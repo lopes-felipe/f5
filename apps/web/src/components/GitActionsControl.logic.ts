@@ -84,6 +84,11 @@ export function summarizeGitResult(result: GitRunStackedActionResult): {
   title: string;
   description?: string;
 } {
+  if (result.commit.status === "context_changed")
+    return {
+      title: "Files or staging changed",
+      description: "Review the suggested message and current changes before trying again.",
+    };
   if (result.pr.status === "created" || result.pr.status === "opened_existing") {
     const prNumber = result.pr.number ? ` #${result.pr.number}` : "";
     const title = `${result.pr.status === "created" ? "Created PR" : "Opened PR"}${prNumber}`;

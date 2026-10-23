@@ -16,6 +16,12 @@ export default defineConfig([
   },
   {
     ...shared,
+    entry: ["src/boot.ts", "src/compileCache.ts"],
+    clean: false,
+    external: ["./main.js", "./compileCache.js"],
+  },
+  {
+    ...shared,
     entry: ["src/preload.ts", "src/preview/guestPreload.ts"],
   },
 ]);

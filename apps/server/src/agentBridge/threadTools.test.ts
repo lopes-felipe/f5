@@ -6,6 +6,8 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_SERVER_SETTINGS,
   ProviderInstanceId,
+  ProviderDriverKind,
+  ProjectId,
   ThreadId,
   TurnId,
   type NextTurnQueueSnapshot,
@@ -64,6 +66,12 @@ const setup = (options: { now?: () => number } = {}) =>
       AGENT_BRIDGE_LOCAL_CLIENT_ID,
     )) as AgentBridgeClientRecord;
     const host = new FakeAgentBridgeHost();
+    host.settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [ProviderInstanceId.make("claude")]: { driver: ProviderDriverKind.make("claudeAgent") },
+      },
+    };
     host.projects = [project("exposed"), project("hidden")];
     // The database is shared across tests, so ids must be unique per setup.
     const prefix = crypto.randomUUID().slice(0, 8);
@@ -141,6 +149,13 @@ layer("Agent Bridge thread tools", (it) => {
     Effect.gen(function* () {
       const { host, run } = yield* setup();
       host.providers = [provider("muse", "muse", ["muse-spark-1.3"]), provider("codex", "codex")];
+      host.settings = {
+        ...host.settings,
+        providers: {
+          ...host.settings.providers,
+          muse: { ...host.settings.providers.muse, enabled: true },
+        },
+      };
       const muse = yield* run("create_thread", {
         projectId: "exposed",
         prompt: "Hi",
@@ -193,7 +208,7 @@ layer("Agent Bridge thread tools", (it) => {
         provider("codex", "codex"),
       ];
       host.settings = {
-        ...DEFAULT_SERVER_SETTINGS,
+        ...host.settings,
         textGenerationModelSelection: {
           instanceId: ProviderInstanceId.make("claude"),
           model: "model-a",
@@ -232,7 +247,7 @@ layer("Agent Bridge thread tools", (it) => {
       const codingDefault = DEFAULT_MODEL_BY_PROVIDER.codex;
       host.providers = [provider("codex", "codex", ["small-model", codingDefault])];
       host.settings = {
-        ...DEFAULT_SERVER_SETTINGS,
+        ...host.settings,
         textGenerationModelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
           model: "small-model",
@@ -294,6 +309,41 @@ layer("Agent Bridge thread tools", (it) => {
     }),
   );
 
+  it.effect("scopes provider lists and new-thread admission to an exposed project", () =>
+    Effect.gen(function* () {
+      const { host, run } = yield* setup();
+      const codex = ProviderInstanceId.make("codex"),
+        claude = ProviderInstanceId.make("claude");
+      host.providers = [provider(codex, "codex"), provider(claude, "claudeAgent")];
+      host.settings = {
+        ...host.settings,
+        projectSettingsOverrides: {
+          [ProjectId.makeUnsafe("exposed")]: { providerInstances: { [codex]: { enabled: false } } },
+        },
+      };
+      const global = yield* run("list_providers", {});
+      const scoped = yield* run("list_providers", { projectId: "exposed" });
+      assert.deepStrictEqual(
+        global.ok && global.value.providers.map((p: { instanceId: string }) => p.instanceId),
+        [codex, claude],
+      );
+      assert.deepStrictEqual(
+        scoped.ok && scoped.value.providers.map((p: { instanceId: string }) => p.instanceId),
+        [claude],
+      );
+      assert.isFalse((yield* run("list_providers", { projectId: "hidden" })).ok);
+      assert.isFalse(
+        (yield* run("create_thread", {
+          projectId: "exposed",
+          prompt: "x",
+          providerInstanceId: codex,
+        })).ok,
+      );
+      assert.isTrue((yield* run("create_thread", { projectId: "exposed", prompt: "x" })).ok);
+      assert.strictEqual(host.submissions[0]?.command.modelSelection?.instanceId, claude);
+    }),
+  );
+
   it.effect("uses the checkout for non-git projects", () =>
     Effect.gen(function* () {
       const { host, run } = yield* setup();
@@ -317,7 +367,7 @@ layer("Agent Bridge thread tools", (it) => {
 
       // The default provider changes; the retry still sends the stored command.
       host.settings = {
-        ...DEFAULT_SERVER_SETTINGS,
+        ...host.settings,
         textGenerationModelSelection: {
           instanceId: ProviderInstanceId.make("claude"),
           model: "model-a",

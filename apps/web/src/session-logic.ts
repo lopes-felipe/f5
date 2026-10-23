@@ -1,3 +1,5 @@
+import { readMcpAppView, type McpAppView } from "@t3tools/shared/mcpApp";
+import { HtmlRenderReference } from "@t3tools/contracts";
 import { recordBrowserWork } from "./lib/performanceCounters";
 import { messageListStructure } from "./lib/streamingTextRevision";
 import { Schema } from "effect";
@@ -86,9 +88,13 @@ export const PROVIDER_OPTIONS: Array<{
   { value: "grok", label: "Grok", available: true },
   { value: "antigravity", label: "Antigravity", available: true },
   { value: "muse", label: "Muse Code", available: true },
+  { value: "acp", label: "Custom ACP agent", available: true },
+  { value: "pi", label: "Pi", available: true },
 ];
 
 export interface WorkLogEntry {
+  htmlRender?: HtmlRenderReference;
+  mcpApp?: McpAppView;
   imagePath?: string;
   id: string;
   createdAt: string;
@@ -469,12 +475,15 @@ function parseUserInputQuestions(
         options: UserInputQuestion["options"];
         multiSelect?: boolean;
         optional?: boolean;
+        initialAnswer?: string;
       } = {
         id: question.id,
         header: question.header,
         question: question.question,
         options,
       };
+      if (typeof question.initialAnswer === "string" && question.initialAnswer.length <= 64 * 1024)
+        parsedQuestion.initialAnswer = question.initialAnswer;
       if (typeof question.optional === "boolean") parsedQuestion.optional = question.optional;
       if (typeof question.multiSelect === "boolean") {
         parsedQuestion.multiSelect = question.multiSelect;
@@ -724,7 +733,7 @@ function shouldKeepHistoricalWorkEntry(
   latestTurnId: TurnId | undefined,
   terminalCodexProviderItemIds: ReadonlySet<ProviderItemId>,
 ): boolean {
-  if (!latestTurnId) {
+  if (!latestTurnId || activity.kind === "htmlRender" || activity.kind === "mcpApp") {
     return true;
   }
   if (
@@ -762,6 +771,8 @@ function shouldKeepHistoricalWorkEntry(
 
 function workEntryVisibleSignature(entry: WorkLogEntry): string {
   return JSON.stringify({
+    htmlRender: entry.htmlRender,
+    mcpApp: entry.mcpApp?.reference.attachmentId,
     label: entry.label,
     toolTitle: entry.toolTitle,
     itemType: entry.itemType,
@@ -881,6 +892,43 @@ function coalesceCodexCollaborationEntries(entries: ReadonlyArray<WorkLogEntry>)
     };
   }
   return result;
+}
+
+function collapseWhitespace(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/** Each user-input request's question text, joined with " · " when it asked several. */
+function userInputQuestionTextByRequestId(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlyMap<string, string> {
+  const questions = new Map<string, string>();
+  for (const activity of activities) {
+    if (activity.kind !== "user-input.requested") continue;
+    const payload = workLogPayload(activity);
+    if (typeof payload?.requestId !== "string") continue;
+    const text = (parseUserInputQuestions(payload) ?? [])
+      .map((question) => collapseWhitespace(question.question))
+      .filter(Boolean)
+      .join(" · ");
+    if (text) questions.set(payload.requestId, text);
+  }
+  return questions;
+}
+
+/** The submitted answers as one line; empty when nothing was answered. */
+function userInputAnswerPreview(answers: unknown): string {
+  if (!answers || typeof answers !== "object") return "";
+  const values = Object.values(answers as Record<string, unknown>).flatMap((value) => {
+    const answer =
+      value && typeof value === "object" && !Array.isArray(value)
+        ? (value as { answers?: unknown }).answers
+        : value;
+    return (Array.isArray(answer) ? answer : [answer]).filter(
+      (item): item is string => typeof item === "string",
+    );
+  });
+  return values.map(collapseWhitespace).filter(Boolean).join(" · ");
 }
 
 function workLogPayload(activity: OrchestrationThreadActivity): Record<string, unknown> | null {
@@ -1155,7 +1203,13 @@ function correlateSubagentActivities(entries: ReadonlyArray<WorkLogEntry>): Work
 
 export type LiveWorkActivity =
   | { kind: "thinking"; detail: string | null }
-  | { kind: "tool"; providerItemId: string | null; title: string }
+  | {
+      kind: "tool";
+      providerItemId: string | null;
+      title: string;
+      /** The turn's latest reasoning heading, kept in view while a later tool runs. */
+      thought?: string;
+    }
   /** The provider is retrying a dropped model stream; `attempt` reads like "2/5". */
   | { kind: "reconnecting"; attempt: string | null }
   /**
@@ -1362,7 +1416,23 @@ export function deriveLiveWorkActivity(
     if (item.status !== "inProgress") continue;
     if (!live || item.startIndex > live.startIndex) live = item;
   }
-  if (live) return live.activity;
+  if (live) {
+    if (live.activity.kind !== "tool") return live.activity;
+    // A thought is often a finding; without this, the next tool call hides it.
+    let thought: string | null = null;
+    let thoughtIndex = -1;
+    for (const item of items.values()) {
+      if (
+        item.activity.kind === "thinking" &&
+        item.activity.detail &&
+        item.startIndex > thoughtIndex
+      ) {
+        thought = item.activity.detail;
+        thoughtIndex = item.startIndex;
+      }
+    }
+    return thought ? { ...live.activity, thought } : live.activity;
+  }
   if (options?.awaitingUser) return null;
   const retryIndex = ordered.findLastIndex(isRetryingWarning);
   const retry = ordered[retryIndex];
@@ -1427,6 +1497,7 @@ export function deriveWorkLogEntries(
       usageLimitRowByTurn.set(activity.turnId, activity);
     }
   }
+  const userInputQuestionByRequestId = userInputQuestionTextByRequestId(ordered);
   const entries = ordered
     .filter((activity) =>
       shouldKeepHistoricalWorkEntry(activity, latestTurnId, terminalCodexProviderItemIds),
@@ -1499,13 +1570,29 @@ export function deriveWorkLogEntries(
                 ? payload.message
                 : activity.summary
               : activity.summary;
+      // "User input submitted" buries what was asked: lead with the question and keep the
+      // answer as the row's detail.
+      const answeredQuestion =
+        activity.kind === "user-input.resolved" && typeof payload?.requestId === "string"
+          ? userInputQuestionByRequestId.get(payload.requestId)
+          : undefined;
+      const answerPreview = answeredQuestion ? userInputAnswerPreview(payload?.answers) : "";
       const entry: WorkLogEntry = {
         id: activity.id,
         createdAt: activity.createdAt,
-        label,
+        label: answeredQuestion && answerPreview ? answeredQuestion : label,
         tone: usageLimit || activity.tone === "approval" ? "info" : activity.tone,
         activityKind: activity.kind,
+        ...(answeredQuestion && answerPreview ? { detail: answerPreview } : {}),
       };
+      if (activity.kind === "mcpApp") {
+        const app = readMcpAppView(payload);
+        if (app) entry.mcpApp = app;
+      }
+      if (activity.kind === "htmlRender") {
+        const parsed = Schema.decodeUnknownOption(HtmlRenderReference)(payload?.htmlRender);
+        if (parsed._tag === "Some") entry.htmlRender = parsed.value;
+      }
       if (activity.turnId) {
         entry.turnId = activity.turnId;
       }
@@ -1627,7 +1714,7 @@ export function deriveWorkLogEntries(
       if (diagnostic) {
         entry.diagnostic = diagnostic;
         entry.category = diagnostic.type === "hook" ? "hook" : "review";
-      } else if (toolPayload) {
+      } else if (toolPayload || entry.mcpApp) {
         entry.category = "tool";
       } else if (
         activity.kind === "runtime.warning" ||

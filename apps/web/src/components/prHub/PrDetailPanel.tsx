@@ -1,8 +1,17 @@
+import { prQuickActions, type PrQuickActionRequest } from "../../lib/prQuickActions";
+import { toastManager } from "../ui/toast";
 import { OpenLinkAnchor } from "../OpenLinkAnchor";
 import { PrAuthorLink } from "./PrAuthorLink";
 import { prAttentionText } from "@t3tools/shared/prHub";
 import { waitingLabel } from "./prHubPresentation";
-import { forwardRef, useEffect, useImperativeHandle, useState, type ReactNode } from "react";
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useState,
+  useRef,
+  type ReactNode,
+} from "react";
 import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
 import { ensureNativeApi } from "../../nativeApi";
 import { GitPullRequestIcon, SparklesIcon } from "lucide-react";
@@ -37,6 +46,9 @@ export interface PrDetailHandle {
 }
 
 export interface PrDetailPanelProps {
+  initialAction?: PrQuickActionRequest | undefined;
+  onInitialActionHandled?: (() => void) | undefined;
+  confirmationMode?: "dialog" | "inline";
   pr: TrackedPullRequest;
   advisory?: PrHubAdvisory | undefined;
   isAnalyzingAdvisory?: boolean;
@@ -85,7 +97,16 @@ function stateBadge(pr: TrackedPullRequest): ReactNode {
  * {@link usePrActions}.
  */
 export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(function PrDetailPanel(
-  { pr, advisory, isAnalyzingAdvisory = false, onAnalyzeAdvisory, onThreadCreated },
+  {
+    pr,
+    advisory,
+    isAnalyzingAdvisory = false,
+    onAnalyzeAdvisory,
+    onThreadCreated,
+    confirmationMode = "dialog",
+    initialAction,
+    onInitialActionHandled,
+  },
   ref,
 ) {
   const [activeTab, setActiveTab] = useState<PrDetailTab>("summary");
@@ -109,6 +130,22 @@ export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(func
     advisory,
     onThreadCreated,
   });
+  const handledQuickAction = useRef<string | null>(null);
+  useEffect(() => {
+    if (!initialAction || handledQuickAction.current === initialAction.id) return;
+    handledQuickAction.current = initialAction.id;
+    onInitialActionHandled?.();
+    if (!prQuickActions(pr).includes(initialAction.kind)) {
+      toastManager.add({
+        type: "info",
+        title: "This PR action is no longer available. Refresh its state.",
+      });
+      return;
+    }
+    if (initialAction.kind === "merge") handlers.onMerge();
+    else if (initialAction.kind === "ready") handlers.onMarkReady();
+    else dialogProps.setPendingAction(initialAction.kind);
+  }, [initialAction, pr, handlers, dialogProps, onInitialActionHandled]);
   const visibility = prRowActionVisibility(pr, {
     isAuthor: flags.isAuthor,
     isOpen: flags.isOpen,
@@ -385,7 +422,7 @@ export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(func
         }
       />
 
-      <PrActionDialogs {...dialogProps} />
+      <PrActionDialogs {...dialogProps} confirmationMode={confirmationMode} />
     </div>
   );
 });

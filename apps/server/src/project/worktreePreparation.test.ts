@@ -1,4 +1,13 @@
 import * as Path from "node:path";
+import { createLargeIgnoredDependencyTree } from "../git/ignoredPaths.testUtils.ts";
+import { GitCore } from "../git/Services/GitCore.ts";
+import { canonicalWorktreePath } from "../git/worktreePaths.ts";
+import {
+  automationLayer,
+  git as runGit,
+  makeClonedRepo,
+  makeWorld,
+} from "../storage/storageAutomation.testHarness.ts";
 import { makeFakeGitCore } from "../git/testDoubles.ts";
 import { makeMemoryWorktreePreparations } from "../persistence/worktreePreparations.testUtils.ts";
 import { ThreadId, type GitPrepareWorktreeInput } from "@t3tools/contracts";
@@ -95,6 +104,63 @@ describe("worktree preparation", () => {
         worktreePath: result.worktree.path,
         preferredTerminalId: `setup-t3code-${threadId}`,
       });
+    }
+  });
+
+  it("replays completed setup with more than a megabyte of ignored dependency paths", async () => {
+    const repo = await makeClonedRepo("f5-preparation-dependencies-");
+    try {
+      const worktreePath = Path.join(repo.dir, "worktree");
+      runGit(repo.root, "worktree", "add", "-b", "feature", "--", worktreePath, "HEAD");
+      await createLargeIgnoredDependencyTree(worktreePath);
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const core = yield* GitCore;
+          const scope = yield* Effect.scope;
+          const receipts = makeMemoryWorktreePreparations();
+          const receipt = yield* receipts.allocate({
+            operationId: "completed-setup",
+            // Preparation compares canonical paths; Windows short names and Git's forward slashes
+            // differ from the raw ones.
+            repositoryIdentity: yield* core
+              .resolveCommonDir(repo.root)
+              .pipe(Effect.flatMap((dir) => Effect.promise(() => canonicalWorktreePath(dir)))),
+            projectIdentity: yield* Effect.promise(() => canonicalWorktreePath(repo.root)),
+            owner: `thread:${input.threadId}`,
+            requestedBase: "main",
+            baseOid: runGit(repo.root, "rev-parse", "HEAD"),
+            path: worktreePath,
+            branch: "feature",
+            namingIntent: "existing",
+            runSetupScript: true,
+            setupIdentity: null,
+          });
+          yield* receipts.update(receipt, { phase: "completed", createdCheckout: true });
+          const runSetup = vi.fn(() => Effect.succeed({ status: "no-script" } as const));
+          const prepare = yield* makeWorktreePreparation({
+            scope,
+            git: { ...core, allocateWorktreePath: () => Effect.succeed(worktreePath) },
+            receipts,
+            createWorktree: () => Effect.fail(new Error("Completed setup must reuse its checkout")),
+            runSetup,
+          });
+          expect(
+            yield* prepare({
+              ...input,
+              cwd: repo.root,
+              projectCwd: repo.root,
+              branch: "main",
+              newBranch: "feature",
+            }),
+          ).toEqual({ worktree: { path: worktreePath, branch: "feature" } });
+          expect(runSetup).not.toHaveBeenCalled();
+        }).pipe(
+          Effect.provide(automationLayer(makeWorld(), {}, "f5-preparation-dependencies-state-")),
+          Effect.scoped,
+        ),
+      );
+    } finally {
+      await repo.cleanup();
     }
   });
 

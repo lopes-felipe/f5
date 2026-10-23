@@ -6,9 +6,15 @@ import {
   ProjectId,
   ProjectSettingsOverrides,
   ServerSettings,
+  ProviderInstanceId,
+  ProviderDriverKind,
 } from "@t3tools/contracts";
 import { parseCheckedInProjectFile } from "./checkedInProjectFile";
-import { agentBrowserPolicyFromSettings, resolveProjectSettings } from "./projectSettings";
+import {
+  agentBrowserPolicyFromSettings,
+  resolveProjectSettings,
+  resolveWorktreeCleanupRules,
+} from "./projectSettings";
 import { applyServerSettingsPatch } from "./serverSettings";
 const id = ProjectId.makeUnsafe("project-test");
 describe("agent browser policy", () => {
@@ -63,6 +69,44 @@ describe("project settings", () => {
     expect(result.settings.worktreeCleanup).toBeNull();
     expect(result.sources.autoPullDefaultBranch).toBe("default");
   });
+  it("keeps settlement opt-in under user-owned global and project settings", () => {
+    const checkedIn = {
+      autoSettleOnPullRequestMerge: true,
+      autoSettleAfterDays: 1,
+      autoSettleKeepPullRequests: false,
+    };
+    const result = resolveProjectSettings({ projectId: id, checkedIn, sourceFile: "f5.json" });
+    expect(result.settings.autoSettleOnPullRequestMerge).toBe(false);
+    expect(result.settings.autoSettleAfterDays).toBeNull();
+    expect(result.settings.autoSettleKeepPullRequests).toBe(true);
+    const global = { ...DEFAULT_SERVER_SETTINGS, projectSettingsOverrides: { [id]: checkedIn } };
+    const override = resolveProjectSettings({ projectId: id, checkedIn: {}, global });
+    expect(override.settings.autoSettleAfterDays).toBe(1);
+    expect(override.sources.autoSettleAfterDays).toBe("project");
+  });
+  it("recognizes an on-settle-only cleanup rule and honors the master opt-in", () => {
+    const worktree = {
+      afterDays: null,
+      onMerge: false,
+      onDelete: false,
+      unchanged: false,
+      minIdleHours: 24,
+      onSettle: true,
+    };
+    expect(
+      resolveWorktreeCleanupRules({
+        ...DEFAULT_SERVER_SETTINGS,
+        storageCleanup: { ...DEFAULT_SERVER_SETTINGS.storageCleanup, enabled: true, worktree },
+      }),
+    ).toEqual(worktree);
+    expect(
+      resolveWorktreeCleanupRules({
+        ...DEFAULT_SERVER_SETTINGS,
+        storageCleanup: { ...DEFAULT_SERVER_SETTINGS.storageCleanup, enabled: false, worktree },
+      }),
+    ).toBeNull();
+  });
+
   it("never lets a checked-in file widen agent browser or computer reach", () => {
     const result = resolveProjectSettings({
       projectId: id,
@@ -187,4 +231,37 @@ describe("project settings", () => {
       textGenerationModelSelection: legacySettings.textGenerationModelSelection,
     });
   });
+});
+
+it("keeps instance configuration while falling back to a project-enabled custom text generator", () => {
+  const custom = ProviderInstanceId.make("custom-codex");
+  const providerInstances = Object.fromEntries(
+    Object.keys(DEFAULT_SERVER_SETTINGS.providers).map((driver) => [driver, { enabled: false }]),
+  );
+  const global = {
+    ...DEFAULT_SERVER_SETTINGS,
+    providerInstances: {
+      [custom]: {
+        driver: ProviderDriverKind.make("codex"),
+        enabled: false,
+        config: { binaryPath: "/custom/codex", homePath: "/private/home" },
+      },
+    },
+    projectSettingsOverrides: {
+      [id]: { providerInstances: { ...providerInstances, [custom]: { enabled: true } } },
+    },
+  };
+  const resolved = resolveProjectSettings({
+    global,
+    projectId: id,
+    checkedIn: { providerInstances: { [custom]: { enabled: false } } },
+  });
+  expect(resolved.settings.textGenerationModelSelection.instanceId).toBe(custom);
+  expect(resolved.settings.providerInstances[custom]?.config).toEqual(
+    global.providerInstances[custom]?.config,
+  );
+  expect(resolved.settings.providerInstances[custom]?.enabled).toBe(true);
+  expect(resolved.settings.providers.codex.enabled).toBe(false);
+  expect(global.providerInstances[custom]?.enabled).toBe(false);
+  expect(resolved.sources.providerInstances).toBe("project");
 });

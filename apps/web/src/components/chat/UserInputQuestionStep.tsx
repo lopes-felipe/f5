@@ -11,6 +11,7 @@ import {
 import { CheckIcon, ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 
 import { cn } from "~/lib/utils";
+import ChatMarkdown from "../ChatMarkdown";
 
 /**
  * Where custom text answers are typed: an inline "Other…" field inside the
@@ -27,6 +28,8 @@ export type UserInputShortcutScope = "document" | "panel";
 
 interface UserInputQuestionStepProps {
   question: UserInputQuestion;
+  /** Resolves file links in the question text. */
+  cwd?: string | undefined;
   questionIndex: number;
   questionCount: number;
   selectedOptionLabels: readonly string[];
@@ -62,6 +65,7 @@ const PANEL_SCOPE_SELECTOR = '[data-user-input-shortcut-scope="panel"]';
 
 export function UserInputQuestionStep({
   question,
+  cwd,
   questionIndex,
   questionCount,
   selectedOptionLabels,
@@ -291,7 +295,9 @@ export function UserInputQuestionStep({
         ) : null}
       </div>
       <div hidden={collapsed}>
-        <p className="mt-1.5 text-sm text-foreground">{question.question}</p>
+        <div className="mt-1.5 text-sm">
+          <ChatMarkdown text={question.question} cwd={cwd} />
+        </div>
         {hasOptions ? (
           <div className="mt-3 space-y-1">
             {question.options.map((option, index) => {

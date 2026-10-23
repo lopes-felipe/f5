@@ -270,6 +270,27 @@ describe("HomeMissionControl", () => {
     }
   });
 
+  it("searches the project picker and starts work in the chosen project", async () => {
+    const view = await renderHome([IDLE_THREAD]);
+    try {
+      await page.getByRole("combobox", { name: "Project" }).click();
+      await page.getByRole("combobox", { name: "Search projects" }).fill("bet");
+      await expect.element(page.getByRole("option", { name: "Beta" })).toBeVisible();
+      expect(page.getByRole("option", { name: "Alpha" }).all()).toHaveLength(0);
+      await page.getByRole("combobox", { name: "Search projects" }).fill("zzz");
+      await expect.element(page.getByText("No matching projects.")).toBeVisible();
+      await page.getByRole("combobox", { name: "Search projects" }).fill("bet");
+      await page.getByRole("option", { name: "Beta" }).click();
+      await expect
+        .element(page.getByRole("combobox", { name: "Project" }))
+        .toHaveTextContent("Beta");
+      await page.getByRole("button", { name: "New workflow" }).click();
+      expect(useWorkflowCreateDialogStore.getState().projectId).toBe(PROJECT_B.id);
+    } finally {
+      await view.cleanup();
+    }
+  });
+
   it("opens the workflow dialog for the selected project", async () => {
     const view = await renderHome([IDLE_THREAD]);
     try {

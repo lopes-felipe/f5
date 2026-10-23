@@ -1,6 +1,13 @@
 export const MAX_COMPRESSIBLE_IMAGE_SOURCE_BYTES = 50 * 1024 * 1024;
 export const MAX_COMPRESSIBLE_IMAGE_PIXELS = 25_000_000;
-export const IMAGE_COMPRESSION_DIMENSION_STEPS = [2048, 1536, 1024] as const;
+/**
+ * Longest edge, in pixels, an attachment keeps. Anthropic rejects an image over
+ * 2000px on a side once a request holds more than 20 images, and Claude Code
+ * forwards images sent into a running turn unchanged, so one large paste breaks
+ * every later request in that thread.
+ */
+export const IMAGE_ATTACHMENT_MAX_EDGE = 2000;
+export const IMAGE_COMPRESSION_DIMENSION_STEPS = [IMAGE_ATTACHMENT_MAX_EDGE, 1536, 1024] as const;
 export const IMAGE_COMPRESSION_QUALITY_STEPS = [0.92, 0.86, 0.8, 0.72, 0.64] as const;
 export const COMPOSER_IMAGE_OUTPUT_MIME_TYPE = "image/webp";
 
@@ -323,6 +330,7 @@ export async function processImageForComposerInWorker(input: {
 
   if (
     isProviderSupportedImageMimeType(mimeType) &&
+    Math.max(dimensions.width, dimensions.height) <= IMAGE_ATTACHMENT_MAX_EDGE &&
     input.file.size <= input.maxBytes &&
     imageDataUrlCharLength(input.file.size, mimeType) <= input.maxDataUrlChars
   ) {

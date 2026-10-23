@@ -1,3 +1,4 @@
+import { keepOutboundFetchOnHttp1 } from "./outboundHttp.ts";
 import * as NodePath from "node:path";
 import { runDistributionCommand } from "./distribution/commands";
 import { watchLauncher } from "./distribution/activation";
@@ -25,6 +26,7 @@ const RuntimeLayer = Layer.empty.pipe(
 );
 
 export function startServer(): void {
+  keepOutboundFetchOnHttp1();
   watchLauncher();
   if (process.env.F5_STANDALONE === "1") {
     process.env.F5_STANDALONE_DIR = NodePath.dirname(process.execPath);

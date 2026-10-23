@@ -104,6 +104,41 @@ describe("processImageForComposerInWorker", () => {
       }),
     ).resolves.toEqual({ ok: true, useOriginal: true, mimeType: "image/gif" });
   });
+  it("scales a small file whose long edge is over 2000px instead of passing it through", async () => {
+    const bytes = new Uint8Array(24);
+    bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+    bytes.set([0, 0, 0x0b, 0xb8, 0, 0, 0x03, 0xe8], 16);
+    const close = vi.fn();
+    const dimensions: Array<[number, number]> = [];
+    vi.stubGlobal(
+      "createImageBitmap",
+      vi.fn().mockResolvedValue({ width: 3000, height: 1000, close }),
+    );
+    vi.stubGlobal(
+      "OffscreenCanvas",
+      class {
+        constructor(width: number, height: number) {
+          dimensions.push([width, height]);
+        }
+        getContext() {
+          return { drawImage: vi.fn() };
+        }
+        async convertToBlob() {
+          return new Blob([new Uint8Array(10)], { type: COMPOSER_IMAGE_OUTPUT_MIME_TYPE });
+        }
+      },
+    );
+
+    await expect(
+      processImageForComposerInWorker({
+        file: new Blob([bytes], { type: "image/png" }),
+        mimeType: "image/png",
+        maxBytes: 1024,
+        maxDataUrlChars: 2048,
+      }),
+    ).resolves.toMatchObject({ ok: true, useOriginal: false });
+    expect(dimensions[0]).toEqual([2000, 667]);
+  });
 
   it("refuses animated images instead of flattening the first frame", async () => {
     const file = new Blob([bytesAsArrayBuffer(gifWithFrames(2))], { type: "image/gif" });
@@ -155,7 +190,7 @@ describe("processImageForComposerInWorker", () => {
     expect(createImageBitmapMock).toHaveBeenCalledWith(expect.any(Blob), {
       imageOrientation: "from-image",
     });
-    expect(dimensions[0]).toEqual([2048, 1365]);
+    expect(dimensions[0]).toEqual([2000, 1333]);
     expect(close).toHaveBeenCalledOnce();
   });
 
@@ -193,7 +228,7 @@ describe("processImageForComposerInWorker", () => {
       }),
     ).resolves.toEqual({ ok: false, reason: "too-large" });
     expect(dimensions).toEqual([
-      [2048, 1365],
+      [2000, 1333],
       [1536, 1024],
       [1024, 683],
     ]);

@@ -19,7 +19,13 @@ import { assertWorktreeReady, WorktreeInspectionError } from "../../project/work
 import { GitCore } from "../../git/Services/GitCore.ts";
 import type { OrchestrationReadModel, ProjectId, ThreadId } from "@t3tools/contracts";
 import { NextTurnQueueStore } from "../../nextTurnQueue/Services/NextTurnQueueStore.ts";
-import { CommandId, EventId, OrchestrationCommand, OrchestrationEvent } from "@t3tools/contracts";
+import {
+  CommandId,
+  EventId,
+  MessageId,
+  OrchestrationCommand,
+  OrchestrationEvent,
+} from "@t3tools/contracts";
 import {
   Cause,
   Deferred,
@@ -35,6 +41,13 @@ import {
   Stream,
 } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as NodeFS from "node:fs/promises";
+import * as NodePath from "node:path";
+import {
+  isScratchProject,
+  isScratchThreadFolder,
+  scratchThreadFolderName,
+} from "@t3tools/shared/scratchProject";
 
 import {
   PerformanceStageProbe,
@@ -91,6 +104,7 @@ function commandToAggregateRef(command: OrchestrationCommand): {
 } {
   switch (command.type) {
     case "project.create":
+    case "project.scratch.create":
     case "project.meta.update":
     case "project.delete":
     case "project.memory.save":
@@ -161,6 +175,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const diskSpaceMonitor = yield* Effect.serviceOption(DiskSpaceMonitor);
 
   let readModel = createEmptyReadModel(new Date().toISOString());
+  const nativeReconciledThreads = new Set<string>();
   let hasDeletedThreads = false;
 
   const controlNow = yield* ControlDeliveryClock;
@@ -234,6 +249,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   const processEnvelope = (envelope: CommandEnvelope): Effect.Effect<void> => {
     const dispatchStartSequence = readModel.snapshotSequence;
+    // Events this dispatch appended. Reconcile republishes only these: a
+    // shared state directory can contain events another server already
+    // handled, and republishing them starts a second provider turn.
+    const appendedEventIds = new Set<OrchestrationEvent["eventId"]>();
     let commandReadModel = readModel;
     const processingStartedAtMs = Date.now();
     const aggregateRef = commandToAggregateRef(envelope.command);
@@ -257,7 +276,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       readModel = hasDeletedThreads ? withoutDeletedThreadDetails(nextReadModel) : nextReadModel;
 
       for (const persistedEvent of persistedEvents) {
-        yield* PubSub.publish(eventPubSub, persistedEvent);
+        if (appendedEventIds.has(persistedEvent.eventId)) {
+          yield* PubSub.publish(eventPubSub, persistedEvent);
+        }
       }
     });
 
@@ -324,10 +345,38 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           });
         }
 
+        const command = envelope.command;
+        if ("threadId" in command && nativeReconciledThreads.has(command.threadId)) {
+          const turnId =
+            "turnId" in command
+              ? command.turnId
+              : command.type === "thread.activity.append"
+                ? command.activity.turnId
+                : command.type === "thread.proposed-plan.upsert"
+                  ? command.proposedPlan.turnId
+                  : command.type === "thread.command-execution.record"
+                    ? command.commandExecution.turnId
+                    : command.type === "thread.file-change.record"
+                      ? command.fileChange.turnId
+                      : command.type === "thread.session.set"
+                        ? (command.session.activeTurnId ?? command.settledTurnId)
+                        : undefined;
+          if (
+            turnId &&
+            (yield* sql`SELECT 1 FROM native_history_retired_turns WHERE thread_id = ${command.threadId} AND turn_id = ${turnId}`)
+              .length
+          )
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: "This turn was retired by verified native history reconciliation.",
+            });
+        }
+
         if (
           envelope.command.type === "thread.turn.start" ||
           envelope.command.type === "thread.turn.steer" ||
-          envelope.command.type === "thread.conversation.revert"
+          envelope.command.type === "thread.conversation.revert" ||
+          envelope.command.type === "thread.native-history.reconcile"
         ) {
           const active = yield* sql<{
             readonly operationId: string;
@@ -530,6 +579,19 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 "Conversations still reference this project workspace. Create a separate project for the new workspace.",
             });
         }
+        const nativeRemovedMessageIds =
+          envelope.command.type === "thread.native-history.reconcile" &&
+          envelope.command.removedTurnIds.length
+            ? (yield* sql<{ pendingMessageId: string | null; assistantMessageId: string | null }>`
+              SELECT pending_message_id AS "pendingMessageId", assistant_message_id AS "assistantMessageId"
+              FROM projection_turns WHERE thread_id = ${envelope.command.threadId}
+                AND ${sql.in("turn_id", envelope.command.removedTurnIds)}
+            `).flatMap((row) =>
+                [row.pendingMessageId, row.assistantMessageId].flatMap((id) =>
+                  id ? [MessageId.make(id)] : [],
+                ),
+              )
+            : [];
         if (hasDeletedThreads && projectionSnapshotQuery.getRetainedThreadDetails)
           commandReadModel = yield* hydrateDeciderReadModel(
             readModel,
@@ -537,6 +599,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             projectionSnapshotQuery.getRetainedThreadDetails,
           );
         const eventBase = yield* decideOrchestrationCommand({
+          nativeRemovedMessageIds,
           command: envelope.command,
           readModel: commandReadModel,
           ...(envelope.command.type === "thread.turn.start" && providerRegistry._tag === "Some"
@@ -548,6 +611,41 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           .withTransaction(
             Effect.gen(function* () {
               yield* checkWorkspaceBarrier;
+              if (envelope.command.type === "thread.settle") {
+                const command = envelope.command;
+                const [blocked] = yield* sql<{
+                  request: number;
+                  queued: number;
+                  background: number;
+                  scripts: number;
+                  watch: number;
+                }>`SELECT
+                  (EXISTS(SELECT 1 FROM projection_pending_approvals WHERE thread_id=${command.threadId} AND status='pending')
+                    OR EXISTS(SELECT 1 FROM projection_pending_user_inputs WHERE thread_id=${command.threadId} AND resolution IS NULL)) AS request,
+                  (EXISTS(SELECT 1 FROM next_turn_queue WHERE thread_id=${command.threadId} AND deleted_at IS NULL)
+                    OR EXISTS(SELECT 1 FROM next_turn_queue_quarantine WHERE thread_id=${command.threadId})
+                    OR EXISTS(SELECT 1 FROM next_turn_queue_state WHERE thread_id=${command.threadId} AND worktree_block_token IS NOT NULL)) AS queued,
+                  EXISTS(SELECT 1 FROM projection_thread_background_work WHERE thread_id=${command.threadId} AND active=1) AS background,
+                  EXISTS(SELECT 1 FROM thread_settlement_hooks WHERE thread_id=${command.threadId} AND state IN ('pending','running','orphaned')) AS scripts,
+                  (${command.settledBy === "auto" ? 1 : 0}=1 AND EXISTS(SELECT 1 FROM thread_pull_request_watches WHERE thread_id=${command.threadId})) AS watch`;
+                // The reason is shown to the user, so it names what to clear first.
+                const blocker = blocked?.request
+                  ? "This thread is waiting on an approval or question. Answer it before settling."
+                  : blocked?.queued
+                    ? "This thread has a queued message. Send it or remove it from the queue before settling."
+                    : blocked?.background
+                      ? "This thread still has background work running. Stop it before settling."
+                      : blocked?.scripts
+                        ? "Settlement scripts from an earlier settle are still running or need attention."
+                        : blocked?.watch
+                          ? "This thread is watching a pull request."
+                          : null;
+                if (blocker !== null)
+                  return yield* new OrchestrationCommandInvariantError({
+                    commandType: command.type,
+                    detail: blocker,
+                  });
+              }
               if (
                 envelope.command.type === "thread.turn.start" &&
                 envelope.command.dispatchSource === "next-turn-queue"
@@ -571,6 +669,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
               for (const nextEvent of eventBases) {
                 const savedEvent = yield* eventStore.append(nextEvent);
+                appendedEventIds.add(savedEvent.eventId);
                 nextReadModel = yield* measurePerformanceStage(
                   probe,
                   "engine.readModelProjection",
@@ -582,6 +681,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 yield* commitSideEffects(savedEvent, {
                   commandType: envelope.command.type,
                   steerFallback,
+                  readModel: nextReadModel,
                 });
                 committedEvents.push(savedEvent);
               }
@@ -655,6 +755,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             ),
           );
 
+        for (const event of committedCommand.committedEvents)
+          if (event.type === "thread.reverted" && event.payload.removedTurnIds?.length)
+            nativeReconciledThreads.add(event.payload.threadId);
         hasDeletedThreads ||= committedCommand.committedEvents.some(
           (event) => event.type === "thread.deleted",
         );
@@ -778,6 +881,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   };
 
   yield* withStartupPhaseTiming("orchestration.projection.bootstrap", projectionPipeline.bootstrap);
+  for (const row of yield* sql<{
+    threadId: string;
+  }>`SELECT DISTINCT thread_id AS "threadId" FROM native_history_retired_turns`)
+    nativeReconciledThreads.add(row.threadId);
 
   let replayFromSequence = 0;
   let bootstrapSource: "projection-snapshot" | "event-replay" = "event-replay";
@@ -850,8 +957,61 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const readEvents: OrchestrationEngineShape["readEvents"] = (fromSequenceExclusive) =>
     eventStore.readFromSequence(fromSequenceExclusive);
 
-  const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
+  // Every thread of the scratch project gets its own folder before it is created, whichever
+  // path creates it. The name depends only on the command, so a retried create reuses it.
+  // A folder the decider would refuse is never created, and one created for a command that is
+  // then rejected is removed again while it is still empty.
+  const withScratchFolder = (
+    command: OrchestrationCommand,
+    created: { folder: string | undefined },
+  ) =>
     Effect.gen(function* () {
+      if (command.type !== "thread.create") return command;
+      const project = readModel.projects.find(
+        (entry) => entry.id === command.projectId && entry.deletedAt === null,
+      );
+      if (!isScratchProject(project) || !project) return command;
+      const { scratchFolderWords, ...rest } = command;
+      const folder = NodePath.join(
+        project.workspaceRoot,
+        scratchThreadFolderName({
+          threadId: command.threadId,
+          createdAt: command.createdAt,
+          text: scratchFolderWords ?? command.title,
+        }),
+      );
+      if (
+        !isScratchThreadFolder(project.workspaceRoot, folder) ||
+        command.worktreePath !== null ||
+        command.branch !== null
+      )
+        return { ...rest, scratchPath: folder };
+      const existed = yield* Effect.promise(() =>
+        NodeFS.stat(folder).then(
+          () => true,
+          () => false,
+        ),
+      );
+      yield* Effect.tryPromise({
+        try: () => NodeFS.mkdir(folder, { recursive: true }),
+        catch: () =>
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Failed to create the folder for this thread.",
+          }),
+      });
+      if (!existed) created.folder = folder;
+      return { ...rest, scratchPath: folder };
+    });
+  const removeEmptyScratchFolder = (created: { folder: string | undefined }) =>
+    created.folder === undefined
+      ? Effect.void
+      : Effect.promise(() => NodeFS.rmdir(created.folder!).catch(() => undefined));
+
+  const dispatch: OrchestrationEngineShape["dispatch"] = (incoming) =>
+    Effect.gen(function* () {
+      const created: { folder: string | undefined } = { folder: undefined };
+      const command = yield* withScratchFolder(incoming, created);
       // Git I/O must not occupy the serialized projection worker. The worker
       // revalidates this metadata fingerprint before accepting the command.
       let workspace: CommandEnvelope["workspace"];
@@ -1023,7 +1183,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           return result;
         }),
       );
-      return yield* Deferred.await(admittedResult);
+      return yield* Deferred.await(admittedResult).pipe(
+        Effect.tapError(() => removeEmptyScratchFolder(created)),
+      );
     });
 
   // PubSub is intentionally not replayed. Detect a missing/dead consumer without

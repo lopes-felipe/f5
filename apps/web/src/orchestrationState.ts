@@ -217,8 +217,9 @@ export function retainThreadMessagesAfterRevert(
   messages: ReadonlyArray<Thread["messages"][number]>,
   retainedTurnIds: ReadonlySet<string>,
   turnCount: number,
+  verifiedMessageIds: ReadonlyArray<string> = [],
 ): ReadonlyArray<Thread["messages"][number]> {
-  const retainedMessageIds = new Set<string>();
+  const retainedMessageIds = new Set<string>(verifiedMessageIds);
   for (const message of messages) {
     if (message.role === "system") {
       retainedMessageIds.add(message.id);

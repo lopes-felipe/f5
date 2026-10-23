@@ -3,9 +3,14 @@ import { constants as fsConstants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
 import { openContainedFile } from "./assetHttp";
+import { extractIcnsPng } from "./icns";
 
 export const WORKSPACE_IMAGE_ASSET_MAX_BYTES = 10 * 1024 * 1024;
 export const WORKSPACE_FAVICON_MAX_BYTES = 1024 * 1024;
+/** A macOS app icon embeds every size up to 1024px, so it is read under a larger cap. */
+export const WORKSPACE_ICNS_FAVICON_MAX_BYTES = 8 * 1024 * 1024;
+// Clients draw project icons from a 96px thumbnail at most.
+const ICNS_MIN_PNG_SIZE = 96;
 export const WORKSPACE_ASSET_HANDLE_TTL_MS = 30 * 60 * 1_000;
 
 const MAX_ACTIVE_HANDLES = 2_048;
@@ -372,9 +377,25 @@ export function makeWorkspaceAssetAuthorizer(input: {
           ? { rejectSymlink: assetInput.rejectSymlink }
           : {}),
       });
-      const extensionMimeType = IMAGE_MIME_BY_EXTENSION.get(
-        path.extname(result.relativePath).toLowerCase(),
-      );
+      const extension = path.extname(result.relativePath).toLowerCase();
+      if (extension === ".icns") {
+        // Browsers cannot draw .icns, so serve its embedded PNG.
+        const png = extractIcnsPng(result.bytes, ICNS_MIN_PNG_SIZE);
+        if (!png) {
+          throw new WorkspaceAssetAuthorizationError(
+            "mime_mismatch",
+            "Workspace .icns image has no embedded PNG.",
+          );
+        }
+        return {
+          bytes: png,
+          contentSha256: createHash("sha256").update(png).digest("hex"),
+          identity,
+          mimeType: "image/png",
+          relativePath: result.relativePath,
+        };
+      }
+      const extensionMimeType = IMAGE_MIME_BY_EXTENSION.get(extension);
       const signatureMimeType = detectedImageMimeType(result.bytes);
       if (!extensionMimeType || signatureMimeType !== extensionMimeType) {
         throw new WorkspaceAssetAuthorizationError(

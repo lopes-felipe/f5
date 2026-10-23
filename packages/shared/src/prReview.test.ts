@@ -5,6 +5,7 @@ import {
   substantivePrPatch,
   prComparisonsEqual,
   resolvePrReviewPosition,
+  prReviewExcerpt,
 } from "./prReview";
 
 describe("PR review anchors", () => {
@@ -52,6 +53,21 @@ describe("PR review anchors", () => {
     expect(prReviewLines(patch.replace("+extra\n", "")).size).toBe(0);
     expect(prReviewLines(patch + "+unexpected\n").size).toBe(0);
     expect(isPrReviewAnchorInPatch({ path: "a", side: "LEFT", line: 0 }, patch)).toBe(false);
+  });
+  it("extracts bounded excerpts only from complete old/new hunk coordinates", () => {
+    expect(prReviewExcerpt(patch, "old", 5, 6)).toEqual([
+      { line: 5, text: "context" },
+      { line: 6, text: "old" },
+    ]);
+    expect(prReviewExcerpt(patch, "new", 8, 10)).toEqual([
+      { line: 8, text: "context" },
+      { line: 9, text: "new" },
+      { line: 10, text: "extra" },
+    ]);
+    expect(prReviewExcerpt(patch.replace("+extra\n", ""), "new", 8, 9)).toEqual([]);
+    expect(prReviewExcerpt(patch, "new", 8, 33)).toEqual([]);
+    expect(prReviewExcerpt(patch, "old", 0, 6)).toEqual([]);
+    expect(prReviewExcerpt(patch, "new", 9, 8)).toEqual([]);
   });
   it("supports additions, deletions, no-newline markers and separated hunks", () => {
     expect([

@@ -91,6 +91,17 @@ describe("ChatHeader", () => {
     document.body.innerHTML = "";
   });
 
+  it("renders provider-native goal status in the header", async () => {
+    const screen = await renderHeader({ nativeGoalSummary: "Goal: All tests pass · active" });
+    try {
+      await expect
+        .element(page.getByText("Goal: All tests pass · active", { exact: true }))
+        .toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("collapses the panel toggles into a Panels menu when the header is narrow", async () => {
     const onToggleDiff = vi.fn();
     const screen = await renderHeader({ diffToggleShortcutLabel: "Mod+D", onToggleDiff }, 320);

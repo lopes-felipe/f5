@@ -1,8 +1,8 @@
 import {
-  KNOWN_PROVIDER_KINDS,
   type ProjectId,
   type ProviderKind,
   type UsageAccounts,
+  type UsageMetrics,
   type UsageRange,
   type UsageSummary,
 } from "@t3tools/contracts";
@@ -16,6 +16,7 @@ import {
 import { AlertTriangleIcon, CoinsIcon, GaugeIcon, RefreshCwIcon, SigmaIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import { useServerKeybindings } from "../../keybindings";
 import { formatAbsoluteTimeLabel } from "../../lib/relativeTime";
 import {
   accountJobsPending,
@@ -45,10 +46,14 @@ import {
   RANGES,
   rangeLabel,
   recordCountDisplay,
+  resolveUsageTimeZone,
   tokenDelta,
   tokenFieldDisplay,
+  usageMetricValue,
 } from "./format";
 import { ProjectsThreadsCard } from "./ProjectsThreadsCard";
+import { UsageProviderFilter } from "./UsageProviderFilter";
+import { isUsageBackShortcut, resolveUsageShortcut } from "./usageShortcuts";
 import { UsagePriceEditor, type UsagePriceDraft } from "./UsagePriceEditor";
 
 export type { UsageSearch, UsageSearchPatch, UsageTab } from "../../lib/usageSearch";
@@ -64,6 +69,18 @@ const CHART_LABELS: Record<UsageMetric, string> = {
   cost: "Cost chart",
   turns: "Recorded turns chart",
 };
+
+/** Ranks provider and model rows by the selected metric, then by tokens. */
+function sortByMetric<Entry extends { readonly metrics: UsageMetrics }>(
+  entries: ReadonlyArray<Entry>,
+  metric: UsageMetric,
+): Array<Entry> {
+  return [...entries].sort(
+    (left, right) =>
+      usageMetricValue(right.metrics, metric) - usageMetricValue(left.metrics, metric) ||
+      right.metrics.totalTokens - left.metrics.totalTokens,
+  );
+}
 
 // Each refresh rebuilds the summary server-side (several SQLite passes), so
 // streaming turns refresh at most every 5 seconds.
@@ -245,8 +262,6 @@ export function UsageDashboardView(props: {
   readonly showHeader?: boolean;
   readonly fetching: boolean;
   readonly accounts?: UsageAccounts | undefined;
-  readonly provider?: ProviderKind | undefined;
-  readonly onProviderChange?: (provider: ProviderKind | undefined) => void;
   readonly projectId?: ProjectId | undefined;
   readonly projectOptions?: ReadonlyArray<ProjectOption>;
   readonly projectName?: (projectId: ProjectId, title: string | null) => string;
@@ -325,23 +340,6 @@ export function UsageDashboardView(props: {
               ))}
             </select>
           ) : null}
-          <select
-            aria-label="History provider"
-            className="rounded-md border border-border bg-background p-1 text-xs"
-            value={props.provider ?? "all"}
-            onChange={(event) =>
-              props.onProviderChange?.(
-                event.target.value === "all" ? undefined : (event.target.value as ProviderKind),
-              )
-            }
-          >
-            <option value="all">All providers</option>
-            {KNOWN_PROVIDER_KINDS.map((provider) => (
-              <option key={provider} value={provider}>
-                {providerLabel(provider)}
-              </option>
-            ))}
-          </select>
         </div>
       </div>
       {props.error && (
@@ -449,7 +447,7 @@ export function UsageDashboardView(props: {
         <ProjectsThreadsCard
           scope={summary.projectScope}
           metric={chartMetric}
-          totalTokens={summary.metrics.totalTokens}
+          totalMetrics={summary.metrics}
           projectName={projectName}
           onSelectProject={(projectId) => props.onProjectChange?.(projectId)}
         />
@@ -477,7 +475,7 @@ export function UsageDashboardView(props: {
                 </tr>
               </thead>
               <tbody>
-                {summary.byProvider.map((entry) => {
+                {sortByMetric(summary.byProvider, chartMetric).map((entry) => {
                   const tokens = tokenFieldDisplay(entry.metrics, "totalTokens");
                   const entryRecords = recordCountDisplay(entry.metrics);
                   return (
@@ -578,7 +576,7 @@ function useThrottled(callback: () => void, delayMs: number) {
 
 function ActivityPanel(props: {
   readonly range: UsageRange;
-  readonly provider: ProviderKind | undefined;
+  readonly hiddenProviders: ReadonlyArray<ProviderKind>;
   readonly projectId: ProjectId | undefined;
   readonly metric: UsageMetric;
   readonly timeZone: string;
@@ -590,7 +588,7 @@ function ActivityPanel(props: {
   const options = usageSummaryQueryOptions({
     range: props.range,
     timeZone: props.timeZone,
-    provider: props.provider,
+    hiddenProviders: props.hiddenProviders,
     projectId: props.projectId,
     enabled: connected,
   });
@@ -753,8 +751,6 @@ function ActivityPanel(props: {
         showHeader={false}
         fetching={summaryQuery.isFetching}
         renderAccounts={false}
-        provider={props.provider}
-        onProviderChange={(provider) => props.onSearchChange({ provider })}
         projectId={props.projectId}
         projectOptions={projectOptions}
         projectName={projectName}
@@ -791,6 +787,7 @@ function ActivityPanel(props: {
 function LimitsPanel(props: {
   readonly range: UsageRange;
   readonly variant: "activity" | "limits";
+  readonly hiddenProviders: ReadonlyArray<ProviderKind>;
 }) {
   const full = props.variant === "limits";
   const client = useQueryClient();
@@ -900,7 +897,13 @@ function LimitsPanel(props: {
         </div>
       ) : null}
       {accountsQuery.data ? (
-        <AccountUsageCards accounts={accountsQuery.data} range={props.range} history={history} />
+        <AccountUsageCards
+          accounts={accountsQuery.data.filter(
+            (account) => !props.hiddenProviders.includes(account.provider),
+          )}
+          range={props.range}
+          history={history}
+        />
       ) : null}
     </section>
   );
@@ -911,46 +914,81 @@ export function UsageDashboard(props: {
   search?: UsageSearchPatch;
   defaults?: { readonly tab?: UsageTab; readonly range?: UsageRange };
   onSearchChange?: (patch: UsageSearchPatch) => void;
+  /** Saved provider filter; when omitted the dashboard keeps local state. */
+  hiddenProviders?: ReadonlyArray<ProviderKind>;
+  onHiddenProvidersChange?: (hiddenProviders: ReadonlyArray<ProviderKind>) => void;
+  /** Escape on the page; the route returns to the previous page. */
+  onBack?: () => void;
 }) {
   const [localSearch, setLocalSearch] = useState<UsageSearchPatch>({});
+  const [localHidden, setLocalHidden] = useState<ReadonlyArray<ProviderKind>>([]);
+  const hiddenProviders = props.hiddenProviders ?? localHidden;
+  const hiddenProviderSet = useMemo(() => new Set(hiddenProviders), [hiddenProviders]);
+  const onHiddenProvidersChange = props.onHiddenProvidersChange ?? setLocalHidden;
   const search = props.search ?? localSearch;
   const onSearchChange =
     props.onSearchChange ??
     ((patch: UsageSearchPatch) => setLocalSearch((current) => ({ ...current, ...patch })));
   const tab = search.tab ?? props.defaults?.tab ?? "activity";
   const range = search.range ?? props.defaults?.range ?? "7d";
-  const timeZone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", []);
+  const timeZone = useMemo(resolveUsageTimeZone, []);
+  const keybindings = useServerKeybindings();
+  const handlersRef = useRef({ onSearchChange, onBack: props.onBack });
+  handlersRef.current = { onSearchChange, onBack: props.onBack };
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      if (isUsageBackShortcut(event)) {
+        if (!handlersRef.current.onBack) return;
+        event.preventDefault();
+        handlersRef.current.onBack();
+        return;
+      }
+      const patch = resolveUsageShortcut(event, keybindings);
+      if (!patch) return;
+      event.preventDefault();
+      handlersRef.current.onSearchChange(patch);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [keybindings]);
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-5 sm:px-6 sm:py-7">
-      <div className="flex gap-2" role="tablist" aria-label="Usage views">
-        {(["activity", "limits"] as const).map((value) => (
-          <Button
-            key={value}
-            role="tab"
-            aria-selected={tab === value}
-            variant={tab === value ? "default" : "outline"}
-            onClick={() => onSearchChange({ tab: value })}
-          >
-            {value === "activity" ? "Activity" : "Limits"}
-          </Button>
-        ))}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex gap-2" role="tablist" aria-label="Usage views">
+          {(["activity", "limits"] as const).map((value) => (
+            <Button
+              key={value}
+              role="tab"
+              aria-selected={tab === value}
+              variant={tab === value ? "default" : "outline"}
+              onClick={() => onSearchChange({ tab: value })}
+            >
+              {value === "activity" ? "Activity" : "Limits"}
+            </Button>
+          ))}
+        </div>
+        <UsageProviderFilter
+          hiddenProviders={hiddenProviderSet}
+          onChange={onHiddenProvidersChange}
+        />
       </div>
       <UsageHeader range={range} onRangeChange={(next) => onSearchChange({ range: next })} />
       {tab === "activity" ? (
         <>
           <ActivityPanel
             range={range}
-            provider={search.provider}
+            hiddenProviders={hiddenProviders}
             projectId={search.projectId}
             metric={search.metric ?? "tokens"}
             timeZone={timeZone}
             onSearchChange={onSearchChange}
           />
-          <LimitsPanel range={range} variant="activity" />
+          <LimitsPanel range={range} variant="activity" hiddenProviders={hiddenProviders} />
         </>
       ) : (
-        <LimitsPanel range={range} variant="limits" />
+        <LimitsPanel range={range} variant="limits" hiddenProviders={hiddenProviders} />
       )}
     </div>
   );

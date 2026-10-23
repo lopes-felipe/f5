@@ -1,3 +1,5 @@
+import { SourceControlProviderError } from "../sourceControl/SourceControlProvider.ts";
+import type { PrHubDetailResult } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { GitHubCredentialScope } from "../git/githubApi.ts";
@@ -54,5 +56,32 @@ it.effect("bounds cached bytes and refuses oversized individual values", () =>
     assert.equal(cache.has("unverified:0"), false);
     yield* fetch("oversized", "x".repeat(8 * 1024 * 1024));
     assert.equal(cache.has("unverified:oversized"), false);
+  }),
+);
+
+it.effect("retains the rate-limit reason and reset time when serving a cached detail", () =>
+  Effect.gen(function* () {
+    type Value = Pick<PrHubDetailResult, "stale" | "refreshedAt" | "rateLimit" | "readErrorKind">;
+    const cache = new Map<string, CachedPrDetailRead<Value>>();
+    const value: Value = { stale: false, refreshedAt: "2026-10-19T12:00:00.000Z" };
+    yield* readPrDetailCache({ cache, key: "pr", mode: "force", fetch: Effect.succeed(value) });
+    const resetAt = "2026-10-19T12:05:00.000Z";
+    const result = yield* readPrDetailCache({
+      cache,
+      key: "pr",
+      mode: "force",
+      fetch: Effect.fail(
+        new SourceControlProviderError({
+          provider: "github",
+          operation: "detail",
+          kind: "rate_limited",
+          detail: "Rate limited",
+          rateLimit: { resetAt },
+        }),
+      ),
+    });
+    assert.equal(result.stale, true);
+    assert.equal(result.readErrorKind, "rate_limited");
+    assert.equal(result.rateLimit?.resetAt, resetAt);
   }),
 );

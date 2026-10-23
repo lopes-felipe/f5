@@ -12,8 +12,8 @@ There are three ways to run F5:
 
 ## From source
 
-Run `bun install --frozen-lockfile` from the repository root before using these
-commands, including after pulling changes or switching branches with different dependencies.
+Run `bun install --frozen-lockfile` from the repository root once after cloning.
+The `dev*` and desktop build scripts reinstall automatically when `bun.lock` changes.
 
 ```bash
 # Development (with hot reload)
@@ -46,15 +46,25 @@ To run the server outside the desktop app without a checkout, use the
 
 ```bash
 git pull --ff-only
-bun install --frozen-lockfile
 bun run start:desktop
 ```
 
-Pulling source changes does not update `node_modules`. The desktop build checks
-for missing dependencies before invoking the build tools and lists any missing
-packages with the command to reinstall. You can also run `bun run check:dependencies`
-directly. This check detects missing packages; run the install command after updating
-even if the check passes, so installed versions match the lockfile.
+Pulling source changes does not update `node_modules`. Every `bun install` records
+which `bun.lock` it installed from. Before building, `build:desktop` (and therefore
+`start:desktop`) and the `dev*` scripts compare that record with the current `bun.lock`
+and check that every declared dependency is present. If either is out of date they run
+`bun install --frozen-lockfile` first. Installs run with `--ignore-scripts` aren't
+recorded, so the next build reinstalls once.
+
+If the install fails, for example offline or because local `package.json` edits no
+longer match `bun.lock`, the scripts print bun's error. They continue with a warning
+when every dependency is still present, and stop when packages are missing. In CI the
+check reports missing packages without installing. `bun run check:dependencies` runs
+the same presence check without installing.
+
+After pulling, start one `dev*` or desktop script and let it finish installing before
+starting another; two installs running at once can leave `node_modules` half-linked.
+If that happens, run `bun install --frozen-lockfile` again.
 
 ## Windows build tools
 

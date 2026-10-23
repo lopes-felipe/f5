@@ -7,10 +7,18 @@ The Usage page shows two things. **Activity** covers the tokens, cost and turns 
 
 ## How to
 
-1. Open **Usage** from the sidebar, or type `/usage-limits` in the composer for a quick read.
+1. Open **Usage** from the sidebar or the command palette, or press `mod+U` outside the terminal
+   (`usage.open` in **Settings → Keybindings**). Type `/usage-limits` in the composer for a quick
+   read.
 2. Choose **Activity** or **Limits**.
-3. Pick a range (**24h**, **7d**, **30d**, **90d**) and, optionally, a provider or project.
+3. Pick a range (**24h**, **7d**, **30d**, **90d**) and, optionally, a project. The provider menu
+   next to the tabs limits both tabs to the providers you check, and F5 remembers that choice.
 4. Switch the chart between tokens, cost and turns.
+
+On Usage, when you are not typing in a field, press `T`, `C` or `R` for tokens, cost or recorded
+turns, `L` for Limits, and `1` to `4` for 24 hours, 7, 30 or 90 days. `Escape` returns to the
+previous page. Rebind them under **Usage** in **Settings → Keybindings**; they use the
+`usagePageOpen` context.
 
 The URL keeps the tab, range and filters, so you can bookmark a view or share it.
 
@@ -45,6 +53,11 @@ provider reports no cost, set a price in **Usage prices** (USD per million token
 provider and model. **Set price** next to an unpriced model opens the editor with that model
 filled in. Provider-reported costs, including zero, always win.
 
+To count one model as another, such as a preview model under its released name, add it under
+**Model mappings** with the target model ID in **Map to**. The mapped model no longer appears on
+Usage: its tokens and cost move to the target and use the target's price. Remove the mapping to
+show the model on its own again.
+
 ## Limits
 
 Each account gets meters showing the allowance left, when it resets and when it was last read.
@@ -67,9 +80,10 @@ separately; using a reset credit asks you to confirm first.
 <details>
 <summary>Details and limits</summary>
 
-**URL parameters.** `tab` (`activity`, `limits`), `range` (`24h`, `7d`, `30d`, `90d`), `provider`,
+**URL parameters.** `tab` (`activity`, `limits`), `range` (`24h`, `7d`, `30d`, `90d`),
 `projectId` and `metric` (`tokens`, `cost`, `turns`). F5 remembers the last tab and range. The
-default `tokens` metric is left out of the URL.
+default `tokens` metric is left out of the URL. The provider filter is a saved setting, not a URL
+parameter; F5 drops the older `provider` parameter.
 
 **Refresh timing**
 

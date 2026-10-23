@@ -15,10 +15,13 @@ const exitLogPath = process.env.T3_ACP_EXIT_LOG_PATH;
 const emitToolCalls = process.env.T3_ACP_EMIT_TOOL_CALLS === "1";
 const emitInterleavedAssistantToolCalls =
   process.env.T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS === "1";
+const emitBackgroundToolDuringAnswer =
+  process.env.T3_ACP_EMIT_BACKGROUND_TOOL_DURING_ANSWER === "1";
 const emitGenericToolPlaceholders = process.env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS === "1";
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
+const exitDuringPrompt = process.env.T3_ACP_EXIT_DURING_PROMPT === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
 const promptDelayMs = Math.max(
   0,
@@ -33,6 +36,11 @@ const failLoadNotFound = process.env.T3_ACP_LOAD_FAIL_NOT_FOUND === "1";
 const failLoadAfterReplay = process.env.T3_ACP_LOAD_FAIL_AFTER_REPLAY === "1";
 const hangLoad = process.env.T3_ACP_LOAD_HANG === "1";
 const replayBeforeLoadHang = process.env.T3_ACP_LOAD_REPLAY_BEFORE_HANG === "1";
+const omitAllowAlways = process.env.T3_ACP_OMIT_ALLOW_ALWAYS === "1";
+const permissionRequestCount = Math.max(
+  1,
+  Number.parseInt(process.env.T3_ACP_PERMISSION_REQUEST_COUNT ?? "1", 10) || 1,
+);
 const sessionId = "mock-session-1";
 
 let currentModeId = "ask";
@@ -366,6 +374,51 @@ const program = Effect.gen(function* () {
         process.stdout.write("{malformed-json\n");
         return yield* Effect.never;
       }
+      if (process.env.ACP_MOCK_ARGUMENT_STREAM === "1") {
+        const toolCallId = "argument-stream";
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId,
+            kind: "edit",
+            title: "Edit file",
+            status: "pending",
+            rawInput: { path: "/fixture/file", content: "" },
+          },
+        });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: { sessionUpdate: "tool_call_update", toolCallId, status: "in_progress" },
+        });
+        for (let index = 1; index <= 120; index++)
+          yield* agent.client.sessionUpdate({
+            sessionId: requestedSessionId,
+            update: {
+              sessionUpdate: "tool_call_update",
+              toolCallId,
+              rawInput: { path: "/fixture/file", content: "x".repeat(index) },
+            },
+          });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: { sessionUpdate: "tool_call_update", toolCallId, title: "Arguments finished" },
+        });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId,
+            rawOutput: { output: "visible result" },
+          },
+        });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: { sessionUpdate: "tool_call_update", toolCallId, status: "completed" },
+        });
+        return { stopReason: "end_turn" };
+      }
+
       if (process.env.ACP_MOCK_PRIVATE_TOOL_EVENTS === "1") {
         for (const update of [
           {
@@ -392,6 +445,52 @@ const program = Effect.gen(function* () {
 
       if (promptDelayMs > 0) {
         yield* Effect.sleep(`${promptDelayMs} millis`);
+      }
+
+      if (exitDuringPrompt) {
+        logExit("prompt");
+        process.exit(1);
+      }
+
+      if (emitBackgroundToolDuringAnswer) {
+        // A command backgrounded earlier reports progress and then finishes
+        // while the next answer is still streaming.
+        const toolCallId = "background-1";
+        const say = (text: string) =>
+          agent.client.sessionUpdate({
+            sessionId: requestedSessionId,
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
+          });
+        const progress = (status: "in_progress" | "completed", stdout: string) =>
+          agent.client.sessionUpdate({
+            sessionId: requestedSessionId,
+            update: {
+              sessionUpdate: "tool_call_update",
+              toolCallId,
+              status,
+              rawOutput: { stdout },
+            },
+          });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId,
+            title: "Terminal",
+            kind: "execute",
+            status: "in_progress",
+            rawInput: { command: "sleep 3 && echo done" },
+          },
+        });
+        yield* say("| a | b |\n|---|---|\n| 1 ");
+        yield* progress("in_progress", ".");
+        yield* say("| x |\n");
+        yield* progress("completed", "done");
+        yield* say("| 2 | y |\n");
+        // Agents can repeat a terminal update after the call finished.
+        yield* progress("completed", "done");
+        yield* say("| 3 | z |");
+        return { stopReason: "end_turn" };
       }
 
       if (emitInterleavedAssistantToolCalls) {
@@ -480,36 +579,56 @@ const program = Effect.gen(function* () {
           },
         });
 
-        const permission = yield* agent.client.requestPermission({
-          sessionId: requestedSessionId,
-          toolCall: {
-            toolCallId,
-            title: "`cat server/package.json`",
-            kind: "execute",
-            status: "pending",
-            content: [
-              {
-                type: "content",
-                content: {
-                  type: "text",
-                  text: "Not in allowlist: cat server/package.json",
-                },
+        let cancelled = false;
+        for (let index = 0; index < permissionRequestCount && !cancelled; index++) {
+          const command =
+            index > 0
+              ? (process.env.T3_ACP_SECOND_PERMISSION_COMMAND ?? "cat server/package.json")
+              : "cat server/package.json";
+          const permission = yield* agent.client.requestPermission({
+            sessionId: requestedSessionId,
+            toolCall: {
+              toolCallId: index === 0 ? toolCallId : `${toolCallId}-${index + 1}`,
+              title: `\`${command}\``,
+              kind: "execute",
+              status: "pending",
+              rawInput: {
+                variant: "Bash",
+                command,
+                description: index === 0 ? "Read package metadata" : "Read it again",
               },
+              content: [
+                {
+                  type: "content",
+                  content: {
+                    type: "text",
+                    text: `Not in allowlist: ${command}`,
+                  },
+                },
+              ],
+            },
+            options: [
+              { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+              ...(omitAllowAlways
+                ? []
+                : [
+                    {
+                      optionId: "allow-always",
+                      name: "Allow always",
+                      kind: "allow_always" as const,
+                    },
+                  ]),
+              { optionId: "reject-once", name: "Reject", kind: "reject_once" },
             ],
-          },
-          options: [
-            { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
-            { optionId: "allow-always", name: "Allow always", kind: "allow_always" },
-            { optionId: "reject-once", name: "Reject", kind: "reject_once" },
-          ],
-        });
+          });
 
-        if (process.env.T3_ACP_WAIT_AFTER_PERMISSION === "1") {
-          while (!cancelledSessions.has(requestedSessionId)) yield* Effect.sleep("10 millis");
+          if (process.env.T3_ACP_WAIT_AFTER_PERMISSION === "1") {
+            while (!cancelledSessions.has(requestedSessionId)) yield* Effect.sleep("10 millis");
+          }
+          cancelled =
+            cancelledSessions.delete(requestedSessionId) ||
+            permission.outcome.outcome === "cancelled";
         }
-        const cancelled =
-          cancelledSessions.delete(requestedSessionId) ||
-          permission.outcome.outcome === "cancelled";
 
         yield* agent.client.sessionUpdate({
           sessionId: requestedSessionId,
@@ -574,6 +693,60 @@ const program = Effect.gen(function* () {
           },
         });
 
+        return { stopReason: "end_turn" };
+      }
+
+      if (process.env.T3_ACP_COPILOT_SUBAGENTS === "1") {
+        const raw = (type: string, data: Record<string, unknown>, agentId?: string) =>
+          agent.client.extNotification("github.com/copilot/sessionEvent", {
+            sessionId: requestedSessionId,
+            type,
+            data,
+            ...(agentId ? { agentId } : {}),
+          });
+        const chunk = (text: string) =>
+          agent.client.sessionUpdate({
+            sessionId: requestedSessionId,
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
+          });
+        yield* raw("subagent.started", { toolCallId: "copilot-task" }, "child-agent");
+        yield* raw("assistant.message_delta", {
+          parentToolCallId: "copilot-task",
+          deltaContent: "PRIVATE_COPILOT_CHILD",
+        });
+        yield* chunk("PRIVATE_COPILOT_CHILD");
+        yield* raw("assistant.message_delta", {
+          parentToolCallId: "copilot-task",
+          deltaContent: "SAME_CHUNK",
+        });
+        yield* chunk("SAME_CHUNK");
+        yield* raw("assistant.message_delta", { deltaContent: "SAME_CHUNK" });
+        yield* chunk("SAME_CHUNK");
+        yield* raw("assistant.reasoning_delta", {
+          parentToolCallId: "copilot-task",
+          deltaContent: "PRIVATE_COPILOT_THOUGHT",
+        });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "agent_thought_chunk",
+            content: { type: "text", text: "PRIVATE_COPILOT_THOUGHT" },
+          },
+        });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "private-child-read",
+            title: "Private child read",
+            kind: "read",
+            status: "in_progress",
+            _meta: { "github.com/copilot": { agentId: "child-agent" } },
+          },
+        });
+        yield* raw("subagent.completed", {}, "child-agent");
+        yield* raw("assistant.message_delta", { deltaContent: "PUBLIC_PARENT" });
+        yield* chunk("PUBLIC_PARENT");
         return { stopReason: "end_turn" };
       }
 

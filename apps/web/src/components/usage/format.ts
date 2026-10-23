@@ -7,6 +7,22 @@ import {
   type UsageSummary,
 } from "@t3tools/contracts";
 
+/**
+ * The browser's time zone for usage buckets, or UTC when the system reports a zone this
+ * runtime cannot format (a misconfigured or retired name). The server rejects such a zone,
+ * which failed the whole summary instead of bucketing it in UTC.
+ */
+export function resolveUsageTimeZone(): string {
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (!timeZone) return "UTC";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format(0);
+    return timeZone;
+  } catch {
+    return "UTC";
+  }
+}
+
 export const RANGES: ReadonlyArray<{ readonly value: UsageRange; readonly label: string }> = [
   { value: "24h", label: "24 hours" },
   { value: "7d", label: "7 days" },
@@ -125,8 +141,23 @@ export function totalCost(metrics: UsageMetrics): number {
   return (metrics.providerReportedCostUsd ?? 0) + (metrics.estimatedCostUsd ?? 0);
 }
 
+/** No provider-reported cost and no priced turn: the cost is unknown, not zero. */
+export function isCostUnknown(metrics: UsageMetrics): boolean {
+  return metrics.providerReportedCostUsd === null && !metrics.pricedTurnCount;
+}
+
+/** The value a row ranks and shares by for the selected chart metric. */
+export function usageMetricValue(
+  metrics: UsageMetrics,
+  metric: "tokens" | "cost" | "turns",
+): number {
+  if (metric === "cost") return totalCost(metrics);
+  if (metric === "turns") return recordCountDisplay(metrics).count;
+  return metrics.totalTokens;
+}
+
 export function costLabel(metrics: UsageMetrics): string {
-  if (metrics.providerReportedCostUsd === null && !metrics.pricedTurnCount) return "Unpriced";
+  if (isCostUnknown(metrics)) return "Unpriced";
   const estimates = metrics.estimatedCostUsd !== undefined && metrics.estimatedCostUsd !== null;
   return `${formatUsd(totalCost(metrics))}${estimates ? " (includes estimates)" : ""}${
     metrics.unpricedTurnCount > 0 ? " + unpriced" : ""

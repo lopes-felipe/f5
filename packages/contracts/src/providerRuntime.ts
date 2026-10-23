@@ -485,6 +485,7 @@ export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
 const TaskStartedPayload = Schema.Struct({
   runId: Schema.optional(TrimmedNonEmptyStringSchema),
   model: Schema.optional(TrimmedNonEmptyStringSchema),
+  effort: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(64)))),
   taskId: RuntimeTaskId,
   description: Schema.optional(TrimmedNonEmptyStringSchema),
   taskType: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -494,6 +495,7 @@ export type TaskStartedPayload = typeof TaskStartedPayload.Type;
 const TaskProgressPayload = Schema.Struct({
   runId: Schema.optional(TrimmedNonEmptyStringSchema),
   model: Schema.optional(TrimmedNonEmptyStringSchema),
+  effort: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(64)))),
   taskId: RuntimeTaskId,
   description: TrimmedNonEmptyStringSchema,
   usage: Schema.optional(Schema.Unknown),

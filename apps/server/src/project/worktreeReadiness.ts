@@ -1,4 +1,5 @@
 import { stat } from "node:fs/promises";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { Effect } from "effect";
 import type { GitCoreShape } from "../git/Services/GitCore.ts";
 import { canonicalWorktreePath, isTemporaryWorktreeBranch } from "../git/worktreePaths.ts";
@@ -21,9 +22,14 @@ export const followsCheckoutBranchAtTurnEnd = (
       readonly id: string;
       readonly projectId: string;
       readonly worktreePath: string | null;
+      readonly scratchPath?: string | null | undefined;
       readonly deletedAt: string | null;
     }>;
-    readonly projects: ReadonlyArray<{ readonly id: string; readonly workspaceRoot: string }>;
+    readonly projects: ReadonlyArray<{
+      readonly id: string;
+      readonly kind?: string | undefined;
+      readonly workspaceRoot: string;
+    }>;
   },
   threadId: string,
   cwd: string,
@@ -35,7 +41,7 @@ export const followsCheckoutBranchAtTurnEnd = (
     for (const other of model.threads) {
       if (other.id === threadId || other.deletedAt !== null) continue;
       const owner = model.projects.find((project) => project.id === other.projectId);
-      const effective = other.worktreePath ?? owner?.workspaceRoot;
+      const effective = threadWorkspaceCwd(other, owner);
       if (!effective) return false;
       if ((yield* Effect.tryPromise(() => canonicalWorktreePath(effective))) === canonical)
         return false;

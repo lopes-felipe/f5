@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { deriveToolActivityPresentation } from "./toolActivity";
+import { claudeSkillToolTitle, deriveToolActivityPresentation } from "./toolActivity";
 
 describe("toolActivity", () => {
   it("normalizes command tools to a stable ran-command label", () => {
@@ -54,4 +54,15 @@ describe("toolActivity", () => {
       summary: "Read file",
     });
   });
+});
+
+it.each([
+  ["Skill", { skill: " team:review " }, "Skill: team:review"],
+  ["Skill", { skill: "" }, undefined],
+  ["Skill", { skill: 42 }, undefined],
+  ["Skill", { skill: "a".repeat(513) }, undefined],
+  ["Bash", { skill: "review" }, undefined],
+  ["Skill", null, undefined],
+])("derives bounded skill titles for %s", (toolName, input, expected) => {
+  expect(claudeSkillToolTitle(toolName as string, input)).toBe(expected);
 });

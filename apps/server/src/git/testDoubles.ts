@@ -39,8 +39,10 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
       "cleanMoveCopies",
       "status",
       "statusDetails",
+      "cleanupSafetyProbe",
       "prepareCommitContext",
       "commit",
+      "commitPrepared",
       "pushCurrentBranch",
       "branchExists",
       "ensureWorktree",
@@ -105,6 +107,13 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
     deleteMoveRef: () => Effect.void,
     cleanMoveCopies: () => Effect.void,
     isDirty: () => Effect.succeed(false),
+    cleanupSafetyProbe: () =>
+      Effect.succeed({
+        hasTrackedChanges: false,
+        hasUntrackedChanges: false,
+        ignoredEntries: [],
+        ignoredTruncated: false,
+      }),
     readWorktreePreparation: () => Effect.succeed(null),
     allocateWorktreePath: ({ cwd, branch }) =>
       Effect.succeed(`${cwd}/worktrees/${branch.replaceAll("/", "-")}`),
@@ -152,6 +161,7 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
     statusDetails: () => Effect.succeed(DEFAULT_STATUS_DETAILS),
     prepareCommitContext: () => Effect.succeed(null),
     commit: () => Effect.succeed({ commitSha: "abc123" }),
+    commitPrepared: () => Effect.succeed({ status: "created", commitSha: "abc123" }),
     pushCurrentBranch: (_cwd, fallbackBranch) =>
       Effect.succeed({
         status: "pushed",
@@ -250,6 +260,10 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
       record("isDirty", [cwd]);
       return implementations.isDirty(cwd);
     },
+    cleanupSafetyProbe: (cwd) => {
+      record("cleanupSafetyProbe", [cwd]);
+      return implementations.cleanupSafetyProbe(cwd);
+    },
     fastForwardTo: (cwd, sha) => {
       record("fastForwardTo", [cwd, sha]);
       return implementations.fastForwardTo(cwd, sha);
@@ -317,6 +331,10 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
     prepareCommitContext: (cwd, filePaths) => {
       record("prepareCommitContext", [cwd, filePaths]);
       return implementations.prepareCommitContext(cwd, filePaths);
+    },
+    commitPrepared: (cwd, subject, body, context, options) => {
+      record("commitPrepared", [cwd, subject, body, context, options]);
+      return implementations.commitPrepared(cwd, subject, body, context, options);
     },
     commit: (cwd, subject, body) => {
       record("commit", [cwd, subject, body]);
@@ -559,6 +577,8 @@ export const makeGitProjectRepositories = (
     Layer.succeed(ProjectionThreadRepository, {
       listByProjectId: () => Effect.succeed([]),
       listProjectIdsByWorktreePath: () => Effect.succeed([]),
+      touchActivity: () => Effect.void,
+      getActivityState: () => Effect.succeed(Option.none()),
       getById: () => Effect.succeed(Option.none()),
       upsert: () => Effect.void,
       deleteById: () => Effect.void,

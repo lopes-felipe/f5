@@ -8,6 +8,13 @@ export const threadPurgePolicy: Readonly<
     { readonly kind: "root" | "cascade" | "explicit" | "retain"; readonly reason?: string }
   >
 > = {
+  thread_pull_request_watches: { kind: "cascade" },
+  thread_pull_request_watch_stops: { kind: "cascade" },
+  thread_message_authorship: { kind: "cascade" },
+  thread_settlement_requests: { kind: "cascade" },
+  thread_settlement_hooks: { kind: "cascade" },
+  mcp_app_instances: { kind: "cascade" },
+  mcp_app_model_context: { kind: "cascade" },
   search_documents: { kind: "explicit" },
   usage_limit_resumes: { kind: "cascade" },
   usage_limit_resume_streaks: { kind: "cascade" },
@@ -27,6 +34,7 @@ export const threadPurgePolicy: Readonly<
   provider_terminal_events: { kind: "explicit" },
   provider_turn_deliveries: { kind: "explicit" },
   native_operations: { kind: "explicit" },
+  native_history_retired_turns: { kind: "explicit" },
   workspace_transitions: { kind: "explicit" },
   worktree_setup_ordering: { kind: "explicit" },
   next_turn_queue_orphaned_attachments: { kind: "explicit" },
@@ -66,6 +74,8 @@ export const threadPurgePolicy: Readonly<
 
 /** Static SQL handlers; schema introspection must never determine what gets deleted. */
 export const threadPurgeHandlers = {
+  native_history_retired_turns: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
+    sql`DELETE FROM native_history_retired_turns WHERE rowid IN (SELECT rowid FROM native_history_retired_turns WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
   checkpoint_diff_blobs: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
     sql`DELETE FROM checkpoint_diff_blobs WHERE rowid IN (SELECT rowid FROM checkpoint_diff_blobs WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
   projection_thread_messages: (sql: SqlClient.SqlClient, threadId: ThreadId) =>

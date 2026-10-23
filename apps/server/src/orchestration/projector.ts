@@ -1,3 +1,12 @@
+import {
+  reconcileNativeHistoryProjection,
+  retainNativeTurnRows,
+} from "@t3tools/shared/nativeHistoryReconciliation";
+import {
+  ThreadSettledPayload,
+  ThreadUnsettledPayload,
+  ThreadAutoSettleChangedPayload,
+} from "@t3tools/contracts";
 import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@t3tools/contracts";
 import type { ProviderKind } from "@t3tools/contracts";
 import { projectPendingUserInputs } from "@t3tools/shared/pendingUserInputs";
@@ -120,12 +129,18 @@ function revertedTaskFields(
   };
 }
 
+// Runs for every thread event (including streaming deltas) against every
+// thread the server has ever seen, so copy the array rather than map it.
 function updateThread(
   threads: ReadonlyArray<OrchestrationThread>,
   threadId: ThreadId,
   patch: ThreadPatch,
-): OrchestrationThread[] {
-  return threads.map((thread) => (thread.id === threadId ? { ...thread, ...patch } : thread));
+): ReadonlyArray<OrchestrationThread> {
+  const index = threads.findIndex((thread) => thread.id === threadId);
+  if (index === -1) return threads;
+  const next = threads.slice();
+  next[index] = { ...threads[index]!, ...patch };
+  return next;
 }
 
 function decodeForEvent<A>(
@@ -144,8 +159,9 @@ function retainThreadMessagesAfterRevert(
   messages: ReadonlyArray<OrchestrationMessage>,
   retainedTurnIds: ReadonlySet<string>,
   turnCount: number,
+  verifiedMessageIds: ReadonlyArray<string> = [],
 ): ReadonlyArray<OrchestrationMessage> {
-  const retainedMessageIds = new Set<string>();
+  const retainedMessageIds = new Set<string>(verifiedMessageIds);
   for (const message of messages) {
     if (message.role === "system") {
       retainedMessageIds.add(message.id);
@@ -268,6 +284,7 @@ export function projectEvent(
           const existing = nextBase.projects.find((entry) => entry.id === payload.projectId);
           const nextProject = {
             id: payload.projectId,
+            kind: payload.kind,
             title: payload.title,
             workspaceRoot: payload.workspaceRoot,
             defaultModel: payload.defaultModel,
@@ -659,6 +676,7 @@ export function projectEvent(
             interactionMode: payload.interactionMode,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
+            scratchPath: payload.scratchPath,
             latestTurn: null,
             archivedAt: null,
             pinnedAt: null,
@@ -824,6 +842,44 @@ export function projectEvent(
         "payload",
       ).pipe(Effect.as(nextBase));
 
+    case "thread.settled":
+      return decodeForEvent(ThreadSettledPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            settledAt: payload.settledAt,
+            settledBy: payload.settledBy,
+            updatedAt: event.occurredAt,
+          }),
+        })),
+      );
+    case "thread.unsettled":
+      return decodeForEvent(ThreadUnsettledPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            settledAt: null,
+            settledBy: null,
+            lastInteractionAt: event.occurredAt,
+            updatedAt: event.occurredAt,
+          }),
+        })),
+      );
+    case "thread.auto-settle-changed":
+      return decodeForEvent(
+        ThreadAutoSettleChangedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            autoSettleDisabled: !payload.enabled,
+            updatedAt: event.occurredAt,
+          }),
+        })),
+      );
     case "thread.archived":
       return decodeForEvent(ThreadArchivedPayload, event.payload, event.type, "payload").pipe(
         Effect.map((payload) => ({
@@ -831,6 +887,8 @@ export function projectEvent(
           ...(payload.pinRevision !== undefined ? { pinRevision: payload.pinRevision } : {}),
           threads: updateThread(nextBase.threads, payload.threadId, {
             archivedAt: payload.archivedAt,
+            settledAt: null,
+            settledBy: null,
             pinnedAt: null,
             pinOrderKey: null,
             snoozedUntil: null,
@@ -1412,6 +1470,31 @@ export function projectEvent(
             return nextBase;
           }
 
+          if (payload.removedTurnIds) {
+            const removed = new Set(payload.removedTurnIds);
+            return {
+              ...nextBase,
+              threads: updateThread(nextBase.threads, payload.threadId, {
+                ...reconcileNativeHistoryProjection(
+                  thread,
+                  removed,
+                  new Set(payload.removedMessageIds ?? []),
+                ),
+                checkpoints: retainNativeTurnRows(thread.checkpoints, removed),
+                pendingUserInputs: projectPendingUserInputs(thread.pendingUserInputs ?? [], event),
+                session: thread.session
+                  ? {
+                      ...thread.session,
+                      estimatedContextTokens: undefined,
+                      tokenUsageSource: undefined,
+                    }
+                  : null,
+                lastInteractionAt: event.occurredAt,
+                updatedAt: event.occurredAt,
+              }),
+            };
+          }
+
           const checkpoints = thread.checkpoints
             .filter((entry) => entry.checkpointTurnCount <= payload.turnCount)
             .toSorted((left, right) => left.checkpointTurnCount - right.checkpointTurnCount)
@@ -1423,6 +1506,7 @@ export function projectEvent(
             thread.messages,
             retainedTurnIds,
             payload.turnCount,
+            payload.retainedMessageIds,
           ).slice(-MAX_THREAD_MESSAGES);
           const proposedPlans = retainThreadProposedPlansAfterRevert(
             thread.proposedPlans,

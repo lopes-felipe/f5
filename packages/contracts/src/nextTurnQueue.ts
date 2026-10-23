@@ -73,9 +73,9 @@ export const NextTurnQueueItem = Schema.Struct({
   command: ThreadTurnStartCommand,
   attemptCount: NonNegativeInt,
   notBefore: Schema.NullOr(IsoDateTime),
-  scheduleReason: Schema.optional(Schema.NullOr(Schema.Literal("usage_limit_reset"))).pipe(
-    Schema.withDecodingDefault(() => null),
-  ),
+  scheduleReason: Schema.optional(
+    Schema.NullOr(Schema.Literals(["usage_limit_reset", "pull_request_watch"])),
+  ).pipe(Schema.withDecodingDefault(() => null)),
   dispatchStartedAt: Schema.NullOr(IsoDateTime),
   lastErrorCode: Schema.NullOr(Schema.String),
   lastErrorDetail: Schema.NullOr(Schema.String),
@@ -83,6 +83,17 @@ export const NextTurnQueueItem = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 export type NextTurnQueueItem = typeof NextTurnQueueItem.Type;
+
+/**
+ * Failed queue rows marked for delivery-only recovery. Command receipts remain
+ * the server's authority for admission; this marker controls recovery presentation.
+ */
+export function isAdmittedDeliveryQueueItem(item: NextTurnQueueItem): boolean {
+  return (
+    item.status === "failed" &&
+    (item.lastErrorCode === "delivery_rejected" || item.lastErrorCode === "delivery_ambiguous")
+  );
+}
 
 export const NextTurnQueueSnapshot = Schema.Struct({
   workspaceTransition: Schema.optional(Schema.NullOr(WorkspaceTransitionSnapshot)),

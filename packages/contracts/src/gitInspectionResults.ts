@@ -40,6 +40,8 @@ const GitStatusPr = Schema.Struct({
   url: Schema.String,
   baseBranch: TrimmedNonEmptyStringSchema,
   headBranch: TrimmedNonEmptyStringSchema,
+  /** The pull request's head commit, when the host read reports it. */
+  headOid: Schema.optionalKey(TrimmedNonEmptyStringSchema),
   state: GitStatusPrState,
 });
 

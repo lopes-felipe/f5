@@ -41,19 +41,21 @@ vi.mock("@legendapp/list/react", () => ({
   LegendList: LegendListStub,
 }));
 
-vi.mock("../../appSettings", () => ({
-  useDiffWordWrap: () => false,
-  useAppSettings: () => ({
-    settings: {
-      linkOpenTarget: "system",
-      previewDefaults: { zoomFactor: 1, muted: false, colorScheme: "system" },
-      expandMcpToolCalls: false,
-      expandMcpToolCallCardsByDefault: true,
-      showReasoningExpanded: false,
-      showFileChangeDiffsInline: false,
-    },
-  }),
-}));
+vi.mock("../../appSettings", () => {
+  const settings = {
+    linkOpenTarget: "system",
+    previewDefaults: { zoomFactor: 1, muted: false, colorScheme: "system" },
+    expandMcpToolCalls: false,
+    expandMcpToolCallCardsByDefault: true,
+    showReasoningExpanded: false,
+    showFileChangeDiffsInline: false,
+  };
+  return {
+    useDiffWordWrap: () => false,
+    useAppSettings: () => ({ settings }),
+    useAppSettingsSelector: <T,>(selector: (value: typeof settings) => T) => selector(settings),
+  };
+});
 
 vi.mock("../../fileNavigationContext", () => ({
   useFileNavigation: () => () => false,

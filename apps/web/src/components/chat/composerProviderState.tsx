@@ -1,5 +1,7 @@
+import { stepEffortOptions } from "./effortLevels";
 import {
   type ProviderDriverKind,
+  type ProviderOptionDescriptor,
   type ProviderOptionSelection,
   type ScopedThreadRef,
   type ServerProviderModel,
@@ -8,6 +10,9 @@ import {
   buildProviderOptionSelectionsFromDescriptors,
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
+  getProviderOptionStringSelectionValue,
+  resolveCodexEffectiveReasoningEffort,
+  resolveModelCapabilities,
 } from "@t3tools/shared/model";
 import type { ReactNode } from "react";
 
@@ -65,6 +70,45 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
         }
       : {}),
   };
+}
+
+/** Keyboard changes use the same reported/fallback Codex effort policy as its picker. */
+export function getComposerReasoningStep(
+  input: ComposerProviderStateInput & { direction: 1 | -1 },
+) {
+  const reported = getProviderModelCapabilities(input.models, input.model, input.provider);
+  let descriptors = getProviderOptionDescriptors({
+    caps: reported,
+    selections: input.modelOptions,
+  });
+  if (input.provider === "codex") {
+    const caps = resolveModelCapabilities("codex", input.model, reported);
+    const current = resolveCodexEffectiveReasoningEffort(
+      input.model,
+      getProviderOptionStringSelectionValue(input.modelOptions, "reasoningEffort"),
+      reported,
+    );
+    const effort: ProviderOptionDescriptor[] = caps.effortOptions.length
+      ? [
+          {
+            id: "reasoningEffort",
+            label: "Reasoning",
+            type: "select",
+            options: caps.effortOptions.map((id) => ({
+              id,
+              label: id,
+              isDefault: id === caps.defaultEffort,
+            })),
+            ...(current ? { currentValue: current } : {}),
+          },
+        ]
+      : [];
+    descriptors = [...descriptors.filter((entry) => entry.id !== "reasoningEffort"), ...effort];
+  }
+  const next = stepEffortOptions(descriptors, input.direction);
+  if (!next) return null;
+  const updatedIds = new Set(next.map((entry) => entry.id));
+  return [...(input.modelOptions ?? []).filter((entry) => !updatedIds.has(entry.id)), ...next];
 }
 
 function renderTraitsControl(

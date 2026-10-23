@@ -1,3 +1,18 @@
+import {
+  ProviderNativeHistory,
+  ProviderNativeHistoryLive,
+} from "./provider/ProviderNativeHistory.ts";
+import { ProviderNativeHistoryWorkerLive } from "./orchestration/Layers/ProviderNativeHistory.ts";
+import {
+  ProviderContinuationRequests,
+  ProviderContinuationRequestsLive,
+} from "./provider/ProviderContinuationRequests.ts";
+import { ProviderContinuationWorkerLive } from "./provider/ProviderContinuationWorker.ts";
+import { McpAppServiceLive } from "./mcpApps/McpAppService.ts";
+import { ThreadSettlementServiceLive } from "./orchestration/Layers/ThreadSettlementService.ts";
+import { PullRequestWatchServiceLive } from "./orchestration/Layers/PullRequestWatchService.ts";
+import { ThreadMcpBroker, ThreadMcpBrokerLive } from "./mcp/threadMcpTools.ts";
+import { PrHubReviewGuideServiceLive } from "./prHub/Layers/PrHubReviewGuideService.ts";
 import { WorkspaceTransitionsLive } from "./persistence/Layers/WorkspaceTransitions.ts";
 import { WorkspaceTransitionLive } from "./project/Layers/WorkspaceTransition.ts";
 import { WorktreePreparationsLive } from "./persistence/Layers/WorktreePreparations.ts";
@@ -7,7 +22,7 @@ import {
   ComputerAutomationBroker,
   ComputerAutomationBrokerLive,
 } from "./computer/ComputerAutomationBroker";
-import { AgentControlPauseLive } from "./mcp/agentControlPause";
+import { AgentControlPauseLive, AgentControlPauseService } from "./mcp/agentControlPause";
 import { WorktreeSetupLive } from "./project/Layers/WorktreeSetup.ts";
 import { DefaultBranchAutoPullLive } from "./git/DefaultBranchAutoPull.ts";
 import { StorageCleanupWorkerLive } from "./storage/StorageCleanupWorker.ts";
@@ -157,10 +172,14 @@ export function makeServerProviderLayer(): Layer.Layer<
   | PreviewAutomationBroker
   | ComputerAutomationBroker
   | PreviewMcpHttpServer
+  | ThreadMcpBroker
   | ProviderRegistry
   | ProviderUpdateAdvisor
   | ProviderAdvisoryProjection
   | ProviderInstanceRegistry
+  | ProviderContinuationRequests
+  | ProviderNativeHistory
+  | AgentControlPauseService
   | ProviderAdapterRegistry
   | ServerSettingsService
   | DiskSpaceMonitor,
@@ -207,10 +226,14 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(AgentControlPauseLive),
     );
     const previewMcpHttpServerLayer = PreviewMcpHttpServerLive.pipe(
+      Layer.provide(ThreadMcpBrokerLive),
       Layer.provide(computerAutomationBrokerLayer),
       Layer.provide(previewAutomationBrokerLayer),
     );
     const providerInstanceRegistryLayer = ProviderInstanceRegistryHydrationLive.pipe(
+      Layer.provide(ProviderContinuationRequestsLive),
+      Layer.provide(ProviderNativeHistoryLive),
+      Layer.provide(ThreadMcpBrokerLive),
       Layer.provide(serverSettingsLayer),
       Layer.provide(providerEventLoggersLayer),
       Layer.provide(OpenCodeRuntimeLive),
@@ -222,6 +245,7 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(providerInstanceRegistryLayer),
     );
     const providerRegistryLayer = ProviderRegistryLive.pipe(
+      Layer.provide(serverSettingsLayer),
       Layer.provide(providerInstanceRegistryLayer),
     );
     const codexMcpEventBusLayer = CodexMcpEventBusLive;
@@ -280,6 +304,9 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(projectMcpConfigServiceLayer),
     );
     return Layer.mergeAll(
+      ProviderContinuationRequestsLive,
+      ProviderNativeHistoryLive,
+      AgentControlPauseLive,
       serverSettingsLayer,
       DiskSpaceMonitorLive.pipe(Layer.provide(serverSettingsLayer)),
       providerServiceLayer,
@@ -298,6 +325,7 @@ export function makeServerProviderLayer(): Layer.Layer<
       previewAutomationBrokerLayer,
       computerAutomationBrokerLayer,
       previewMcpHttpServerLayer,
+      ThreadMcpBrokerLive,
     );
   }).pipe(Effect.provide(ProviderTerminalEventRepositoryLive), Layer.unwrap);
 }
@@ -306,7 +334,10 @@ export function makeServerProviderLayer(): Layer.Layer<
 export function makeServerRuntimeServicesLayer() {
   const forgeAccountsLayer = ForgeAccountsLive.pipe(Layer.provideMerge(ServerSecretStoreLive));
   const githubCliLayer = GitHubCliLive.pipe(Layer.provideMerge(ServerSecretStoreLive));
-  const textGenerationLayer = TextGenerationLive;
+  const textGenerationLayer = TextGenerationLive.pipe(
+    Layer.provide(ProjectionProjectRepositoryLive),
+    Layer.provide(ProjectionThreadRepositoryLive),
+  );
 
   const { gitLayer, checkpointDiffQueryLayer } = makeServerGitLayers();
   const threadCommandExecutionQueryLayer = ThreadCommandExecutionQueryLive.pipe(
@@ -337,6 +368,10 @@ export function makeServerRuntimeServicesLayer() {
     Layer.provideMerge(ProjectionProjectRepositoryLive),
   );
   const prHubLayer = PrHubFederatedServiceLive.pipe(Layer.provideMerge(federationLayer));
+  const prHubReviewGuideLayer = PrHubReviewGuideServiceLive.pipe(
+    Layer.provideMerge(federationLayer),
+    Layer.provideMerge(textGenerationLayer),
+  );
   const prHubExtensionsLayer = PrHubExtensionsLive.pipe(Layer.provideMerge(prHubLayer));
   const prHubAdvisoryLayer = PrHubAdvisoryServiceLive.pipe(
     Layer.provideMerge(prHubLayer),
@@ -355,16 +390,20 @@ export function makeServerRuntimeServicesLayer() {
     prHubLayer,
     prHubExtensionsLayer,
     prHubAdvisoryLayer,
+    prHubReviewGuideLayer,
     terminalLayer,
     KeybindingsLive,
-    ObservabilityLive,
+    ObservabilityLive.pipe(Layer.provide(ServerSettingsLive)),
     NextTurnQueueStoreLive,
   ).pipe(Layer.provideMerge(NodeServices.layer));
 }
 
 /** Build orchestration workers with the same credential-aware Git composition as server routes. */
 export function makeServerOrchestrationRuntimeLayer() {
-  const textGenerationLayer = TextGenerationLive;
+  const textGenerationLayer = TextGenerationLive.pipe(
+    Layer.provide(ProjectionProjectRepositoryLive),
+    Layer.provide(ProjectionThreadRepositoryLive),
+  );
   const providerSessionDirectoryLayer = ProviderSessionDirectoryLive.pipe(
     Layer.provide(ProviderSessionRuntimeRepositoryLive),
   );
@@ -469,7 +508,17 @@ export function makeServerOrchestrationRuntimeLayer() {
   const sessionNotesServiceLayer = SessionNotesServiceLive.pipe(
     Layer.provideMerge(runtimeServicesLayer),
   );
+  const continuationWorkerLayer = ProviderContinuationWorkerLive.pipe(
+    Layer.provideMerge(runtimeServicesLayer),
+    Layer.provideMerge(NextTurnQueueStoreLive),
+    Layer.provideMerge(nextTurnQueueDispatcherLayer),
+  );
+  const nativeHistoryWorkerLayer = ProviderNativeHistoryWorkerLive.pipe(
+    Layer.provideMerge(runtimeServicesLayer),
+  );
   const orchestrationReactorLayer = OrchestrationReactorLive.pipe(
+    Layer.provideMerge(nativeHistoryWorkerLayer),
+    Layer.provideMerge(continuationWorkerLayer),
     Layer.provideMerge(orchestrationLayer),
     Layer.provideMerge(runtimeIngestionLayer),
     Layer.provideMerge(providerCommandReactorLayer),
@@ -541,5 +590,8 @@ export function makeServerOrchestrationRuntimeLayer() {
     worktreeManagerLayer,
     workspaceTransitionLayer,
     defaultBranchAutoPullLayer,
+    PullRequestWatchServiceLive.pipe(Layer.provideMerge(nextTurnQueueDispatcherLayer)),
+    ThreadSettlementServiceLive.pipe(Layer.provideMerge(nextTurnQueueDispatcherLayer)),
+    McpAppServiceLive.pipe(Layer.provideMerge(runtimeServicesLayer)),
   ).pipe(Layer.provideMerge(NodeServices.layer));
 }

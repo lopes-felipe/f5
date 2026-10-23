@@ -522,6 +522,26 @@ export default function GitActionsControl({
         const result = await promise;
         activeGitActionProgressRef.current = null;
         const resultToast = summarizeGitResult(result);
+        if (result.commit.status === "context_changed") {
+          const suggestion = result.commit.suggestedMessage ?? result.commit.subject ?? "";
+          // Retain the full suggestion for inspection; do not dispatch a retry.
+          setDialogCommitMessage(suggestion);
+          toastManager.update(resolvedProgressToastId, {
+            type: "warning",
+            title: resultToast.title,
+            description: resultToast.description,
+            timeout: 0,
+            data: threadToastData,
+            actionProps: {
+              children: "Review suggestion",
+              onClick: () => {
+                setDialogCommitMessage(suggestion);
+                setIsCommitDialogOpen(true);
+              },
+            },
+          });
+          return;
+        }
 
         const existingOpenPrUrl =
           actionStatus?.pr?.state === "open" ? actionStatus.pr.url : undefined;

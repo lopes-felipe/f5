@@ -1,3 +1,4 @@
+import { CliCommandSettings } from "../CliCommandSettings";
 import { useDesktopUpdate } from "../../sidebar/useDesktopUpdate";
 import {
   getDesktopUpdateStatusSummary,
@@ -101,6 +102,8 @@ export function AboutSettings() {
           />
         </div>
       ) : null}
+
+      <CliCommandSettings />
 
       {showResetOnboardingButton ? (
         <div className="mt-4 flex justify-end" data-settings-search-target="about.onboarding">

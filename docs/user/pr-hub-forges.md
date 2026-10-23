@@ -22,7 +22,7 @@ The existing GitHub setup stays the default as the legacy profile account.
 The **Inbox** and **Focus** views list tracked pull requests. Attention filters such as **Needs
 you**, **Needs my review**, **CI failing** and **Ready** narrow the list, and you can also filter by
 repository, CI or lifecycle. Each pull request has **Summary**, **Timeline**, **Review threads**
-and **Files** tabs.
+**Files**, and **Guide · Beta** tabs.
 
 ## Safe actions
 
@@ -38,6 +38,16 @@ Inline comments are tied to the exact head and base you compared. If either chan
 before commenting. **Viewed** marks also belong to that revision, so a new push clears them.
 Hover a PR link to preview it, copy it, or open it in the hub. **Send to agent** puts a diff
 comment into the linked thread's composer without sending it.
+
+Open **Guide · Beta** and select **Generate guide** for an ordered tour of the change.
+Move between stops to read the excerpts, notes and review questions. A guide belongs to
+the selected account and PR head. After a new push, F5 warns that the guide is stale and
+hides its excerpts until you regenerate it. A failed regeneration keeps the previous tour.
+
+In **Settings → Git → Guided PR reviews**, guides use your git text generation model
+by default. Turn off **Use git text generation model** to select another provider,
+model and reasoning options. Generating a guide sends the PR description, diff and
+a bounded summary of settled review comments to that provider's account.
 
 ## What each forge supports
 
@@ -85,7 +95,67 @@ GitHub has native stacks.
 
 </details>
 
+## PR watches
+
+Open a linked PR's menu in the thread header and select **Watch**. The eye button
+stops that watch. Agents can use `watch_pull_request` with a PR URL or F5 key;
+omitting the target uses the thread's single linked PR. `unwatch_pull_request`
+without a target stops every watch in the current thread.
+
+Watches run on the server every two minutes and queue an automatic follow-up when
+checks, conflicts or review activity change. They share reads for the same account
+and PR. Nothing starts watching by default. Stop, archive and PR closure end a watch.
+Rate limits pause it; eight consecutive read failures end it with a thread notice.
+Ten consecutive comment-only updates also end it to prevent bot loops. Forge
+capabilities determine which check and review facts are available.
+
 ## Related
 
 - [Project settings](project-settings.md) (per-project merge method)
 - [Worktrees and storage automation](worktrees-and-storage-automation.md)
+
+## PR links beside a thread
+
+Click a PR link in a conversation or its linked-PR header to open a PR tab beside
+that thread. Your conversation and draft stay in place. Merge, review and other
+confirmations stay inside the panel and still require an explicit confirmation.
+You can close, reorder and reopen the PR tab like other panel tabs.
+
+Command-click, Control-click and middle-click always open the system browser.
+Enable **Settings → Browser → Open pull request links on the forge** to use the
+system browser for ordinary PR clicks too. **Open on forge** is always available
+in the PR panel. Without a current thread, ordinary clicks open the in-app PR page.
+The panel uses the selected forge account; connect or select a matching account
+in **Pull requests** if a read is refused. Failed reads offer **Retry**.
+
+In **Review threads → Filter comments**, choose whether to show bot comments and
+resolved conversations. These choices persist locally. A thread with hidden bot
+comments keeps **Load more comments** available for unloaded human replies.
+Host restrictions on individual comments and threads can disable editing or
+resolution even when the repository generally supports them.
+
+Drag a linked PR from the thread header into the composer to add a PR context chip.
+It keeps the PR URL in your draft and sends that reference only when you submit
+the prompt. Deleting the chip removes the reference; undo restores it.
+
+## Merge-message attribution
+
+**Settings → Git → Remove agent credits when merging** is off by default. Enable
+it to remove recognized agent co-author and generated-by lines from new GitHub
+merge and squash commit messages, including auto-merge. Human co-authors, quoted
+examples and original commits retain their text. Merge queues and native stack
+merges keep their host-generated messages. The setting applies to this profile;
+other forges retain their existing merge-message behavior.
+
+## Quick actions and row menus
+
+Hold **Shift** without another modifier to show quick actions in the PR inbox and
+on linked PRs in the thread header. Right-click either row to open its action menu.
+Linked PR menus also include **Copy link**, **Open in F5**, **Open on forge** and
+**Watch**.
+
+A quick action opens its confirmation view; it does not send a remote change.
+Linked PRs load their current state when opened, and unavailable actions are
+refused. **Prepare** shows the saved operation and **Confirm** submits it once.
+Only actions supported by that forge are offered. Releasing Shift, changing
+modifiers or leaving the window hides quick actions.

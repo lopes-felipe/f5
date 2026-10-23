@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   TERMINAL_SELECTION_CONTEXT_MENU_ITEMS,
   applyTerminalFontAppearance,
+  clampDrawerHeight,
+  normalizeDrawerHeight,
   resolveTerminalSelectionContextMenuAction,
   resolveTerminalSelectionActionPosition,
   shouldHandleTerminalSelectionMouseUp,
@@ -133,5 +135,19 @@ describe("resolveTerminalSelectionActionPosition", () => {
     expect(shouldHandleTerminalSelectionMouseUp(true, 0)).toBe(true);
     expect(shouldHandleTerminalSelectionMouseUp(false, 0)).toBe(false);
     expect(shouldHandleTerminalSelectionMouseUp(true, 1)).toBe(false);
+  });
+});
+
+describe("terminal drawer height", () => {
+  it("keeps the stored preference independent of the window", () => {
+    expect(normalizeDrawerHeight(640.4)).toBe(640);
+    expect(normalizeDrawerHeight(20)).toBe(180);
+    expect(normalizeDrawerHeight(Number.NaN)).toBe(280);
+  });
+
+  it("caps only the rendered height, so a larger window restores the preference", () => {
+    const preferred = normalizeDrawerHeight(640);
+    expect(clampDrawerHeight(preferred, 300)).toBe(300);
+    expect(clampDrawerHeight(preferred, 900)).toBe(640);
   });
 });

@@ -23,6 +23,11 @@ import {
   defaultDocumentReaderSlot,
   isDocumentWorkflow,
 } from "@t3tools/shared/documentWorkflow";
+import {
+  SCRATCH_PROJECT_TITLE,
+  isScratchProject,
+  isScratchThreadFolder,
+} from "@t3tools/shared/scratchProject";
 
 import { OrchestrationCommandInvariantError, ThreadTurnAlreadyActiveError } from "./Errors.ts";
 import {
@@ -45,6 +50,25 @@ import {
 const nowIso = () => new Date().toISOString();
 const DEFAULT_ASSISTANT_DELIVERY_MODE = "buffered" as const;
 export const GLOBAL_PIN_AGGREGATE_ID = ProjectId.makeUnsafe("f5-global-pins");
+
+/** The scratch project is server-owned: its folder, actions, memories and skills stay fixed. */
+function scratchProjectRefusal(commandType: string, what: string) {
+  return new OrchestrationCommandInvariantError({
+    commandType,
+    detail: `The home for threads without a project cannot change ${what}.`,
+  });
+}
+
+const requireNonScratchProject = Effect.fnUntraced(function* (
+  readModel: OrchestrationReadModel,
+  command: OrchestrationCommand,
+  projectId: ProjectId,
+  what: string,
+) {
+  const project = yield* requireProject({ readModel, command, projectId });
+  if (isScratchProject(project)) return yield* scratchProjectRefusal(command.type, what);
+  return project;
+});
 
 function unsupportedWorkflowBehaviorMessage(input: {
   readonly templateId: string;
@@ -82,13 +106,15 @@ function makeThreadUnsnoozedEvent(input: {
   };
 }
 
-export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand")(function* ({
+const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
   command,
   readModel,
   providerInstances = [],
+  nativeRemovedMessageIds = [],
 }: {
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
+  readonly nativeRemovedMessageIds?: readonly import("@t3tools/contracts").MessageId[];
   readonly providerInstances?: ReadonlyArray<Pick<ServerProvider, "instanceId" | "driver">>;
 }): Effect.fn.Return<
   Omit<OrchestrationEvent, "sequence"> | ReadonlyArray<Omit<OrchestrationEvent, "sequence">>,
@@ -112,6 +138,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "project.created",
         payload: {
           projectId: command.projectId,
+          kind: "standard",
           title: command.title,
           workspaceRoot: command.workspaceRoot,
           defaultModel: command.defaultModel ?? null,
@@ -124,12 +151,51 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
-    case "project.meta.update": {
-      yield* requireProject({
+    case "project.scratch.create": {
+      yield* requireProjectAbsent({
         readModel,
         command,
         projectId: command.projectId,
       });
+      if (readModel.projects.some((project) => isScratchProject(project) && !project.deletedAt))
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "This profile already has a home for threads without a project.",
+        });
+      return {
+        ...withEventBase({
+          aggregateKind: "project",
+          aggregateId: command.projectId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "project.created",
+        payload: {
+          projectId: command.projectId,
+          kind: "scratch",
+          title: SCRATCH_PROJECT_TITLE,
+          workspaceRoot: command.workspaceRoot,
+          defaultModel: null,
+          defaultEnvMode: null,
+          icon: { type: "lucide", glyph: "folder", color: "gray" },
+          scripts: [],
+          createdAt: command.createdAt,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "project.meta.update": {
+      const project = yield* requireProject({
+        readModel,
+        command,
+        projectId: command.projectId,
+      });
+      if (
+        isScratchProject(project) &&
+        (command.workspaceRoot !== undefined || command.scripts !== undefined)
+      )
+        return yield* scratchProjectRefusal(command.type, "its folder or actions");
       if (command.scripts !== undefined) {
         const oldIds = new Set(
           readModel.projects
@@ -173,11 +239,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "project.delete": {
-      yield* requireProject({
+      const project = yield* requireProject({
         readModel,
         command,
         projectId: command.projectId,
       });
+      if (isScratchProject(project)) return yield* scratchProjectRefusal(command.type, "it");
       const activeChildThreadCount = listThreadsByProjectId(readModel, command.projectId).filter(
         (thread) => thread.deletedAt === null,
       ).length;
@@ -204,11 +271,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "project.memory.save": {
-      yield* requireProject({
-        readModel,
-        command,
-        projectId: command.projectId,
-      });
+      yield* requireNonScratchProject(readModel, command, command.projectId, "memories");
       const existing = readModel.projects
         .find((project) => project.id === command.projectId)
         ?.memories.find((memory) => memory.id === command.memoryId && memory.deletedAt === null);
@@ -245,11 +308,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "project.memory.update": {
-      yield* requireProject({
-        readModel,
-        command,
-        projectId: command.projectId,
-      });
+      yield* requireNonScratchProject(readModel, command, command.projectId, "memories");
       const existing = readModel.projects
         .find((project) => project.id === command.projectId)
         ?.memories.find((memory) => memory.id === command.memoryId && memory.deletedAt === null);
@@ -283,11 +342,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "project.memory.delete": {
-      yield* requireProject({
-        readModel,
-        command,
-        projectId: command.projectId,
-      });
+      yield* requireNonScratchProject(readModel, command, command.projectId, "memories");
       const existing = readModel.projects
         .find((project) => project.id === command.projectId)
         ?.memories.find((memory) => memory.id === command.memoryId && memory.deletedAt === null);
@@ -314,11 +369,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "project.skills.replace": {
-      yield* requireProject({
-        readModel,
-        command,
-        projectId: command.projectId,
-      });
+      yield* requireNonScratchProject(readModel, command, command.projectId, "skills");
       const mismatchedSkill = command.skills.find((skill) => skill.projectId !== command.projectId);
       if (mismatchedSkill) {
         return yield* new OrchestrationCommandInvariantError({
@@ -628,7 +679,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "Restore the owning workflow before creating its thread.",
         });
       }
-      yield* requireProject({
+      const project = yield* requireProject({
         readModel,
         command,
         projectId: command.projectId,
@@ -638,6 +689,26 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      const scratchPath = command.scratchPath ?? null;
+      if (isScratchProject(project)) {
+        // The engine allocates the folder before dispatch; without one a scratch thread
+        // would have no workspace of its own, so creation fails closed.
+        if (
+          scratchPath === null ||
+          !isScratchThreadFolder(project.workspaceRoot, scratchPath) ||
+          command.worktreePath !== null ||
+          command.branch !== null
+        )
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "A thread without a project needs its own folder and no branch or worktree.",
+          });
+      } else if (scratchPath !== null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Only threads without a project have a scratch folder.",
+        });
+      }
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -658,6 +729,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           interactionMode: command.interactionMode,
           branch: command.branch,
           worktreePath: command.worktreePath,
+          scratchPath,
           threadReferences: command.threadReferences ?? [],
           ...(command.pullRequest ? { pullRequest: command.pullRequest } : {}),
           createdAt: command.createdAt,
@@ -713,6 +785,85 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           deletedAt: occurredAt,
           ...(pinRevision !== undefined ? { pinRevision } : {}),
         },
+      };
+    }
+
+    case "thread.settle": {
+      const thread = yield* requireThreadNotArchived({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      // The reason is shown to the user, so it names what to clear first.
+      const blocker = thread.deletedAt
+        ? "This thread was deleted."
+        : (thread.pendingUserInputs?.length ?? 0) > 0
+          ? "This thread is waiting on a question. Answer it before settling."
+          : thread.session?.activeTurnId ||
+              thread.latestTurn?.state === "running" ||
+              (thread.latestTurn?.completedAt && thread.latestTurn.processingQuiescedAt === null) ||
+              ["running", "starting"].includes(thread.session?.status ?? "")
+            ? "This thread is still running. Stop it before settling."
+            : thread.pinnedAt
+              ? "This thread is pinned. Unpin it before settling."
+              : thread.snoozedUntil &&
+                  Date.parse(thread.snoozedUntil) > Date.parse(command.createdAt)
+                ? "This thread is snoozed. Wake it before settling."
+                : null;
+      if (blocker !== null)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: blocker,
+        });
+      if (command.expectedUpdatedAt !== undefined && command.expectedUpdatedAt !== thread.updatedAt)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The thread changed before settlement. Retry with the current thread.",
+        });
+      if (command.settledBy === "auto" && thread.autoSettleDisabled)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Automatic settlement is disabled for this thread.",
+        });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.settled",
+        payload: {
+          threadId: command.threadId,
+          settledAt: command.settledAt ?? command.createdAt,
+          settledBy: command.settledBy ?? "user",
+        },
+      };
+    }
+    case "thread.unsettle": {
+      yield* requireThread({ readModel, command, threadId: command.threadId });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.unsettled",
+        payload: { threadId: command.threadId, reason: command.reason ?? "user" },
+      };
+    }
+    case "thread.auto-settle.set": {
+      yield* requireThread({ readModel, command, threadId: command.threadId });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.auto-settle-changed",
+        payload: { threadId: command.threadId, enabled: command.enabled },
       };
     }
 
@@ -1498,6 +1649,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ? { expectedSessionGeneration: command.expectedSessionGeneration }
             : {}),
           ...(command.presentation ? { presentation: command.presentation } : {}),
+          ...(command.continuationRequestId
+            ? { continuationRequestId: command.continuationRequestId }
+            : {}),
           threadId: command.threadId,
           messageId: command.message.messageId,
           ...(command.provider !== undefined ? { provider: command.provider } : {}),
@@ -2033,6 +2187,43 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.native-history.reconcile": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (
+        thread.deletedAt ||
+        thread.archivedAt ||
+        thread.session?.providerName !== "pi" ||
+        thread.session.providerInstanceId !== command.providerInstanceId ||
+        thread.session.status !== "running" ||
+        thread.session.activeTurnId !== command.expectedTurnId ||
+        thread.latestTurn?.turnId !== command.expectedTurnId ||
+        command.removedTurnIds.includes(command.expectedTurnId)
+      )
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The native history owner changed before reconciliation.",
+        });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.reverted",
+        payload: {
+          threadId: command.threadId,
+          turnCount: Math.max(
+            0,
+            ...thread.checkpoints.map((checkpoint) => checkpoint.checkpointTurnCount),
+          ),
+          removedTurnIds: [...new Set(command.removedTurnIds)],
+          removedMessageIds: [...new Set(nativeRemovedMessageIds)],
+          nativeTurnId: command.expectedTurnId,
+        },
+      };
+    }
+
     case "thread.revert.complete": {
       yield* requireThread({
         readModel,
@@ -2051,6 +2242,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           turnCount: command.turnCount,
           ...(command.operationId ? { operationId: command.operationId } : {}),
+          ...(command.retainedMessageIds ? { retainedMessageIds: command.retainedMessageIds } : {}),
           ...(command.retainedTurnIds ? { retainedTurnIds: command.retainedTurnIds } : {}),
         },
       };
@@ -2483,4 +2675,43 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       });
     }
   }
+});
+
+/** Wake is part of the same accepted command and replay stream as the new work. */
+export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand")(function* (
+  input: Parameters<typeof decideCommand>[0],
+) {
+  const result = yield* decideCommand(input);
+  const events = Array.isArray(result) ? result : [result];
+  const command = input.command;
+  if (!("threadId" in command)) return result;
+  const thread = input.readModel.threads.find((thread) => thread.id === command.threadId);
+  if (
+    !thread?.settledAt ||
+    !events.some(
+      (event) =>
+        event.type === "thread.message-sent" ||
+        event.type === "thread.turn-start-requested" ||
+        event.type === "thread.unsnoozed" ||
+        (event.type === "thread.session-set" &&
+          (event.payload.session.activeTurnId ||
+            ["starting", "running"].includes(event.payload.session.status))),
+    )
+  )
+    return result;
+  const event = events[0]!;
+  const wake: Omit<OrchestrationEvent, "sequence"> = {
+    ...withEventBase({
+      aggregateKind: "thread",
+      aggregateId: command.threadId,
+      commandId: command.commandId,
+      occurredAt: event.occurredAt,
+    }),
+    type: "thread.unsettled",
+    payload: {
+      threadId: command.threadId,
+      reason: events.some((event) => event.type === "thread.unsnoozed") ? "wake" : "activity",
+    },
+  };
+  return [wake, ...events];
 });

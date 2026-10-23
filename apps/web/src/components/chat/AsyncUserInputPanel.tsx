@@ -17,15 +17,29 @@ import { UserInputQuestionStep } from "./UserInputQuestionStep";
 export function AsyncUserInputPanel({
   threadId,
   input,
+  cwd,
   variant = "standalone",
 }: {
   threadId: ThreadId;
   input: PendingUserInput;
+  cwd?: string | undefined;
   variant?: ComposerPanelVariant;
 }) {
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
-  const [custom, setCustom] = useState<Record<string, string>>({});
-  const [customOpen, setCustomOpen] = useState<Record<string, boolean>>({});
+  const [custom, setCustom] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      input.questions.flatMap((question) =>
+        question.initialAnswer === undefined ? [] : [[question.id, question.initialAnswer]],
+      ),
+    ),
+  );
+  const [customOpen, setCustomOpen] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(
+      input.questions
+        .filter((question) => question.initialAnswer !== undefined)
+        .map((question) => [question.id, true]),
+    ),
+  );
   const [questionIndex, setQuestionIndex] = useState(0);
   const [attachments, setAttachments] = useState<AttachmentUpload[]>([]);
   const [busy, setBusy] = useState(false);
@@ -162,6 +176,7 @@ export function AsyncUserInputPanel({
       {activeQuestion ? (
         <UserInputQuestionStep
           question={activeQuestion}
+          cwd={cwd}
           questionIndex={activeIndex}
           questionCount={questions.length}
           selectedOptionLabels={answers[activeQuestion.id] ?? []}

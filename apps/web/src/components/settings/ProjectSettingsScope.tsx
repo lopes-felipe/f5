@@ -1,3 +1,5 @@
+import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
+import { ThreadSettlementFields } from "./ThreadSettlementSettings";
 import { pickPreferredModel } from "@t3tools/shared/model";
 import { useComputerStatus, computerSettingsCanEnable } from "../../hooks/useComputerStatus";
 import { RememberedComputerApps } from "./RememberedComputerApps";
@@ -334,6 +336,53 @@ export function ProjectOverridesResetCard() {
   );
 }
 
+export function ProjectProviderControls() {
+  const { projectId, settings, overrides, saving, set } = useProjectScope();
+  const config = useQuery(serverConfigQueryOptions());
+  const providers = projectProviderSnapshots(config.data?.providers ?? [], settings, projectId);
+  return (
+    <SettingsCard
+      title="Providers"
+      searchTarget="project.providers"
+      description="Choose which configured agents this project can use. Other projects keep their own choices."
+      actions={
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={saving || !Object.keys(overrides.providerInstances ?? {}).length}
+          onClick={() => set("providerInstances", {})}
+        >
+          Use global providers
+        </Button>
+      }
+    >
+      {config.isError ? (
+        <p role="alert">Could not load providers.</p>
+      ) : (
+        providers.map((provider) => (
+          <div
+            key={provider.instanceId}
+            className="flex items-center justify-between gap-4 py-2 text-sm"
+          >
+            <span>{provider.displayName ?? provider.instanceId}</span>
+            <Switch
+              aria-label={`Enable ${provider.displayName ?? provider.instanceId} for this project`}
+              checked={provider.enabled}
+              disabled={saving || provider.availability === "unavailable"}
+              onCheckedChange={(enabled) =>
+                set("providerInstances", {
+                  ...overrides.providerInstances,
+                  [provider.instanceId]: { enabled },
+                })
+              }
+            />
+          </div>
+        ))
+      )}
+    </SettingsCard>
+  );
+}
+
 export function ProjectThreadsOverrides() {
   const { settings, sources, saving, set, badge, projectId } = useProjectScope();
   const client = useQueryClient();
@@ -639,6 +688,16 @@ export function ProjectGitOverrides() {
               onSave={(paths) => set("worktreeDisposablePaths", paths)}
             />
           }
+        />
+      </SettingsCard>
+      <SettingsCard title="Thread settlement">
+        <ThreadSettlementFields
+          settings={settings}
+          disabled={saving}
+          badge={badge}
+          onChange={(patch) => {
+            for (const [key, value] of Object.entries(patch)) set(key as keyof typeof patch, value);
+          }}
         />
       </SettingsCard>
       <SettingsCard title="Sync">

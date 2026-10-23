@@ -23,6 +23,8 @@ export type PrPendingAction =
   | "comment"
   | "requestChanges"
   | "merge"
+  | "close"
+  | "reopen"
   | "markReady"
   | "reRequestReview"
   | "snooze"
@@ -70,6 +72,8 @@ export interface PrActionDialogProps {
   dialogTitle: string;
   reviewers: string;
   setReviewers: (value: string) => void;
+  deleteBranch?: boolean;
+  setDeleteBranch?: ((value: boolean) => void) | undefined;
   mergeMethod: PrMergeMethod | null;
   allowedMergeMethods: readonly PrMergeMethod[];
   mergeComparison: PrHubComparisonIdentity | null;
@@ -122,6 +126,8 @@ export function usePrActions(
   const busy = useRef(false);
   const [pendingAction, setPendingAction] = useState<PrPendingAction>(null);
   const [reviewers, setReviewers] = useState("");
+  const [deleteBranch, setDeleteBranch] = useState(false);
+  useEffect(() => setDeleteBranch(false), [pr.key, pendingAction]);
   const [mergeChoice, setMergeChoice] = useState<{ key: string; method: PrMergeMethod } | null>(
     null,
   );
@@ -184,6 +190,10 @@ export function usePrActions(
         return "Request changes";
       case "merge":
         return "Merge pull request";
+      case "close":
+        return "Close pull request";
+      case "reopen":
+        return "Reopen pull request";
       case "markReady":
         return "Mark ready for review";
       case "reRequestReview":
@@ -200,6 +210,7 @@ export function usePrActions(
     setIsRunning(true);
     try {
       const api = ensureNativeApi().prHub;
+      let actionWarning: string | undefined;
       if (
         pendingAction === "approve" ||
         pendingAction === "comment" ||
@@ -210,11 +221,13 @@ export function usePrActions(
         if (!mergeComparison) throw new Error("Load the merge comparison before confirming.");
         if (!mergeMethod || !allowedMergeMethods.includes(mergeMethod))
           throw new Error("Refresh the PR hub to load the repository's allowed merge methods.");
-        await api.merge({
+        const result = await api.merge({
           url: pr.url,
           method: mergeMethod,
           expectedComparison: mergeComparison,
+          ...(deleteBranch ? { deleteBranch: true } : {}),
         });
+        actionWarning = result.actionWarning;
         const recent = Object.entries(settings.prHubLastMergeMethods)
           .filter(([key]) => key !== repositoryKey)
           .slice(-99);
@@ -234,7 +247,15 @@ export function usePrActions(
       } else if (pendingAction === "snooze") {
         await api.snooze({ key: pr.key, until: new Date(snoozeUntil).toISOString() });
       }
-      toastManager.add({ type: "success", title: "Pull request updated" });
+      toastManager.add(
+        actionWarning
+          ? {
+              type: "info",
+              title: "PR updated; branch cleanup needs attention",
+              description: actionWarning,
+            }
+          : { type: "success", title: "Pull request updated" },
+      );
       setPendingAction(null);
       setReviewers("");
     } catch (error) {
@@ -440,6 +461,8 @@ export function usePrActions(
       reviewers,
       setReviewers,
       mergeMethod,
+      deleteBranch,
+      setDeleteBranch,
       allowedMergeMethods,
       mergeComparison,
       mergeComparisonError,

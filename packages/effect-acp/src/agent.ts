@@ -18,6 +18,7 @@ import {
   decodeExtNotificationRegistration,
   decodeExtRequestRegistration,
   runHandler,
+  isolateNotificationHandler,
 } from "./_internal/shared";
 import * as AcpTerminal from "./terminal";
 
@@ -295,7 +296,11 @@ export const make = Effect.fn("effect-acp/AcpAgent.make")(function* (
               }),
           ),
           Effect.flatMap((decoded) =>
-            Effect.forEach(cancelHandlers, (handler) => handler(decoded), { discard: true }),
+            Effect.forEach(
+              cancelHandlers,
+              (handler) => isolateNotificationHandler(() => handler(decoded)),
+              { discard: true },
+            ),
           ),
         );
       }
@@ -356,7 +361,7 @@ export const make = Effect.fn("effect-acp/AcpAgent.make")(function* (
     }),
   );
 
-  yield* RpcServer.make(AcpRpcs.AgentRpcs).pipe(
+  yield* RpcServer.make(AcpRpcs.AgentRpcs, { disableFatalDefects: true }).pipe(
     Effect.provideService(RpcServer.Protocol, transport.serverProtocol),
     Effect.provide(agentHandlerLayer),
     Effect.forkScoped,

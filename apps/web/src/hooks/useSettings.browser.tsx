@@ -9,11 +9,22 @@ import { useRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
-import { APP_SETTINGS_STORAGE_KEY } from "../appSettings";
+import {
+  APP_SETTINGS_STORAGE_KEY,
+  parsePersistedAppSettings,
+  updateAppSettings,
+  useAppSettings,
+  useAppSettingsSelector,
+} from "../appSettings";
 import { projectSettingsQueryOptions } from "../lib/projectSettingsQuery";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
 import { LOCAL_STORAGE_CHANGE_EVENT } from "./useLocalStorage";
-import { useSettings, type UnifiedWebSettings } from "./useSettings";
+import {
+  selectServerSettings,
+  useSettings,
+  useUpdateSettings,
+  type UnifiedWebSettings,
+} from "./useSettings";
 
 vi.mock("../nativeApi", () => ({
   ensureNativeApi: () => {
@@ -118,6 +129,35 @@ describe("useSettings", () => {
     }
   });
 
+  it("keeps a server-settings selection stable across web-only writes", async () => {
+    const queryClient = seedQueryClient();
+    const selections: unknown[] = [];
+    function ServerProbe() {
+      selections.push(useSettings(selectServerSettings));
+      return null;
+    }
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <ServerProbe />
+      </QueryClientProvider>,
+    );
+    try {
+      writeAppSettings({ sidebarThreadPreviewCount: 10 });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(new Set(selections).size).toBe(1);
+
+      queryClient.setQueryData(serverConfigQueryOptions().queryKey, {
+        settings: { ...DEFAULT_SERVER_SETTINGS, resumeActiveTurnsAfterRestart: true },
+      } as never);
+      await vi.waitFor(() => expect(new Set(selections).size).toBe(2));
+      expect((selections.at(-1) as ServerSettings | undefined)?.resumeActiveTurnsAfterRestart).toBe(
+        true,
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("applies project-scoped overrides and follows their updates", async () => {
     const queryClient = seedQueryClient();
     const projectResult = (resumeActiveTurnsAfterRestart: boolean) =>
@@ -153,6 +193,72 @@ describe("useSettings", () => {
         expect(probe("project").text).toBe("false");
       });
       expect(probe("global").renders).toBe(globalRenders);
+    } finally {
+      await screen.unmount();
+    }
+  });
+});
+
+describe("useAppSettingsSelector", () => {
+  it("re-renders only when the selected app setting changes", async () => {
+    const selections: unknown[] = [];
+    function ObjectProbe() {
+      selections.push(useAppSettingsSelector((settings) => ({ wrap: settings.diffWordWrap })));
+      return null;
+    }
+    const screen = await render(<ObjectProbe />);
+    try {
+      writeAppSettings({ sidebarThreadPreviewCount: 10 });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(new Set(selections).size).toBe(1);
+
+      writeAppSettings({ diffWordWrap: true });
+      await vi.waitFor(() => expect(new Set(selections).size).toBe(2));
+      expect(selections.at(-1)).toEqual({ wrap: true });
+    } finally {
+      await screen.unmount();
+    }
+  });
+});
+
+describe("settings writers", () => {
+  it("updateAppSettings writes storage and resyncs useAppSettings readers", async () => {
+    const seen: number[] = [];
+    function Reader() {
+      seen.push(useAppSettings().settings.sidebarThreadPreviewCount);
+      return null;
+    }
+    const screen = await render(<Reader />);
+    try {
+      updateAppSettings({ sidebarThreadPreviewCount: 11 });
+      expect(
+        parsePersistedAppSettings(localStorage.getItem(APP_SETTINGS_STORAGE_KEY))
+          .sidebarThreadPreviewCount,
+      ).toBe(11);
+      await vi.waitFor(() => expect(seen.at(-1)).toBe(11));
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("useUpdateSettings does not re-render its caller on settings writes", async () => {
+    const queryClient = seedQueryClient();
+    let renders = 0;
+    function Writer() {
+      useUpdateSettings();
+      renders += 1;
+      return null;
+    }
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <Writer />
+      </QueryClientProvider>,
+    );
+    try {
+      const initial = renders;
+      writeAppSettings({ sidebarThreadPreviewCount: 12 });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(renders).toBe(initial);
     } finally {
       await screen.unmount();
     }

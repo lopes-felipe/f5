@@ -6,6 +6,7 @@ import type {
 import { Cause, Effect, Layer, Option, Schedule, ServiceMap, Stream } from "effect";
 import type { Scope } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { isScratchProject } from "@t3tools/shared/scratchProject";
 
 import { ServerConfig } from "../config.ts";
 import { NextTurnQueueStore } from "../nextTurnQueue/Services/NextTurnQueueStore.ts";
@@ -73,7 +74,8 @@ export const makeDefaultBranchAutoPull = Effect.gen(function* () {
       const seen = new Set<string>();
       const result: Candidate[] = [];
       for (const project of model.projects) {
-        if (project.deletedAt !== null) continue;
+        // The scratch root holds folders, not a repository.
+        if (project.deletedAt !== null || isScratchProject(project)) continue;
         const resolved = yield* readProjectSettings(global, project);
         if (!resolved.settings.autoPullDefaultBranch) continue;
         const root = yield* Effect.tryPromise(() =>

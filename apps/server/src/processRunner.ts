@@ -4,6 +4,7 @@ import { ensureWindowsPathHydrated } from "@t3tools/shared/windowsPath";
 
 import { resolveExecutable, resolveInvocation } from "./spawn/resolveCommand.ts";
 import { resolveProfileGithubLauncher } from "./git/GithubCliLauncher";
+import { isManagedGitCommand, managedGitProcessEnvironment } from "./git/gitProcessEnvironment.ts";
 
 export interface ProcessRunOptions {
   cwd?: string | undefined;
@@ -145,7 +146,9 @@ export async function runProcess(
   const maxStdoutBytes = options.maxStdoutBytes ?? maxBufferBytes;
   const maxStderrBytes = options.maxStderrBytes ?? maxBufferBytes;
   const outputMode = options.outputMode ?? "error";
-  const environment = options.env;
+  const environment = isManagedGitCommand(command)
+    ? managedGitProcessEnvironment(options.env)
+    : options.env;
   await ensureWindowsPathHydrated(environment);
   const executable =
     process.platform === "win32"

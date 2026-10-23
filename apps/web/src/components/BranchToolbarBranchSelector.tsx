@@ -17,7 +17,7 @@ import {
   useTransition,
 } from "react";
 
-import { useAppSettings } from "../appSettings";
+import { useAppSettingsSelector } from "../appSettings";
 import {
   gitBranchesQueryOptions,
   gitQueryKeys,
@@ -118,7 +118,9 @@ export function BranchToolbarBranchSelector({
   onCheckoutPullRequestRequest,
   onComposerFocusRequest,
 }: BranchToolbarBranchSelectorProps) {
-  const { settings } = useAppSettings();
+  const gitStatusAutoRefreshIntervalSeconds = useAppSettingsSelector(
+    (settings) => settings.gitStatusAutoRefreshIntervalSeconds,
+  );
   const queryClient = useQueryClient();
   const [isBranchMenuOpen, setIsBranchMenuOpen] = useState(false);
   const [checkoutConflict, setCheckoutConflict] = useState<{
@@ -143,8 +145,8 @@ export function BranchToolbarBranchSelector({
   }, [context]);
   const [branchQuery, setBranchQuery] = useState("");
   const deferredBranchQuery = useDeferredValue(branchQuery);
-  const gitAutoRefreshIntervalMs = settings.gitStatusAutoRefreshIntervalSeconds * 1000;
-  const gitAutoRefreshEnabled = settings.gitStatusAutoRefreshIntervalSeconds > 0;
+  const gitAutoRefreshIntervalMs = gitStatusAutoRefreshIntervalSeconds * 1000;
+  const gitAutoRefreshEnabled = gitStatusAutoRefreshIntervalSeconds > 0;
 
   const branchesQuery = useQuery(
     gitBranchesQueryOptions({

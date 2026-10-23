@@ -86,6 +86,62 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 describe("NextTurnQueueRow usage limit timing", () => {
+  it.each(["delivery_rejected", "delivery_ambiguous"])(
+    "reserves %s recovery for the banner",
+    async (lastErrorCode) => {
+      active = await render(
+        <NextTurnQueueRow
+          {...props}
+          snapshot={{
+            ...snapshot,
+            unresolvedDelivery: {
+              deliveryId: CommandId.makeUnsafe("failed-delivery"),
+              state: "ambiguous",
+            },
+          }}
+          canSteer
+          onSteer={async () => {}}
+          item={item({
+            status: "failed",
+            lastErrorCode,
+            lastErrorDetail: "Detailed provider error",
+            notBefore: null,
+          })}
+        />,
+      );
+      await expect
+        .element(page.getByText(/^Delivery unconfirmed\. Use Recheck, Retry or Discard above\./))
+        .toBeVisible();
+      for (const name of [
+        "Retry queued turn",
+        "Run queued turn now",
+        "Steer now",
+        "Edit queued turn",
+        "Duplicate queued turn",
+        "Move queued turn to top",
+      ]) {
+        await expect.element(page.getByRole("button", { name })).not.toBeInTheDocument();
+      }
+      await expect.element(page.getByText("Detailed provider error")).not.toBeInTheDocument();
+      await expect
+        .element(page.getByRole("button", { name: "Drag to reorder queued turn" }))
+        .toBeDisabled();
+      await expect.element(page.getByRole("button", { name: "Cancel queued turn" })).toBeDisabled();
+    },
+  );
+  it("does not direct a pending delivery to missing recovery buttons", async () => {
+    active = await render(
+      <NextTurnQueueRow
+        {...props}
+        item={item({ status: "failed", lastErrorCode: "delivery_ambiguous", notBefore: null })}
+      />,
+    );
+    await expect.element(page.getByText(/^Checking delivery…/)).toBeVisible();
+    await expect
+      .element(page.getByText(/Use Recheck, Retry or Discard above/))
+      .not.toBeInTheDocument();
+    await expect.element(page.getByRole("button", { name: "Cancel queued turn" })).toBeDisabled();
+  });
   it("uses an absolute date and one deadline timer instead of an interval", async () => {
     const interval = vi.spyOn(window, "setInterval");
     const timeout = vi.spyOn(window, "setTimeout");

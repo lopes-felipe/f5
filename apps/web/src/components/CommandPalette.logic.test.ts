@@ -2,9 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { ProjectId, ThreadId } from "@t3tools/contracts";
 import type { Thread } from "../types";
 import {
+  buildCommandPaletteRows,
   buildFileSearchActionItems,
   buildThreadActionItems,
   filterCommandPaletteGroups,
+  findHighlightedCommandPaletteItem,
+  type CommandPaletteActionItem,
   type CommandPaletteGroup,
 } from "./CommandPalette.logic";
 
@@ -264,5 +267,41 @@ describe("buildFileSearchActionItems", () => {
     expect(groups[0]?.items.map((item) => item.value)).toEqual([
       "file:apps/web/src/components/CommandPalette.tsx",
     ]);
+  });
+});
+
+describe("virtualized command palette rows", () => {
+  const action = (value: string): CommandPaletteActionItem => ({
+    kind: "action",
+    value,
+    searchTerms: [],
+    title: value,
+    icon: null,
+    run: async () => {},
+  });
+  const groups: CommandPaletteGroup[] = [
+    { value: "actions", label: "Actions", items: [action("new-thread")] },
+    { value: "threads", label: "Threads", items: [action("thread-a"), action("thread-b")] },
+  ];
+
+  it("keeps group order and headings while indexing every item", () => {
+    const { rows, itemValues, rowIndexByItemIndex } = buildCommandPaletteRows(groups);
+
+    expect(rows.map((row) => (row.kind === "label" ? `# ${row.label}` : row.key))).toEqual([
+      "# Actions",
+      "actions:new-thread",
+      "# Threads",
+      "threads:thread-a",
+      "threads:thread-b",
+    ]);
+    expect(itemValues).toEqual(["new-thread", "thread-a", "thread-b"]);
+    expect(rowIndexByItemIndex).toEqual([1, 3, 4]);
+    expect(rows.flatMap((row) => (row.kind === "item" ? [row.itemIndex] : []))).toEqual([0, 1, 2]);
+  });
+
+  it("resolves Enter to the highlighted item without needing its row mounted", () => {
+    expect(findHighlightedCommandPaletteItem(groups, "thread-b")?.value).toBe("thread-b");
+    expect(findHighlightedCommandPaletteItem(groups, "missing")).toBeNull();
+    expect(findHighlightedCommandPaletteItem(groups, null)).toBeNull();
   });
 });

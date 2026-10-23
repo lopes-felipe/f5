@@ -87,6 +87,20 @@ describe("deriveLiveWorkActivity", () => {
     expect(deriveLiveWorkActivity([reasoning("idle", 1)], turnId)).toEqual({ kind: "idle" });
   });
 
+  it("keeps the latest thought on a tool that runs after it", () => {
+    expect(
+      deriveLiveWorkActivity(
+        [reasoning("idle", 1, "Found the cause"), tool("tool.started", "A", 2, "rg cause")],
+        turnId,
+      ),
+    ).toEqual({ kind: "tool", providerItemId: "A", title: "rg cause", thought: "Found the cause" });
+    expect(deriveLiveWorkActivity([tool("tool.started", "A", 1)], turnId)).toEqual({
+      kind: "tool",
+      providerItemId: "A",
+      title: "A",
+    });
+  });
+
   it("keeps the newer tool when an older one completes", () => {
     expect(
       deriveLiveWorkActivity(
@@ -629,6 +643,24 @@ describe("derivePendingApprovals", () => {
 });
 
 describe("derivePendingUserInputs", () => {
+  it("preserves bounded editor prefills from persisted activities", () => {
+    const question = {
+      id: "editor",
+      header: "Edit",
+      question: "Edit draft",
+      options: [],
+      initialAnswer: "Existing\ntext",
+      optional: true,
+    };
+    const input = derivePendingUserInputs([
+      makeActivity({
+        kind: "user-input.requested",
+        payload: { requestId: "editor-request", questions: [question] },
+      }),
+    ]);
+    expect(input[0]?.questions).toEqual([question]);
+  });
+
   it("tracks open structured prompts and removes resolved ones", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -1018,6 +1050,60 @@ describe("hasActionableProposedPlan", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
+  it("leads an answered user-input row with the question and shows the answer", () => {
+    const question = (id: string, text: string) => ({
+      id,
+      header: id,
+      question: text,
+      options: [{ label: "Yes", description: "Proceed" }],
+    });
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "input-requested",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          turnId: "turn-1",
+          kind: "user-input.requested",
+          summary: "User input requested",
+          tone: "info",
+          payload: {
+            requestId: "req-1",
+            questions: [
+              question("scope", "Which  package\nshould move?"),
+              question("tests", "Keep tests?"),
+            ],
+          },
+        }),
+        makeActivity({
+          id: "input-resolved",
+          createdAt: "2026-02-23T00:00:02.000Z",
+          turnId: "turn-1",
+          kind: "user-input.resolved",
+          summary: "User input submitted",
+          tone: "info",
+          payload: { requestId: "req-1", answers: { scope: "apps/web", tests: ["Yes"] } },
+        }),
+        makeActivity({
+          id: "receipt",
+          createdAt: "2026-02-23T00:00:03.000Z",
+          turnId: "turn-1",
+          kind: "user-input.resolved",
+          summary: "Provider received the requested input",
+          tone: "info",
+          payload: { requestId: "req-1", receipt: "resolved" },
+        }),
+      ],
+      TurnId.makeUnsafe("turn-1"),
+    );
+    const resolved = entries.find((entry) => entry.id === "input-resolved");
+    expect(resolved?.label).toBe("Which package should move? · Keep tests?");
+    expect(resolved?.detail).toBe("apps/web · Yes");
+    // A value-free receipt keeps its own summary.
+    expect(entries.find((entry) => entry.id === "receipt")?.label).toBe(
+      "Provider received the requested input",
+    );
+  });
+
   it("coalesces a Codex collaboration lifecycle into one stable retained row", () => {
     const lifecycle = [
       makeActivity({
@@ -1299,6 +1385,31 @@ describe("deriveWorkLogEntries", () => {
     const entries = deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-2"));
     expect(entries.map((entry) => entry.id)).toEqual(["historical-file-change", "latest-tool"]);
     expect(entries[0]?.status).toBe("completed");
+  });
+
+  it("retains a valid historical MCP app and its turn correlation", () => {
+    const payload = {
+      reference: {
+        attachmentId: "app-document",
+        server: "weather",
+        tool: "forecast",
+        resourceUri: "ui://weather/app",
+      },
+      arguments: { city: "Berlin" },
+      result: { content: [{ type: "text", text: "Sunny" }] },
+    };
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({ id: "app", kind: "mcpApp", turnId: "old-turn", payload }),
+        makeActivity({ id: "broken-app", kind: "mcpApp", turnId: "old-turn", payload: {} }),
+      ],
+      TurnId.makeUnsafe("new-turn"),
+    );
+    expect(entries.find((entry) => entry.id === "app")).toMatchObject({
+      turnId: "old-turn",
+      mcpApp: payload,
+    });
+    expect(entries.find((entry) => entry.id === "broken-app")?.mcpApp).toBeUndefined();
   });
 
   it("filters noisy account diagnostics from the work log", () => {
@@ -3286,6 +3397,8 @@ describe("PROVIDER_OPTIONS", () => {
       { value: "grok", label: "Grok", available: true },
       { value: "antigravity", label: "Antigravity", available: true },
       { value: "muse", label: "Muse Code", available: true },
+      { value: "acp", label: "Custom ACP agent", available: true },
+      { value: "pi", label: "Pi", available: true },
     ]);
     expect(claude).toEqual({
       value: "claudeAgent",
@@ -3307,5 +3420,25 @@ describe("PROVIDER_OPTIONS", () => {
       label: "Grok",
       available: true,
     });
+  });
+});
+
+it("derives skill names for old tool history and live tool headings", () => {
+  const activity = makeActivity({
+    id: "skill-history",
+    turnId: "turn-skill",
+    payload: {
+      itemType: "dynamic_tool_call",
+      providerItemId: "skill-call",
+      title: "Tool call",
+      data: { toolName: "Skill", input: { skill: "team:review" } },
+    },
+  });
+  expect(
+    deriveWorkLogEntries([{ ...activity, kind: "tool.completed" }], undefined)[0]?.toolTitle,
+  ).toBe("Skill: team:review");
+  expect(deriveLiveWorkActivity([activity], TurnId.makeUnsafe("turn-skill"))).toMatchObject({
+    kind: "tool",
+    title: "Skill: team:review",
   });
 });

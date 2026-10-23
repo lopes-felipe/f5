@@ -1,4 +1,5 @@
 import type { ProjectId, ThreadId } from "@t3tools/contracts";
+import { withoutScratchProjects } from "@t3tools/shared/scratchProject";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowRightIcon,
@@ -285,6 +286,7 @@ export function HomeMissionControl() {
   "use memo";
   const navigate = useNavigate();
   const projects = useStore((state) => state.projects);
+  const pickableProjects = withoutScratchProjects(projects);
   const threads = useThreadSummaries();
   const planningWorkflows = useStore((state) => state.planningWorkflows);
   const codeReviewWorkflows = useStore((state) => state.codeReviewWorkflows);
@@ -378,8 +380,9 @@ export function HomeMissionControl() {
     projectsInRecent.sort((a, b) => a.name.localeCompare(b.name));
 
     // Top active projects for the ⌘1..⌘N quick-jump shortcuts.
+    const listedProjects = withoutScratchProjects(projects);
     const sortedProjects = sortProjectsByActivity(
-      projects,
+      listedProjects,
       threads,
       planningWorkflows,
       codeReviewWorkflows,
@@ -391,7 +394,7 @@ export function HomeMissionControl() {
       statusByThreadId: statusById,
       projectsById: projectMap,
       mostRecentProject: getMostRecentProject(
-        projects,
+        listedProjects,
         threads,
         planningWorkflows,
         codeReviewWorkflows,
@@ -570,7 +573,7 @@ export function HomeMissionControl() {
     activeThreadProjectId: null,
     activeDraftProjectId: null,
     mostRecentProjectId: mostRecentProject?.id ?? null,
-    firstProjectId: projects[0]?.id ?? null,
+    firstProjectId: pickableProjects[0]?.id ?? null,
   });
 
   // One flat index so j/k spans every section in reading order: each section
@@ -638,7 +641,7 @@ export function HomeMissionControl() {
       <div className="flex flex-col gap-3">
         <HomeQuickStart
           greeting={greeting}
-          projects={projects}
+          projects={pickableProjects}
           defaultProjectId={defaultProjectId}
         />
         {quickStartChips.length > 0 ? <QuickStartChips chips={quickStartChips} /> : null}

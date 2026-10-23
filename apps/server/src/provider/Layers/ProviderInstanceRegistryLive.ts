@@ -173,12 +173,10 @@ const buildEntry = <R>(input: {
     const decoder = Schema.decodeUnknownEffect(driver.configSchema);
     const decodeResult = yield* decoder(entry.config ?? driver.defaultConfig()).pipe(Effect.result);
     if (decodeResult._tag === "Failure") {
-      const issue = decodeResult.failure;
-      const detail = issue.message ?? String(issue);
       yield* Effect.logError("Failed to decode provider instance config", {
         instanceId: rawInstanceId,
         driver: entry.driver,
-        detail,
+        category: "configuration",
       });
       return {
         kind: "unavailable" as const,
@@ -187,7 +185,7 @@ const buildEntry = <R>(input: {
           instanceId,
           displayName: entry.displayName,
           accentColor: entry.accentColor,
-          reason: `Invalid config for instance '${rawInstanceId}': ${detail}`,
+          reason: `Invalid configuration for instance '${rawInstanceId}'. Check its provider settings.`,
         }),
       };
     }
@@ -220,7 +218,7 @@ const buildEntry = <R>(input: {
       yield* Effect.logError("Failed to create provider instance", {
         instanceId: rawInstanceId,
         driver: entry.driver,
-        detail: createResult.failure.detail,
+        category: "initialization",
       });
       yield* Scope.close(childScope, Exit.void).pipe(Effect.ignore);
       return {
@@ -230,7 +228,7 @@ const buildEntry = <R>(input: {
           instanceId,
           displayName: entry.displayName,
           accentColor: entry.accentColor,
-          reason: `Driver '${entry.driver}' failed to create instance: ${createResult.failure.detail}`,
+          reason: `Provider instance '${rawInstanceId}' failed to initialize. Check its configuration and availability.`,
         }),
       };
     }

@@ -1,3 +1,4 @@
+import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
 import { isListedModel, pickPreferredModel } from "@t3tools/shared/model";
 /**
  * Agent Bridge thread tools: read exposed projects, threads, and diffs, and
@@ -864,14 +865,33 @@ export function makeThreadTools(deps: ThreadToolsDeps): ReadonlyArray<AgentBridg
   const listProviders: AgentBridgeToolDefinition = {
     name: "list_providers",
     title: "List providers",
-    description: `List the coding agents F5 can run, with their models. Only providers with supportsSupervised can be used for bridge turns. ${WORKSPACE_NOTE}`,
+    description: `List coding agents and models available globally or in an exposed project. Only providers with supportsSupervised can be used for bridge turns. ${WORKSPACE_NOTE}`,
     scope: "f5.read",
-    inputSchema: objectSchema({}),
+    inputSchema: objectSchema({
+      projectId: stringProp("Use this exposed project's provider choices."),
+    }),
     annotations: readOnly,
-    run: () =>
-      host.listProviderInstances.pipe(
-        Effect.map((providers) => ({
-          providers: providers
+    run: (args, caller) =>
+      Effect.gen(function* () {
+        const input = yield* decodeArgs(
+          Schema.Struct({ projectId: Schema.optionalKey(ProjectId) }),
+        )(args);
+        if (input.projectId) {
+          const model = yield* snapshot;
+          if (
+            !caller.visibleProjectIds.has(input.projectId) ||
+            !model.projects.some(
+              (project) => project.id === input.projectId && project.deletedAt === null,
+            )
+          )
+            return yield* notFound("Project");
+        }
+        const [providers, settings] = yield* Effect.all([
+          host.listProviderInstances,
+          host.getSettings.pipe(hostError),
+        ]);
+        return {
+          providers: projectProviderSnapshots(providers, settings, input.projectId)
             .filter((provider) => provider.enabled)
             .map((provider) => ({
               instanceId: provider.instanceId,
@@ -883,8 +903,8 @@ export function makeThreadTools(deps: ThreadToolsDeps): ReadonlyArray<AgentBridg
                 .filter(isListedModel)
                 .map((model) => ({ slug: model.slug, name: model.name })),
             })),
-        })),
-      ),
+        };
+      }),
   };
 
   const listThreads: AgentBridgeToolDefinition = {
@@ -1090,12 +1110,16 @@ export function makeThreadTools(deps: ThreadToolsDeps): ReadonlyArray<AgentBridg
               host.listProviderInstances,
               host.getSettings.pipe(hostError),
             ]);
-            const { provider, model: modelSlug } = yield* resolveProvider(providers, settings, {
-              ...(input.providerInstanceId !== undefined
-                ? { instanceId: input.providerInstanceId }
-                : {}),
-              ...(input.model !== undefined ? { model: input.model } : {}),
-            });
+            const { provider, model: modelSlug } = yield* resolveProvider(
+              projectProviderSnapshots(providers, settings, project.id),
+              settings,
+              {
+                ...(input.providerInstanceId !== undefined
+                  ? { instanceId: input.providerInstanceId }
+                  : {}),
+                ...(input.model !== undefined ? { model: input.model } : {}),
+              },
+            );
             const branch = yield* host.getProjectGitBranch(project.workspaceRoot);
             const useWorktree = (input.useWorktree ?? true) && branch !== null;
             const createdAt = now().toISOString();

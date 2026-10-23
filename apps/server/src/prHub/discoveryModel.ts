@@ -700,7 +700,7 @@ export function buildTrackedPullRequest(
     forgeCapabilities: {
       ...GITHUB_FORGE_CAPABILITIES,
       actions: GITHUB_FORGE_CAPABILITIES.actions.filter((action) =>
-        ["ready", "draft", "close", "reopen", "update-branch"].includes(action)
+        ["ready", "draft", "close", "reopen", "update-branch", "delete-branch"].includes(action)
           ? pr.mergePermission === "allowed" ||
             pr.author?.toLowerCase() === viewerLogin.toLowerCase()
           : pr.mergePermission === "allowed",

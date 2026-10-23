@@ -25,6 +25,20 @@ describe("GrokAcpSupport", () => {
     });
   });
 
+  it("puts Supervised on the Grok argv so a config always-approve cannot skip prompts", () => {
+    expect(buildGrokAcpSpawnInput(null, "/repo", undefined, "approval-required").args).toEqual([
+      "--permission-mode",
+      "default",
+      "agent",
+      "stdio",
+    ]);
+    // The adapter answers full-access requests itself so computer use still reaches the user.
+    expect(buildGrokAcpSpawnInput(null, "/repo", undefined, "full-access").args).toEqual([
+      "agent",
+      "stdio",
+    ]);
+  });
+
   it("falls back to the default Grok binary", () => {
     expect(buildGrokAcpSpawnInput(null, "/repo").command).toBe("grok");
   });

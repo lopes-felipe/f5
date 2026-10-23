@@ -51,6 +51,7 @@ const make = Effect.gen(function* () {
         status,
         active,
         model,
+        effort,
         phase,
         title,
         prompt,
@@ -74,6 +75,7 @@ const make = Effect.gen(function* () {
         ${row.status},
         ${row.active ? 1 : 0},
         ${row.model ?? null},
+        ${row.effort ?? null},
         ${row.phase ?? null},
         ${row.title ?? null},
         ${row.prompt ?? null},
@@ -123,6 +125,12 @@ const make = Effect.gen(function* () {
           WHEN ${row.model === undefined ? 1 : 0} = 1
             THEN projection_thread_background_work.model
           ELSE excluded.model
+        END,
+        effort = CASE
+          WHEN ${row.effort === undefined ? 1 : 0} = 1
+            THEN CASE WHEN ${row.model === undefined ? 1 : 0} = 0 AND excluded.model IS NOT projection_thread_background_work.model
+              THEN NULL ELSE projection_thread_background_work.effort END
+          ELSE excluded.effort
         END,
         phase = CASE
           WHEN ${row.phase === undefined ? 1 : 0} = 1
@@ -226,6 +234,7 @@ const make = Effect.gen(function* () {
           status,
           active,
           model,
+          effort,
           phase,
           title,
           ${prompt} AS prompt,

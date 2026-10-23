@@ -13,6 +13,8 @@ import {
   AutocompleteInput,
   AutocompleteItem,
   AutocompleteList,
+  AutocompleteListHeading,
+  AutocompleteListVirtualized,
   AutocompleteSeparator,
 } from "~/components/ui/autocomplete";
 
@@ -121,6 +123,29 @@ function CommandList({ className, ...props }: React.ComponentProps<typeof Autoco
   );
 }
 
+// Pair with a LegendList child; the list owns scrolling and spacing.
+function CommandListVirtualized({
+  className,
+  ...props
+}: React.ComponentProps<typeof AutocompleteListVirtualized>) {
+  return (
+    <AutocompleteListVirtualized
+      className={cn("flex max-h-[inherit] flex-col", className)}
+      data-slot="command-list"
+      {...props}
+    />
+  );
+}
+
+function CommandListHeading({
+  className,
+  ...props
+}: React.ComponentProps<typeof AutocompleteListHeading>) {
+  return (
+    <AutocompleteListHeading className={className} data-slot="command-group-label" {...props} />
+  );
+}
+
 function CommandEmpty({ className, ...props }: React.ComponentProps<typeof AutocompleteEmpty>) {
   return (
     <AutocompleteEmpty
@@ -219,6 +244,8 @@ export {
   CommandInput,
   CommandItem,
   CommandList,
+  CommandListHeading,
+  CommandListVirtualized,
   CommandPanel,
   CommandSeparator,
   CommandShortcut,

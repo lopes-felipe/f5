@@ -2,6 +2,12 @@ import { makeGitHubRequestQueue, type GitHubPriority } from "./githubRequestQueu
 import { Effect, Option, ServiceMap } from "effect";
 import type { SourceControlRateLimit, PrHubSchedulerState } from "@t3tools/contracts";
 import { GitHubCliError } from "./Errors.ts";
+import { enforceGitHubRequestPolicy } from "./githubRequestPolicy.ts";
+
+/** Only explicit read synchronization opts in. Writes and passive polls never retry. */
+export class GitHubSyncWait extends ServiceMap.Service<GitHubSyncWait, boolean>()(
+  "t3/git/githubRequestScheduler/GitHubSyncWait",
+) {}
 
 export class GitHubRequestPriority extends ServiceMap.Service<
   GitHubRequestPriority,
@@ -15,13 +21,14 @@ interface Budget {
   used: Record<Exclude<GitHubResource, "write">, number>;
   quota: Partial<Record<Exclude<GitHubResource, "write">, SourceControlRateLimit>>;
   reserve: Partial<Record<Exclude<GitHubResource, "write">, number>>;
-  blockedUntil: number;
+  rateLimitedUntil: number;
+  networkBlockedUntil: number;
   failures: number;
   queued: number;
   schedule: ReturnType<typeof makeGitHubRequestQueue>;
 }
 
-/** No retries: admission failure leaves resumable work for the next poll. */
+/** Passive admission failures leave resumable work for the next poll. */
 export function makeGitHubRequestScheduler(now = Date.now, random = Math.random) {
   const hosts = new Map<string, Budget>();
   const budgetFor = (host: string) => {
@@ -34,7 +41,8 @@ export function makeGitHubRequestScheduler(now = Date.now, random = Math.random)
         used: { rest: 0, search: 0, graphql: 0 },
         quota: {},
         reserve: {},
-        blockedUntil: 0,
+        rateLimitedUntil: 0,
+        networkBlockedUntil: 0,
         failures: 0,
         queued: 0,
         schedule: makeGitHubRequestQueue(),
@@ -43,6 +51,8 @@ export function makeGitHubRequestScheduler(now = Date.now, random = Math.random)
     }
     return budget;
   };
+  const blockedUntil = (budget: Budget) =>
+    Math.max(budget.rateLimitedUntil, budget.networkBlockedUntil);
   const deferred = (until: number, detail: string) =>
     new GitHubCliError({
       operation: "schedule",
@@ -65,7 +75,7 @@ export function makeGitHubRequestScheduler(now = Date.now, random = Math.random)
       const urgency = Option.getOrElse(priority, () => "interactive" as const);
       const background = urgency !== "interactive";
       const budget = budgetFor(host);
-      const admitted = Effect.gen(function* () {
+      const admission = Effect.gen(function* () {
         const timestamp = now();
         if (timestamp - budget.windowStart >= 180_000) {
           budget.windowStart = timestamp;
@@ -76,9 +86,9 @@ export function makeGitHubRequestScheduler(now = Date.now, random = Math.random)
           budget.minuteStart = timestamp;
           budget.searchMinute = 0;
         }
-        if (budget.blockedUntil > timestamp)
+        if (blockedUntil(budget) > timestamp)
           return yield* deferred(
-            budget.blockedUntil,
+            blockedUntil(budget),
             "GitHub requests are waiting for the retry window.",
           );
         if (resource !== "write") {
@@ -124,7 +134,6 @@ export function makeGitHubRequestScheduler(now = Date.now, random = Math.random)
             if (resource === "search") budget.searchMinute++;
           }
         }
-        return yield* effect;
       });
       return yield* Effect.acquireUseRelease(
         Effect.suspend(() => {
@@ -135,7 +144,35 @@ export function makeGitHubRequestScheduler(now = Date.now, random = Math.random)
           budget.queued++;
           return Effect.void;
         }),
-        () => budget.schedule(urgency, resource === "write", admitted),
+        () =>
+          Effect.gen(function* () {
+            const wait = yield* Effect.serviceOption(GitHubSyncWait);
+            while (true) {
+              const attempt = yield* budget.schedule(
+                urgency,
+                resource === "write",
+                Effect.gen(function* () {
+                  const denied = yield* admission.pipe(
+                    Effect.as(null),
+                    Effect.catch((error) => Effect.succeed(error)),
+                  );
+                  if (denied) return { admitted: false as const, error: denied };
+                  // Failures after this point are returned directly; never replay dispatched work.
+                  return { admitted: true as const, value: yield* effect };
+                }),
+              );
+              if (attempt.admitted) return attempt.value;
+              const until = Date.parse(attempt.error.rateLimit?.resetAt ?? "");
+              if (
+                resource === "write" ||
+                budget.networkBlockedUntil > now() ||
+                !Option.getOrElse(wait, () => false) ||
+                !Number.isFinite(until)
+              )
+                return yield* attempt.error;
+              yield* enforceGitHubRequestPolicy(Effect.sleep(Math.max(1, until - now())), false);
+            }
+          }),
         () =>
           Effect.sync(() => {
             budget.queued--;
@@ -164,7 +201,8 @@ export function makeGitHubRequestScheduler(now = Date.now, random = Math.random)
         (result.rateLimit.remaining === 0 || result.rateLimit.retryAfterSeconds != null))
     ) {
       const reset = result.rateLimit.resetAt ? Date.parse(result.rateLimit.resetAt) : now();
-      budget.blockedUntil = Math.max(
+      budget.rateLimitedUntil = Math.max(
+        budget.rateLimitedUntil,
         now() + (result.rateLimit.retryAfterSeconds ?? 30) * 1000,
         reset,
       );
@@ -174,7 +212,7 @@ export function makeGitHubRequestScheduler(now = Date.now, random = Math.random)
   const networkFailure = (host: string) => {
     const budget = budgetFor(host);
     budget.failures++;
-    budget.blockedUntil =
+    budget.networkBlockedUntil =
       now() +
       Math.min(900_000, 30_000 * 2 ** Math.min(5, budget.failures - 1)) * (0.8 + random() * 0.4);
   };
@@ -183,16 +221,22 @@ export function makeGitHubRequestScheduler(now = Date.now, random = Math.random)
     const timestamp = now();
     const currentWindow = timestamp - budget.windowStart < 180_000;
     const retryAt =
-      budget.blockedUntil > timestamp ? new Date(budget.blockedUntil).toISOString() : null;
+      blockedUntil(budget) > timestamp ? new Date(blockedUntil(budget)).toISOString() : null;
     return {
       retryAt,
+      cooldownReason:
+        budget.networkBlockedUntil > timestamp
+          ? "network"
+          : budget.rateLimitedUntil > timestamp
+            ? "rate-limit"
+            : null,
       activeOrQueuedRequests: budget.queued,
       resources: (["rest", "search", "graphql"] as const).map((resource) => {
         const quota = budget.quota[resource];
         const used = currentWindow ? budget.used[resource] : 0;
         const windowLimit = { rest: 60, search: 30, graphql: 500 }[resource];
         let resume = Math.max(
-          budget.blockedUntil,
+          blockedUntil(budget),
           used >= windowLimit ? budget.windowStart + 180_000 : 0,
         );
         if (
@@ -229,3 +273,20 @@ export function makeGitHubRequestScheduler(now = Date.now, random = Math.random)
 }
 
 export const githubRequestScheduler = makeGitHubRequestScheduler();
+
+/** Discovery loops use this before skipping work, preserving passive deferral. */
+export function githubCooldownActive(host: string) {
+  return Effect.gen(function* () {
+    const wait = yield* Effect.serviceOption(GitHubSyncWait);
+    while (true) {
+      const state = githubRequestScheduler.status(host);
+      const retryAt = state.retryAt;
+      if (!retryAt) return false;
+      if (state.cooldownReason === "network" || !Option.getOrElse(wait, () => false)) return true;
+      yield* enforceGitHubRequestPolicy(
+        Effect.sleep(Math.max(1, Date.parse(retryAt) - Date.now())),
+        false,
+      ).pipe(Effect.catch(() => Effect.interrupt));
+    }
+  });
+}

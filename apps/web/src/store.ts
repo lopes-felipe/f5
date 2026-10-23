@@ -256,6 +256,7 @@ function mapProjectsFromReadModel(
     const persistedCollapsed = persistedCollapsedProjectCwds.has(project.workspaceRoot);
     return {
       id: project.id,
+      kind: project.kind,
       name: project.title,
       defaultModel: project.defaultModel,
       defaultModelSelection: project.defaultModelSelection,
@@ -1147,6 +1148,9 @@ function buildThreadFromReadModel(
     existing.error === error &&
     existing.createdAt === thread.createdAt &&
     existing.archivedAt === thread.archivedAt &&
+    (existing.settledAt ?? null) === (thread.settledAt ?? null) &&
+    (existing.settledBy ?? null) === (thread.settledBy ?? null) &&
+    (existing.autoSettleDisabled ?? false) === (thread.autoSettleDisabled ?? false) &&
     (existing.pinnedAt ?? null) === pinnedAt &&
     (existing.pinOrderKey ?? null) === pinOrderKey &&
     (existing.snoozedUntil ?? null) === snoozedUntil &&
@@ -1165,6 +1169,7 @@ function buildThreadFromReadModel(
     existing.lastVisitedAt === lastVisitedAt &&
     existing.branch === thread.branch &&
     existing.worktreePath === thread.worktreePath &&
+    (existing.scratchPath ?? null) === (thread.scratchPath ?? null) &&
     existingCompaction === compaction &&
     existing.turnDiffSummaries === nextDetailFields.turnDiffSummaries &&
     existing.activities === activities &&
@@ -1200,6 +1205,9 @@ function buildThreadFromReadModel(
     error,
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
+    settledAt: thread.settledAt ?? null,
+    settledBy: thread.settledBy ?? null,
+    autoSettleDisabled: thread.autoSettleDisabled ?? false,
     pinnedAt,
     pinOrderKey,
     snoozedUntil,
@@ -1217,6 +1225,7 @@ function buildThreadFromReadModel(
     lastVisitedAt,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    scratchPath: thread.scratchPath ?? null,
     compaction,
     turnDiffSummaries: nextDetailFields.turnDiffSummaries,
     activities,

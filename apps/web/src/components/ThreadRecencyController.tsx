@@ -43,7 +43,7 @@ import {
 } from "../threadRecency";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { isWsInteractionBlocked, useWsConnectionState } from "../wsConnectionState";
-import { SETTINGS_CATEGORY_LABELS, type SettingsCategory } from "./settings/settingsCategories";
+import { SETTINGS_CATEGORY_LABELS, type SettingsCategory } from "./settings/settingsRouting";
 import { useThreadSummaries } from "../threadSelectors";
 import { pillForStatus } from "../threadStatus";
 import ThreadCyclePicker from "./ThreadCyclePicker";

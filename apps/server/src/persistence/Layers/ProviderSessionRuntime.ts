@@ -112,9 +112,9 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
   });
 
   const listRuntimeRows = SqlSchema.findAll({
-    Request: Schema.Void,
+    Request: Schema.Struct({ excludeStopped: Schema.Boolean }),
     Result: ProviderSessionRuntimeDbRowSchema,
-    execute: () =>
+    execute: ({ excludeStopped }) =>
       sql`
         SELECT
           thread_id AS "threadId",
@@ -130,6 +130,7 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
           resume_cursor_json AS "resumeCursor",
           runtime_payload_json AS "runtimePayload"
         FROM provider_session_runtime
+        ${excludeStopped ? sql`WHERE status <> 'stopped'` : sql``}
         ORDER BY last_seen_at ASC, thread_id ASC
       `,
   });
@@ -201,8 +202,8 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
       ),
     );
 
-  const list: ProviderSessionRuntimeRepositoryShape["list"] = () =>
-    listRuntimeRows(undefined).pipe(
+  const list: ProviderSessionRuntimeRepositoryShape["list"] = (options) =>
+    listRuntimeRows({ excludeStopped: options?.excludeStopped === true }).pipe(
       Effect.mapError(
         toPersistenceSqlOrDecodeError(
           "ProviderSessionRuntimeRepository.list:query",

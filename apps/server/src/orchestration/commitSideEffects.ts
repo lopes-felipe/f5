@@ -1,4 +1,4 @@
-import type { OrchestrationCommand } from "@t3tools/contracts";
+import type { OrchestrationCommand, OrchestrationReadModel } from "@t3tools/contracts";
 import { OrchestrationEvent } from "@t3tools/contracts";
 import { Effect, Option, Schema } from "effect";
 import type * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -7,6 +7,7 @@ import { canonicalRequestHash } from "../nextTurnQueue/canonicalRequestHash.ts";
 import type { NextTurnQueueStoreShape } from "../nextTurnQueue/Services/NextTurnQueueStore.ts";
 import type { WorkspaceTransitionsShape } from "../persistence/Services/WorkspaceTransitions.ts";
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
+import { stopThreadPullRequestWatches } from "./stopThreadPullRequestWatches.ts";
 
 /** Queue pauses the user or environment chose, which a conversation revert must not undo. */
 const QUEUE_PAUSES_KEPT_ACROSS_REVERT: ReadonlySet<string> = new Set([
@@ -30,15 +31,51 @@ export function makeCommitSideEffects({
     {
       commandType,
       steerFallback,
+      readModel,
     }: {
       readonly commandType: OrchestrationCommand["type"];
       readonly steerFallback: boolean;
+      /** The read model with `savedEvent` already applied. */
+      readonly readModel: OrchestrationReadModel;
     },
   ) =>
     Effect.gen(function* () {
       if (savedEvent.type === "thread.archived" || savedEvent.type === "thread.deleted") {
         if (Option.isSome(transitions))
           yield* transitions.value.cancel(savedEvent.payload.threadId).pipe(Effect.orDie);
+      }
+      if (
+        savedEvent.type === "thread.settled" ||
+        savedEvent.type === "thread.archived" ||
+        savedEvent.type === "thread.deleted" ||
+        savedEvent.type === "thread.turn-interrupt-requested" ||
+        savedEvent.type === "thread.session-stop-requested"
+      ) {
+        yield* sql`DELETE FROM thread_settlement_requests WHERE thread_id=${savedEvent.payload.threadId}`;
+        yield* stopThreadPullRequestWatches(
+          sql,
+          savedEvent.payload.threadId,
+          savedEvent.occurredAt,
+        );
+      }
+      if (savedEvent.type === "thread.settled") {
+        const settledThread = readModel.threads.find(
+          (thread) => thread.id === savedEvent.payload.threadId,
+        );
+        const project = readModel.projects.find(
+          (project) => project.id === settledThread?.projectId,
+        );
+        const scripts = project?.scripts.filter((script) => script.runOnWorktreeSettle) ?? [];
+        if (settledThread?.worktreePath && project && scripts.length) {
+          yield* sql`INSERT INTO thread_settlement_hooks(thread_id,job_id,settled_at,worktree_path,project_id,scripts_json,state,updated_at) VALUES(${settledThread.id},${savedEvent.eventId},${savedEvent.payload.settledAt},${settledThread.worktreePath},${project.id},${JSON.stringify(scripts)},'pending',${savedEvent.occurredAt}) ON CONFLICT(thread_id) DO UPDATE SET job_id=excluded.job_id,settled_at=excluded.settled_at,worktree_path=excluded.worktree_path,project_id=excluded.project_id,scripts_json=excluded.scripts_json,state='pending',updated_at=excluded.updated_at`;
+        }
+      }
+      if (
+        savedEvent.type === "thread.unsettled" ||
+        savedEvent.type === "thread.archived" ||
+        savedEvent.type === "thread.deleted"
+      ) {
+        yield* sql`UPDATE thread_settlement_hooks SET state='canceled',updated_at=${savedEvent.occurredAt} WHERE thread_id=${savedEvent.payload.threadId} AND state='pending'`;
       }
       if (savedEvent.type === "thread.archived") {
         // Startup repair can precede queue subscribers. Persist the pause
@@ -89,6 +126,9 @@ export function makeCommitSideEffects({
         if (cancelled.length > 0)
           yield* sql`UPDATE next_turn_queue_state SET revision = revision + 1,
           updated_at = ${savedEvent.occurredAt} WHERE thread_id = ${savedEvent.payload.threadId}`;
+      }
+      if (savedEvent.type === "thread.message-sent" && savedEvent.payload.role === "user") {
+        yield* sql`DELETE FROM thread_settlement_requests WHERE thread_id=${savedEvent.payload.threadId}`;
       }
       if (savedEvent.type === "thread.message-sent") {
         yield* Effect.forEach(
@@ -224,6 +264,20 @@ export function makeCommitSideEffects({
           yield* sql`DELETE FROM attachment_owners WHERE owner_kind = 'rewind_draft' AND owner_id = ${operationId} AND attachment_id IN (SELECT attachment_id FROM attachments WHERE thread_id = ${threadId})`;
           yield* sql`UPDATE rewind_operations SET draft_resolved_at = ${savedEvent.occurredAt} WHERE operation_id = ${operationId} AND thread_id = ${threadId} AND state = 'completed'`;
         }
+      }
+      if (savedEvent.type === "thread.reverted" && savedEvent.payload.removedTurnIds) {
+        const { threadId } = savedEvent.payload;
+        for (const turnId of savedEvent.payload.removedTurnIds)
+          yield* sql`INSERT OR IGNORE INTO native_history_retired_turns(thread_id, turn_id, retired_at)
+            VALUES (${threadId}, ${turnId}, ${savedEvent.occurredAt})`;
+        // Queued prompts were written against the abandoned branch. Keep them
+        // for review and preserve any pause the user/environment already chose.
+        yield* sql`INSERT INTO next_turn_queue_state(thread_id, paused, pause_reason_code, revision, updated_at)
+          VALUES (${threadId}, 1, 'thread_reverted', 1, ${savedEvent.occurredAt})
+          ON CONFLICT(thread_id) DO UPDATE SET paused = 1,
+            pause_reason_code = CASE WHEN paused = 1 THEN pause_reason_code ELSE 'thread_reverted' END,
+            revision = revision + 1, updated_at = ${savedEvent.occurredAt}`;
+        yield* sql`DELETE FROM restart_turn_markers WHERE thread_id = ${threadId}`;
       }
       if (savedEvent.type === "thread.reverted" && savedEvent.payload.operationId) {
         const { operationId, threadId } = savedEvent.payload;

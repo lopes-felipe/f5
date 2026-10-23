@@ -117,6 +117,41 @@ export function describeBackgroundTask(
   };
 }
 
+const BACKGROUND_KIND_ORDER: ReadonlyArray<BackgroundTaskKind> = [
+  "agent",
+  "workflow",
+  "monitor",
+  "shell",
+];
+
+/**
+ * The background-work status chip: "1 shell", "2 agents · 1 shell", counts
+ * by kind with the most counted first. The descriptions are oldest first, so
+ * the first elapsed time is the longest.
+ */
+export function describeBackgroundWorkChip(
+  descriptions: ReadonlyArray<Pick<BackgroundTaskDescription, "kind" | "kindLabel" | "elapsed">>,
+): { readonly counts: string; readonly elapsed: string | null } {
+  const byKind = new Map<BackgroundTaskKind, { label: string; count: number }>();
+  for (const description of descriptions) {
+    const entry = byKind.get(description.kind);
+    if (entry) entry.count += 1;
+    else byKind.set(description.kind, { label: description.kindLabel, count: 1 });
+  }
+  const counts = [...byKind.entries()]
+    .toSorted(
+      ([leftKind, left], [rightKind, right]) =>
+        right.count - left.count ||
+        BACKGROUND_KIND_ORDER.indexOf(leftKind) - BACKGROUND_KIND_ORDER.indexOf(rightKind),
+    )
+    .map(([, { label, count }]) => `${count} ${label.toLowerCase()}${count === 1 ? "" : "s"}`)
+    .join(" · ");
+  return {
+    counts,
+    elapsed: descriptions.find((description) => description.elapsed !== null)?.elapsed ?? null,
+  };
+}
+
 export interface ShellOutputPage {
   readonly output: string;
   readonly totalBytes: number;

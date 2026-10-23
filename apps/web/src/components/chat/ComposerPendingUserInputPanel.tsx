@@ -10,6 +10,7 @@ import { UserInputQuestionStep } from "./UserInputQuestionStep";
 
 interface PendingUserInputPanelProps {
   pendingUserInputs: PendingUserInput[];
+  cwd?: string | undefined;
   respondingRequestIds: ApprovalRequestId[];
   answers: Record<string, PendingUserInputDraftAnswer>;
   questionIndex: number;
@@ -20,6 +21,7 @@ interface PendingUserInputPanelProps {
 
 export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserInputPanel({
   pendingUserInputs,
+  cwd,
   respondingRequestIds,
   answers,
   questionIndex,
@@ -35,6 +37,7 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
     <ComposerPendingUserInputCard
       key={activePrompt.requestId}
       prompt={activePrompt}
+      cwd={cwd}
       isResponding={respondingRequestIds.includes(activePrompt.requestId)}
       answers={answers}
       questionIndex={questionIndex}
@@ -48,6 +51,7 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
 /** Blocking questions: custom answers are typed in the composer below. */
 const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard({
   prompt,
+  cwd,
   isResponding,
   answers,
   questionIndex,
@@ -56,6 +60,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   onAdvance,
 }: {
   prompt: PendingUserInput;
+  cwd: string | undefined;
   isResponding: boolean;
   answers: Record<string, PendingUserInputDraftAnswer>;
   questionIndex: number;
@@ -75,6 +80,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
     <div className="px-4 py-3 sm:px-5">
       <UserInputQuestionStep
         question={activeQuestion}
+        cwd={cwd}
         questionIndex={progress.questionIndex}
         questionCount={prompt.questions.length}
         selectedOptionLabels={progress.selectedOptionLabels}

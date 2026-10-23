@@ -1607,4 +1607,51 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
       yield* Fiber.interrupt(eventFiber);
     }),
   );
+
+  it.effect("settles the active turn when the agent exits during a prompt", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-exit-during-prompt");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_EXIT_DURING_PROMPT: "1" }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const events: ProviderRuntimeEvent[] = [];
+      const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+
+      const sent = yield* adapter
+        .sendTurn({ threadId, input: "exit mid-prompt", attachments: [] })
+        .pipe(Effect.exit);
+      assert.equal(sent._tag, "Failure");
+      const turnId = events.find((event) => event.type === "turn.started")?.turnId;
+      assert.isDefined(turnId);
+      const exited = (event: ProviderRuntimeEvent) =>
+        event.type === "session.exited" && event.threadId === threadId;
+      for (let attempt = 0; attempt < 200 && !events.some(exited); attempt += 1)
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
+
+      const completions = events.filter(
+        (event) => event.type === "turn.completed" && event.turnId === turnId,
+      );
+      assert.equal(completions.length, 1);
+      assert.deepInclude(completions[0]!.payload, { state: "failed" });
+      const exitEvent = events.find(exited);
+      assert.deepInclude(exitEvent?.payload, { exitKind: "error", recoverable: true });
+      // A dead session must not stay registered, or every later send reuses it.
+      assert.isFalse(yield* adapter.hasSession(threadId));
+      yield* Fiber.interrupt(eventFiber);
+    }),
+  );
 });

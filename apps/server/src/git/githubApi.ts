@@ -4,9 +4,13 @@ import {
   makeGitHubConditionalCache,
   type GitHubConditionalRead,
 } from "./githubConditionalCache.ts";
-import { githubRequestScheduler, type GitHubResource } from "./githubRequestScheduler.ts";
+import {
+  githubRequestScheduler,
+  GitHubSyncWait,
+  type GitHubResource,
+} from "./githubRequestScheduler.ts";
 import { createHash, randomUUID } from "node:crypto";
-import { Effect, Semaphore, ServiceMap } from "effect";
+import { Effect, Option, Semaphore, ServiceMap } from "effect";
 import type { SourceControlRateLimit } from "@t3tools/contracts";
 
 import { GitHubCliError } from "./Errors.ts";
@@ -42,6 +46,7 @@ export interface GitHubApiRequest {
   readonly method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
   readonly endpoint: string;
   readonly body?: unknown;
+  readonly accept?: "application/vnd.github.diff";
   readonly query?: Readonly<Record<string, string | number | boolean>>;
   readonly cache?: GitHubConditionalRead;
   readonly ifNoneMatch?: string | undefined;
@@ -127,7 +132,11 @@ class GitHubResponseParseError extends Error {
 }
 
 /** Parse exactly one --include response. Incomplete bodies are never empty successes. */
-export function parseGitHubApiResponse(output: string, now = Date.now()): GitHubApiResponse {
+export function parseGitHubApiResponse(
+  output: string,
+  now = Date.now(),
+  format: "json" | "text" = "json",
+): GitHubApiResponse {
   const statusMatch = /^HTTP\/\S+\s+(\d{3})(?:\s|$)/.exec(output.slice(0, 256));
   const separator = /\r?\n\r?\n/.exec(output);
   if (!separator || separator.index > 64 * 1024)
@@ -147,11 +156,11 @@ export function parseGitHubApiResponse(output: string, now = Date.now()): GitHub
     const value = line.slice(colon + 1).trim();
     headers.set(name, headers.has(name) ? `${headers.get(name)}, ${value}` : value);
   }
-  const rawBody = output.slice(separator.index + separator[0].length).trim();
+  const rawBody = output.slice(separator.index + separator[0].length);
   let body: unknown = null;
   if (status !== 204 && status !== 304) {
     try {
-      body = JSON.parse(rawBody);
+      body = format === "text" && status < 400 ? rawBody : JSON.parse(rawBody);
     } catch {
       // Gateways can return text/HTML errors. Preserve their HTTP status and
       // retry headers so callers and the scheduler can handle the failure.
@@ -214,6 +223,7 @@ export function makeGitHubApi(
   scheduler = githubRequestScheduler,
   resolveToken: (host: string, cwd: string) => Effect.Effect<string, GitHubCliError> = () =>
     Effect.succeed(""),
+  options: { readonly invalidateToken?: (host: string) => void } = {},
 ) {
   const rejectedCredentials = new Map<string, string>();
   const accounts = new Map<string, GitHubCredentialContext>();
@@ -255,6 +265,11 @@ export function makeGitHubApi(
               if (/[\r\n]/.test(value) || value.length > 4096)
                 throw new Error("Invalid conditional request header.");
               args.push("--header", `${name}: ${value}`);
+            }
+            if (input.accept !== undefined) {
+              if (input.accept !== "application/vnd.github.diff")
+                throw new Error("Invalid GitHub response format.");
+              args.push("--header", `Accept: ${input.accept}`);
             }
             if (body !== undefined) args.push("--input", "-");
             const timeoutMs = input.timeoutMs ?? 45_000;
@@ -343,7 +358,8 @@ export function makeGitHubApi(
             );
           }
           return yield* Effect.try({
-            try: () => parseGitHubApiResponse(result.stdout),
+            try: () =>
+              parseGitHubApiResponse(result.stdout, Date.now(), input.accept ? "text" : "json"),
             catch: (cause) =>
               cause instanceof GitHubResponseParseError
                 ? cause
@@ -406,10 +422,24 @@ export function makeGitHubApi(
             }),
           ),
         );
-        return yield* scheduler.run(input.host, resource, recorded, {
+        const run = scheduler.run(input.host, resource, recorded, {
           searchPages,
           graphql: isGraphql,
         });
+        const response = yield* run;
+        const sync = Option.getOrElse(yield* Effect.serviceOption(GitHubSyncWait), () => false);
+        if (
+          sync &&
+          resource !== "write" &&
+          (response.status === 429 ||
+            (response.status === 403 &&
+              (response.rateLimit.remaining === 0 || response.rateLimit.retryAfterSeconds != null)))
+        ) {
+          // Re-admission waits for the recorded reset. Retry a read at most once;
+          // dispatched writes retain their original durable outcome.
+          return yield* run;
+        }
+        return response;
       }).pipe(
         Effect.mapError(
           (error) =>
@@ -427,21 +457,44 @@ export function makeGitHubApi(
   ): Effect.Effect<GitHubApiResponse, GitHubCliError> =>
     Effect.suspend(() => {
       const credential = credentials.get(input.context);
-      return credential
-        ? requestCaptured({
+      if (!credential)
+        return Effect.fail(
+          new GitHubCliError({
+            operation: "request",
+            kind: "unauthenticated",
+            detail: "Unverified GitHub credential context.",
+            requestDispatched: false,
+          }),
+        );
+      return Effect.gen(function* () {
+        const perform = () =>
+          requestCaptured({
             ...input,
             host: input.context.host,
             token: credential.token,
             expectedGeneration: input.context.generation,
-          })
-        : Effect.fail(
-            new GitHubCliError({
-              operation: "request",
-              kind: "unauthenticated",
-              detail: "Unverified GitHub credential context.",
-              requestDispatched: false,
-            }),
-          );
+          });
+        const response = yield* perform();
+        if (response.status !== 401) return response;
+        // A 401 is safe to retry once, but never redirect an operation to another account.
+        options.invalidateToken?.(input.context.host);
+        const replacement = (yield* resolveToken(input.context.host, input.cwd)).trim();
+        if (!replacement || replacement === credential.token) return response;
+        const refreshed = yield* getCredentialContext({ cwd: input.cwd, host: input.context.host });
+        const refreshedCredential = credentials.get(refreshed);
+        if (!refreshedCredential || refreshed.viewerId !== input.context.viewerId)
+          return yield* new GitHubCliError({
+            operation: "request",
+            kind: "forbidden",
+            detail: "The GitHub account changed during credential refresh. Nothing was retried.",
+          });
+        return yield* requestCaptured({
+          ...input,
+          host: refreshed.host,
+          token: refreshedCredential.token,
+          expectedGeneration: refreshed.generation,
+        });
+      });
     });
 
   const request = (input: GitHubApiRequest) => conditionalCache(input, requestUncached);

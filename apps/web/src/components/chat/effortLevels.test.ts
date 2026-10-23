@@ -12,6 +12,7 @@ import {
   isEffortDescriptor,
   isEffortScale,
   sortEffortOptions,
+  stepEffortOptions,
 } from "./effortLevels";
 
 const toOptions = (ids: ReadonlyArray<string>) => ids.map((id) => ({ id, label: id }));
@@ -79,5 +80,62 @@ describe("effortLevels", () => {
       "high",
     );
     expect(getEffortChipClass([contextWindow])).toBeNull();
+  });
+});
+
+describe("effort stepping", () => {
+  const effort: ProviderOptionDescriptor = {
+    id: "reasoningEffort",
+    label: "Effort",
+    type: "select",
+    options: [
+      { id: "max", label: "Max" },
+      { id: "low", label: "Low" },
+      { id: "medium", label: "Medium", isDefault: true },
+      { id: "high", label: "High" },
+    ],
+  };
+  it("steps by effort rank, wraps and preserves unrelated traits", () => {
+    const other: ProviderOptionDescriptor = {
+      id: "fastMode",
+      type: "boolean",
+      label: "Fast",
+      currentValue: true,
+    };
+    for (const [from, direction, to] of [
+      ["low", 1, "medium"],
+      ["medium", -1, "low"],
+      ["high", 1, "max"],
+      ["max", 1, "low"],
+      ["low", -1, "max"],
+    ] as const) {
+      expect(stepEffortOptions([{ ...effort, currentValue: from }, other], direction)).toEqual([
+        { id: "reasoningEffort", value: to },
+        { id: "fastMode", value: true },
+      ]);
+    }
+  });
+  it("starts from the default when a provider reports an unlisted effort", () => {
+    expect(stepEffortOptions([{ ...effort, currentValue: "provider-default" }], 1)).toEqual([
+      { id: "reasoningEffort", value: "high" },
+    ]);
+  });
+  it("does not change context-window selects or unsupported single-value efforts", () => {
+    expect(stepEffortOptions([{ ...effort, id: "contextWindow" }], 1)).toBeNull();
+    expect(
+      stepEffortOptions([{ ...effort, options: [{ id: "high", label: "High" }] }], 1),
+    ).toBeNull();
+  });
+  it("uses reported catalog order for provider-specific levels", () => {
+    const thinking: ProviderOptionDescriptor = {
+      id: "thinking",
+      type: "select",
+      label: "Thinking",
+      options: [
+        { id: "off", label: "Off", isDefault: true },
+        { id: "on", label: "On" },
+      ],
+    };
+    expect(stepEffortOptions([thinking], 1)).toEqual([{ id: "thinking", value: "on" }]);
   });
 });

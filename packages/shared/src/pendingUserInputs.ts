@@ -34,6 +34,10 @@ export function projectPendingUserInputs(
   event: OrchestrationEvent,
 ): ReadonlyArray<PendingUserInput> {
   if (event.type === "thread.reverted") {
+    if (event.payload.removedTurnIds) {
+      const removed = new Set(event.payload.removedTurnIds);
+      return current.filter((input) => input.turnId === null || !removed.has(input.turnId));
+    }
     const retained = new Set(event.payload.retainedTurnIds ?? []);
     return current.filter((input) => input.turnId === null || retained.has(input.turnId));
   }

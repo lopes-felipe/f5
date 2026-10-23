@@ -62,6 +62,18 @@ describe("approval identity and salvage", () => {
     };
     expect(decodeMuseApproval(valid)?.approvalId).toBe("ap1");
     expect(decodeMuseApproval({ ...valid, subject: "nope" })).toBeUndefined();
+    expect(
+      decodeMuseApproval({ ...valid, subagentOrigin: { subagentId: "child" } })?.subagentOrigin,
+    ).toEqual({ subagentId: "child" });
+    for (const subagentOrigin of [
+      null,
+      {},
+      { subagentId: " " },
+      { subagentId: "x".repeat(1025) },
+      { subagentId: "child", childRunId: 42 },
+    ]) {
+      expect(decodeMuseApproval({ ...valid, subagentOrigin })).toBeUndefined();
+    }
   });
 
   it("salvages a deny choice from an otherwise undecodable approval", () => {

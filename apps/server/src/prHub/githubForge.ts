@@ -1,3 +1,4 @@
+import { mergeCreditRemovalEnabled, readGitHubMergeMessage } from "../git/githubMergeMessage.ts";
 import { Effect } from "effect";
 import type { SourceControlPullRequestRef } from "@t3tools/contracts";
 import { GitHubCliError } from "../git/Errors.ts";
@@ -238,20 +239,28 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
         return files;
       }),
     getDiff: (ref) =>
-      scope(ref, () =>
+      scope(ref, (context) =>
         github
-          .execute({
+          .request({
             cwd,
-            args: [
-              "api",
-              `repos/${ref.repository}/pulls/${ref.number}`,
-              "--hostname",
-              ref.host,
-              "-H",
-              "Accept: application/vnd.github.diff",
-            ],
+            context,
+            method: "GET",
+            endpoint: `repos/${ref.repository}/pulls/${ref.number}`,
+            accept: "application/vnd.github.diff",
           })
-          .pipe(Effect.map((r) => r.stdout)),
+          .pipe(
+            Effect.flatMap((response) =>
+              response.status === 200 && typeof response.body === "string"
+                ? Effect.succeed(response.body)
+                : Effect.fail(
+                    new GitHubCliError({
+                      operation: "diff",
+                      kind: response.status === 404 ? "not_found" : "invalid_json",
+                      detail: "GitHub did not return the pull request diff.",
+                    }),
+                  ),
+            ),
+          ),
       ),
     getComments: (ref) =>
       Effect.gen(function* () {
@@ -302,16 +311,25 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
         const ref = input.ref;
         switch (input.action) {
           case "merge":
-            return yield* request(ref, `/pulls/${ref.number}/merge`, "PUT", {
-              merge_method: input.method ?? "merge",
-              sha: input.expectedHeadOid,
-            }).pipe(
-              Effect.flatMap((value) =>
-                record(value).merged === true
-                  ? Effect.succeed(value)
-                  : Effect.fail(failure("merge", "GitHub did not merge this pull request.", true)),
-              ),
+            return yield* scope(ref, () =>
+              github.mergePullRequest({
+                cwd,
+                url: `https://${ref.host}/${ref.repository}/pull/${ref.number}`,
+                method: input.method ?? "merge",
+                expectedHeadOid: input.expectedHeadOid,
+                ...(input.removeAgentCreditsOnMerge === undefined
+                  ? {}
+                  : { removeAgentCreditsOnMerge: input.removeAgentCreditsOnMerge }),
+              }),
             );
+          case "delete-branch":
+            if (!original.deletePullRequestBranch || !input.expectedHeadOid)
+              return yield* failure("delete-branch", "A prepared branch revision is required.");
+            return yield* original.deletePullRequestBranch({
+              cwd,
+              url: `https://${ref.host}/${ref.repository}/pull/${ref.number}`,
+              expectedHeadOid: input.expectedHeadOid,
+            });
           case "close":
           case "reopen":
             return yield* request(ref, `/pulls/${ref.number}`, "PATCH", {
@@ -352,22 +370,44 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
               { id },
             );
           }
-          case "enable-auto-merge":
-          case "disable-auto-merge": {
-            const id = yield* node(ref);
+          case "enable-auto-merge": {
+            const detail = yield* getDetail(ref);
+            const id = text(detail.raw.node_id);
+            const head = input.expectedHeadOid ?? detail.headRefOid;
+            if (!id || !head || detail.headRefOid !== head)
+              return yield* failure(
+                "enable-auto-merge",
+                "The prepared pull request head is missing or changed.",
+              );
+            const message = yield* readGitHubMergeMessage({
+              ref,
+              method: input.method ?? "merge",
+              expectedHeadOid: head,
+              enabled: yield* mergeCreditRemovalEnabled(input.removeAgentCreditsOnMerge).pipe(
+                Effect.mapError(mapGitHubCliError),
+              ),
+              query: (document, variables) => graphql(ref, document, variables),
+              invalid: (detail) => failure("enable-auto-merge", detail),
+            });
+            const body = message.commitBody;
+            // GitHub's expectedHeadOid also fences auto-merge activation (see its input schema).
             return yield* graphql(
               ref,
-              input.action === "enable-auto-merge"
-                ? "mutation($id:ID!,$method:PullRequestMergeMethod!){enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:$method}){pullRequest{id}}}"
-                : "mutation($id:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$id}){pullRequest{id}}}",
+              `mutation($id:ID!,$head:GitObjectID!,$method:PullRequestMergeMethod!${body === undefined ? "" : ",$body:String!"}){enablePullRequestAutoMerge(input:{pullRequestId:$id,expectedHeadOid:$head,mergeMethod:$method${body === undefined ? "" : ",commitBody:$body"}}){pullRequest{id}}}`,
               {
                 id,
-                ...(input.action === "enable-auto-merge"
-                  ? { method: (input.method ?? "merge").toUpperCase() }
-                  : {}),
+                head,
+                method: (input.method ?? "merge").toUpperCase(),
+                ...(body === undefined ? {} : { body }),
               },
             );
           }
+          case "disable-auto-merge":
+            return yield* graphql(
+              ref,
+              "mutation($id:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$id}){pullRequest{id}}}",
+              { id: yield* node(ref) },
+            );
           case "revert":
             return yield* graphql(
               ref,

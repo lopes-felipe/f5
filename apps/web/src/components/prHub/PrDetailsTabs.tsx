@@ -2,7 +2,7 @@ import { resolveShortcutCommand, useServerKeybindings } from "~/keybindings";
 import { writeTextToClipboard } from "~/hooks/useCopyToClipboard";
 import { toastManager } from "~/components/ui/toast";
 import { PrReviewThreadsTab } from "./PrReviewThreadsTab";
-import { useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import type { TrackedPullRequest } from "@t3tools/contracts";
 
 import { cn } from "../../lib/utils";
@@ -11,7 +11,10 @@ import { PrSummaryTab } from "./PrSummaryTab";
 import { PrTimelineTab } from "./PrTimelineTab";
 import { usePrDetailMutations } from "./usePrDetailMutations";
 
-export type PrDetailTab = "summary" | "timeline" | "files" | "review_threads";
+const PrReviewGuideTab = lazy(() =>
+  import("./PrReviewGuideTab").then((module) => ({ default: module.PrReviewGuideTab })),
+);
+export type PrDetailTab = "summary" | "timeline" | "files" | "review_threads" | "guide";
 
 export function PrDetailsTabs({
   pr,
@@ -53,6 +56,7 @@ export function PrDetailsTabs({
     { id: "timeline", label: "Timeline" },
     { id: "review_threads", label: "Review threads" },
     { id: "files", label: `Files (${pr.changedFiles})` },
+    { id: "guide", label: "Guide · Beta" },
   ];
 
   return (
@@ -83,6 +87,10 @@ export function PrDetailsTabs({
         <PrTimelineTab pr={pr} active mutations={mutations} />
       ) : tab === "review_threads" ? (
         <PrReviewThreadsTab key={pr.key} pr={pr} />
+      ) : tab === "guide" ? (
+        <Suspense fallback={<p>Loading review guide…</p>}>
+          <PrReviewGuideTab key={pr.key} pr={pr} />
+        </Suspense>
       ) : (
         <PrFilesTab pr={pr} active />
       )}

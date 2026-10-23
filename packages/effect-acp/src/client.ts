@@ -22,6 +22,7 @@ import {
   decodeExtNotificationRegistration,
   decodeExtRequestRegistration,
   runHandler,
+  isolateNotificationHandler,
 } from "./_internal/shared";
 import { makeChildStdio, makeTerminationError } from "./_internal/stdio";
 
@@ -344,7 +345,7 @@ export const make = Effect.fn("effect-acp/AcpClient.make")(function* (
   ) =>
     Effect.forEach(
       registration.handlers,
-      (handler) => handler(notification).pipe(Effect.catch(() => Effect.void)),
+      (handler) => isolateNotificationHandler(() => handler(notification)),
       { discard: true },
     );
 
@@ -469,7 +470,7 @@ export const make = Effect.fn("effect-acp/AcpClient.make")(function* (
     }),
   );
 
-  yield* RpcServer.make(AcpRpcs.ClientRpcs).pipe(
+  yield* RpcServer.make(AcpRpcs.ClientRpcs, { disableFatalDefects: true }).pipe(
     Effect.provideService(RpcServer.Protocol, transport.serverProtocol),
     Effect.provide(clientHandlerLayer),
     Effect.forkScoped,

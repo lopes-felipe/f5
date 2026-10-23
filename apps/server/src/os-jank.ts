@@ -2,23 +2,33 @@ import * as OS from "node:os";
 import * as PathNode from "node:path";
 import { Effect, Path } from "effect";
 import { F5_HOME_DIR_NAME, USERDATA_STATE_DIR_NAME } from "@t3tools/shared/appStatePaths";
-import { readPathFromLoginShell } from "@t3tools/shared/shell";
+import { readEnvironmentFromLoginShell } from "@t3tools/shared/shell";
 import { ensureWindowsPathHydrated } from "@t3tools/shared/windowsPath";
 
-export async function fixPath(): Promise<void> {
-  if (process.platform === "win32") {
-    await ensureWindowsPathHydrated(process.env, {
+export async function fixPath(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Promise<void> {
+  // The desktop already ran these probes into the env this child inherits.
+  // Repeating them costs a login shell, or seconds of PowerShell on Windows.
+  if (env.F5_SHELL_ENVIRONMENT_PREPARED === "1") return;
+  if (platform === "win32") {
+    await ensureWindowsPathHydrated(env, {
       warn: (message) => console.warn(`[environment] ${message}`),
     });
     return;
   }
-  if (process.platform !== "darwin") return;
+  if (platform !== "darwin") return;
 
   try {
-    const shell = process.env.SHELL ?? "/bin/zsh";
-    const result = readPathFromLoginShell(shell);
-    if (result) {
-      process.env.PATH = result;
+    const shell = env.SHELL ?? "/bin/zsh";
+    const result = readEnvironmentFromLoginShell(shell, ["PATH", "__MISE_DIFF"]);
+    if (result.PATH) {
+      env.PATH = result.PATH;
+      // mise's record of the PATH entries it added. It must travel with the
+      // shell's PATH, or `mise x` can rebuild PATH behind a same-named wrapper
+      // (`exec mise x claude -- claude`) that then re-runs itself forever.
+      if (result.__MISE_DIFF) env.__MISE_DIFF = result.__MISE_DIFF;
     }
   } catch {
     // Silently ignore — keep default PATH

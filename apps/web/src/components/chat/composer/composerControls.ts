@@ -3,6 +3,7 @@ import type * as React from "react";
 import type {
   ApprovalRequestId,
   ProviderInstanceId,
+  ProviderKind,
   ResolvedKeybindingsConfig,
   ServerProvider,
 } from "@t3tools/contracts";
@@ -33,14 +34,7 @@ export type ComposerRuntimeMode =
   | "approval-required"
   | "auto-accept-edits"
   | "full-access";
-export type ComposerProvider =
-  | "codex"
-  | "claudeAgent"
-  | "cursor"
-  | "opencode"
-  | "grok"
-  | "antigravity"
-  | "muse";
+export type ComposerProvider = ProviderKind;
 
 /** Approvals and structured questions the agent is waiting on. */
 export interface ComposerPendingInteraction {

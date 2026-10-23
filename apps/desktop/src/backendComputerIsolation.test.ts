@@ -16,6 +16,11 @@ describe("backend GUI permission isolation", () => {
       args: ["backend"],
     });
   });
+  it("keeps preload arguments inside the isolated backend process", () => {
+    expect(
+      isolatedBackendCommand("darwin", "/F5", "/backend", ["--require", "/cache.js"]).args,
+    ).toEqual(["-p", MAC_BACKEND_COMPUTER_SANDBOX, "/F5", "--require", "/cache.js", "/backend"]);
+  });
   it.skipIf(process.platform !== "darwin")(
     "uses a valid kernel profile and blocks Apple Events without prompting",
     () => {

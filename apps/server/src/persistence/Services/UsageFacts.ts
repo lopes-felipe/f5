@@ -6,6 +6,8 @@ import type { ProjectionRepositoryError } from "../Errors.ts";
 
 export interface UsageSummaryRangeInput {
   readonly provider?: ProviderKind;
+  /** Providers left out of every total. */
+  readonly hiddenProviders?: ReadonlyArray<ProviderKind>;
   readonly startedAt: IsoDateTime;
   readonly endedAt: IsoDateTime;
 }
@@ -21,6 +23,7 @@ export interface UsageBucketRange {
 export interface UsageBucketSummaryInput {
   readonly buckets: ReadonlyArray<UsageBucketRange>;
   readonly provider?: ProviderKind;
+  readonly hiddenProviders?: ReadonlyArray<ProviderKind>;
   readonly projectId?: ProjectId;
 }
 

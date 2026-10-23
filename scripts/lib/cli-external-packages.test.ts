@@ -6,8 +6,14 @@ it("stages native runtime roots while bundling ordinary server dependencies", ()
       "node-pty": "1",
       "@ff-labs/fff-node": "2",
       "@anthropic-ai/claude-agent-sdk": "3",
+      undici: "8.11.2",
       effect: "4",
       ws: "5",
     }),
-  ).toEqual({ "node-pty": "1", "@ff-labs/fff-node": "2", "@anthropic-ai/claude-agent-sdk": "3" });
+  ).toEqual({
+    "node-pty": "1",
+    "@ff-labs/fff-node": "2",
+    "@anthropic-ai/claude-agent-sdk": "3",
+    undici: "8.11.2",
+  });
 });

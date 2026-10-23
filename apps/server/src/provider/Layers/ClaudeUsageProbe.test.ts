@@ -44,7 +44,7 @@ describe("Claude account probe", () => {
               messages.push(message.type as string);
               if (respondToInitializeRequest(message, process)) return;
               if (message.type === "control_request") {
-                expect((message.request as { subtype: string }).subtype).toBe("get_usage");
+                expect(message.request).toEqual({ subtype: "get_usage", skip_behaviors: true });
                 process.emitJson({
                   type: "control_response",
                   response: {

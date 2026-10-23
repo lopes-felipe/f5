@@ -6,7 +6,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
  * Bumped when an eligibility rule changes meaning, so an audit trail can tell
  * which policy removed (or pulled) a target.
  */
-export const STORAGE_AUTOMATION_POLICY_VERSION = 1;
+export const STORAGE_AUTOMATION_POLICY_VERSION = 2;
 
 const AUDIT_RETENTION_MS = 90 * 24 * 60 * 60 * 1_000;
 const AUDIT_MAX_ROWS = 5_000;

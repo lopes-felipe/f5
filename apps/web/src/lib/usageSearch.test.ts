@@ -7,7 +7,7 @@ import {
 } from "./usageSearch";
 
 describe("validateUsageSearch", () => {
-  it("keeps valid params and drops invalid or default values", () => {
+  it("keeps valid params and drops invalid or default values and the retired provider param", () => {
     expect(
       validateUsageSearch({
         tab: "limits",
@@ -19,7 +19,6 @@ describe("validateUsageSearch", () => {
     ).toEqual({
       tab: "limits",
       range: "30d",
-      provider: "codex",
       projectId: "project-1",
       metric: "cost",
     });
@@ -37,10 +36,10 @@ describe("validateUsageSearch", () => {
   it("materializes tab and range that fell back to saved defaults", () => {
     const defaults = { tab: "activity", range: "7d" } as const;
     expect(materializeUsageSearch({}, defaults)).toEqual({ tab: "activity", range: "7d" });
-    expect(materializeUsageSearch({ range: "30d", provider: "codex" }, defaults)).toEqual({
+    expect(materializeUsageSearch({ range: "30d", metric: "cost" }, defaults)).toEqual({
       tab: "activity",
       range: "30d",
-      provider: "codex",
+      metric: "cost",
     });
     expect(materializeUsageSearch({ tab: "limits", range: "24h" }, defaults)).toBeNull();
   });

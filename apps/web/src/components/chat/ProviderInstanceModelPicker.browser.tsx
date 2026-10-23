@@ -56,6 +56,36 @@ afterEach(async () => {
 });
 
 describe("ProviderInstanceModelPicker", () => {
+  it("keeps Pi provider/model identities distinct inside an explicit Pi instance", async () => {
+    const piId = defaultInstanceIdForDriver(ProviderDriverKind.make("pi"));
+    const onChange = vi.fn();
+    active = await render(
+      <TooltipProvider delay={0}>
+        <ProviderInstanceModelPicker
+          instanceId={piId}
+          model="first/shared"
+          lockedInstanceId={null}
+          providers={[createTestServerProvider("pi")]}
+          modelOptionsByInstance={
+            new Map([
+              [
+                piId,
+                [
+                  { slug: "first/shared", name: "First shared", subProvider: "first" },
+                  { slug: "second/shared", name: "Second shared", subProvider: "second" },
+                ],
+              ],
+            ])
+          }
+          onInstanceModelChange={onChange}
+        />
+      </TooltipProvider>,
+    );
+    await page.getByRole("button", { name: /First shared/ }).click();
+    await page.getByPlaceholder("Search models...").fill("Second shared");
+    await page.getByText("Second shared", { exact: true }).click();
+    expect(onChange).toHaveBeenCalledWith(piId, "pi", "second/shared");
+  });
   it("selects Fable 5.1 on the Claude instance from search", async () => {
     const onChange = vi.fn();
     active = await render(

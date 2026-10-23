@@ -1,3 +1,6 @@
+import { useAppSettings } from "../../appSettings";
+import { isBotReviewComment, visibleReviewThreads } from "./prCommentFilters";
+import { Menu, MenuCheckboxItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { PrSendToAgent } from "./PrSendToAgent";
 import { ForgeComposer } from "./ForgeControls";
 import { ForgeOperationPanel } from "./ForgeOperationPanel";
@@ -11,6 +14,11 @@ import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
 import { Button } from "../ui/button";
 
 export function PrReviewThreadsTab({ pr }: { pr: TrackedPullRequest }) {
+  const { settings, updateSettings } = useAppSettings();
+  const filters = {
+    bots: settings.prHubShowBotComments,
+    resolved: settings.prHubShowResolvedComments,
+  };
   const accountGeneration = getPrHubAccountGeneration();
   const query = useInfiniteQuery({
     queryKey: ["prHub", "reviewThreads", accountGeneration, pr.key],
@@ -26,6 +34,25 @@ export function PrReviewThreadsTab({ pr }: { pr: TrackedPullRequest }) {
   });
   return (
     <div role="tabpanel" aria-label="Review threads" className="space-y-3">
+      <Menu>
+        <MenuTrigger render={<Button size="xs" variant="outline" />}>Filter comments</MenuTrigger>
+        <MenuPopup>
+          <MenuCheckboxItem
+            checked={filters.bots}
+            onCheckedChange={(prHubShowBotComments) => updateSettings({ prHubShowBotComments })}
+          >
+            Bot comments
+          </MenuCheckboxItem>
+          <MenuCheckboxItem
+            checked={filters.resolved}
+            onCheckedChange={(prHubShowResolvedComments) =>
+              updateSettings({ prHubShowResolvedComments })
+            }
+          >
+            Resolved threads
+          </MenuCheckboxItem>
+        </MenuPopup>
+      </Menu>
       {query.isPending ? <p>Loading review threads…</p> : null}
       {query.isError ? (
         <p role="alert">
@@ -36,12 +63,13 @@ export function PrReviewThreadsTab({ pr }: { pr: TrackedPullRequest }) {
         </p>
       ) : null}
       {query.data?.pages.flatMap((page) =>
-        page.threads.map((thread) => (
+        visibleReviewThreads(page.threads, filters).map((thread) => (
           <Thread
             key={`${accountGeneration}:${pr.key}:${thread.id}`}
             pr={pr}
             thread={thread}
             comparisonVersion={page.comparisonVersion}
+            showBots={filters.bots}
           />
         )),
       )}
@@ -53,8 +81,16 @@ export function PrReviewThreadsTab({ pr }: { pr: TrackedPullRequest }) {
       >
         Refresh threads
       </Button>
-      {query.data?.pages[0]?.threads.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No review threads.</p>
+      {query.data &&
+      visibleReviewThreads(
+        query.data.pages.flatMap((page) => page.threads),
+        filters,
+      ).length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          {query.data.pages.some((page) => page.threads.length)
+            ? "No loaded threads match these filters."
+            : "No review threads."}
+        </p>
       ) : null}
       {query.hasNextPage ? (
         <Button
@@ -74,10 +110,12 @@ function Thread({
   pr,
   thread,
   comparisonVersion,
+  showBots,
 }: {
   pr: TrackedPullRequest;
   thread: PrHubReviewThread;
   comparisonVersion: string;
+  showBots: boolean;
 }) {
   const accountGeneration = getPrHubAccountGeneration();
   const queryClient = useQueryClient();
@@ -130,20 +168,27 @@ function Thread({
         · {thread.isResolved ? "Resolved" : "Unresolved"}
         {thread.isOutdated ? " · Outdated" : ""}
       </p>
-      {comments.map((comment) => (
-        <div key={comment.id} className="border-l-2 border-border pl-3">
-          <span className="text-xs text-muted-foreground">
-            @<PrAuthorLink prUrl={pr.url} login={comment.author} />
-          </span>
-          <p className="whitespace-pre-wrap text-sm">{comment.bodyText}</p>
-          <PrSendToAgent
-            pr={pr}
-            body={comment.bodyText}
-            path={thread.path}
-            line={thread.line ?? thread.originalLine}
-          />
-        </div>
-      ))}
+      {comments
+        .filter((comment) => showBots || !isBotReviewComment(comment))
+        .map((comment) => (
+          <div key={comment.id} className="border-l-2 border-border pl-3">
+            <span className="text-xs text-muted-foreground">
+              @<PrAuthorLink prUrl={pr.url} login={comment.author} />
+            </span>
+            <p className="whitespace-pre-wrap text-sm">{comment.bodyText}</p>
+            <PrSendToAgent
+              pr={pr}
+              body={comment.bodyText}
+              path={thread.path}
+              line={thread.line ?? thread.originalLine}
+            />
+          </div>
+        ))}
+      {!showBots && comments.length > 0 && comments.every(isBotReviewComment) ? (
+        <p className="text-sm text-muted-foreground">
+          The loaded bot comments are hidden. Load more comments or change the filter to see them.
+        </p>
+      ) : null}
       {error || query.error ? (
         <p role="alert" className="text-sm">
           {error ?? query.error?.message}
@@ -166,17 +211,27 @@ function Thread({
       ) : null}
       {!pr.repositoryArchived &&
       pr.provider === "github" &&
+      thread.canResolve !== false &&
       (thread.isResolved ? thread.viewerCanUnresolve : thread.viewerCanResolve) ? (
         <Button size="xs" variant="outline" disabled={busy} onClick={() => void setResolved()}>
           {thread.isResolved ? "Reopen conversation" : "Resolve conversation"}
         </Button>
       ) : null}
-      {!pr.repositoryArchived && (pr.forgeCapabilities?.review.reply ?? thread.viewerCanReply) ? (
+      {!pr.repositoryArchived &&
+      (pr.forgeCapabilities
+        ? pr.forgeCapabilities.review.reply && thread.viewerCanReply !== false
+        : thread.viewerCanReply) ? (
         <Button size="xs" variant="outline" onClick={() => setReplyOpen(!replyOpen)}>
           Reply
         </Button>
       ) : null}
-      {pr.provider !== "github" && pr.forgeCapabilities?.review.resolve ? (
+      {!pr.repositoryArchived &&
+      pr.provider !== "github" &&
+      pr.forgeCapabilities?.review.resolve &&
+      thread.canResolve !== false &&
+      (thread.isResolved
+        ? thread.viewerCanUnresolve !== false
+        : thread.viewerCanResolve !== false) ? (
         <ForgeOperationPanel
           pr={pr}
           payload={{ kind: "thread-state", threadId: thread.id, resolved: !thread.isResolved }}

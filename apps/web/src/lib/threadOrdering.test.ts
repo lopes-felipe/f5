@@ -235,6 +235,24 @@ describe("threadOrdering", () => {
     ).toEqual(["project-3", "project-2", "project-1"]);
   });
 
+  it("does not reopen settled work when a project is selected or added again", () => {
+    const projectId = ProjectId.makeUnsafe("project-1");
+    const settled = makeThread({
+      projectId,
+      settledAt: "2026-10-19T12:00:00.000Z",
+      lastInteractionAt: "2026-10-19T12:00:00.000Z",
+    });
+    const active = makeThread({
+      id: ThreadId.makeUnsafe("older-active"),
+      projectId,
+      lastInteractionAt: "2026-10-18T12:00:00.000Z",
+    });
+    expect(getMostRecentThreadForProject(projectId, [settled], [], [], [])).toBeNull();
+    expect(getMostRecentThreadForProject(projectId, [settled, active], [], [], [])?.id).toBe(
+      active.id,
+    );
+  });
+
   it("ignores archived threads for most recent thread selection", () => {
     const projectId = ProjectId.makeUnsafe("project-1");
     const activeThread = makeThread({

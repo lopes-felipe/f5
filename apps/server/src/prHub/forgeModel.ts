@@ -124,14 +124,37 @@ export function forgeTracked(
     attentionFingerprint: JSON.stringify([state, detail.headRefOid]),
   };
 }
+const validTerminalDate = (value: unknown): string | null =>
+  typeof value === "string" && Number.isFinite(Date.parse(value))
+    ? new Date(value).toISOString()
+    : null;
+/** Only actual terminal timestamps can prove completion; updated-at is not such proof. */
+export function forgeTerminalDates(
+  raw: Readonly<Record<string, unknown>>,
+  state: "open" | "merged" | "closed",
+) {
+  return {
+    mergedAt:
+      state === "merged"
+        ? validTerminalDate(raw.merged_at ?? raw.closedDate ?? raw.closed_on)
+        : null,
+    closedAt:
+      state === "closed"
+        ? validTerminalDate(raw.closed_at ?? raw.closedDate ?? raw.closed_on)
+        : null,
+  };
+}
 export function forgeDetail(pr: TrackedPullRequest, detail: ForgeDetail): PrHubDetailResult {
   return {
     detail: {
       key: pr.key,
-      providerDetails: pr.providerDetails as Exclude<
-        NonNullable<TrackedPullRequest["providerDetails"]>,
-        { provider: "github" }
-      >,
+      providerDetails: {
+        ...(pr.providerDetails as Exclude<
+          NonNullable<TrackedPullRequest["providerDetails"]>,
+          { provider: "github" }
+        >),
+        headRefOid: detail.headRefOid ?? null,
+      },
       title: pr.title,
       body: detail.body,
       url: pr.url,
@@ -145,8 +168,7 @@ export function forgeDetail(pr: TrackedPullRequest, detail: ForgeDetail): PrHubD
       baseRefName: pr.baseRefName,
       createdAt: pr.createdAt,
       updatedAt: pr.updatedAt,
-      mergedAt: null,
-      closedAt: null,
+      ...forgeTerminalDates(detail.raw, pr.state),
       author: pr.author ? { login: pr.author, name: null, avatarUrl: null } : null,
       labels: pr.labels.map((name) => ({ name, color: null, description: null })),
       reviewers: [],
@@ -157,6 +179,16 @@ export function forgeDetail(pr: TrackedPullRequest, detail: ForgeDetail): PrHubD
     refreshedAt: new Date().toISOString(),
   };
 }
+
+/** Keep native discussion and flat comment shapes consistent across reads and writes. */
+export const forgeComments = (values: readonly Readonly<Record<string, unknown>>[]) =>
+  values.flatMap((value) =>
+    Array.isArray(value.notes)
+      ? value.notes.map(record)
+      : Array.isArray(value.comments)
+        ? value.comments.map(record)
+        : [value],
+  );
 
 /** Native discussion shapes retain only actual inline locations and resolution facts. */
 export function forgeReviewThreads(
@@ -206,13 +238,25 @@ export function forgeReviewThreads(
         path,
         line,
         originalLine: line,
-        viewerCanReply: provider.forgeCapabilities.review.reply,
-        viewerCanResolve: provider.forgeCapabilities.review.resolve,
-        viewerCanUnresolve: provider.forgeCapabilities.review.resolve,
+        viewerCanReply: provider.forgeCapabilities.review.reply && value.viewerCanReply !== false,
+        ...(typeof value.canResolve === "boolean" ? { canResolve: value.canResolve } : {}),
+        viewerCanResolve:
+          provider.forgeCapabilities.review.resolve &&
+          value.canResolve !== false &&
+          value.viewerCanResolve !== false,
+        viewerCanUnresolve:
+          provider.forgeCapabilities.review.resolve &&
+          value.canResolve !== false &&
+          value.viewerCanUnresolve !== false,
         comments: inline.map((comment) => ({
           id: String(comment.id),
+          ...(typeof comment.canEdit === "boolean" ? { canEdit: comment.canEdit } : {}),
           url: text(comment.html_url ?? comment.web_url) ?? "",
           author: login(comment.author ?? comment.user),
+          ...(record(comment.author ?? comment.user).bot === true ||
+          record(comment.author ?? comment.user).type === "Bot"
+            ? { authorIsBot: true }
+            : {}),
           bodyText:
             text(comment.body) ?? text(record(comment.content).raw) ?? text(comment.content) ?? "",
           body:

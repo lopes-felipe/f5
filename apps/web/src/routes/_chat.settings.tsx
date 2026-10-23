@@ -1,3 +1,4 @@
+import { getSettingsItemDescriptor } from "../components/settings/settingsCategories";
 import { SettingsScopePicker } from "../components/settings/ProjectSettingsScope";
 import { createFileRoute, redirect } from "@tanstack/react-router";
 
@@ -7,11 +8,10 @@ import { SettingsLayout } from "../components/settings/SettingsLayout";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { SettingsRouteContext } from "../components/settings/SettingsRouteContext";
 import {
-  getSettingsItemDescriptor,
   isProjectSettingsCategory,
   resolveSettingsSearch,
   type SettingsSearch,
-} from "../components/settings/settingsCategories";
+} from "../components/settings/settingsRouting";
 import { useSettingsRouteState } from "../components/settings/useSettingsRouteState";
 
 function SettingsRouteView() {

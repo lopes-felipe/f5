@@ -19,8 +19,10 @@ import {
 } from "react";
 
 import { Schema } from "effect";
+import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { getLocalStorageItem } from "../hooks/useLocalStorage";
-import { useAppSettings } from "../appSettings";
+import { type AppSettings, updateAppSettings, useAppSettingsSelector } from "../appSettings";
 import ChatView from "../components/ChatView";
 import { DiffSurfaceBoundary } from "../components/DiffSurfaceBoundary";
 import PlanSidebar from "../components/PlanSidebar";
@@ -37,6 +39,7 @@ import {
 import { Button } from "../components/ui/button";
 import { toastManager } from "../components/ui/toast";
 import { workspaceIdentityForRoot } from "../components/fileTreeDragMention";
+import { useThreadLinkPrompt } from "../components/promptLinks/useThreadLinkPrompt";
 import { useComposerDraftStore } from "../composerDraftStore";
 import {
   clearFileViewSearchParams,
@@ -72,6 +75,14 @@ import { useThread } from "../threadSelectors";
 import { Sidebar, SidebarInset, SidebarProvider, SidebarRail } from "~/components/ui/sidebar";
 import { AppTitlebar } from "~/components/AppTitlebar";
 
+function selectThreadRouteSettings(settings: AppSettings) {
+  return {
+    timestampFormat: settings.timestampFormat,
+    workspaceFileTreeEntryLimit: settings.workspaceFileTreeEntryLimit,
+  };
+}
+
+const PrLinkedPanel = lazy(() => import("../components/prHub/PrLinkedPanel"));
 const DiffPanel = lazy(() => import("../components/DiffPanel"));
 const AgentsPanel = lazy(() =>
   import("../components/AgentsPanel").then((module) => ({ default: module.AgentsPanel })),
@@ -185,18 +196,18 @@ const RightPanelInlineSidebar = (props: {
   children: ReactNode;
 }) => {
   const { open, onClose, onOpenDefaultSurface, threadId } = props;
-  const { settings, updateSettings } = useAppSettings();
+  const rightPanelWidths = useAppSettingsSelector((settings) => settings.rightPanelWidths);
   const width =
-    settings.rightPanelWidths[threadId] ??
+    rightPanelWidths[threadId] ??
     getLocalStorageItem(RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY, Schema.Finite);
   const saveWidth = useCallback(
     (nextWidth: number) => {
-      const entries = Object.entries(settings.rightPanelWidths).filter(([id]) => id !== threadId);
-      updateSettings({
+      const entries = Object.entries(rightPanelWidths).filter(([id]) => id !== threadId);
+      updateAppSettings({
         rightPanelWidths: Object.fromEntries([...entries.slice(-49), [threadId, nextWidth]]),
       });
     },
-    [settings.rightPanelWidths, threadId, updateSettings],
+    [rightPanelWidths, threadId],
   );
   const onOpenChange = useCallback(
     (open: boolean) => {
@@ -334,20 +345,20 @@ function ChatThreadRouteView() {
     select: (params) => ThreadId.makeUnsafe(params.threadId),
   });
   const search = Route.useSearch();
-  const { settings } = useAppSettings();
+  const settings = useAppSettingsSelector(selectThreadRouteSettings);
   const thread = useThread(threadId);
   const threadExists = thread !== undefined;
   const draftThread = useComposerDraftStore(
     (store) => store.draftThreadsByThreadId[threadId] ?? null,
   );
   const effectiveProjectId = thread?.projectId ?? draftThread?.projectId ?? null;
-  const effectiveWorktreePath = thread?.worktreePath ?? draftThread?.worktreePath ?? null;
   const activeProject = useStore((store) =>
     effectiveProjectId
       ? (store.projects.find((project) => project.id === effectiveProjectId) ?? null)
       : null,
   );
   const routeThreadExists = threadExists || draftThread !== null;
+  useThreadLinkPrompt(threadId, startupReady && routeThreadExists);
   useContextDocumentTitle({
     projectName: activeProject?.name ?? null,
     itemTitle: thread?.title ?? (draftThread ? "New thread" : null),
@@ -401,9 +412,13 @@ function ChatThreadRouteView() {
       threadTasks,
     ],
   );
-  const markdownCwd = effectiveWorktreePath ?? activeProject?.cwd ?? undefined;
-  const workspaceRoot = activeProject?.cwd ?? undefined;
-  const workspaceBrowserRoot = effectiveWorktreePath ?? activeProject?.cwd ?? null;
+  const markdownCwd = threadWorkspaceCwd(thread ?? draftThread, activeProject);
+  // A thread without a project treats its own folder as the root; the shared scratch root is
+  // never shown.
+  const workspaceRoot = isScratchProject(activeProject)
+    ? markdownCwd
+    : (activeProject?.cwd ?? undefined);
+  const workspaceBrowserRoot = markdownCwd ?? null;
   const workspaceBrowserName = activeProject?.name ?? "Workspace";
   const workspaceBrowserIdentity =
     effectiveProjectId && workspaceBrowserRoot
@@ -655,6 +670,24 @@ function ChatThreadRouteView() {
     (mode: RightPanelRenderMode, loadingOnly = false) =>
       (surface: RightPanelSurface): ReactNode => {
         switch (surface.kind) {
+          case "pull-request":
+            return loadingOnly ? (
+              <DiffPanelLoadingState label="Loading pull request..." />
+            ) : (
+              <Suspense fallback={<DiffPanelLoadingState label="Loading pull request..." />}>
+                <PrLinkedPanel
+                  url={surface.url}
+                  threadId={threadId}
+                  initialAction={surface.initialAction}
+                  onInitialActionHandled={() => {
+                    if (surface.initialAction)
+                      useRightPanelStore
+                        .getState()
+                        .consumePullRequestAction(threadId, surface.id, surface.initialAction.id);
+                  }}
+                />
+              </Suspense>
+            );
           case "diff":
             return loadingOnly ? (
               <DiffLoadingFallback mode={mode} />

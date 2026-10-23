@@ -2730,6 +2730,9 @@ const makeStorageMaintenance = Effect.gen(function* () {
       SELECT 'Provider delivery needs recovery.' AS reason WHERE EXISTS (
         SELECT 1 FROM provider_turn_deliveries WHERE thread_id = ${thread.threadId}
         AND (state IN ('sending', 'ambiguous') OR reservation_released_at IS NULL))
+      UNION ALL SELECT 'Settlement script process completion needs recovery.' WHERE EXISTS (
+        SELECT 1 FROM thread_settlement_hooks WHERE thread_id = ${thread.threadId}
+        AND state IN ('pending', 'running', 'orphaned'))
       UNION ALL SELECT 'Native operation needs recovery.' WHERE EXISTS (
         SELECT 1 FROM native_operations WHERE thread_id = ${thread.threadId}
         AND state IN ('requested', 'dispatched', 'running', 'indeterminate'))

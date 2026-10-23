@@ -341,6 +341,29 @@ export function terminalDeleteShortcutData(
     : null;
 }
 
+/**
+ * Local scrollback keys: Cmd+A on macOS or Ctrl+Shift+A elsewhere selects all
+ * retained output; Ctrl+Shift+Home/End (Cmd on macOS) jumps to its start or the
+ * latest output. Ctrl+A stays with the shell. xterm already pages with
+ * Shift+PageUp/Down.
+ */
+export function terminalScrollbackShortcut(
+  event: ShortcutEventLike,
+  platform = navigator.platform,
+): "select-all" | "top" | "bottom" | null {
+  if (event.type !== undefined && event.type !== "keydown") return null;
+  if (event.altKey) return null;
+  const mac = isMacPlatform(platform);
+  const primary = mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+  if (!primary) return null;
+  const key = normalizeEventKey(event.key);
+  if (key === "a" && event.shiftKey !== mac) return "select-all";
+  if (!event.shiftKey) return null;
+  if (key === "home") return "top";
+  if (key === "end") return "bottom";
+  return null;
+}
+
 export function terminalNavigationShortcutData(
   event: ShortcutEventLike,
   platform = navigator.platform,

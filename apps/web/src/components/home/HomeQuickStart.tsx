@@ -1,18 +1,22 @@
 import type { ProjectId } from "@t3tools/contracts";
 import { ArrowUpIcon, FolderPlusIcon, WorkflowIcon } from "lucide-react";
-import { useState, type FormEvent, type KeyboardEvent } from "react";
+import { lazy, Suspense, useState, type FormEvent, type KeyboardEvent } from "react";
 
 import { useCommandPaletteStore } from "../../commandPaletteStore";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { requestComposerFocus } from "../../composerFocusRequestStore";
 import { useCreateProjectBackedDraftThread } from "../../hooks/useCreateProjectBackedDraftThread";
+import { useStartScratchThread } from "../../hooks/useStartScratchThread";
 import { isKeyboardEventComposing } from "../../lib/keyboardComposition";
 import type { Project } from "../../types";
 import { useWorkflowCreateDialogStore } from "../../workflowCreateDialogStore";
-import { ProjectIcon } from "../ProjectIcon";
 import { Button } from "../ui/button";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { toastManager } from "../ui/toast";
+import { HomeProjectPickerPlaceholder } from "./HomeProjectPickerPlaceholder";
+
+// Home renders at startup; the combobox it needs would otherwise push the initial bundle
+// past its budget.
+const HomeProjectPicker = lazy(() => import("./HomeProjectPicker"));
 
 export const QUICK_START_PLACEHOLDER = "What should we work on?";
 
@@ -34,6 +38,7 @@ export function HomeQuickStart(props: {
   readonly defaultProjectId: ProjectId | null;
 }) {
   const createProjectBackedDraftThread = useCreateProjectBackedDraftThread();
+  const startScratchThread = useStartScratchThread();
   const [selectedProjectId, setSelectedProjectId] = useState<ProjectId | null>(null);
   const [text, setText] = useState("");
   const [starting, setStarting] = useState(false);
@@ -42,10 +47,6 @@ export function HomeQuickStart(props: {
       ? selectedProjectId
       : (props.defaultProjectId ?? props.projects[0]?.id ?? null);
   const selectedProject = props.projects.find((project) => project.id === projectId);
-  const projectItems = props.projects.map((project) => ({
-    value: project.id,
-    label: project.name,
-  }));
 
   const start = async () => {
     if (!projectId || starting) return;
@@ -97,10 +98,19 @@ export function HomeQuickStart(props: {
           <p className="text-sm text-muted-foreground">
             Add a project to start a thread or a workflow.
           </p>
-          <Button onClick={() => useCommandPaletteStore.getState().openAddProject()}>
-            <FolderPlusIcon />
-            Add a project
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button onClick={() => useCommandPaletteStore.getState().openAddProject()}>
+              <FolderPlusIcon />
+              Add a project
+            </Button>
+            <Button
+              variant="link"
+              data-testid="home-start-without-project"
+              onClick={() => void startScratchThread()}
+            >
+              or start without a project
+            </Button>
+          </div>
         </div>
       </div>
     );
@@ -127,43 +137,13 @@ export function HomeQuickStart(props: {
           className="block min-h-24 w-full resize-none bg-transparent px-4 pt-4 pb-2 text-sm text-foreground outline-none placeholder:text-muted-foreground"
         />
         <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
-          <Select
-            value={projectId}
-            onValueChange={(value) => setSelectedProjectId(value as ProjectId)}
-            items={projectItems}
-          >
-            <SelectTrigger
-              aria-label="Project"
-              variant="ghost"
-              size="sm"
-              className="h-7 max-w-56 gap-1.5 text-ui text-muted-foreground hover:text-foreground"
-            >
-              {selectedProject ? (
-                <ProjectIcon
-                  projectId={selectedProject.id}
-                  name={selectedProject.name}
-                  icon={selectedProject.icon}
-                  className="size-3.5"
-                />
-              ) : null}
-              <SelectValue />
-            </SelectTrigger>
-            <SelectPopup>
-              {props.projects.map((project) => (
-                <SelectItem key={project.id} value={project.id}>
-                  <span className="inline-flex min-w-0 items-center gap-2">
-                    <ProjectIcon
-                      projectId={project.id}
-                      name={project.name}
-                      icon={project.icon}
-                      className="size-3.5"
-                    />
-                    <span className="truncate">{project.name}</span>
-                  </span>
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
+          <Suspense fallback={<HomeProjectPickerPlaceholder project={selectedProject} />}>
+            <HomeProjectPicker
+              projects={props.projects}
+              projectId={projectId}
+              onSelect={setSelectedProjectId}
+            />
+          </Suspense>
           <Button
             type="button"
             variant="ghost"

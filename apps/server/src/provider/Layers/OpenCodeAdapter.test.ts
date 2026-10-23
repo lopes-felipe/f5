@@ -59,6 +59,7 @@ const runtimeMock = {
   state: {
     startCalls: [] as string[],
     sessionCreateUrls: [] as string[],
+    sessionCreateInputs: [] as Array<Record<string, unknown> | undefined>,
     authHeaders: [] as Array<string | null>,
     abortCalls: [] as string[],
     permissionReplies: [] as Array<{ requestID: string; reply: string }>,
@@ -92,6 +93,7 @@ const runtimeMock = {
   reset() {
     this.state.startCalls.length = 0;
     this.state.sessionCreateUrls.length = 0;
+    this.state.sessionCreateInputs.length = 0;
     this.state.authHeaders.length = 0;
     this.state.abortCalls.length = 0;
     this.state.permissionReplies.length = 0;
@@ -168,8 +170,9 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
       command: { list: async () => ({ data: runtimeMock.state.commands }) },
       app: { skills: async () => ({ data: [] }) },
       session: {
-        create: async () => {
+        create: async (input?: Record<string, unknown>) => {
           runtimeMock.state.sessionCreateUrls.push(baseUrl);
+          runtimeMock.state.sessionCreateInputs.push(input);
           runtimeMock.state.authHeaders.push(
             serverPassword ? `Basic ${btoa(`opencode:${serverPassword}`)}` : null,
           );
@@ -617,6 +620,9 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       assert.equal(session.threadId, "thread-opencode");
       assert.deepEqual(runtimeMock.state.startCalls, []);
       assert.deepEqual(runtimeMock.state.sessionCreateUrls, ["http://127.0.0.1:9999"]);
+      // OpenCode only generates a session title when session.create has none.
+      assert.equal(runtimeMock.state.sessionCreateInputs.length, 1);
+      assert.equal("title" in (runtimeMock.state.sessionCreateInputs[0] ?? {}), false);
       assert.deepEqual(runtimeMock.state.authHeaders, [
         `Basic ${btoa("opencode:secret-password")}`,
       ]);

@@ -1,5 +1,8 @@
 import type { ProviderOptionDescriptor } from "@t3tools/contracts";
-import { getProviderOptionCurrentValue } from "@t3tools/shared/model";
+import {
+  buildProviderOptionSelectionsFromDescriptors,
+  getProviderOptionCurrentValue,
+} from "@t3tools/shared/model";
 
 /**
  * Presentation for reasoning-effort levels: a fixed colour per level id (cool
@@ -86,7 +89,13 @@ const ALL_EFFORT_LEVELS: Readonly<Record<string, EffortLevelPresentation>> = {
 };
 
 /** Option ids that carry the effort scale, across provider descriptors. */
-const EFFORT_DESCRIPTOR_IDS = new Set(["effort", "reasoningEffort", "reasoning", "variant"]);
+const EFFORT_DESCRIPTOR_IDS = new Set([
+  "effort",
+  "reasoningEffort",
+  "reasoning",
+  "variant",
+  "thinking",
+]);
 
 export function getEffortLevel(id: string | null | undefined): EffortLevelPresentation | null {
   if (!id || !Object.hasOwn(ALL_EFFORT_LEVELS, id)) {
@@ -134,4 +143,31 @@ export function getEffortChipClass(
   return typeof level === "string" && presentation
     ? { level, className: presentation.chipClass }
     : null;
+}
+
+/** Step only the reasoning select, retaining defaults and all unrelated model traits. */
+export function stepEffortOptions(
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+  direction: 1 | -1,
+) {
+  const descriptor = descriptors.find(
+    (entry): entry is Extract<ProviderOptionDescriptor, { type: "select" }> =>
+      entry.type === "select" && EFFORT_DESCRIPTOR_IDS.has(entry.id),
+  );
+  if (!descriptor || descriptor.options.length < 2) return null;
+  const options = isEffortScale(descriptor.options)
+    ? sortEffortOptions(descriptor.options).toReversed()
+    : descriptor.options;
+  const current = getProviderOptionCurrentValue(descriptor);
+  let position = options.findIndex((option) => option.id === current);
+  if (position < 0) position = options.findIndex((option) => option.isDefault);
+  if (position < 0) position = direction > 0 ? -1 : 0;
+  const next = options[(position + direction + options.length) % options.length]!;
+  return (
+    buildProviderOptionSelectionsFromDescriptors(
+      descriptors.map((entry) =>
+        entry.id === descriptor.id ? { ...descriptor, currentValue: next.id } : entry,
+      ),
+    ) ?? null
+  );
 }

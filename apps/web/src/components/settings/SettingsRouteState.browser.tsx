@@ -1,3 +1,4 @@
+import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import "../../index.css";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -99,6 +100,7 @@ function seedProjects() {
 }
 
 function createNativeApiMock(providers?: ReadonlyArray<ServerProvider>) {
+  let saved = DEFAULT_SERVER_SETTINGS;
   const serverConfig: ServerConfig = {
     cwd: "/repo/project-one",
     keybindingsConfigPath: "/repo/project-one/.t3code-keybindings.json",
@@ -111,9 +113,13 @@ function createNativeApiMock(providers?: ReadonlyArray<ServerProvider>) {
 
   nativeApiRef.current = {
     server: {
-      getConfig: vi.fn(async () => serverConfig),
+      getConfig: vi.fn(async () => ({ ...serverConfig, settings: saved })),
+      updateSettings: vi.fn(async (patch: Parameters<NativeApi["server"]["updateSettings"]>[0]) => {
+        saved = applyServerSettingsPatch(saved, patch);
+        return saved;
+      }),
       getProjectSettings: vi.fn(async ({ projectId }: { projectId: ProjectId }) =>
-        resolveProjectSettings({ projectId, global: DEFAULT_SERVER_SETTINGS }),
+        resolveProjectSettings({ projectId, global: saved }),
       ),
     },
     orchestration: {
@@ -232,6 +238,43 @@ describe("useSettingsRouteState", () => {
       codeReviewWorkflows: [],
       investigationWorkflows: [],
     });
+  });
+
+  it("saves a provider switch for one project and can restore global inheritance", async () => {
+    const { screen, queryClient, selectProject } = await renderHarness();
+    try {
+      const toggle = () =>
+        page.getByRole("switch", { name: "Enable Codex for this project", exact: true });
+      await vi.waitFor(() =>
+        expect(
+          document.querySelector(
+            '[data-settings-search-target="project.providers"] [data-slot="switch"]',
+          ),
+        ).not.toBeNull(),
+      );
+      await expect.element(toggle()).toBeChecked();
+      await toggle().click();
+      await expect.element(toggle()).not.toBeChecked();
+      const update = vi.mocked(nativeApiRef.current!.server.updateSettings);
+      expect(update.mock.calls[0]?.[0]).toMatchObject({
+        projectSettingsOverrides: {
+          [PROJECT_ONE]: { providerInstances: { codex: { enabled: false } } },
+        },
+      });
+      expect(update.mock.calls[0]?.[0]).not.toHaveProperty("providerInstances");
+      await selectProject(PROJECT_TWO);
+      await expect.element(toggle()).toBeChecked();
+      await selectProject(PROJECT_ONE);
+      await expect.element(toggle()).not.toBeChecked();
+      await page.getByRole("button", { name: "Use global providers", exact: true }).click();
+      await expect.element(toggle()).toBeChecked();
+      expect(update.mock.calls.at(-1)?.[0]).toMatchObject({
+        projectSettingsOverrides: { [PROJECT_ONE]: { providerInstances: {} } },
+      });
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
   });
 
   it("shows checked-in non-executable defaults and their diagnostics", async () => {

@@ -1,4 +1,4 @@
-import { UsagePriceOverride } from "./usage";
+import { UsageModelAliases, UsagePriceOverride } from "./usage";
 import { AgentBridgeSettings, AgentBridgeSettingsPatch } from "./agentBridge";
 import { Effect } from "effect";
 import * as Schema from "effect/Schema";
@@ -158,6 +158,7 @@ export const OpenCodeSettings = Schema.Struct({
   binaryPath: makeBinaryPathSetting("opencode"),
   serverUrl: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
   serverPassword: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
+  serverPasswordRedacted: Schema.optionalKey(Schema.Boolean),
   customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
 });
 export type OpenCodeSettings = typeof OpenCodeSettings.Type;
@@ -184,9 +185,66 @@ export const AntigravitySettings = Schema.Struct({
 });
 export type AntigravitySettings = typeof AntigravitySettings.Type;
 
+/** Pi is instantiated only through an explicit provider-instance entry. */
+export const PiSettings = Schema.Struct({
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
+  binaryPath: makeBinaryPathSetting("pi"),
+  launchArgs: Schema.String.check(
+    Schema.isMaxLength(32 * 1024),
+    Schema.makeFilter((value) => !value.includes("\0")),
+  ).pipe(Schema.withDecodingDefault(() => "")),
+  customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
+});
+export type PiSettings = typeof PiSettings.Type;
+
+/** Local ACP commands are executed directly, with an argument vector and instance environment. */
+export const AcpSettings = Schema.Struct({
+  command: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(4096),
+    Schema.makeFilter(
+      (value) => !value.includes("\0") && !value.includes("\r") && !value.includes("\n"),
+    ),
+  ),
+  args: Schema.Array(
+    Schema.String.check(
+      Schema.isMaxLength(16384),
+      Schema.makeFilter((value) => !value.includes("\0")),
+    ),
+  )
+    .check(Schema.isMaxLength(256))
+    .pipe(Schema.withDecodingDefault(() => [])),
+  env: Schema.Record(
+    Schema.String.check(Schema.isPattern(/^[a-zA-Z_][a-zA-Z0-9_]*$/)),
+    Schema.String.check(
+      Schema.isMaxLength(65536),
+      Schema.makeFilter((value) => !value.includes("\0")),
+    ),
+  )
+    .check(Schema.makeFilter((values) => Object.keys(values).length <= 128))
+    .pipe(Schema.withDecodingDefault(() => ({}))),
+  customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
+});
+export type AcpSettings = typeof AcpSettings.Type;
+
+export const OtlpHeader = Schema.Struct({
+  name: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(128),
+    Schema.isPattern(/^[!#$%&'*+.^_`|~0-9a-z-]+$/i),
+  ),
+  value: Schema.String.check(Schema.isMaxLength(4096), Schema.isPattern(/^[^\r\n]*$/)),
+  valueRedacted: Schema.optionalKey(Schema.Boolean),
+});
+export const OtlpHeaders = Schema.Array(OtlpHeader).check(
+  Schema.isMaxLength(100),
+  Schema.makeFilter(
+    (headers) =>
+      new Set(headers.map((header) => header.name.toLowerCase())).size === headers.length,
+  ),
+);
 export const ObservabilitySettings = Schema.Struct({
   otlpTracesUrl: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
   otlpMetricsUrl: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
+  otlpHeaders: Schema.optionalKey(OtlpHeaders),
 });
 export type ObservabilitySettings = typeof ObservabilitySettings.Type;
 
@@ -251,6 +309,7 @@ export const WorktreeCleanupMinIdleHours = Schema.Int.check(
  * the thread's worktree path, so resuming the thread recreates the checkout.
  */
 export const WorktreeCleanupRules = Schema.Struct({
+  onSettle: Schema.optionalKey(Schema.Boolean).pipe(Schema.withDecodingDefault(() => false)),
   /** Remove after the thread has been idle this many days. */
   afterDays: StorageRetentionDays.pipe(Schema.withDecodingDefault(() => null)),
   /** Remove once HEAD is in the default branch and the branch's PR is merged. */
@@ -317,6 +376,7 @@ const StorageCleanupSettingsPatch = Schema.Struct({
   worktree: Schema.optionalKey(
     Schema.Struct({
       afterDays: Schema.optionalKey(StorageRetentionDays),
+      onSettle: Schema.optionalKey(Schema.Boolean),
       onMerge: Schema.optionalKey(Schema.Boolean),
       onDelete: Schema.optionalKey(Schema.Boolean),
       unchanged: Schema.optionalKey(Schema.Boolean),
@@ -349,7 +409,24 @@ export type WorktreeDisposablePaths = typeof WorktreeDisposablePaths.Type;
 export const ComputerUseExecutionMode = Schema.Literals(["foreground", "background"]);
 export type ComputerUseExecutionMode = typeof ComputerUseExecutionMode.Type;
 
+export const GitHubTransport = Schema.Literals(["http", "gh"]);
+export type GitHubTransport = typeof GitHubTransport.Type;
+
+export const AutoSettleAfterDays = Schema.NullOr(
+  Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 365 })),
+);
+
+export const ProjectProviderOverrides = Schema.Record(
+  ProviderInstanceId,
+  Schema.Struct({ enabled: Schema.optionalKey(Schema.Boolean) }),
+);
+export type ProjectProviderOverrides = typeof ProjectProviderOverrides.Type;
+
 export const ProjectSettingsOverrides = Schema.Struct({
+  providerInstances: Schema.optionalKey(ProjectProviderOverrides),
+  autoSettleOnPullRequestMerge: Schema.optionalKey(Schema.Boolean),
+  autoSettleAfterDays: Schema.optionalKey(AutoSettleAfterDays),
+  autoSettleKeepPullRequests: Schema.optionalKey(Schema.Boolean),
   autoResumeUsageLimitedThreads: Schema.optionalKey(Schema.Boolean),
   resumeActiveTurnsAfterRestart: Schema.optionalKey(Schema.Boolean),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
@@ -374,7 +451,12 @@ export const ProjectSettingsOverrides = Schema.Struct({
 export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
 
 export const ServerSettings = Schema.Struct({
+  removeAgentCreditsOnMerge: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  autoSettleOnPullRequestMerge: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  autoSettleAfterDays: AutoSettleAfterDays.pipe(Schema.withDecodingDefault(() => null)),
+  autoSettleKeepPullRequests: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   usagePriceOverrides: Schema.Array(UsagePriceOverride).pipe(Schema.withDecodingDefault(() => [])),
+  usageModelAliases: UsageModelAliases.pipe(Schema.withDecodingDefault(() => ({}))),
   /** Background account-limit sampling for quota history and forecasts. */
   usageBackgroundSampling: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   autoResumeUsageLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
@@ -398,11 +480,16 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(() => "local" as const satisfies ThreadEnvModeType),
   ),
   addProjectBaseDirectory: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
+  /** Where "New project" creates folders. Empty uses `~/f5-projects` (suffixed per profile). */
+  projectsRoot: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
   textGenerationModelSelection: ModelSelection.pipe(
     Schema.withDecodingDefault(() => ({
       instanceId: ProviderInstanceId.make("codex"),
       model: DEFAULT_GIT_TEXT_GENERATION_MODEL,
     })),
+  ),
+  reviewGuideModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefault(() => null),
   ),
   sessionNotesModelSelection: ModelSelection.pipe(
     Schema.withDecodingDefault(() => ({
@@ -446,6 +533,11 @@ export const ServerSettings = Schema.Struct({
   autoPullDefaultBranch: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   /** Upstream tracking schedule and models. Local only; a checked-in file never sets it. */
   upstreamPorts: UpstreamPortsSettings.pipe(Schema.withDecodingDefault(() => ({}))),
+  /**
+   * How GitHub API requests travel: f5's HTTP client, or `gh api` as before
+   * the HTTP move. "gh" is a fallback kept for one release.
+   */
+  githubTransport: GitHubTransport.pipe(Schema.withDecodingDefault(() => "http" as const)),
 
   // Legacy single-instance-per-driver settings. Continues to be the source
   // of truth until `providerInstances` (below) lands per-driver migration
@@ -562,7 +654,13 @@ const PrHubSettingsPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  removeAgentCreditsOnMerge: Schema.optionalKey(Schema.Boolean),
+  autoSettleOnPullRequestMerge: Schema.optionalKey(Schema.Boolean),
+  autoSettleAfterDays: Schema.optionalKey(AutoSettleAfterDays),
+  autoSettleKeepPullRequests: Schema.optionalKey(Schema.Boolean),
   usagePriceOverrides: Schema.optionalKey(Schema.Array(UsagePriceOverride)),
+  /** Replaces every mapping. */
+  usageModelAliases: Schema.optionalKey(UsageModelAliases),
   usageBackgroundSampling: Schema.optionalKey(Schema.Boolean),
   autoResumeUsageLimitedThreads: Schema.optionalKey(Schema.Boolean),
   resumeActiveTurnsAfterRestart: Schema.optionalKey(Schema.Boolean),
@@ -579,8 +677,10 @@ export const ServerSettingsPatch = Schema.Struct({
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   addProjectBaseDirectory: Schema.optionalKey(Schema.String),
+  projectsRoot: Schema.optionalKey(Schema.String),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
   sessionNotesModelSelection: Schema.optionalKey(ModelSelectionPatch),
+  reviewGuideModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   prHubDefaultMergeMethod: Schema.optionalKey(
     Schema.NullOr(Schema.Literals(["squash", "merge", "rebase"])),
   ),
@@ -598,10 +698,12 @@ export const ServerSettingsPatch = Schema.Struct({
   computerUsePasswordMasking: Schema.optionalKey(ComputerPasswordMasking),
   autoPullDefaultBranch: Schema.optionalKey(Schema.Boolean),
   upstreamPorts: Schema.optionalKey(UpstreamPortsSettings),
+  githubTransport: Schema.optionalKey(GitHubTransport),
   observability: Schema.optionalKey(
     Schema.Struct({
       otlpTracesUrl: Schema.optionalKey(Schema.String),
       otlpMetricsUrl: Schema.optionalKey(Schema.String),
+      otlpHeaders: Schema.optionalKey(OtlpHeaders),
     }),
   ),
   prHub: Schema.optionalKey(PrHubSettingsPatch),
@@ -632,6 +734,10 @@ export const ServerSettingsPatch = Schema.Struct({
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
+  "providerInstances",
+  "autoSettleOnPullRequestMerge",
+  "autoSettleAfterDays",
+  "autoSettleKeepPullRequests",
   "resumeActiveTurnsAfterRestart",
   "autoResumeUsageLimitedThreads",
   "defaultRuntimeMode",

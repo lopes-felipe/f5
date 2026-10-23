@@ -18,6 +18,7 @@ import {
   resolveBestEffortGeneratedTitle,
   sanitizeThreadTitle,
   stripWrappingQuotes,
+  ThreadTitleRetryDelay,
   THREAD_TITLE_MAX_CHARS,
   THREAD_TITLE_REGENERATION_MAX_CONTEXT_CHARS,
   trimToMaxChars,
@@ -183,6 +184,7 @@ describe("resolveBestEffortGeneratedTitle", () => {
       resolveBestEffortGeneratedTitle({
         cwd: "/tmp/project",
         titleSourceText: "Plan title generation routing",
+        linkedContext: "team/repo#42: Fix native transport",
         attachments: [],
         titleGenerationModel: "ignored/title-model",
         titleGenerationModelSelection,
@@ -203,10 +205,39 @@ describe("resolveBestEffortGeneratedTitle", () => {
       expect.objectContaining({
         cwd: "/tmp/project",
         message: "Plan title generation routing",
+        linkedContext: "team/repo#42: Fix native transport",
         model: "custom/title-model",
         modelSelection: titleGenerationModelSelection,
       }),
     );
+  });
+
+  it("retries a transient title failure before falling back", async () => {
+    const generateThreadTitle = vi
+      .fn()
+      .mockImplementationOnce(() => Effect.fail(new Error("Claude CLI request timed out.")))
+      .mockImplementationOnce(() => Effect.fail(new Error("Claude CLI request timed out.")))
+      .mockImplementationOnce(() => Effect.succeed({ title: "Generated after retry" }));
+
+    const title = await Effect.runPromise(
+      resolveBestEffortGeneratedTitle({
+        cwd: "/tmp/project",
+        titleSourceText: "Plan the workflow",
+        attachments: [],
+        defaultTitle: "New thread",
+        textGeneration: {
+          generateCommitMessage: () => Effect.die("unsupported"),
+          generatePrContent: () => Effect.die("unsupported"),
+          generateBranchName: () => Effect.die("unsupported"),
+          generateThreadTitle,
+          generateStructuredJson: () => Effect.die("unsupported"),
+        },
+        logPrefix: "threadTitle test",
+      }).pipe(Effect.provideService(ThreadTitleRetryDelay, "1 millis")),
+    );
+
+    expect(title).toBe("Generated after retry");
+    expect(generateThreadTitle).toHaveBeenCalledTimes(3);
   });
 
   it.each(["gpt-5.3-codex", DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER.codex])(

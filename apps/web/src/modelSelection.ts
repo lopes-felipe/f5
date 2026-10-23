@@ -27,6 +27,11 @@ import { type ProviderInstanceEntry, deriveProviderInstanceEntries } from "./pro
 import { sortModelsForProviderInstance } from "./modelOrdering";
 
 export const MAX_CUSTOM_MODEL_LENGTH = 256;
+/** The settings an instance's model list depends on; select these to avoid unrelated renders. */
+export type ModelCatalogSettings = Pick<
+  UnifiedSettings,
+  "providerInstances" | "providers" | "providerModelPreferences"
+>;
 const DEFAULT_TEXT_GENERATION_INSTANCE_ID = ProviderInstanceId.make("codex");
 const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_DRIVER =
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER as Partial<Record<string, string>>;
@@ -48,7 +53,7 @@ const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_DRIVER =
  * can appear on the stock `claudeAgent` instance.
  */
 function readInstanceCustomModels(
-  settings: UnifiedSettings,
+  settings: ModelCatalogSettings,
   instanceId: ProviderInstanceId,
   driverKind: ProviderDriverKind,
 ): ReadonlyArray<CustomModelSetting> {
@@ -93,7 +98,7 @@ function toAppModelOption(model: ServerProvider["models"][number]): AppModelOpti
 }
 
 function readInstanceModelPreferences(
-  settings: UnifiedSettings,
+  settings: ModelCatalogSettings,
   instanceId: ProviderInstanceId,
 ): { readonly hiddenModels: ReadonlyArray<string>; readonly modelOrder: ReadonlyArray<string> } {
   return (
@@ -186,7 +191,7 @@ export function getAppModelOptions(
  * custom slugs into each other.
  */
 export function getAppModelOptionsForInstance(
-  settings: UnifiedSettings,
+  settings: ModelCatalogSettings,
   entry: ProviderInstanceEntry,
 ): AppModelOption[] {
   const options: AppModelOption[] = entry.models
@@ -258,7 +263,7 @@ export function resolveAppModelSelectionForInstance(
  * custom instances side by side without collapsing them.
  */
 export function getCustomModelOptionsByInstance(
-  settings: UnifiedSettings,
+  settings: ModelCatalogSettings,
   providers: ReadonlyArray<ServerProvider>,
   _selectedInstanceId?: ProviderInstanceId | null,
   _selectedModel?: string | null,
@@ -286,9 +291,19 @@ export function resolveAppModelSelectionState(
     selectedEntry ?? entries.find((candidate) => candidate.enabled && candidate.isAvailable);
   if (entry) {
     // When the instance changed due to fallback (e.g. selected instance was disabled),
-    // don't carry over the old instance's model — use the fallback instance's default.
+    // don't carry over the old instance's model.
     const selectedModel = selectedEntry ? selection.model : null;
+    // A saved model the catalog no longer lists, or a new fallback instance, gets the
+    // driver's cheap text generation default. The catalog's own preferred model is the
+    // flagship chat model, which is too expensive for commit messages and titles.
+    const options = getAppModelOptionsForInstance(settings, entry);
     const model =
+      resolveSelectableModel(entry.driverKind, selectedModel, options) ??
+      resolveSelectableModel(
+        entry.driverKind,
+        DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_DRIVER[entry.driverKind],
+        options,
+      ) ??
       resolveAppModelSelectionForInstance(entry.instanceId, settings, providers, selectedModel) ??
       pickPreferredModel(entry.models)?.slug ??
       DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_DRIVER[entry.driverKind];

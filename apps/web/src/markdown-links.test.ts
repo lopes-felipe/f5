@@ -1,10 +1,64 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  collectMarkdownLinkHrefs,
+  isMarkdownFileLinkLabel,
   resolveMarkdownFileLinkMeta,
   resolveMarkdownFileLinkTarget,
   rewriteMarkdownFileUriHref,
 } from "./markdown-links";
+
+describe("collectMarkdownLinkHrefs", () => {
+  // The regex the scanner replaced; it is quadratic on unterminated brackets.
+  const reference = (text: string) =>
+    [...text.matchAll(/\[(?:\\.|[^\]\\])*\]\(\s*(<[^>]+>|[^()\s]+)[^)]*\)/g)].flatMap((match) => {
+      const raw = match[1];
+      if (!raw) return [];
+      return [raw.startsWith("<") && raw.endsWith(">") ? raw.slice(1, -1) : raw];
+    });
+
+  it.each([
+    "See [app.ts](./app.ts) and [b](src/b.ts 'title').",
+    "[a](<foo)bar> invalid [b](ok)",
+    "[a](foo \"mixed title') [b](< >)",
+    "[a](<one [b](two)> invalid [c](ok)",
+    "[[[nested](src/main.ts) [unfinished",
+    "[outer [inner] invalid [valid](src/main.ts)",
+    "[bad](missing title [valid](src/main.ts)",
+    "```text\n[link](src/main.ts)\n```",
+    "[empty]() [valid](src/main.ts 'title')",
+    '[angle](<src/My File.ts> "title")',
+    "[esc \\] still label](a.ts) \\\\[x](b.ts) [y\\](c.ts)",
+    "[a](x [b](y) [c]( \n <d e>\n tail) [f](g(h)i)",
+    "[a](<multi\nline>) [b](<>) [c](<) [d]( ) []()",
+  ])("matches the previous regex on %j", (text) => {
+    expect(collectMarkdownLinkHrefs(text)).toEqual(reference(text));
+  });
+
+  it("matches the previous regex on generated bracket soup", () => {
+    const alphabet = ["[", "]", "(", ")", "<", ">", "\\", " ", "\n", "a", "'", '"'];
+    let seed = 7;
+    const next = () => (seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31);
+    for (let round = 0; round < 2_000; round += 1) {
+      const text = Array.from({ length: 1 + (next() % 24) }, () => alphabet[next() % 12]).join("");
+      expect(collectMarkdownLinkHrefs(text), JSON.stringify(text)).toEqual(reference(text));
+    }
+  });
+
+  it("stays linear on unterminated brackets and destinations", () => {
+    const started = performance.now();
+    for (const text of [
+      "[".repeat(32_000),
+      "[](a".repeat(16_000),
+      "[](<a".repeat(16_000),
+      "[x](https://e.com/".repeat(8_000),
+      "[unfinished item\n".repeat(8_000),
+    ])
+      expect(collectMarkdownLinkHrefs(text)).toEqual([]);
+    // The regex took about 12 seconds for these inputs.
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+});
 
 describe("resolveMarkdownFileLinkTarget", () => {
   it("resolves absolute posix file paths", () => {
@@ -56,6 +110,31 @@ describe("resolveMarkdownFileLinkTarget", () => {
 
   it("does not treat app routes as file links", () => {
     expect(resolveMarkdownFileLinkTarget("/chat/settings")).toBeNull();
+  });
+});
+
+describe("isMarkdownFileLinkLabel", () => {
+  it.each([
+    ["validates the input", "/repo/src/example.ts:12", false],
+    ["read src/example.ts", "/repo/src/example.ts:12", false],
+    ["example.ts?why this matters", "/repo/src/example.ts", false],
+    ["example.ts", "/repo/src/example.ts:12", true],
+    ["example.ts:12", "/repo/src/example.ts:12", true],
+    ["example.ts:99", "/repo/src/example.ts:12", false],
+    ["example.ts:12:2", "/repo/src/example.ts:12:2", true],
+    ["example.ts:12:3", "/repo/src/example.ts:12:2", false],
+    ["example.ts:12", "/repo/src/example.ts", false],
+    ["src/example.ts:12", "/repo/src/example.ts:12", true],
+    ["./src/example.ts", "/repo/src/example.ts", true],
+    ["/repo/src/example.ts", "/repo/src/example.ts", true],
+    ["src/", "/home/me/project/src/", true],
+    ["EXAMPLE.TS", "C:/repo/src/example.ts:12", true],
+    ["file name.ts", "file:///repo/file%20name.ts", true],
+    ["", "/repo/src/example.ts", true],
+  ])("classifies %s for %s", (label, href, expected) => {
+    const meta = resolveMarkdownFileLinkMeta(href);
+    expect(meta).not.toBeNull();
+    expect(isMarkdownFileLinkLabel(label, meta!)).toBe(expected);
   });
 });
 

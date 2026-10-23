@@ -1,3 +1,4 @@
+import { cleanupLocalPrBranch } from "./localBranchCleanup.ts";
 import { prComparisonsEqual } from "@t3tools/shared/prReview";
 
 import { PR_DETAIL_CACHE_TTL_MS } from "./detailCache.ts";
@@ -436,14 +437,34 @@ export function createPrHubRemoteActions(
             ),
             Effect.flatMap(() => sourceControlProviders.get(pr.provider)),
             Effect.flatMap((provider) =>
-              refreshAfterAction(
-                provider.mergePullRequest({
+              Effect.gen(function* () {
+                yield* provider.mergePullRequest({
                   cwd,
                   url: input.url,
                   method: input.method,
                   expectedHeadOid: headRefOid,
-                }),
-              ),
+                });
+                let actionWarning: string | undefined;
+                if (input.deleteBranch) {
+                  const deleted = provider.deletePullRequestBranch
+                    ? yield* provider
+                        .deletePullRequestBranch({
+                          cwd,
+                          url: input.url,
+                          expectedHeadOid: headRefOid,
+                        })
+                        .pipe(Effect.timeout("30 seconds"), Effect.result)
+                    : null;
+                  if (deleted?._tag === "Success")
+                    actionWarning = yield* cleanupLocalPrBranch(deleted.success);
+                  else
+                    actionWarning =
+                      "The PR merged, but branch deletion was not confirmed. Inspect the source branch before requesting cleanup again.";
+                }
+                yield* requestRefresh;
+                const snapshot = yield* getSnapshot;
+                return { ...snapshot, ...(actionWarning ? { actionWarning } : {}) };
+              }),
             ),
           );
         }),

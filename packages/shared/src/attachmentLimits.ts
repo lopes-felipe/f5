@@ -12,7 +12,9 @@ export function providerMaxAttachmentBytes(provider: ProviderKind): number {
   return provider === "antigravity" ? ATTACHMENT_MAX_FILE_BYTES : ATTACHMENT_MAX_TURN_BYTES;
 }
 export function providerMaxImages(provider: ProviderKind): number {
-  return provider === "cursor" || provider === "grok" || provider === "muse" ? 10 : 20;
+  return provider === "cursor" || provider === "grok" || provider === "muse" || provider === "pi"
+    ? 10
+    : 20;
 }
 export function getProviderAttachmentLimitError(
   attachments: ReadonlyArray<ChatAttachment>,

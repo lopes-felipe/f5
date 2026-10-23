@@ -64,6 +64,11 @@ arguments**.
 - Sensitive variables are stored as server secrets and never sent back to the app.
 - **Auto** access mode lets Claude's own reviewer approve actions. It can approve risky commands
   without asking; use it only where that is acceptable.
+- Use `/goal <objective>` to set a native Claude goal, `/goal` to check it, and
+  `/goal clear` to clear it. The chat header shows the goal and its status. Claude owns
+  the evaluation and continuation; F5 mirrors its native output. A stopped or failed turn
+  keeps the goal active. SDK mode does not distinguish a passed check from an evaluator
+  timeout or an impossible verdict when Claude reports a successful completion.
 - Native compaction and file checkpointing are on by default. You can turn either off per
   provider; the change applies at the next session start.
 - **Prompt before compacting resumed sessions** (off by default) shows Claude's resume dialog

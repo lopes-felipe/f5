@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { DESKTOP_MAC_EXTEND_INFO } from "./lib/desktop-mac-info.ts";
+import { DESKTOP_PROTOCOLS } from "./lib/desktop-protocols.ts";
 import { withoutSigningCredentials } from "./lib/signing-environment.ts";
 
 import { spawnSync } from "node:child_process";
@@ -459,6 +461,7 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       onlyLoadAppFromAsar: true,
     },
     productName,
+    protocols: DESKTOP_PROTOCOLS,
     artifactName: "F5-${version}-${arch}.${ext}",
     asarUnpack: DESKTOP_ASAR_UNPACK,
     ...(platform !== "linux"
@@ -499,10 +502,7 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
-      extendInfo: {
-        NSAppleEventsUsageDescription:
-          "F5 uses Apple Events to inspect applications for computer use.",
-      },
+      extendInfo: DESKTOP_MAC_EXTEND_INFO,
       ...(signed
         ? {
             hardenedRuntime: true,
@@ -703,7 +703,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     private: true,
     description: "F5 desktop app",
     author: "Felipe Lopes",
-    main: "apps/desktop/dist-electron/main.js",
+    main: "apps/desktop/dist-electron/boot.js",
     build: yield* createBuildConfig(
       options.platform,
       options.target,

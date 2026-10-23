@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { GrokSettings, ServerProviderSkill } from "@t3tools/contracts";
 import { Effect } from "effect";
 import { runProcess } from "../../processRunner.ts";
+import { grokProbeEnvironment } from "../Layers/GrokProvider.ts";
 
 /** Ask the CLI so disabled and plugin skills follow Grok's own configuration. */
 export function parseGrokSkills(text: string): ServerProviderSkill[] {
@@ -53,7 +54,7 @@ export const discoverGrokSkills = (
   Effect.tryPromise({
     try: (signal) =>
       runProcess(settings.binaryPath || "grok", ["inspect", "--json"], {
-        env,
+        env: grokProbeEnvironment(env),
         cwd,
         signal,
         timeoutMs: 4000,

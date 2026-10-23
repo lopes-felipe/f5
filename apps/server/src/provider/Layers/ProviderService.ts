@@ -1,3 +1,6 @@
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
+import { captureRestartTurnMarkers } from "../../nextTurnQueue/restartMarkerCapture.ts";
+import { resolveProjectProviderInstanceEnabled } from "@t3tools/shared/serverSettings";
 import { registerProviderRuntimeFanout } from "../../observability/Metrics.ts";
 import { readIncompleteHistory } from "../runtimePayload.ts";
 import { ProviderControlTarget } from "../controlTarget.ts";
@@ -112,6 +115,7 @@ import {
   type ProviderAdapterError,
   type ProviderServiceError,
   ProviderSessionActionUnavailableError,
+  ProviderUnsupportedError,
   ProviderValidationError,
   ProviderTurnDeliveryError,
   ProviderAdapterRequestError,
@@ -237,6 +241,16 @@ const decodeInputOrValidationError = <S extends Schema.Top>(input: {
     ),
   );
 
+/** Stopped rows with no active turn are settled; shutdown leaves them untouched. */
+function isSettledBinding(binding: {
+  readonly status?: string | undefined;
+  readonly runtimePayload?: unknown;
+}): boolean {
+  return (
+    binding.status === "stopped" && readPersistedActiveTurnId(binding.runtimePayload) === undefined
+  );
+}
+
 function toRuntimeStatus(session: ProviderSession): "starting" | "running" | "stopped" | "error" {
   switch (session.status) {
     case "connecting":
@@ -349,6 +363,35 @@ function toInstructionContextFromSessionStartInput(
 const makeProviderService = (options?: ProviderServiceLiveOptions) =>
   Effect.gen(function* () {
     const nativeScope = yield* Effect.scope;
+    const settingsOption = yield* Effect.serviceOption(ServerSettingsService);
+    const requireProjectProvider = (binding: ProviderRuntimeBinding) =>
+      Effect.gen(function* () {
+        if (Option.isNone(settingsOption)) return;
+        const settings = yield* settingsOption.value.getSettings.pipe(
+          Effect.mapError(
+            () =>
+              new ProviderTurnDeliveryError({
+                certainty: "not_sent",
+                retryable: false,
+                detail: "Provider settings could not be read.",
+              }),
+          ),
+        );
+        if (
+          !resolveProjectProviderInstanceEnabled(
+            settings,
+            binding.projectId,
+            resolveBindingInstanceId(binding),
+          )
+        )
+          return yield* new ProviderTurnDeliveryError({
+            certainty: "not_sent",
+            retryable: false,
+            detail:
+              "This provider is disabled for the project. Enable it or select another provider before sending.",
+          });
+      });
+
     let accepting = true;
     let nativePolling: Fiber.Fiber<unknown, never> | undefined;
     const ensureAccepting = Effect.suspend(() =>
@@ -386,9 +429,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           );
         const rows = yield* workspaceSql.value<{
           worktreePath: string | null;
+          scratchPath: string | null;
           branch: string | null;
           projectCwd: string | null;
-        }>`SELECT t.worktree_path AS "worktreePath", t.branch AS "branch", p.workspace_root AS "projectCwd" FROM projection_threads t LEFT JOIN projection_projects p ON p.project_id = t.project_id WHERE t.thread_id = ${threadId}`;
+          projectKind: string | null;
+        }>`SELECT t.worktree_path AS "worktreePath", t.scratch_path AS "scratchPath", t.branch AS "branch", p.workspace_root AS "projectCwd", p.kind AS "projectKind" FROM projection_threads t LEFT JOIN projection_projects p ON p.project_id = t.project_id WHERE t.thread_id = ${threadId}`;
         const blocks = yield* workspaceSql.value<{
           token: string | null;
         }>`SELECT worktree_block_token AS token FROM next_turn_queue_state WHERE thread_id = ${threadId}`;
@@ -397,6 +442,26 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             new Error("Workspace preparation must finish before provider delivery."),
           );
         const row = rows[0];
+        // A thread without a project works only in its own folder, never the shared root.
+        if (row?.projectKind === "scratch") {
+          const scratchCwd = threadWorkspaceCwd(row, {
+            kind: "scratch",
+            cwd: row.projectCwd ?? "",
+          });
+          if (!scratchCwd)
+            return yield* Effect.fail(new Error("This thread's folder is not ready yet."));
+          if (
+            sessionCwd !== undefined &&
+            (yield* Effect.tryPromise(() => canonicalWorktreePath(sessionCwd))) !==
+              (yield* Effect.tryPromise(() => canonicalWorktreePath(scratchCwd)))
+          )
+            return yield* Effect.fail(
+              new Error(
+                "The provider session is attached to a different folder. Restart the session before sending.",
+              ),
+            );
+          return;
+        }
         if (!row?.worktreePath) return;
         if (!row.projectCwd || Option.isNone(workspaceGit))
           return yield* Effect.fail(new Error("Workspace identity cannot be verified."));
@@ -1114,6 +1179,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       readonly fallbackActiveTurnId?: TurnId;
     }) =>
       Effect.gen(function* () {
+        yield* requireProjectProvider(input.binding);
         const bindingInstanceId = resolveBindingInstanceId(input.binding);
         yield* Effect.annotateCurrentSpan({
           "provider.operation": "recover-session",
@@ -1591,7 +1657,21 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               `Provider instance '${requestedInstanceId}' belongs to driver '${resolvedProvider}', not '${parsed.provider}'.`,
             );
           }
-          if (!instanceInfo.enabled) {
+          const enabledForProject = Option.isSome(settingsOption)
+            ? resolveProjectProviderInstanceEnabled(
+                yield* settingsOption.value.getSettings.pipe(
+                  Effect.mapError(() =>
+                    toValidationError(
+                      "ProviderService.startSession",
+                      "Provider settings could not be read.",
+                    ),
+                  ),
+                ),
+                parsed.projectId,
+                requestedInstanceId,
+              )
+            : instanceInfo.enabled;
+          if (!enabledForProject) {
             return yield* toValidationError(
               "ProviderService.startSession",
               `Provider instance '${requestedInstanceId}' is disabled in settings.`,
@@ -2126,6 +2206,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           "provider.attachment_count": input.attachments.length,
         });
         const binding = yield* directory.getBinding(input.threadId);
+        if (Option.isSome(binding)) yield* requireProjectProvider(binding.value);
         const instanceId = Option.isSome(binding) ? resolveBindingInstanceId(binding.value) : "";
         let metricProvider = "unknown";
         let metricModel = input.model;
@@ -2137,7 +2218,8 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 const routed = yield* resolveRoutableSession({
                   threadId: input.threadId,
                   operation: "ProviderService.sendTurn",
-                  allowRecovery: input.expectedTurnId === undefined,
+                  allowRecovery:
+                    input.expectedTurnId === undefined && input.continuationRequestId === undefined,
                   binding,
                 });
                 metricProvider = routed.adapter.provider;
@@ -2327,6 +2409,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 }),
             ),
           );
+          yield* requireProjectProvider(deliveryBinding.value);
           yield* ensureAccepting;
           const turn = yield* (
             input.expectedTurnId !== undefined
@@ -2837,8 +2920,14 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         });
       });
 
-    const getCapabilities: ProviderServiceShape["getCapabilities"] = (provider) =>
-      registry.getByProvider(provider).pipe(Effect.map((adapter) => adapter.capabilities));
+    const getCapabilities: ProviderServiceShape["getCapabilities"] = (provider, instanceId) =>
+      (instanceId ? registry.getByInstance(instanceId) : registry.getByProvider(provider)).pipe(
+        Effect.flatMap((adapter) =>
+          adapter.provider === provider
+            ? Effect.succeed(adapter.capabilities)
+            : Effect.fail(new ProviderUnsupportedError({ provider })),
+        ),
+      );
 
     const getSessionCapabilities: ProviderServiceShape["getSessionCapabilities"] = (threadId) =>
       Effect.gen(function* () {
@@ -2881,6 +2970,36 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         }
         return capabilities;
       });
+
+    const withLiveMcpApps = <A, E>(
+      threadId: ThreadId,
+      run: (
+        apps: NonNullable<
+          import("../Services/ProviderAdapter.ts").ProviderAdapterShape<
+            import("../Errors.ts").ProviderAdapterError
+          >["mcpApps"]
+        >,
+      ) => Effect.Effect<A, E>,
+    ) =>
+      withProviderThreadAccess(
+        threadId,
+        Effect.gen(function* () {
+          const routed = yield* resolveRoutableSession({
+            threadId,
+            operation: "ProviderService.mcpApps",
+            allowRecovery: false,
+          });
+          if (!routed.isActive || routed.adapter.provider !== "codex" || !routed.adapter.mcpApps)
+            return yield* toValidationError("McpApps", "Send a message to reconnect.");
+          return yield* run(routed.adapter.mcpApps);
+        }),
+      );
+    const mcpApps: NonNullable<ProviderServiceShape["mcpApps"]> = {
+      identity: (threadId) => withLiveMcpApps(threadId, (apps) => apps.identity(threadId)),
+      listTools: (input) => withLiveMcpApps(input.threadId, (apps) => apps.listTools(input)),
+      callTool: (input) => withLiveMcpApps(input.threadId, (apps) => apps.callTool(input)),
+      readResource: (input) => withLiveMcpApps(input.threadId, (apps) => apps.readResource(input)),
+    };
 
     const readThread: ProviderServiceShape["readThread"] = (rawThreadId) =>
       Effect.gen(function* () {
@@ -3648,37 +3767,21 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         return { sessions: sessions.flat() };
       });
 
-    const settingsOption = yield* Effect.serviceOption(ServerSettingsService);
     const sqlOption = yield* Effect.serviceOption(SqlClient.SqlClient);
     const markRestartTurns = Effect.gen(function* () {
       if (Option.isNone(settingsOption) || Option.isNone(sqlOption)) return;
       const settings = yield* settingsOption.value.getSettings;
       const sql = sqlOption.value;
-      const sessions = yield* listSessions();
-      for (const session of sessions) {
-        if (!session.activeTurnId) continue;
-        const thread = (yield* sql<{
-          readonly projectId: string;
-        }>`SELECT project_id AS "projectId" FROM projection_threads WHERE thread_id = ${session.threadId}`)[0];
-        const enabled = thread
-          ? (settings.projectSettingsOverrides[
-              thread.projectId as import("@t3tools/contracts").ProjectId
-            ]?.resumeActiveTurnsAfterRestart ?? settings.resumeActiveTurnsAfterRestart)
-          : false;
-        if (!enabled) continue;
-        const continuation =
-          yield* sql`SELECT c.continuation_id FROM restart_continuations c LEFT JOIN provider_turn_deliveries d ON d.delivery_id = c.continuation_id WHERE c.thread_id = ${session.threadId} AND (c.provider_turn_id = ${session.activeTurnId} OR d.provider_turn_id = ${session.activeTurnId} OR d.state = 'sending' OR EXISTS (SELECT 1 FROM projection_turns t WHERE t.thread_id = c.thread_id AND t.turn_id = ${session.activeTurnId} AND t.pending_message_id = c.continuation_id))`;
-        const recovery =
-          yield* sql`SELECT pending_message_id FROM projection_turns WHERE thread_id = ${session.threadId} AND turn_id = ${session.activeTurnId} AND pending_message_id LIKE 'usage-resume:%'`;
-        if (continuation.length || recovery.length) continue;
-        const continuationId = `resume:${session.threadId}:${session.activeTurnId}`;
-        yield* sql`INSERT INTO restart_turn_markers VALUES (${session.threadId}, ${session.activeTurnId}, ${new Date().toISOString()}, ${continuationId}) ON CONFLICT(thread_id) DO UPDATE SET turn_id = excluded.turn_id, marked_at = excluded.marked_at, continuation_id = excluded.continuation_id`;
-      }
+      yield* captureRestartTurnMarkers({
+        sessions: yield* listSessions(),
+        bindings: yield* directory.listBindings(),
+        settings,
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     });
 
     const runStopAll = () =>
       Effect.gen(function* () {
-        const threadIds = yield* directory.listThreadIds();
+        const bindings = yield* directory.listBindings();
         const currentAdapters = yield* getAdapterEntries;
         const stopFailures: unknown[] = [];
         yield* markRestartTurns.pipe(
@@ -3702,23 +3805,21 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             ),
           ),
         );
-        yield* Effect.forEach(threadIds, (threadId) =>
-          directory.getBinding(threadId).pipe(
-            Effect.flatMap((bindingOption) => {
-              const binding = Option.getOrUndefined(bindingOption);
-              if (!binding) return Effect.void;
-              return directory.upsert({
-                threadId,
-                provider: binding.provider,
-                providerInstanceId: resolveBindingInstanceId(binding),
-                status: "stopped",
-                runtimePayload: {
-                  lastRuntimeEvent: "provider.stopAll",
-                  lastRuntimeEventAt: new Date().toISOString(),
-                },
-              });
+        // Stopped rows stay for their resume cursors, so long-lived installs hold
+        // thousands. Only rewrite the ones this shutdown actually stops.
+        yield* Effect.forEach(
+          bindings.filter((binding) => !isSettledBinding(binding)),
+          (binding) =>
+            directory.upsert({
+              threadId: binding.threadId,
+              provider: binding.provider,
+              providerInstanceId: resolveBindingInstanceId(binding),
+              status: "stopped",
+              runtimePayload: {
+                lastRuntimeEvent: "provider.stopAll",
+                lastRuntimeEventAt: new Date().toISOString(),
+              },
             }),
-          ),
         ).pipe(Effect.asVoid);
         submissionTokens.clear();
         sessionEventIdentities.clear();
@@ -3726,7 +3827,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           yield* Deferred.succeed(completion.done, undefined);
         submissionCompletions.clear();
         yield* analytics.record("provider.sessions.stopped_all", {
-          sessionCount: threadIds.length,
+          sessionCount: bindings.length,
         });
         yield* analytics.flush;
         if (stopFailures.length > 0)
@@ -3931,6 +4032,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       getCapabilities,
       getSessionCapabilities,
       assertSessionAction,
+      mcpApps,
       readThread: (threadId) => withProviderThreadAccess(threadId, readThread(threadId)),
       rollbackConversation: (input) =>
         withProviderThreadAccess(input.threadId, rollbackConversation(input)),

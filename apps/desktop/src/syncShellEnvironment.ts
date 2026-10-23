@@ -4,6 +4,8 @@ import {
   type WindowsRegistryPathReader,
 } from "@t3tools/shared/windowsPath";
 
+const CA_TRUST_NAMES = ["SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS"] as const;
+
 const LOCALE_NAMES = ["LANG", "LC_ALL", "LC_CTYPE"] as const;
 
 export function syncShellEnvironment(
@@ -33,9 +35,14 @@ export function syncShellEnvironment(
     const shell = env.SHELL ?? "/bin/zsh";
     const shellEnvironment = (options.readEnvironment ?? readEnvironmentFromLoginShell)(shell, [
       "PATH",
+      "__MISE_DIFF",
       "SSH_AUTH_SOCK",
       ...LOCALE_NAMES,
+      ...CA_TRUST_NAMES,
     ]);
+
+    for (const name of CA_TRUST_NAMES)
+      if (!env[name]?.trim() && shellEnvironment[name]?.trim()) env[name] = shellEnvironment[name];
 
     // Locale categories form a precedence group; never override an inherited choice.
     if (LOCALE_NAMES.every((name) => !env[name]?.trim())) {
@@ -46,6 +53,10 @@ export function syncShellEnvironment(
 
     if (shellEnvironment.PATH) {
       env.PATH = shellEnvironment.PATH;
+      // mise's record of the PATH entries it added. It must travel with the
+      // shell's PATH, or `mise x` can rebuild PATH behind a same-named wrapper
+      // (`exec mise x claude -- claude`) that then re-runs itself forever.
+      if (shellEnvironment.__MISE_DIFF) env.__MISE_DIFF = shellEnvironment.__MISE_DIFF;
     }
 
     if (!env.SSH_AUTH_SOCK && shellEnvironment.SSH_AUTH_SOCK) {

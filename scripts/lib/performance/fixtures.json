@@ -1,6 +1,7 @@
 {
   "version": 1,
   "seed": 290261,
+  "sqliteCheckpoint": { "walBytes": 41943040, "resolutionMs": 1, "maximumP99Ms": 50 },
   "epoch": "2026-09-01T00:00:00.000Z",
   "chat": {
     "messages": 10000,

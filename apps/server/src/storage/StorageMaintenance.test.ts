@@ -2888,6 +2888,44 @@ it.layer(makeStorageTestLayer())("StorageMaintenance scan and operation safety",
       }),
     ),
   );
+  it.effect("preserves settlement process claims across attempted permanent thread purge", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.makeUnsafe("settlement-purge-claim");
+        const archivedAt = daysAgo(90);
+        yield* seedThread({ sql, threadId, archivedAt, deletedAt: null });
+        yield* sql`INSERT INTO thread_settlement_hooks(thread_id,job_id,settled_at,worktree_path,project_id,scripts_json,state,updated_at) SELECT thread_id,'hook',${archivedAt},'/tmp/settlement-hook',project_id,'[]','pending',${archivedAt} FROM projection_threads WHERE thread_id=${threadId}`;
+        for (const state of ["pending", "running", "orphaned"]) {
+          yield* sql`UPDATE thread_settlement_hooks SET state=${state} WHERE thread_id=${threadId}`;
+          const report = yield* storage.inspect({ force: true });
+          const result = yield* storage.cleanup({
+            operationId: `settlement-purge-${state}`,
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["purgeArchivedThreads"],
+            confirmationText: "DELETE",
+            options: { vacuumAfterDeletes: false },
+          });
+          assert.isTrue(
+            result.warnings.some((warning) => warning.reason.includes("Settlement script")),
+          );
+          assert.lengthOf(
+            yield* sql`SELECT thread_id FROM projection_threads WHERE thread_id=${threadId} AND deleted_at IS NULL`,
+            1,
+          );
+          assert.equal(
+            (yield* sql<{
+              state: string;
+            }>`SELECT state FROM thread_settlement_hooks WHERE thread_id=${threadId}`)[0]?.state,
+            state,
+          );
+        }
+      }),
+    ),
+  );
+
   it.effect("blocks archived purge before deletion when a native operation needs recovery", () =>
     withHomeSandbox(
       Effect.gen(function* () {

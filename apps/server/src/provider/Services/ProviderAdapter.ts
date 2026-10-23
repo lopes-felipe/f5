@@ -119,7 +119,30 @@ export type ProviderAdapterSendTurnInput = ProviderSendTurnInput & {
   readonly resolvedAttachments?: ReadonlyArray<ProviderResolvedAttachment>;
 };
 
+/** Live MCP server access; only adapters with native app-server support expose it. */
+export interface ProviderMcpApps<TError> {
+  readonly identity: (threadId: ThreadId) => Effect.Effect<string, TError>;
+  readonly listTools: (input: {
+    readonly threadId: ThreadId;
+    readonly server: string;
+  }) => Effect.Effect<ReadonlyArray<unknown>, TError>;
+  readonly callTool: (input: {
+    readonly threadId: ThreadId;
+    readonly server: string;
+    readonly tool: string;
+    readonly arguments: Record<string, unknown>;
+    readonly sessionIdentity: string;
+    readonly approved: boolean;
+  }) => Effect.Effect<unknown, TError>;
+  readonly readResource: (input: {
+    readonly threadId: ThreadId;
+    readonly server: string;
+    readonly uri: string;
+  }) => Effect.Effect<unknown, TError>;
+}
+
 export interface ProviderAdapterShape<TError> {
+  readonly mcpApps?: ProviderMcpApps<TError>;
   /**
    * Provider kind implemented by this adapter.
    */

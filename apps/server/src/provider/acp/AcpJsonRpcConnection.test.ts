@@ -441,6 +441,50 @@ describe("AcpSessionRuntime", () => {
     ),
   );
 
+  it.effect("keeps one answer when an earlier tool reports progress mid-stream", () =>
+    Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime;
+      yield* runtime.start();
+      yield* runtime.prompt({ prompt: [{ type: "text", text: "hi" }] });
+
+      const notes = Array.from(yield* Stream.runCollect(Stream.take(runtime.getEvents(), 9)));
+      // Neither the progress tick, the completion, nor a repeated completion
+      // splits the markdown table across assistant items.
+      expect(notes.map((note) => note._tag)).toEqual([
+        "ToolCallUpdated",
+        "AssistantItemStarted",
+        "ContentDelta",
+        "ToolCallUpdated",
+        "ContentDelta",
+        "ToolCallUpdated",
+        "ContentDelta",
+        "ToolCallUpdated",
+        "ContentDelta",
+      ]);
+      const itemIds = new Set(
+        notes.flatMap((note) =>
+          note._tag === "ContentDelta" || note._tag === "AssistantItemStarted" ? [note.itemId] : [],
+        ),
+      );
+      expect(itemIds.size).toBe(1);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: bunExe,
+            args: [mockAgentPath],
+            env: { T3_ACP_EMIT_BACKGROUND_TOOL_DURING_ANSWER: "1" },
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          authMethodId: "test",
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+
   it.effect("segments assistant text around ACP tool calls", () =>
     Effect.gen(function* () {
       const runtime = yield* AcpSessionRuntime;
@@ -716,6 +760,46 @@ describe("AcpSessionRuntime", () => {
           },
           cwd: process.cwd(),
           clientInfo: { name: "t3-test", version: "0.0.0" },
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+      Effect.ensuring(Effect.sync(() => rmSync(tempDir, { recursive: true, force: true }))),
+    );
+  });
+
+  it.effect("sends a configured custom model the agent does not advertise", () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "acp-runtime-"));
+    const requestLogPath = path.join(tempDir, "requests.ndjson");
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime;
+      yield* runtime.start();
+      yield* runtime.setModel("my-custom-model").pipe(Effect.ignore);
+
+      const recordedRequests = readFileSync(requestLogPath, "utf8")
+        .trim()
+        .split("\n")
+        .filter((line) => line.length > 0)
+        .map((line) => JSON.parse(line) as { method?: string; params?: { value?: unknown } });
+      expect(
+        recordedRequests.some(
+          (message) =>
+            message.method === "session/set_config_option" &&
+            message.params?.value === "my-custom-model",
+        ),
+      ).toBe(true);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          authMethodId: "test",
+          spawn: {
+            command: bunExe,
+            args: [mockAgentPath],
+            env: { T3_ACP_REQUEST_LOG_PATH: requestLogPath },
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          customModels: ["my-custom-model"],
         }),
       ),
       Effect.scoped,

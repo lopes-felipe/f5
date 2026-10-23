@@ -462,6 +462,7 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
             threadId: input.command.threadId,
             projectId: bootstrap.createThread.projectId,
             title: bootstrap.createThread.title,
+            scratchFolderWords: input.command.message.text.slice(0, 8_000),
             model: bootstrap.createThread.model,
             runtimeMode: bootstrap.createThread.runtimeMode,
             interactionMode: bootstrap.createThread.interactionMode,

@@ -4,6 +4,7 @@ import type {
   ProviderInstanceInventory,
   ProviderInventorySource,
 } from "@t3tools/contracts";
+import { withoutScratchProjects } from "@t3tools/shared/scratchProject";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDownIcon, RotateCwIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
@@ -223,7 +224,7 @@ export function ProviderInventorySection({
                 }
               >
                 <option value="">Instance only (no project)</option>
-                {projects.map((project) => (
+                {withoutScratchProjects(projects).map((project) => (
                   <option key={project.id} value={project.id}>
                     {project.name}
                   </option>

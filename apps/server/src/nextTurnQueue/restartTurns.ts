@@ -18,7 +18,8 @@ export const recoverRestartTurnMarkers = Effect.gen(function* () {
     readonly threadId: string;
     readonly continuationId: string;
     readonly turnId: string;
-  }>`SELECT thread_id AS "threadId", continuation_id AS "continuationId", turn_id AS "turnId" FROM restart_turn_markers`;
+    readonly interruptedBackgroundWork: number;
+  }>`SELECT thread_id AS "threadId", continuation_id AS "continuationId", turn_id AS "turnId", interrupted_background_work AS "interruptedBackgroundWork" FROM restart_turn_markers`;
   const hasBlockedWork = (threadId: ThreadId) =>
     Effect.gen(function* () {
       const queue = yield* store.listByThread(threadId);
@@ -66,7 +67,10 @@ export const recoverRestartTurnMarkers = Effect.gen(function* () {
       message: {
         messageId: MessageId.makeUnsafe(marker.continuationId),
         role: "user" as const,
-        text: "Continue the interrupted turn from where you left off. Check the current state before taking further actions.",
+        text:
+          marker.interruptedBackgroundWork > 0
+            ? `The server restart interrupted background work (${marker.interruptedBackgroundWork >= 201 ? "more than 200" : marker.interruptedBackgroundWork} recorded work items). Completion was not confirmed. Check the current state and resume unfinished work only as needed. Do not assume that a task succeeded or repeat completed actions.`
+            : "Continue the interrupted turn from where you left off. Check the current state before taking further actions.",
         attachments: [],
       },
       model: thread.model,

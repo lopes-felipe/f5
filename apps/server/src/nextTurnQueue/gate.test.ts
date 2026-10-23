@@ -97,6 +97,17 @@ describe("resolveNextTurnQueueGate", () => {
       }),
     ).toEqual(expect.objectContaining({ kind: "drop", reasonCode: "usage_limit_context_changed" }));
   });
+  it("holds follow-ups and steers while the thread compacts", () => {
+    const runningTurn = { turnId: "turn-1", state: "running" };
+    const steer = { ...item, command: { expectedTurnId: "turn-1" } as never };
+    for (const queued of [item, steer]) {
+      expect(gate({ item: queued, runningTurn, automaticCompaction: true })).toEqual({
+        kind: "wait",
+        reasonCode: "thread_compacting",
+      });
+    }
+    expect(gate({ item: steer, runningTurn })).toEqual({ kind: "ready" });
+  });
   it("reports the reset wait separately from transport backoff", () => {
     const future = "2026-01-02T00:00:00.000Z";
     expect(

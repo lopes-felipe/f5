@@ -1,6 +1,11 @@
+import { McpAppFrame } from "./McpAppFrame";
+import { ThreadFindContext } from "./threadFindContext";
+import { highlightThreadFind } from "./threadFindHighlights";
+import { HtmlRenderFrame } from "./HtmlRenderFrame";
 import { recordTimelineRowRender } from "../../lib/performanceCounters";
 import { messageTextRevision, messageReasoningContent } from "../../lib/streamingTextRevision";
 import { computerToolHeading } from "@t3tools/shared/computerAction";
+import type { PromptLinkRepository } from "@t3tools/shared/promptLinks";
 import { NativeFilePreview } from "./NativeFilePreview";
 import { AttachmentFileChip } from "./AttachmentFileChip";
 import { ChatAssetImage } from "../ChatAssetImage";
@@ -46,6 +51,7 @@ import { changedLineCount, summarizeTurnDiffStats } from "../../lib/turnDiffTree
 import ChatMarkdown from "../ChatMarkdown";
 import {
   BotIcon,
+  BrainIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
@@ -71,6 +77,7 @@ import { ComposerDockSpacer } from "./composer/ComposerDock";
 import { openInPreferredEditor } from "../../editorPreferences";
 import { useFileNavigation } from "../../fileNavigationContext";
 import { Button } from "../ui/button";
+import { TooltipScrollDismissArea } from "../ui/tooltip";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
 import type { ImageAttachmentActionItem } from "./imageAttachmentActions";
@@ -79,6 +86,7 @@ import { CommandTranscriptCard } from "./CommandTranscriptCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
 import { DiffStatLabel, hasNonZeroStat } from "./DiffStatLabel";
 import { MessageCopyButton } from "./MessageCopyButton";
+import { PromptLinkCopyButton } from "../promptLinks/PromptLinkCopyButton";
 import { UserMessageRevertPopover } from "./UserMessageRevertPopover";
 import { computeRevertImpact } from "./revertImpact";
 import { AssistantMessageActions } from "./AssistantMessageActions";
@@ -105,6 +113,7 @@ import {
   TIMELINE_TURN_RAIL_MIN_ITEMS,
 } from "./MessagesTimeline.logic";
 import { TimelineTurnRail } from "./TimelineTurnRail";
+import { forwardWheelToTimeline } from "./timelineMinimapWheel";
 import { WorkingRibbon, type WorkingRibbonReleaseReason } from "./WorkingRibbon";
 import { useNowIso } from "../../lib/nowTicker";
 import type { RibbonPoint } from "./WorkingRibbon.logic";
@@ -117,7 +126,7 @@ import {
 } from "~/lib/terminalContext";
 import { relativePathForDisplay } from "~/lib/attachedFiles";
 import { cn } from "~/lib/utils";
-import { type TimestampFormat, useAppSettings } from "../../appSettings";
+import { type AppSettings, type TimestampFormat, useAppSettingsSelector } from "../../appSettings";
 import { readNativeApi } from "../../nativeApi";
 import {
   extractTerminalLinks,
@@ -343,6 +352,8 @@ export interface RevertReopenRequest {
 export interface ChatDiffContext {
   threadId: ThreadId | null;
   isGitRepo: boolean;
+  /** The GitHub repository a copied prompt link names, when the thread's remote has one. */
+  promptLinkRepository?: PromptLinkRepository | null;
   inferredCheckpointTurnCountByTurnId: Record<TurnId, number>;
   expandedFileChangeDiffs: Record<string, boolean>;
   fileChangeSummariesById: Record<string, OrchestrationFileChangeSummary>;
@@ -364,12 +375,24 @@ function formatInlineDiffFileCountLabel(fileCount: number): string {
 const EMPTY_CHAT_DIFF_CONTEXT: ChatDiffContext = {
   threadId: null,
   isGitRepo: false,
+  promptLinkRepository: null,
   inferredCheckpointTurnCountByTurnId: {},
   expandedFileChangeDiffs: {},
   fileChangeSummariesById: {},
   onToggleFileChangeDiff: () => {},
   onOpenFileChangeDiff: () => {},
 };
+
+// Only these settings re-render the timeline; other setting writes keep the selection.
+function selectTimelineSettings(settings: AppSettings) {
+  return {
+    collapseCompletedWorkLogs: settings.collapseCompletedWorkLogs,
+    expandMcpToolCallCardsByDefault: settings.expandMcpToolCallCardsByDefault,
+    expandMcpToolCalls: settings.expandMcpToolCalls,
+    showFileChangeDiffsInline: settings.showFileChangeDiffsInline,
+    showReasoningExpanded: settings.showReasoningExpanded,
+  };
+}
 
 export const MessagesTimeline = memo(function MessagesTimeline({
   nativeSessionCapabilities,
@@ -422,7 +445,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   chatDiffContext = EMPTY_CHAT_DIFF_CONTEXT,
   onWorkingRibbonFocusLost,
 }: MessagesTimelineProps) {
-  const { settings } = useAppSettings();
+  const settings = useAppSettingsSelector(selectTimelineSettings);
   // The working label can be picked up and steered (see WorkingRibbon).
   const reducedMotion = useReducedMotion();
   const [ribbonOrigin, setRibbonOrigin] = useState<RibbonPoint | null>(null);
@@ -814,6 +837,50 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     if (!isAtEndRef.current && pendingViewableRowIndexRef.current <= 3) requestOlderHistory();
   }, [requestOlderHistory, syncIsAtEndFromListState]);
 
+  // A disclosure toggled at the end keeps the end in view while rows re-measure.
+  // Anywhere else, maintainVisibleContentPosition holds the toggled row in place.
+  const disclosurePinsEndRef = useRef(false);
+  const disclosureSettleFrameRef = useRef<number | null>(null);
+  const pinDisclosureToEnd = useCallback(() => {
+    if (!disclosurePinsEndRef.current) return;
+    const node = listRef.current?.getScrollableNode?.();
+    if (node instanceof HTMLElement) node.scrollTop = node.scrollHeight;
+  }, [listRef]);
+  // Settles two frames after the last toggle or row resize, since tool output
+  // can render a few frames late.
+  const scheduleDisclosureSettle = useCallback(() => {
+    if (disclosureSettleFrameRef.current !== null) {
+      window.cancelAnimationFrame(disclosureSettleFrameRef.current);
+    }
+    disclosureSettleFrameRef.current = window.requestAnimationFrame(() => {
+      pinDisclosureToEnd();
+      disclosureSettleFrameRef.current = window.requestAnimationFrame(() => {
+        pinDisclosureToEnd();
+        disclosurePinsEndRef.current = false;
+        disclosureSettleFrameRef.current = null;
+        syncIsAtEndFromListState();
+      });
+    });
+  }, [pinDisclosureToEnd, syncIsAtEndFromListState]);
+  const pinEndThroughDisclosure = useCallback(() => {
+    if (!isAtEndRef.current) return;
+    disclosurePinsEndRef.current = true;
+    scheduleDisclosureSettle();
+  }, [scheduleDisclosureSettle]);
+  const handleItemSizeChanged = useCallback(() => {
+    if (!disclosurePinsEndRef.current) return;
+    queueMicrotask(pinDisclosureToEnd);
+    scheduleDisclosureSettle();
+  }, [pinDisclosureToEnd, scheduleDisclosureSettle]);
+  useEffect(
+    () => () => {
+      if (disclosureSettleFrameRef.current !== null) {
+        window.cancelAnimationFrame(disclosureSettleFrameRef.current);
+      }
+    },
+    [],
+  );
+
   const navigateToTimelineRow = useCallback(
     (rowIndex: number, viewPosition: number) => {
       isAtEndRef.current = false;
@@ -825,6 +892,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       });
     },
     [listRef, onIsAtEndChange],
+  );
+
+  const forwardOverlayWheel = useCallback(
+    (event: WheelEvent) => {
+      const node = listRef.current?.getScrollableNode?.();
+      if (node instanceof HTMLElement) forwardWheelToTimeline(event, node);
+    },
+    [listRef],
   );
 
   const keyExtractor = useCallback((row: TimelineRow) => row.id, []);
@@ -906,6 +981,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     latestMessageId,
     revertPopover,
     chatDiffContext,
+    pinEndThroughDisclosure,
   };
   const latestRowInputsRef = useRef(latestRowInputs);
   useLayoutEffect(() => {
@@ -913,20 +989,31 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   });
   const rowActions = useMemo<TimelineRowActions>(
     () => ({
-      onToggleWorkGroup: (groupId, paginatedEntryCount) =>
-        latestRowInputsRef.current.onToggleWorkGroup(groupId, paginatedEntryCount),
-      onSetWorkGroupExpanded: (groupId, expanded) =>
-        latestRowInputsRef.current.onSetWorkGroupExpanded?.(groupId, expanded),
+      onToggleWorkGroup: (groupId, paginatedEntryCount) => {
+        latestRowInputsRef.current.pinEndThroughDisclosure();
+        latestRowInputsRef.current.onToggleWorkGroup(groupId, paginatedEntryCount);
+      },
+      onSetWorkGroupExpanded: (groupId, expanded) => {
+        latestRowInputsRef.current.pinEndThroughDisclosure();
+        latestRowInputsRef.current.onSetWorkGroupExpanded?.(groupId, expanded);
+      },
       onOpenTurnDiff: (turnId, filePath) =>
         latestRowInputsRef.current.onOpenTurnDiff(turnId, filePath),
       onImageExpand: (preview) => latestRowInputsRef.current.onImageExpand(preview),
       onImageActionMenu: (item, position) =>
         latestRowInputsRef.current.onImageActionMenu?.(item, position),
-      onToggleCommandExecution: (commandExecutionId) =>
-        latestRowInputsRef.current.onToggleCommandExecution(commandExecutionId),
-      onToggleAllDirectories: () => latestRowInputsRef.current.onToggleAllDirectories(),
-      onToggleFileChangeDiff: (workEntryId) =>
-        latestRowInputsRef.current.chatDiffContext.onToggleFileChangeDiff(workEntryId),
+      onToggleCommandExecution: (commandExecutionId) => {
+        latestRowInputsRef.current.pinEndThroughDisclosure();
+        latestRowInputsRef.current.onToggleCommandExecution(commandExecutionId);
+      },
+      onToggleAllDirectories: () => {
+        latestRowInputsRef.current.pinEndThroughDisclosure();
+        latestRowInputsRef.current.onToggleAllDirectories();
+      },
+      onToggleFileChangeDiff: (workEntryId) => {
+        latestRowInputsRef.current.pinEndThroughDisclosure();
+        latestRowInputsRef.current.chatDiffContext.onToggleFileChangeDiff(workEntryId);
+      },
       onOpenFileChangeDiff: (fileChangeId, filePath) =>
         latestRowInputsRef.current.chatDiffContext.onOpenFileChangeDiff(fileChangeId, filePath),
       setRevertPopoverOpen: (messageId, open) =>
@@ -977,6 +1064,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       markdownCwd,
       resolvedTheme,
       isGitRepo: chatDiffContext.isGitRepo,
+      promptLinkRepository: chatDiffContext.promptLinkRepository ?? null,
       canRestoreFiles,
       revertDisabledReason: effectiveRevertDisabledReason,
       revertPreferenceKey,
@@ -993,6 +1081,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       allDirectoriesExpanded,
       canRestoreFiles,
       chatDiffContext.isGitRepo,
+      chatDiffContext.promptLinkRepository,
       effectiveRevertDisabledReason,
       isWorking,
       markdownCwd,
@@ -1137,7 +1226,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   return (
     <TimelineRowContext.Provider value={timelineRowContext}>
-      <div className="relative h-full min-h-0">
+      <TooltipScrollDismissArea className="relative h-full min-h-0">
         <LegendList<TimelineRow>
           ref={listRef}
           data={rows}
@@ -1183,6 +1272,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           // row data itself is still present.
           maintainVisibleContentPosition={{ size: true, data: true }}
           onScroll={handleScroll}
+          onItemSizeChanged={handleItemSizeChanged}
           onViewableItemsChanged={handleViewableItemsChanged}
           // Stable hook for browser tests
           // queries — the LegendList's overflow container has inline styles that
@@ -1217,6 +1307,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             activeRowIndex={activeMinimapRowIndex}
             hasUnloadedHistory={hasOlderHistory}
             onNavigate={(rowIndex) => navigateToTimelineRow(rowIndex, 0.3)}
+            onWheel={forwardOverlayWheel}
           />
         ) : null}
         {turnRailItems.length >= TIMELINE_TURN_RAIL_MIN_ITEMS ? (
@@ -1226,9 +1317,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             hitStripWidth={turnRailHitStripWidth}
             activeTickIndex={turnRailActiveTickIndex}
             onSelect={(item) => navigateToTimelineRow(item.rowIndex, 0.1)}
+            onWheel={forwardOverlayWheel}
           />
         ) : null}
-      </div>
+      </TooltipScrollDismissArea>
     </TimelineRowContext.Provider>
   );
 });
@@ -1239,8 +1331,22 @@ function TimelineMinimap(props: {
   activeRowIndex: number;
   hasUnloadedHistory: boolean;
   onNavigate: (rowIndex: number) => void;
+  onWheel: (event: WheelEvent) => void;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
+  const { onWheel } = props;
+  const setTrackRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      trackRef.current = node;
+      if (!node) return;
+      node.addEventListener("wheel", onWheel, { passive: false });
+      return () => {
+        node.removeEventListener("wheel", onWheel);
+        trackRef.current = null;
+      };
+    },
+    [onWheel],
+  );
   const activeMarkerIndex = findNearestMinimapMarkerIndex(
     props.markerRowIndices,
     props.activeRowIndex,
@@ -1291,7 +1397,7 @@ function TimelineMinimap(props: {
         <ChevronDownIcon className="size-3" />
       </button>
       <div
-        ref={trackRef}
+        ref={setTrackRef}
         className="absolute top-5 right-1 bottom-5 z-10 w-3 touch-none rounded-full bg-background/70 opacity-45 backdrop-blur-sm transition-opacity hover:opacity-100 focus-visible:opacity-100"
         role="slider"
         tabIndex={0}
@@ -1387,9 +1493,37 @@ const TimelineRowWrapper = memo(function TimelineRowWrapper({
   testRenderCountProps?: { "data-render-count": number } | undefined;
   children: ReactNode;
 }) {
+  const find = useContext(ThreadFindContext);
+  const element = useRef<HTMLDivElement>(null);
+  const active = find?.entryId === row.id;
+  useEffect(() => {
+    const root = element.current;
+    if (!active || !find || !root) return;
+    let clear = () => {};
+    let frame = 0;
+    const refresh = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        frame = window.requestAnimationFrame(() => {
+          clear();
+          clear = highlightThreadFind(root, find.query, find.occurrence);
+        });
+      });
+    };
+    const observer = new MutationObserver(refresh);
+    observer.observe(root, { childList: true, subtree: true, characterData: true });
+    refresh();
+    return () => {
+      observer.disconnect();
+      window.cancelAnimationFrame(frame);
+      clear();
+    };
+  }, [active, find]);
   recordTimelineRowRender(row.id);
   return (
     <div
+      ref={element}
+      data-thread-find-active={active ? "true" : undefined}
       className="pb-4"
       {...testRenderCountProps}
       data-timeline-row-id={row.id}
@@ -1421,7 +1555,9 @@ function shouldRenderWorkEntryAsStandaloneRow(
   entry: TimelineWorkEntry,
   options: { settingsExpandMcpToolCalls: boolean },
 ): boolean {
-  return entry.itemType === "mcp_tool_call" && options.settingsExpandMcpToolCalls;
+  return (
+    !!entry.htmlRender || (entry.itemType === "mcp_tool_call" && options.settingsExpandMcpToolCalls)
+  );
 }
 
 function resolveStandaloneExpandedMcpWorkEntry(
@@ -1467,7 +1603,14 @@ type TimelineRow =
       commandExecution: TimelineCommandExecution;
       nestedDiagnostics?: ReadonlyArray<TimelineWorkEntry>;
     }
-  | { kind: "working"; id: string; createdAt: string | null; activity: string | null };
+  | {
+      kind: "working";
+      id: string;
+      createdAt: string | null;
+      activity: string | null;
+      /** The latest thought while a later tool runs. */
+      thought: string | null;
+    };
 
 /** Label for the working row: what the running turn is doing right now. */
 function workingActivityLabel(
@@ -3231,6 +3374,7 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
   onImageExpand: (preview: ExpandedImagePreview) => void;
 }) {
   const { workEntry } = props;
+  const { threadId } = useTimelineRowContext();
   const timestamp = (className: string) => (
     <time
       dateTime={workEntry.createdAt}
@@ -3247,36 +3391,41 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
   // in the shared right gutter overlapped the card's corner whenever it was wider.
   const mcpCard =
     !workEntry.diagnostic && workEntry.itemType === "mcp_tool_call" && props.expandMcpToolCalls;
-  const row = workEntry.diagnostic ? (
-    <DiagnosticWorkEntryRow workEntry={workEntry} />
-  ) : workEntry.itemType === "collab_agent_tool_call" ? (
-    <SubagentWorkEntryRow
-      workEntry={workEntry}
-      turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
-      workspaceRoot={props.workspaceRoot}
-      markdownCwd={props.markdownCwd}
-    />
-  ) : mcpCard ? (
-    <McpToolCallRow
-      workEntry={workEntry}
-      expandByDefault={props.expandMcpByDefault}
-      turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
-      workspaceRoot={props.workspaceRoot}
-      markdownCwd={props.markdownCwd}
-      timestamp={timestamp("shrink-0 pt-0.5")}
-      onImageExpand={props.onImageExpand}
-    />
-  ) : (
-    <SimpleWorkEntryRow
-      workEntry={workEntry}
-      turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
-      workspaceRoot={props.workspaceRoot}
-      resolvedTheme={props.resolvedTheme}
-      showFileChangeDiffsInline={props.showFileChangeDiffsInline}
-      chatDiffContext={props.chatDiffContext}
-      onOpenTurnDiff={props.onOpenTurnDiff}
-    />
-  );
+  const row =
+    workEntry.mcpApp && threadId ? (
+      <McpAppFrame app={workEntry.mcpApp} threadId={threadId} />
+    ) : workEntry.htmlRender ? (
+      <HtmlRenderFrame reference={workEntry.htmlRender} onImageExpand={props.onImageExpand} />
+    ) : workEntry.diagnostic ? (
+      <DiagnosticWorkEntryRow workEntry={workEntry} />
+    ) : workEntry.itemType === "collab_agent_tool_call" ? (
+      <SubagentWorkEntryRow
+        workEntry={workEntry}
+        turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
+        workspaceRoot={props.workspaceRoot}
+        markdownCwd={props.markdownCwd}
+      />
+    ) : mcpCard ? (
+      <McpToolCallRow
+        workEntry={workEntry}
+        expandByDefault={props.expandMcpByDefault}
+        turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
+        workspaceRoot={props.workspaceRoot}
+        markdownCwd={props.markdownCwd}
+        timestamp={timestamp("shrink-0 pt-0.5")}
+        onImageExpand={props.onImageExpand}
+      />
+    ) : (
+      <SimpleWorkEntryRow
+        workEntry={workEntry}
+        turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
+        workspaceRoot={props.workspaceRoot}
+        resolvedTheme={props.resolvedTheme}
+        showFileChangeDiffsInline={props.showFileChangeDiffsInline}
+        chatDiffContext={props.chatDiffContext}
+        onOpenTurnDiff={props.onOpenTurnDiff}
+      />
+    );
 
   return (
     <div className={cn("group/work-entry relative min-w-0", !mcpCard && "pr-14")}>
@@ -3364,6 +3513,7 @@ interface TimelineRowContextValue {
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
   isGitRepo: boolean;
+  promptLinkRepository: PromptLinkRepository | null;
   canRestoreFiles: boolean | undefined;
   revertDisabledReason: string | null;
   revertPreferenceKey: string | undefined;
@@ -3492,55 +3642,58 @@ function WorkGroupRowContent(props: {
     workspaceRoot,
   } = useTimelineRowContext();
   const groupId = row.id;
-  const groupState = resolveWorkGroupRenderState(row.groupedEntries, externals.expandedCount);
-  const standaloneExpandedMcpEntry = resolveStandaloneExpandedMcpWorkEntry(row.groupedEntries, {
-    settingsExpandMcpToolCalls: expandMcpToolCalls,
-  });
+  const appEntries = row.groupedEntries.filter((entry) => entry.mcpApp);
+  const logEntries = row.groupedEntries.filter((entry) => !entry.mcpApp);
+  const groupState = resolveWorkGroupRenderState(logEntries, externals.expandedCount);
+  const entryProps = {
+    timestampFormat,
+    expandMcpToolCalls,
+    expandMcpByDefault: expandMcpToolCallCardsByDefault,
+    turnDiffSummaryByTurnId: externals.turnDiffSummaryByTurnId,
+    workspaceRoot,
+    markdownCwd,
+    resolvedTheme,
+    showFileChangeDiffsInline,
+    chatDiffContext: externals.chatDiffContext,
+    onOpenTurnDiff: actions.onOpenTurnDiff,
+    onImageExpand: actions.onImageExpand,
+  };
+  const appRows = appEntries.map((entry) => (
+    <WorkEntryRow key={`app:${entry.id}`} workEntry={entry} {...entryProps} />
+  ));
+  if (!logEntries.length) return <div className="min-w-0 space-y-2">{appRows}</div>;
+  const standaloneExpandedMcpEntry =
+    row.groupedEntries.length === 1 &&
+    (row.groupedEntries[0]?.htmlRender || row.groupedEntries[0]?.mcpApp)
+      ? row.groupedEntries[0]
+      : resolveStandaloneExpandedMcpWorkEntry(row.groupedEntries, {
+          settingsExpandMcpToolCalls: expandMcpToolCalls,
+        });
 
-  if (standaloneExpandedMcpEntry) {
+  if (!appEntries.length && standaloneExpandedMcpEntry) {
     return (
       <div className="min-w-0 px-1 py-0.5">
-        <WorkEntryRow
-          workEntry={standaloneExpandedMcpEntry}
-          timestampFormat={timestampFormat}
-          expandMcpToolCalls={expandMcpToolCalls}
-          expandMcpByDefault={expandMcpToolCallCardsByDefault}
-          turnDiffSummaryByTurnId={externals.turnDiffSummaryByTurnId}
-          workspaceRoot={workspaceRoot}
-          markdownCwd={markdownCwd}
-          resolvedTheme={resolvedTheme}
-          showFileChangeDiffsInline={showFileChangeDiffsInline}
-          chatDiffContext={externals.chatDiffContext}
-          onOpenTurnDiff={actions.onOpenTurnDiff}
-          onImageExpand={actions.onImageExpand}
-        />
+        <WorkEntryRow workEntry={standaloneExpandedMcpEntry} {...entryProps} />
       </div>
     );
   }
 
   const expanded = externals.collapseOverride ?? !(row.isPriorTurn && collapseCompletedWorkLogs);
-  if (!expanded) {
-    return (
-      <div className="min-w-0 px-1 py-0.5">
-        <button
-          type="button"
-          aria-expanded={false}
-          data-slot="work-group-summary"
-          className="flex min-h-7 w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left text-ui text-muted-foreground outline-none transition-colors duration-(--duration-fast) hover:bg-accent/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={() => actions.onSetWorkGroupExpanded(groupId, true)}
-        >
-          <ChevronRightIcon
-            aria-hidden="true"
-            className="size-3.5 shrink-0 text-faint-foreground"
-          />
-          <span className="min-w-0 truncate">{row.workSummary}</span>
-        </button>
-      </div>
-    );
-  }
   const canCollapse = row.isPriorTurn && canSetWorkGroupExpanded;
-
-  return (
+  const log = !expanded ? (
+    <div className="min-w-0 px-1 py-0.5">
+      <button
+        type="button"
+        aria-expanded={false}
+        data-slot="work-group-summary"
+        className="flex min-h-7 w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left text-ui text-muted-foreground outline-none transition-colors duration-(--duration-fast) hover:bg-accent/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        onClick={() => actions.onSetWorkGroupExpanded(groupId, true)}
+      >
+        <ChevronRightIcon aria-hidden="true" className="size-3.5 shrink-0 text-faint-foreground" />
+        <span className="min-w-0 truncate">{row.workSummary}</span>
+      </button>
+    </div>
+  ) : (
     <div className="rounded-xl border border-border bg-card/50 px-2 py-1.5">
       {(groupState.showHeader || canCollapse) && (
         <div className="mb-1 flex min-h-6 items-center justify-between gap-2 px-0.5">
@@ -3558,7 +3711,7 @@ function WorkGroupRowContent(props: {
               <span className="truncate">{row.workSummary}</span>
             </button>
           ) : (
-            <SectionLabel as="span" count={row.groupedEntries.length} className="min-h-0">
+            <SectionLabel as="span" count={logEntries.length} className="min-h-0">
               {groupState.groupLabel}
             </SectionLabel>
           )}
@@ -3577,24 +3730,18 @@ function WorkGroupRowContent(props: {
       )}
       <div className="space-y-0.5">
         {groupState.visibleEntries.map((workEntry) => (
-          <WorkEntryRow
-            key={`work-row:${workEntry.id}`}
-            workEntry={workEntry}
-            timestampFormat={timestampFormat}
-            expandMcpToolCalls={expandMcpToolCalls}
-            expandMcpByDefault={expandMcpToolCallCardsByDefault}
-            turnDiffSummaryByTurnId={externals.turnDiffSummaryByTurnId}
-            workspaceRoot={workspaceRoot}
-            markdownCwd={markdownCwd}
-            resolvedTheme={resolvedTheme}
-            showFileChangeDiffsInline={showFileChangeDiffsInline}
-            chatDiffContext={externals.chatDiffContext}
-            onOpenTurnDiff={actions.onOpenTurnDiff}
-            onImageExpand={actions.onImageExpand}
-          />
+          <WorkEntryRow key={`work-row:${workEntry.id}`} workEntry={workEntry} {...entryProps} />
         ))}
       </div>
     </div>
+  );
+  return appRows.length ? (
+    <div className="min-w-0 space-y-2">
+      {appRows}
+      {log}
+    </div>
+  ) : (
+    log
   );
 }
 
@@ -3610,6 +3757,7 @@ function UserMessageRowContent(props: {
     hasImageActionMenu,
     isGitRepo,
     nativeSessionCapabilities,
+    promptLinkRepository,
     resolvedTheme,
     revertDisabledReason,
     revertPreferenceKey,
@@ -3732,6 +3880,12 @@ function UserMessageRowContent(props: {
         <div className="flex items-center gap-0.5 opacity-0 transition-opacity duration-(--duration-fast) focus-within:opacity-100 group-hover/user-message:opacity-100 has-[[data-popup-open]]:opacity-100 pointer-coarse:opacity-100">
           {displayedUserMessage.copyText && (
             <MessageCopyButton text={displayedUserMessage.copyText} />
+          )}
+          {displayedUserMessage.copyText && (
+            <PromptLinkCopyButton
+              prompt={displayedUserMessage.copyText}
+              repository={promptLinkRepository}
+            />
           )}
           {threadId &&
             row.message.turnId &&
@@ -3971,9 +4125,11 @@ function ProposedPlanRowContent(props: { row: ProposedPlanTimelineRow }) {
   "use memo";
   const { row } = props;
   const { markdownCwd, workspaceRoot } = useTimelineRowContext();
+  const find = useContext(ThreadFindContext);
   return (
     <div className="min-w-0 px-1 py-0.5">
       <ProposedPlanCard
+        forceExpanded={find?.entryId === row.id}
         planMarkdown={row.proposedPlan.planMarkdown}
         cwd={markdownCwd}
         workspaceRoot={workspaceRoot}
@@ -4015,6 +4171,15 @@ function WorkingRowContent(props: {
   const { actions, grabButtonRef, reducedMotion } = useTimelineRowContext();
   return (
     <div className="py-0.5 pl-1.5">
+      {row.thought ? (
+        <div
+          data-working-thought=""
+          className="flex min-w-0 items-start gap-2 pt-1 text-ui text-muted-foreground"
+        >
+          <BrainIcon aria-hidden className="mt-[0.2em] size-3.5 shrink-0 text-faint-foreground" />
+          <span className="min-w-0 line-clamp-4 wrap-break-word">{row.thought}</span>
+        </div>
+      ) : null}
       <div className="flex min-w-0 items-center gap-2 pt-1 text-ui text-muted-foreground">
         <span aria-hidden="true" className="inline-flex shrink-0 items-center gap-0.5">
           <span className="size-1 rounded-full bg-faint-foreground motion-safe:animate-status-pulse" />
@@ -4209,7 +4374,10 @@ export function buildTimelineRows(input: {
           cursor += 1;
         }
       }
-      const isPriorTurn = index < lastUserMessageEntryIndex;
+      // A steer leaves a running subagent working, so its group stays open until it ends.
+      const isPriorTurn =
+        index < lastUserMessageEntryIndex &&
+        !groupedEntries.some((entry) => entry.subagentType && entry.status === "inProgress");
       nextRows.push(
         reuse(timelineEntry.id, ["work", isPriorTurn, ...groupedEntries], () => ({
           kind: "work",
@@ -4280,13 +4448,20 @@ export function buildTimelineRows(input: {
 
   if (input.isWorking) {
     const activity = workingActivityLabel(nextRows, input.liveActivity);
+    const thought =
+      input.liveActivity?.kind === "tool" ? (input.liveActivity.thought ?? null) : null;
     nextRows.push(
-      reuse("working-indicator-row", ["working", input.activeTurnStartedAt, activity], () => ({
-        kind: "working",
-        id: "working-indicator-row",
-        createdAt: input.activeTurnStartedAt,
-        activity,
-      })),
+      reuse(
+        "working-indicator-row",
+        ["working", input.activeTurnStartedAt, activity, thought],
+        () => ({
+          kind: "working",
+          id: "working-indicator-row",
+          createdAt: input.activeTurnStartedAt,
+          activity,
+          thought,
+        }),
+      ),
     );
   }
 

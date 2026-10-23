@@ -133,6 +133,9 @@ describe("orchestration projector", () => {
     expect(next.snapshotSequence).toBe(1);
     expect(next.threads).toEqual([
       {
+        settledAt: null,
+        settledBy: null,
+        autoSettleDisabled: false,
         id: "thread-1",
         projectId: "project-1",
         title: "demo",
@@ -141,6 +144,7 @@ describe("orchestration projector", () => {
         interactionMode: "default",
         branch: null,
         worktreePath: null,
+        scratchPath: null,
         latestTurn: null,
         archivedAt: null,
         pinnedAt: null,

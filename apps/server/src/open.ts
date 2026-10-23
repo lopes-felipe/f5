@@ -105,6 +105,8 @@ const macEditorAppNames: Partial<Record<EditorId, readonly string[]>> = {
   vscode: ["Visual Studio Code"],
   "vscode-insiders": ["Visual Studio Code - Insiders"],
   idea: ["IntelliJ IDEA", "IntelliJ IDEA CE", "IntelliJ IDEA Ultimate"],
+  // `Antigravity.app` is the separate Hub, not the IDE.
+  antigravity: ["Antigravity IDE"],
 };
 
 function resolveEditorCommandCandidates(

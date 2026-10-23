@@ -158,6 +158,11 @@ export class GithubCliImport {
       maxStderrBytes: MAX_OUTPUT_BYTES,
       allowNonZeroExit: true,
     }).catch(() => null);
+    // gh gained `auth status --json` in 2.81.0; older versions reject the flag and exit non-zero.
+    if (result && result.code !== 0 && result.stderr.includes("unknown flag: --json"))
+      throw new Error(
+        "GitHub CLI is too old to list its logins. Update gh to 2.81.0 or newer (for example `brew upgrade gh`) and try again.",
+      );
     if (!result || result.timedOut || result.code !== 0 || result.stdoutTruncated)
       throw new Error("Unable to read the GitHub CLI login on this computer.");
     try {

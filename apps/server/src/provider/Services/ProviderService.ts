@@ -57,6 +57,7 @@ export interface ProviderSubmissionHandle {
 }
 
 export interface ProviderServiceShape {
+  readonly mcpApps?: import("./ProviderAdapter.ts").ProviderMcpApps<ProviderServiceError>;
   /** Preserve a send fence when ingestion cannot retain an admitted event. */
   readonly requireHistoryReconciliation?: (
     event: ProviderRuntimeEvent,
@@ -179,10 +180,12 @@ export interface ProviderServiceShape {
   readonly listSessions: () => Effect.Effect<ReadonlyArray<ProviderSession>>;
 
   /**
-   * Read static capabilities for a provider adapter.
+   * Read static capabilities from the exact instance when supplied. The legacy
+   * kind-only form resolves the default instance.
    */
   readonly getCapabilities: (
     provider: ProviderKind,
+    instanceId?: ProviderInstanceId,
   ) => Effect.Effect<ProviderAdapterCapabilities, ProviderServiceError>;
 
   /**

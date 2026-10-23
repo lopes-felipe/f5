@@ -14,6 +14,43 @@ import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
 import { createComposerMention } from "./composer-editor-mentions";
 
 describe("detectComposerTrigger", () => {
+  it.each(["Use ", "Use\t"])("detects an inline slash skill search after %j", (prefix) => {
+    const text = `${prefix}/skill:review later`;
+    const cursor = `${prefix}/skill:review`.length;
+    expect(detectComposerTrigger(text, cursor)).toEqual({
+      kind: "slash-command",
+      query: "skill:review",
+      rangeStart: prefix.length,
+      rangeEnd: cursor,
+      inline: true,
+    });
+  });
+
+  it("treats an indented slash on its own line as a line-start command", () => {
+    const text = "Use\n  /review";
+    expect(detectComposerTrigger(text, text.length)).toEqual({
+      kind: "slash-command",
+      query: "review",
+      rangeStart: "Use\n  ".length,
+      rangeEnd: text.length,
+    });
+  });
+
+  it.each(["Use /", "Use /review"])("detects the inline slash token in %j", (text) => {
+    expect(detectComposerTrigger(text, text.length)).toEqual({
+      kind: "slash-command",
+      query: text.slice(5),
+      rangeStart: 4,
+      rangeEnd: text.length,
+      inline: true,
+    });
+  });
+
+  it.each(["Use/review", "https://example.com/review", "Use /review "])(
+    "does not trigger for %j",
+    (text) => expect(detectComposerTrigger(text, text.length)).toBeNull(),
+  );
+
   it("detects @path trigger at cursor", () => {
     const text = "Please check @src/com";
     const trigger = detectComposerTrigger(text, text.length);

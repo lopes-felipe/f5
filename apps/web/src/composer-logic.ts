@@ -1,4 +1,8 @@
-import { splitPromptIntoComposerSegments, type ComposerMention } from "./composer-editor-mentions";
+import {
+  splitPromptIntoComposerSegments,
+  type ComposerMention,
+  type ComposerPromptSegment,
+} from "./composer-editor-mentions";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
 
 export type ComposerTriggerKind = "path" | "slash-command" | "skill";
@@ -9,11 +13,11 @@ export interface ComposerTrigger {
   query: string;
   rangeStart: number;
   rangeEnd: number;
+  /** A slash token after other text on its line: it searches skills, not commands. */
+  inline?: true;
 }
 
-const isInlineTokenSegment = (
-  segment: { type: "text"; text: string } | { type: "mention" } | { type: "terminal-context" },
-): boolean => segment.type !== "text";
+const isInlineTokenSegment = (segment: ComposerPromptSegment): boolean => segment.type !== "text";
 
 function clampCursor(text: string, cursor: number): number {
   if (!Number.isFinite(cursor)) return text.length;
@@ -101,7 +105,7 @@ export function expandCollapsedComposerCursor(
   let expandedCursor = 0;
 
   for (const segment of segments) {
-    if (segment.type === "mention") {
+    if (segment.type === "mention" || segment.type === "pull-request") {
       const expandedLength = segment.raw.length;
       if (remaining <= 1) {
         return expandedCursor + (remaining === 0 ? 0 : expandedLength);
@@ -130,9 +134,7 @@ export function expandCollapsedComposerCursor(
   return expandedCursor;
 }
 
-function collapsedSegmentLength(
-  segment: { type: "text"; text: string } | { type: "mention" } | { type: "terminal-context" },
-): number {
+function collapsedSegmentLength(segment: ComposerPromptSegment): number {
   if (segment.type === "text") {
     return segment.text.length;
   }
@@ -140,9 +142,7 @@ function collapsedSegmentLength(
 }
 
 function clampCollapsedComposerCursorForSegments(
-  segments: ReadonlyArray<
-    { type: "text"; text: string } | { type: "mention" } | { type: "terminal-context" }
-  >,
+  segments: ReadonlyArray<ComposerPromptSegment>,
   cursorInput: number,
 ): number {
   const collapsedLength = segments.reduce(
@@ -181,7 +181,7 @@ export function collapseExpandedComposerCursor(
   let collapsedCursor = 0;
 
   for (const segment of segments) {
-    if (segment.type === "mention") {
+    if (segment.type === "mention" || segment.type === "pull-request") {
       const expandedLength = segment.raw.length;
       if (remaining === 0) {
         return collapsedCursor;
@@ -272,6 +272,16 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
   const skillMatch = /^\p{Sc}([a-zA-Z0-9-]*)$/u.exec(token);
   if (skillMatch && !/^[0-9][0-9_]*(?:[kKmMbBtT]|[eE][0-9]+)?$/.test(skillMatch[1] ?? "")) {
     return { kind: "skill", query: skillMatch[1] ?? "", rangeStart: tokenStart, rangeEnd: cursor };
+  }
+  if (token.startsWith("/")) {
+    const inline = text.slice(lineStart, tokenStart).trim() !== "";
+    return {
+      kind: "slash-command",
+      query: token.slice(1),
+      rangeStart: tokenStart,
+      rangeEnd: cursor,
+      ...(inline ? { inline: true as const } : {}),
+    };
   }
   if (!token.startsWith("@")) {
     return null;

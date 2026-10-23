@@ -26,8 +26,9 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
         { cwd: "/tmp/workspace", editor: "antigravity" },
         "darwin",
       );
+      // `agy` is the standalone Antigravity CLI; the IDE launches as `antigravity-ide`.
       assert.deepEqual(antigravityLaunch, {
-        command: "agy",
+        command: "antigravity-ide",
         args: ["/tmp/workspace"],
       });
 

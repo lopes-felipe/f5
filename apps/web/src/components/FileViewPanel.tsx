@@ -43,6 +43,7 @@ import { Textarea } from "./ui/textarea";
 import { DIFF_PANEL_UNSAFE_CSS } from "./DiffPanel";
 import { insertFileMentionIntoComposer } from "./composerFileMentionInsertion";
 import { showFileEntryContextMenu } from "./fileEntryActions";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 
 interface FileViewPanelProps {
   mode: DiffPanelMode;
@@ -120,8 +121,7 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
   const activeProject = useStore((store) =>
     activeProjectId ? store.projects.find((project) => project.id === activeProjectId) : undefined,
   );
-  const workspaceRoot =
-    activeThread?.worktreePath ?? draftThread?.worktreePath ?? activeProject?.cwd;
+  const workspaceRoot = threadWorkspaceCwd(activeThread ?? draftThread, activeProject);
   const filePath = surface?.relativePath ?? fileSearch.fileViewPath;
   const fileLine = surface?.line ?? fileSearch.fileLine;
   const fileEndLine = surface?.endLine ?? fileSearch.fileEndLine;
@@ -673,6 +673,22 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
             <p className="mt-2 text-sm text-muted-foreground">
               {fileQuery.error instanceof Error ? fileQuery.error.message : "Failed to load file."}
             </p>
+            {/* A wrong link usually means a wrong path, so show which path was tried and where. */}
+            {watchedFilePath ? (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Attempted path{" "}
+                <code className="break-all font-mono text-foreground select-all">
+                  {watchedFilePath}
+                </code>
+                {workspaceRoot ? (
+                  <>
+                    {" "}
+                    in workspace folder{" "}
+                    <code className="break-all font-mono select-all">{workspaceRoot}</code>
+                  </>
+                ) : null}
+              </p>
+            ) : null}
             <div className="mt-4 flex items-center gap-2">
               <Button size="xs" variant="outline" onClick={() => void fileQuery.refetch()}>
                 <RefreshCwIcon className="size-3.5" />

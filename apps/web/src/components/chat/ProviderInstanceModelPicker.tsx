@@ -12,7 +12,7 @@ import { BoxIcon, ChevronDownIcon, SearchIcon, StarIcon } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { VariantProps } from "class-variance-authority";
 
-import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
+import { type UnifiedWebSettings, useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import {
   deriveProviderInstanceEntries,
   sortProviderInstanceEntries,
@@ -44,6 +44,10 @@ type ModelPickerSource =
   | { readonly kind: "instance"; readonly instanceId: ProviderInstanceId };
 
 const INSTANCE_SIDEBAR_ID_PREFIX = "instance:";
+
+function selectFavoriteSettings(settings: UnifiedWebSettings) {
+  return { favorites: settings.favorites };
+}
 
 function instanceSidebarId(instanceId: ProviderInstanceId): string {
   return `${INSTANCE_SIDEBAR_ID_PREFIX}${instanceId}`;
@@ -126,7 +130,7 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
     | ((instanceId: ProviderInstanceId, driver: ProviderDriverKind, model: ModelSlug) => void)
     | undefined;
 }) {
-  const settings = useSettings();
+  const settings = useSettings(selectFavoriteSettings);
   const { updateSettings } = useUpdateSettings();
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const [search, setSearch] = useState("");

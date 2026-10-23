@@ -580,11 +580,14 @@ export function abandonPendingTaskToolCalls(state: TaskToolState): ReduceResult 
 export function revertTaskToolState(
   state: TaskToolState,
   retainedTurnIds: ReadonlySet<string> | undefined,
+  native?: { readonly removedTurnIds: ReadonlySet<string> },
 ): TaskToolState {
   const tracking = state.tracking;
   if (!tracking) return { tasks: [], tracking: null };
   const isRetained = (turnId: string | null) =>
-    turnId !== null && retainedTurnIds !== undefined && retainedTurnIds.has(turnId);
+    native
+      ? turnId === null || !native.removedTurnIds.has(turnId)
+      : turnId !== null && retainedTurnIds !== undefined && retainedTurnIds.has(turnId);
   const discarded = new Set(
     tracking.provenance.filter((entry) => !isRetained(entry.turnId)).map((entry) => entry.taskId),
   );

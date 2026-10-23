@@ -164,3 +164,28 @@ it.each(["**a****b**", "# Title **bold**", "**a**__b__", "`a``b`"])(
     await expect.element(screen.getByLabelText("Serialized prompt")).toHaveTextContent(prompt);
   },
 );
+
+it("keeps a PR reference chip and its complete URL through styling, deletion and undo", async () => {
+  const raw = "[PR #7](https://github.com/org/repo/pull/7)";
+  const screen = await render(<Harness initial={raw} />);
+  const editor = screen.getByTestId("composer-editor");
+  await expect
+    .poll(() => editor.element().querySelector("[data-composer-pr-reference]")?.textContent)
+    .toBe("org/repo#7");
+  await screen.getByRole("button", { name: "Toggle styling" }).click();
+  await screen.getByRole("button", { name: "Read prompt" }).click();
+  await expect.element(screen.getByLabelText("Serialized prompt")).toHaveTextContent(raw);
+  await expect.element(screen.getByLabelText("Mentions")).toHaveTextContent("[]");
+  await screen.getByRole("button", { name: "Focus end" }).click();
+  await userEvent.keyboard("{Backspace}");
+  await expect
+    .poll(() => editor.element().querySelector("[data-composer-pr-reference]"))
+    .toBeNull();
+  const modifier = navigator.platform.toUpperCase().includes("MAC") ? "Meta" : "Control";
+  await userEvent.keyboard("{" + modifier + ">}z{/" + modifier + "}");
+  await expect
+    .poll(() => editor.element().querySelector("[data-composer-pr-reference]")?.textContent)
+    .toBe("org/repo#7");
+  await screen.getByRole("button", { name: "Read prompt" }).click();
+  await expect.element(screen.getByLabelText("Serialized prompt")).toHaveTextContent(raw);
+});

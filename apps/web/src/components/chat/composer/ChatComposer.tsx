@@ -5,8 +5,9 @@ import { PopupFocusContext } from "~/components/ui/popupFocus";
 import { type ComposerMention, insertComposerMentionTrigger } from "~/composer-editor-mentions";
 import { recallComposerMentions } from "~/composerMentionHistoryStore";
 import { collapseExpandedComposerCursor } from "~/composer-logic";
-import { useAppSettings } from "~/appSettings";
+import { type AppSettings, useAppSettingsSelector } from "~/appSettings";
 import { useEffect, useRef, useId } from "react";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { isKeyboardEventComposing } from "~/lib/keyboardComposition";
 import { stepPromptHistory, type PromptHistoryPosition } from "./promptHistory";
 import type * as React from "react";
@@ -19,7 +20,11 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { relativePathForDisplay } from "~/lib/attachedFiles";
 import { ComposerPromptEditor } from "~/components/ComposerPromptEditor";
 import { buildExpandedImagePreview } from "~/components/chat/ExpandedImagePreview";
-import { ComposerCommandMenu } from "~/components/chat/ComposerCommandMenu";
+import {
+  ComposerCommandMenu,
+  composerCommandMenuEmptyText,
+  composerSuggestionOptionId,
+} from "~/components/chat/ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "~/components/chat/ComposerPendingApprovalActions";
 import { ComposerPendingApprovalPanel } from "~/components/chat/ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "~/components/chat/ComposerPendingUserInputPanel";
@@ -90,6 +95,15 @@ export interface ChatComposerProps {
   attachments: ComposerAttachments;
 }
 
+// Only these settings re-render the composer; other setting writes keep the selection.
+function selectComposerSettings(settings: AppSettings) {
+  return {
+    composerCollapseOnScroll: settings.composerCollapseOnScroll,
+    composerRichTextEnabled: settings.composerRichTextEnabled,
+    sendShortcut: settings.sendShortcut,
+  };
+}
+
 export function ChatComposer({
   redesignEnabled,
   getTimeline,
@@ -120,8 +134,9 @@ export function ChatComposer({
   sendControls,
   attachments,
 }: ChatComposerProps) {
-  const { settings } = useAppSettings();
+  const settings = useAppSettingsSelector(selectComposerSettings);
   const attachmentTrayId = useId();
+  const composerSuggestionListId = `${useId()}-suggestions`;
   const historyPosition = useRef<PromptHistoryPosition | null>(null);
   const sendShortcutLabel = composerSendShortcutLabel(
     settings.sendShortcut,
@@ -137,6 +152,8 @@ export function ChatComposer({
     activePendingProgress,
     isComposerApprovalState,
   } = pendingInteraction;
+  // The editor points at the highlighted option only while the list is on screen.
+  const composerSuggestionsVisible = composerMenuOpen && !isComposerApprovalState;
   const { interactionMode, showPlanFollowUpPrompt, activeProposedPlan } = modeControls;
   const { isConnecting, isPendingTurnDispatchBlocked, phase, revertInProgress } = sendControls;
   const {
@@ -315,6 +332,7 @@ export function ChatComposer({
             <div className="rounded-t-[calc(var(--radius-xl)-1px)] border-b border-border bg-muted/40">
               <ComposerPendingUserInputPanel
                 pendingUserInputs={pendingUserInputs}
+                cwd={threadWorkspaceCwd(activeThread, activeProject)}
                 respondingRequestIds={respondingRequestIds}
                 answers={pendingInteraction.activePendingDraftAnswers}
                 questionIndex={pendingInteraction.activePendingQuestionIndex}
@@ -340,7 +358,12 @@ export function ChatComposer({
               hasComposerHeader ? "pt-2.5 sm:pt-3" : "pt-3.5 sm:pt-4",
             )}
           >
-            {composerMenuOpen && !isComposerApprovalState && (
+            <div role="status" aria-atomic="true" className="sr-only">
+              {composerSuggestionsVisible && composerMenuItems.length === 0
+                ? composerCommandMenuEmptyText(isComposerMenuLoading, composerTriggerKind)
+                : ""}
+            </div>
+            {composerSuggestionsVisible && (
               <div
                 data-composer-command-drawer={redesignEnabled || undefined}
                 className={cn(
@@ -349,6 +372,7 @@ export function ChatComposer({
                 )}
               >
                 <ComposerCommandMenu
+                  listId={composerSuggestionListId}
                   items={composerMenuItems}
                   resolvedTheme={resolvedTheme}
                   isLoading={isComposerMenuLoading}
@@ -460,7 +484,7 @@ export function ChatComposer({
                     {composerFilePaths.map((filePath) => {
                       const displayPath = relativePathForDisplay(
                         filePath,
-                        activeThread?.worktreePath ?? activeProject?.cwd,
+                        threadWorkspaceCwd(activeThread, activeProject),
                       );
                       return (
                         <FileChip
@@ -533,6 +557,13 @@ export function ChatComposer({
                           : "Ask F5 to build, fix, or explain... (@ files, / commands)"
               }
               disabled={isConnecting || isComposerApprovalState || isPendingTurnDispatchBlocked}
+              ariaLabel="Message"
+              suggestionListId={composerSuggestionListId}
+              activeSuggestionId={
+                composerSuggestionsVisible && composerMenuItems.length > 0 && activeComposerMenuItem
+                  ? composerSuggestionOptionId(composerSuggestionListId, activeComposerMenuItem.id)
+                  : undefined
+              }
             />
           </div>
 

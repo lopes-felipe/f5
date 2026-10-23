@@ -1,3 +1,5 @@
+import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
+import { ServerSettingsService } from "../../serverSettings.ts";
 /**
  * ProviderRegistryLive — aggregates per-instance snapshot streams into a
  * single materialized list.
@@ -30,7 +32,7 @@ import {
   type ServerProvider,
   type ServerProviderProbeOutcome,
 } from "@t3tools/contracts";
-import { Cause, Effect, Equal, FileSystem, Layer, Path, PubSub, Ref, Stream } from "effect";
+import { Cause, Effect, Equal, FileSystem, Layer, Option, Path, PubSub, Ref, Stream } from "effect";
 import * as Semaphore from "effect/Semaphore";
 
 import { ServerConfig } from "../../config.ts";
@@ -279,6 +281,16 @@ export const ProviderRegistryLive = Layer.effect(
   ProviderRegistry,
   Effect.gen(function* () {
     const instanceRegistry = yield* ProviderInstanceRegistry;
+    const settingsService = yield* Effect.serviceOption(ServerSettingsService);
+    const globalSnapshots = (snapshots: ReadonlyArray<ServerProvider>) =>
+      Option.isSome(settingsService)
+        ? settingsService.value.getSettings.pipe(
+            Effect.map((settings) => projectProviderSnapshots(snapshots, settings)),
+            Effect.catch(() =>
+              Effect.succeed(snapshots.map((provider) => ({ ...provider, enabled: false }))),
+            ),
+          )
+        : Effect.succeed(snapshots);
     const config = yield* ServerConfig;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -682,13 +694,29 @@ export const ProviderRegistryLive = Layer.effect(
     });
 
     return {
-      getProviders: Ref.get(providersRef),
+      getProviders: Ref.get(providersRef).pipe(Effect.flatMap(globalSnapshots)),
       refresh: (provider?: ProviderDriverKind) =>
-        refresh(provider).pipe(Effect.catchCause(recoverRefreshFailure)),
+        refresh(provider).pipe(
+          Effect.catchCause(recoverRefreshFailure),
+          Effect.flatMap(globalSnapshots),
+        ),
       refreshInstance: (instanceId: ProviderInstanceId) =>
-        refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
+        refreshInstance(instanceId).pipe(
+          Effect.catchCause(recoverRefreshFailure),
+          Effect.flatMap(globalSnapshots),
+        ),
       get streamChanges() {
-        return Stream.fromPubSub(changesPubSub);
+        const changes = Stream.fromPubSub(changesPubSub);
+        return (
+          Option.isSome(settingsService)
+            ? Stream.merge(
+                changes,
+                settingsService.value.streamChanges.pipe(
+                  Stream.mapEffect(() => Ref.get(providersRef)),
+                ),
+              )
+            : changes
+        ).pipe(Stream.mapEffect(globalSnapshots));
       },
     } satisfies ProviderRegistryShape;
   }),

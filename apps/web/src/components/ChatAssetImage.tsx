@@ -8,7 +8,7 @@ import { useStore } from "../store";
 import { useThreadSummaries } from "../threadSelectors";
 import { readNativeApi } from "../nativeApi";
 import { getServerHttpOrigin } from "../lib/serverHttpOrigin";
-import { useAppSettings } from "../appSettings";
+import { useAppSettingsSelector } from "../appSettings";
 
 type ImageGrant = { url: string; width?: number | undefined; height?: number | undefined };
 type Identity = ProjectIssueAssetUrlInput["identity"];
@@ -58,7 +58,9 @@ export function ChatAssetImage({
   alt: string;
   cwd: string | undefined;
 }) {
-  const { settings } = useAppSettings();
+  const loadRemoteImagesInChat = useAppSettingsSelector(
+    (settings) => settings.loadRemoteImagesInChat,
+  );
   const documentContext = useContext(AssetDocumentContext);
   const projects = useStore((state) => state.projects);
   // Summaries keep worktree paths without changing on every streaming delta.
@@ -103,7 +105,7 @@ export function ChatAssetImage({
     staleTime: 25 * 60 * 1000,
     refetchInterval: visible ? 25 * 60 * 1000 : false,
   });
-  const url = remote ? (settings.loadRemoteImagesInChat ? src : undefined) : grant.data?.url;
+  const url = remote ? (loadRemoteImagesInChat ? src : undefined) : grant.data?.url;
   return (
     <span ref={anchor} className="inline-block min-h-12 min-w-24 max-w-full">
       {visible && url ? (
@@ -145,7 +147,7 @@ export function ChatAssetImage({
       ) : (
         <span className="text-muted-foreground">
           {alt || "Image"}
-          {remote && !settings.loadRemoteImagesInChat
+          {remote && !loadRemoteImagesInChat
             ? " (remote images disabled)"
             : grant.isError
               ? " (unavailable)"

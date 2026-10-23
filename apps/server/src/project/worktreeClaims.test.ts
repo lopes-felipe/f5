@@ -53,9 +53,7 @@ describe("effective workspace claims and removal gate", () => {
             policy,
           });
           expect(result.blockedReasons.join(" ")).toContain(
-            kind === "autoCleanup"
-              ? "ignored files other than node_modules/"
-              : "ignored files that are not build output",
+            "ignored files that are not build output",
           );
           expect(result.ignoredFiles?.requiresApproval).toBe(false);
           expect(result.ignoredFiles?.canRemoveAfterApproval).toBe(false);
@@ -274,6 +272,49 @@ describe("effective workspace claims and removal gate", () => {
       }).pipe(Effect.provide(automationLayer(world, {}, "f5-removal-state-")), Effect.scoped),
     );
   });
+  it("manual removal preserves ignored databases, envrc files, and private keys", async () => {
+    const repo = await makeClonedRepo("f5-manual-ignored-");
+    cleanups.push(repo.cleanup);
+    const world = makeWorld();
+    world.projects.push(project("p", repo.root));
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const core = yield* GitCore;
+        const target = path.join((yield* ServerConfig).worktreesDir, "manual");
+        yield* core.createWorktree({
+          cwd: repo.root,
+          branch: "main",
+          newBranch: "manual",
+          path: target,
+        });
+        yield* Effect.promise(() =>
+          fs.appendFile(
+            path.join(repo.root, ".git", "info", "exclude"),
+            "\n*.sqlite\n.envrc\n*.pem\n",
+          ),
+        );
+        for (const name of ["local.sqlite", ".envrc", "private.pem"]) {
+          yield* Effect.promise(() => fs.writeFile(path.join(target, name), "precious local data"));
+          const result = yield* removeWorktreeSafely({
+            projectCwd: repo.root,
+            path: target,
+            policy: { kind: "manual", ownThreadId: null },
+          });
+          expect(result.blockedReasons.join(" ").toLowerCase()).toContain("ignored");
+          const raw = yield* Effect.result(core.removeWorktree({ cwd: repo.root, path: target }));
+          expect(raw._tag).toBe("Failure");
+          expect(yield* Effect.promise(() => fs.readFile(path.join(target, name), "utf8"))).toBe(
+            "precious local data",
+          );
+          yield* Effect.promise(() => fs.rm(path.join(target, name)));
+        }
+      }).pipe(
+        Effect.provide(automationLayer(world, {}, "f5-manual-ignored-state-")),
+        Effect.scoped,
+      ),
+    );
+  });
+
   it.each(["pr:feature", "workflow:implementation"])(
     "removes idle pending preparation owned by %s and releases its reservation",
     async (owner) => {
@@ -457,7 +498,7 @@ describe("effective workspace claims and removal gate", () => {
             policy: { kind, ownThreadId: null },
           });
         expect((yield* inspect("storageMaintenance")).blockedReasons).toEqual([]);
-        expect((yield* inspect("autoCleanup")).blockedReasons.join(" ")).toMatch(/ignored/);
+        expect((yield* inspect("autoCleanup")).blockedReasons).toEqual([]);
         yield* Effect.promise(() => fs.writeFile(path.join(target, "data.sqlite"), "rows"));
         expect((yield* inspect("storageMaintenance")).blockedReasons.join(" ")).toContain(
           "ignored files that are not build output (data.sqlite)",

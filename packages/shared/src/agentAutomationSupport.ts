@@ -4,7 +4,7 @@ export type ComputerAgentProvider = "claude" | "codex" | "cursor" | "grok" | "an
 export function computerAgentProviderFor(kind: ProviderKind): ComputerAgentProvider | undefined {
   return kind === "claudeAgent"
     ? "claude"
-    : kind === "opencode" || kind === "muse"
+    : kind === "opencode" || kind === "muse" || kind === "acp" || kind === "pi"
       ? undefined
       : kind;
 }
@@ -20,15 +20,16 @@ export const COMPUTER_AGENT_DISPLAY: Record<
 };
 export type SupportEntry = { state: "available" | "conditional" | "unsupported"; reason?: string };
 export const ACP_COMPUTER_CATALOG_VERIFIED: Readonly<
-  Record<"cursor" | "grok" | "antigravity", boolean>
+  Record<"cursor" | "grok" | "antigravity" | "acp", boolean>
 > = Object.freeze({
   cursor: false,
   grok: false,
   antigravity: false,
+  acp: false,
 });
 export const ACP_PREVIEW_CATALOG_VERIFIED: Readonly<
-  Record<"cursor" | "grok" | "antigravity", boolean>
-> = Object.freeze({ cursor: false, grok: false, antigravity: false });
+  Record<"cursor" | "grok" | "antigravity" | "acp", boolean>
+> = Object.freeze({ cursor: false, grok: false, antigravity: false, acp: false });
 export const OPENCODE_EXTERNAL_AUTOMATION_REASON =
   "External OpenCode servers can't connect to F5's session-bound tools.";
 const awaitingVerification: SupportEntry = {
@@ -64,6 +65,8 @@ export const AGENT_AUTOMATION_SUPPORT: Record<
     preview: { state: "unsupported", reason: openCodeReason },
     computer: { state: "unsupported", reason: openCodeReason },
   },
+  acp: { preview: awaitingVerification, computer: awaitingVerification },
+  pi: { preview: awaitingVerification, computer: awaitingVerification },
   muse: {
     preview: { state: "unsupported", reason: museReason },
     computer: { state: "unsupported", reason: museReason },

@@ -30,6 +30,7 @@ import { runAgentBridgeStdio } from "./agentBridge/stdioShim.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   Data,
+  Deferred,
   Effect,
   Exit,
   Layer,
@@ -2227,6 +2228,15 @@ describe("WebSocket Server", () => {
     vi.resetModules();
     vi.doMock("./serverLayers.ts", async () => {
       const actual = await vi.importActual<typeof import("./serverLayers.ts")>("./serverLayers.ts");
+      const { McpAppService } = await vi.importActual<typeof import("./mcpApps/McpAppService.ts")>(
+        "./mcpApps/McpAppService.ts",
+      );
+      const { ThreadSettlementService } = await vi.importActual<
+        typeof import("./orchestration/Layers/ThreadSettlementService.ts")
+      >("./orchestration/Layers/ThreadSettlementService.ts");
+      const { PullRequestWatchService } = await vi.importActual<
+        typeof import("./orchestration/Layers/PullRequestWatchService.ts")
+      >("./orchestration/Layers/PullRequestWatchService.ts");
       const orchestrationEngineModule = await vi.importActual<
         typeof import("./orchestration/Services/OrchestrationEngine.ts")
       >("./orchestration/Services/OrchestrationEngine.ts");
@@ -2333,6 +2343,9 @@ describe("WebSocket Server", () => {
       };
 
       const runtimeLayer = Layer.mergeAll(
+        Layer.mock(McpAppService)({}),
+        Layer.mock(ThreadSettlementService)({ start: Effect.void }),
+        Layer.mock(PullRequestWatchService)({ start: Effect.void, changes: Stream.empty }),
         Layer.succeed(orchestrationEngineModule.OrchestrationEngineService, {
           getReadModel: () => Effect.succeed(readModel),
           readEvents: () => Stream.empty,
@@ -2627,6 +2640,10 @@ describe("WebSocket Server", () => {
       issues: [],
       providers: defaultProviderSnapshots,
       settings: DEFAULT_SERVER_SETTINGS,
+      diagnostics: {
+        traces: { endpoint: null, source: "unset", protocol: "http/protobuf" },
+        metrics: { endpoint: null, source: "unset", protocol: "http/protobuf" },
+      },
       availableEditors: expect.any(Array),
     });
     expect(
@@ -2652,6 +2669,9 @@ describe("WebSocket Server", () => {
       path.join(stateDir, "settings.json"),
       JSON.stringify(
         {
+          observability: {
+            otlpHeaders: [{ name: "Authorization", value: "collector-private-header" }],
+          },
           providers: {
             opencode: {
               serverPassword: "server-password",
@@ -2688,6 +2708,7 @@ describe("WebSocket Server", () => {
 
     const response = await sendRequest(ws, WS_METHODS.serverGetConfig);
     expect(response.error).toBeUndefined();
+    expect(JSON.stringify(response.result)).not.toContain("collector-private-header");
     const settings = (response.result as { settings: ServerSettings }).settings;
     expect(settings.providers.opencode.serverPassword).toBe("");
     expect(settings.providerInstances[instanceId]?.config).toMatchObject({
@@ -2917,6 +2938,10 @@ describe("WebSocket Server", () => {
       issues: [],
       providers: defaultProviderSnapshots,
       settings: DEFAULT_SERVER_SETTINGS,
+      diagnostics: {
+        traces: { endpoint: null, source: "unset", protocol: "http/protobuf" },
+        metrics: { endpoint: null, source: "unset", protocol: "http/protobuf" },
+      },
       availableEditors: expect.any(Array),
     });
     expectAvailableEditors((response.result as { availableEditors: unknown }).availableEditors);
@@ -2954,6 +2979,10 @@ describe("WebSocket Server", () => {
       ],
       providers: defaultProviderSnapshots,
       settings: DEFAULT_SERVER_SETTINGS,
+      diagnostics: {
+        traces: { endpoint: null, source: "unset", protocol: "http/protobuf" },
+        metrics: { endpoint: null, source: "unset", protocol: "http/protobuf" },
+      },
       availableEditors: expect.any(Array),
     });
     expectAvailableEditors((response.result as { availableEditors: unknown }).availableEditors);
@@ -3223,6 +3252,10 @@ describe("WebSocket Server", () => {
       issues: [],
       providers: defaultProviderSnapshots,
       settings: DEFAULT_SERVER_SETTINGS,
+      diagnostics: {
+        traces: { endpoint: null, source: "unset", protocol: "http/protobuf" },
+        metrics: { endpoint: null, source: "unset", protocol: "http/protobuf" },
+      },
       availableEditors: expect.any(Array),
     });
     expectAvailableEditors((response.result as { availableEditors: unknown }).availableEditors);
@@ -3271,6 +3304,10 @@ describe("WebSocket Server", () => {
       issues: [],
       providers: defaultProviderSnapshots,
       settings: DEFAULT_SERVER_SETTINGS,
+      diagnostics: {
+        traces: { endpoint: null, source: "unset", protocol: "http/protobuf" },
+        metrics: { endpoint: null, source: "unset", protocol: "http/protobuf" },
+      },
       availableEditors: expect.any(Array),
     });
     expectAvailableEditors(
@@ -6042,6 +6079,59 @@ describe("WebSocket Server", () => {
     expect(response!.error!.message).toContain("Invalid request format");
   });
 
+  for (const constructionThrow of [false, true]) {
+    it(`isolates route defects from concurrent and later requests, construction throw=${constructionThrow}`, async () => {
+      const started = Effect.runSync(Deferred.make<void>());
+      const released = Effect.runSync(Deferred.make<void>());
+      const open: OpenShape = {
+        ...defaultOpenService,
+        openInEditor: ({ cwd }) => {
+          if (cwd === "/fixture/pending") {
+            return Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Deferred.await(released)),
+            );
+          }
+          if (cwd === "/fixture/failing") {
+            if (constructionThrow) throw new Error("fixture route construction defect");
+            return Effect.die(new Error("fixture route defect"));
+          }
+          return Effect.void;
+        },
+      };
+      server = await createTestServer({ cwd: "/test", open });
+      const address = server.address();
+      const port = typeof address === "object" && address !== null ? address.port : 0;
+      const [ws] = await connectAndAwaitWelcome(port);
+      connections.push(ws);
+      const responses = channelsBySocket.get(ws)!.response;
+      const send = (id: string, cwd: string) =>
+        ws.send(
+          JSON.stringify({
+            id,
+            body: { _tag: WS_METHODS.shellOpenInEditor, cwd, editor: "cursor" },
+          }),
+        );
+      try {
+        send("pending", "/fixture/pending");
+        await Effect.runPromise(Deferred.await(started).pipe(Effect.timeout("5 seconds")));
+        send("failing", "/fixture/failing");
+        const failed = await dequeue(responses, 5_000);
+        expect(failed.id).toBe("failing");
+        expect(failed.error).toBeDefined();
+        send("later", "/fixture/success");
+        const later = await dequeue(responses, 5_000);
+        expect(later.id).toBe("later");
+        expect(later.error).toBeUndefined();
+        expect(ws.readyState).toBe(WebSocket.OPEN);
+      } finally {
+        Effect.runSync(Deferred.succeed(released, undefined));
+      }
+      const pending = await dequeue(responses, 5_000);
+      expect(pending.id).toBe("pending");
+      expect(pending.error).toBeUndefined();
+    });
+  }
+
   it("catches websocket message handler rejections and keeps the socket usable", async () => {
     const unhandledRejections: unknown[] = [];
     const onUnhandledRejection = (reason: unknown) => {
@@ -6158,6 +6248,108 @@ describe("WebSocket Server", () => {
       ]),
       truncated: false,
     });
+  });
+
+  it("creates a committed project from a name in the configured projects folder", async () => {
+    const projectsRoot = makeTempDir("f5-ws-new-projects-");
+    fs.mkdirSync(path.join(projectsRoot, "my-app"));
+    server = await createTestServer({ cwd: "/test" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    expect(
+      (
+        await sendRequest(ws, WS_METHODS.serverUpdateSettings, {
+          projectsRoot,
+          gitAuthorName: "F5 Test",
+          gitAuthorEmail: "f5@example.com",
+        })
+      ).error,
+    ).toBeUndefined();
+
+    const response = await sendRequest(ws, WS_METHODS.projectsCreateNew, { name: "My App" });
+    expect(response.error).toBeUndefined();
+    const result = response.result as { projectId: string; workspaceRoot: string; warning: null };
+    // The taken name gets a suffix rather than reusing a folder that already exists.
+    expect(result.workspaceRoot).toBe(path.join(projectsRoot, "my-app-2"));
+    expect(result.warning).toBeNull();
+    expect(
+      execFileSync("git", ["log", "--format=%s"], { cwd: result.workspaceRoot }).toString().trim(),
+    ).toBe("Initial commit");
+    const snapshot = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
+    expect(
+      (snapshot.result as OrchestrationReadModel).projects.find(
+        (project) => project.id === result.projectId,
+      ),
+    ).toMatchObject({ title: "My App", workspaceRoot: result.workspaceRoot, kind: "standard" });
+  });
+
+  it("finds the projects whose GitHub remote names a repository", async () => {
+    const repo = (remote: string) => {
+      const folder = makeTempDir("f5-ws-find-repo-");
+      execFileSync("git", ["init", "-q"], { cwd: folder });
+      execFileSync("git", ["remote", "add", "origin", remote], { cwd: folder });
+      return folder;
+    };
+    const matching = repo("git@github.com:Lopes-Felipe/F5.git");
+    const other = repo("https://github.com/lopes-felipe/f5-docs.git");
+    server = await createTestServer({ cwd: "/test" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    for (const [projectId, workspaceRoot] of [
+      ["project-find-match", matching],
+      ["project-find-other", other],
+    ] as const) {
+      const created = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+        type: "project.create",
+        commandId: `cmd-${projectId}`,
+        projectId,
+        title: projectId,
+        workspaceRoot,
+        defaultModel: "gpt-5-codex",
+        createdAt: new Date().toISOString(),
+      });
+      expect(created.error).toBeUndefined();
+    }
+
+    const response = await sendRequest(ws, WS_METHODS.projectsFindByRepository, {
+      owner: "lopes-felipe",
+      name: "f5",
+    });
+    expect(response.error).toBeUndefined();
+    expect(response.result).toEqual([
+      { projectId: "project-find-match", title: "project-find-match", workspaceRoot: matching },
+    ]);
+  });
+
+  it("keeps file and Git requests below the scratch root inside one thread folder", async () => {
+    const stateDir = makeTempDir("f5-ws-scratch-state-");
+    const folder = path.join(stateDir, "scratch", "2026-10-22-notes-abc12345");
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, "notes.md"), "# notes", "utf8");
+    server = await createTestServer({ cwd: "/test", stateDir });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const own = await sendRequest(ws, WS_METHODS.projectsSearchEntries, {
+      cwd: folder,
+      query: "notes",
+      limit: 10,
+    });
+    expect(own.error).toBeUndefined();
+    const shared = await sendRequest(ws, WS_METHODS.projectsSearchEntries, {
+      cwd: path.join(stateDir, "scratch"),
+      query: "notes",
+      limit: 10,
+    });
+    expect(shared.error?.message).toContain("not a workspace");
+    const status = await sendRequest(ws, WS_METHODS.gitStatus, { cwd: folder });
+    expect(status.error?.message).toContain("no Git repository");
   });
 
   it("loads checked-in project defaults through a registered project identity", async () => {
@@ -6740,6 +6932,7 @@ describe("WebSocket Server", () => {
     const resolvePullRequest = vi.fn(() => Effect.void as any);
     const preparePullRequestThread = vi.fn(() => Effect.void as any);
     const gitManager: GitManagerShape = {
+      branchPullRequest: () => Effect.succeed(null),
       status,
       resolvePullRequest,
       preparePullRequestThread,
@@ -6779,6 +6972,7 @@ describe("WebSocket Server", () => {
     };
 
     const gitManager: GitManagerShape = {
+      branchPullRequest: () => Effect.succeed(null),
       status: vi.fn(() => Effect.void as any),
       resolvePullRequest: vi.fn(() => Effect.succeed(resolvePullRequestResult)),
       preparePullRequestThread: vi.fn(() => Effect.succeed(preparePullRequestThreadResult)),
@@ -6827,6 +7021,7 @@ describe("WebSocket Server", () => {
       ),
     );
     const gitManager: GitManagerShape = {
+      branchPullRequest: () => Effect.succeed(null),
       status: vi.fn(() => Effect.void as any),
       resolvePullRequest: vi.fn(() => Effect.void as any),
       preparePullRequestThread: vi.fn(() => Effect.void as any),

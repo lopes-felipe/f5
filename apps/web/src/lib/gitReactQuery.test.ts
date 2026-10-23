@@ -101,6 +101,27 @@ describe("invalidateGitQueries", () => {
 });
 
 describe("gitStatusQueryOptions", () => {
+  it("keeps local-only status under its own key that cwd invalidation still covers", async () => {
+    const local = gitStatusQueryOptions({ cwd: "/repo/a", includeRemote: false });
+    const full = gitStatusQueryOptions({ cwd: "/repo/a" });
+    expect(local.queryKey).not.toEqual(full.queryKey);
+    expect(local.queryKey.slice(0, full.queryKey.length)).toEqual(full.queryKey);
+
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(local.queryKey, {
+      branch: "main",
+      pr: null,
+      hasWorkingTreeChanges: false,
+      workingTree: { files: [], insertions: 0, deletions: 0 },
+      hasUpstream: false,
+      aheadCount: 0,
+      behindCount: 0,
+      changeRequest: null,
+    });
+    await invalidateGitQueries(queryClient, { cwd: "/repo/a" });
+    expect(queryClient.getQueryState(local.queryKey)?.isInvalidated).toBe(true);
+  });
+
   it("keeps background refresh behavior enabled by default", () => {
     const options = gitStatusQueryOptions({ cwd: "/repo/a", autoRefresh: true });
 

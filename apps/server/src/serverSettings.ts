@@ -37,7 +37,7 @@ import {
   PubSub,
   Ref,
   Schema,
-  SchemaIssue,
+  Option,
   Scope,
   ServiceMap,
   Stream,
@@ -46,6 +46,9 @@ import {
 import * as Semaphore from "effect/Semaphore";
 import { writeFileStringAtomically } from "./atomicWrite.ts";
 import { ServerConfig } from "./config.ts";
+import { summarizeSettingsIssue } from "./serverSettingsDiagnostics.ts";
+import { prepareSettingsSecrets, materializeSettingsSecrets } from "./serverSettingsSecrets.ts";
+import { watchSettingsFile } from "./watchSettingsFile.ts";
 import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import {
@@ -110,6 +113,18 @@ export function redactServerSettingsForClient(settings: ServerSettings): ServerS
   );
   return {
     ...settings,
+    observability: {
+      ...settings.observability,
+      ...(settings.observability.otlpHeaders
+        ? {
+            otlpHeaders: settings.observability.otlpHeaders.map((header) => ({
+              name: header.name,
+              value: "",
+              valueRedacted: true,
+            })),
+          }
+        : {}),
+    },
     providers: {
       ...settings.providers,
       opencode: {
@@ -190,8 +205,8 @@ export class ServerSettingsService extends ServiceMap.Service<
                     (cause) =>
                       new ServerSettingsError({
                         settingsPath: "<memory>",
-                        detail: `failed to normalize server settings: ${SchemaIssue.makeFormatterDefault()(cause.issue)}`,
-                        cause,
+                        detail: `failed to normalize server settings: ${summarizeSettingsIssue(cause.issue)}`,
+                        cause: summarizeSettingsIssue(cause.issue),
                       }),
                   ),
                 ),
@@ -279,7 +294,14 @@ const makeServerSettings = Effect.gen(function* () {
     ),
   );
 
+  // A file removed after the existence check, or a dangling link that Windows reports as
+  // present, reads as missing.
   const readRawConfig = fs.readFileString(settingsPath).pipe(
+    Effect.map(Option.some),
+    Effect.catchIf(
+      (cause) => cause.reason._tag === "NotFound",
+      () => Effect.succeed(Option.none<string>()),
+    ),
     Effect.mapError(
       (cause) =>
         new ServerSettingsError({
@@ -291,16 +313,20 @@ const makeServerSettings = Effect.gen(function* () {
   );
 
   const loadSettingsFromDisk = Effect.gen(function* () {
-    if (!(yield* readConfigExists)) {
+    const contents = (yield* readConfigExists) ? yield* readRawConfig : Option.none<string>();
+    if (Option.isNone(contents)) {
       yield* Ref.set(decodeFailureRef, null);
       yield* Ref.set(unknownFieldsRef, {});
       return DEFAULT_SERVER_SETTINGS;
     }
 
-    const raw = yield* readRawConfig;
+    const raw = contents.value;
     const decoded = Schema.decodeUnknownExit(ServerSettingsJson)(raw);
     if (decoded._tag === "Failure") {
-      const issues = Cause.pretty(decoded.cause);
+      const failure = Cause.findErrorOption(decoded.cause);
+      const issues = summarizeSettingsIssue(
+        Option.isSome(failure) ? failure.value.issue : undefined,
+      );
       yield* Ref.set(decodeFailureRef, issues);
       yield* Effect.logWarning("failed to parse settings.json; writes blocked until repaired", {
         path: settingsPath,
@@ -405,10 +431,17 @@ const makeServerSettings = Effect.gen(function* () {
           environment,
         } satisfies ProviderInstanceConfig;
       }
-      return {
-        ...settings,
-        providerInstances: providerInstances as ServerSettings["providerInstances"],
-      };
+      return yield* materializeSettingsSecrets(
+        {
+          ...settings,
+          providerInstances: providerInstances as ServerSettings["providerInstances"],
+        },
+        secretStore,
+      ).pipe(
+        Effect.mapError((cause) =>
+          toSettingsError("failed to read stored settings secrets", cause),
+        ),
+      );
     });
 
   type SecretChange = { name: string; value: Uint8Array | null };
@@ -417,7 +450,9 @@ const makeServerSettings = Effect.gen(function* () {
     next: ServerSettings,
   ): Effect.Effect<{ settings: ServerSettings; changes: SecretChange[] }> =>
     Effect.sync(() => {
-      const changes: SecretChange[] = [];
+      const passwords = prepareSettingsSecrets(next, current);
+      next = passwords.settings;
+      const changes: SecretChange[] = [...passwords.changes];
       const providerInstances: Record<string, ProviderInstanceConfig> = {
         ...next.providerInstances,
       };
@@ -500,6 +535,7 @@ const makeServerSettings = Effect.gen(function* () {
 
       return yield* writeFileStringAtomically({
         filePath: settingsPath,
+        followSymlinks: true,
         contents: `${JSON.stringify({ ...unknownFields, ...sparseSettings }, null, 2)}\n`,
       }).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),
@@ -515,6 +551,70 @@ const makeServerSettings = Effect.gen(function* () {
       );
     });
 
+  const publishSettings = (next: ServerSettings, secretChanges: SecretChange[]) =>
+    Effect.uninterruptible(
+      Effect.gen(function* () {
+        const applied: SecretChange[] = [];
+        const transaction = yield* Effect.exit(
+          Effect.gen(function* () {
+            for (const change of secretChanges) {
+              const previous = yield* secretStore
+                .get(change.name)
+                .pipe(
+                  Effect.mapError((cause) =>
+                    toSettingsError("failed to read settings secret", cause),
+                  ),
+                );
+              // Record before mutation: a store can write successfully and then report an error.
+              applied.push({ name: change.name, value: previous });
+              yield* (
+                change.value === null
+                  ? secretStore.remove(change.name)
+                  : secretStore.set(change.name, change.value)
+              ).pipe(
+                Effect.mapError((cause) =>
+                  toSettingsError("failed to persist settings secret", cause),
+                ),
+              );
+            }
+            const materialized = yield* materializeProviderEnvironmentSecrets(next);
+            yield* writeSettingsAtomically(next);
+            return materialized;
+          }),
+        );
+        if (transaction._tag === "Failure") {
+          for (const previous of applied.toReversed()) {
+            yield* (
+              previous.value === null
+                ? secretStore.remove(previous.name)
+                : secretStore.set(previous.name, previous.value)
+            ).pipe(
+              Effect.catch(() =>
+                Effect.logError("failed to restore settings secret", {
+                  secretName: previous.name,
+                }),
+              ),
+            );
+          }
+          return yield* Effect.failCause(transaction.cause);
+        }
+        yield* Cache.set(settingsCache, cacheKey, next);
+        yield* emitChange(next);
+        return resolveTextGenerationProvider(transaction.value);
+      }),
+    );
+
+  const migrateInlineSecrets = Effect.gen(function* () {
+    const current = yield* getSettingsFromCache;
+    if ((yield* Ref.get(decodeFailureRef)) !== null) return current;
+    const prepared = yield* prepareProviderEnvironmentSecrets(current, current);
+    if (prepared.changes.some((change) => change.value !== null)) {
+      yield* publishSettings(prepared.settings, prepared.changes);
+      return prepared.settings;
+    }
+    return current;
+  });
+
   const revalidateAndEmit = writeSemaphore.withPermits(1)(
     Effect.gen(function* () {
       yield* Cache.invalidate(settingsCache, cacheKey);
@@ -525,8 +625,6 @@ const makeServerSettings = Effect.gen(function* () {
 
   const startWatcher = Effect.gen(function* () {
     const settingsDir = pathService.dirname(settingsPath);
-    const settingsFile = pathService.basename(settingsPath);
-    const settingsPathResolved = pathService.resolve(settingsPath);
 
     yield* fs.makeDirectory(settingsDir, { recursive: true }).pipe(
       Effect.mapError(
@@ -541,19 +639,20 @@ const makeServerSettings = Effect.gen(function* () {
 
     const revalidateAndEmitSafely = revalidateAndEmit.pipe(Effect.ignoreCause({ log: true }));
 
-    // Debounce watch events so the file is fully written before we read it.
-    // Editors emit multiple events per save (truncate, write, rename) and
-    // `fs.watch` can fire before the content has been flushed to disk.
-    const debouncedSettingsEvents = fs.watch(settingsDir).pipe(
-      Stream.filter((event) => {
-        return (
-          event.path === settingsFile ||
-          event.path === settingsPath ||
-          pathService.resolve(settingsDir, event.path) === settingsPathResolved
-        );
-      }),
-      Stream.debounce(Duration.millis(100)),
+    const events = yield* watchSettingsFile(settingsPath).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, pathService),
+      Scope.provide(watcherScope),
+      Effect.mapError(
+        (cause) =>
+          new ServerSettingsError({
+            settingsPath,
+            detail: "failed to watch settings file",
+            cause,
+          }),
+      ),
     );
+    const debouncedSettingsEvents = events.pipe(Stream.debounce(Duration.millis(100)));
 
     yield* Stream.runForEach(debouncedSettingsEvents, () => revalidateAndEmitSafely).pipe(
       Effect.ignoreCause({ log: true }),
@@ -571,7 +670,9 @@ const makeServerSettings = Effect.gen(function* () {
     const startup = Effect.gen(function* () {
       yield* startWatcher;
       yield* Cache.invalidate(settingsCache, cacheKey);
-      yield* getSettingsFromCache;
+      yield* writeSemaphore.withPermits(1)(
+        migrateInlineSecrets.pipe(Effect.flatMap(materializeProviderEnvironmentSecrets)),
+      );
     });
 
     const startupExit = yield* Effect.exit(startup);
@@ -589,7 +690,7 @@ const makeServerSettings = Effect.gen(function* () {
     // The cache stores secret references, not an immutable materialized snapshot.
     // Readers must not observe a partially written secret transaction or its rollback.
     getSettings: writeSemaphore.withPermits(1)(
-      getSettingsFromCache.pipe(
+      migrateInlineSecrets.pipe(
         Effect.flatMap(materializeProviderEnvironmentSecrets),
         Effect.map(resolveTextGenerationProvider),
       ),
@@ -667,10 +768,12 @@ const makeServerSettings = Effect.gen(function* () {
             });
           }
           const current = yield* getSettingsFromCache;
-          const prepared = yield* prepareProviderEnvironmentSecrets(
-            current,
+          // Apply explicit replacements/removals before resolving references. This lets a
+          // user repair a missing secret, while unchanged references still fail closed.
+          const patched = yield* materializeProviderEnvironmentSecrets(
             applyServerSettingsPatch(current, patch),
           );
+          const prepared = yield* prepareProviderEnvironmentSecrets(current, patched);
           const next = yield* Schema.decodeEffect(ServerSettings)({
             ...prepared.settings,
             clientSettingMigrations: { ...prepared.settings.clientSettingMigrations, ...markers },
@@ -679,62 +782,12 @@ const makeServerSettings = Effect.gen(function* () {
               (cause) =>
                 new ServerSettingsError({
                   settingsPath: "<memory>",
-                  detail: `failed to normalize server settings: ${SchemaIssue.makeFormatterDefault()(cause.issue)}`,
-                  cause,
+                  detail: `failed to normalize server settings: ${summarizeSettingsIssue(cause.issue)}`,
+                  cause: summarizeSettingsIssue(cause.issue),
                 }),
             ),
           );
-          return yield* Effect.uninterruptible(
-            Effect.gen(function* () {
-              const applied: SecretChange[] = [];
-              const transaction = yield* Effect.exit(
-                Effect.gen(function* () {
-                  for (const change of prepared.changes) {
-                    const previous = yield* secretStore
-                      .get(change.name)
-                      .pipe(
-                        Effect.mapError((cause) =>
-                          toSettingsError("failed to read provider environment secret", cause),
-                        ),
-                      );
-                    // Record before mutation: a store can write successfully and then report an error.
-                    applied.push({ name: change.name, value: previous });
-                    yield* (
-                      change.value === null
-                        ? secretStore.remove(change.name)
-                        : secretStore.set(change.name, change.value)
-                    ).pipe(
-                      Effect.mapError((cause) =>
-                        toSettingsError("failed to persist provider environment secret", cause),
-                      ),
-                    );
-                  }
-                  const materialized = yield* materializeProviderEnvironmentSecrets(next);
-                  yield* writeSettingsAtomically(next);
-                  return materialized;
-                }),
-              );
-              if (transaction._tag === "Failure") {
-                for (const previous of applied.toReversed()) {
-                  yield* (
-                    previous.value === null
-                      ? secretStore.remove(previous.name)
-                      : secretStore.set(previous.name, previous.value)
-                  ).pipe(
-                    Effect.catch(() =>
-                      Effect.logError("failed to restore provider environment secret", {
-                        secretName: previous.name,
-                      }),
-                    ),
-                  );
-                }
-                return yield* Effect.failCause(transaction.cause);
-              }
-              yield* Cache.set(settingsCache, cacheKey, next);
-              yield* emitChange(next);
-              return resolveTextGenerationProvider(transaction.value);
-            }),
-          );
+          return yield* publishSettings(next, prepared.changes);
         }),
       ),
     get streamChanges() {

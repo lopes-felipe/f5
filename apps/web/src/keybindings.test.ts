@@ -26,6 +26,7 @@ import {
   shortcutLabelForCommand,
   terminalDeleteShortcutData,
   terminalNavigationShortcutData,
+  terminalScrollbackShortcut,
   type ShortcutEventLike,
 } from "./keybindings";
 
@@ -798,6 +799,48 @@ describe("terminalDeleteShortcutData", () => {
   });
 });
 
+describe("terminalScrollbackShortcut", () => {
+  it("selects all with Cmd+A on macOS and Ctrl+Shift+A elsewhere, leaving Ctrl+A to the shell", () => {
+    assert.strictEqual(
+      terminalScrollbackShortcut(event({ key: "a", metaKey: true }), "MacIntel"),
+      "select-all",
+    );
+    assert.strictEqual(
+      terminalScrollbackShortcut(event({ key: "A", ctrlKey: true, shiftKey: true }), "Linux"),
+      "select-all",
+    );
+    assert.isNull(terminalScrollbackShortcut(event({ key: "a", ctrlKey: true }), "Linux"));
+    assert.isNull(terminalScrollbackShortcut(event({ key: "a", ctrlKey: true }), "MacIntel"));
+    assert.isNull(
+      terminalScrollbackShortcut(event({ key: "a", metaKey: true, shiftKey: true }), "MacIntel"),
+    );
+  });
+
+  it("jumps to the start and latest output with the primary modifier and Shift", () => {
+    assert.strictEqual(
+      terminalScrollbackShortcut(event({ key: "Home", metaKey: true, shiftKey: true }), "MacIntel"),
+      "top",
+    );
+    assert.strictEqual(
+      terminalScrollbackShortcut(event({ key: "End", ctrlKey: true, shiftKey: true }), "Win32"),
+      "bottom",
+    );
+    assert.isNull(terminalScrollbackShortcut(event({ key: "End", ctrlKey: true }), "Win32"));
+    assert.isNull(
+      terminalScrollbackShortcut(
+        event({ key: "End", ctrlKey: true, shiftKey: true, altKey: true }),
+        "Win32",
+      ),
+    );
+    assert.isNull(
+      terminalScrollbackShortcut(
+        event({ type: "keyup", key: "End", ctrlKey: true, shiftKey: true }),
+        "Linux",
+      ),
+    );
+  });
+});
+
 describe("terminalNavigationShortcutData", () => {
   it("maps Option+Arrow on macOS to word movement", () => {
     assert.strictEqual(
@@ -909,6 +952,20 @@ describe("Phase 3 shortcut contexts", () => {
         context: { isElectron: false },
       }),
       command,
+    );
+  });
+  it("maps mod+U to the Usage page unless the terminal has focus", () => {
+    const pressed = event({ key: "u", metaKey: true });
+    assert.equal(
+      resolveShortcutCommand(pressed, DEFAULT_RESOLVED_KEYBINDINGS, { platform: "MacIntel" }),
+      "usage.open",
+    );
+    assert.notEqual(
+      resolveShortcutCommand(pressed, DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "MacIntel",
+        context: { terminalFocus: true },
+      }),
+      "usage.open",
     );
   });
   it("maps mod+/ to the shortcuts reference unless the terminal has focus", () => {

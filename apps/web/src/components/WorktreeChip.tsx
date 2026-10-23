@@ -18,6 +18,7 @@ export function WorktreeChip({
   branch,
   path,
   isWorktree,
+  creatingWorktree = false,
   onOpenTerminal,
   onNewWorktree,
   canMove = false,
@@ -28,6 +29,8 @@ export function WorktreeChip({
   branch: string | null;
   path: string;
   isWorktree: boolean;
+  /** The thread's worktree is still being created; `path` is the project checkout. */
+  creatingWorktree?: boolean;
   onOpenTerminal?: () => void;
   onNewWorktree?: () => void;
   canMove?: boolean;
@@ -46,6 +49,7 @@ export function WorktreeChip({
       }),
     );
   const dir = formatWorktreePathForDisplay(path);
+  const label = isWorktree ? "Worktree" : creatingWorktree ? "New worktree" : "Local";
   return (
     <>
       {moveOpen && (
@@ -80,15 +84,15 @@ export function WorktreeChip({
           ref={triggerRef}
           data-composer-control={isWorktree ? undefined : "envMode"}
           className="inline-flex min-w-0 max-w-60 items-center gap-1 rounded px-2 py-1 text-2xs text-muted-foreground hover:text-foreground focus-visible:outline-ring"
-          aria-label={`${isWorktree ? "Worktree" : "Local"}: ${branch ?? dir} · ${path}`}
+          aria-label={`${label}: ${branch ?? dir} · ${path}`}
           title={path}
         >
-          {isWorktree ? (
+          {isWorktree || creatingWorktree ? (
             <GitForkIcon className="size-3 shrink-0" />
           ) : (
             <FolderIcon className="size-3 shrink-0" />
           )}
-          <span className="truncate">{isWorktree ? `${branch ?? dir} · …/${dir}` : "Local"}</span>
+          <span className="truncate">{isWorktree ? `${branch ?? dir} · …/${dir}` : label}</span>
         </MenuTrigger>
         <MenuPopup
           finalFocus={triggerRef}

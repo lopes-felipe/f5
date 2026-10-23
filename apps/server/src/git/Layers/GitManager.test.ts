@@ -12,11 +12,12 @@ import { emptyGitProjectRepositories } from "../testDoubles";
 import path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Stream } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
 import { ForgeAccounts, type ForgeAccountsShape } from "../../sourceControl/accountRouting.ts";
 import { makeGitManager } from "./GitManager.ts";
+import { GitWorkspaceSwitch } from "../workspaceSwitch.ts";
 import { GitCommandError, GitHubCliError } from "../Errors.ts";
 import { GitCore, type GitCoreShape, type GitStatusDetails } from "../Services/GitCore.ts";
 import { GitHubCli } from "../Services/GitHubCli.ts";
@@ -190,6 +191,7 @@ describe("GitManager unit", () => {
             url: "https://github.com/t3tools/f5/pull/42",
             baseRefName: "main",
             headRefName: "feature/test",
+            headRefOid: "abc123",
             state: "open",
           },
         ],
@@ -204,12 +206,52 @@ describe("GitManager unit", () => {
       url: "https://github.com/t3tools/f5/pull/42",
       baseBranch: "main",
       headBranch: "feature/test",
+      headOid: "abc123",
       state: "open",
     });
     expect(status.changeRequest).toMatchObject({
       id: "42",
       provider: { kind: "github", remoteName: "origin" },
     });
+  });
+
+  it("announces a pull request once when status sees it change state", async () => {
+    const pr = {
+      number: 42,
+      title: "Fast tests",
+      url: "https://github.com/t3tools/f5/pull/42",
+      baseRefName: "main",
+      headRefName: "feature/test",
+      headRefOid: "abc123",
+      state: "open" as "open" | "merged",
+    };
+    const { manager } = await makeManager({
+      gitCore: { statusDetails: () => Effect.succeed(cleanStatus) },
+      gitHub: {
+        get pullRequests() {
+          return [{ ...pr }];
+        },
+      },
+    });
+    const seen = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const changes: string[] = [];
+          yield* Stream.runForEach(manager.pullRequestStateChanges!, (url) =>
+            Effect.sync(() => changes.push(url)),
+          ).pipe(Effect.forkScoped);
+          yield* Effect.sleep("10 millis");
+          yield* manager.status({ cwd });
+          pr.state = "merged";
+          yield* manager.status({ cwd });
+          yield* manager.status({ cwd });
+          yield* Effect.sleep("10 millis");
+          return changes;
+        }),
+      ),
+    );
+    // An open first read is not news; the merge is, once.
+    expect([...seen]).toEqual(["https://github.com/t3tools/f5/pull/42"]);
   });
 
   it("fails closed instead of dispatching GitHub operations for unsupported remotes", async () => {
@@ -289,7 +331,9 @@ describe("GitManager unit", () => {
       commitSha: "abc123",
       subject: "Generated commit",
     });
-    expect(git.calls.commit).toEqual([[cwd, "Generated commit", "Generated body"]]);
+    expect(git.calls.commitPrepared.map((args) => args.slice(0, 3))).toEqual([
+      [cwd, "Generated commit", "Generated body"],
+    ]);
   });
 
   it("forwards selected files and preserves a custom subject/body", async () => {
@@ -311,7 +355,41 @@ describe("GitManager unit", () => {
     );
 
     expect(git.calls.prepareCommitContext).toEqual([[cwd, ["src/selected.ts"]]]);
-    expect(git.calls.commit).toEqual([[cwd, "Custom subject", "Custom body"]]);
+    expect(git.calls.commitPrepared.map((args) => args.slice(0, 3))).toEqual([
+      [cwd, "Custom subject", "Custom body"],
+    ]);
+  });
+
+  it("retains the suggestion and stops the entire action when commit context changed", async () => {
+    const { manager, git, github } = await makeManager({
+      gitCore: {
+        statusDetails: () => Effect.succeed(dirtyStatus),
+        prepareCommitContext: () =>
+          Effect.succeed({ stagedSummary: "selected", stagedPatch: "+selected" }),
+        commitPrepared: () => Effect.succeed({ status: "context_changed" }),
+      },
+    });
+    const result = await Effect.runPromise(
+      manager.runStackedAction({
+        cwd,
+        action: "commit_push_pr",
+        featureBranch: true,
+        commitMessage: "Keep this suggestion\n\nThe full body remains available.",
+      }),
+    );
+    expect(result.commit).toEqual({
+      status: "context_changed",
+      subject: "Keep this suggestion",
+      suggestedMessage: "Keep this suggestion\n\nThe full body remains available.",
+    });
+    expect(result.branch.status).toBe("skipped_not_requested");
+    expect(result.push.status).toBe("skipped_not_requested");
+    expect(result.pr.status).toBe("skipped_not_requested");
+    expect(git.calls.commit).toHaveLength(0);
+    expect(git.calls.createBranch).toHaveLength(0);
+    expect(git.calls.checkoutBranch).toHaveLength(0);
+    expect(git.calls.pushCurrentBranch).toHaveLength(0);
+    expect(github.calls).toHaveLength(0);
   });
 
   it("creates and checks out a collision-safe feature branch before committing", async () => {
@@ -330,10 +408,47 @@ describe("GitManager unit", () => {
     );
 
     expect(result.branch).toEqual({ status: "created", name: "feature/generated-commit-2" });
-    expect(git.calls.createBranch).toEqual([[{ cwd, branch: "feature/generated-commit-2" }]]);
-    expect(git.calls.checkoutBranch).toEqual([[{ cwd, branch: "feature/generated-commit-2" }]]);
+    expect(git.calls.createBranch).toHaveLength(0);
+    expect(git.calls.checkoutBranch).toHaveLength(0);
+    expect(git.calls.commitPrepared[0]?.[4]).toEqual({ newBranch: "feature/generated-commit-2" });
     expect(git.calls.pushCurrentBranch).toEqual([[cwd, "feature/generated-commit-2"]]);
   });
+
+  it.each(["created", "context_changed"] as const)(
+    "uses the workspace transition before a generated-branch commit (%s)",
+    async (status) => {
+      const order: string[] = [];
+      const { manager, git } = await makeManager({
+        gitCore: {
+          statusDetails: () => Effect.succeed(dirtyStatus),
+          prepareCommitContext: () =>
+            Effect.succeed({ stagedSummary: "change", stagedPatch: "+change" }),
+          commitPrepared: () =>
+            Effect.sync(() => {
+              order.push("commit");
+              return status === "created" ? { status, commitSha: "a".repeat(40) } : { status };
+            }),
+        },
+      });
+      const switched: unknown[] = [];
+      const result = await Effect.runPromise(
+        manager.runStackedAction({ cwd, action: "commit_push", featureBranch: true }).pipe(
+          Effect.provideService(GitWorkspaceSwitch, (input) =>
+            Effect.sync(() => {
+              order.push("switch");
+              switched.push(input);
+            }),
+          ),
+        ),
+      );
+      expect(order).toEqual(["switch", "commit"]);
+      expect(switched).toEqual([{ cwd, branch: "feature/generated-commit", create: true }]);
+      expect(git.calls.commitPrepared[0]?.[4]).toBeUndefined();
+      expect(git.calls.createBranch).toHaveLength(0);
+      expect(result.branch).toEqual({ status: "created", name: "feature/generated-commit" });
+      if (status === "context_changed") expect(git.calls.pushCurrentBranch).toHaveLength(0);
+    },
+  );
 
   it("rejects push actions from detached HEAD before mutating Git", async () => {
     const { manager, git } = await makeManager({
@@ -476,6 +591,52 @@ describe("GitManager unit", () => {
       [{ cwd, prNumber: 42, branch: "feature/test", preserveExisting: true }],
     ]);
     expect(git.calls.createWorktree).toHaveLength(1);
+  });
+
+  it("skips the project's setup script when the caller opts out", async () => {
+    const projectId = ProjectId.makeUnsafe("setup-project");
+    const prepare = (runSetupScript?: boolean) =>
+      makeManager({
+        projects: [
+          {
+            projectId,
+            title: "Setup project",
+            workspaceRoot: cwd,
+            defaultModel: null,
+            scripts: [
+              {
+                id: "setup",
+                name: "Setup",
+                command: "bun install",
+                icon: "play",
+                runOnWorktreeCreate: true,
+              },
+            ],
+            createdAt: "2026-09-29T00:00:00Z",
+            updatedAt: "2026-09-29T00:00:00Z",
+            deletedAt: null,
+          },
+        ],
+        gitCore: {
+          statusDetails: () => Effect.succeed(cleanStatus),
+          listBranches: () => Effect.succeed({ branches: [], isRepo: true, hasOriginRemote: true }),
+          createWorktree: () =>
+            Effect.succeed({ worktree: { path: "/tmp/f5-pr-worktree", branch: "feature/test" } }),
+        },
+      }).then(async ({ manager, git }) => {
+        await Effect.runPromise(
+          manager.preparePullRequestThread({
+            cwd,
+            reference: "42",
+            mode: "worktree",
+            ...(runSetupScript === undefined ? {} : { runSetupScript }),
+          }),
+        );
+        return (git.calls.createWorktree[0]![0] as { preparation?: unknown }).preparation;
+      });
+
+    expect(await prepare()).toMatchObject({ runSetupScript: true, setupIdentity: "bun install" });
+    expect(await prepare(false)).toMatchObject({ runSetupScript: false, setupIdentity: null });
   });
 
   it("rejects a stale expected PR head before checkout or fetch", async () => {

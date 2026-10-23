@@ -12,6 +12,7 @@
  *
  * @module provider/claudeInventory
  */
+import { existsSync } from "node:fs";
 import * as NodeFs from "node:fs/promises";
 import * as NodePath from "node:path";
 
@@ -71,6 +72,21 @@ export function claudeManagedSettingsDir(platform: NodeJS.Platform): string {
     default:
       return "/etc/claude-code";
   }
+}
+
+/**
+ * Whether an administrator installed Claude Code's `managed-mcp.json`. While it
+ * exists Claude refuses `--strict-mcp-config` and exits before initializing,
+ * but it already ignores user, project and `--mcp-config` servers on its own,
+ * so callers that pass the flag for isolation can drop it.
+ */
+export function hasClaudeManagedMcpConfig(
+  platform: NodeJS.Platform = process.platform,
+  exists: (path: string) => boolean = existsSync,
+): boolean {
+  const directory = claudeManagedSettingsDir(platform);
+  const join = platform === "win32" ? NodePath.win32.join : NodePath.posix.join;
+  return exists(join(directory, "managed-mcp.json"));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -162,6 +162,19 @@ it.layer(SqliteClient.layerMemory())("UsageFactRepository facts and legacy costs
           rows.filter((row) => row.provider === provider),
         );
       }
+      // Hidden providers leave both facts and legacy cost events out.
+      assert.deepStrictEqual(
+        yield* repository.summarizeBuckets({ buckets, hiddenProviders: ["claudeAgent", "cursor"] }),
+        rows.filter((row) => row.provider === "codex"),
+      );
+      assert.isTrue(rows.some((row) => row.provider === "claudeAgent" && row.legacyCostEventCount));
+      const range = { startedAt: buckets[0]!.startAt, endedAt: buckets.at(-1)!.endAt };
+      const scopeRows = yield* repository.summarizeByScope(range);
+      assert.deepStrictEqual(
+        yield* repository.summarizeByScope({ ...range, hiddenProviders: ["claudeAgent"] }),
+        scopeRows.filter((row) => row.provider !== "claudeAgent"),
+      );
+      assert.isTrue(scopeRows.some((row) => row.provider === "claudeAgent"));
       assert.deepStrictEqual(
         rows.map((row) => ({
           bucket: row.bucketKey,

@@ -1,3 +1,6 @@
+import { recoverRestartBackgroundWork } from "../../nextTurnQueue/restartMarkerCapture.ts";
+import { readMcpAppReferenceForTool, readMcpAppToolResult } from "@t3tools/shared/mcpApp";
+import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
 import { LosslessCommandAdmission } from "../commandAdmission.ts";
 import { startTerminalReceiptRetries } from "../terminalReceiptRecovery.ts";
 import { PerformanceStageProbe } from "../../observability/Metrics.ts";
@@ -106,7 +109,7 @@ import {
   isProviderTerminalRuntimeEvent,
   ProviderTerminalEventRepository,
 } from "../../persistence/Services/ProviderTerminalEvents.ts";
-import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
+import { resolveThreadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { isGitRepository } from "../../git/isRepo.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
@@ -242,6 +245,8 @@ const REASONING_HEADING_REGEX = /^\s*\*\*([^*\n]{1,200}?)\*\*/;
 // block within the same turn).
 const THINKING_TOKENS_DISPATCH_THRESHOLD = 500;
 const PROFILED_WORKFLOW_TURN_TIMEOUT_MS = 30 * 60 * 1_000;
+// Tool items that never complete are evicted oldest first past this many.
+const MAX_TRACKED_TOOL_UPDATES = 512;
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const MAX_BUFFERED_REASONING_CHARS = 200_000;
 const COMMAND_OUTPUT_FLUSH_INTERVAL_MS = 100;
@@ -1474,6 +1479,11 @@ export function runtimeEventToActivities(
         typeof config.fast_mode_state === "string" && config.fast_mode_state.trim().length > 0
           ? config.fast_mode_state.trim()
           : undefined;
+      const fastModeDisabledReason =
+        typeof config.fast_mode_disabled_reason === "string" &&
+        config.fast_mode_disabled_reason.trim().length > 0
+          ? config.fast_mode_disabled_reason.trim()
+          : undefined;
       const effort =
         typeof config.effort === "string" && config.effort.trim().length > 0
           ? config.effort.trim()
@@ -1513,6 +1523,7 @@ export function runtimeEventToActivities(
               ...(claudeCodeVersion ? { claudeCodeVersion } : {}),
               ...(sessionId ? { sessionId } : {}),
               ...(fastModeState ? { fastModeState } : {}),
+              ...(fastModeDisabledReason ? { fastModeDisabledReason } : {}),
               ...(effort ? { effort } : {}),
               ...(reasoning ? { reasoning } : {}),
               ...(contextWindow ? { contextWindow } : {}),
@@ -2280,6 +2291,25 @@ export function runtimeEventToActivities(
         return [];
       }
       const normalizedTitle = commandExecutionLifecycleTitle(event);
+      const data = asRecord(event.payload.data);
+      const native = asRecord(data?.item);
+      const reference =
+        event.provider === "codex" &&
+        native &&
+        typeof native.server === "string" &&
+        typeof native.tool === "string"
+          ? readMcpAppReferenceForTool(data?.mcpApp, native.server, native.tool)
+          : undefined;
+      const bootstrap = asRecord(data?.mcpAppBootstrap);
+      const initialResult = readMcpAppToolResult(bootstrap?.result);
+      const initial =
+        reference && initialResult
+          ? stringifyWithinBytes(
+              { arguments: asRecord(bootstrap?.arguments) ?? {}, result: initialResult },
+              192 * 1024,
+            )
+          : undefined;
+
       return [
         {
           id: event.eventId,
@@ -2297,6 +2327,20 @@ export function runtimeEventToActivities(
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
         },
+        ...(reference && initial
+          ? [
+              {
+                id: EventId.makeUnsafe(`${event.eventId}:mcp-app`),
+                createdAt: event.createdAt,
+                tone: "tool" as const,
+                kind: "mcpApp",
+                summary: reference.tool,
+                payload: { reference, ...(JSON.parse(initial) as Record<string, unknown>) },
+                turnId: toTurnId(event.turnId) ?? null,
+                ...maybeSequence,
+              },
+            ]
+          : []),
       ];
     }
 
@@ -2345,6 +2389,9 @@ const make = Effect.gen(function* () {
     string,
     Set<import("@t3tools/contracts").ProviderInstanceId | null>
   >();
+  // Last tool.updated activity appended per open tool item. Providers such as OpenCode resend
+  // the whole tool state on every part update, so a repeat that matches it is not stored again.
+  const lastToolUpdates = new Map<string, string>();
   // Runtime error and terminal reports share one refresh, without blocking the serial worker.
   const refreshedUsageFailures = new Map<ThreadId, string>();
   let enqueueResolvedUsageLimit: (input: RuntimeIngestionInput) => Effect.Effect<void> = () =>
@@ -2354,9 +2401,10 @@ const make = Effect.gen(function* () {
   const providerTerminalEventRepository = yield* ProviderTerminalEventRepository;
   const threadBackgroundWork = yield* ThreadBackgroundWork;
   const computerAutomationBroker = yield* Effect.serviceOption(ComputerAutomationBroker);
+  const sqlOption = yield* Effect.serviceOption(SqlClient.SqlClient);
   const imageStorage = {
     config: yield* Effect.serviceOption(ServerConfig),
-    sql: yield* Effect.serviceOption(SqlClient.SqlClient),
+    sql: sqlOption,
     fileSystem: yield* Effect.serviceOption(FileSystem.FileSystem),
     path: yield* Effect.serviceOption(Path.Path),
   };
@@ -5536,7 +5584,13 @@ const make = Effect.gen(function* () {
             createdAt: now,
           });
       }
-      if (event.type === "thread.metadata.updated" && event.payload.name) {
+      // A provider name only fills a thread that still has its default title: it must not
+      // overwrite a title the user typed or F5 generated.
+      if (
+        event.type === "thread.metadata.updated" &&
+        event.payload.name &&
+        thread.titleSource === "default"
+      ) {
         yield* orchestrationEngine.dispatch({
           type: "thread.meta.update",
           commandId: providerCommandId(event, "thread-meta-update"),
@@ -5728,13 +5782,28 @@ const make = Effect.gen(function* () {
         lifecycle.images,
         isPreparedComputerEvent(event),
       );
+      const toolUpdateKey = event.itemId ? `${thread.id}\u0000${event.itemId}` : undefined;
+      if (toolUpdateKey && event.type === "item.completed") lastToolUpdates.delete(toolUpdateKey);
       yield* Effect.forEach(activities, (activity) =>
-        orchestrationEngine.dispatch({
-          type: "thread.activity.append",
-          commandId: providerCommandId(event, `thread-activity-append:${activity.id}`),
-          threadId: thread.id,
-          activity,
-          createdAt: activity.createdAt,
+        Effect.gen(function* () {
+          const signature =
+            toolUpdateKey && activity.kind === "tool.updated"
+              ? JSON.stringify([activity.tone, activity.summary, activity.turnId, activity.payload])
+              : undefined;
+          if (signature && lastToolUpdates.get(toolUpdateKey!) === signature) return;
+          yield* orchestrationEngine.dispatch({
+            type: "thread.activity.append",
+            commandId: providerCommandId(event, `thread-activity-append:${activity.id}`),
+            threadId: thread.id,
+            activity,
+            createdAt: activity.createdAt,
+          });
+          // Recorded only after the append succeeds, so a retried event is not skipped.
+          if (!signature) return;
+          lastToolUpdates.delete(toolUpdateKey!);
+          lastToolUpdates.set(toolUpdateKey!, signature);
+          if (lastToolUpdates.size > MAX_TRACKED_TOOL_UPDATES)
+            lastToolUpdates.delete(lastToolUpdates.keys().next().value!);
         }),
       ).pipe(Effect.asVoid);
 
@@ -6074,6 +6143,12 @@ const make = Effect.gen(function* () {
       ]);
       const bindingsByThreadId = new Map(bindings.map((binding) => [binding.threadId, binding]));
       const liveThreadIds = new Set(liveSessions.map((session) => session.threadId));
+      if (Option.isSome(sqlOption))
+        yield* recoverRestartBackgroundWork({
+          bindings,
+          liveThreadIds,
+          settings: yield* serverSettings.getSettings,
+        }).pipe(Effect.provideService(SqlClient.SqlClient, sqlOption.value));
       let recoveredCount = 0;
       for (const thread of readModel.threads) {
         if (thread.deletedAt !== null || providerService.getStartingSessionIdentity?.(thread.id))

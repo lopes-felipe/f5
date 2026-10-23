@@ -11,6 +11,20 @@ export interface PendingUserInputDraftAnswer {
   mentions?: readonly ComposerMention[];
 }
 
+/** Seed only unanswered drafts. An explicitly cleared answer must remain cleared. */
+export function seedPendingUserInputAnswers(
+  questions: ReadonlyArray<UserInputQuestion>,
+  drafts: Record<string, PendingUserInputDraftAnswer>,
+): Record<string, PendingUserInputDraftAnswer> {
+  let next = drafts;
+  for (const question of questions) {
+    if (question.initialAnswer === undefined || Object.hasOwn(next, question.id)) continue;
+    if (next === drafts) next = { ...drafts };
+    next[question.id] = { customAnswer: question.initialAnswer };
+  }
+  return next;
+}
+
 /**
  * Value shape sent to the provider for a single question. Multi-select
  * questions pass a `string[]` (preserving cardinality so labels like

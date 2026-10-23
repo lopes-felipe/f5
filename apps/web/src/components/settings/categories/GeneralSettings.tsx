@@ -1,3 +1,4 @@
+import { DiagnosticsSettings } from "../DiagnosticsSettings";
 import {
   SIDEBAR_THREAD_PREVIEW_COUNT_MAX,
   SIDEBAR_THREAD_PREVIEW_COUNT_MIN,
@@ -275,6 +276,7 @@ export function GeneralSettings() {
           }
         />
       </SettingsCard>
+      <DiagnosticsSettings />
     </>
   );
 }

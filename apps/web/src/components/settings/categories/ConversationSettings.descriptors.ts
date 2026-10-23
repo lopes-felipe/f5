@@ -1,3 +1,4 @@
+import { SETTINGS_ITEM_ROUTES } from "../settingsRouting";
 import type { SettingsItemDescriptor } from "../settingsSearch";
 
 const CONVERSATION_CONTROL_DESCRIPTORS = (
@@ -24,6 +25,13 @@ const CONVERSATION_CONTROL_DESCRIPTORS = (
       ["composer", "scroll", "resting", "collapse"],
     ],
     [
+      "compact-layout",
+      "Compact chat layout",
+      "Show tasks, queued turns and notices as chips above the composer.",
+      "Compact chat layout",
+      ["composer", "horizontal", "chips", "tray", "density", "space"],
+    ],
+    [
       "streaming",
       "Stream assistant messages",
       "Show output while a response is in progress.",
@@ -33,9 +41,9 @@ const CONVERSATION_CONTROL_DESCRIPTORS = (
     [
       "remote-images",
       "Load remote images in chat",
-      "Allow HTTPS images from external websites.",
+      "Allow HTTPS images from external websites, and HTTPS images and scripts in HTML pages agents show. Even when off, an HTML page opened in a web browser rather than the desktop app can still navigate away, taking what it shows with it.",
       "Load remote images in chat",
-      ["images", "privacy", "markdown"],
+      ["images", "privacy", "markdown", "html", "scripts"],
     ],
     [
       "word-wrap",
@@ -138,8 +146,7 @@ const CONVERSATION_CONTROL_DESCRIPTORS = (
   ] as const
 ).map(
   ([id, label, description, ariaLabel, keywords]): SettingsItemDescriptor => ({
-    id: `conversation.${id}`,
-    category: "conversation",
+    ...SETTINGS_ITEM_ROUTES[`conversation.${id}`],
     label,
     description,
     keywords,
@@ -150,8 +157,7 @@ const CONVERSATION_CONTROL_DESCRIPTORS = (
 export const CONVERSATION_SETTINGS_DESCRIPTORS = [
   ...CONVERSATION_CONTROL_DESCRIPTORS,
   {
-    id: "conversation.display-density",
-    category: "conversation",
+    ...SETTINGS_ITEM_ROUTES["conversation.display-density"],
     label: "Display density",
     description: "Pick a minimal, balanced, or detailed preset for thread activity.",
     keywords: ["preset", "verbosity", "detail", "minimal", "detailed"],

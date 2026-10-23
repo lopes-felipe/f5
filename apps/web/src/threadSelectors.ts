@@ -47,6 +47,9 @@ const LIST_ITEM_KEYS = [
   "codexThreadId",
   "createdAt",
   "archivedAt",
+  "settledAt",
+  "settledBy",
+  "autoSettleDisabled",
   "pinnedAt",
   "pinOrderKey",
   "snoozedUntil",
@@ -54,6 +57,7 @@ const LIST_ITEM_KEYS = [
   "lastVisitedAt",
   "branch",
   "worktreePath",
+  "scratchPath",
   "threadReferences",
   "error",
 ] as const satisfies ReadonlyArray<Exclude<keyof ThreadListItem, "lastInteractionAt">>;

@@ -431,23 +431,33 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
             "--head",
             input.headSelector,
             "--state",
-            "open",
+            input.state ?? "open",
             "--limit",
             String(input.limit ?? 1),
             "--json",
-            "number,title,url,baseRefName,headRefName",
+            input.state === "all"
+              ? "number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,isCrossRepository,headRepository,headRepositoryOwner"
+              : "number,title,url,baseRefName,headRefName",
           ],
         }).pipe(
           Effect.map((result) =>
             (
               JSON.parse(result.stdout) as Array<
-                GitHubPullRequestSummary & {
+                Omit<GitHubPullRequestSummary, "state"> & {
+                  state?: string;
+                  mergedAt?: string | null;
                   headRepository?: { nameWithOwner: string };
                   headRepositoryOwner?: { login: string };
                 }
               >
             ).map((pr) => ({
               ...pr,
+              state:
+                pr.mergedAt || pr.state === "MERGED"
+                  ? ("merged" as const)
+                  : pr.state === "CLOSED" || pr.state === "closed"
+                    ? ("closed" as const)
+                    : ("open" as const),
               ...(pr.headRepository
                 ? { headRepositoryNameWithOwner: pr.headRepository.nameWithOwner }
                 : {}),
@@ -607,6 +617,82 @@ function makeManager(input?: {
 const GitManagerTestLayer = Layer.merge(GitServiceTestLayer, NodeServices.layer);
 
 it.layer(GitManagerTestLayer)("GitManager", (it) => {
+  it.effect("looks up a saved branch independently of HEAD without refreshing the real index", () =>
+    Effect.gen(function* () {
+      const repo = yield* makeTempDir("f5-branch-pr-index-");
+      yield* initRepo(repo);
+      yield* runGit(repo, ["remote", "add", "origin", "https://github.com/team/repo.git"]);
+      yield* runGit(repo, ["branch", "topic"]);
+      const head = (yield* runGit(repo, ["rev-parse", "HEAD"])).stdout.trim();
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(path.join(repo, "README.md"), "uncommitted local work\n");
+      const before = yield* fs.readFile(path.join(repo, ".git/index"));
+      const { manager, ghCalls } = yield* makeManager({
+        ghScenario: {
+          prListSequence: [
+            JSON.stringify([
+              {
+                number: 7,
+                title: "Change",
+                url: "https://github.com/team/repo/pull/7",
+                baseRefName: "main",
+                headRefName: "topic",
+                headRefOid: head,
+                state: "MERGED",
+                mergedAt: "2026-10-02T00:00:00Z",
+                updatedAt: "2026-10-02T00:00:00Z",
+              },
+            ]),
+          ],
+        },
+      });
+      const pr = yield* manager.branchPullRequest({ cwd: repo, branch: "topic" });
+      expect(pr?.state).toBe("merged");
+      expect(pr?.headRefOid).toBe(head);
+      expect((yield* runGit(repo, ["symbolic-ref", "--short", "HEAD"])).stdout.trim()).toBe("main");
+      expect(yield* fs.readFile(path.join(repo, ".git/index"))).toEqual(before);
+      expect(yield* fs.readFileString(path.join(repo, "README.md"))).toBe(
+        "uncommitted local work\n",
+      );
+      expect(ghCalls.some((call) => call.includes("pr list --head topic --state all"))).toBe(true);
+    }),
+  );
+  it.effect(
+    "uses a surviving exact remote-tracking ref when the saved local branch no longer exists",
+    () =>
+      Effect.gen(function* () {
+        const repo = yield* makeTempDir("f5-branch-pr-tracking-");
+        yield* initRepo(repo);
+        yield* runGit(repo, ["remote", "add", "origin", "https://github.com/team/repo.git"]);
+        const head = (yield* runGit(repo, ["rev-parse", "HEAD"])).stdout.trim();
+        yield* runGit(repo, ["update-ref", "refs/remotes/origin/topic", head]);
+        const { manager } = yield* makeManager({
+          ghScenario: {
+            prListSequence: [
+              JSON.stringify([
+                {
+                  number: 7,
+                  title: "Change",
+                  url: "https://github.com/team/repo/pull/7",
+                  baseRefName: "main",
+                  headRefName: "topic",
+                  headRefOid: head,
+                  state: "MERGED",
+                  mergedAt: "2026-10-02T00:00:00Z",
+                },
+              ]),
+            ],
+          },
+        });
+        expect((yield* manager.branchPullRequest({ cwd: repo, branch: "topic" }))?.state).toBe(
+          "merged",
+        );
+        expect(
+          (yield* runGit(repo, ["show-ref", "--verify", "refs/heads/topic"], true)).code,
+        ).not.toBe(0);
+      }),
+  );
+
   it.effect("status includes PR metadata when branch already has an open PR", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
@@ -735,6 +821,89 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     180_000,
   );
 
+  const forkPullRequest = (headOwner: string) =>
+    JSON.stringify([
+      {
+        number: 77,
+        title: "Fork change",
+        url: "https://github.com/pingdotgg/codething-mvp/pull/77",
+        baseRefName: "main",
+        headRefName: "fork-change",
+        isCrossRepository: true,
+        headRepository: { nameWithOwner: `${headOwner}/codething-mvp` },
+        headRepositoryOwner: { login: headOwner },
+        state: "OPEN",
+        updatedAt: "2026-03-10T07:00:00Z",
+      },
+    ]);
+
+  const pushForkBranchWithoutUpstream = (repoDir: string, remotes: ReadonlyArray<string>) =>
+    Effect.gen(function* () {
+      yield* runGit(repoDir, [
+        "remote",
+        "add",
+        "origin",
+        "git@github.com:pingdotgg/codething-mvp.git",
+      ]);
+      yield* runGit(repoDir, ["checkout", "-b", "fork-change"]);
+      fs.writeFileSync(path.join(repoDir, "fork-change.txt"), "fork change\n");
+      yield* runGit(repoDir, ["add", "fork-change.txt"]);
+      yield* runGit(repoDir, ["commit", "-m", "Fork change"]);
+      for (const remote of remotes) {
+        const forkDir = yield* createBareRemote();
+        yield* runGit(repoDir, ["remote", "add", remote, forkDir]);
+        // No -u: the branch names no upstream or remote.
+        yield* runGit(repoDir, ["push", remote, "fork-change"]);
+        yield* configureCrossRepoRemote(
+          repoDir,
+          remote,
+          forkDir,
+          `git@github.com:${remote}/codething-mvp.git`,
+        );
+      }
+    });
+
+  it.effect(
+    "finds a fork PR for a branch pushed without an upstream, after a later local commit",
+    () =>
+      Effect.gen(function* () {
+        const repoDir = yield* makeTempDir("t3code-git-manager-");
+        yield* initRepo(repoDir);
+        yield* pushForkBranchWithoutUpstream(repoDir, ["jasonLaster"]);
+        fs.writeFileSync(path.join(repoDir, "fork-change.txt"), "unpushed follow-up\n");
+        yield* runGit(repoDir, ["commit", "-am", "Unpushed follow-up"]);
+
+        const { manager } = yield* makeManager({
+          ghScenario: { prListSequence: [forkPullRequest("jasonLaster")] },
+        });
+
+        const status = yield* manager.status({ cwd: repoDir });
+        expect(status.pr).toMatchObject({ number: 77, headBranch: "fork-change" });
+        expect(status.changeRequest).toMatchObject({
+          isCrossRepository: true,
+          headRepository: "jasonLaster/codething-mvp",
+        });
+      }),
+    180_000,
+  );
+
+  it.effect(
+    "attaches no fork PR when two remotes hold the branch's exact tip",
+    () =>
+      Effect.gen(function* () {
+        const repoDir = yield* makeTempDir("t3code-git-manager-");
+        yield* initRepo(repoDir);
+        yield* pushForkBranchWithoutUpstream(repoDir, ["jasonLaster", "otherFork"]);
+
+        const { manager } = yield* makeManager({
+          ghScenario: { prListSequence: [forkPullRequest("jasonLaster")] },
+        });
+
+        expect((yield* manager.status({ cwd: repoDir })).pr).toBeNull();
+      }),
+    180_000,
+  );
+
   it.effect("looks up the local feature branch instead of inheriting its base branch PR", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("f5-pr-base-");
@@ -849,11 +1018,20 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       expect((yield* runGit(cwd, ["rev-parse", "--abbrev-ref", "@{upstream}"])).stdout.trim()).toBe(
         "fork/statemachine",
       );
-      expect((yield* runGit(fork, ["rev-parse", "refs/heads/statemachine"])).stdout.trim()).toBe(
-        (yield* runGit(cwd, ["rev-parse", "HEAD"])).stdout.trim(),
-      );
       expect(
-        (yield* runGit(fork, ["branch", "--list", "t3code/pr-142/statemachine"])).stdout.trim(),
+        (yield* runGit(fork, [
+          "--git-dir=.",
+          "rev-parse",
+          "refs/heads/statemachine",
+        ])).stdout.trim(),
+      ).toBe((yield* runGit(cwd, ["rev-parse", "HEAD"])).stdout.trim());
+      expect(
+        (yield* runGit(fork, [
+          "--git-dir=.",
+          "branch",
+          "--list",
+          "t3code/pr-142/statemachine",
+        ])).stdout.trim(),
       ).toBe("");
       expect(
         (yield* runGit(cwd, [

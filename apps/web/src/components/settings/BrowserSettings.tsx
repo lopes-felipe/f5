@@ -114,6 +114,19 @@ export function BrowserSettings() {
             </Select>
           }
         />
+        <SettingsRow
+          title="Open pull request links on the forge"
+          description="Open PR links in your system browser. Command, Control and middle clicks always use the system browser."
+          control={
+            <Switch
+              aria-label="Open pull request links on the forge"
+              checked={!settings.pullRequestLinksOpenInApp}
+              onCheckedChange={(external) =>
+                updateSettings({ pullRequestLinksOpenInApp: !external })
+              }
+            />
+          }
+        />
       </SettingsCard>
 
       <SettingsCard

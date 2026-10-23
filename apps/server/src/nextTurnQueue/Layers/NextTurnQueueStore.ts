@@ -57,7 +57,7 @@ interface QueueRow {
   readonly status: string;
   readonly attemptCount: number;
   readonly notBefore: string | null;
-  readonly scheduleReason: "usage_limit_reset" | null;
+  readonly scheduleReason: "usage_limit_reset" | "pull_request_watch" | null;
   readonly dispatchStartedAt: string | null;
   readonly commandJson: string;
   readonly lastErrorCode: string | null;
@@ -416,7 +416,9 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
     );
 
   const rejectAcceptedMutation = (item: NextTurnQueueItem) =>
-    item.command.presentation === "continuation" && item.scheduleReason !== "usage_limit_reset"
+    item.command.presentation === "continuation" &&
+    item.scheduleReason !== "usage_limit_reset" &&
+    item.scheduleReason !== "pull_request_watch"
       ? Effect.fail(
           new NextTurnQueueItemAlreadyRanError({
             message: "Restart continuations are managed by recovery.",
@@ -796,7 +798,7 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
             `;
             if (
               (countRows[0]?.count ?? 0) >=
-              MAX_QUEUED_TURNS_PER_THREAD + (input.scheduleReason ? 1 : 0)
+              MAX_QUEUED_TURNS_PER_THREAD + (input.scheduleReason === "usage_limit_reset" ? 1 : 0)
             ) {
               return yield* new NextTurnQueueLimitExceededError({
                 message: `A thread can queue at most ${MAX_QUEUED_TURNS_PER_THREAD} turns.`,

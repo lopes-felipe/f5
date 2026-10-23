@@ -48,7 +48,7 @@ describe("preview tool catalog", () => {
       preview_status: { properties: [], required: [] },
       preview_open: { properties: ["url", "show", "reuseExistingTab"], required: [] },
       preview_navigate: { properties: ["url", "target", "readiness", "timeoutMs"], required: [] },
-      preview_snapshot: { properties: ["save"], required: [] },
+      preview_snapshot: { properties: ["includeImage", "save"], required: [] },
       preview_click: { properties: ["selector", "locator", "x", "y", "timeoutMs"], required: [] },
       preview_type: {
         properties: ["text", "selector", "locator", "clear", "timeoutMs"],
@@ -125,6 +125,10 @@ describe("callPreviewTool", () => {
     assert.equal((status.structuredContent as { reason?: string }).reason, "disabled");
     const click = await callPreviewTool(context, "preview_click", { selector: "#go" });
     assert.equal(click.isError, true);
+    // The agent is told to stop retrying and how to check the page instead.
+    const text = (click.content[0] as { text: string }).text;
+    assert.include(text, "Do not retry");
+    assert.include(text, "Playwright");
     assert.equal(calls.length, 0);
   });
 
@@ -160,6 +164,37 @@ describe("callPreviewTool", () => {
       { url: "example.com/docs" },
     );
     assert.deepEqual((calls[0]!.input as { url?: string }).url, "https://example.com/docs");
+  });
+
+  it("returns a text-only snapshot when the agent asks for no image", async () => {
+    const calls: PreviewAutomationInvokeInput[] = [];
+    const base = makePreviewAutomationBroker();
+    const broker = {
+      ...base,
+      invoke: <A>(input: PreviewAutomationInvokeInput) =>
+        Effect.sync(() => {
+          calls.push(input);
+          return {
+            url: "http://127.0.0.1:4791/",
+            title: "Agent check",
+            screenshot: { mimeType: "image/png", data: "iVBO", width: 2, height: 1 },
+          } as A;
+        }),
+    };
+    const context = { broker, policy: ENABLED, threadId, automationSessionId: "s" };
+    const textOnly = await callPreviewTool(context, "preview_snapshot", { includeImage: false });
+    // The browser still takes the full snapshot; only the tool output drops the image.
+    assert.deepEqual(calls[0]?.input, {});
+    assert.deepEqual(
+      textOnly.content.map((part) => part.type),
+      ["text"],
+    );
+    assert.equal((textOnly.structuredContent as { title?: string }).title, "Agent check");
+    const withImage = await callPreviewTool(context, "preview_snapshot", {});
+    assert.deepEqual(
+      withImage.content.map((part) => part.type),
+      ["text", "image"],
+    );
   });
 
   it("returns the screenshot image to the agent and keeps the saved artifact", async () => {

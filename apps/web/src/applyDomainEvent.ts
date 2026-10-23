@@ -2,6 +2,10 @@ import { projectLatestTurnSession } from "@t3tools/shared/turnStateTransitions";
 import { recordMessageAppend, recordMessageListChange } from "./lib/streamingTextRevision";
 import { detailEntityKey, detailEventIsCovered } from "./orchestration/detailCoverage";
 import {
+  reconcileNativeHistoryProjection,
+  retainNativeTurnRows,
+} from "@t3tools/shared/nativeHistoryReconciliation";
+import {
   summarizePlanningWorkflow,
   summarizeCodeReviewWorkflow,
   summarizeInvestigationWorkflow,
@@ -724,6 +728,7 @@ function reduceDomainEvent(
       }
       const nextProject: Project = {
         id: event.payload.projectId,
+        kind: event.payload.kind,
         name: event.payload.title,
         cwd: event.payload.workspaceRoot,
         model: resolveProjectModel(
@@ -919,6 +924,7 @@ function reduceDomainEvent(
         lastVisitedAt: event.payload.createdAt,
         branch: event.payload.branch,
         worktreePath: event.payload.worktreePath,
+        scratchPath: event.payload.scratchPath,
         compaction: null,
         turnDiffSummaries: [],
         activities: [],
@@ -951,6 +957,30 @@ function reduceDomainEvent(
       return threads === state.threads ? state : { ...state, threads };
     }
 
+    case "thread.settled": {
+      const threads = updateThread(state.threads, event.payload.threadId, (thread) => ({
+        ...thread,
+        settledAt: event.payload.settledAt,
+        settledBy: event.payload.settledBy,
+      }));
+      return threads === state.threads ? state : { ...state, threads };
+    }
+    case "thread.unsettled": {
+      const threads = updateThread(state.threads, event.payload.threadId, (thread) => ({
+        ...thread,
+        settledAt: null,
+        settledBy: null,
+        lastInteractionAt: event.occurredAt,
+      }));
+      return threads === state.threads ? state : { ...state, threads };
+    }
+    case "thread.auto-settle-changed": {
+      const threads = updateThread(state.threads, event.payload.threadId, (thread) => ({
+        ...thread,
+        autoSettleDisabled: !event.payload.enabled,
+      }));
+      return threads === state.threads ? state : { ...state, threads };
+    }
     case "thread.archived": {
       const threads = updateThread(state.threads, event.payload.threadId, (thread) =>
         thread.archivedAt === event.payload.archivedAt &&
@@ -961,6 +991,8 @@ function reduceDomainEvent(
           : {
               ...thread,
               archivedAt: event.payload.archivedAt,
+              settledAt: null,
+              settledBy: null,
               pinnedAt: null,
               pinOrderKey: null,
               snoozedUntil: null,
@@ -1381,6 +1413,28 @@ function reduceDomainEvent(
             lastInteractionAt: event.occurredAt,
           };
         }
+        if (event.payload.removedTurnIds) {
+          const removed = new Set(event.payload.removedTurnIds);
+          return {
+            ...thread,
+            ...reconcileNativeHistoryProjection(
+              thread,
+              removed,
+              new Set(event.payload.removedMessageIds ?? []),
+            ),
+            pendingUserInputs,
+            turnDiffSummaries: retainNativeTurnRows(thread.turnDiffSummaries, removed),
+            commandExecutions: retainNativeTurnRows(thread.commandExecutions, removed),
+            estimatedThinkingTokens: null,
+            session: thread.session
+              ? (() => {
+                  const { tokenUsageSource: _source, ...session } = thread.session;
+                  return session;
+                })()
+              : null,
+            lastInteractionAt: event.occurredAt,
+          };
+        }
         const turnDiffSummaries = thread.turnDiffSummaries
           .filter(
             (summary) =>
@@ -1398,6 +1452,7 @@ function reduceDomainEvent(
           thread.messages,
           retainedTurnIds,
           event.payload.turnCount,
+          event.payload.retainedMessageIds,
         ).slice(-MAX_THREAD_MESSAGES);
         const proposedPlans = retainThreadProposedPlansAfterRevert(
           thread.proposedPlans,

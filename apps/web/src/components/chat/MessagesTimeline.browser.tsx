@@ -13,6 +13,7 @@ import "../../index.css";
 import { QueryClient } from "@tanstack/react-query";
 import type { OrchestrationCommandExecution } from "@t3tools/contracts";
 import {
+  EventId,
   MessageId,
   type NativeApi,
   type OrchestrationFileChangeSummary,
@@ -26,7 +27,11 @@ import type {} from "@vitest/browser-playwright"; // Types cdp() as a Playwright
 import { cdp, page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
-import type { deriveTimelineEntries, LiveWorkActivity } from "../../session-logic";
+import {
+  deriveWorkLogEntries,
+  type deriveTimelineEntries,
+  type LiveWorkActivity,
+} from "../../session-logic";
 import { parsePersistedAppSettings } from "../../appSettings";
 import type { TurnDiffSummary } from "../../types";
 import { readTimelineScrollAnchor } from "./timelineScrollAnchors";
@@ -235,6 +240,41 @@ describe("MessagesTimeline (LegendList)", () => {
     document.body.innerHTML = "";
   });
 
+  it("renders the actual skill name from persisted generic tool history", async () => {
+    const createdAt = "2026-03-04T12:00:01.000Z";
+    const [entry] = deriveWorkLogEntries(
+      [
+        {
+          id: EventId.makeUnsafe("skill-history"),
+          createdAt,
+          kind: "tool.completed",
+          summary: "Tool call completed",
+          tone: "tool",
+          turnId: TurnId.makeUnsafe("turn-1"),
+          payload: {
+            itemType: "dynamic_tool_call",
+            title: "Tool call",
+            providerItemId: "skill-call",
+            status: "completed",
+            data: { toolName: "Skill", input: { skill: "team:review" } },
+          },
+        },
+      ],
+      undefined,
+    );
+    expect(entry?.toolTitle).toBe("Skill: team:review");
+    await render(
+      <TimelineHarness
+        initialEntries={[
+          makeUserEntry("skill-user", "Review the patch", 0),
+          { id: entry!.id, kind: "work", createdAt, entry: entry! },
+        ]}
+        onIsAtEndChangeSpy={vi.fn()}
+      />,
+    );
+    await expect.element(page.getByText("Skill: team:review", { exact: true })).toBeVisible();
+  });
+
   it("restores a thread reading position after navigating away", async () => {
     const threadId = ThreadId.makeUnsafe("remember-reading-position");
     const entries = makeOverflowEntries(40);
@@ -317,6 +357,38 @@ describe("MessagesTimeline (LegendList)", () => {
       expect(target).not.toBeNull();
       expect(isElementVisibleWithinContainer(target!, container)).toBe(true);
     });
+  });
+
+  it("scrolls the timeline when the wheel turns over the turn rail or minimap", async () => {
+    await page.viewport(1200, 896);
+    const host = document.createElement("div");
+    document.body.append(host);
+    let listRef: LegendListRef | null = null;
+    await render(
+      <TimelineHarness
+        initialEntries={makeOverflowEntries(40)}
+        initialHeight={360}
+        onIsAtEndChangeSpy={() => {}}
+        onListRefChange={(next) => {
+          listRef = next;
+        }}
+      />,
+      { container: host },
+    );
+    const container = await waitForScrollContainer(host);
+    await scrollTimelineToOffset(listRef, container, container.scrollHeight);
+    const targets = [
+      host.querySelector<HTMLElement>('[data-testid="timeline-turn-rail-strip"]'),
+      host.querySelector<HTMLElement>('[aria-label="Conversation minimap"]'),
+    ];
+    for (const target of targets) {
+      expect(target).not.toBeNull();
+      const before = container.scrollTop;
+      const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -200 });
+      target!.dispatchEvent(wheel);
+      expect(wheel.defaultPrevented).toBe(true);
+      await vi.waitFor(() => expect(container.scrollTop).toBeLessThan(before));
+    }
   });
 
   it("tracks the active turn-rail tick while scrolling", async () => {
@@ -479,6 +551,55 @@ describe("MessagesTimeline (LegendList)", () => {
         expect(host.textContent).toContain("src/a.ts");
       });
       expect(summaryButton()).toBeNull();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("keeps a prior-turn MCP app visible while ordinary work logs collapse", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const appEntry = makeReadWorkEntry("app-work", "unused", 2);
+    if (appEntry.kind !== "work") throw new Error("Expected work entry");
+    appEntry.entry = {
+      ...appEntry.entry,
+      label: "Weather app",
+      readPaths: [],
+      changedFiles: [],
+      mcpApp: {
+        reference: {
+          attachmentId: "weather-doc",
+          server: "weather",
+          tool: "forecast",
+          resourceUri: "ui://weather/app",
+        },
+        arguments: {},
+        result: { content: [] },
+      },
+    };
+    const screen = await render(
+      <TimelineHarness
+        threadId={INLINE_DIFF_THREAD_ID}
+        initialEntries={[
+          makeUserEntry("app-user-1", "Weather", 0),
+          makeReadWorkEntry("app-read", "src/weather.ts", 1),
+          appEntry,
+          makeAssistantEntry("app-answer", "Sunny", 3),
+          makeUserEntry("app-user-2", "Tomorrow?", 4),
+        ]}
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+    try {
+      await vi.waitFor(() => {
+        expect(
+          host.querySelector('[data-slot="work-group-summary"]')?.getAttribute("aria-expanded"),
+        ).toBe("false");
+        expect(host.textContent).toContain("Send a message to reconnect.");
+      });
+      expect(host.textContent).not.toContain("src/weather.ts");
     } finally {
       await screen.unmount();
       host.remove();
@@ -1649,6 +1770,60 @@ describe("MessagesTimeline (LegendList)", () => {
       await vi.waitFor(() => {
         expect(getToggleButton()?.getAttribute("aria-expanded")).toBe("false");
         expect(getRow()?.textContent).not.toContain("Output");
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("stays at the end while a command row at the end opens and closes", async () => {
+    const commandId = "command-toggle-at-end";
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[
+          ...makeOverflowEntries(16),
+          makeCommandEntry(commandId, {
+            output: Array.from({ length: 40 }, (_, line) => `line ${line}`).join("\n"),
+          }),
+        ]}
+        initialHeight={240}
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+    const toggle = () =>
+      host.querySelector<HTMLButtonElement>(
+        `[data-timeline-row-id="${commandId}"] button[aria-expanded]`,
+      );
+    try {
+      const scrollContainer = await waitForScrollContainer(host);
+      const distanceFromEnd = () =>
+        scrollContainer.scrollHeight - scrollContainer.clientHeight - scrollContainer.scrollTop;
+      await vi.waitFor(() => {
+        expect(toggle()).not.toBeNull();
+        expect(distanceFromEnd()).toBeLessThan(8);
+      });
+      for (const expanded of ["true", "false"]) {
+        toggle()!.click();
+        await vi.waitFor(() => {
+          expect(toggle()?.getAttribute("aria-expanded")).toBe(expanded);
+          expect(distanceFromEnd()).toBeLessThan(8);
+        });
+      }
+
+      // Scrolled up, the toggled row holds its place instead of following the end.
+      scrollContainer.scrollTop -= 120;
+      scrollContainer.dispatchEvent(new Event("scroll"));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const rowTop = toggle()!.getBoundingClientRect().top;
+      toggle()!.click();
+      await vi.waitFor(() => {
+        expect(toggle()?.getAttribute("aria-expanded")).toBe("true");
+        expect(Math.abs(toggle()!.getBoundingClientRect().top - rowTop)).toBeLessThan(2);
+        expect(distanceFromEnd()).toBeGreaterThan(100);
       });
     } finally {
       await screen.unmount();
@@ -3269,6 +3444,28 @@ describe("MessagesTimeline row stability", () => {
     expect(externalsAfter.get("work-a")?.version).not.toBe(externalsBefore.get("work-a")?.version);
     expect(externalsAfter.get("work-b")).toBe(externalsBefore.get("work-b"));
     expect(externalsAfter.get("user-between")).toBe(externalsBefore.get("user-between"));
+  });
+
+  it("keeps an earlier work group open while a subagent in it is still running", () => {
+    const agent = (status: string): TimelineEntry => {
+      const base = makeReadWorkEntry("agent-work", "src/a.ts", 1);
+      if (base.kind !== "work") throw new Error("expected a work entry");
+      return {
+        ...base,
+        entry: { ...base.entry, label: "Agent", subagentType: "Explore", status },
+      } as TimelineEntry;
+    };
+    const rows = (status: string) =>
+      buildRows(
+        [
+          makeUserEntry("agent-user", "first", 0),
+          agent(status),
+          makeUserEntry("agent-steer", "also check b", 2),
+        ],
+        createTimelineRowCache(),
+      ).find((row) => row.id === "agent-work");
+    expect(rows("inProgress")).toMatchObject({ kind: "work", isPriorTurn: false });
+    expect(rows("completed")).toMatchObject({ kind: "work", isPriorTurn: true });
   });
 
   it("prunes cached rows that a rewind removed", () => {

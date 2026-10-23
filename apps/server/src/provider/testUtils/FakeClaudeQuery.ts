@@ -121,8 +121,11 @@ export class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     }
   }
 
+  /** Set by tests that exercise Claude's graceful interrupt. */
+  public onInterrupt: (() => Promise<void>) | undefined;
   readonly interrupt = async (): Promise<void> => {
     this.interruptCalls.push(undefined);
+    await this.onInterrupt?.();
   };
 
   public setModelWait: Promise<void> | undefined;

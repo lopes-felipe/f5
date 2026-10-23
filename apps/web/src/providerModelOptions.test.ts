@@ -12,6 +12,20 @@ import {
 } from "@t3tools/shared/model";
 
 describe("providerModelOptions", () => {
+  it.each(["off", "minimal", "low", "medium", "high", "xhigh", "max"])(
+    "round-trips Pi's native thinking level without changing its meaning: %s",
+    (thinking) => {
+      const options = providerSelectionsToModelOptions("pi", [{ id: "thinking", value: thinking }]);
+      expect(options).toEqual({ pi: { thinking } });
+      expect(providerModelOptionsToSelections("pi", options)).toEqual([
+        { id: "thinking", value: thinking },
+      ]);
+    },
+  );
+  it("drops unsupported Pi thinking values instead of silently selecting a different level", () => {
+    expect(normalizeProviderModelOptions({ pi: { thinking: "ultra" } })).toBeNull();
+    expect(providerSelectionsToModelOptions("pi", [{ id: "thinking", value: true }])).toBeNull();
+  });
   it("serializes Sol Ultra and omits its default High effort", () => {
     const codex = normalizeCodexModelOptions("gpt-6.1-sol", { reasoningEffort: "ultra" });
     expect(providerModelOptionsToSelections("codex", { codex })).toEqual([

@@ -33,6 +33,26 @@ export type ComposerCommandItem =
       source?: "session" | "instance" | "project";
     };
 
+/** The editor's aria-activedescendant target for one suggestion in one composer's list. */
+export function composerSuggestionOptionId(listId: string, itemId: string): string {
+  // JSON escapes lone UTF-16 surrogates before URI encoding without losing identity.
+  return `${listId}-${encodeURIComponent(JSON.stringify(itemId))}`;
+}
+
+export function composerCommandMenuEmptyText(
+  isLoading: boolean,
+  triggerKind: ComposerTriggerKind | null,
+): string {
+  if (isLoading) return "Searching workspace files...";
+  return triggerKind === "path" ? "No matching files or folders." : "No matching command.";
+}
+
+const LISTBOX_LABEL_BY_TRIGGER: Record<ComposerTriggerKind, string> = {
+  path: "Files and folders",
+  "slash-command": "Commands",
+  skill: "Skills",
+};
+
 const SKILL_SOURCE_LABELS = {
   session: "session",
   instance: "instance",
@@ -40,6 +60,7 @@ const SKILL_SOURCE_LABELS = {
 } as const;
 
 export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
+  listId: string;
   items: ComposerCommandItem[];
   resolvedTheme: "light" | "dark";
   isLoading: boolean;
@@ -58,10 +79,15 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
       }}
     >
       <div className="relative overflow-hidden rounded-xl border border-border/80 bg-popover/96 shadow-lg/8 backdrop-blur-xs">
-        <CommandList className="max-h-64">
+        <CommandList
+          id={props.listId}
+          aria-label={props.triggerKind ? LISTBOX_LABEL_BY_TRIGGER[props.triggerKind] : undefined}
+          className="max-h-64"
+        >
           {props.items.map((item) => (
             <ComposerCommandMenuItem
               key={item.id}
+              optionId={composerSuggestionOptionId(props.listId, item.id)}
               item={item}
               resolvedTheme={props.resolvedTheme}
               isActive={props.activeItemId === item.id}
@@ -71,11 +97,7 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
         </CommandList>
         {props.items.length === 0 && (
           <p className="px-3 py-2 text-muted-foreground text-xs">
-            {props.isLoading
-              ? "Searching workspace files..."
-              : props.triggerKind === "path"
-                ? "No matching files or folders."
-                : "No matching command."}
+            {composerCommandMenuEmptyText(props.isLoading, props.triggerKind)}
           </p>
         )}
       </div>
@@ -84,6 +106,7 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
 });
 
 const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
+  optionId: string;
   item: ComposerCommandItem;
   resolvedTheme: "light" | "dark";
   isActive: boolean;
@@ -91,6 +114,8 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
 }) {
   return (
     <CommandItem
+      render={<div id={props.optionId} />}
+      aria-selected={props.isActive}
       value={props.item.id}
       className={cn(
         "cursor-pointer select-none gap-2",

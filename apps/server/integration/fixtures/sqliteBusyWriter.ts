@@ -25,7 +25,17 @@ try {
       const sql = yield* SqlClient.SqlClient;
       process.stdout.write("writing\n");
       const startedAt = performance.now();
-      yield* sql`INSERT INTO contention_test VALUES ('child')`;
+      if (process.argv[3] === "transaction")
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql<{
+              count: number;
+            }>`SELECT count(*) AS count FROM contention_test`;
+            process.stdout.write(`read:${rows[0]!.count}\n`);
+            yield* sql`INSERT INTO contention_test VALUES ('child')`;
+          }),
+        );
+      else yield* sql`INSERT INTO contention_test VALUES ('child')`;
       process.stdout.write(`written:${performance.now() - startedAt}\n`);
     }),
   );

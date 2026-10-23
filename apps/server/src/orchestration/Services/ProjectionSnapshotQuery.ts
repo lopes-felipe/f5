@@ -8,6 +8,8 @@ import type { RetainedThreadDetails } from "../deciderReadModel.ts";
  * @module ProjectionSnapshotQuery
  */
 import type {
+  ThreadSearchInput,
+  ThreadSearchResult,
   OrchestrationGetThreadHistoryPageInput,
   OrchestrationGetStartupSnapshotInput,
   OrchestrationGetStartupSnapshotResult,
@@ -30,6 +32,9 @@ import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
 export interface ProjectionSnapshotQueryShape {
+  readonly searchThread: (
+    input: ThreadSearchInput,
+  ) => Effect.Effect<ThreadSearchResult, ProjectionRepositoryError>;
   /** Internal decider fallback; uses the same retention limits as live state. */
   readonly getRetainedThreadDetails?: (
     threadId: ThreadId,

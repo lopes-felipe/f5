@@ -2,6 +2,7 @@ import {
   KeybindingRule as KeybindingRuleSchema,
   type KeybindingCommand,
   type KeybindingRule,
+  type NativeApi,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import { Schema } from "effect";
@@ -30,6 +31,22 @@ export function decodeProjectScriptKeybindingRule(input: {
     throw new Error(PROJECT_SCRIPT_KEYBINDING_INVALID_MESSAGE);
   }
   return decoded.value;
+}
+
+/**
+ * Replaces a project action's custom shortcut on the server: removes every custom rule for its
+ * command, then adds the new one. Desktop and browser clients both save it.
+ */
+export async function replaceProjectScriptKeybinding(input: {
+  readonly server: Pick<NativeApi["server"], "addKeybinding" | "removeKeybinding">;
+  readonly customKeybindings: ReadonlyArray<KeybindingRule>;
+  readonly command: KeybindingCommand | null;
+  readonly rule: KeybindingRule | null;
+}): Promise<void> {
+  for (const target of input.customKeybindings) {
+    if (target.command === input.command) await input.server.removeKeybinding({ target });
+  }
+  if (input.rule) await input.server.addKeybinding({ rule: input.rule });
 }
 
 export function keybindingValueForCommand(

@@ -1,33 +1,37 @@
+import { SETTINGS_ITEM_ROUTES } from "../settingsRouting";
 import type { SettingsItemDescriptor } from "../settingsSearch";
 
 export const ABOUT_SETTINGS_DESCRIPTORS = [
   {
-    id: "about.updates",
-    category: "about",
+    ...SETTINGS_ITEM_ROUTES["about.cli"],
+    label: "Install command-line tools",
+    description: "Install the bundled f5 and t3 commands for terminal use.",
+    keywords: ["terminal", "cli", "path", "symlink"],
+    targetSelector: '[data-settings-search-target="about.cli"]',
+  },
+  {
+    ...SETTINGS_ITEM_ROUTES["about.updates"],
     label: "Updates",
     description: "Check, download and install F5 updates.",
     keywords: ["update", "restart", "release"],
     targetSelector: '[data-settings-search-target="about.updates"]',
   },
   {
-    id: "about.betaUpdates",
-    category: "about",
+    ...SETTINGS_ITEM_ROUTES["about.betaUpdates"],
     label: "Beta updates",
     description: "Receive pre-release builds.",
     keywords: ["beta", "channel", "prerelease"],
     targetSelector: '[data-settings-search-target="about.betaUpdates"]',
   },
   {
-    id: "about.version",
-    category: "about",
+    ...SETTINGS_ITEM_ROUTES["about.version"],
     label: "Application version",
     description: "View the installed F5 version and environment information.",
     keywords: ["about", "build", "release"],
     targetSelector: '[data-settings-search-target="about.version"]',
   },
   {
-    id: "about.onboarding",
-    category: "about",
+    ...SETTINGS_ITEM_ROUTES["about.onboarding"],
     label: "Show onboarding again",
     description: "Restart the lightweight onboarding flow.",
     keywords: ["welcome", "setup", "tutorial"],

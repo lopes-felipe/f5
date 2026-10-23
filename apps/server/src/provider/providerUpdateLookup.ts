@@ -34,7 +34,11 @@ export type LatestVersionLookupResult =
 export { NPM_UPDATE_SOURCES } from "./providerInstallChannel.ts";
 
 export const isBuiltInProviderDriver = (driver: ProviderDriverKind): boolean =>
-  driver === "codex" || driver === "claudeAgent" || driver === "cursor" || driver === "opencode";
+  driver === "codex" ||
+  driver === "claudeAgent" ||
+  driver === "cursor" ||
+  driver === "opencode" ||
+  driver === "pi";
 
 export function extractProviderVersion(
   _driver: ProviderDriverKind,

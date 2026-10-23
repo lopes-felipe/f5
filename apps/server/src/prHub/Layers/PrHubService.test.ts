@@ -1815,6 +1815,7 @@ it.effect("uses the tracked head oid for merge instead of trusting client input"
     const staleClientInput = {
       url: tracked.url,
       method: "squash",
+      deleteBranch: true,
       expectedHeadOid: "stale-client-head",
       expectedComparison: {
         baseRepository: "octo/repo",
@@ -1827,7 +1828,8 @@ it.effect("uses the tracked head oid for merge instead of trusting client input"
         mode: "current_pr",
       },
     } as Parameters<typeof service.merge>[0] & { readonly expectedHeadOid: string };
-    yield* service.merge(staleClientInput);
+    const merged = yield* service.merge(staleClientInput);
+    assert.ok(merged.actionWarning?.includes("The PR merged"));
     assert.equal(
       (yield* Effect.exit(
         service.merge({

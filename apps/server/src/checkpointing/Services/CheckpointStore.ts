@@ -34,6 +34,12 @@ export interface DiffCheckpointsInput {
   readonly fallbackFromToHead?: boolean;
   readonly options?: {
     readonly ignoreWhitespace?: boolean;
+    /**
+     * Leave out files a pull, merge or rebase brought in between the checkpoints. A file
+     * the turn also edited, committed or resolved stays whole. When the checkpoints carry
+     * no HEAD provenance, or the filter cannot run, the complete diff is returned.
+     */
+    readonly excludeGitImports?: boolean;
   };
 }
 

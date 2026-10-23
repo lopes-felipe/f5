@@ -86,13 +86,18 @@ export function gitStatusQueryOptions({
   autoRefresh = true,
   staleTimeMs,
   refetchIntervalMs,
-}: GitAutoRefreshQueryOptionsInput) {
+  includeRemote = true,
+}: GitAutoRefreshQueryOptionsInput & {
+  /** false reads local status only, without fetching a stale upstream. */
+  includeRemote?: boolean;
+}) {
   return queryOptions({
-    queryKey: gitQueryKeys.status(cwd),
+    // Local-only results stay under their own key so they never stand in for a refreshed status.
+    queryKey: includeRemote ? gitQueryKeys.status(cwd) : [...gitQueryKeys.status(cwd), "local"],
     queryFn: async () => {
       const api = ensureNativeApi();
       if (!cwd) throw new Error("Git status is unavailable.");
-      return api.git.status({ cwd });
+      return api.git.status(includeRemote ? { cwd } : { cwd, includeRemote: false });
     },
     enabled: cwd !== null,
     staleTime: autoRefresh ? (staleTimeMs ?? GIT_STATUS_STALE_TIME_MS) : Infinity,

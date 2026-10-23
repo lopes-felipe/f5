@@ -8,7 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { assert, it } from "@effect/vitest";
-import { Exit, Effect, FileSystem, Layer, Schema, Stream } from "effect";
+import { Cause, Exit, Effect, FileSystem, Layer, Logger, Schema, Stream } from "effect";
 import { ServerConfig } from "./config.ts";
 import { SecretStoreError, ServerSecretStore } from "./auth/Services/ServerSecretStore.ts";
 import {
@@ -99,6 +99,55 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         assert.equal(yield* fs.readFileString(config.settingsPath!), raw);
       }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
+  it.effect("keeps malformed credential values out of disk-decode logs and write errors", () => {
+    const messages: unknown[] = [];
+    const secret = "settings-decode-private-fixture";
+    return Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const raw = JSON.stringify({ providers: { opencode: { serverPassword: [secret] } } });
+      yield* fs.writeFileString(config.settingsPath!, raw);
+      yield* service.getSettings;
+      const result = yield* Effect.exit(service.updateSettings({ gitAuthorName: "Keep file" }));
+      assert.isTrue(Exit.isFailure(result));
+      assert.equal(yield* fs.readFileString(config.settingsPath!), raw);
+      assert.ok(messages.length > 0, "decode failure must remain observable");
+      assert.notInclude(JSON.stringify(messages), secret);
+      if (Exit.isFailure(result)) assert.notInclude(Cause.pretty(result.cause), secret);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          makeServerSettingsLayer(),
+          Logger.layer([Logger.make(({ message }) => messages.push(message))], {
+            mergeWithExisting: false,
+          }),
+        ),
+      ),
+    );
+  });
+
+  for (const storage of ["disk", "memory"] as const) {
+    it.effect(`keeps malformed credential patches out of ${storage} normalization errors`, () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsService;
+        const secret = "settings-patch-private-fixture";
+        const result = yield* Effect.exit(
+          service.updateSettings({
+            providers: { opencode: { serverPassword: [secret] } },
+          } as unknown as ServerSettingsPatch),
+        );
+        assert.isTrue(Exit.isFailure(result));
+        if (Exit.isFailure(result)) assert.notInclude(Cause.pretty(result.cause), secret);
+        assert.equal((yield* service.getSettings).providers.opencode.serverPassword, "");
+      }).pipe(
+        Effect.provide(
+          storage === "disk" ? makeServerSettingsLayer() : ServerSettingsService.layerTest(),
+        ),
+      ),
+    );
+  }
+
   it.effect(
     "migrates a browser default once under concurrent clients and persists the winner",
     () =>
@@ -594,7 +643,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           },
           opencode: {
             serverUrl: "http://127.0.0.1:4096",
-            serverPassword: "secret-password",
+            serverPasswordRedacted: true,
           },
         },
       });

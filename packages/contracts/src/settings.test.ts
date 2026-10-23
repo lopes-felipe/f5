@@ -215,3 +215,37 @@ describe("ClientSettings.dismissedProviderUpdateAdvisories", () => {
     );
   });
 });
+
+describe("thread settlement opt-ins", () => {
+  it("decodes legacy settings with automatic settlement and cleanup disabled", () => {
+    const settings = decodeServerSettings({});
+    expect(settings.autoSettleOnPullRequestMerge).toBe(false);
+    expect(settings.autoSettleAfterDays).toBeNull();
+    expect(settings.autoSettleKeepPullRequests).toBe(true);
+    expect(settings.storageCleanup.worktree.onSettle).toBe(false);
+  });
+  it("preserves on-settle cleanup in a partial settings patch", () => {
+    expect(
+      decodeServerSettingsPatch({ storageCleanup: { worktree: { onSettle: true } } }).storageCleanup
+        ?.worktree?.onSettle,
+    ).toBe(true);
+  });
+  it("bounds inactivity settlement days", () => {
+    for (const days of [0, 366, 1.5])
+      expect(() => decodeServerSettingsPatch({ autoSettleAfterDays: days })).toThrow();
+    for (const days of [1, 365, null])
+      expect(decodeServerSettingsPatch({ autoSettleAfterDays: days }).autoSettleAfterDays).toBe(
+        days,
+      );
+  });
+});
+
+it("keeps merge-message attribution changes off by default and accepts explicit patches", () => {
+  expect(decodeServerSettings({}).removeAgentCreditsOnMerge).toBe(false);
+  expect(
+    decodeServerSettingsPatch({ removeAgentCreditsOnMerge: true }).removeAgentCreditsOnMerge,
+  ).toBe(true);
+  expect(
+    decodeServerSettingsPatch({ removeAgentCreditsOnMerge: false }).removeAgentCreditsOnMerge,
+  ).toBe(false);
+});

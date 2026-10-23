@@ -9,15 +9,26 @@ export type GitConfigPair = readonly [key: string, value: string];
 export function appendGitConfigPairs(
   environment: NodeJS.ProcessEnv,
   pairs: readonly GitConfigPair[],
+  platform: NodeJS.Platform = process.platform,
 ): NodeJS.ProcessEnv {
   if (pairs.length === 0) return environment;
-  const offset = Number(environment.GIT_CONFIG_COUNT ?? 0);
-  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("Invalid GIT_CONFIG_COUNT.");
+  const countKeys = Object.keys(environment).filter((key) =>
+    platform === "win32" ? key.toUpperCase() === "GIT_CONFIG_COUNT" : key === "GIT_CONFIG_COUNT",
+  );
+  const rawCount = environment[countKeys.at(-1) ?? "GIT_CONFIG_COUNT"];
+  if (rawCount && !/^[ \t\r\n\v\f]*(?:\+?\d+|-0+)$/.test(rawCount))
+    throw new Error("Invalid GIT_CONFIG_COUNT.");
+  const offset = Number(rawCount ?? 0);
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(offset + pairs.length))
+    throw new Error("Invalid GIT_CONFIG_COUNT.");
+  if (pairs.some(([key, value]) => key.includes("\0") || value.includes("\0")))
+    throw new Error("Invalid Git configuration environment entry.");
   pairs.forEach(([key, value], index) => {
     environment[`GIT_CONFIG_KEY_${offset + index}`] = key;
     environment[`GIT_CONFIG_VALUE_${offset + index}`] = value;
   });
-  environment.GIT_CONFIG_COUNT = String(offset + pairs.length);
+  for (const key of new Set([...countKeys, "GIT_CONFIG_COUNT"]))
+    environment[key] = String(offset + pairs.length);
   return environment;
 }
 

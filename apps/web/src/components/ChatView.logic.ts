@@ -26,6 +26,7 @@ import {
   isReservedHostLocalSlashCommandName,
   normalizeHostCompatibleRuntimeSlashCommandName,
 } from "@t3tools/shared/slashCommands";
+import { describeFastModeDisabledReason, refusedFastModeReason } from "@t3tools/shared/runtimeInfo";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
 import { type ChatMessage } from "../types";
 import { CLAUDE_SUBAGENT_MODEL_INHERIT, getAppModelOptions } from "../appSettings";
@@ -636,7 +637,11 @@ function getServerCustomModelsForProvider(
     );
   }
 
-  return serverSettings.providers[provider].customModels.map(customModelSlug);
+  return provider in serverSettings.providers
+    ? serverSettings.providers[provider as keyof typeof serverSettings.providers].customModels.map(
+        customModelSlug,
+      )
+    : [];
 }
 
 function getProviderCustomModelsForPicker(
@@ -736,6 +741,8 @@ export function getProviderDispatchModelsByProvider(
     grok: modelsFor("grok"),
     antigravity: modelsFor("antigravity"),
     muse: modelsFor("muse"),
+    acp: modelsFor("acp"),
+    pi: modelsFor("pi"),
   };
 }
 
@@ -835,6 +842,19 @@ function readRerouteString(payload: Record<string, unknown> | null, key: string)
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function fastModeEntry(
+  runtime: CompactRuntimeConfiguredActivityPayload | null,
+): ProviderRuntimeInfoEntry | null {
+  if (!runtime?.fastModeState) return null;
+  const reason = refusedFastModeReason(runtime);
+  return {
+    label: "Fast mode",
+    value: reason
+      ? `${runtime.fastModeState} (${describeFastModeDisabledReason(reason)})`
+      : runtime.fastModeState,
+  };
+}
+
 export function deriveProviderRuntimeInfoEntries(input: {
   provider: ProviderKind | null;
   threadModel: string | null;
@@ -856,9 +876,7 @@ export function deriveProviderRuntimeInfoEntries(input: {
       input.configuredRuntime?.claudeCodeVersion
         ? { label: "Claude Code", value: input.configuredRuntime.claudeCodeVersion }
         : null,
-      input.configuredRuntime?.fastModeState
-        ? { label: "Fast mode", value: input.configuredRuntime.fastModeState }
-        : null,
+      fastModeEntry(input.configuredRuntime),
       input.configuredRuntime?.effort
         ? { label: "Effort", value: input.configuredRuntime.effort }
         : null,
@@ -917,9 +935,7 @@ export function deriveProviderRuntimeInfoEntries(input: {
       input.configuredRuntime?.contextWindow
         ? { label: "Context", value: input.configuredRuntime.contextWindow }
         : null,
-      input.configuredRuntime?.fastModeState
-        ? { label: "Fast mode", value: input.configuredRuntime.fastModeState }
-        : null,
+      fastModeEntry(input.configuredRuntime),
       input.configuredRuntime?.thinkingState
         ? { label: "Thinking", value: input.configuredRuntime.thinkingState }
         : null,

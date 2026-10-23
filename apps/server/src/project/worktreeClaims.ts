@@ -1,3 +1,4 @@
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { WorkspaceTransitions } from "../persistence/Services/WorkspaceTransitions.ts";
 import { sameMoveSnapshot, isMoveCopySnapshot, type MoveSnapshot } from "../git/moveSnapshot.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -9,7 +10,7 @@ import { ServerConfig } from "../config.ts";
 import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
 import { WorktreeSetupGate } from "./Services/WorktreeSetupGate.ts";
 import {
-  type ThreadId,
+  ThreadId,
   WorktreeSetupSnapshot,
   worktreeSetupGatesTurn,
   WorkspaceTransitionSnapshot,
@@ -94,7 +95,7 @@ export const readWorktreeClaims = Effect.fn("readWorktreeClaims")(function* (pat
   const transitionThreadIds: ThreadId[] = [];
   for (const thread of readModel.threads) {
     const project = readModel.projects.find((entry) => entry.id === thread.projectId);
-    const workspace = thread.worktreePath ?? project?.workspaceRoot;
+    const workspace = threadWorkspaceCwd(thread, project);
     if (!workspace) {
       unknown = true;
       continue;
@@ -158,6 +159,19 @@ export const readWorktreeClaims = Effect.fn("readWorktreeClaims")(function* (pat
   }
   const transitionSql = yield* Effect.serviceOption(SqlClient.SqlClient);
   if (Option.isSome(transitionSql)) {
+    const hooks = yield* transitionSql.value<{
+      threadId: string;
+      path: string;
+    }>`SELECT thread_id AS "threadId",worktree_path AS path FROM thread_settlement_hooks WHERE state IN ('pending','running','orphaned') LIMIT 1001`.pipe(
+      Effect.orElseSucceed(() => {
+        unknown = true;
+        return [];
+      }),
+    );
+    if (hooks.length > 1000) unknown = true;
+    for (const hook of hooks)
+      if (inside(yield* resolve(hook.path)))
+        setupThreadIds.push(ThreadId.makeUnsafe(hook.threadId));
     const transitions = yield* transitionSql.value<{
       record: string;
     }>`SELECT record_json AS record FROM workspace_transitions
@@ -255,8 +269,9 @@ export const readWorktreeClaims = Effect.fn("readWorktreeClaims")(function* (pat
 /**
  * Why ignored files make removing `worktreePath` unsafe, or null when they do
  * not. `git worktree remove` refuses on tracked changes and untracked files but
- * silently deletes ignored ones (a `.env`, a local database), so every removal
- * path checks this as well as `git status`.
+ * silently deletes ignored ones. Manual removal requires explicit approval of
+ * every ignored entry. Automatic cleanup and storage maintenance may delete
+ * only well-known build and cache output.
  */
 export const ignoredFilesBlockRemoval = (
   git: GitCoreShape,
@@ -264,7 +279,15 @@ export const ignoredFilesBlockRemoval = (
   inspected?: { readonly entries: ReadonlyArray<string>; readonly truncated: boolean },
   policy: IgnoredFilesRemovalPolicy = { kind: "protect" },
 ) =>
-  (inspected ? Effect.succeed(inspected) : git.listIgnoredEntries(worktreePath)).pipe(
+  (inspected
+    ? Effect.succeed(inspected)
+    : git.cleanupSafetyProbe(worktreePath).pipe(
+        Effect.map((probe) => ({
+          entries: probe.ignoredEntries,
+          truncated: probe.ignoredTruncated,
+        })),
+      )
+  ).pipe(
     Effect.map(({ entries, truncated }) => {
       if (truncated) return "too many ignored files to check";
       const blocking = blockingIgnoredEntries(entries, policy);
@@ -348,7 +371,9 @@ const isStorageCleanupPolicy = (
 const ignoredRemovalPolicy = (policy: WorktreeRemovalPolicy): IgnoredFilesRemovalPolicy =>
   policy.kind === "manual"
     ? { kind: "manual", approvedEntries: policy.approvedIgnoredEntries }
-    : isStorageCleanupPolicy(policy)
+    : // Automatic cleanup may run unattended on rules users enabled long ago, so
+      // it gets no wider an ignored-file exception than storage maintenance.
+      policy.kind === "autoCleanup" || isStorageCleanupPolicy(policy)
       ? { kind: "rebuildable" }
       : { kind: "protect" };
 
@@ -379,6 +404,7 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
   const engine = yield* OrchestrationEngineService;
   const config = yield* ServerConfig;
   const blockedReasons: string[] = [];
+  let ignoredEntries: ReadonlyArray<string> = [];
   let ignoredFiles:
     | {
         entries: ReadonlyArray<string>;
@@ -435,6 +461,7 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
       blockedReasons,
       linkedThreads: [] as ThreadId[],
       deletedThreadClaims: [] as ThreadId[],
+      ignoredEntries,
       branch,
       headSha,
       headMerged,
@@ -488,6 +515,18 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
       blockedReasons.push("it contains a project checkout");
   }
   const claims = yield* readWorktreeClaims(input.path);
+  if (input.policy.kind === "storageMaintenance") {
+    const model = yield* engine.getReadModel();
+    if (
+      model.threads.some(
+        (thread) =>
+          claims.threadIds.includes(thread.id) &&
+          thread.deletedAt === null &&
+          thread.archivedAt === null,
+      )
+    )
+      blockedReasons.push("Referenced by an active thread.");
+  }
   let ownedTransition = false;
   let originalMoveSnapshot: MoveSnapshot | undefined;
   const transitionStore = yield* Effect.serviceOption(WorkspaceTransitions);
@@ -576,6 +615,7 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
       : null;
     if (!inspected && matches) blockedReasons.push("checkout status could not be read");
     if (inspected) {
+      ignoredEntries = inspected.ignoredEntries;
       branch = inspected.branch;
       headSha = inspected.headSha;
       if (isStorageCleanupPolicy(input.policy)) {
@@ -676,6 +716,7 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
     blockedReasons: [...new Set([...blockedReasons, ...(ignoredReason ? [ignoredReason] : [])])],
     linkedThreads: claims.threadIds,
     deletedThreadClaims: claims.deletedThreadIds,
+    ignoredEntries,
     branch,
     headSha,
     headMerged,
@@ -719,6 +760,7 @@ export const removeWorktreeSafely = Effect.fn("removeWorktreeSafely")(function* 
       linkedThreads: [] as ThreadId[],
       deletedThreadClaims: [] as ThreadId[],
       blockedReasons: ["Cleanup was cancelled."],
+      ignoredEntries: [] as string[],
     };
   const preview = yield* evaluateWorktreeRemoval(input);
   if (preview.blockedReasons.length) return preview;

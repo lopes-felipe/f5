@@ -1,7 +1,9 @@
 import { holdsWorktreeLifecycleLock } from "../../project/Layers/WorktreeLifecycleCoordinator.ts";
 import { ServerConfig } from "../../config.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Cause, Effect, Layer, ManagedRuntime, Metric } from "effect";
+import { Cause, Effect, Layer, ManagedRuntime, Metric, Stream } from "effect";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { GitCoreTestLive as GitCoreLive } from "../testLayers.ts";
 import { GitCommandError } from "../Errors.ts";
+import { GitServiceLive } from "./GitService.ts";
 import { GitCore } from "../Services/GitCore.ts";
 import {
   GitService,
@@ -83,6 +86,8 @@ it("places generated worktrees under the configured server worktree root", async
       expect(scripted.calls.find((call) => call.args[0] === "worktree")?.args).toContain(
         result.worktree.path,
       );
+      const addArgs = scripted.calls.find((call) => call.args[0] === "worktree")!.args;
+      expect(addArgs[addArgs.indexOf(result.worktree.path) - 1]).toBe("--");
     }).pipe(
       Effect.provide(
         GitCoreLive.pipe(
@@ -95,6 +100,39 @@ it("places generated worktrees under the configured server worktree root", async
       ),
     ),
   );
+});
+
+it("rejects option-shaped worktree refs before Git calls or ownership allocation", async () => {
+  const scripted = makeScriptedGitService((input) => ({
+    stdout: input.args[0] === "rev-parse" ? "a".repeat(40) : "",
+  }));
+  const core = await makeCore(scripted.service);
+  for (const fields of [
+    { newBranch: "--delete" },
+    { branch: "--orphan" },
+    { newBranch: "safe", baseRefName: "--orphan" },
+    { newBranch: "invalid\0branch" },
+    { newBranch: "" },
+  ]) {
+    await expect(
+      Effect.runPromise(
+        core.createWorktree({
+          cwd: process.cwd(),
+          branch: "main",
+          path: null,
+          ...fields,
+        }),
+      ),
+    ).rejects.toThrow("Invalid worktree ref name");
+  }
+  for (const branch of ["--orphan", "invalid\0branch", ""]) {
+    await expect(
+      Effect.runPromise(
+        core.ensureWorktree({ cwd: process.cwd(), path: "/unused-worktree", branch }),
+      ),
+    ).rejects.toThrow("Invalid worktree ref name");
+  }
+  expect(scripted.calls).toEqual([]);
 });
 
 function counterValue(
@@ -160,6 +198,44 @@ describe("GitCore unit", () => {
       GIT_TERMINAL_PROMPT: "0",
       GCM_INTERACTIVE: "never",
     });
+  });
+
+  it.each([
+    "error: cannot lock ref 'refs/remotes/origin/main': is at 1234 but expected 5678",
+    "error: fetching ref refs/remotes/origin/main failed: incorrect old value provided",
+  ])("retries a base fetch once when another fetch held the ref: %s", async (stderr) => {
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    let fetches = 0;
+    const scripted = makeScriptedGitService((input) => {
+      if (input.args[0] === "rev-parse") return { stdout: `${commit}\n` };
+      if (input.args[0] === "fetch" && ++fetches === 1) return { code: 1, stderr };
+      return {};
+    });
+    const core = await makeCore(scripted.service);
+
+    await expect(
+      Effect.runPromise(
+        core.fetchRemoteBranchCommit({ cwd: process.cwd(), remoteName: "origin", branch: "main" }),
+      ),
+    ).resolves.toMatchObject({ commit });
+    expect(fetches).toBe(2);
+  });
+
+  it("fails a base fetch without retrying when the remote is unreachable", async () => {
+    let fetches = 0;
+    const scripted = makeScriptedGitService((input) => {
+      if (input.args[0] !== "fetch") return {};
+      fetches += 1;
+      return { code: 128, stderr: "fatal: Could not resolve host: example.test" };
+    });
+    const core = await makeCore(scripted.service);
+
+    await expect(
+      Effect.runPromise(
+        core.fetchRemoteBranchCommit({ cwd: process.cwd(), remoteName: "origin", branch: "main" }),
+      ),
+    ).rejects.toThrow("Git could not reach the remote");
+    expect(fetches).toBe(1);
   });
 
   it("rejects option-like remote names before invoking git fetch", async () => {
@@ -237,13 +313,13 @@ describe("GitCore unit", () => {
             "# branch.head feature/parser\x00# branch.upstream origin/feature/parser\x00# branch.ab +2 -3\x001 .M N... 100644 100644 100644 a b src/a.ts\x00? notes.txt\x00",
         };
       }
-      if (argsEqual(input, ["diff", "--numstat", "-z"])) {
+      if (argsEqual(input, ["diff-files", "-M", "--numstat", "-z"])) {
         return { stdout: "4\t1\tsrc/a.ts\x002\t0\tnotes.txt\x00" };
       }
       if (argsEqual(input, ["diff", "--cached", "--numstat", "-z"])) {
         return { stdout: "3\t2\tsrc/a.ts\x00" };
       }
-      if (argsEqual(input, ["diff", "--numstat", "-z", "HEAD", "--"])) {
+      if (argsEqual(input, ["diff-index", "-M", "--numstat", "-z", "HEAD", "--"])) {
         return { stdout: "3\t1\tsrc/a.ts\x002\t0\tnotes.txt\x00" };
       }
       return {};
@@ -279,8 +355,39 @@ describe("GitCore unit", () => {
     });
   });
 
-  it("limits generated commit context to the selected paths", async () => {
+  it("lists worktrees when older Git rejects the NUL option", async () => {
     const scripted = makeScriptedGitService((input) => {
+      if (argsEqual(input, ["worktree", "list", "--porcelain", "-z"]))
+        return { code: 129, stderr: "error: unknown switch `z'" };
+      if (argsEqual(input, ["worktree", "list", "--porcelain"]))
+        return {
+          stdout: `worktree ${process.cwd()}\nHEAD ${"a".repeat(40)}\nbranch refs/heads/main\n\n`,
+        };
+      return {};
+    });
+    const core = await makeCore(scripted.service);
+    await expect(Effect.runPromise(core.listWorktrees(process.cwd()))).resolves.toMatchObject([
+      { path: process.cwd(), branch: "main", headSha: "a".repeat(40), isMain: true },
+    ]);
+    expect(scripted.calls.filter((call) => call.args[0] === "worktree")).toHaveLength(2);
+  });
+
+  it("keeps unrelated worktree-list failures visible without a compatibility retry", async () => {
+    const scripted = makeScriptedGitService(() => ({
+      code: 128,
+      stderr: "fatal: not a git repository",
+    }));
+    const core = await makeCore(scripted.service);
+    await expect(Effect.runPromise(core.listWorktrees(process.cwd()))).rejects.toThrow(
+      "not a git repository",
+    );
+    expect(scripted.calls.filter((call) => call.args[0] === "worktree")).toHaveLength(1);
+  });
+
+  it("limits generated commit context to the selected paths", async () => {
+    const indexPath = join(tmpdir(), `f5-fake-index-${crypto.randomUUID()}`);
+    const scripted = makeScriptedGitService((input) => {
+      if (argsEqual(input, ["rev-parse", "--git-path", "index"])) return { stdout: indexPath };
       if (input.args.includes("--name-status")) return { stdout: "M\tsrc/selected.ts\n" };
       if (input.args.includes("--patch")) return { stdout: "+selected\n" };
       return {};
@@ -293,12 +400,17 @@ describe("GitCore unit", () => {
       stagedSummary: "M\tsrc/selected.ts",
       stagedPatch: "+selected\n",
     });
+    expect(
+      scripted.calls
+        .filter((call) => call.args.includes("add"))
+        .every((call) => call.env?.GIT_INDEX_FILE?.startsWith(`${indexPath}.f5-`)),
+    ).toBe(true);
     expect(scripted.calls.map((call) => call.args)).toContainEqual([
       "diff",
       "--cached",
       "--name-status",
       "--",
-      "src/selected.ts",
+      ":(literal)src/selected.ts",
     ]);
     expect(scripted.calls.map((call) => call.args)).toContainEqual([
       "diff",
@@ -309,7 +421,7 @@ describe("GitCore unit", () => {
       "--dst-prefix=b/",
       "--minimal",
       "--",
-      "src/selected.ts",
+      ":(literal)src/selected.ts",
     ]);
   });
 
@@ -392,6 +504,7 @@ describe("GitCore unit", () => {
         "--no-write-fetch-head",
         "--no-auto-maintenance",
         "--refmap=",
+        "--",
         "origin",
         expect.stringMatching(/^\+refs\/heads\/feature\/cache:refs\/f5\/status\//),
       ]);
@@ -427,6 +540,7 @@ describe("GitCore unit", () => {
           "--quiet",
           "--no-tags",
           "--refmap=",
+          "--",
           "origin",
           expect.stringMatching(/^\+refs\/heads\/feature\/cache:refs\/f5\/status\//),
         ]);
@@ -440,7 +554,7 @@ describe("GitCore unit", () => {
           stdout: "# branch.oid (initial)\x00# branch.head main\x00? README.md\x00",
         };
       }
-      if (argsEqual(input, ["diff", "--numstat", "-z", "HEAD", "--"])) {
+      if (argsEqual(input, ["diff-index", "-M", "--numstat", "-z", "HEAD", "--"])) {
         return { code: 128, stderr: "fatal: ambiguous argument 'HEAD'" };
       }
       return {};
@@ -468,10 +582,10 @@ describe("GitCore unit", () => {
       if (argsEqual(input, ["diff", "--cached", "--numstat", "-z"])) {
         return { stdout: "0\t0\t\x00dir/old name.txt\x00dir/new name.txt\x00" };
       }
-      if (argsEqual(input, ["diff", "--numstat", "-z"])) {
+      if (argsEqual(input, ["diff-files", "-M", "--numstat", "-z"])) {
         return { stdout: "1\t0\tcafé.txt\x00" };
       }
-      if (argsEqual(input, ["diff", "--numstat", "-z", "HEAD", "--"])) {
+      if (argsEqual(input, ["diff-index", "-M", "--numstat", "-z", "HEAD", "--"])) {
         return {
           stdout: "0\t0\t\x00dir/old name.txt\x00dir/new name.txt\x001\t0\tcafé.txt\x00",
         };
@@ -611,6 +725,7 @@ describe("GitCore unit", () => {
     expect(scripted.calls.at(-1)?.args).toEqual([
       "remote",
       "add",
+      "--",
       "Octo-Cat-1",
       "https://github.com/octocat/f5.git",
     ]);
@@ -691,6 +806,7 @@ describe("GitCore unit", () => {
       "fetch",
       "--quiet",
       "--no-tags",
+      "--",
       "origin",
       "+refs/pull/77/head:refs/heads/pr/77-safe",
     ]);
@@ -910,8 +1026,126 @@ it("preserves existing branches during forge head materialization, including rac
   );
   expect(scripted.calls.find((call) => call.args[0] === "branch")?.args).toEqual([
     "branch",
+    "--",
     "existing",
     "origin/feature",
   ]);
   expect(scripted.calls.flatMap((call) => call.args)).not.toContain("--force");
+});
+
+it("rejects option-shaped checkout targets without running a checkout", async () => {
+  const scripted = makeScriptedGitService();
+  const core = await makeCore(scripted.service);
+  await expect(
+    Effect.runPromise(
+      core.checkoutBranch({ cwd: process.cwd(), branch: "--orphan=intruder" }).pipe(Effect.scoped),
+    ),
+  ).rejects.toThrow("Invalid branch name");
+  expect(scripted.calls.some((call) => call.args[0] === "checkout")).toBe(false);
+});
+
+describe("pull output beyond the output cap", () => {
+  const runGit = (cwd: string, args: string[]) =>
+    execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+
+  // A fast-forward that prints over 1 MB takes thousands of files, so the real pull's output is
+  // padded past the cap instead.
+  async function makePaddedCore(stream: "stdout" | "stderr") {
+    const padding = new Uint8Array(1_000_001).fill(0x20);
+    const spawnerLayer = Layer.effect(
+      ChildProcessSpawner.ChildProcessSpawner,
+      Effect.gen(function* () {
+        const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
+        return ChildProcessSpawner.make((command) =>
+          Effect.gen(function* () {
+            const handle = yield* delegate.spawn(command);
+            const isPull =
+              ChildProcess.isStandardCommand(command) &&
+              command.args.includes("pull") &&
+              command.args.includes("--ff-only");
+            return isPull
+              ? ChildProcessSpawner.makeHandle({
+                  ...handle,
+                  [stream]: Stream.concat(handle[stream], Stream.make(padding)),
+                })
+              : handle;
+          }),
+        );
+      }),
+    ).pipe(Layer.provide(NodeServices.layer));
+    const layer = GitCoreLive.pipe(
+      Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "f5-git-core-pull-" })),
+      Layer.provide(GitServiceLive),
+      Layer.provide(Layer.merge(NodeServices.layer, spawnerLayer)),
+    );
+    return Effect.runPromise(Effect.service(GitCore).pipe(Effect.provide(layer)));
+  }
+
+  function cloneBehindRemote() {
+    const root = mkdtempSync(join(tmpdir(), "f5-git-core-pull-"));
+    const [cwd, remote, updater] = ["local", "remote.git", "updater"].map((name) =>
+      join(root, name),
+    ) as [string, string, string];
+    for (const dir of [cwd, remote, updater]) mkdirSync(dir);
+    const configure = (repo: string) => {
+      runGit(repo, ["config", "user.email", "test@test.com"]);
+      runGit(repo, ["config", "user.name", "Test"]);
+      runGit(repo, ["config", "commit.gpgsign", "false"]);
+    };
+    runGit(remote, ["init", "--bare", "--initial-branch=main"]);
+    runGit(cwd, ["init", "--initial-branch=main"]);
+    configure(cwd);
+    writeFileSync(join(cwd, "README.md"), "initial\n");
+    runGit(cwd, ["add", "README.md"]);
+    runGit(cwd, ["commit", "-m", "initial"]);
+    runGit(cwd, ["remote", "add", "origin", remote]);
+    runGit(cwd, ["push", "-u", "origin", "main"]);
+    runGit(updater, ["clone", remote, "."]);
+    configure(updater);
+    writeFileSync(join(updater, "remote.txt"), "remote\n");
+    runGit(updater, ["add", "remote.txt"]);
+    runGit(updater, ["commit", "-m", "remote commit"]);
+    runGit(updater, ["push", "origin", "HEAD:main"]);
+    return { root, cwd, remoteHead: runGit(updater, ["rev-parse", "HEAD"]) };
+  }
+
+  it.each(["stdout", "stderr"] as const)(
+    "reports a fast-forward whose %s passes the cap as pulled",
+    async (stream) => {
+      const core = await makePaddedCore(stream);
+      const { root, cwd, remoteHead } = cloneBehindRemote();
+      try {
+        const result = await Effect.runPromise(core.pullCurrentBranch(cwd));
+        expect(result.status).toBe("pulled");
+        expect(runGit(cwd, ["rev-parse", "HEAD"])).toBe(remoteHead);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
+
+  it("still fails a pull that Git rejects, whatever its output size", async () => {
+    const core = await makePaddedCore("stderr");
+    const { root, cwd } = cloneBehindRemote();
+    try {
+      // A local commit the remote lacks: `pull --ff-only` cannot fast-forward.
+      writeFileSync(join(cwd, "local.txt"), "local\n");
+      runGit(cwd, ["add", "local.txt"]);
+      runGit(cwd, ["commit", "-m", "local commit"]);
+
+      const error = await Effect.runPromise(Effect.flip(core.pullCurrentBranch(cwd)));
+      expect(error.operation).toBe("GitCore.pullCurrentBranch.pull");
+      expect(error.detail).not.toContain("exceeded");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+it("terminates option parsing before configuration keys", async () => {
+  const scripted = makeScriptedGitService();
+  const core = await makeCore(scripted.service);
+  await Effect.runPromise(core.readConfigValue(process.cwd(), "--list"));
+  expect(scripted.calls.at(-1)?.args).toEqual(["config", "--get", "--", "--list"]);
 });

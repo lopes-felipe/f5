@@ -1,10 +1,8 @@
 import { type ModelSelection, type ServerProvider } from "@t3tools/contracts";
 import { useState } from "react";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
-import { getCustomModelOptionsByInstance } from "../../modelSelection";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
-import { ProviderInstanceModelPicker } from "../chat/ProviderInstanceModelPicker";
-import { TraitsPicker } from "../chat/TraitsPicker";
+import { GenerationModelPicker } from "./GenerationModelPicker";
 
 export function SessionNotesSettings({ providers }: { providers: ReadonlyArray<ServerProvider> }) {
   const settings = useSettings();
@@ -23,9 +21,6 @@ export function SessionNotesSettings({ providers }: { providers: ReadonlyArray<S
     !selected.isAvailable ||
     selected.status === "error" ||
     selected.status === "disabled";
-  const selectable = supported.filter((provider) =>
-    entries.some((entry) => entry.instanceId === provider.instanceId && entry.enabled),
-  );
   const save = async (next: ModelSelection) => {
     setSaving(true);
     setError(null);
@@ -52,33 +47,12 @@ export function SessionNotesSettings({ providers }: { providers: ReadonlyArray<S
         Selected: {selected?.displayName ?? selection.instanceId} / {selection.model}
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-2" aria-busy={saving}>
-        <ProviderInstanceModelPicker
-          instanceId={selection.instanceId}
-          model={selection.model}
-          lockedInstanceId={null}
-          providers={selectable}
-          modelOptionsByInstance={getCustomModelOptionsByInstance(settings, selectable)}
+        <GenerationModelPicker
+          value={selection}
+          providers={supported}
           disabled={saving}
-          onInstanceModelChange={(instanceId, _driver, model) => {
-            void save({ instanceId, model });
-          }}
+          onChange={(value) => void save(value)}
         />
-        {selected ? (
-          <TraitsPicker
-            disabled={saving}
-            provider={selected.driverKind}
-            models={selected.models}
-            model={selection.model}
-            modelOptions={selection.options}
-            onModelOptionsChange={(options) => {
-              void save({
-                instanceId: selection.instanceId,
-                model: selection.model,
-                options: options ?? [],
-              });
-            }}
-          />
-        ) : null}
       </div>
       {unavailable ? (
         <p className="mt-2 text-xs text-warning-foreground" role="status">

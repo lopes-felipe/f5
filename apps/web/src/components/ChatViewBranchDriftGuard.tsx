@@ -76,6 +76,7 @@ export function useChatViewBranchDriftGuard(scopeThreadId: ThreadId): {
         const drift = detectBranchDrift({
           recordedBranch: input.recordedBranch,
           currentBranch: branches.branches.find((branch) => branch.current)?.name ?? null,
+          checkoutAvailable: branches.worktreeMissing !== true && branches.isRepo,
         });
         if (!drift) return true;
         resolverRef.current?.(false);

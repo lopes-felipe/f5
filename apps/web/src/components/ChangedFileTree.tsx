@@ -2,6 +2,7 @@ import { ChevronDownIcon, ChevronRightIcon, CopyIcon, FileIcon, FolderIcon } fro
 import { useMemo, useState, type MouseEvent } from "react";
 import { useAppSettings } from "../appSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
+import { compareFilePathsCaseSensitive } from "../lib/filePathCollator";
 import { Button } from "./ui/button";
 
 export interface ChangedFileTreeEntry {
@@ -38,7 +39,7 @@ export function changedFileTreeRows(
     for (const child of [...node.children.values()].sort(
       (a, b) =>
         Number(Boolean(a.file)) - Number(Boolean(b.file)) ||
-        a.path.localeCompare(b.path, undefined, { numeric: true }),
+        compareFilePathsCaseSensitive(a.path, b.path),
     )) {
       rows.push({ path: child.path, depth, ...(child.file ? { file: child.file } : {}) });
       if (!collapsed.has(child.path)) visit(child, depth + 1);

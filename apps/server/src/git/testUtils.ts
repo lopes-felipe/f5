@@ -62,7 +62,7 @@ function parsePushSpec(refspec: string, currentBranch: string): PushSpec | null 
 
 /**
  * Decorates the real Git service for integration tests that push to a local
- * repository. Local pushes are materialized with fetch/update-ref so they work
+ * bare repository. Local pushes are materialized with fetch/update-ref so they work
  * in restricted sandboxes. All other commands go directly to the real service,
  * avoiding the former shell -> Node wrapper -> Git process chain.
  */
@@ -134,7 +134,12 @@ export function makeLocalPushFriendlyGitService(base: GitServiceShape): GitServi
 
         for (const spec of specs) {
           if (spec.source === null) {
-            yield* executeText(input, remotePath, ["update-ref", "-d", spec.destination]);
+            yield* executeText(input, remotePath, [
+              "--git-dir=.",
+              "update-ref",
+              "-d",
+              spec.destination,
+            ]);
             if (spec.destination.startsWith("refs/heads/")) {
               const remoteBranch = spec.destination.slice("refs/heads/".length);
               yield* executeText(input, input.cwd, [
@@ -148,6 +153,7 @@ export function makeLocalPushFriendlyGitService(base: GitServiceShape): GitServi
 
           const sourceSha = yield* executeText(input, input.cwd, ["rev-parse", spec.source]);
           yield* executeText(input, remotePath, [
+            "--git-dir=.",
             "fetch",
             input.cwd,
             `${sourceSha}:${spec.destination}`,

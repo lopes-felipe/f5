@@ -11,12 +11,99 @@ import {
 } from "@t3tools/contracts";
 import { ChevronDownIcon, KeyRoundIcon } from "lucide-react";
 import { McpSignInControls } from "../settings/mcp/McpSignInButton";
-import { memo, useRef, useState } from "react";
+import { Fragment, memo, useRef, useState } from "react";
+import { cn } from "~/lib/utils";
 
 interface ProviderRuntimeInfoEntry {
   readonly label: string;
   readonly value: string;
 }
+
+function runtimeProviderLabel(provider: ProviderKind): string {
+  return provider === "claudeAgent"
+    ? "Claude"
+    : provider === "codex"
+      ? "Codex"
+      : provider === "cursor"
+        ? "Cursor"
+        : provider === "opencode"
+          ? "OpenCode"
+          : provider;
+}
+
+/**
+ * The runtime banner folded into a header chip (compact chat layout): the
+ * provider and its CLI version, with every entry in a popover.
+ */
+export const ProviderRuntimeInfoChip = memo(function ProviderRuntimeInfoChip({
+  provider,
+  entries,
+  mcpServers,
+  projectId,
+  threadId,
+  className,
+}: {
+  provider: ProviderKind | null;
+  entries: ReadonlyArray<ProviderRuntimeInfoEntry>;
+  mcpServers?: ReadonlyArray<CompactMcpStatusActivityPayload> | undefined;
+  projectId?: ProjectId | undefined;
+  threadId?: ThreadId | undefined;
+  className?: string | undefined;
+}) {
+  if (!provider || entries.length === 0) {
+    return null;
+  }
+  const providerLabel = runtimeProviderLabel(provider);
+  const headline = entries.find((entry) => entry.label === "CLI") ?? entries[0]!;
+  const summary = `${providerLabel} · ${headline.label} ${headline.value}`;
+  return (
+    <Popover>
+      <PopoverTrigger
+        data-slot="provider-runtime-info-chip"
+        aria-label={`${providerLabel} runtime: ${headline.label} ${headline.value}`}
+        title={summary}
+        className={cn(
+          "flex h-6 max-w-56 shrink-0 cursor-pointer items-center gap-1 rounded-md border border-border/70 px-1.5 text-2xs text-muted-foreground outline-none hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-accent",
+          className,
+        )}
+      >
+        <span className="font-medium text-foreground">{providerLabel}</span>
+        <span className="min-w-0 truncate">
+          · {headline.label} <span className="font-mono text-foreground">{headline.value}</span>
+        </span>
+      </PopoverTrigger>
+      <PopoverPopup
+        side="bottom"
+        align="start"
+        className="max-w-md"
+        aria-label={`${providerLabel} runtime`}
+      >
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-4 gap-y-1.5 text-xs [&_dt]:text-muted-foreground">
+          {entries.map((entry) => (
+            <Fragment key={entry.label}>
+              <dt>{entry.label}</dt>
+              <dd className="min-w-0">
+                {entry.label === "MCP" && mcpServers?.length ? (
+                  <McpRuntimeChip
+                    summary={entry.value}
+                    servers={mcpServers}
+                    projectId={projectId}
+                    provider={provider}
+                    threadId={threadId}
+                  />
+                ) : (
+                  <span className="block truncate font-mono text-foreground" title={entry.value}>
+                    {entry.value}
+                  </span>
+                )}
+              </dd>
+            </Fragment>
+          ))}
+        </dl>
+      </PopoverPopup>
+    </Popover>
+  );
+});
 
 export const ProviderRuntimeInfoBanner = memo(function ProviderRuntimeInfoBanner({
   provider,
@@ -35,16 +122,7 @@ export const ProviderRuntimeInfoBanner = memo(function ProviderRuntimeInfoBanner
     return null;
   }
 
-  const providerLabel =
-    provider === "claudeAgent"
-      ? "Claude"
-      : provider === "codex"
-        ? "Codex"
-        : provider === "cursor"
-          ? "Cursor"
-          : provider === "opencode"
-            ? "OpenCode"
-            : provider;
+  const providerLabel = runtimeProviderLabel(provider);
 
   return (
     <div

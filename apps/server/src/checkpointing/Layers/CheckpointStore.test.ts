@@ -1,4 +1,5 @@
-import { existsSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CheckpointRef } from "@t3tools/contracts";
@@ -10,8 +11,13 @@ import { describe, expect, it } from "vitest";
 
 import { GitCommandError } from "../../git/Errors.ts";
 import { GitService, type ExecuteGitInput } from "../../git/Services/GitService.ts";
+import { copiedIndexTimestampSeconds } from "../../git/copiedIndex.ts";
 import { CheckpointStore } from "../Services/CheckpointStore.ts";
-import { CheckpointStoreLiveWithGitService } from "./CheckpointStore.ts";
+import {
+  AUTHORED_PATHS_MAX_COMMITS,
+  CheckpointStoreLiveWithGitService,
+  CheckpointStoreLiveWithoutCredentials,
+} from "./CheckpointStore.ts";
 
 function makeLayer(calls: ExecuteGitInput[], refOutput = "") {
   return CheckpointStoreLiveWithGitService.pipe(
@@ -31,6 +37,13 @@ function makeLayer(calls: ExecuteGitInput[], refOutput = "") {
     Layer.provideMerge(NodeServices.layer),
   );
 }
+
+describe("copiedIndexTimestampSeconds", () => {
+  it("keeps the index's own second, even when it falls exactly on the second", () => {
+    expect(copiedIndexTimestampSeconds(new Date(1_700_000_000_000))).toBe(1_700_000_000);
+    expect(copiedIndexTimestampSeconds(new Date(1_700_000_000_999))).toBe(1_700_000_000);
+  });
+});
 
 describe("CheckpointStoreLive", () => {
   it("resolves thousands of exact checkpoint refs with one bounded Git listing", async () => {
@@ -277,6 +290,147 @@ describe("CheckpointStoreLive", () => {
     expect(diffCall?.args).toContain("--ignore-all-space");
     expect(diffCall?.args).not.toContain("--ignore-blank-lines");
     expect(diffCall?.args).not.toContain("--ignore-space-change");
+  });
+
+  describe("excluding files Git brought in", () => {
+    // Fixture commits predate the captures, as commits a pull brings in do.
+    const pastDate = "2020-01-01T00:00:00Z";
+    const run = (cwd: string, ...args: string[]) =>
+      execFileSync("git", args, {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, GIT_AUTHOR_DATE: pastDate, GIT_COMMITTER_DATE: pastDate },
+      });
+    const changedFiles = (diff: string) =>
+      [...diff.matchAll(/^diff --git a\/(\S+) b\//gm)].map((match) => match[1]);
+
+    async function scenario(turn: (cwd: string) => void, before?: (cwd: string) => void) {
+      const cwd = mkdtempSync(path.join(os.tmpdir(), "f5-checkpoint-imports-"));
+      try {
+        run(cwd, "init", "-q", "-b", "main");
+        run(cwd, "config", "user.email", "test@example.com");
+        run(cwd, "config", "user.name", "Test");
+        writeFileSync(path.join(cwd, "mine.txt"), "one\n");
+        run(cwd, "add", ".");
+        run(cwd, "commit", "-q", "-m", "base");
+        run(cwd, "checkout", "-q", "-b", "upstream");
+        writeFileSync(path.join(cwd, "upstream.txt"), "from upstream\n");
+        run(cwd, "add", ".");
+        run(cwd, "commit", "-q", "-m", "upstream work");
+        run(cwd, "checkout", "-q", "main");
+        before?.(cwd);
+
+        const from = CheckpointRef.makeUnsafe("refs/t3/checkpoints/imports/0");
+        const to = CheckpointRef.makeUnsafe("refs/t3/checkpoints/imports/1");
+        return await Effect.runPromise(
+          Effect.gen(function* () {
+            const store = yield* CheckpointStore;
+            yield* store.captureCheckpoint({ cwd, checkpointRef: from });
+            turn(cwd);
+            yield* store.captureCheckpoint({ cwd, checkpointRef: to });
+            const diff = (excludeGitImports: boolean) =>
+              store.diffCheckpoints({
+                cwd,
+                fromCheckpointRef: from,
+                toCheckpointRef: to,
+                options: { excludeGitImports },
+              });
+            return { filtered: yield* diff(true), full: yield* diff(false) };
+          }).pipe(
+            Effect.provide(
+              CheckpointStoreLiveWithoutCredentials.pipe(Layer.provideMerge(NodeServices.layer)),
+            ),
+          ),
+        );
+      } finally {
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    }
+
+    it("leaves out files a pull brought in and keeps the turn's own edits", async () => {
+      const { filtered, full } = await scenario((cwd) => {
+        writeFileSync(path.join(cwd, "mine.txt"), "two\n");
+        run(cwd, "merge", "-q", "--ff-only", "upstream");
+      });
+      expect(changedFiles(full)).toEqual(["mine.txt", "upstream.txt"]);
+      expect(changedFiles(filtered)).toEqual(["mine.txt"]);
+      expect(filtered).toContain("+two");
+    });
+
+    it("shows the whole diff instead of replaying a long range HEAD left", async () => {
+      const { filtered, full } = await scenario(
+        (cwd) => {
+          // Leaving the busy branch for upstream makes HEAD leave every busy commit.
+          run(cwd, "checkout", "-q", "main");
+          run(cwd, "merge", "-q", "--ff-only", "upstream");
+        },
+        (cwd) => {
+          // More commits than the filter replays, in one fast-import instead of a Git per commit.
+          const base = run(cwd, "rev-parse", "HEAD").trim();
+          const commits = Array.from(
+            { length: AUTHORED_PATHS_MAX_COMMITS + 1 },
+            (_, index) =>
+              `commit refs/heads/busy\ncommitter Test <test@example.com> 1577836800 +0000\ndata 1\n${index % 10}\n${index === 0 ? `from ${base}\n` : ""}M 644 inline busy.txt\ndata ${String(index).length}\n${index}\n`,
+          );
+          execFileSync("git", ["fast-import", "--quiet"], { cwd, input: commits.join("") });
+          run(cwd, "checkout", "-q", "busy");
+        },
+      );
+      // Within the cap, upstream.txt would be left out as brought in by the merge.
+      expect(changedFiles(full)).toContain("upstream.txt");
+      expect(changedFiles(filtered)).toEqual(changedFiles(full));
+    });
+
+    it("keeps an imported file the turn also edited", async () => {
+      const { filtered } = await scenario((cwd) => {
+        run(cwd, "merge", "-q", "--ff-only", "upstream");
+        writeFileSync(path.join(cwd, "upstream.txt"), "edited by the turn\n");
+      });
+      expect(changedFiles(filtered)).toEqual(["upstream.txt"]);
+    });
+
+    it("keeps a nested workspace when restoring removes its last tracked file", async () => {
+      const root = mkdtempSync(path.join(os.tmpdir(), "f5-checkpoint-nested-"));
+      try {
+        run(root, "init", "-q", "-b", "main");
+        run(root, "config", "user.email", "test@example.com");
+        run(root, "config", "user.name", "Test");
+        writeFileSync(path.join(root, "root.txt"), "root\n");
+        run(root, "add", ".");
+        run(root, "commit", "-q", "-m", "base");
+        const cwd = path.join(root, "pkg");
+        mkdirSync(cwd);
+        const checkpointRef = CheckpointRef.makeUnsafe("refs/t3/checkpoints/nested/0");
+        await Effect.runPromise(
+          Effect.gen(function* () {
+            const store = yield* CheckpointStore;
+            yield* store.captureCheckpoint({ cwd, checkpointRef });
+            writeFileSync(path.join(cwd, "added.txt"), "added\n");
+            run(cwd, "add", "added.txt");
+            yield* store.restoreCheckpoint({ cwd, checkpointRef });
+          }).pipe(
+            Effect.provide(
+              CheckpointStoreLiveWithoutCredentials.pipe(Layer.provideMerge(NodeServices.layer)),
+            ),
+          ),
+        );
+        expect(existsSync(cwd)).toBe(true);
+        expect(existsSync(path.join(cwd, "added.txt"))).toBe(false);
+        expect(existsSync(path.join(root, "root.txt"))).toBe(true);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps every file when HEAD did not move", async () => {
+      const { filtered, full } = await scenario((cwd) => {
+        writeFileSync(path.join(cwd, "mine.txt"), "two\n");
+        writeFileSync(path.join(cwd, "new.txt"), "new\n");
+      });
+      expect(filtered).toBe(full);
+      expect(changedFiles(filtered)).toEqual(["mine.txt", "new.txt"]);
+    });
   });
 
   it("omits whitespace flags by default", async () => {

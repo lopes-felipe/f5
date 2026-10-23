@@ -1,4 +1,4 @@
-import { type GrokSettings, ProviderDriverKind } from "@t3tools/contracts";
+import { type GrokSettings, ProviderDriverKind, type RuntimeMode } from "@t3tools/contracts";
 import { normalizeModelSlug } from "@t3tools/shared/model";
 import { Effect, Layer, Scope } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -28,16 +28,29 @@ export interface GrokAcpRuntimeInput extends Omit<
   readonly childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
   readonly grokSettings: GrokAcpRuntimeGrokSettings | null | undefined;
   readonly environment?: NodeJS.ProcessEnv;
+  readonly runtimeMode?: RuntimeMode;
+}
+
+/**
+ * Supervised goes on the argv so an always-approve in the user's Grok config cannot skip the
+ * approval prompts. Full access keeps Grok asking too: the adapter answers each request itself,
+ * which keeps computer-use requests in front of the user.
+ */
+export function grokAcpSpawnArgs(runtimeMode?: RuntimeMode): ReadonlyArray<string> {
+  return runtimeMode === "approval-required"
+    ? ["--permission-mode", "default", "agent", "stdio"]
+    : ["agent", "stdio"];
 }
 
 export function buildGrokAcpSpawnInput(
   grokSettings: GrokAcpRuntimeGrokSettings | null | undefined,
   cwd: string,
   environment?: NodeJS.ProcessEnv,
+  runtimeMode?: RuntimeMode,
 ): AcpSpawnInput {
   return {
     command: grokSettings?.binaryPath || "grok",
-    args: ["agent", "stdio"],
+    args: [...grokAcpSpawnArgs(runtimeMode)],
     cwd,
     env: {
       ...environment,
@@ -59,7 +72,12 @@ export const makeGrokAcpRuntime = (
     const acpContext = yield* Layer.build(
       AcpSessionRuntime.layer({
         ...input,
-        spawn: buildGrokAcpSpawnInput(input.grokSettings, input.cwd, input.environment),
+        spawn: buildGrokAcpSpawnInput(
+          input.grokSettings,
+          input.cwd,
+          input.environment,
+          input.runtimeMode,
+        ),
         authMethodId: resolveGrokAuthMethodId(input.environment),
       }).pipe(
         Layer.provide(
@@ -82,18 +100,26 @@ export function currentGrokModelIdFromSessionSetup(
     | EffectAcpSchema.NewSessionResponse
     | EffectAcpSchema.ResumeSessionResponse,
 ): string | undefined {
-  return sessionSetupResult.models?.currentModelId?.trim() || undefined;
+  const reported = sessionSetupResult.models?.currentModelId?.trim();
+  if (reported) return reported;
+  const model = sessionSetupResult.configOptions?.find(
+    (option) => option.id === "model" || option.category === "model",
+  );
+  return model?.type === "select" && typeof model.currentValue === "string"
+    ? model.currentValue.trim() || undefined
+    : undefined;
 }
 
 export function applyGrokAcpModelSelection<E>(input: {
   readonly runtime: Pick<AcpSessionRuntimeShape, "setSessionModel">;
   readonly currentModelId: string | undefined;
   readonly requestedModelId: string | undefined;
+  readonly defaultModelId?: string;
   readonly mapError: (cause: EffectAcpErrors.AcpError) => E;
 }): Effect.Effect<string | undefined, E> {
   if (
     !input.requestedModelId ||
-    input.requestedModelId === "grok-build" ||
+    input.requestedModelId === (input.defaultModelId ?? "grok-build") ||
     input.requestedModelId === input.currentModelId
   ) {
     return Effect.succeed(input.currentModelId);

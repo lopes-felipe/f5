@@ -1,3 +1,4 @@
+import { ThreadMcpBroker } from "../../mcp/threadMcpTools.ts";
 import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import * as NodeOS from "node:os";
 import {
@@ -167,6 +168,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         instanceId,
       );
       const previewAutomationBroker = yield* PreviewAutomationBroker;
+      const threadMcpBroker = yield* Effect.serviceOption(ThreadMcpBroker);
       const computerAutomationBroker = yield* Effect.serviceOption(ComputerAutomationBroker);
       // Latest probed models, so launches use the capabilities the CLI reported
       // (the same ones the composer shows) instead of only F5's static table.
@@ -184,6 +186,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           ),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         previewAutomationBroker,
+        ...(threadMcpBroker._tag === "Some" ? { threadMcpBroker: threadMcpBroker.value } : {}),
         ...(computerAutomationBroker._tag === "Some"
           ? { computerAutomationBroker: computerAutomationBroker.value }
           : {}),
@@ -216,8 +219,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
 
       // Per-instance capabilities cache: keyed on binary + resolved HOME so
       // account-specific probes never share auth metadata across instances.
+      // Instance-level probes are not tied to a project, so they run in the
+      // server's state dir. The server cwd is $HOME in packaged desktop builds,
+      // and `claude` wrappers that scope themselves to their cwd refuse to run
+      // there.
       const probes = yield* makeClaudeInstanceProbes(effectiveConfig, processEnv, {
-        cwd: serverCwd,
+        cwd: serverConfig.stateDir,
       });
       const accountUsage = yield* makeAccountUsageCapability(
         {
@@ -256,6 +263,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         effectiveConfig,
         () => probes.capabilities,
         processEnv,
+        serverConfig.stateDir,
       ).pipe(
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),

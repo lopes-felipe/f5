@@ -18,9 +18,13 @@ vi.mock("../nativeApi", () => ({
   readNativeApi: () => ({ git: api }),
   ensureNativeApi: () => ({ git: api }),
 }));
-vi.mock("../appSettings", () => ({
-  useAppSettings: () => ({ settings: { gitStatusAutoRefreshIntervalSeconds: 0 } }),
-}));
+vi.mock("../appSettings", () => {
+  const settings = { gitStatusAutoRefreshIntervalSeconds: 0 };
+  return {
+    useAppSettings: () => ({ settings }),
+    useAppSettingsSelector: <T,>(selector: (value: typeof settings) => T) => selector(settings),
+  };
+});
 
 const cwd = "/repo/worktrees/thread";
 const conflict = { cwd, branch: "main", files: ["index.css", "ChatComposer.tsx"] };

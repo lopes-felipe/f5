@@ -3,10 +3,12 @@ import os from "node:os";
 import path from "node:path";
 
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Fiber, Metric } from "effect";
+import { Effect, Fiber, Metric, Tracer } from "effect";
 
 import {
   eventLoopDelay,
+  recordEventLoopStall,
+  recentEventLoopStalls,
   increment,
   makeMetricSnapshotWriter,
   previewRecordingFramesDroppedTotal,
@@ -199,3 +201,30 @@ describe("preview metrics", () => {
     }),
   );
 });
+
+it.effect(
+  "records actual stall duration on independent spans and bounds its retained history",
+  () =>
+    Effect.gen(function* () {
+      const spans: Array<Parameters<Tracer.Tracer["span"]>[0]> = [];
+      const tracer = Tracer.make({
+        span(options) {
+          spans.push(options);
+          return new Tracer.NativeSpan(options);
+        },
+      });
+      yield* recordEventLoopStall(49).pipe(Effect.provideService(Tracer.Tracer, tracer));
+      assert.equal(spans.length, 0);
+      yield* Effect.forEach(
+        Array.from({ length: 150 }, (_, index) => index + 50),
+        (duration) =>
+          recordEventLoopStall(duration).pipe(Effect.provideService(Tracer.Tracer, tracer)),
+        { discard: true },
+      );
+      assert.equal(spans.length, 150);
+      assert.equal(spans[0]?.name, "event-loop.stall");
+      assert.isUndefined(spans[0]?.parent);
+      assert.equal(recentEventLoopStalls().length, 128);
+      assert.equal(recentEventLoopStalls().at(-1)?.durationMs, 199);
+    }),
+);

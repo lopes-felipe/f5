@@ -1,3 +1,5 @@
+import { makeProjectionTurnRepository } from "../../persistence/Layers/ProjectionTurns.ts";
+import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import { createPersistentOrchestrationSystem } from "../testUtils/persistentOrchestration.ts";
 import { AcceptedShutdownWork, ServerShutdown, ShutdownRegistry } from "../../shutdown.ts";
 import { ProviderControlTarget } from "../../provider/controlTarget.ts";
@@ -22,6 +24,8 @@ import path from "node:path";
 import {
   CheckpointRef,
   CommandId,
+  EventId,
+  ProviderInstanceId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   MessageId,
   ProjectId,
@@ -32,6 +36,7 @@ import {
 import {
   Deferred,
   Effect,
+  Fiber,
   Exit,
   Scope,
   Layer,
@@ -68,6 +73,7 @@ import { ServerConfig } from "../../config.ts";
 import { DiskSpaceMonitor } from "../../storage/DiskSpaceMonitor.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { makeLocalFileTracer } from "../../observability/LocalFileTracer.ts";
+import { makeTraceSink } from "../../observability/TraceSink.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.makeUnsafe(value);
 const asMessageId = (value: string): MessageId => MessageId.makeUnsafe(value);
@@ -124,14 +130,22 @@ async function createOrchestrationSystem(input?: {
   if (input?.tracePath) {
     fs.mkdirSync(path.dirname(input.tracePath), { recursive: true });
   }
-  const tracerLayer = input?.tracePath
+  let flushTraces = Effect.void;
+  const traceOptions = input?.tracePath
+    ? {
+        filePath: input.tracePath,
+        maxBytes: 1024 * 1024,
+        maxFiles: 2,
+        batchWindowMs: 1,
+      }
+    : null;
+  const tracerLayer = traceOptions
     ? Layer.effect(
         Tracer.Tracer,
-        makeLocalFileTracer({
-          filePath: input.tracePath,
-          maxBytes: 1024 * 1024,
-          maxFiles: 2,
-          batchWindowMs: 1,
+        Effect.gen(function* () {
+          const sink = yield* makeTraceSink(traceOptions);
+          flushTraces = sink.flush;
+          return yield* makeLocalFileTracer({ ...traceOptions, sink });
         }),
       )
     : Layer.empty;
@@ -160,6 +174,7 @@ async function createOrchestrationSystem(input?: {
     engine,
     sql,
     transitions: await runtime.runPromise(Effect.service(WorkspaceTransitions)),
+    flushTraces: () => runtime.runPromise(flushTraces),
     run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
     dispose: () => runtime.dispose(),
   };
@@ -186,6 +201,115 @@ function now() {
 }
 
 describe("OrchestrationEngine", () => {
+  it("retains a retried message consistently in live, SQL, and replayed conversations", async () => {
+    const system = await createOrchestrationSystem();
+    const threadId = ThreadId.makeUnsafe("retried-revert");
+    const projectId = ProjectId.makeUnsafe("retried-project");
+    const at = "2026-10-22T12:00:00.000Z";
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.makeUnsafe("retry-project"),
+          projectId,
+          title: "Retry",
+          workspaceRoot: process.cwd(),
+          createdAt: at,
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.makeUnsafe("retry-thread"),
+          threadId,
+          projectId,
+          title: "Retry",
+          model: "gpt-5-codex",
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: at,
+        }),
+      );
+      for (let index = 1; index <= 3; index++) {
+        await system.run(
+          system.engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.makeUnsafe(`retry-start-${index}`),
+            threadId,
+            message: {
+              messageId: MessageId.makeUnsafe(`retry-message-${index}`),
+              role: "user",
+              text: `Prompt ${index}`,
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdAt: new Date(Date.parse(at) + index * 1000).toISOString(),
+          }),
+        );
+      }
+      const turns = await system.run(
+        makeProjectionTurnRepository.pipe(Effect.provideService(SqlClient.SqlClient, system.sql)),
+      );
+      for (let index = 1; index <= 2; index++) {
+        await system.run(
+          turns.upsertByTurnId({
+            threadId,
+            turnId: TurnId.makeUnsafe(`retry-turn-${index}`),
+            pendingMessageId: null,
+            assistantMessageId: null,
+            state: "completed",
+            requestedAt: new Date(Date.parse(at) + index * 1000).toISOString(),
+            startedAt: at,
+            completedAt: at,
+            processingQuiescedAt: at,
+            checkpointTurnCount: null,
+            checkpointRef: null,
+            checkpointStatus: null,
+            checkpointFiles: [],
+          }),
+        );
+        await system.run(
+          system.sql`UPDATE provider_turn_deliveries SET state = 'accepted', provider_turn_id = ${`retry-turn-${index}`} WHERE command_id = ${`retry-start-${index + 1}`}`,
+        );
+      }
+      const retained = (await system.run(turns.listByThreadId({ threadId }))).slice(0, 1);
+      const retainedMessageIds = retained.flatMap((turn) =>
+        turn.pendingMessageId ? [turn.pendingMessageId] : [],
+      );
+      expect(retainedMessageIds).toEqual(["retry-message-2"]);
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.revert.complete",
+          commandId: CommandId.makeUnsafe("retry-revert"),
+          threadId,
+          turnCount: 1,
+          retainedTurnIds: [TurnId.makeUnsafe("retry-turn-1")],
+          retainedMessageIds,
+          createdAt: at,
+        }),
+      );
+      const live = (await system.run(system.engine.getReadModel())).threads[0]!.messages.map(
+        (message) => message.id,
+      );
+      expect(live).toEqual(["retry-message-2"]);
+      const stored = await system.run(
+        system.sql<{
+          id: string;
+        }>`SELECT message_id AS id FROM projection_thread_messages WHERE thread_id = ${threadId}`,
+      );
+      expect(stored.map((message) => message.id)).toEqual(live);
+      const events = await system.run(Stream.runCollect(system.engine.readEvents(0)));
+      let replayed = createEmptyReadModel(at);
+      for (const event of events) replayed = await Effect.runPromise(projectEvent(replayed, event));
+      expect(replayed.threads[0]!.messages.map((message) => message.id)).toEqual(live);
+    } finally {
+      await system.dispose();
+    }
+  });
+
   it.each(["planning", "codeReview", "investigation"] as const)(
     "persists and replays an atomic %s workflow archive and restore",
     async (kind) => {
@@ -1195,6 +1319,84 @@ describe("OrchestrationEngine", () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }, 60_000);
 
+  it("gives each scratch thread its own folder and keeps it across a restart", async () => {
+    const tempDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "t3-scratch-engine-")));
+    const dbPath = path.join(tempDir, "state.sqlite");
+    const scratchRoot = path.join(tempDir, "scratch");
+    const createdAt = "2026-10-22T09:30:00.000Z";
+    const threadId = ThreadId.makeUnsafe("0f9e8d7c-1111-2222-3333-444455556666");
+    const system = await createPersistentOrchestrationSystem({ dbPath });
+    await system.run(
+      system.engine.dispatch({
+        type: "project.scratch.create",
+        commandId: CommandId.makeUnsafe("cmd-scratch-create"),
+        projectId: asProjectId("scratch"),
+        workspaceRoot: scratchRoot,
+        createdAt,
+      }),
+    );
+    const create = {
+      type: "thread.create",
+      commandId: CommandId.makeUnsafe("cmd-scratch-thread"),
+      threadId,
+      projectId: asProjectId("scratch"),
+      title: "New thread",
+      scratchFolderWords: "Fix the login page, please! Then more words",
+      model: "gpt-5-codex",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      branch: null,
+      worktreePath: null,
+      createdAt,
+    } as const;
+    await system.run(system.engine.dispatch(create));
+    // A retried create replays its receipt and allocates nothing new.
+    await system.run(system.engine.dispatch(create));
+    const folder = path.join(scratchRoot, "2026-10-22-fix-the-login-page-please-0f9e8d7c");
+    const model = await system.run(system.engine.getReadModel());
+    expect(model.threads.find((thread) => thread.id === threadId)?.scratchPath).toBe(folder);
+    expect(fs.statSync(folder).isDirectory()).toBe(true);
+    expect(fs.readdirSync(scratchRoot)).toEqual([path.basename(folder)]);
+    // A rejected create leaves no folder behind, and one the decider would refuse is never made.
+    for (const rejected of [
+      { commandId: "cmd-scratch-duplicate", scratchFolderWords: "Another folder" },
+      { commandId: "cmd-scratch-branch", threadId: "other-thread", branch: "feature" },
+    ])
+      await expect(
+        system.run(
+          system.engine.dispatch({
+            ...create,
+            ...rejected,
+            commandId: CommandId.makeUnsafe(rejected.commandId),
+            threadId: ThreadId.makeUnsafe(rejected.threadId ?? threadId),
+          }),
+        ),
+      ).rejects.toThrow();
+    expect(fs.readdirSync(scratchRoot)).toEqual([path.basename(folder)]);
+    // A creation time that is not a date stays out of the name, so it cannot leave the root.
+    await system.run(
+      system.engine.dispatch({
+        ...create,
+        commandId: CommandId.makeUnsafe("cmd-scratch-escape"),
+        threadId: ThreadId.makeUnsafe("escape-thread"),
+        scratchFolderWords: "Escape",
+        createdAt: "../../evil",
+      }),
+    );
+    expect(fs.readdirSync(scratchRoot).sort()).toEqual(
+      [path.basename(folder), "escape-escapeth"].sort(),
+    );
+    expect(fs.existsSync(path.join(tempDir, "evil"))).toBe(false);
+    await system.dispose();
+
+    const restarted = await createPersistentOrchestrationSystem({ dbPath });
+    const restored = await restarted.run(restarted.engine.getReadModel());
+    expect(restored.projects.find((project) => project.id === "scratch")?.kind).toBe("scratch");
+    expect(restored.threads.find((thread) => thread.id === threadId)?.scratchPath).toBe(folder);
+    await restarted.dispose();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }, 60_000);
+
   it("falls back to full replay when projection snapshot hydration fails", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-orchestration-snapshot-fallback-"));
     const dbPath = path.join(tempDir, "state.sqlite");
@@ -1245,6 +1447,7 @@ describe("OrchestrationEngine", () => {
 
     const readCursors: number[] = [];
     const failingSnapshotQueryLayer = Layer.succeed(ProjectionSnapshotQuery, {
+      searchThread: () => Effect.die("unused thread search"),
       getBootstrapSnapshot: () =>
         Effect.fail(
           new PersistenceSqlError({
@@ -1321,7 +1524,6 @@ describe("OrchestrationEngine", () => {
         createdAt,
       }),
     );
-    await system.run(Effect.sleep("25 millis"));
 
     const after = await system.run(Metric.snapshot);
     expect(
@@ -1359,6 +1561,7 @@ describe("OrchestrationEngine", () => {
         }),
     ).toBe(1);
 
+    await system.flushTraces();
     const traces = fs
       .readFileSync(tracePath, "utf8")
       .trim()
@@ -1946,6 +2149,18 @@ describe("OrchestrationEngine", () => {
       }),
     );
 
+    // The recovery-* events stand in for events another server appended to a
+    // shared state directory; reconcile must not republish them.
+    const publishedEventIds: string[] = [];
+    const subscription = runtime.runFork(
+      Stream.runForEach(engine.streamDomainEvents, (event) =>
+        Effect.sync(() => {
+          publishedEventIds.push(event.eventId);
+        }),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
     await expect(
       runtime.runPromise(
         engine.dispatch({
@@ -1956,6 +2171,10 @@ describe("OrchestrationEngine", () => {
         }),
       ),
     ).rejects.toThrow("projection failed");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await runtime.runPromise(Fiber.interrupt(subscription));
+    expect(publishedEventIds).toHaveLength(1);
+    expect(publishedEventIds.some((id) => id.startsWith("recovery-"))).toBe(false);
 
     const readModelAfterFailure = await runtime.runPromise(engine.getReadModel());
     const updatedThread = readModelAfterFailure.threads.find(
@@ -2280,6 +2499,221 @@ describe("usage recovery stop durability", () => {
       }
     },
   );
+});
+
+it("reconciles proven native rewind turns durably while preserving other providers and the active command", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "f5-native-rewind-"));
+  const dbPath = path.join(directory, "state.sqlite");
+  let system = await createPersistentOrchestrationSystem({ dbPath });
+  try {
+    const { engine, run, sql } = system;
+    const threadId = ThreadId.make("native-rewind-thread");
+    const projectId = ProjectId.make("native-rewind-project");
+    const instanceId = ProviderInstanceId.make("pi-native");
+    const createdAt = "2026-10-19T00:00:00.000Z";
+    await run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("native-project"),
+        projectId,
+        title: "Native",
+        workspaceRoot: "/tmp/native-rewind-project",
+        defaultModel: "default",
+        createdAt,
+      }),
+    );
+    await run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("native-thread"),
+        threadId,
+        projectId,
+        title: "Native",
+        model: "default",
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+    const ids = ["other-provider", "kept-pi", "removed-pi", "rewinding-command"].map((id) =>
+      TurnId.make(id),
+    );
+    for (const [index, turnId] of ids.entries()) {
+      await run(
+        engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`user-command-${index}`),
+          threadId,
+          message: {
+            messageId: MessageId.make(`user-${index}`),
+            role: "user",
+            text: `Prompt ${index}`,
+            attachments: [],
+          },
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          createdAt,
+        }),
+      );
+      const session = {
+        threadId,
+        status: "running" as const,
+        providerName: index === 0 ? ("codex" as const) : ("pi" as const),
+        providerInstanceId: instanceId,
+        runtimeMode: "approval-required" as const,
+        activeTurnId: turnId,
+        lastError: null,
+        lastErrorId: null,
+        lastErrorOccurredAt: null,
+        lastErrorRetryability: null,
+        updatedAt: createdAt,
+      };
+      await run(
+        engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(`session-${index}`),
+          threadId,
+          session,
+          createdAt,
+        }),
+      );
+      await run(
+        engine.dispatch({
+          type: "thread.message.assistant.delta",
+          commandId: CommandId.make(`message-${index}`),
+          threadId,
+          messageId: MessageId.make(`message-${index}`),
+          turnId,
+          delta: `Reply ${turnId}`,
+          createdAt,
+        }),
+      );
+      await run(
+        engine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.make(`activity-${index}`),
+          threadId,
+          activity: {
+            id: EventId.make(`activity-${index}`),
+            kind: "tool.completed",
+            tone: "tool",
+            summary: turnId,
+            turnId,
+            payload: {},
+            createdAt,
+          },
+          createdAt,
+        }),
+      );
+      if (index < 3) {
+        await run(
+          engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make(`ready-${index}`),
+            threadId,
+            session: { ...session, status: "ready", activeTurnId: null },
+            settledTurnId: turnId,
+            createdAt,
+          }),
+        );
+      }
+    }
+    const reconcile = {
+      type: "thread.native-history.reconcile" as const,
+      commandId: CommandId.make("native-reconcile"),
+      threadId,
+      providerInstanceId: instanceId,
+      expectedTurnId: ids[3]!,
+      removedTurnIds: [ids[2]!],
+      createdAt,
+    };
+    const result = await run(engine.dispatch(reconcile));
+    expect(await run(engine.dispatch(reconcile))).toEqual(result);
+    const thread = (await run(engine.getReadModel())).threads.find(
+      (thread) => thread.id === threadId,
+    )!;
+    expect(
+      thread.messages
+        .filter((message) => message.role === "assistant")
+        .map((message) => message.turnId),
+    ).toEqual([ids[0], ids[1], ids[3]]);
+    expect(
+      thread.messages.filter((message) => message.role === "user").map((message) => message.id),
+    ).toEqual(["user-0", "user-1", "user-3"]);
+    expect(thread.activities.map((activity) => activity.turnId)).toEqual([ids[0], ids[1], ids[3]]);
+    expect(thread.latestTurn?.turnId).toBe(ids[3]);
+    expect(thread.session?.activeTurnId).toBe(ids[3]);
+    const rows = await run(
+      sql<{
+        turnId: string;
+      }>`SELECT turn_id AS "turnId" FROM projection_turns WHERE thread_id=${threadId} ORDER BY turn_id`,
+    );
+    expect(rows.map((row) => row.turnId)).toEqual([ids[1], ids[0], ids[3]].toSorted());
+    const messages = await run(
+      sql<{
+        turnId: string;
+      }>`SELECT turn_id AS "turnId" FROM projection_thread_messages WHERE thread_id=${threadId} ORDER BY message_id`,
+    );
+    expect(messages.map((row) => row.turnId)).toEqual([ids[0], ids[1], ids[3], null, null, null]);
+    const queue = await run(
+      sql<{
+        paused: number;
+        reason: string;
+      }>`SELECT paused,pause_reason_code AS reason FROM next_turn_queue_state WHERE thread_id=${threadId}`,
+    );
+    expect(queue).toEqual([{ paused: 1, reason: "thread_reverted" }]);
+    await expect(
+      run(
+        engine.dispatch({
+          ...reconcile,
+          commandId: CommandId.make("stale-native-reconcile"),
+          expectedTurnId: ids[1]!,
+        }),
+      ),
+    ).rejects.toThrow("native history owner changed");
+    const lateCheckpoint = {
+      type: "thread.turn.diff.complete" as const,
+      commandId: CommandId.make("late-native-checkpoint"),
+      threadId,
+      turnId: ids[2]!,
+      checkpointTurnCount: 3,
+      checkpointRef: CheckpointRef.make("refs/t3/checkpoints/native/3"),
+      files: [],
+      status: "ready" as const,
+      completedAt: createdAt,
+      createdAt,
+    };
+    await expect(run(engine.dispatch(lateCheckpoint))).rejects.toThrow(
+      "retired by verified native history",
+    );
+    await system.dispose();
+    system = await createPersistentOrchestrationSystem({ dbPath });
+    const recovered = (await system.run(system.engine.getReadModel())).threads.find(
+      (thread) => thread.id === threadId,
+    )!;
+    expect(
+      recovered.messages
+        .filter((message) => message.role === "assistant")
+        .map((message) => message.turnId),
+    ).toEqual([ids[0], ids[1], ids[3]]);
+    expect(
+      recovered.messages.filter((message) => message.role === "user").map((message) => message.id),
+    ).toEqual(["user-0", "user-1", "user-3"]);
+    expect(recovered.latestTurn?.turnId).toBe(ids[3]);
+    await expect(
+      system.run(
+        system.engine.dispatch({
+          ...lateCheckpoint,
+          commandId: CommandId.make("late-native-checkpoint-after-restart"),
+        }),
+      ),
+    ).rejects.toThrow("retired by verified native history");
+  } finally {
+    await system.dispose();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 describe("command admission", () => {

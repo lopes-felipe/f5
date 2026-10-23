@@ -22,7 +22,7 @@ import {
   type AppSettings,
   readAppSettingsSnapshot,
   subscribeAppSettings,
-  useAppSettings,
+  updateAppSettings,
 } from "../appSettings";
 import { serverConfigQueryOptions, serverQueryKeys } from "../lib/serverReactQuery";
 import { ensureNativeApi } from "../nativeApi";
@@ -32,6 +32,20 @@ const SERVER_SETTINGS_KEYS = new Set(
   Object.keys(ServerSettings.fields).filter((key) => !APP_SETTINGS_KEYS.has(key)),
 );
 export type UnifiedWebSettings = UnifiedSettings & AppSettings;
+
+const SERVER_SETTINGS_FIELD_KEYS = Object.keys(ServerSettings.fields) as ReadonlyArray<
+  keyof ServerSettings
+>;
+
+/**
+ * The merged settings restricted to server-schema keys. Pass it to `useSettings` when a
+ * component needs `ServerSettings`: a write to a web-only setting keeps its identity.
+ */
+export function selectServerSettings(settings: UnifiedWebSettings): ServerSettings {
+  const selected: Partial<Record<keyof ServerSettings, unknown>> = {};
+  for (const key of SERVER_SETTINGS_FIELD_KEYS) selected[key] = settings[key];
+  return selected as ServerSettings;
+}
 
 export function mergeSettings(
   appSettings: AppSettings,
@@ -172,7 +186,7 @@ export function useSettings<T = UnifiedWebSettings>(
 }
 
 export function useUpdateSettings() {
-  const { updateSettings: updateAppSettings } = useAppSettings();
+  // Writes go straight to storage, so updating settings does not subscribe the caller.
   const queryClient = useQueryClient();
   const serverUpdateQueueRef = useRef<Promise<void>>(Promise.resolve());
 
@@ -194,7 +208,7 @@ export function useUpdateSettings() {
         await update;
       }
     },
-    [queryClient, updateAppSettings],
+    [queryClient],
   );
 
   return { updateSettings } as const;

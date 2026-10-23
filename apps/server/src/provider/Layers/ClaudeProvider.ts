@@ -49,6 +49,7 @@ import {
   resolveClaudeCliInvocation,
   resolveClaudeSdkExecutableOptions,
 } from "../claudeSdkExecutable.ts";
+import { hasClaudeManagedMcpConfig } from "../claudeInventory.ts";
 import { AccountUsageReadError, accountUsageErrorCode } from "../../usage/accountUsageErrors.ts";
 import { normalizeClaudeAccountUsage } from "../../usage/claudeAccountUsage.ts";
 import { CommandNotFoundError } from "../../spawn/resolveCommand.ts";
@@ -417,7 +418,9 @@ export function withClaudeProbeQuery<A>(
               allowedTools: [],
               settings: { disableAllHooks: true },
               mcpServers: {},
-              strictMcpConfig: true,
+              // Claude refuses the strict flag next to a managed-mcp.json,
+              // which already excludes every other MCP source.
+              ...(hasClaudeManagedMcpConfig() ? {} : { strictMcpConfig: true }),
               env: {
                 ...claudeEnvironment,
                 ENABLE_CLAUDEAI_MCP_SERVERS: "false",
@@ -521,7 +524,9 @@ export const probeClaudeAccountUsage = (
         if (typeof read !== "function")
           return yield* Effect.fail(new AccountUsageReadError("unsupported"));
         const response = yield* Effect.tryPromise({
-          try: () => read.call(q),
+          // Only the rate limits are read, so skip the local transcript scan that fills
+          // `behaviors`: with a few GB of transcripts it outlasts the deadline.
+          try: () => read.call(q, { skipBehaviors: true }),
           // Only a rejection from this operation can prove unsupported usage RPCs.
           catch: (error) =>
             new AccountUsageReadError(
@@ -545,6 +550,7 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   claudeSettings: ClaudeSettings,
   args: ReadonlyArray<string>,
   environment: NodeJS.ProcessEnv = process.env,
+  cwd?: string,
 ) {
   const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
   const invocation = yield* Effect.try({
@@ -556,6 +562,7 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   });
   const command = ChildProcess.make(invocation.file, [...invocation.args], {
     env: claudeEnvironment,
+    ...(cwd ? { cwd } : {}),
   });
   return yield* spawnAndCollect(claudeSettings.binaryPath, command);
 });
@@ -566,6 +573,8 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     claudeSettings: ClaudeSettings,
   ) => Effect.Effect<ClaudeCapabilitiesProbe | undefined>,
   environment: NodeJS.ProcessEnv = process.env,
+  /** Where the CLI probes run; wrappers that scope themselves to their cwd can refuse $HOME. */
+  cwd?: string,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -591,10 +600,12 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     });
   }
 
-  const versionProbe = yield* runClaudeCommand(claudeSettings, ["--version"], environment).pipe(
-    Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
-    Effect.result,
-  );
+  const versionProbe = yield* runClaudeCommand(
+    claudeSettings,
+    ["--version"],
+    environment,
+    cwd,
+  ).pipe(Effect.timeoutOption(DEFAULT_TIMEOUT_MS), Effect.result);
 
   if (Result.isFailure(versionProbe)) {
     const error = versionProbe.failure;
@@ -671,7 +682,12 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
 
   // SDK initialization and model discovery work without credentials. Only the
   // account probe can establish whether this instance is signed in.
-  const authProbe = yield* runClaudeCommand(claudeSettings, ["auth", "status"], environment).pipe(
+  const authProbe = yield* runClaudeCommand(
+    claudeSettings,
+    ["auth", "status"],
+    environment,
+    cwd,
+  ).pipe(
     Effect.timeout(AUTH_TIMEOUT_MS),
     Effect.map(parseClaudeAuthStatusFromOutput),
     Effect.orElseSucceed(() => ({

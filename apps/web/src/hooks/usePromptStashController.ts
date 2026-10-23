@@ -3,6 +3,7 @@ import {
   type ResolvedKeybindingsConfig,
   type ServerProvider,
 } from "@t3tools/contracts";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { useCallback, useMemo } from "react";
 
 import { type PromptStashDraftSelection, useComposerDraftStore } from "~/composerDraftStore";
@@ -57,11 +58,12 @@ export function usePromptStashController(input: {
   );
 
   const stash = useCallback(async () => {
-    if (!activeThread || !activeProject || disabled) return;
+    const workspaceRoot = threadWorkspaceCwd(activeThread, activeProject);
+    if (!activeThread || !activeProject || !workspaceRoot || disabled) return;
     const result = await stashPromptDraft({
       threadId: activeThread.id,
       projectId: activeProject.id,
-      workspaceRoot: activeThread.worktreePath ?? activeProject.cwd,
+      workspaceRoot,
     });
     if (result.status === "stored") {
       onStashed();

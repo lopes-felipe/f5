@@ -162,6 +162,8 @@ export function formatKeybindingCommandLabel(
   switch (staticCommand) {
     case "thread.stop":
       return "Stop active turn";
+    case "thread.toggleSettled":
+      return "Toggle thread settlement";
     case "thread.togglePin":
       return "Pin or unpin thread";
     case "thread.copyReference":
@@ -178,8 +180,18 @@ export function formatKeybindingCommandLabel(
       return "Page chat down";
     case "chat.newBackground":
       return "Send new thread in background";
+    case "chat.sendAndNew":
+      return "Send and open a new thread";
+    case "rightPanel.tabMenu":
+      return "Switch right panel tab";
+    case "rightPanel.reopenClosed":
+      return "Reopen closed right panel tab";
     case "rightPanel.closeTab":
       return "Close active right panel tab";
+    case "composer.effortUp":
+      return "Increase reasoning effort";
+    case "composer.effortDown":
+      return "Decrease reasoning effort";
     case "composer.effort":
       return "Choose effort";
     case "composer.runtimeMode":
@@ -239,10 +251,14 @@ export function formatKeybindingCommandLabel(
       return "New thread";
     case "chat.newLocal":
       return "Reuse project draft";
+    case "chat.newScratch":
+      return "New thread without a project";
     case "workflow.new":
       return "New workflow";
     case "chat.scrollToBottom":
       return "Scroll to bottom";
+    case "chat.find":
+      return "Find in thread";
     case "chat.queueTurn":
       return "Queue turn at end";
     case "chat.queueTurnNext":
@@ -289,6 +305,24 @@ export function formatKeybindingCommandLabel(
       return "Steer the active turn";
     case "composer.pasteAsText":
       return "Paste as text without folding";
+    case "usage.open":
+      return "Open Usage";
+    case "usage.tokens":
+      return "Usage: show tokens";
+    case "usage.cost":
+      return "Usage: show cost";
+    case "usage.turns":
+      return "Usage: show recorded turns";
+    case "usage.limits":
+      return "Usage: show limits";
+    case "usage.period.day":
+      return "Usage: past 24 hours";
+    case "usage.period.week":
+      return "Usage: past 7 days";
+    case "usage.period.month":
+      return "Usage: past 30 days";
+    case "usage.period.quarter":
+      return "Usage: past 90 days";
     case "commandPalette.toggle":
       return "Toggle command palette";
     case "help.shortcuts":

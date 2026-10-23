@@ -106,6 +106,7 @@ export const ForgeMutationPayload = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("action"),
     action: ForgeAction,
+    deleteBranch: Schema.optional(Schema.Boolean),
     method: Schema.optional(Schema.Literals(["merge", "squash", "rebase"])),
   }),
   Schema.Struct({
@@ -169,6 +170,7 @@ export const ForgeOperationInput = Schema.Struct({
 });
 export type ForgeOperationInput = typeof ForgeOperationInput.Type;
 export const ForgeOperation = Schema.Struct({
+  warning: Schema.optional(Schema.String),
   ...ForgePrepareOperationInput.fields,
   status: Schema.Literals([
     "prepared",

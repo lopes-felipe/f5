@@ -1,5 +1,7 @@
+import { ProviderNativeHistoryWorker } from "./ProviderNativeHistory.ts";
+import { ProviderContinuationWorker } from "../../provider/ProviderContinuationWorker.ts";
 import { CommandId } from "@t3tools/contracts";
-import { Effect, Layer, Stream } from "effect";
+import { Effect, Layer, Option, Stream } from "effect";
 
 import {
   OrchestrationReactor,
@@ -18,6 +20,7 @@ import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeInge
 import { SessionNotesService } from "../Services/SessionNotesService.ts";
 import { WorkflowService } from "../Services/WorkflowService.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
+import { startScratchFolderCleanupReactor } from "../scratchFolderCleanupReactor.ts";
 import { startThreadSnoozeReactor } from "../threadSnoozeReactor.ts";
 import { reconcileWorkflowArchives } from "../workflowArchiveLifecycle.ts";
 
@@ -35,11 +38,15 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
   const nextTurnQueueDispatcher = yield* NextTurnQueueDispatcher;
   const nativeSessionCleanupReactor = yield* NativeSessionCleanupReactor;
   const orchestrationEngine = yield* OrchestrationEngineService;
+  const continuationWorker = yield* Effect.serviceOption(ProviderContinuationWorker);
+  const nativeHistoryWorker = yield* Effect.serviceOption(ProviderNativeHistoryWorker);
 
   const start: OrchestrationReactorShape["start"] = Effect.gen(function* () {
     yield* providerRuntimeIngestion.start;
+    if (Option.isSome(nativeHistoryWorker)) yield* nativeHistoryWorker.value.start;
     yield* providerCommandReactor.start;
     yield* startThreadSnoozeReactor(orchestrationEngine);
+    yield* startScratchFolderCleanupReactor(orchestrationEngine);
     yield* reconcileWorkflowArchives(orchestrationEngine);
     yield* Stream.runForEach(providerTurnDeliveryWorker.outcomes, (outcome) =>
       Effect.gen(function* () {
@@ -115,6 +122,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* codeReviewWorkflowService.start;
     yield* investigationWorkflowService.start;
     yield* nextTurnQueueDispatcher.start;
+    if (Option.isSome(continuationWorker)) yield* continuationWorker.value.start;
     yield* nativeSessionCleanupReactor.start;
   });
 

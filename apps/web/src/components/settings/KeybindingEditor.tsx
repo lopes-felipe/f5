@@ -28,6 +28,7 @@ import { cn } from "../../lib/utils";
 import { formatKeybindingCommandLabel } from "../../lib/keybindingConflicts";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
+import { groupKeybindingRows } from "./KeybindingEditor.logic";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { useSettingsRouteContext } from "./SettingsRouteContext";
@@ -412,86 +413,98 @@ export function KeybindingEditor() {
 
       {submitError && !draftRule ? <p className="text-xs text-destructive">{submitError}</p> : null}
 
-      <div className="overflow-hidden rounded-lg border border-border">
-        {rows.length === 0 ? (
-          <p className="bg-background px-3 py-3 text-xs text-muted-foreground">
-            {searchQuery.trim()
-              ? "No keybindings match the current search."
-              : "No keybindings available."}
-          </p>
-        ) : (
-          <div className="divide-y divide-border">
-            {rows.map((row) => (
-              <div
-                key={row.id}
-                className="grid gap-2 bg-background px-3 py-2 md:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_auto]"
-              >
-                <div className="min-w-0">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <p className="truncate text-sm font-medium text-foreground">
-                      {formatKeybindingCommandLabel(row.command, projectScripts)}
-                    </p>
-                    <Badge variant={row.source === "custom" ? "info" : "outline"} size="sm">
-                      {row.source === "custom" ? "Custom" : "Default"}
-                    </Badge>
-                    {row.hasConflict ? (
-                      <Badge variant="warning" size="sm">
-                        Conflict
-                      </Badge>
-                    ) : null}
-                  </div>
-                  <p className="mt-0.5 truncate font-mono text-2xs text-muted-foreground">
-                    {row.command}
-                  </p>
-                </div>
-                <div className="flex items-center">
-                  <code className="rounded-sm border border-border bg-card px-1.5 py-0.5 text-xs text-foreground">
-                    {!isElectron && row.source === "default" && /^isElectron\b/.test(row.when)
-                      ? "Unbound on web"
-                      : formatShortcutLabel(row.binding.shortcut)}
-                  </code>
-                </div>
-                <p
-                  className={cn(
-                    "truncate self-center font-mono text-2xs",
-                    row.when ? "text-muted-foreground" : "text-muted-foreground",
-                  )}
-                  title={row.when || "Always"}
+      {rows.length === 0 ? (
+        <p className="rounded-lg border border-border bg-background px-3 py-3 text-xs text-muted-foreground">
+          {searchQuery.trim()
+            ? "No keybindings match the current search."
+            : "No keybindings available."}
+        </p>
+      ) : (
+        groupKeybindingRows(rows).map((group) => (
+          <section
+            key={group.id}
+            aria-labelledby={`keybinding-group-${group.id}`}
+            className="space-y-1.5"
+          >
+            <h3
+              id={`keybinding-group-${group.id}`}
+              className="px-1 text-xs font-medium text-muted-foreground"
+            >
+              {group.title}
+            </h3>
+            <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
+              {group.rows.map((row) => (
+                <div
+                  key={row.id}
+                  className="grid gap-2 bg-background px-3 py-2 md:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_auto]"
                 >
-                  {row.when || "Always"}
-                </p>
-                <div className="flex items-center justify-end gap-1">
-                  <Button
-                    type="button"
-                    size="icon-xs"
-                    variant="ghost"
-                    aria-label={`Edit ${formatKeybindingCommandLabel(row.command, projectScripts)}`}
-                    onClick={() => beginEdit(row)}
-                    disabled={isMutating}
+                  <div className="min-w-0">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <p className="truncate text-sm font-medium text-foreground">
+                        {formatKeybindingCommandLabel(row.command, projectScripts)}
+                      </p>
+                      <Badge variant={row.source === "custom" ? "info" : "outline"} size="sm">
+                        {row.source === "custom" ? "Custom" : "Default"}
+                      </Badge>
+                      {row.hasConflict ? (
+                        <Badge variant="warning" size="sm">
+                          Conflict
+                        </Badge>
+                      ) : null}
+                    </div>
+                    <p className="mt-0.5 truncate font-mono text-2xs text-muted-foreground">
+                      {row.command}
+                    </p>
+                  </div>
+                  <div className="flex items-center">
+                    <code className="rounded-sm border border-border bg-card px-1.5 py-0.5 text-xs text-foreground">
+                      {!isElectron && row.source === "default" && /^isElectron\b/.test(row.when)
+                        ? "Unbound on web"
+                        : formatShortcutLabel(row.binding.shortcut)}
+                    </code>
+                  </div>
+                  <p
+                    className={cn(
+                      "truncate self-center font-mono text-2xs",
+                      row.when ? "text-muted-foreground" : "text-muted-foreground",
+                    )}
+                    title={row.when || "Always"}
                   >
-                    <Edit2Icon className="size-3" />
-                  </Button>
-                  {row.target ? (
+                    {row.when || "Always"}
+                  </p>
+                  <div className="flex items-center justify-end gap-1">
                     <Button
                       type="button"
                       size="icon-xs"
                       variant="ghost"
-                      aria-label={`Remove ${formatKeybindingCommandLabel(
-                        row.command,
-                        projectScripts,
-                      )}`}
-                      onClick={() => void removeRule(row.target!)}
+                      aria-label={`Edit ${formatKeybindingCommandLabel(row.command, projectScripts)}`}
+                      onClick={() => beginEdit(row)}
                       disabled={isMutating}
                     >
-                      <Trash2Icon className="size-3" />
+                      <Edit2Icon className="size-3" />
                     </Button>
-                  ) : null}
+                    {row.target ? (
+                      <Button
+                        type="button"
+                        size="icon-xs"
+                        variant="ghost"
+                        aria-label={`Remove ${formatKeybindingCommandLabel(
+                          row.command,
+                          projectScripts,
+                        )}`}
+                        onClick={() => void removeRule(row.target!)}
+                        disabled={isMutating}
+                      >
+                        <Trash2Icon className="size-3" />
+                      </Button>
+                    ) : null}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+              ))}
+            </div>
+          </section>
+        ))
+      )}
     </div>
   );
 }

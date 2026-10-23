@@ -9,6 +9,7 @@ import {
   type OrchestrationThreadActivity,
 } from "@t3tools/contracts";
 import { readRuntimeConfiguredPayload } from "@t3tools/shared/orchestrationActivityPayload";
+import { normalizeProviderRuntimeInfo } from "@t3tools/shared/runtimeInfo";
 import { NativeRuntimePanel } from "./NativeRuntimePanel";
 import { ComposerDock, ComposerDockColumn } from "./composer/ComposerDock";
 
@@ -220,6 +221,55 @@ describe("NativeRuntimePanel", () => {
       await expect.element(page.getByText("reported-model", { exact: true })).toBeVisible();
       await expect
         .element(page.getByRole("button", { name: "Inspect output" }))
+        .not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  function refusedFastModeRuntime(requestedFastMode: boolean) {
+    const reported = {
+      model: "claude-opus-5-5",
+      fast_mode_state: "off",
+      fast_mode_disabled_reason: "extra_usage_disabled",
+    };
+    const runtimeInfo = normalizeProviderRuntimeInfo(
+      { model: "claude-opus-5-5", fastMode: requestedFastMode },
+      reported,
+    );
+    return readRuntimeConfiguredPayload({ config: { ...reported, runtimeInfo } });
+  }
+
+  it("links a refused fast mode to the settings that fix it", async () => {
+    const screen = await render(
+      <NativeRuntimePanel {...fixture({ runtime: refusedFastModeRuntime(true) })} />,
+    );
+    try {
+      await page.getByRole("button", { name: "Runtime details" }).click();
+      await expect
+        .element(page.getByText("fastMode: on → off (usage credits not enabled)"))
+        .toBeVisible();
+      await expect
+        .element(page.getByRole("link", { name: "Open Claude usage settings" }))
+        .toHaveAttribute("href", "https://claude.ai/settings/usage");
+      await expect
+        .element(page.getByRole("link", { name: "Fast mode requirements" }))
+        .toHaveAttribute("href", "https://code.claude.com/docs/en/fast-mode#requirements");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("stays quiet about a blocked fast mode the user did not request", async () => {
+    const screen = await render(
+      <NativeRuntimePanel {...fixture({ runtime: refusedFastModeRuntime(false) })} />,
+    );
+    try {
+      await page.getByRole("button", { name: "Runtime details" }).click();
+      await expect.element(page.getByText("claude-opus-5-5").first()).toBeVisible();
+      await expect.element(page.getByText("Fast mode unavailable")).not.toBeInTheDocument();
+      await expect
+        .element(page.getByRole("link", { name: "Open Claude usage settings" }))
         .not.toBeInTheDocument();
     } finally {
       await screen.unmount();

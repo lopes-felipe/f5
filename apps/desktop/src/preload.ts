@@ -69,6 +69,11 @@ for (const eventName of ["click", "keydown"] as const) {
   );
 }
 contextBridge.exposeInMainWorld("desktopBridge", {
+  htmlPreview: (input) => ipcRenderer.invoke("desktop:html-preview", input),
+  cliCommand: {
+    state: () => ipcRenderer.invoke("desktop:cli-command-state"),
+    install: () => ipcRenderer.invoke("desktop:cli-command-install"),
+  },
   computerAutomation: {
     status: () => ipcRenderer.invoke("desktop-computer:status"),
     requestPermission: (kind) => ipcRenderer.invoke("desktop-computer:request-permission", kind),
@@ -109,6 +114,14 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.on("desktop:profiles-changed", wrapped);
     return () => {
       ipcRenderer.removeListener("desktop:profiles-changed", wrapped);
+    };
+  },
+  takePromptLinks: () => ipcRenderer.invoke("desktop:take-prompt-links"),
+  onPromptLinksAvailable: (listener) => {
+    const wrapped = () => listener();
+    ipcRenderer.on("desktop:prompt-links-available", wrapped);
+    return () => {
+      ipcRenderer.removeListener("desktop:prompt-links-available", wrapped);
     };
   },
   getPathForFile: (file) => {

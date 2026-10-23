@@ -1,3 +1,4 @@
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { listWorktreeInventory } from "../worktreeInventory.ts";
 import { WorkspaceTransition } from "../Services/WorkspaceTransition.ts";
 import {
@@ -121,7 +122,7 @@ export const makeWorktreeManager = Effect.gen(function* () {
         for (const thread of model.threads) {
           if (thread.deletedAt !== null) continue;
           const owner = model.projects.find((entry) => entry.id === thread.projectId);
-          const workspace = thread.worktreePath ?? owner?.workspaceRoot;
+          const workspace = threadWorkspaceCwd(thread, owner);
           // Unknown references remain fail-closed, but equal branch names in other
           // repositories do not protect this repository's ref.
           if (!workspace || (yield* canonical(workspace)) === target) linked = true;

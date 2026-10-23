@@ -50,16 +50,55 @@ export interface AcpSpawnInput {
   readonly extendEnv?: boolean;
 }
 
+/** Shared direct-exec boundary for session startup and initialize-only health probes. */
+export const spawnAcpAgent = (spawn: AcpSpawnInput) =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const spawnEnvironment = spawn.env
+      ? spawn.extendEnv === false
+        ? spawn.env
+        : { ...process.env, ...spawn.env }
+      : process.env;
+    const invocation = yield* resolveInvocationEffect(spawn.command, spawn.args, spawnEnvironment, {
+      cwd: spawn.cwd,
+    }).pipe(
+      Effect.mapError(
+        (cause) => new EffectAcpErrors.AcpSpawnError({ command: spawn.command, cause }),
+      ),
+    );
+    return yield* spawner
+      .spawn(
+        ChildProcess.make(invocation.file, [...invocation.args], {
+          ...(spawn.cwd ? { cwd: spawn.cwd } : {}),
+          env: spawnEnvironment,
+          extendEnv: spawn.extendEnv !== false,
+        }),
+      )
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new EffectAcpErrors.AcpSpawnError({
+              command: spawn.command,
+              cause,
+            }),
+        ),
+      );
+  });
+
 export interface AcpSessionRuntimeOptions {
   readonly spawn: AcpSpawnInput;
   readonly cwd: string;
   readonly resumeSessionId?: string;
   readonly clientCapabilities?: EffectAcpSchema.InitializeRequest["clientCapabilities"];
+  /** Provider-owned attribution runs on the wire reader, before state or text coalescing. */
+  readonly normalizeSessionUpdate?: (
+    notification: EffectAcpSchema.SessionNotification,
+  ) => EffectAcpSchema.SessionNotification | undefined;
   readonly clientInfo: {
     readonly name: string;
     readonly version: string;
   };
-  readonly authMethodId: string;
+  readonly authMethodId?: string;
   readonly transformStdoutLine?: (line: string) => string;
   readonly onStderr?: (chunk: string) => void;
   readonly hasSensitiveConfiguration?: () => boolean;
@@ -84,6 +123,12 @@ export interface AcpSessionRuntimeOptions {
     readonly retryDelayMs?: number;
     readonly eventBarrierTimeoutMs?: number;
   };
+  /**
+   * Model ids the user configured for this instance. The model config option
+   * accepts them even when the agent does not advertise them, and the agent
+   * validates them instead.
+   */
+  readonly customModels?: ReadonlyArray<string>;
 }
 
 export interface AcpSessionRequestLogEvent {
@@ -123,6 +168,12 @@ export interface AcpSessionRuntimeShape {
   readonly handleExtNotification: EffectAcpClient.AcpClientShape["handleExtNotification"];
   readonly start: () => Effect.Effect<AcpSessionRuntimeStartResult, EffectAcpErrors.AcpError>;
   readonly getEvents: () => Stream.Stream<AcpParsedSessionEvent, never>;
+  /**
+   * Completes when the agent process exits, with its exit code when known.
+   * The event stream never ends on its own, so adapters watch this to settle
+   * a turn whose agent died before reporting a terminal result.
+   */
+  readonly awaitExit: Effect.Effect<number | undefined>;
   readonly awaitEventBarrier: Effect.Effect<void>;
   readonly getModeState: Effect.Effect<AcpSessionModeState | undefined>;
   readonly getConfigOptions: Effect.Effect<ReadonlyArray<EffectAcpSchema.SessionConfigOption>>;
@@ -252,6 +303,9 @@ const makeAcpSessionRuntime = (
     const modeStateRef = yield* Ref.make<AcpSessionModeState | undefined>(undefined);
     const toolCallsRef = yield* Ref.make(new Map<string, AcpToolCallState>());
     const toolEmissions = new Map<string, { length: number | undefined; skipped: number }>();
+    // Recently shown tool calls. A late update to a finished call is not a new
+    // boundary in the answer, although its progress state is gone.
+    const shownToolCallIds = new Set<string>();
     const assistantSegmentRef = yield* Ref.make<AcpAssistantSegmentState>({ nextSegmentIndex: 0 });
     const configOptionsRef = yield* Ref.make(sessionConfigOptionsFromSetup(undefined));
     const startStateRef = yield* Ref.make<AcpStartState>({ _tag: "NotStarted" });
@@ -333,39 +387,10 @@ const makeAcpSessionRuntime = (
         ),
       );
 
-    const spawnEnvironment = options.spawn.env
-      ? options.spawn.extendEnv === false
-        ? options.spawn.env
-        : { ...process.env, ...options.spawn.env }
-      : process.env;
-    const invocation = yield* resolveInvocationEffect(
-      options.spawn.command,
-      options.spawn.args,
-      spawnEnvironment,
-      { cwd: options.spawn.cwd },
-    ).pipe(
-      Effect.mapError(
-        (cause) => new EffectAcpErrors.AcpSpawnError({ command: options.spawn.command, cause }),
-      ),
+    const child = yield* spawnAcpAgent(options.spawn).pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.provideService(Scope.Scope, runtimeScope),
     );
-    const child = yield* spawner
-      .spawn(
-        ChildProcess.make(invocation.file, [...invocation.args], {
-          ...(options.spawn.cwd ? { cwd: options.spawn.cwd } : {}),
-          env: spawnEnvironment,
-          extendEnv: options.spawn.extendEnv !== false,
-        }),
-      )
-      .pipe(
-        Effect.provideService(Scope.Scope, runtimeScope),
-        Effect.mapError(
-          (cause) =>
-            new EffectAcpErrors.AcpSpawnError({
-              command: options.spawn.command,
-              cause,
-            }),
-        ),
-      );
 
     const acpContext = yield* Layer.build(
       EffectAcpClient.layerChildProcess(child, {
@@ -400,6 +425,19 @@ const makeAcpSessionRuntime = (
 
     const acp = yield* Effect.service(EffectAcpClient.AcpClient).pipe(Effect.provide(acpContext));
 
+    // Typed handlers deliver the notifications. This private diagnostic copy is
+    // never exposed by the runtime, so drain it instead of retaining every frame.
+    yield* Stream.runDrain(acp.raw.notifications).pipe(Effect.forkScoped);
+
+    const recordReplayActivity = Clock.currentTimeMillis.pipe(
+      Effect.flatMap((now) =>
+        Ref.update(resumeReplayRef, (current) =>
+          current.active
+            ? { ...current, eventCount: current.eventCount + 1, lastActivityAt: now }
+            : current,
+        ),
+      ),
+    );
     const startupCommands = new Map<string, EffectAcpSchema.SessionNotification>();
     yield* acp.handleSessionUpdate((notification) =>
       Effect.gen(function* () {
@@ -416,28 +454,24 @@ const makeAcpSessionRuntime = (
             return;
           }
         }
+        const normalized = options.normalizeSessionUpdate
+          ? options.normalizeSessionUpdate(notification)
+          : notification;
+        if (!normalized) {
+          if (hardeningEnabled) yield* recordReplayActivity;
+          return;
+        }
         yield* handleSessionUpdate({
           queue: eventQueue,
           modeStateRef,
           toolCallsRef,
           toolEmissions,
+          shownToolCallIds,
           assistantSegmentRef,
-          params: notification,
+          params: normalized,
           ...(hardeningEnabled
             ? {
-                onActivity: Clock.currentTimeMillis.pipe(
-                  Effect.flatMap((now) =>
-                    Ref.update(resumeReplayRef, (current) =>
-                      current.active
-                        ? {
-                            ...current,
-                            eventCount: current.eventCount + 1,
-                            lastActivityAt: now,
-                          }
-                        : current,
-                    ),
-                  ),
-                ),
+                onActivity: recordReplayActivity,
               }
             : {}),
         });
@@ -505,6 +539,9 @@ const makeAcpSessionRuntime = (
         }
         const allowedValues = collectSessionConfigOptionValues(configOption);
         if (allowedValues.includes(value)) {
+          return;
+        }
+        if (configOption.category === "model" && options.customModels?.includes(value)) {
           return;
         }
         return yield* new EffectAcpErrors.AcpRequestError({
@@ -729,15 +766,17 @@ const makeAcpSessionRuntime = (
         catch: () => EffectAcpErrors.AcpRequestError.internalError("ACP_MCP_CONFIGURATION_FAILED"),
       });
 
-      const authenticatePayload = {
-        methodId: options.authMethodId,
-      } satisfies EffectAcpSchema.AuthenticateRequest;
+      if (options.authMethodId) {
+        const authenticatePayload = {
+          methodId: options.authMethodId,
+        } satisfies EffectAcpSchema.AuthenticateRequest;
 
-      yield* runLoggedRequest(
-        "authenticate",
-        authenticatePayload,
-        acp.agent.authenticate(authenticatePayload),
-      );
+        yield* runLoggedRequest(
+          "authenticate",
+          authenticatePayload,
+          acp.agent.authenticate(authenticatePayload),
+        );
+      }
 
       let sessionId: string;
       let sessionSetupResult:
@@ -859,6 +898,7 @@ const makeAcpSessionRuntime = (
           modeStateRef,
           toolCallsRef,
           toolEmissions,
+          shownToolCallIds,
           assistantSegmentRef,
           params: commands,
         });
@@ -964,6 +1004,10 @@ const makeAcpSessionRuntime = (
       handleExtNotification: acp.handleExtNotification,
       start: () => start,
       getEvents,
+      awaitExit: child.exitCode.pipe(
+        Effect.map((code): number | undefined => code),
+        Effect.orElseSucceed(() => undefined),
+      ),
       awaitEventBarrier,
       getModeState: Ref.get(modeStateRef),
       getConfigOptions: Ref.get(configOptionsRef),
@@ -1059,11 +1103,14 @@ function configOptionCurrentValueMatches(
   return currentValue.trim() === String(value).trim();
 }
 
+const MAX_SHOWN_TOOL_CALL_IDS = 256;
+
 const handleSessionUpdate = ({
   queue,
   modeStateRef,
   toolCallsRef,
   toolEmissions,
+  shownToolCallIds,
   assistantSegmentRef,
   params,
   onActivity,
@@ -1072,6 +1119,7 @@ const handleSessionUpdate = ({
   readonly modeStateRef: Ref.Ref<AcpSessionModeState | undefined>;
   readonly toolCallsRef: Ref.Ref<Map<string, AcpToolCallState>>;
   readonly toolEmissions: Map<string, { length: number | undefined; skipped: number }>;
+  readonly shownToolCallIds: Set<string>;
   readonly assistantSegmentRef: Ref.Ref<AcpAssistantSegmentState>;
   readonly params: EffectAcpSchema.SessionNotification;
   readonly onActivity?: Effect.Effect<void>;
@@ -1086,10 +1134,19 @@ const handleSessionUpdate = ({
     }
     for (const event of parsed.events) {
       if (event._tag === "ToolCallUpdated") {
-        yield* closeActiveAssistantSegment({
-          queue,
-          assistantSegmentRef,
-        });
+        // A new tool call is a boundary in the prose. Progress on a call that
+        // is already shown, such as a background command finishing, is not.
+        const toolCallId = event.toolCall.toolCallId;
+        if (!shownToolCallIds.has(toolCallId)) {
+          shownToolCallIds.add(toolCallId);
+          // Only recent calls get late updates; keep a long session bounded.
+          if (shownToolCallIds.size > MAX_SHOWN_TOOL_CALL_IDS) {
+            shownToolCallIds.delete(shownToolCallIds.values().next().value!);
+          }
+          // A call still running is already on screen, even if it aged out.
+          const running = (yield* Ref.get(toolCallsRef)).has(toolCallId);
+          if (!running) yield* closeActiveAssistantSegment({ queue, assistantSegmentRef });
+        }
         const { previous, merged } = yield* Ref.modify(toolCallsRef, (current) => {
           const previous = current.get(event.toolCall.toolCallId);
           const nextToolCall = mergeToolCallState(previous, event.toolCall);

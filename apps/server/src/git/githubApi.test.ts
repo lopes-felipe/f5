@@ -50,6 +50,46 @@ function harness(scheduler = makeGitHubRequestScheduler()) {
 }
 
 describe("credential-bound GitHub requests", () => {
+  it.each([true, false])(
+    "refreshes a rejected token once, preserving account identity=%s",
+    async (sameAccount) => {
+      let token = "expired-token";
+      const execute = vi.fn<GitHubCliShape["execute"]>((input) =>
+        Effect.succeed({
+          stdout:
+            input.args[1] === "user"
+              ? wire({ id: token === "expired-token" || sameAccount ? 1 : 2, login: "viewer" })
+              : wire({ ok: true }, input.env?.GH_TOKEN === "expired-token" ? 401 : 200),
+          code: 0,
+          stderr: "",
+          signal: null,
+          timedOut: false,
+        }),
+      );
+      const invalidate = vi.fn(() => {
+        token = "refreshed-token";
+      });
+      const api = makeGitHubApi(
+        execute,
+        makeGitHubRequestScheduler(),
+        () => Effect.succeed(token),
+        { invalidateToken: invalidate },
+      );
+      const context = await Effect.runPromise(
+        api.getCredentialContext({ cwd: ".", host: "github.com" }),
+      );
+      const result = await Effect.runPromiseExit(
+        api.request({ cwd: ".", context, method: "GET", endpoint: "repos/o/r" }),
+      );
+      expect(invalidate).toHaveBeenCalledOnce();
+      expect(execute.mock.calls.filter(([input]) => input.args[1] === "repos/o/r")).toHaveLength(
+        sameAccount ? 2 : 1,
+      );
+      if (sameAccount) expect(result).toMatchObject({ _tag: "Success", value: { status: 200 } });
+      else expect(Exit.isFailure(result)).toBe(true);
+    },
+  );
+
   it("reports a policy rejection as undispatched through the real request primitive", async () => {
     const { api, execute } = harness();
     const context = await Effect.runPromise(
@@ -560,4 +600,59 @@ describe("GitHub response failures", () => {
     expect(parseGitHubApiResponse("HTTP/2.0 204 No Content\n\n").body).toBeNull();
     expect(() => parseGitHubApiResponse("HTTP/2.0 200 OK\n\n")).toThrow();
   });
+});
+
+it("a credential refresh dispatches only the exact token whose account was verified", async () => {
+  let refreshing = false,
+    resolutions = 0;
+  const execute = vi.fn<GitHubCliShape["execute"]>((input) =>
+    Effect.succeed({
+      stdout:
+        input.args[1] === "user"
+          ? wire({ id: 1, login: "viewer" })
+          : wire({ ok: true }, input.env?.GH_TOKEN === "expired" ? 401 : 200),
+      code: 0,
+      stderr: "",
+      signal: null,
+      timedOut: false,
+    }),
+  );
+  const api = makeGitHubApi(
+    execute,
+    makeGitHubRequestScheduler(),
+    () =>
+      Effect.sync(() =>
+        refreshing
+          ? ++resolutions === 1
+            ? "unverified-other-account"
+            : "verified-current-account"
+          : "expired",
+      ),
+    {
+      invalidateToken: () => {
+        refreshing = true;
+      },
+    },
+  );
+  const context = await Effect.runPromise(
+    api.getCredentialContext({ cwd: ".", host: "github.com" }),
+  );
+  const response = await Effect.runPromise(
+    api.request({
+      cwd: ".",
+      context,
+      method: "POST",
+      endpoint: "repos/o/r/issues/1/comments",
+      body: { body: "hello" },
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(execute.mock.calls.map(([input]) => input.env?.GH_TOKEN)).not.toContain(
+    "unverified-other-account",
+  );
+  expect(
+    execute.mock.calls
+      .filter(([input]) => input.args[1] !== "user")
+      .map(([input]) => input.env?.GH_TOKEN),
+  ).toEqual(["expired", "verified-current-account"]);
 });

@@ -29,6 +29,7 @@ export const ThreadBackgroundWorkTransition = Schema.Struct({
   status: BackgroundWorkStatus,
   active: Schema.Boolean,
   model: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  effort: Schema.optional(Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(64)))),
   phase: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   title: Schema.optional(Schema.NullOr(Schema.String)),
   prompt: Schema.optional(Schema.NullOr(Schema.String)),

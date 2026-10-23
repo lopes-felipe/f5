@@ -52,6 +52,7 @@ export const ThreadBackgroundWorkEntry = Schema.Struct({
   status: BackgroundWorkStatus,
   active: Schema.Boolean,
   model: Schema.NullOr(TrimmedNonEmptyString),
+  effort: Schema.optional(Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(64)))),
   /** Task or subagent type, fixed at start. */
   phase: Schema.NullOr(TrimmedNonEmptyString),
   /** Human-readable title, fixed at start. */

@@ -53,9 +53,21 @@ export const UsageTurnFact = Schema.Struct({
 });
 export type UsageTurnFact = typeof UsageTurnFact.Type;
 
+/**
+ * Exact model ID to the model its usage counts as, such as a preview slug to
+ * its released name. A mapped model is reported and priced as its target.
+ */
+export const UsageModelAliases = Schema.Record(
+  TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+  TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+);
+export type UsageModelAliases = typeof UsageModelAliases.Type;
+
 export const UsageGetSummaryInput = Schema.Struct({
   range: UsageRange,
   provider: Schema.optional(ProviderKind),
+  /** Providers left out of every total; the Usage page's provider filter. */
+  hiddenProviders: Schema.optional(Schema.Array(ProviderKind).check(Schema.isMaxLength(32))),
   projectId: Schema.optional(ProjectId),
   timeZone: TrimmedNonEmptyString,
 });

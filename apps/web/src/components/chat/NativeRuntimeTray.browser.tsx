@@ -10,6 +10,7 @@ import {
   type ThreadBackgroundWorkEntry,
 } from "@t3tools/contracts";
 
+import { useRightPanelStore } from "../../rightPanelStore";
 import { toastManager } from "../ui/toast";
 import { NativeRuntimeTray } from "./NativeRuntimeTray";
 
@@ -326,6 +327,24 @@ describe("NativeRuntimeTray", () => {
         await expect.element(stopAll).toBeEnabled();
       } finally {
         await screen.unmount();
+      }
+    });
+
+    it("links running tasks to the Agents panel until it is open", async () => {
+      mocks.snapshot.mockResolvedValue({
+        entries: [shellTask("b1", "Watch typecheck", 30), shellTask("b2", "Run unit tests", 10)],
+      });
+      const onViewAgents = vi.fn(() => useRightPanelStore.getState().open(threadId, "agents"));
+      const screen = await render(<NativeRuntimeTray {...taskProps} onViewAgents={onViewAgents} />);
+      try {
+        await page.getByRole("button", { name: "View agents" }).click();
+        expect(onViewAgents).toHaveBeenCalledOnce();
+        await expect
+          .poll(() => page.getByRole("button", { name: "View agents" }).all())
+          .toHaveLength(0);
+      } finally {
+        await screen.unmount();
+        useRightPanelStore.getState().closeSurface(threadId, "agents");
       }
     });
 

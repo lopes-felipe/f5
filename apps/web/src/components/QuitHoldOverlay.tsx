@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 import type { QuitShortcutHintEvent } from "@t3tools/contracts";
-import { useAppSettings } from "../appSettings";
+import { useAppSettingsSelector } from "../appSettings";
 
 export function QuitHoldOverlay() {
-  const { settings } = useAppSettings();
+  const quitShortcutMode = useAppSettingsSelector((settings) => settings.quitShortcutMode);
   const [hint, setHint] = useState<QuitShortcutHintEvent>({ state: "up" });
   useEffect(() => {
-    void window.desktopBridge?.setQuitShortcutMode?.(settings.quitShortcutMode);
-  }, [settings.quitShortcutMode]);
+    void window.desktopBridge?.setQuitShortcutMode?.(quitShortcutMode);
+  }, [quitShortcutMode]);
   useEffect(() => window.desktopBridge?.onQuitShortcut?.(setHint), []);
   if (hint.state === "up") return null;
   const shortcut = /Mac/.test(navigator.platform) ? "⌘Q" : "Ctrl+Q";

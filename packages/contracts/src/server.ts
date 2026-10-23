@@ -287,6 +287,15 @@ export const ServerValidateHarnessesResult = Schema.Struct({
 });
 export type ServerValidateHarnessesResult = typeof ServerValidateHarnessesResult.Type;
 
+const DiagnosticsSignal = Schema.Struct({
+  endpoint: Schema.NullOr(Schema.String),
+  source: Schema.Literals(["disabled", "settings", "environment", "unset", "secret-unavailable"]),
+  protocol: Schema.Literals(["http/json", "http/protobuf"]),
+});
+export const DiagnosticsConfiguration = Schema.Struct({
+  traces: DiagnosticsSignal,
+  metrics: DiagnosticsSignal,
+});
 export const ServerConfig = Schema.Struct({
   cwd: FilesystemPath,
   keybindingsConfigPath: TrimmedNonEmptyString,
@@ -296,6 +305,7 @@ export const ServerConfig = Schema.Struct({
   providers: ServerProviders,
   availableEditors: Schema.Array(EditorId),
   settings: Schema.optional(ServerSettings),
+  diagnostics: Schema.optionalKey(DiagnosticsConfiguration),
 });
 export type ServerConfig = typeof ServerConfig.Type;
 

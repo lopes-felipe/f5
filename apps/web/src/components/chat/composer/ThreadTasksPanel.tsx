@@ -35,15 +35,127 @@ export function describeTaskSync(
   return `Task list may be out of date${tracking.syncDetail ? `: ${tracking.syncDetail}` : "."} It updates the next time the agent lists its tasks.`;
 }
 
-export function ThreadTasksPanel(input: {
-  readonly threadId: ThreadId;
+type ThreadTaskTrackingInput =
+  | Pick<ThreadTaskTracking, "syncState" | "syncDetail">
+  | null
+  | undefined;
+
+function TaskListHeading(props: { readonly summary: string; readonly syncNotice: string | null }) {
+  return (
+    <div className="min-w-0">
+      <div className="flex items-center gap-2">
+        <ListTodoIcon className="size-4 text-muted-foreground" />
+        <span className="font-medium text-foreground text-sm">Task list</span>
+      </div>
+      <p className="truncate pt-0.5 text-muted-foreground text-xs">{props.summary}</p>
+      {props.syncNotice ? (
+        <p
+          role="status"
+          className="flex items-center gap-1 truncate pt-0.5 text-warning-foreground text-xs"
+        >
+          <AlertTriangleIcon className="size-3 shrink-0" />
+          <span className="truncate">{props.syncNotice}</span>
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function TaskRows(props: { readonly tasks: ReadonlyArray<ThreadTaskItem> }) {
+  return props.tasks.map((task) => {
+    const meta = TASK_STATUS_META[task.status];
+    return (
+      <div
+        key={task.id}
+        className={cn(
+          "flex items-start gap-3 rounded-xl border px-3 py-2 transition-colors duration-200",
+          meta.accentClass,
+        )}
+      >
+        <span
+          className={cn(
+            "mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full transition-colors duration-200",
+            meta.dotClass,
+            task.status === "in_progress" ? "animate-pulse" : "",
+          )}
+        />
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-medium text-sm">{task.activeForm}</p>
+          {task.content !== task.activeForm ? (
+            <p className="truncate pt-0.5 text-muted-foreground text-xs">{task.content}</p>
+          ) : null}
+          {task.owner || (task.blockedBy && task.blockedBy.length > 0) ? (
+            <p className="truncate pt-0.5 text-muted-foreground text-2xs">
+              {[
+                task.owner ? `Owner: ${task.owner}` : null,
+                task.blockedBy && task.blockedBy.length > 0
+                  ? `Blocked by ${task.blockedBy.map((id) => `#${id}`).join(", ")}`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </p>
+          ) : null}
+        </div>
+        <span className="shrink-0 rounded-full border border-current/15 px-2 py-0.5 font-medium text-2xs uppercase tracking-wider">
+          {meta.label}
+        </span>
+      </div>
+    );
+  });
+}
+
+/**
+ * The task list inside a status-strip popover: the popover already toggles
+ * it, so the header is static and the list is always shown.
+ */
+function ThreadTasksPopoverPanel(input: {
   readonly tasks: ReadonlyArray<ThreadTaskItem>;
-  readonly tracking?: Pick<ThreadTaskTracking, "syncState" | "syncDetail"> | null | undefined;
-  readonly open: boolean;
+  readonly tracking?: ThreadTaskTrackingInput;
   readonly summary: string;
-  readonly onToggle: () => void;
-  readonly attached?: boolean;
 }) {
+  return (
+    <section data-thread-tasks-popover className="w-full">
+      <div className="px-1 pb-2">
+        <TaskListHeading summary={input.summary} syncNotice={describeTaskSync(input.tracking)} />
+      </div>
+      {input.tasks.length > 0 ? (
+        <div role="region" aria-label="Task list details" className="space-y-2">
+          <TaskRows tasks={input.tasks} />
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+export function ThreadTasksPanel(
+  input:
+    | {
+        readonly variant: "popover";
+        readonly tasks: ReadonlyArray<ThreadTaskItem>;
+        readonly tracking?: ThreadTaskTrackingInput;
+        readonly summary: string;
+      }
+    | {
+        readonly variant?: "drawer";
+        readonly threadId: ThreadId;
+        readonly tasks: ReadonlyArray<ThreadTaskItem>;
+        readonly tracking?: ThreadTaskTrackingInput;
+        readonly open: boolean;
+        readonly summary: string;
+        readonly onToggle: () => void;
+        readonly attached?: boolean;
+      },
+) {
+  if (input.variant === "popover") {
+    return (
+      <ThreadTasksPopoverPanel
+        tasks={input.tasks}
+        tracking={input.tracking}
+        summary={input.summary}
+      />
+    );
+  }
   const panelId = `thread-task-panel-${input.threadId}`;
   const syncNotice = describeTaskSync(input.tracking);
 
@@ -65,22 +177,7 @@ export function ThreadTasksPanel(input: {
         aria-controls={panelId}
         aria-expanded={input.open}
       >
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <ListTodoIcon className="size-4 text-muted-foreground" />
-            <span className="font-medium text-foreground text-sm">Task list</span>
-          </div>
-          <p className="truncate pt-0.5 text-muted-foreground text-xs">{input.summary}</p>
-          {syncNotice ? (
-            <p
-              role="status"
-              className="flex items-center gap-1 truncate pt-0.5 text-warning-foreground text-xs"
-            >
-              <AlertTriangleIcon className="size-3 shrink-0" />
-              <span className="truncate">{syncNotice}</span>
-            </p>
-          ) : null}
-        </div>
+        <TaskListHeading summary={input.summary} syncNotice={syncNotice} />
         {input.open ? (
           <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground" />
         ) : (
@@ -104,49 +201,7 @@ export function ThreadTasksPanel(input: {
               input.attached && "max-h-[min(35dvh,20rem)] overflow-y-auto overscroll-contain",
             )}
           >
-            {input.tasks.map((task) => {
-              const meta = TASK_STATUS_META[task.status];
-              return (
-                <div
-                  key={task.id}
-                  className={cn(
-                    "flex items-start gap-3 rounded-xl border px-3 py-2 transition-colors duration-200",
-                    meta.accentClass,
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full transition-colors duration-200",
-                      meta.dotClass,
-                      task.status === "in_progress" ? "animate-pulse" : "",
-                    )}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate font-medium text-sm">{task.activeForm}</p>
-                    {task.content !== task.activeForm ? (
-                      <p className="truncate pt-0.5 text-muted-foreground text-xs">
-                        {task.content}
-                      </p>
-                    ) : null}
-                    {task.owner || (task.blockedBy && task.blockedBy.length > 0) ? (
-                      <p className="truncate pt-0.5 text-muted-foreground text-2xs">
-                        {[
-                          task.owner ? `Owner: ${task.owner}` : null,
-                          task.blockedBy && task.blockedBy.length > 0
-                            ? `Blocked by ${task.blockedBy.map((id) => `#${id}`).join(", ")}`
-                            : null,
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      </p>
-                    ) : null}
-                  </div>
-                  <span className="shrink-0 rounded-full border border-current/15 px-2 py-0.5 font-medium text-2xs uppercase tracking-wider">
-                    {meta.label}
-                  </span>
-                </div>
-              );
-            })}
+            <TaskRows tasks={input.tasks} />
           </div>
         </div>
       </div>

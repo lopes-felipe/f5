@@ -2,6 +2,7 @@ import { isKnownProviderKind, UsageTurnFact } from "@t3tools/contracts";
 import { Effect, Layer } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
+import type * as Statement from "effect/unstable/sql/Statement";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
@@ -100,6 +101,19 @@ function usageSqlFragments(sql: SqlClient.SqlClient) {
  * an indexed range search over unwrapped timestamp columns. Exported so tests
  * can `EXPLAIN QUERY PLAN` the exact statements.
  */
+/** `provider` narrows to one provider; `hiddenProviders` leaves providers out. */
+function providerFilter(
+  sql: SqlClient.SqlClient,
+  column: Statement.Fragment,
+  input: { readonly provider?: string; readonly hiddenProviders?: ReadonlyArray<string> },
+) {
+  const only = input.provider ? sql`AND ${column} = ${input.provider}` : sql``;
+  const hidden = input.hiddenProviders?.length
+    ? sql`AND ${column} NOT IN (SELECT value FROM json_each(${JSON.stringify(input.hiddenProviders)}))`
+    : sql``;
+  return sql`${only} ${hidden}`;
+}
+
 export function makeUsageBucketStatements(
   sql: SqlClient.SqlClient,
   input: UsageBucketSummaryInput,
@@ -121,7 +135,7 @@ export function makeUsageBucketStatements(
     CROSS JOIN projection_turn_usage_facts AS f
     WHERE f.completed_at >= json_extract(b.value, '$.startAt')
       AND f.completed_at < json_extract(b.value, '$.endAt')
-      ${input.provider ? sql`AND f.provider_name = ${input.provider}` : sql``}
+      ${providerFilter(sql, sql`f.provider_name`, input)}
       ${input.projectId ? sql`AND f.project_id = ${input.projectId}` : sql``}
       AND COALESCE(f.recorded_at, f.completed_at) >= ${factCutoverAt}
     GROUP BY "bucketKey", ${fragments.factPartitions}
@@ -139,7 +153,7 @@ export function makeUsageBucketStatements(
             AND e.occurred_at < json_extract(b.value, '$.endAt')
             AND e.occurred_at < ${factCutoverAt}
             AND ${fragments.legacyCostPredicate}
-            ${input.provider ? sql`AND ${fragments.legacyProvider} = ${input.provider}` : sql``}
+            ${providerFilter(sql, fragments.legacyProvider, input)}
             ${
               input.projectId
                 ? sql`AND EXISTS (
@@ -271,7 +285,7 @@ const make = Effect.gen(function* () {
         FROM projection_turn_usage_facts AS f
         WHERE f.completed_at >= ${input.startedAt}
           AND f.completed_at < ${input.endedAt}
-          ${input.provider ? sql`AND f.provider_name = ${input.provider}` : sql``}
+          ${providerFilter(sql, sql`f.provider_name`, input)}
           AND COALESCE(f.recorded_at, f.completed_at) >= ${factCutoverAt}
         GROUP BY f.thread_id, f.project_id, ${fragments.factPartitions}
       `;
@@ -288,7 +302,7 @@ const make = Effect.gen(function* () {
               WHERE e.occurred_at >= ${input.startedAt}
                 AND e.occurred_at < ${legacyEndedAt}
                 AND ${fragments.legacyCostPredicate}
-                ${input.provider ? sql`AND ${fragments.legacyProvider} = ${input.provider}` : sql``}
+                ${providerFilter(sql, fragments.legacyProvider, input)}
               GROUP BY ${fragments.legacyThreadId}, t.project_id, ${fragments.legacyProvider}
             `
           : [];

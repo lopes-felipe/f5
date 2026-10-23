@@ -328,4 +328,22 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
 
       fs.rmSync(tempDir, { recursive: true, force: true });
     }));
+
+  it.effect("lists only live bindings when asked to exclude stopped rows", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      const live = ThreadId.makeUnsafe("thread-live-binding");
+      const stopped = ThreadId.makeUnsafe("thread-stopped-binding");
+      yield* directory.upsert({ provider: "codex", threadId: live, status: "running" });
+      yield* directory.upsert({ provider: "codex", threadId: stopped, status: "stopped" });
+
+      const all = (yield* directory.listBindings()).map((binding) => binding.threadId);
+      assert.isTrue(all.includes(live) && all.includes(stopped));
+      const liveOnly = (yield* directory.listBindings({ excludeStopped: true })).map(
+        (binding) => binding.threadId,
+      );
+      assert.isTrue(liveOnly.includes(live));
+      assert.isFalse(liveOnly.includes(stopped));
+    }),
+  );
 });

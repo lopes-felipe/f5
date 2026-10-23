@@ -12,8 +12,22 @@ import { ensureNativeApi } from "../nativeApi";
 
 export const usageQueryKeys = {
   summaries: ["usage", "summary"] as const,
-  summary: (range: UsageRange, timeZone: string, provider?: ProviderKind, projectId?: ProjectId) =>
-    ["usage", "summary", range, timeZone, provider ?? "all", projectId ?? "all"] as const,
+  summary: (
+    range: UsageRange,
+    timeZone: string,
+    provider?: ProviderKind,
+    projectId?: ProjectId,
+    hiddenProviders: ReadonlyArray<ProviderKind> = [],
+  ) =>
+    [
+      "usage",
+      "summary",
+      range,
+      timeZone,
+      provider ?? "all",
+      projectId ?? "all",
+      hiddenProviders.toSorted().join(","),
+    ] as const,
   accounts: ["usage", "accounts"] as const,
   quotaHistory: ["usage", "quota-history"] as const,
 };
@@ -30,11 +44,13 @@ export function usageSummaryQueryOptions(input: {
   readonly timeZone: string;
   readonly provider?: ProviderKind | undefined;
   readonly projectId?: ProjectId | undefined;
+  readonly hiddenProviders?: ReadonlyArray<ProviderKind>;
   readonly enabled?: boolean;
 }) {
   const { range, timeZone, provider, projectId } = input;
+  const hiddenProviders = input.hiddenProviders?.toSorted() ?? [];
   return queryOptions({
-    queryKey: usageQueryKeys.summary(range, timeZone, provider, projectId),
+    queryKey: usageQueryKeys.summary(range, timeZone, provider, projectId, hiddenProviders),
     queryFn: async () =>
       decodeUsageSummary(
         await ensureNativeApi().usage.getSummary({
@@ -42,6 +58,7 @@ export function usageSummaryQueryOptions(input: {
           timeZone,
           ...(provider ? { provider } : {}),
           ...(projectId ? { projectId } : {}),
+          ...(hiddenProviders.length > 0 ? { hiddenProviders } : {}),
         }),
       ),
     staleTime: 30_000,

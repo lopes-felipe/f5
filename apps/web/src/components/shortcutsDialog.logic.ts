@@ -30,6 +30,7 @@ const WHEN_CONTEXT_LABELS: Readonly<Record<string, string>> = {
   dialogFocus: "In dialogs",
   composerFocus: "In composer",
   modelPickerOpen: "In model picker",
+  usagePageOpen: "On Usage",
 };
 
 /** Context keys the clause requires to be true (ignores negated and `or` branches). */
@@ -71,6 +72,7 @@ const SHORTCUT_SECTION_DEFINITIONS: ReadonlyArray<{
       "projectContentSearch.toggle",
       "sidebar.toggle",
       "prHub.open",
+      "usage.open",
       "editor.openFavorite",
       "dialog.primaryAction",
     ],
@@ -86,6 +88,7 @@ const SHORTCUT_SECTION_DEFINITIONS: ReadonlyArray<{
       "chat.pageUp",
       "chat.pageDown",
       "chat.scrollToBottom",
+      "chat.find",
     ],
   },
   {
@@ -94,10 +97,13 @@ const SHORTCUT_SECTION_DEFINITIONS: ReadonlyArray<{
     commands: [
       "chat.new",
       "chat.newLocal",
+      "chat.newScratch",
       "chat.newBackground",
+      "chat.sendAndNew",
       "workflow.new",
       "thread.stop",
       "thread.togglePin",
+      "thread.toggleSettled",
       "thread.copyReference",
       "thread.undo",
       "prHub.copyNumber",
@@ -113,6 +119,8 @@ const SHORTCUT_SECTION_DEFINITIONS: ReadonlyArray<{
       "composer.stash",
       "composer.pasteAsText",
       "composer.effort",
+      "composer.effortUp",
+      "composer.effortDown",
       "composer.runtimeMode",
       "composer.envMode",
       "composer.branch",
@@ -139,6 +147,22 @@ const SHORTCUT_SECTION_DEFINITIONS: ReadonlyArray<{
       "terminal.close",
       "diff.toggle",
       "rightPanel.closeTab",
+      "rightPanel.tabMenu",
+      "rightPanel.reopenClosed",
+    ],
+  },
+  {
+    id: "usage",
+    title: "Usage",
+    commands: [
+      "usage.tokens",
+      "usage.cost",
+      "usage.turns",
+      "usage.limits",
+      "usage.period.day",
+      "usage.period.week",
+      "usage.period.month",
+      "usage.period.quarter",
     ],
   },
   {

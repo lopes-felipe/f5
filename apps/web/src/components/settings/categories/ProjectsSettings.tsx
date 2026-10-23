@@ -104,6 +104,34 @@ export function ProjectsSettings() {
           ) : null}
         </div>
       </SettingsCard>
+
+      <SettingsCard
+        title="New projects"
+        description="New project creates a folder here, initializes Git and makes a first commit. Leave blank to use f5-projects in your home folder (another profile gets its own folder)."
+      >
+        <div className="space-y-3">
+          <label htmlFor="new-projects-root" className="block space-y-1">
+            <span className="text-xs font-medium text-foreground">Projects folder</span>
+            <Input
+              id="new-projects-root"
+              className="font-mono"
+              value={settings.projectsRoot}
+              onChange={(event) => updateSettings({ projectsRoot: event.target.value })}
+              placeholder="~/f5-projects"
+              spellCheck={false}
+            />
+          </label>
+          {settings.projectsRoot !== defaults.projectsRoot ? (
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() => updateSettings({ projectsRoot: "" })}
+            >
+              Restore default
+            </Button>
+          ) : null}
+        </div>
+      </SettingsCard>
     </>
   );
 }

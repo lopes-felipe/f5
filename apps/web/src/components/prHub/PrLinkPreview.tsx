@@ -3,6 +3,7 @@ import type { PrHubPeek } from "@t3tools/contracts";
 import * as nativeApi from "../../nativeApi";
 import { writeTextToClipboard } from "../../hooks/useCopyToClipboard";
 import { getPrHubSelectedAccountId } from "../../lib/prHubAccount";
+import { OpenLinkAnchor } from "../OpenLinkAnchor";
 import { Button } from "../ui/button";
 
 const readPreviewApi = () => {
@@ -44,9 +45,9 @@ export function PrLinkPreview({ url, children }: { url: string; children: ReactN
         if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
       }}
     >
-      <a href={url} target="_blank" rel="noopener noreferrer">
+      <OpenLinkAnchor href={url} target="_blank" rel="noopener noreferrer">
         {children}
-      </a>
+      </OpenLinkAnchor>
       {open ? (
         <span
           role="tooltip"

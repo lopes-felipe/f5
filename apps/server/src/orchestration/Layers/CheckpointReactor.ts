@@ -21,10 +21,8 @@ import { Cause, Effect, Layer, Option, Stream } from "effect";
 import { makeBackgroundWorker } from "../../backgroundWorker.ts";
 
 import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
-import {
-  checkpointRefForThreadTurn,
-  resolveThreadWorkspaceCwd,
-} from "../../checkpointing/Utils.ts";
+import { checkpointRefForThreadTurn } from "../../checkpointing/Utils.ts";
+import { resolveThreadWorkspaceCwd, threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { clearWorkspaceIndexCache } from "../../workspaceEntries.ts";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
@@ -349,6 +347,7 @@ const make = Effect.gen(function* () {
             fromCheckpointRef,
             toCheckpointRef: targetCheckpointRef,
             fallbackFromToHead: false,
+            options: { excludeGitImports: true },
           })
         : Effect.succeed("")
     ).pipe(

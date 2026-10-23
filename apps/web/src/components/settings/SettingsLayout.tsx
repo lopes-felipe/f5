@@ -35,6 +35,7 @@ import {
 import type { ProjectId } from "@t3tools/contracts";
 import { cn } from "../../lib/utils";
 import { SectionLabel } from "../ui/section-label";
+import { resolveSettingsSearchShortcut } from "./settingsSearchShortcut";
 import {
   SETTINGS_CATEGORY_LABELS,
   filterSettingsItems,
@@ -205,12 +206,14 @@ export function SettingsLayout({
 
   useEffect(() => {
     const focusSearch = (event: KeyboardEvent) => {
-      if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
+      const shortcut = resolveSettingsSearchShortcut(event);
+      if (!shortcut) return;
       const target = event.target;
       if (
         target instanceof HTMLElement &&
-        (target.matches("input, textarea") ||
-          target.isContentEditable ||
+        ((shortcut === "slash" &&
+          (target.matches("input, textarea") || target.isContentEditable)) ||
+          // Keep focus inside open dialogs and popups instead of escaping their focus trap.
           target.closest('[role="dialog"], [aria-modal="true"], [data-slot$="popup"]'))
       ) {
         return;

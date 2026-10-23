@@ -330,6 +330,105 @@ const seedProjectionFixture = (sql: SqlClient.SqlClient) =>
   });
 
 projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
+  it.effect(
+    "searches unloaded older messages and plans, counts occurrences and hydrates the selected plan",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const query = yield* ProjectionSnapshotQuery;
+        yield* seedProjectionFixture(sql);
+        yield* sql`UPDATE projection_thread_messages SET text='unrelated'`;
+        yield* sql`UPDATE projection_thread_proposed_plans SET plan_markdown='unrelated plan'`;
+        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at) VALUES('old-find','thread-1',NULL,'assistant','needle **Needle**',0,'2025-01-01T00:00:00Z','2025-01-01T00:00:00Z')`;
+        for (let i = 0; i < MAX_THREAD_MESSAGES + 1; i++)
+          yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at) VALUES(${`new-find-${i}`},'thread-1',NULL,'assistant','other',0,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`;
+        yield* sql`INSERT INTO projection_thread_proposed_plans(plan_id,thread_id,turn_id,plan_markdown,created_at,updated_at) VALUES('old-plan-find','thread-1',NULL,'# Needle\n\nneedLE','2025-02-01T00:00:00Z','2025-02-01T00:00:00Z')`;
+        const tail = yield* query.getThreadTailDetails({ threadId: asThreadId("thread-1") });
+        assert.isFalse(tail.messages.some((message) => message.id === "old-find"));
+        const first = yield* query.searchThread({
+          threadId: asThreadId("thread-1"),
+          query: "needle",
+        });
+        assert.equal(first.totalMatches, 4);
+        assert.equal(first.match?.entryId, "old-find");
+        assert.equal(first.match?.occurrence, 0);
+        const second = yield* query.searchThread({
+          threadId: asThreadId("thread-1"),
+          query: "needle",
+          index: 1,
+        });
+        assert.equal(second.match?.occurrence, 1);
+        const plan = yield* query.searchThread({
+          threadId: asThreadId("thread-1"),
+          query: "needle",
+          index: 2,
+        });
+        assert.equal(plan.match?.kind, "plan");
+        assert.equal(plan.match?.plan?.planMarkdown, "# Needle\n\nneedLE");
+        assert.equal(
+          (yield* query.searchThread({
+            threadId: asThreadId("thread-1"),
+            query: "needle",
+            index: 4,
+          })).activeIndex,
+          0,
+        );
+      }),
+  );
+  it.effect("invalidates search counts after a projection change and rejects deleted threads", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const query = yield* ProjectionSnapshotQuery;
+      yield* seedProjectionFixture(sql);
+      yield* sql`UPDATE projection_thread_messages SET text='freshneedle'`;
+      const leading = Object.values(ORCHESTRATION_PROJECTOR_NAMES)[0]!;
+      yield* sql`UPDATE projection_state SET last_applied_sequence=1000 WHERE projector=${leading}`;
+      const input = { threadId: asThreadId("thread-1"), query: "freshneedle" };
+      assert.isAbove((yield* query.searchThread(input)).totalMatches, 0);
+      yield* sql`UPDATE projection_thread_messages SET text='changed'`;
+      yield* sql`UPDATE projection_state SET last_applied_sequence=last_applied_sequence+1 WHERE projector != ${leading}`;
+      assert.equal((yield* query.searchThread(input)).totalMatches, 0);
+      yield* sql`UPDATE projection_threads SET deleted_at='2026-10-19T00:00:00Z'`;
+      assert.equal((yield* query.searchThread(input).pipe(Effect.result))._tag, "Failure");
+    }),
+  );
+  it.effect(
+    "searches literal Unicode text without matching hidden link targets or interpreting SQL",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const query = yield* ProjectionSnapshotQuery;
+        yield* seedProjectionFixture(sql);
+        yield* sql`UPDATE projection_thread_messages SET text='İ ΟΣ 100%_ [visible](https://hidden-find.invalid/needle)'`;
+        yield* sql`UPDATE projection_thread_proposed_plans SET plan_markdown='other'`;
+        const input = { threadId: asThreadId("thread-1") };
+        assert.isAbove((yield* query.searchThread({ ...input, query: "σ" })).totalMatches, 0);
+        assert.isAbove((yield* query.searchThread({ ...input, query: "100%_" })).totalMatches, 0);
+        assert.equal(
+          (yield* query.searchThread({ ...input, query: "hidden-find" })).totalMatches,
+          0,
+        );
+        assert.equal(
+          (yield* query.searchThread({ ...input, query: "' OR 1=1 --" })).totalMatches,
+          0,
+        );
+      }),
+  );
+  it.effect(
+    "refuses an oversized body without silently omitting it and releases the connection",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const query = yield* ProjectionSnapshotQuery;
+        yield* seedProjectionFixture(sql);
+        yield* sql`UPDATE projection_thread_messages SET text=${"x".repeat(2 * 1024 * 1024 + 1)}`;
+        const input = { threadId: asThreadId("thread-1"), query: "oversizedneedle" };
+        assert.equal((yield* query.searchThread(input).pipe(Effect.result))._tag, "Failure");
+        yield* sql`UPDATE projection_thread_messages SET text='oversizedneedle'`;
+        yield* sql`UPDATE projection_state SET last_applied_sequence=last_applied_sequence+1`;
+        assert.isAbove((yield* query.searchThread(input)).totalMatches, 0);
+      }),
+  );
   it.effect("getStartupSnapshot omits heavyweight detail fields but preserves summary data", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;

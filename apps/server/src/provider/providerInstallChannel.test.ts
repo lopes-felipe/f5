@@ -417,3 +417,16 @@ it("only gives each updater its own tooling variables and never provider credent
     CLAUDE_CONFIG_DIR: "/claude",
   });
 });
+
+it("uses Pi's native self-updater and canonical executable identity", () => {
+  const { target } = fixture("/pi/install/bin/pi", { driver: "pi" });
+  expect(target).toMatchObject({
+    channel: "self-update",
+    installKey: "pi-self-update:/pi/install/bin/pi",
+    latestSource: { kind: "npm", pkg: "@earendil-works/pi-coding-agent", tag: "latest" },
+  });
+  expect(buildProviderUpdateCommand(target!, "linux", "0.90.0")).toMatchObject({
+    executable: "/bin/cli",
+    args: ["update", "--self"],
+  });
+});

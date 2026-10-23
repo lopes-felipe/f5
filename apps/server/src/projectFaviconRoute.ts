@@ -8,6 +8,7 @@ import {
   type WorkspaceAssetAuthorizer,
   WorkspaceAssetAuthorizationError,
   WORKSPACE_FAVICON_MAX_BYTES,
+  WORKSPACE_ICNS_FAVICON_MAX_BYTES,
 } from "./WorkspaceAssetAuthorizer";
 import type { CheckedInProjectFileService } from "./project/CheckedInProjectFileService";
 
@@ -34,6 +35,8 @@ const FAVICON_CANDIDATES = [
   "assets/icon.png",
   "assets/logo.svg",
   "assets/logo.png",
+  "Resources/AppIcon.icns",
+  "AppIcon.icns",
 ] as const;
 
 const ICON_SOURCE_FILES = [
@@ -113,6 +116,12 @@ function resolveIconHref(href: string): string[] {
   return [`public/${clean}`, clean];
 }
 
+function faviconMaxBytes(relativePath: string): number {
+  return relativePath.toLowerCase().endsWith(".icns")
+    ? WORKSPACE_ICNS_FAVICON_MAX_BYTES
+    : WORKSPACE_FAVICON_MAX_BYTES;
+}
+
 function sendFallbackFavicon(res: http.ServerResponse): void {
   res.writeHead(200, {
     "Cache-Control": "private, max-age=3600",
@@ -146,7 +155,7 @@ async function findFaviconRelativePath(
   const reader = await authorizer.forProject(projectId);
   for (const relativePath of FAVICON_CANDIDATES) {
     try {
-      await reader.readImage({ relativePath, maxBytes: WORKSPACE_FAVICON_MAX_BYTES });
+      await reader.readImage({ relativePath, maxBytes: faviconMaxBytes(relativePath) });
       return relativePath;
     } catch {
       // Missing, oversized, escaped, and spoofed candidates all fall through.
@@ -167,7 +176,7 @@ async function findFaviconRelativePath(
     if (!href) continue;
     for (const relativePath of resolveIconHref(href)) {
       try {
-        await reader.readImage({ relativePath, maxBytes: WORKSPACE_FAVICON_MAX_BYTES });
+        await reader.readImage({ relativePath, maxBytes: faviconMaxBytes(relativePath) });
         return relativePath;
       } catch {
         // Continue looking for an authorized favicon candidate.
@@ -262,7 +271,7 @@ export async function tryHandleProjectFaviconRequest(
     const reader = await authorizer.forProject(projectId);
     const issued = reader.issueImageHandle({
       relativePath,
-      maxBytes: WORKSPACE_FAVICON_MAX_BYTES,
+      maxBytes: faviconMaxBytes(relativePath),
       rejectSymlink: config.iconPath === relativePath,
     });
     res.writeHead(302, {

@@ -51,7 +51,8 @@ suspended. Placeholder paths and profile values previously came from the hidden 
 
 - **Desktop app:** command = the F5 executable, environment `ELECTRON_RUN_AS_NODE=1`,
   arguments `[<backend entry>, "agent-bridge-stdio", "--state-dir", <dir>, "--profile", <id>]`.
-- **CLI install:** `t3 agent-bridge-stdio` (add `--profile <id>` for a non-default profile).
+- **CLI install:** `f5 agent-bridge-stdio` (add `--profile <id>` for a non-default profile).
+  The `t3` alias that **Install CLI commands** also links runs the same command.
 
 F5 never writes ChatGPT or Codex configuration. When F5 or the bridge is not running, the shim
 answers each request with JSON-RPC error `-32002`.

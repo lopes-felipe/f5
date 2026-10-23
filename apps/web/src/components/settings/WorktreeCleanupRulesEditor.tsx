@@ -7,12 +7,15 @@ import { Switch } from "../ui/switch";
 export const MAX_RETENTION_DAYS = 3650;
 
 /** Parses a retention field: empty means "never", otherwise 1 to 3650 whole days. */
-export function parseRetentionDays(value: string): number | null | "invalid" {
+export function parseRetentionDays(
+  value: string,
+  maxDays = MAX_RETENTION_DAYS,
+): number | null | "invalid" {
   const trimmed = value.trim();
   if (trimmed === "") return null;
   if (!/^\d+$/.test(trimmed)) return "invalid";
   const days = Number(trimmed);
-  return days >= 1 && days <= MAX_RETENTION_DAYS ? days : "invalid";
+  return days >= 1 && days <= maxDays ? days : "invalid";
 }
 
 /** Parses the content rules' wait: required, 1 to 720 whole hours. */
@@ -72,22 +75,30 @@ function CommittedNumberInput<T extends number | null>(props: {
 /** A days field that commits on blur or Enter; empty clears it. */
 export function RetentionDaysInput(props: {
   readonly label: string;
+  readonly maxDays?: number;
   readonly value: number | null;
   readonly disabled?: boolean;
   readonly placeholder?: string;
   readonly onCommit: (days: number | null) => void;
 }) {
+  const { maxDays, ...rest } = props;
   return (
     <CommittedNumberInput
-      {...props}
+      {...rest}
       unit="days"
-      parse={parseRetentionDays}
+      parse={(value) => parseRetentionDays(value, maxDays)}
       placeholder={props.placeholder ?? "Never"}
     />
   );
 }
 
 const RULE_TOGGLES = [
+  {
+    key: "onSettle",
+    label: "When the thread is settled",
+    description:
+      "Run enabled settlement scripts first and retain the existing cleanup safety checks.",
+  },
   {
     key: "onMerge",
     label: "When the pull request is merged",
@@ -136,7 +147,7 @@ export function WorktreeCleanupRulesEditor(props: {
           <Switch
             aria-label={toggle.label}
             disabled={disabled ?? false}
-            checked={rules[toggle.key]}
+            checked={rules[toggle.key] ?? false}
             onCheckedChange={(checked) => props.onChange({ ...rules, [toggle.key]: checked })}
           />
         </label>

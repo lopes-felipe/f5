@@ -1,3 +1,4 @@
+import Migration0129 from "../../persistence/Migrations/134_BackgroundWorkEffort.ts";
 import {
   EventId,
   ProviderInstanceId,
@@ -53,6 +54,7 @@ const testLayer = ThreadBackgroundWorkLive.pipe(
 const migrateBackgroundWork = Effect.gen(function* () {
   yield* Migration0066;
   yield* Migration0111;
+  yield* Migration0129;
 });
 
 function eventBase(index: number) {
@@ -595,3 +597,50 @@ it("persists distinct work identities for successive native task runs", () => {
   assert.equal(first?.workItemId, "task-1::run:run-1");
   assert.equal(second?.workItemId, "task-1::run:run-2");
 });
+
+it.effect(
+  "persists each agent's effort through heartbeats and clears an unsupported model's effort",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY)`;
+      yield* sql`INSERT OR REPLACE INTO projection_threads (thread_id) VALUES (${threadId})`;
+      yield* migrateBackgroundWork;
+      const work = yield* ThreadBackgroundWork;
+      const taskId = RuntimeTaskId.make("own-effort");
+      yield* work.recordProviderEvent({
+        ...eventBase(1),
+        type: "task.started",
+        payload: { taskId, taskType: "local_agent", model: "claude-sonnet-4-6", effort: "low" },
+      });
+      yield* work.recordProviderEvent({
+        ...eventBase(2),
+        type: "task.progress",
+        payload: { taskId, description: "Still reviewing" },
+      });
+      const retained = (yield* work.getSnapshot).entries.find(
+        (entry) => entry.workItemId === taskId,
+      )!;
+      assert.equal(retained.model, "claude-sonnet-4-6");
+      assert.equal(retained.effort, "low");
+      yield* work.recordProviderEvent({
+        ...eventBase(3),
+        type: "task.progress",
+        payload: {
+          taskId,
+          description: "Actual model reported",
+          model: "claude-haiku-4-5",
+          effort: null,
+        },
+      });
+      const updated = (yield* work.getSnapshot).entries.find(
+        (entry) => entry.workItemId === taskId,
+      )!;
+      assert.equal(updated.model, "claude-haiku-4-5");
+      assert.equal(updated.effort, null);
+      const rows = yield* sql<{
+        effort: string | null;
+      }>`SELECT effort FROM projection_thread_background_work WHERE provider_work_item_id=${taskId}`;
+      assert.deepStrictEqual(rows, [{ effort: null }]);
+    }).pipe(Effect.provide(testLayer)),
+);

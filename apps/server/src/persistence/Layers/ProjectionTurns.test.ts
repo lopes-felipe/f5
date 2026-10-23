@@ -13,6 +13,85 @@ const layer = it.layer(
 const at = "2026-01-01T00:00:00.000Z";
 
 layer("accepted pending turn reconciliation", (it) => {
+  for (const pendingMessageId of [null, MessageId.makeUnsafe("original-boundary")]) {
+    it.effect(
+      `lists a retried delivery boundary with ${pendingMessageId ? "existing" : "missing"} pending metadata`,
+      () =>
+        Effect.gen(function* () {
+          const turns = yield* ProjectionTurnRepository;
+          const sql = yield* SqlClient.SqlClient;
+          const threadId = ThreadId.makeUnsafe(`retry-boundary-${pendingMessageId}`);
+          const turnId = TurnId.makeUnsafe("retried-turn");
+          yield* turns.upsertByTurnId({
+            threadId,
+            turnId,
+            pendingMessageId,
+            assistantMessageId: null,
+            state: "completed",
+            requestedAt: at,
+            startedAt: at,
+            completedAt: at,
+            processingQuiescedAt: at,
+            checkpointTurnCount: null,
+            checkpointRef: null,
+            checkpointStatus: null,
+            checkpointFiles: [],
+          });
+          // Neither an unresolved delivery, an accepted steer, nor another thread
+          // may supply (or multiply) this turn's conversation boundary.
+          for (const [id, state, owner, type] of [
+            ["unresolved", "ambiguous", threadId, "thread.turn-start-requested"],
+            ["other", "accepted", "other-thread", "thread.turn-start-requested"],
+            ["steer", "accepted", threadId, "thread.turn-steer-requested"],
+            ["retry", "accepted", threadId, "thread.turn-start-requested"],
+          ]) {
+            yield* sql`INSERT INTO provider_turn_deliveries
+            (delivery_id, thread_id, command_id, message_id, state, provider_turn_id, event_json, created_at, updated_at)
+            VALUES (${`${threadId}-${id}`}, ${owner}, ${`${threadId}-${id}`}, ${id}, ${state}, ${turnId}, ${JSON.stringify({ type })}, ${at}, ${at})`;
+          }
+          const listed = yield* turns.listByThreadId({ threadId });
+          assert.equal(listed.length, 1);
+          assert.equal(listed[0]!.pendingMessageId, pendingMessageId ?? "retry");
+          assert.equal(
+            Option.getOrThrow(yield* turns.getByTurnId({ threadId, turnId })).pendingMessageId,
+            pendingMessageId ?? "retry",
+          );
+          assert.equal(
+            Option.getOrThrow(yield* turns.getLatestTerminalByThreadId({ threadId }))
+              .pendingMessageId,
+            pendingMessageId ?? "retry",
+          );
+          // All read APIs agree without mutating historical records.
+          assert.equal(
+            (yield* sql<{
+              messageId: string | null;
+            }>`SELECT pending_message_id AS "messageId" FROM projection_turns WHERE thread_id = ${threadId}`)[0]!
+              .messageId,
+            pendingMessageId,
+          );
+        }),
+    );
+  }
+
+  it.effect("uses the turn boundary index for an accepted-delivery fallback", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const plan = yield* sql<{ detail: string }>`EXPLAIN QUERY PLAN
+      SELECT message_id FROM provider_turn_deliveries
+      WHERE thread_id = 'thread' AND provider_turn_id = 'turn' AND state = 'accepted'
+        AND json_extract(event_json, '$.type') IS NOT 'thread.turn-steer-requested'
+      ORDER BY created_at, rowid LIMIT 1`;
+      assert.equal(
+        plan.some((row) => row.detail.includes("idx_provider_turn_deliveries_boundary")),
+        true,
+      );
+      assert.equal(
+        plan.some((row) => row.detail.includes("TEMP B-TREE")),
+        false,
+      );
+    }),
+  );
+
   for (const terminal of [false, true]) {
     it.effect(
       `clears accepted feedback without changing its ${terminal ? "completed" : "running"} turn`,

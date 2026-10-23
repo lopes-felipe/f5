@@ -13,6 +13,9 @@ import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { runProcess } from "./processRunner.ts";
 import { makeServerGitLayers } from "./serverGitLayers.ts";
 
+// Windows runs Git for Windows by its resolved path, so match the executable name.
+const isGit = (command: string) => /^git(\.exe)?$/i.test(command.split(/[\\/]/).pop() ?? "");
+
 it.each(["checkpoint query", "Git"])(
   "uses profile credentials in the runtime composition with %s built first",
   async (first) => {
@@ -24,7 +27,7 @@ it.each(["checkpoint query", "Git"])(
         return ChildProcessSpawner.make((command) => {
           if (
             command._tag === "StandardCommand" &&
-            command.command === "git" &&
+            isGit(command.command) &&
             ["fetch", "ls-remote"].includes(command.args[0] ?? "")
           ) {
             // Replace only network I/O. Exercise the real profile environment and

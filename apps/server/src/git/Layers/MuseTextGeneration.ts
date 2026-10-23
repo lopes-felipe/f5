@@ -12,7 +12,6 @@ import {
   type ModelSelection,
   type MuseSettings,
 } from "@t3tools/contracts";
-import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import {
   MUSE_READ_ONLY_PERMISSION_PROFILE,
   MUSE_SERVE_ARGS,
@@ -27,22 +26,8 @@ import {
 } from "../../provider/msp/MspSessionRuntime.ts";
 import { makeMspTransport } from "../../provider/msp/MspTransport.ts";
 import { TextGenerationError } from "../Errors.ts";
-import {
-  buildBranchNamePrompt,
-  buildCommitMessagePrompt,
-  buildPrContentPrompt,
-  buildThreadTitlePrompt,
-} from "../Prompts.ts";
-import {
-  type TextGenerationShape,
-  type ThreadTitleGenerationResult,
-} from "../Services/TextGeneration.ts";
-import {
-  extractJsonObject,
-  sanitizeCommitSubject,
-  sanitizePrTitle,
-  sanitizeThreadTitle,
-} from "../Utils.ts";
+import { extractJsonObject } from "../Utils.ts";
+import { makePromptTextGeneration } from "../promptTextGeneration.ts";
 
 const MUSE_TEXT_GENERATION_TIMEOUT_MS = 180_000;
 
@@ -192,118 +177,5 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
       );
     });
 
-  const generateCommitMessage: TextGenerationShape["generateCommitMessage"] = Effect.fn(
-    "MuseTextGeneration.generateCommitMessage",
-  )(function* (input) {
-    const { prompt, outputSchema } = buildCommitMessagePrompt({
-      repositoryContext: input.repositoryContext,
-      branch: input.branch,
-      stagedSummary: input.stagedSummary,
-      stagedPatch: input.stagedPatch,
-      includeBranch: input.includeBranch === true,
-      writingPreferences: input.writingPreferences,
-    });
-    const generated = yield* runJson({
-      operation: "generateCommitMessage",
-      cwd: input.cwd,
-      prompt,
-      outputSchemaJson: outputSchema,
-      modelSelection: input.modelSelection,
-      model: input.model,
-    });
-    return {
-      subject: sanitizeCommitSubject(generated.subject),
-      body: generated.body.trim(),
-      ...("branch" in generated && typeof generated.branch === "string"
-        ? { branch: sanitizeFeatureBranchName(generated.branch) }
-        : {}),
-    };
-  });
-
-  const generatePrContent: TextGenerationShape["generatePrContent"] = Effect.fn(
-    "MuseTextGeneration.generatePrContent",
-  )(function* (input) {
-    const { prompt, outputSchema } = buildPrContentPrompt({
-      repositoryContext: input.repositoryContext,
-      baseBranch: input.baseBranch,
-      headBranch: input.headBranch,
-      commitSummary: input.commitSummary,
-      diffSummary: input.diffSummary,
-      diffPatch: input.diffPatch,
-      writingPreferences: input.writingPreferences,
-    });
-    const generated = yield* runJson({
-      operation: "generatePrContent",
-      cwd: input.cwd,
-      prompt,
-      outputSchemaJson: outputSchema,
-      modelSelection: input.modelSelection,
-      model: input.model,
-    });
-    return { title: sanitizePrTitle(generated.title), body: generated.body.trim() };
-  });
-
-  const generateBranchName: TextGenerationShape["generateBranchName"] = Effect.fn(
-    "MuseTextGeneration.generateBranchName",
-  )(function* (input) {
-    const { prompt, outputSchema } = buildBranchNamePrompt({
-      message: input.message,
-      attachments: input.attachments,
-      writingPreferences: input.writingPreferences,
-    });
-    const generated = yield* runJson({
-      operation: "generateBranchName",
-      cwd: input.cwd,
-      prompt,
-      outputSchemaJson: outputSchema,
-      modelSelection: input.modelSelection,
-      model: input.model,
-    });
-    return { branch: sanitizeBranchFragment(generated.branch) };
-  });
-
-  const generateThreadTitle: TextGenerationShape["generateThreadTitle"] = Effect.fn(
-    "MuseTextGeneration.generateThreadTitle",
-  )(function* (input) {
-    const { prompt, outputSchema } = buildThreadTitlePrompt({
-      message: input.message,
-      previousTitle: input.previousTitle,
-      attachments: input.attachments,
-    });
-    const generated = yield* runJson({
-      operation: "generateThreadTitle",
-      cwd: input.cwd,
-      prompt,
-      outputSchemaJson: outputSchema,
-      modelSelection: input.modelSelection,
-      model: input.model,
-    });
-    return {
-      ...(generated.needsRefinement !== undefined
-        ? { needsRefinement: generated.needsRefinement }
-        : {}),
-      title: sanitizeThreadTitle(generated.title),
-    } satisfies ThreadTitleGenerationResult;
-  });
-
-  const generateStructuredJson: TextGenerationShape["generateStructuredJson"] = Effect.fn(
-    "MuseTextGeneration.generateStructuredJson",
-  )(function* (input) {
-    return yield* runJson({
-      operation: input.operation,
-      cwd: input.cwd,
-      prompt: input.prompt,
-      outputSchemaJson: input.outputSchema,
-      modelSelection: input.modelSelection,
-      model: input.model,
-    });
-  });
-
-  return {
-    generateCommitMessage,
-    generatePrContent,
-    generateBranchName,
-    generateThreadTitle,
-    generateStructuredJson,
-  } satisfies TextGenerationShape;
+  return makePromptTextGeneration(runJson);
 });

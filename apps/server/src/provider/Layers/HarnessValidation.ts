@@ -19,7 +19,7 @@ import type {
   ServerProviderState,
   ServerSettings,
 } from "@t3tools/contracts";
-import { DEFAULT_SERVER_SETTINGS, ThreadId } from "@t3tools/contracts";
+import { DEFAULT_SERVER_SETTINGS, PROVIDER_DISPLAY_NAMES, ThreadId } from "@t3tools/contracts";
 import { Cause, Effect, Exit, FileSystem, Layer, Option, Path, Ref, Result } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
@@ -82,26 +82,11 @@ function selectProviderOptions(
   if (provider === "opencode") {
     return providerOptions?.opencode ? { opencode: providerOptions.opencode } : undefined;
   }
-  return providerOptions?.grok ? { grok: providerOptions.grok } : undefined;
+  return provider === "grok" && providerOptions?.grok ? { grok: providerOptions.grok } : undefined;
 }
 
 function connectivityTimeoutMessage(provider: ProviderKind): string {
-  switch (provider) {
-    case "codex":
-      return "Codex one-off prompt query timed out.";
-    case "claudeAgent":
-      return "Claude one-off prompt query timed out.";
-    case "cursor":
-      return "Cursor one-off prompt query timed out.";
-    case "opencode":
-      return "OpenCode one-off prompt query timed out.";
-    case "grok":
-      return "Grok one-off prompt query timed out.";
-    case "antigravity":
-      return "Antigravity one-off prompt query timed out.";
-    case "muse":
-      return "Muse Code one-off prompt query timed out.";
-  }
+  return `${PROVIDER_DISPLAY_NAMES[provider]} one-off prompt query timed out.`;
 }
 
 function toHarnessMessage(
@@ -235,22 +220,7 @@ function providerDisabledPreflight(provider: ProviderKind, checkedAt = new Date(
 }
 
 function providerDisplayName(provider: ProviderKind): string {
-  switch (provider) {
-    case "codex":
-      return "Codex";
-    case "claudeAgent":
-      return "Claude";
-    case "cursor":
-      return "Cursor";
-    case "opencode":
-      return "OpenCode";
-    case "grok":
-      return "Grok";
-    case "antigravity":
-      return "Antigravity";
-    case "muse":
-      return "Muse Code";
-  }
+  return PROVIDER_DISPLAY_NAMES[provider];
 }
 
 function providerStatusToPreflightStatus(status: ServerProviderState) {

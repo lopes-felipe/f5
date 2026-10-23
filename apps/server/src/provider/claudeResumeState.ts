@@ -1,4 +1,4 @@
-import { ThreadId } from "@t3tools/contracts";
+import { ThreadId, TurnId } from "@t3tools/contracts";
 
 export interface ClaudeTurnBoundary {
   readonly turnId: string;
@@ -147,7 +147,9 @@ export function readClaudeNativeResumeMetadata(cursor: unknown) {
   const tasks: Array<{
     taskId: string;
     toolUseId?: string;
+    turnId?: TurnId;
     model?: string;
+    effort?: string;
     description?: string;
     taskType?: string;
   }> = [];
@@ -162,8 +164,15 @@ export function readClaudeNativeResumeMetadata(cursor: unknown) {
     )
       continue;
     const task: (typeof tasks)[number] = { taskId: value.taskId };
-    for (const key of ["toolUseId", "model", "description", "taskType"] as const)
+    if (
+      typeof value.turnId === "string" &&
+      value.turnId.trim().length > 0 &&
+      value.turnId.length <= 1024
+    )
+      task.turnId = TurnId.makeUnsafe(value.turnId.trim());
+    for (const key of ["toolUseId", "model", "effort", "description", "taskType"] as const)
       if (typeof value[key] === "string" && value[key].length <= 4000) task[key] = value[key];
+    if (task.effort && task.effort.length > 64) delete task.effort;
     tasks.push(task);
   }
   const receipts: Array<[string, { state: "completed" | "failed"; result?: unknown }]> = [];

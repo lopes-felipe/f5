@@ -1,3 +1,7 @@
+import type {
+  GitHubBranchDeletionInput,
+  PullRequestBranchDeletionResult,
+} from "../git/githubBranchDeletion.ts";
 import {
   SourceControlProviderKind,
   SourceControlRateLimit,
@@ -50,6 +54,7 @@ export interface SourceControlPullRequestSummary {
   readonly baseRefName: string;
   readonly headRefName: string;
   readonly headRefOid?: string | null;
+  readonly updatedAt?: string | null;
   readonly state?: "open" | "closed" | "merged";
   readonly isCrossRepository?: boolean;
   readonly headRepositoryNameWithOwner?: string | null;
@@ -67,6 +72,8 @@ export interface SourceControlMergePullRequestInput {
   readonly url: string;
   readonly method: "squash" | "merge" | "rebase";
   readonly expectedHeadOid?: string | undefined;
+  /** Internal override; stack merges retain the host-generated message. */
+  readonly removeAgentCreditsOnMerge?: boolean;
 }
 
 /**
@@ -75,6 +82,9 @@ export interface SourceControlMergePullRequestInput {
  * SourceControlProviderError before they cross this boundary.
  */
 export interface SourceControlProvider {
+  readonly deletePullRequestBranch?: (
+    input: GitHubBranchDeletionInput,
+  ) => Effect.Effect<PullRequestBranchDeletionResult, SourceControlProviderError>;
   readonly kind: SourceControlProviderKind;
   readonly capabilities: ReadonlyArray<SourceControlCapability>;
   readonly capability: (action: SourceControlPullRequestAction) => SourceControlCapability;
@@ -89,6 +99,7 @@ export interface SourceControlProvider {
   readonly listOpenPullRequests: (input: {
     readonly cwd: string;
     readonly headSelector: string;
+    readonly state?: "open" | "all";
     readonly limit?: number;
   }) => Effect.Effect<ReadonlyArray<SourceControlPullRequestSummary>, SourceControlProviderError>;
   readonly getPullRequest: (input: {

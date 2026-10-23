@@ -53,6 +53,14 @@ interface State {
   writes: string[];
   reviews: { body: string; verdict: string }[];
   delay: boolean;
+  canEdit?: boolean;
+  canResolve?: boolean;
+  itemWrites: string[];
+  actionCalls: string[];
+  branchCalls: boolean[];
+  lifecycle: "opened" | "closed" | "merged";
+  branchDeleted: boolean;
+  branchMode: Mode;
 }
 const transportFailure = (mode: Exclude<Mode, "success">) =>
   new SourceControlProviderError({
@@ -78,6 +86,12 @@ const fixture = Effect.gen(function* () {
     writes: [],
     reviews: [],
     delay: false,
+    itemWrites: [],
+    actionCalls: [],
+    branchCalls: [],
+    lifecycle: "opened",
+    branchDeleted: false,
+    branchMode: "success",
   };
   const native = makeForgeSourceControlProvider({
     kind: "gitlab",
@@ -96,7 +110,7 @@ const fixture = Effect.gen(function* () {
         title: "A native MR",
         source_branch: "topic",
         target_branch: "main",
-        state: "opened",
+        state: state.lifecycle,
         sha: state.head,
         diff_refs: { head_sha: state.head, base_sha: "merge-base", start_sha: state.base },
         web_url: "https://gitlab.example/team/repo/-/merge_requests/7",
@@ -104,7 +118,51 @@ const fixture = Effect.gen(function* () {
   });
   const provider = {
     ...native,
+    forgeCapabilities: {
+      ...native.forgeCapabilities,
+      actions: [...native.forgeCapabilities.actions, "delete-branch" as const],
+    },
+    performAction: (input: Parameters<typeof native.performAction>[0]) =>
+      Effect.sync(() => {
+        state.actionCalls.push(input.action);
+        if (input.action === "merge") state.lifecycle = "merged";
+        if (input.action === "close") state.lifecycle = "closed";
+        return {};
+      }),
+    deletePullRequestBranch: (input: { inspectOnly?: boolean }) =>
+      Effect.gen(function* () {
+        state.branchCalls.push(input.inspectOnly === true);
+        if (!input.inspectOnly) {
+          if (state.branchMode !== "unsent") state.branchDeleted = true;
+          if (state.branchMode !== "success") return yield* transportFailure(state.branchMode);
+        }
+        return {
+          host: account.host,
+          repository: "fork/repo",
+          branch: "topic",
+          headOid: "head-1",
+          absent: state.branchDeleted,
+        };
+      }),
     getComments: () => Effect.succeed(state.comments),
+    getReviewThreads: () =>
+      Effect.succeed([
+        {
+          id: "thread-1",
+          canResolve: state.canResolve,
+          comments: [{ id: "comment-1", path: "a.ts", body: "Inline" }],
+        },
+      ]),
+    editComment: () =>
+      Effect.sync(() => {
+        state.itemWrites.push("edit");
+        return {};
+      }),
+    resolveThread: () =>
+      Effect.sync(() => {
+        state.itemWrites.push("resolve");
+        return {};
+      }),
     getFiles: () =>
       Effect.sync(() => {
         if (state.moveBase) state.base = "base-2";
@@ -489,6 +547,139 @@ it.effect("fences inline comments when the base changes during file loading", ()
       state.moveBase = true;
       assert.equal((yield* engine.submitOperation(identify(input))).status, "failed");
       assert.equal(state.writes.length, 0);
+    }),
+  ),
+);
+
+it.effect("host item permissions override authorship and are rechecked before a saved edit", () =>
+  run(({ engine, state }) =>
+    Effect.gen(function* () {
+      state.comments = [{ id: "comment-1", author: { id: "42" }, canEdit: false }];
+      const input = prepared("edit-denied", {
+        kind: "edit-comment",
+        commentId: "comment-1",
+        body: "Changed",
+      });
+      assert.equal((yield* engine.prepareOperation(input).pipe(Effect.result))._tag, "Failure");
+      // An explicit grant can permit editing another author's remark.
+      state.comments = [{ id: "comment-1", author: { id: "other" }, canEdit: true }];
+      yield* engine.prepareOperation(input);
+      state.comments = [{ id: "comment-1", author: { id: "other" }, canEdit: false }];
+      assert.equal(
+        (yield* engine.submitOperation(identify(input)).pipe(Effect.result))._tag,
+        "Failure",
+      );
+      assert.deepEqual(state.itemWrites, []);
+      state.comments = [{ id: "comment-1", author: { id: "other" }, canEdit: true }];
+      assert.equal((yield* engine.submitOperation(identify(input))).status, "succeeded");
+      assert.deepEqual(state.itemWrites, ["edit"]);
+    }),
+  ),
+);
+it.effect("per-thread resolution restrictions are rechecked before dispatch", () =>
+  run(({ engine, state }) =>
+    Effect.gen(function* () {
+      const input = prepared("resolve-denied", {
+        kind: "thread-state",
+        threadId: "thread-1",
+        resolved: true,
+      });
+      state.canResolve = false;
+      assert.equal((yield* engine.prepareOperation(input).pipe(Effect.result))._tag, "Failure");
+      state.canResolve = true;
+      yield* engine.prepareOperation(input);
+      state.canResolve = false;
+      assert.equal(
+        (yield* engine.submitOperation(identify(input)).pipe(Effect.result))._tag,
+        "Failure",
+      );
+      assert.deepEqual(state.itemWrites, []);
+      state.canResolve = true;
+      assert.equal((yield* engine.submitOperation(identify(input))).status, "succeeded");
+      assert.deepEqual(state.itemWrites, ["resolve"]);
+    }),
+  ),
+);
+
+it.effect(
+  "records merge-then-delete intent, dispatches each once and reports skipped local cleanup",
+  () =>
+    run(({ engine, state }) =>
+      Effect.gen(function* () {
+        const input = prepared("merge-delete-once", {
+          kind: "action",
+          action: "merge",
+          method: "squash",
+          deleteBranch: true,
+        });
+        yield* engine.prepareOperation(input);
+        const first = yield* engine.submitOperation(identify(input));
+        assert.equal(first.status, "succeeded");
+        assert.ok(first.warning?.includes("local branch cleanup is unavailable"));
+        yield* engine.submitOperation(identify(input));
+        assert.deepEqual(state.actionCalls, ["merge"]);
+        assert.deepEqual(state.branchCalls, [false]);
+      }),
+    ),
+);
+it.effect(
+  "recovers branch absence after a lost response without replaying merge, delete or local cleanup",
+  () =>
+    run(({ engine, state, create }) =>
+      Effect.gen(function* () {
+        state.branchMode = "ambiguous";
+        const input = prepared("merge-delete-unknown", {
+          kind: "action",
+          action: "merge",
+          deleteBranch: true,
+        });
+        yield* engine.prepareOperation(input);
+        assert.equal((yield* engine.submitOperation(identify(input))).status, "outcome_unknown");
+        const restarted = yield* create();
+        assert.equal((yield* restarted.submitOperation(identify(input))).status, "outcome_unknown");
+        const recovered = yield* restarted.recoverOperation(identify(input));
+        assert.equal(recovered.status, "succeeded");
+        assert.ok(recovered.warning?.includes("not replayed"));
+        assert.deepEqual(state.actionCalls, ["merge"]);
+        assert.deepEqual(state.branchCalls, [false, true]);
+      }),
+    ),
+);
+it.effect("reports a completed close separately when branch deletion was definitely not sent", () =>
+  run(({ engine, state }) =>
+    Effect.gen(function* () {
+      state.branchMode = "unsent";
+      const input = prepared("close-delete-unsent", {
+        kind: "action",
+        action: "close",
+        deleteBranch: true,
+      });
+      yield* engine.prepareOperation(input);
+      const result = yield* engine.submitOperation(identify(input));
+      assert.equal(result.status, "failed");
+      assert.ok(result.error?.includes("PR action completed"));
+      yield* engine.submitOperation(identify(input));
+      assert.deepEqual(state.actionCalls, ["close"]);
+      assert.deepEqual(state.branchCalls, [false]);
+    }),
+  ),
+);
+it.effect("does not start branch deletion while recovering an unrecorded primary response", () =>
+  run(({ engine, state, sql }) =>
+    Effect.gen(function* () {
+      const input = prepared("merge-delete-not-started", {
+        kind: "action",
+        action: "merge",
+        deleteBranch: true,
+      });
+      yield* engine.prepareOperation(input);
+      state.lifecycle = "merged";
+      yield* sql`UPDATE forge_operations SET status='outcome_unknown' WHERE operation_id=${input.operationId}`;
+      const result = yield* engine.recoverOperation(identify(input));
+      assert.equal(result.status, "failed");
+      assert.ok(result.error?.includes("not sent"));
+      assert.deepEqual(state.actionCalls, []);
+      assert.deepEqual(state.branchCalls, []);
     }),
   ),
 );

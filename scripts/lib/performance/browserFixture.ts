@@ -276,6 +276,8 @@ export function createBrowserFixture(protocolVersion = 1) {
           return [];
         case "prHub.getThreadLinks":
           return [];
+        case "pullRequestWatches.list":
+          return [];
         case "orchestration.getSnapshot":
           return snapshot();
         case "orchestration.getStartupSnapshot":

@@ -6,6 +6,8 @@ import { ServerConfig } from "../../config";
 import { ServerSettingsService } from "../../serverSettings";
 import { ServerSecretStore } from "../../auth/Services/ServerSecretStore";
 import { profileGitEnvironment } from "../profileGitEnvironment";
+import { managedGitProcessEnvironment } from "../gitProcessEnvironment.ts";
+import { resolveGitExecutable } from "../../spawn/resolveCommand.ts";
 /**
  * Git process helpers - Effect-native git execution with typed errors.
  *
@@ -138,13 +140,23 @@ const makeGitService = Effect.gen(function* () {
           })
         : { ...process.env, ...input.env };
 
-      Object.assign(environment, NONINTERACTIVE_GIT_ENV, { SSH_ASKPASS_REQUIRE: "force" });
+      const protectedEnvironment = yield* Effect.try({
+        try: () => managedGitProcessEnvironment(environment),
+        catch: toGitCommandError(commandInput, "Invalid Git process configuration."),
+      });
+      Object.assign(environment, protectedEnvironment);
+      Object.assign(environment, NONINTERACTIVE_GIT_ENV, {
+        SSH_ASKPASS_REQUIRE: "force",
+        // Required mutation locks still apply. Passive reads must not write a
+        // refreshed index beside a user's own Git operation or generation.
+        GIT_OPTIONAL_LOCKS: "0",
+      });
       if (["fetch", "push", "pull", "ls-remote", "clone"].includes(input.args[0] ?? "")) {
         const configured = environment.GIT_SSH_COMMAND
           ? null
           : yield* Effect.tryPromise({
               try: () =>
-                runProcess("git", ["config", "--get", "core.sshCommand"], {
+                runProcess("git", ["config", "--get", "--", "core.sshCommand"], {
                   cwd: input.cwd,
                   env: environment,
                   allowNonZeroExit: true,
@@ -164,7 +176,7 @@ const makeGitService = Effect.gen(function* () {
 
       const child = yield* commandSpawner
         .spawn(
-          ChildProcess.make("git", commandInput.args, {
+          ChildProcess.make(resolveGitExecutable(environment), commandInput.args, {
             cwd: commandInput.cwd,
             env: environment,
             ...(input.stdin === undefined

@@ -10,6 +10,7 @@
 import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { resolveClaudeCliInvocation } from "../../provider/claudeSdkExecutable.ts";
+import { hasClaudeManagedMcpConfig } from "../../provider/claudeInventory.ts";
 import {
   claudeThinkingCliArgs,
   claudeThinkingConfig,
@@ -80,6 +81,25 @@ const ClaudeOutputMessage = Schema.Struct({
   type: Schema.String,
   structured_output: Schema.optionalKey(Schema.Unknown),
 });
+
+const isClaudeErrorResult = Schema.is(
+  Schema.Struct({ is_error: Schema.Literal(true), result: Schema.String }),
+);
+const decodeJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+
+/**
+ * The error a failed `claude -p --output-format json` run reports on stdout.
+ * Stderr may only hold notices from a wrapper around the binary, so callers
+ * prefer this when present.
+ */
+export function claudeErrorResult(stdout: string): string | undefined {
+  const output = Option.getOrUndefined(decodeJsonOption(stdout));
+  const messages: ReadonlyArray<unknown> = Array.isArray(output) ? output : [output];
+  return messages
+    .filter(isClaudeErrorResult)
+    .map((message) => message.result.trim())
+    .findLast((result) => result.length > 0);
+}
 
 export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(function* (
   claudeSettings: ClaudeSettings,
@@ -183,7 +203,13 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         "--tools",
         "",
         "--disable-slash-commands",
-        "--strict-mcp-config",
+        // A default permission mode from the user's settings (plan mode, for one) must not
+        // change how metadata is generated.
+        "--permission-mode",
+        "dontAsk",
+        // Claude refuses the strict flag next to a managed-mcp.json, which
+        // already excludes every other MCP source.
+        ...(hasClaudeManagedMcpConfig() ? [] : ["--strict-mcp-config"]),
       ];
       const invocation = yield* Effect.try({
         try: () => resolveClaudeCliInvocation(binaryPath, args, claudeEnvironment, { cwd }),
@@ -240,7 +266,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       if (exitCode !== 0) {
         const stderrDetail = stderr.trim();
         const stdoutDetail = stdout.trim();
-        const detail = stderrDetail.length > 0 ? stderrDetail : stdoutDetail;
+        const detail =
+          claudeErrorResult(stdoutDetail) ??
+          (stderrDetail.length > 0 ? stderrDetail : stdoutDetail);
         return yield* new TextGenerationError({
           operation,
           detail:
@@ -391,11 +419,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
   const generateThreadTitle: TextGenerationShape["generateThreadTitle"] = Effect.fn(
     "ClaudeTextGeneration.generateThreadTitle",
   )(function* (input) {
-    const { prompt, outputSchema } = buildThreadTitlePrompt({
-      message: input.message,
-      previousTitle: input.previousTitle,
-      attachments: input.attachments,
-    });
+    const { prompt, outputSchema } = buildThreadTitlePrompt(input);
 
     const generated = yield* runClaudeJson({
       operation: "generateThreadTitle",

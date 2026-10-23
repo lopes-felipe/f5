@@ -19,10 +19,12 @@ export function runtimeModeCapabilities(provider: ProviderKind): ReadonlySet<Run
     case "claudeAgent":
       return REVIEWED_MODES;
     case "opencode":
+    case "pi":
       return EDIT_MODES;
     case "cursor":
     case "grok":
     case "antigravity":
+    case "acp":
       return BASIC_MODES;
     case "muse":
       return MUSE_MODES;

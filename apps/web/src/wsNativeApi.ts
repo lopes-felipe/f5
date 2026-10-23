@@ -1,3 +1,12 @@
+import { MCP_APPS_WS_METHODS, McpAppToolInfo, McpAppToolResult } from "@t3tools/contracts";
+import { THREAD_SETTLEMENT_WS_METHODS } from "@t3tools/contracts";
+import {
+  PR_WATCH_WS_METHODS,
+  PR_WATCH_CHANGED_CHANNEL,
+  PullRequestWatchEntry,
+  PullRequestWatchChanged,
+} from "@t3tools/contracts";
+import { HTML_RENDER_WS_METHODS, HtmlPreviewHostRequest } from "@t3tools/contracts";
 import { useAgentComputerActivityStore } from "./agentComputerActivityStore";
 import { NATIVE_OPERATION_WS_METHODS } from "@t3tools/contracts";
 import type {
@@ -7,6 +16,9 @@ import type {
 } from "@t3tools/contracts";
 import {
   ProjectCloneJob,
+  ProjectEnsureScratchResult,
+  ProjectCreateNewResult,
+  ProjectFindByRepositoryResult,
   AGENTS_WS_CHANNELS,
   AGENTS_WS_METHODS,
   AGENT_BRIDGE_WS_CHANNELS,
@@ -559,6 +571,46 @@ export function createWsNativeApi(): NativeApi {
           listener(message.data),
         ),
     },
+    mcpApps: {
+      toolInfo: async (input) =>
+        Schema.decodeUnknownSync(McpAppToolInfo)(
+          await transport.request(MCP_APPS_WS_METHODS.toolInfo, input),
+        ),
+      callTool: async (input) =>
+        Schema.decodeUnknownSync(McpAppToolResult)(
+          await transport.request(MCP_APPS_WS_METHODS.callTool, input),
+        ),
+      readResource: requestMethod(MCP_APPS_WS_METHODS.readResource),
+      updateModelContext: requestMethod(MCP_APPS_WS_METHODS.updateModelContext),
+    },
+    threadSettlement: {
+      settleProjectIdle: requestMethod(THREAD_SETTLEMENT_WS_METHODS.settleProjectIdle),
+    },
+    pullRequestWatches: {
+      list: async (input) =>
+        Schema.decodeUnknownSync(Schema.Array(PullRequestWatchEntry))(
+          await transport.request(PR_WATCH_WS_METHODS.list, input),
+        ),
+      start: async (input) =>
+        Schema.decodeUnknownSync(PullRequestWatchEntry)(
+          await transport.request(PR_WATCH_WS_METHODS.start, input),
+        ),
+      stop: async (input) => {
+        await transport.request(PR_WATCH_WS_METHODS.stop, input);
+      },
+      onChanged: (callback) =>
+        transport.subscribe(PR_WATCH_CHANGED_CHANNEL, (message) =>
+          callback(Schema.decodeUnknownSync(PullRequestWatchChanged)(message.data)),
+        ),
+    },
+    htmlRender: {
+      setHost: requestMethod(HTML_RENDER_WS_METHODS.host),
+      respond: requestMethod(HTML_RENDER_WS_METHODS.respond),
+      onRequest: (callback) =>
+        transport.subscribe(WS_CHANNELS.htmlRenderRequest, (message) =>
+          callback(Schema.decodeUnknownSync(HtmlPreviewHostRequest)(message.data)),
+        ),
+    },
     preview: {
       open: requestMethod(WS_METHODS.previewOpen),
       navigate: requestMethod(WS_METHODS.previewNavigate),
@@ -623,6 +675,18 @@ export function createWsNativeApi(): NativeApi {
           await transport.request(WS_METHODS.projectsCloneList, {}),
         ),
       cloneCancel: requestMethod(WS_METHODS.projectsCloneCancel),
+      ensureScratch: async () =>
+        Schema.decodeUnknownSync(ProjectEnsureScratchResult)(
+          await transport.request(WS_METHODS.projectsEnsureScratch, {}),
+        ),
+      createNew: async (input) =>
+        Schema.decodeUnknownSync(ProjectCreateNewResult)(
+          await transport.request(WS_METHODS.projectsCreateNew, input),
+        ),
+      findByRepository: async (input) =>
+        Schema.decodeUnknownSync(ProjectFindByRepositoryResult)(
+          await transport.request(WS_METHODS.projectsFindByRepository, input),
+        ),
       getCheckedInConfig: (input) =>
         transport.request(WS_METHODS.projectsGetCheckedInConfig, input),
       authorizeEntry: requestMethod(WS_METHODS.projectsAuthorizeEntry),
@@ -983,6 +1047,8 @@ export function createWsNativeApi(): NativeApi {
       analyzeAdvisories: (input = {}) =>
         requestPrHub(PR_HUB_WS_METHODS.analyzeAdvisories, input, { timeoutMs: null }),
       getAdvisories: (input = {}) => requestPrHub(PR_HUB_WS_METHODS.getAdvisories, input),
+      getReviewGuide: (input) => requestPrHub(PR_HUB_WS_METHODS.getReviewGuide, input),
+      generateReviewGuide: (input) => requestPrHub(PR_HUB_WS_METHODS.generateReviewGuide, input),
       resolveLocalCheckout: (input) => requestPrHub(PR_HUB_WS_METHODS.resolveLocalCheckout, input),
       listLocalCheckoutCandidates: (input) =>
         requestPrHub(PR_HUB_WS_METHODS.listLocalCheckoutCandidates, input),
@@ -1024,6 +1090,7 @@ export function createWsNativeApi(): NativeApi {
       getSnapshot: () => transport.request(ORCHESTRATION_WS_METHODS.getSnapshot),
       getStartupSnapshot: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.getStartupSnapshot, input),
+      searchThread: (input) => transport.request(ORCHESTRATION_WS_METHODS.searchThread, input),
       getThreadTailDetails: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.getThreadTailDetails, input),
       getRewindDrafts: (input) =>

@@ -2,12 +2,14 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import { CommandId, OrchestrationEvent, ThreadId } from "@t3tools/contracts";
 import { Effect, ManagedRuntime, Option, Schema } from "effect";
 import { makeCommitSideEffects } from "./commitSideEffects.ts";
+import { createEmptyReadModel } from "./projector.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 const at = "2026-10-19T00:00:00.000Z";
 const threadId = ThreadId.make("commit-thread");
 const commandId = CommandId.make("commit-command");
+const readModel = createEmptyReadModel(at);
 async function createSystem() {
   const runtime = ManagedRuntime.make(SqlitePersistenceMemory);
   const sql = await runtime.runPromise(Effect.service(SqlClient.SqlClient));
@@ -53,7 +55,7 @@ function apply(saved: OrchestrationEvent, steerFallback = false) {
         sql: system.sql,
         transitions: Option.none(),
         queueStore: Option.none(),
-      })(saved, { commandType: "thread.turn.start", steerFallback }),
+      })(saved, { commandType: "thread.turn.start", steerFallback, readModel }),
     ),
   );
 }
@@ -107,6 +109,7 @@ it.each(["thread.archived", "thread.deleted"] as const)(
         commit(event(type, type === "thread.archived" ? { archivedAt: at } : { deletedAt: at }), {
           commandType: "thread.turn.start",
           steerFallback: false,
+          readModel,
         }),
       ),
     );
@@ -264,7 +267,7 @@ it.each(["cancel", "resolve"] as const)(
 it("finishes a conversation revert while preserving the user's queue pause", async () => {
   await seedRewind("files-confirmed");
   await system.run(
-    system.sql`INSERT INTO restart_turn_markers VALUES (${threadId},'turn',${at},'continuation')`,
+    system.sql`INSERT INTO restart_turn_markers(thread_id, turn_id, marked_at, continuation_id) VALUES (${threadId},'turn',${at},'continuation')`,
   );
   await apply(event("thread.reverted", { operationId: "operation", turnCount: 0 }));
   expect((await system.run(system.sql`SELECT state FROM rewind_operations`))[0]?.state).toBe(

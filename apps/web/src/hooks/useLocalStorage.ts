@@ -54,7 +54,8 @@ interface LocalStorageChangeDetail {
   key: string;
 }
 
-function dispatchLocalStorageChange(key: string) {
+/** Tells same-window subscribers that `key` was written outside a `useLocalStorage` setter. */
+export function dispatchLocalStorageChange(key: string) {
   if (typeof window === "undefined") return;
   window.dispatchEvent(
     new CustomEvent<LocalStorageChangeDetail>(LOCAL_STORAGE_CHANGE_EVENT, {

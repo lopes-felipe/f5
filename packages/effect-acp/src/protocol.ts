@@ -1,6 +1,7 @@
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -16,6 +17,7 @@ import * as RpcServer from "effect/unstable/rpc/RpcServer";
 import * as AcpSchema from "./_generated/schema.gen";
 import { CLIENT_METHODS } from "./_generated/meta.gen";
 import * as AcpError from "./errors";
+import { isolateNotificationHandler } from "./_internal/shared";
 
 export interface AcpProtocolLogEvent {
   readonly direction: "incoming" | "outgoing";
@@ -125,6 +127,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   const outgoing = yield* Queue.unbounded<string | Uint8Array, Cause.Done<void>>();
   const nextRequestId = yield* Ref.make(1n);
   const terminationHandled = yield* Ref.make(false);
+  let terminalError: AcpError.AcpError | undefined;
   const extPending = yield* Ref.make(
     new Map<string, Deferred.Deferred<unknown, AcpError.AcpError>>(),
   );
@@ -145,6 +148,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   const offerOutgoing = Effect.fn("offerOutgoing")(function* (
     message: RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded,
   ) {
+    if (terminalError) return yield* Effect.fail(terminalError);
     yield* logProtocol({
       direction: "outgoing",
       stage: "decoded",
@@ -210,15 +214,15 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       ),
     );
 
-  const dispatchNotification = (notification: AcpIncomingNotification) =>
-    Queue.offer(notificationQueue, notification).pipe(
+  const dispatchNotification = (notification: AcpIncomingNotification) => {
+    const handler = options.onNotification;
+    return Queue.offer(notificationQueue, notification).pipe(
       Effect.andThen(
-        options.onNotification
-          ? options.onNotification(notification).pipe(Effect.catch(() => Effect.void))
-          : Effect.void,
+        handler ? isolateNotificationHandler(() => handler(notification)) : Effect.void,
       ),
       Effect.asVoid,
     );
+  };
 
   const emitClientProtocolError = (error: AcpError.AcpError) =>
     Queue.offer(clientQueue, {
@@ -243,6 +247,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
           if (!error) {
             return;
           }
+          terminalError = error;
           yield* failAllExtPending(error);
           yield* emitClientProtocolError(error);
           if (options.onTermination) {
@@ -279,14 +284,50 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     });
 
   const handleExtRequest = (message: RpcMessage.RequestEncoded) => {
-    if (!options.onExtRequest) {
+    const handler = options.onExtRequest;
+    if (!handler) {
       return respondWithError(message.id, AcpError.AcpRequestError.methodNotFound(message.tag));
     }
-    return options.onExtRequest(message.tag, message.payload).pipe(
-      Effect.matchEffect({
-        onFailure: (error) => respondWithError(message.id, normalizeToRequestError(error)),
+    return Effect.suspend(() => handler(message.tag, message.payload)).pipe(
+      Effect.matchCauseEffect({
+        onFailure: (cause) => {
+          if (Cause.hasInterrupts(cause)) return Effect.interrupt;
+          const failure = Cause.hasDies(cause) ? Option.none() : Cause.findErrorOption(cause);
+          if (Option.isSome(failure))
+            return respondWithError(message.id, normalizeToRequestError(failure.value));
+          return Effect.logError(
+            `ACP extension request handler failed for '${message.tag}'`,
+            cause,
+          ).pipe(
+            Effect.andThen(respondWithError(message.id, AcpError.AcpRequestError.internalError())),
+          );
+        },
         onSuccess: (value) => respondWithSuccess(message.id, value),
       }),
+    );
+  };
+
+  const warnedDecodeFailures = new Set<string>();
+  // A notification has no reply to fail, so one the schema rejects is logged and dropped.
+  // Ending the connection over it would kill a working session because one update, possibly
+  // from a newer spec, did not parse. An agent repeats a bad shape on every update, so each
+  // method is warned about once per connection. The payload is never logged.
+  const dropUndecodableNotification = (method: string) => () => {
+    const diagnostics = { method, detail: `Invalid ${method} notification payload` };
+    const firstOfItsKind = !warnedDecodeFailures.has(method);
+    warnedDecodeFailures.add(method);
+    return logProtocol({
+      direction: "incoming",
+      stage: "decode_failed",
+      payload: diagnostics,
+    }).pipe(
+      Effect.andThen(
+        firstOfItsKind
+          ? Effect.logWarning("Dropped an ACP notification that failed to decode").pipe(
+              Effect.annotateLogs(diagnostics),
+            )
+          : Effect.void,
+      ),
     );
   };
 
@@ -294,22 +335,15 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     if (message.id === "") {
       if (message.tag === CLIENT_METHODS.session_update) {
         return decodeSessionUpdate(message.payload).pipe(
-          Effect.map(
-            (params) =>
-              ({
+          Effect.matchEffect({
+            onFailure: dropUndecodableNotification(CLIENT_METHODS.session_update),
+            onSuccess: (params) =>
+              dispatchNotification({
                 _tag: "SessionUpdate",
                 method: CLIENT_METHODS.session_update,
                 params,
-              }) satisfies AcpIncomingNotification,
-          ),
-          Effect.mapError(
-            (cause) =>
-              new AcpError.AcpProtocolParseError({
-                detail: `Invalid ${CLIENT_METHODS.session_update} notification payload`,
-                cause,
               }),
-          ),
-          Effect.flatMap(dispatchNotification),
+          }),
         );
       }
       if (
@@ -318,22 +352,11 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       ) {
         const method = message.tag;
         return decodeElicitationComplete(message.payload).pipe(
-          Effect.map(
-            (params) =>
-              ({
-                _tag: "ElicitationComplete",
-                method,
-                params,
-              }) satisfies AcpIncomingNotification,
-          ),
-          Effect.mapError(
-            (cause) =>
-              new AcpError.AcpProtocolParseError({
-                detail: `Invalid ${method} notification payload`,
-                cause,
-              }),
-          ),
-          Effect.flatMap(dispatchNotification),
+          Effect.matchEffect({
+            onFailure: dropUndecodableNotification(method),
+            onSuccess: (params) =>
+              dispatchNotification({ _tag: "ElicitationComplete", method, params }),
+          }),
         );
       }
       return dispatchNotification({
@@ -456,8 +479,11 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         ),
       ),
     ),
-    Effect.matchEffect({
-      onFailure: (error) => {
+    Effect.matchCauseEffect({
+      onFailure: (cause) => {
+        if (Cause.hasInterrupts(cause)) return Effect.interrupt;
+        const failure = Cause.findErrorOption(cause);
+        const error = Option.isSome(failure) ? failure.value : Cause.squash(cause);
         const normalized: AcpError.AcpError = Schema.is(AcpError.AcpError)(error)
           ? error
           : new AcpError.AcpTransportError({

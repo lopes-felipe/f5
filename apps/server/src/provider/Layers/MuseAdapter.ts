@@ -91,6 +91,7 @@ import {
   mapMuseApprovalChoices,
   museAnswers,
   museApprovalDetail,
+  museApprovalTurnId,
   museApprovalOptions,
   museApprovalRequestId,
   museDeltaStreamKind,
@@ -413,7 +414,7 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
         for (const pending of ctx.approvals.values()) {
           yield* offer({
             type: "request.resolved",
-            ...(yield* stamp(ctx, pending.params.turnId)),
+            ...(yield* stamp(ctx, museApprovalTurnId(pending.params))),
             requestId: RuntimeRequestId.make(pending.requestId),
             payload: { requestType: museRequestType(pending.params), decision: "cancel" },
           });
@@ -563,7 +564,7 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
         ctx.approvalRequestByApprovalId.set(params.approvalId, requestId);
         yield* offer({
           type: "request.opened",
-          ...(yield* stamp(ctx, params.turnId)),
+          ...(yield* stamp(ctx, museApprovalTurnId(params))),
           requestId: RuntimeRequestId.make(requestId),
           payload: {
             requestType: museRequestType(params),
@@ -591,7 +592,7 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
         }
         yield* offer({
           type: "request.resolved",
-          ...(yield* stamp(ctx, pending.params.turnId)),
+          ...(yield* stamp(ctx, museApprovalTurnId(pending.params))),
           requestId: RuntimeRequestId.make(requestId),
           payload: {
             requestType: museRequestType(pending.params),
@@ -641,8 +642,9 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
           return yield* closeApproval(ctx, previousId, "resolved");
         }
         yield* closeApproval(ctx, previousId, "superseded", { superseded: true });
-        yield* openApproval(ctx, {
+        yield* handleApprovalRequested(ctx, {
           ...previous.params,
+          ...(params.subagentOrigin ? { subagentOrigin: params.subagentOrigin } : {}),
           availableChoices: params.availableChoices,
           currentRequirementId: params.currentRequirementId,
           subject: params.subject,
@@ -1136,11 +1138,20 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
         // The SDK has no response deadline of its own; a host that stops
         // answering must not hold the thread lock forever.
         const openTimeoutMs = options?.sessionOpenTimeoutMs ?? MSP_REQUEST_TIMEOUT_MS;
+        // Without a profile Muse applies its own default, which can be
+        // `:auto-review`, where an AI reviewer answers approvals instead of the
+        // user. Resume selects it too, since the mode may have changed. An
+        // ephemeral host refuses any profile id.
+        const permissionProfile =
+          host.durability.kind === "durable"
+            ? { permissionProfile: expectedPermissionProfile(input.runtimeMode) }
+            : {};
         const startFresh = call("session/start", () =>
           host.gate.run("session/start", openTimeoutMs, () =>
             host.client.startSession({
               workspaceRoot: input.cwd,
               approvalMode: verifyExpectedMode(input.runtimeMode),
+              ...permissionProfile,
               ...(input.modelId ? { modelId: input.modelId } : {}),
             }),
           ),
@@ -1163,6 +1174,7 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
                 host.client.resumeSession({
                   sessionId: input.resume!.mspSessionId,
                   ...(cursor ? { cursor } : { excludeItems: true }),
+                  ...permissionProfile,
                 }),
               ),
             catch: (cause) => new MuseCallFailure({ cause }),
@@ -1198,6 +1210,8 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
 
     const verifyExpectedMode = (runtimeMode: MuseRuntimeMode) =>
       runtimeMode === "full-access" ? ("allowAll" as const) : ("promptUnmatched" as const);
+    const expectedPermissionProfile = (runtimeMode: MuseRuntimeMode) =>
+      runtimeMode === "full-access" ? ":unrestricted" : ":ask-me";
 
     /** Apply the approval mode and require the read-back to match. */
     const enforcePermissions = (host: MspHost, session: MspSession, runtimeMode: MuseRuntimeMode) =>

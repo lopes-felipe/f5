@@ -21,15 +21,14 @@ export function sanitizeBranchFragment(raw: string): string {
 }
 
 /**
- * Sanitize a string into a `feature/…` branch name.
- * Preserves an existing `feature/` prefix or slash-separated namespace.
+ * Sanitize a generated branch name, preserving any slash-separated namespace.
+ * Unprefixed fragments use the `feature/` namespace.
  */
 export function sanitizeFeatureBranchName(raw: string): string {
   const sanitized = sanitizeBranchFragment(raw);
-  if (sanitized.includes("/")) {
-    return sanitized.startsWith("feature/") ? sanitized : `feature/${sanitized}`;
-  }
-  return `feature/${sanitized}`;
+  // A generated name keeps its own namespace (`fix/…`, `team/jules/…`); only an
+  // unprefixed fragment goes under `feature/`.
+  return sanitized.includes("/") ? sanitized : `feature/${sanitized}`;
 }
 
 const AUTO_FEATURE_BRANCH_FALLBACK = "feature/update";
@@ -46,16 +45,49 @@ export function resolveAutoFeatureBranchName(
   const resolvedBase = sanitizeFeatureBranchName(
     preferred && preferred.length > 0 ? preferred : AUTO_FEATURE_BRANCH_FALLBACK,
   );
-  const existingNames = new Set(existingBranchNames.map((branch) => branch.toLowerCase()));
-
-  if (!existingNames.has(resolvedBase)) {
-    return resolvedBase;
+  const existingNames = existingBranchNames.map((branch) => branch.toLowerCase());
+  const existingRefs = new Set(existingNames);
+  // Git cannot hold both `fix` and `fix/name`, so suffix the first path component a
+  // ref blocks, or the final component when a ref already sits beneath it.
+  let resolved = "";
+  const parts = resolvedBase.split("/");
+  for (const [index, part] of parts.entries()) {
+    const base = resolved ? `${resolved}/${part}` : part;
+    let candidate = base;
+    let suffix = 2;
+    while (
+      existingRefs.has(candidate) ||
+      (index === parts.length - 1 &&
+        existingNames.some((branch) => branch.startsWith(`${candidate}/`)))
+    ) {
+      candidate = `${base}-${suffix}`;
+      suffix += 1;
+    }
+    resolved = candidate;
   }
+  return resolved;
+}
 
-  let suffix = 2;
-  while (existingNames.has(`${resolvedBase}-${suffix}`)) {
-    suffix += 1;
-  }
+/** Treat filenames containing glob or pathspec magic as literal filenames. */
+export const literalGitPathspec = (path: string): string => `:(literal)${path}`;
 
-  return `${resolvedBase}-${suffix}`;
+const GIT_CONFIG_OVERRIDE_KEYS = new Set([
+  "core.splitindex",
+  "splitindex.sharedindexexpire",
+  "core.fsync",
+  "core.fsyncmethod",
+  "core.fsmonitor",
+  "index.sparse",
+  "sparse.expectfilesoutsideofpatterns",
+  "protocol.file.allow",
+  "status.showuntrackedfiles",
+]);
+
+/** Only app-owned configuration overrides may be placed in Git's argument vector. */
+export function gitConfigArgs(pairs: ReadonlyArray<readonly [string, string]>): string[] {
+  return pairs.flatMap(([key, value]) => {
+    if (!GIT_CONFIG_OVERRIDE_KEYS.has(key.toLowerCase()) || /[\0\r\n]/.test(value))
+      throw new Error(`Unsupported Git configuration override: ${key}`);
+    return ["-c", `${key}=${value}`];
+  });
 }

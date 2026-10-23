@@ -1,9 +1,9 @@
+import { SETTINGS_ITEM_ROUTES } from "../settingsRouting";
 import type { SettingsItemDescriptor } from "../settingsSearch";
 
 export const PROVIDERS_SETTINGS_DESCRIPTORS = [
   {
-    id: "providers.instances",
-    category: "providers",
+    ...SETTINGS_ITEM_ROUTES["providers.instances"],
     label: "Provider instances",
     description:
       "Manage provider runtimes and each instance's binary, home directory, launch arguments, and models.",
@@ -24,16 +24,14 @@ export const PROVIDERS_SETTINGS_DESCRIPTORS = [
     targetSelector: '[data-settings-search-target="providers.instances"]',
   },
   {
-    id: "providers.updates",
-    category: "providers",
+    ...SETTINGS_ITEM_ROUTES["providers.updates"],
     label: "Automatically check for provider updates",
     description: "Refresh installed provider version and update information.",
     keywords: ["version", "upgrade", "cli"],
     targetSelector: '[aria-label="Automatically check for provider updates"]',
   },
   {
-    id: "providers.legacy-overrides",
-    category: "providers",
+    ...SETTINGS_ITEM_ROUTES["providers.legacy-overrides"],
     label: "Legacy provider overrides",
     description: "Move or clear old app-wide Codex and Claude paths, arguments, and custom models.",
     keywords: ["codex binary", "claude binary", "cli arguments", "custom models", "migrate"],

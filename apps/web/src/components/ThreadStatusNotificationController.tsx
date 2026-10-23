@@ -11,7 +11,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import type { ThreadId } from "@t3tools/contracts";
 
-import { useAppSettings } from "../appSettings";
+import { type AppSettings, useAppSettingsSelector } from "../appSettings";
 import { useStore } from "../store";
 import { useThreadSummaries } from "../threadSelectors";
 import type { ThreadStatus } from "../threadStatus";
@@ -32,6 +32,14 @@ import { Alert, AlertAction, AlertDescription, AlertTitle } from "./ui/alert";
 import { Button } from "./ui/button";
 import { isSnoozedThread } from "../lib/threadOrdering";
 
+function selectNotificationSettings(settings: AppSettings) {
+  return {
+    inAppThreadNotifications: settings.inAppThreadNotifications,
+    notificationMode: settings.notificationMode,
+    showAttentionBadge: settings.showAttentionBadge,
+  };
+}
+
 export function ThreadStatusNotificationControllerContent({
   navigateToThread,
 }: {
@@ -44,7 +52,7 @@ export function ThreadStatusNotificationControllerContent({
     .sort()
     .join(",");
   const projects = useStore((store) => store.projects);
-  const { settings } = useAppSettings();
+  const settings = useAppSettingsSelector(selectNotificationSettings);
   const systemEnabled =
     settings.notificationMode === "system" || settings.notificationMode === "system-and-sound";
   const soundEnabled =

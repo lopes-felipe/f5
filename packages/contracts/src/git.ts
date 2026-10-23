@@ -24,7 +24,7 @@ export const GitActionProgressKind = /* @__PURE__ */ Schema.Literals([
 export type GitActionProgressKind = typeof GitActionProgressKind.Type;
 export const GitActionProgressStream = Schema.Literals(["stdout", "stderr"]);
 export type GitActionProgressStream = typeof GitActionProgressStream.Type;
-const GitCommitStepStatus = Schema.Literals(["created", "skipped_no_changes"]);
+const GitCommitStepStatus = Schema.Literals(["created", "skipped_no_changes", "context_changed"]);
 const GitPushStepStatus = Schema.Literals([
   "pushed",
   "skipped_not_requested",
@@ -39,6 +39,8 @@ const GitPreparePullRequestThreadMode = Schema.Literals(["local", "worktree"]);
 
 export const GitStatusInput = Schema.Struct({
   cwd: FilesystemPath,
+  /** false skips the stale-upstream fetch; passive callers such as sidebar rows read local state. */
+  includeRemote: Schema.optionalKey(Schema.Boolean),
 });
 export type GitStatusInput = typeof GitStatusInput.Type;
 
@@ -99,6 +101,8 @@ export const GitPreparePullRequestThreadInput = Schema.Struct({
   reference: GitPullRequestReference,
   mode: GitPreparePullRequestThreadMode,
   expectedHeadOid: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** `false` skips the project's setup script in a new worktree. Defaults to running it. */
+  runSetupScript: Schema.optional(Schema.Boolean),
 });
 export type GitPreparePullRequestThreadInput = typeof GitPreparePullRequestThreadInput.Type;
 
@@ -146,6 +150,7 @@ export const GitRunStackedActionResult = Schema.Struct({
     status: GitCommitStepStatus,
     commitSha: Schema.optional(TrimmedNonEmptyStringSchema),
     subject: Schema.optional(TrimmedNonEmptyStringSchema),
+    suggestedMessage: Schema.optional(Schema.String),
   }),
   push: Schema.Struct({
     status: GitPushStepStatus,

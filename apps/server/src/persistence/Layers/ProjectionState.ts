@@ -21,12 +21,18 @@ const makeProjectionStateRepository = Effect.gen(function* () {
 
   const upsertProjectionStateRows = SqlSchema.void({
     Request: Schema.Array(ProjectionState),
-    execute: (
-      rows,
-    ) => sql`INSERT INTO projection_state ${sql.insert(rows.map((row) => ({ projector: row.projector, last_applied_sequence: row.lastAppliedSequence, updated_at: row.updatedAt })))}
+    execute: (rows) => sql`
+      INSERT INTO projection_state ${sql.insert(
+        rows.map((row) => ({
+          projector: row.projector,
+          last_applied_sequence: row.lastAppliedSequence,
+          updated_at: row.updatedAt,
+        })),
+      )}
       ON CONFLICT (projector) DO UPDATE SET
         last_applied_sequence = excluded.last_applied_sequence,
-        updated_at = excluded.updated_at`,
+        updated_at = excluded.updated_at
+    `,
   });
 
   const getProjectionStateRow = SqlSchema.findOneOption({

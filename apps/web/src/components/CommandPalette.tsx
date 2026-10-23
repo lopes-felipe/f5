@@ -1,6 +1,13 @@
 "use client";
 
 import { openProjectCloneDialog } from "./ProjectCloneController";
+import {
+  copyPromptLink,
+  promptLinkFor,
+  promptLinkRepositoryOf,
+} from "./promptLinks/copyPromptLink";
+import { useComposerDraftStore } from "../composerDraftStore";
+import { openProjectCreateNewDialog } from "./ProjectCreateNewController";
 import { useTheme } from "../hooks/useTheme";
 import { getAvailableThemePalettes } from "../themePalette";
 
@@ -25,10 +32,12 @@ import {
   FolderPlusIcon,
   HomeIcon,
   KeyboardIcon,
+  LinkIcon,
   ListOrderedIcon,
   MessageSquareIcon,
   PauseCircleIcon,
   RocketIcon,
+  RotateCcwIcon,
   SearchIcon,
   SettingsIcon,
   SquarePenIcon,
@@ -41,15 +50,17 @@ import {
   useDeferredValue,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type KeyboardEvent,
   type ReactNode,
 } from "react";
+import type { LegendListRef } from "@legendapp/list/react";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { useShortcutsDialogStore } from "../shortcutsDialogStore";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useOpenGlobalSearchResult } from "../hooks/useOpenGlobalSearchResult";
-import { useAppSettings } from "../appSettings";
+import { type AppSettings, updateAppSettings, useAppSettingsSelector } from "../appSettings";
 import { ensureNativeApi, readNativeApi } from "../nativeApi";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import {
@@ -83,12 +94,13 @@ import { openFileRightPanelSurface, setSearchParamsForSurface } from "../rightPa
 import { buildGlobalSearchQueryInput, parseGlobalSearchQuery } from "../lib/globalSearchQuery";
 import { formatRelativeTimeLabel } from "../lib/relativeTime";
 import { useStore } from "../store";
-import { liveThreadActivityAt, useThreadSummaries } from "../threadSelectors";
+import { liveThreadActivityAt, selectThreadById, useThreadSummaries } from "../threadSelectors";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { useWorkflowCreateDialogStore } from "../workflowCreateDialogStore";
 import {
   ADDON_ICON_CLASS,
   buildBrowseGroups,
+  buildCommandPaletteRows,
   buildFileSearchActionItems,
   buildProjectActionItems,
   buildRootGroups,
@@ -98,13 +110,14 @@ import {
   type CommandPaletteView,
   filterBrowseEntries,
   filterCommandPaletteGroups,
+  findHighlightedCommandPaletteItem,
   getCommandPaletteInputPlaceholder,
   getCommandPaletteMode,
   ITEM_ICON_CLASS,
   RECENT_THREAD_LIMIT,
 } from "./CommandPalette.logic";
-import { CommandPaletteResults } from "./CommandPaletteResults";
-import { resolveSettingsNavigationSearch } from "./settings/settingsCategories";
+import { CommandPaletteResults, scrollCommandPaletteRowIntoView } from "./CommandPaletteResults";
+import { resolveSettingsNavigationSearch } from "./settings/settingsRouting";
 import { resolvePrimaryNewThreadProjectId } from "./Sidebar.logic";
 import {
   Command,
@@ -121,6 +134,9 @@ import { toastManager } from "./ui/toast";
 import { useNextTurnQueueStore } from "../nextTurnQueueStore";
 import { HighlightedText } from "./HighlightedText";
 import { ProjectIcon } from "./ProjectIcon";
+import { isScratchProject, withoutScratchProjects } from "@t3tools/shared/scratchProject";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
+import { useStartScratchThread } from "../hooks/useStartScratchThread";
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const BROWSE_STALE_TIME_MS = 30_000;
@@ -129,6 +145,24 @@ const CONTENT_SEARCH_DEBOUNCE_MS = 180;
 const FILE_SEARCH_LIMIT = 100;
 
 const ShortcutsDialog = lazy(() => import("./ShortcutsDialog"));
+
+/** Resolves a frame after the palette leaves the DOM, or after `timeoutMs`. */
+function afterPaletteCloses(timeoutMs = 1_000): Promise<void> {
+  const startedAt = performance.now();
+  return new Promise((resolve) => {
+    const check = () => {
+      if (
+        document.querySelector("[data-palette-mode]") === null ||
+        performance.now() - startedAt > timeoutMs
+      ) {
+        requestAnimationFrame(() => resolve());
+        return;
+      }
+      requestAnimationFrame(check);
+    };
+    requestAnimationFrame(check);
+  });
+}
 
 function getLocalFileManagerName(platform: string): string {
   if (isMacPlatform(platform)) {
@@ -141,6 +175,7 @@ function getLocalFileManagerName(platform: string): string {
 }
 
 export function CommandPalette({ children }: { children: ReactNode }) {
+  const navigate = useNavigate();
   const open = useCommandPaletteStore((store) => store.open);
   const setOpen = useCommandPaletteStore((store) => store.setOpen);
   const toggleOpen = useCommandPaletteStore((store) => store.toggleOpen);
@@ -192,13 +227,19 @@ export function CommandPalette({ children }: { children: ReactNode }) {
           event.stopPropagation();
           toggleMode("content");
           return;
+        case "usage.open":
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false);
+          void navigate({ to: "/usage" });
+          return;
         default:
           return;
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [keybindings, setOpen, terminalOpen, toggleMode, toggleOpen, toggleShortcuts]);
+  }, [keybindings, navigate, setOpen, terminalOpen, toggleMode, toggleOpen, toggleShortcuts]);
 
   // Close the palette when this container unmounts (e.g. on route change).
   // Hoisted here so the cleanup fires once at unmount rather than every time
@@ -230,6 +271,13 @@ export function CommandPalette({ children }: { children: ReactNode }) {
       ) : null}
     </>
   );
+}
+
+function selectCommandPaletteSettings(settings: AppSettings) {
+  return {
+    addProjectBaseDirectory: settings.addProjectBaseDirectory,
+    customThemes: settings.customThemes,
+  };
 }
 
 function CommandPaletteDialog() {
@@ -265,15 +313,21 @@ function OpenCommandPaletteDialog(props: {
   const isActionsOnly = searchMode === "all" && deferredQuery.startsWith(">");
   const queryClient = useQueryClient();
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
-  const { settings, updateSettings } = useAppSettings();
+  const resultListRef = useRef<LegendListRef | null>(null);
+  const settings = useAppSettingsSelector(selectCommandPaletteSettings);
   const { theme, setTheme } = useTheme();
   const { activeDraftThread, activeThread, handleNewThread, routeThreadId } = useHandleNewThread();
   const projects = useStore((store) => store.projects);
+  const listedProjects = useMemo(() => withoutScratchProjects(projects), [projects]);
+  const startScratchThread = useStartScratchThread();
   const threads = useThreadSummaries();
   const planningWorkflows = useStore((store) => store.planningWorkflows);
   const codeReviewWorkflows = useStore((store) => store.codeReviewWorkflows);
   const investigationWorkflows = useStore((store) => store.investigationWorkflows);
   const queueSummary = useNextTurnQueueStore((store) => store.summary);
+  const activeSession = useStore((store) =>
+    activeThread ? (selectThreadById(store, activeThread.id)?.session ?? null) : null,
+  );
   const activeQueueSnapshot = useNextTurnQueueStore((store) =>
     activeThread ? (store.byThreadId[activeThread.id]?.snapshot ?? null) : null,
   );
@@ -332,25 +386,28 @@ function OpenCommandPaletteDialog(props: {
         activeDraftProjectId: activeDraftThread?.projectId,
         mostRecentProjectId:
           getMostRecentProject(
-            projects,
+            listedProjects,
             threads,
             planningWorkflows,
             codeReviewWorkflows,
             investigationWorkflows,
           )?.id ?? null,
-        firstProjectId: projects[0]?.id ?? null,
+        firstProjectId: listedProjects[0]?.id ?? null,
       }),
     [
       activeDraftThread?.projectId,
       activeThread?.projectId,
       codeReviewWorkflows,
       investigationWorkflows,
+      listedProjects,
       planningWorkflows,
-      projects,
       threads,
     ],
   );
-  const workflowProjectId = newThreadProjectId;
+  const newThreadProjectIsScratch = isScratchProject(
+    projects.find((project) => project.id === newThreadProjectId),
+  );
+  const workflowProjectId = newThreadProjectIsScratch ? null : newThreadProjectId;
   const [requestedSearchProjectId, setRequestedSearchProjectId] = useState<ProjectId | null>(null);
   const currentProjectCwd = currentProjectId
     ? (projectCwdById.get(currentProjectId) ?? null)
@@ -360,7 +417,7 @@ function OpenCommandPaletteDialog(props: {
       ? projects.find((project) => project.id === requestedSearchProjectId)
       : null) ??
     (currentProjectId ? projects.find((project) => project.id === currentProjectId) : null) ??
-    projects[0] ??
+    listedProjects[0] ??
     null;
   const activeThreadInSearchProject =
     activeThread?.projectId === searchProject?.id ? activeThread : null;
@@ -369,10 +426,10 @@ function OpenCommandPaletteDialog(props: {
   const searchTargetThreadId =
     activeThreadInSearchProject?.id ?? (activeDraftThreadInSearchProject ? routeThreadId : null);
   const searchWorkspaceCwd =
-    activeThreadInSearchProject?.worktreePath ??
-    activeDraftThreadInSearchProject?.worktreePath ??
-    searchProject?.cwd ??
-    null;
+    threadWorkspaceCwd(
+      activeThreadInSearchProject ?? activeDraftThreadInSearchProject,
+      searchProject,
+    ) ?? null;
   const relativePathNeedsActiveProject =
     isExplicitRelativeProjectPath(query.trim()) && currentProjectCwd === null;
   const trimmedQuery = effectiveQuery.trim();
@@ -558,25 +615,37 @@ function OpenCommandPaletteDialog(props: {
   const projectSearchItems = useMemo(
     () =>
       buildProjectActionItems({
-        projects,
+        projects: listedProjects,
         valuePrefix: "project",
         icon: projectIcon,
         runProject: openProjectFromSearch,
       }),
-    [openProjectFromSearch, projectIcon, projects],
+    [listedProjects, openProjectFromSearch, projectIcon],
   );
 
   const projectThreadItems = useMemo(
-    () =>
-      buildProjectActionItems({
-        projects,
+    () => [
+      // First, so it stays in reach however many projects follow.
+      {
+        kind: "action" as const,
+        value: "new-thread-in:no-project",
+        searchTerms: ["no project", "scratch", "without a project"],
+        title: "No project",
+        icon: <FolderIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          await startScratchThread();
+        },
+      },
+      ...buildProjectActionItems({
+        projects: listedProjects,
         valuePrefix: "new-thread-in",
         icon: projectIcon,
         runProject: async (project) => {
           await handleNewThread(project.id);
         },
       }),
-    [handleNewThread, projectIcon, projects],
+    ],
+    [handleNewThread, listedProjects, projectIcon, startScratchThread],
   );
 
   const sortedActiveThreads = useMemo(
@@ -757,6 +826,44 @@ function OpenCommandPaletteDialog(props: {
   }, [clearOpenIntent, openAddProjectFlow, openIntent]);
 
   const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [];
+  if (activeThread)
+    actionItems.push({
+      kind: "action",
+      value: "action:find-thread",
+      searchTerms: ["find", "search", "messages", "plans", "thread"],
+      title: "Find in thread",
+      icon: <SearchIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "chat.find",
+      run: async () => {
+        window.dispatchEvent(new CustomEvent("f5:find-thread", { detail: activeThread.id }));
+      },
+    });
+  // Only an idle process: stopping keeps the conversation, and the next message
+  // resumes it in a fresh process that loads newly added skills, plugins and MCP servers.
+  const restartableSession = activeSession?.status === "ready" ? activeSession : null;
+  if (activeThread && restartableSession)
+    actionItems.push({
+      kind: "action",
+      value: "action:restart-agent-session",
+      searchTerms: ["restart", "agent", "session", "reload", "skills", "plugins", "mcp"],
+      title: "Restart agent session",
+      icon: <RotateCcwIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        const api = ensureNativeApi();
+        await api.orchestration.dispatchCommand({
+          type: "thread.session.stop",
+          commandId: newCommandId(),
+          threadId: activeThread.id,
+          createdAt: new Date().toISOString(),
+        });
+        // Rescan the provider so the composer's skill menus update right away.
+        await api.server.refreshProviders(
+          restartableSession.providerInstanceId
+            ? { instanceId: restartableSession.providerInstanceId }
+            : undefined,
+        );
+      },
+    });
 
   if (projects.length > 0) {
     const activeProjectTitle = newThreadProjectId
@@ -771,7 +878,9 @@ function OpenCommandPaletteDialog(props: {
         kind: "action",
         value: "action:new-thread",
         searchTerms: ["new thread", "chat", "create", "draft"],
-        title: (
+        title: newThreadProjectIsScratch ? (
+          "New thread without a project"
+        ) : (
           <>
             New thread in <span className="font-semibold">{activeProjectTitle}</span>
           </>
@@ -829,6 +938,44 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
+  if (!newThreadProjectIsScratch)
+    actionItems.push({
+      kind: "action",
+      value: "action:new-scratch-thread",
+      searchTerms: ["new thread", "no project", "without a project", "scratch"],
+      title: "New thread without a project",
+      icon: <SquarePenIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "chat.newScratch",
+      run: async () => {
+        await startScratchThread();
+      },
+    });
+
+  if (routeThreadId)
+    actionItems.push({
+      kind: "action",
+      value: "action:copy-prompt-link",
+      searchTerms: ["copy", "prompt", "link", "share", "url"],
+      title: "Copy prompt link",
+      icon: <LinkIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        const prompt =
+          useComposerDraftStore.getState().draftsByThreadId[routeThreadId]?.prompt ?? "";
+        const project = projects.find((entry) => entry.id === currentProjectId);
+        const cwd = isScratchProject(project)
+          ? null
+          : threadWorkspaceCwd(activeThread ?? activeDraftThread, project);
+        const status = cwd
+          ? await ensureNativeApi()
+              .git.status({ cwd, includeRemote: false })
+              .catch(() => null)
+          : null;
+        await copyPromptLink(
+          promptLinkFor(prompt, { repository: promptLinkRepositoryOf(status?.sourceControl) }),
+        );
+      },
+    });
+
   actionItems.push({
     kind: "action",
     value: "action:add-project",
@@ -849,6 +996,17 @@ function OpenCommandPaletteDialog(props: {
     icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
       openProjectCloneDialog(currentProjectCwd ?? "");
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:new-project",
+    title: "New project",
+    searchTerms: ["new project", "create project", "empty", "repository", "git init"],
+    icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      openProjectCreateNewDialog();
     },
   });
 
@@ -892,8 +1050,16 @@ function OpenCommandPaletteDialog(props: {
         icon: <ListOrderedIcon className={ITEM_ICON_CLASS} />,
         run: async () => {
           const panel = document.getElementById("next-turn-queue-panel");
-          panel?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-          panel?.focus();
+          if (!panel) {
+            // The compact chat layout keeps the queue behind a status chip.
+            // Open it once the palette has closed and restored focus, so that
+            // restore does not dismiss the popover.
+            await afterPaletteCloses();
+            document.querySelector<HTMLElement>('[data-status-chip="queue"]')?.click();
+            return;
+          }
+          panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          panel.focus();
         },
       },
     );
@@ -982,6 +1148,7 @@ function OpenCommandPaletteDialog(props: {
       value: "action:usage",
       title: "Open Usage",
       searchTerms: ["usage", "cost", "tokens", "limits"],
+      shortcutCommand: "usage.open",
       icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         await navigate({ to: "/usage" });
@@ -1044,7 +1211,7 @@ function OpenCommandPaletteDialog(props: {
             </span>
           ),
           run: async () => {
-            updateSettings({ themeId: palette.id });
+            updateAppSettings({ themeId: palette.id });
           },
         })),
       },
@@ -1214,6 +1381,7 @@ function OpenCommandPaletteDialog(props: {
   if (isBrowsing) {
     displayedGroups = relativePathNeedsActiveProject ? [] : browseGroups;
   }
+  const resultRows = buildCommandPaletteRows(displayedGroups);
 
   const inputPlaceholder =
     searchMode === "files"
@@ -1260,6 +1428,28 @@ function OpenCommandPaletteDialog(props: {
     if (event.key === "Backspace" && query === "" && isSubmenu) {
       event.preventDefault();
       popView();
+      return;
+    }
+
+    // Base UI clicks the highlighted row on Enter, which does nothing once the
+    // virtualized list has unmounted it, so run the tracked highlight directly.
+    // Modified Enter keeps its own meaning (the browse submit above).
+    if (
+      event.key === "Enter" &&
+      !(event.ctrlKey || event.shiftKey || event.altKey || event.metaKey) &&
+      !event.nativeEvent.isComposing &&
+      event.keyCode !== 229
+    ) {
+      const highlightedItem = findHighlightedCommandPaletteItem(
+        displayedGroups,
+        highlightedItemValue,
+      );
+      if (highlightedItem) {
+        (event as typeof event & { preventBaseUIHandler?: () => void }).preventBaseUIHandler?.();
+        event.preventDefault();
+        event.stopPropagation();
+        executeItem(highlightedItem);
+      }
     }
   }
 
@@ -1316,8 +1506,14 @@ function OpenCommandPaletteDialog(props: {
         aria-label="Command palette"
         autoHighlight={isBrowsing ? false : "always"}
         mode="none"
-        onItemHighlighted={(value) => {
+        items={resultRows.itemValues}
+        virtualized
+        onItemHighlighted={(value, eventDetails) => {
           setHighlightedItemValue(typeof value === "string" ? value : null);
+          const rowIndex = resultRows.rowIndexByItemIndex[eventDetails.index];
+          if (eventDetails.reason === "keyboard" && rowIndex !== undefined) {
+            scrollCommandPaletteRowIntoView(resultListRef.current, rowIndex);
+          }
         }}
         onValueChange={handleQueryChange}
         value={query}
@@ -1384,7 +1580,8 @@ function OpenCommandPaletteDialog(props: {
         </div>
         <CommandPanel className="max-h-[min(28rem,70vh)]">
           <CommandPaletteResults
-            groups={displayedGroups}
+            rows={resultRows.rows}
+            listRef={resultListRef}
             highlightedItemValue={highlightedItemValue}
             isActionsOnly={isActionsOnly}
             keybindings={keybindings}
@@ -1490,7 +1687,10 @@ function OpenCommandPaletteDialog(props: {
                   <SelectValue>{searchProject.name}</SelectValue>
                 </SelectTrigger>
                 <SelectPopup align="end">
-                  {projects.map((project) => (
+                  {(isScratchProject(searchProject)
+                    ? [searchProject, ...listedProjects]
+                    : listedProjects
+                  ).map((project) => (
                     <SelectItem key={project.id} value={project.id}>
                       {project.name}
                     </SelectItem>

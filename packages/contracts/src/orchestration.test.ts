@@ -1017,3 +1017,45 @@ it.effect("preserves proposed plan implementation metadata when present", () =>
     assert.strictEqual(parsed.implementationThreadId, "thread-2");
   }),
 );
+
+it("keeps buffered native continuation identities internal to server queue commands", () => {
+  const command = {
+    type: "thread.turn.start",
+    commandId: "native-wake",
+    threadId: "thread",
+    message: {
+      messageId: "native-wake",
+      role: "user",
+      text: "Continue native work",
+      attachments: [],
+    },
+    provider: "pi",
+    model: "default",
+    runtimeMode: "approval-required",
+    interactionMode: "default",
+    presentation: "continuation",
+    continuationRequestId: "native-wake",
+    createdAt: "2026-10-19T00:00:00.000Z",
+  };
+  assert.equal(
+    Schema.decodeUnknownSync(ThreadTurnStartCommand)(command).continuationRequestId,
+    "native-wake",
+  );
+  assert.throws(() => Schema.decodeUnknownSync(ClientOrchestrationCommand)(command));
+  const { continuationRequestId: _internal, ...client } = command;
+  assert.doesNotThrow(() => Schema.decodeUnknownSync(ClientOrchestrationCommand)(client));
+});
+
+it("rejects client commands that try to reconcile native provider history", () => {
+  assert.throws(() =>
+    Schema.decodeUnknownSync(ClientOrchestrationCommand)({
+      type: "thread.native-history.reconcile",
+      commandId: "native-reconcile",
+      threadId: "thread",
+      providerInstanceId: "pi",
+      expectedTurnId: "native-turn",
+      removedTurnIds: ["old-turn"],
+      createdAt: "2026-10-19T00:00:00.000Z",
+    }),
+  );
+});

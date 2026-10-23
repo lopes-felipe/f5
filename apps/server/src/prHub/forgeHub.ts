@@ -29,6 +29,7 @@ import {
   forgeReviewThreads,
   forgeComparison,
   forgeUserMatches,
+  forgeComments,
   record,
   text,
   login,
@@ -345,6 +346,8 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
               return {
                 ...cached.detail,
                 stale: true,
+                readErrorKind: read.failure.kind === "rate_limited" ? "rate_limited" : "failed",
+                ...(read.failure.rateLimit ? { rateLimit: read.failure.rateLimit } : {}),
                 warning: "Forge refresh failed; showing the last verified detail.",
               };
             return yield* read.failure;
@@ -497,13 +500,7 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
               };
             return yield* read.failure;
           }
-          const comments = read.success.flatMap((value) =>
-            Array.isArray(value.notes)
-              ? value.notes.map(record)
-              : Array.isArray(value.comments)
-                ? value.comments.map(record)
-                : [value],
-          );
+          const comments = forgeComments(read.success);
           const entries: PrHubTimelinePage["entries"] = comments
             .filter((comment) => comment.system !== true)
             .map((comment) => ({
@@ -535,7 +532,9 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
               reviewState: null,
               viewerCanUpdate:
                 provider.forgeCapabilities.edit.comment &&
-                forgeUserMatches(comment.author ?? comment.user, account) &&
+                (typeof comment.canEdit === "boolean"
+                  ? comment.canEdit
+                  : forgeUserMatches(comment.author ?? comment.user, account)) &&
                 !(account.provider === "forgejo" && nativeCommentIsInline(comment)) &&
                 (typeof comment.id === "number" || typeof comment.id === "string"),
               reactions: [],

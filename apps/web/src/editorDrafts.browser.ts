@@ -45,6 +45,25 @@ it("an old save advances the base without clearing newer text; a late old write 
   expect(await editorDrafts.list(saved.fileKey)).toHaveLength(1);
 });
 
+it("reopens storage after the browser closes the database connection", async () => {
+  const record = draft("closed-connection", 1, "saved after reopen");
+  await editorDrafts.list(record.fileKey);
+  const original = IDBDatabase.prototype.transaction;
+  // Chromium keeps throwing on a connection it closed, e.g. after evicting site storage.
+  let closed: IDBDatabase | undefined;
+  IDBDatabase.prototype.transaction = function (this: IDBDatabase, ...args) {
+    closed ??= this;
+    if (this === closed)
+      throw new DOMException("The database connection is closing.", "InvalidStateError");
+    return original.apply(this, args);
+  } as IDBDatabase["transaction"];
+  try {
+    await editorDrafts.put(record);
+    expect(await editorDrafts.list(record.fileKey, true)).toEqual([record]);
+  } finally {
+    IDBDatabase.prototype.transaction = original;
+  }
+});
 it("retains a memory recovery branch when IndexedDB transactions fail", async () => {
   const record = draft("storage-failure", 1, "keep this text");
   // Ensure the database has opened before making its transaction layer fail.

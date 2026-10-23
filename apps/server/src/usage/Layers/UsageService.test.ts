@@ -9,9 +9,11 @@ import { planUsageBuckets } from "../usageBuckets.ts";
 import {
   aggregateUsageMetrics,
   aggregateUsageScope,
+  applyModelAliases,
   buildUsageProjectScope,
   buildUsageSummary,
   previousUsageWindow,
+  resolveModelAliases,
 } from "../usageSummary.ts";
 import { resolveUsageRangeWindow } from "./UsageService.ts";
 
@@ -331,6 +333,59 @@ it("prices only unreported costs, honors zero, and inherits blank cache rates", 
   assert.equal(summary.metrics.providerReportedCostUsd, 0);
   assert.equal(summary.metrics.pricedTurnCount, 2);
   assert.equal(summary.metrics.unpricedTurnCount, 1);
+});
+
+describe("model aliases", () => {
+  it("follows chains to the final target and leaves loops and self-maps unmapped", () => {
+    assert.deepEqual(
+      [...resolveModelAliases({ a: "b", b: "c", loop1: "loop2", loop2: "loop1", self: "self" })],
+      [
+        ["a", "c"],
+        ["b", "c"],
+      ],
+    );
+  });
+
+  it("reports and prices a mapped model as its target", () => {
+    const plan = planUsageBuckets({
+      range: "24h",
+      timeZone: "UTC",
+      now: new Date("2026-10-02T12:00:00Z"),
+    });
+    const bucketKey = "2026-10-02T12:00:00.000Z";
+    const summary = buildUsageSummary({
+      request: { range: "24h", timeZone: "UTC" },
+      now: new Date("2026-10-02T12:00:00Z"),
+      coverageStartedAt: "2026-10-01T00:00:00Z",
+      plan,
+      priceOverrides: [
+        {
+          provider: "codex",
+          model: "gpt-5.6",
+          inputUsdPerMillion: 1,
+          outputUsdPerMillion: 0,
+          cacheReadUsdPerMillion: 0,
+          cacheWriteUsdPerMillion: null,
+        },
+      ],
+      rows: applyModelAliases(
+        [
+          row({ bucketKey, model: "gpt-5.6", inputTokens: 1_000_000, cacheReadTokens: 0 }),
+          row({ bucketKey, model: "gpt-5.6-preview", inputTokens: 2_000_000, cacheReadTokens: 0 }),
+          row({ bucketKey, model: null }),
+        ],
+        resolveModelAliases({ "gpt-5.6-preview": "gpt-5.6" }),
+      ),
+    });
+    assert.deepEqual(
+      summary.byProvider.map((entry) => [entry.model, entry.metrics.turnCount]),
+      [
+        ["gpt-5.6", 2],
+        [null, 1],
+      ],
+    );
+    assert.equal(summary.metrics.estimatedCostUsd, 3);
+  });
 });
 
 describe("project and thread scope", () => {

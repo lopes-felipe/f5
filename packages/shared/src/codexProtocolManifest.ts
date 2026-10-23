@@ -282,6 +282,8 @@ export const CODEX_CLIENT_REQUEST_METHODS = [
   ["config/mcpServer/reload"],
   ["mcpServer/oauth/login"],
   ["mcpServerStatus/list"],
+  ["mcpServer/resource/read"],
+  ["mcpServer/tool/call"],
   // Read-only instance inventory (Release 2).
   ["hooks/list"],
   ["plugin/list"],

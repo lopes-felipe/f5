@@ -37,6 +37,20 @@ describe("worktree porcelain -z", () => {
     ]);
     expect(parseWorktreeListPorcelain("")).toEqual([]);
   });
+  it("decodes older line-form quoted paths without trimming literal whitespace", () => {
+    const entries = parseWorktreeListPorcelain(
+      'worktree /repo \nHEAD abc\nbranch refs/heads/main\n\nworktree "/caf\\303\\251/tab\\tline\\n \"\nHEAD def\ndetached\nlocked waiting for backup \n\n',
+      "line",
+    );
+    expect(entries).toMatchObject([
+      { path: "/repo ", branch: "main", isMain: true },
+      { path: "/café/tab\tline\n ", detached: true, locked: "waiting for backup ", isMain: false },
+    ]);
+    expect(parseWorktreeListPorcelain("worktree /literal\\name \n\n", "line")[0]?.path).toBe(
+      "/literal\\name ",
+    );
+  });
+
   it("strips exactly one output terminator", () => {
     expect(stripPathTerminator("/repo \n\n")).toBe("/repo \n");
     expect(stripPathTerminator("/repo ")).toBe("/repo ");

@@ -2,7 +2,9 @@ import { KeybindingCommand, KeybindingRule, KeybindingsConfig } from "@t3tools/c
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { assertFailure } from "@effect/vitest/utils";
-import { Effect, FileSystem, Layer, Path, PlatformError, Schema } from "effect";
+import { Effect, Fiber, FileSystem, Layer, Path, PlatformError, Schema, Stream } from "effect";
+import * as TestClock from "effect/testing/TestClock";
+import { writeFileStringAtomically } from "./atomicWrite.ts";
 import { ServerConfig, type ServerConfigShape } from "./config";
 
 import {
@@ -54,6 +56,39 @@ const readKeybindingsConfig = (configPath: string) =>
   });
 
 it.layer(NodeServices.layer)("keybindings", (it) => {
+  it.effect(
+    "preserves linked keybindings and observes an external save immediately after a self-write",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const config = yield* ServerConfig;
+        const service = yield* Keybindings;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "f5-keybindings-dotfiles-" });
+        const destination = path.join(directory, "keybindings.json");
+        yield* fs.writeFileString(destination, "[]");
+        yield* fs.symlink(destination, config.keybindingsConfigPath);
+        yield* service.start;
+        const changes = yield* Stream.runCollect(service.streamChanges.pipe(Stream.take(2))).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        const local: KeybindingRule = { key: "mod+shift+9", command: "terminal.split" };
+        yield* service.upsertKeybindingRule(local);
+        const external: KeybindingRule = { key: "mod+shift+8", command: "terminal.split" };
+        yield* writeFileStringAtomically({
+          filePath: destination,
+          contents: JSON.stringify([external]),
+        });
+        const observed = yield* Fiber.join(changes).pipe(Effect.timeout("2 seconds"));
+        assert.deepEqual(
+          observed.map((event) => event.customKeybindings),
+          [[local], [external]],
+        );
+        assert.equal(yield* fs.readLink(config.keybindingsConfigPath), destination);
+        assert.deepEqual((yield* service.getSnapshot).customKeybindings, [external]);
+      }).pipe(Effect.scoped, TestClock.withLive, Effect.provide(makeKeybindingsLayer())),
+  );
+
   it.effect("parses shortcuts including plus key", () =>
     Effect.sync(() => {
       assert.deepEqual(parseKeybindingShortcut("mod+j"), {

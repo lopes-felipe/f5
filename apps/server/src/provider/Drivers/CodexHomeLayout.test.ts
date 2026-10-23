@@ -223,6 +223,34 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
       }),
     );
 
+    it.effect.skipIf(process.platform === "win32")(
+      "replaces Codex-created local runtime locks with the shared ones",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");
+          const shadowHome = path.join(shadowRoot, "shadow");
+          yield* writeTextFile(path.join(sharedHome, ".sqlite-maintenance.lock"), "");
+          yield* fileSystem.makeDirectory(path.join(sharedHome, "mcp-oauth-locks"));
+          yield* writeTextFile(path.join(shadowHome, ".sqlite-maintenance.lock"), "");
+          yield* writeTextFile(path.join(shadowHome, "mcp-oauth-locks", "server.lock"), "");
+
+          const layout = yield* resolveCodexHomeLayout(
+            decodeCodexSettings({ homePath: sharedHome, shadowHomePath: shadowHome }),
+          );
+          yield* materializeCodexShadowHome(layout);
+
+          expect(
+            yield* fileSystem.readLink(path.join(shadowHome, ".sqlite-maintenance.lock")),
+          ).toBe(path.join(sharedHome, ".sqlite-maintenance.lock"));
+          expect(yield* fileSystem.readLink(path.join(shadowHome, "mcp-oauth-locks"))).toBe(
+            path.join(sharedHome, "mcp-oauth-locks"),
+          );
+        }),
+    );
+
     it.effect("refreshes an F5-managed cross-volume copy on later materializations", () =>
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;

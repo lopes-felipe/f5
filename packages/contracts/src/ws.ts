@@ -1,3 +1,5 @@
+import { PR_WATCH_CHANGED_CHANNEL, PullRequestWatchChanged } from "./pullRequestWatch";
+import { HTML_RENDER_REQUEST_CHANNEL, HtmlPreviewHostRequest } from "./threadTools";
 import { Schema } from "effect";
 import {
   FilesystemPath,
@@ -59,6 +61,8 @@ export const WS_CHANNELS = {
   previewEvent: "preview.event",
   previewLocalServersUpdated: "preview.localServersUpdated",
   previewAutomationRequest: "preview.automation.request",
+  htmlRenderRequest: HTML_RENDER_REQUEST_CHANNEL,
+  pullRequestWatchesChanged: PR_WATCH_CHANGED_CHANNEL,
   previewAutomationOwnerRequested: "preview.automation.ownerRequested",
   previewAutomationOwnerReleased: "preview.automation.ownerReleased",
   previewAutomationPauseChanged: "preview.automation.pauseChanged",
@@ -113,6 +117,7 @@ export const WsWelcomePayload = Schema.Struct({
 export type WsWelcomePayload = typeof WsWelcomePayload.Type;
 
 export interface WsPushPayloadByChannel {
+  readonly [PR_WATCH_CHANGED_CHANNEL]: typeof PullRequestWatchChanged.Type;
   readonly [WS_CHANNELS.profilesUpdated]: typeof ProfileListResult.Type;
   readonly [WS_CHANNELS.providerAccountEvent]: typeof ProviderAccountEvent.Type;
   readonly [AGENTS_WS_CHANNELS.snapshotUpdated]: typeof AgentsSnapshot.Type;
@@ -126,6 +131,7 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.terminalEvent]: typeof TerminalEvent.Type;
   readonly [WS_CHANNELS.previewEvent]: PreviewEvent;
   readonly [WS_CHANNELS.previewLocalServersUpdated]: DiscoveredLocalServerList;
+  readonly [WS_CHANNELS.htmlRenderRequest]: typeof HtmlPreviewHostRequest.Type;
   readonly [WS_CHANNELS.previewAutomationRequest]: typeof PreviewAutomationRequest.Type;
   readonly [WS_CHANNELS.previewAutomationOwnerRequested]: typeof PreviewAutomationOwnerRequested.Type;
   readonly [WS_CHANNELS.previewAutomationOwnerReleased]: typeof PreviewAutomationOwnerReleased.Type;
@@ -205,6 +211,14 @@ export const WsPushPreviewEvent = makeWsPushSchema(WS_CHANNELS.previewEvent, Pre
 export const WsPushPreviewLocalServersUpdated = makeWsPushSchema(
   WS_CHANNELS.previewLocalServersUpdated,
   DiscoveredLocalServerList,
+);
+export const WsPushPullRequestWatchesChanged = makeWsPushSchema(
+  PR_WATCH_CHANGED_CHANNEL,
+  PullRequestWatchChanged,
+);
+export const WsPushHtmlRenderRequest = makeWsPushSchema(
+  WS_CHANNELS.htmlRenderRequest,
+  HtmlPreviewHostRequest,
 );
 export const WsPushPreviewAutomationRequest = makeWsPushSchema(
   WS_CHANNELS.previewAutomationRequest,
@@ -347,6 +361,8 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.previewEvent,
   WS_CHANNELS.previewLocalServersUpdated,
   WS_CHANNELS.previewAutomationRequest,
+  WS_CHANNELS.htmlRenderRequest,
+  PR_WATCH_CHANGED_CHANNEL,
   WS_CHANNELS.previewAutomationOwnerRequested,
   WS_CHANNELS.previewAutomationOwnerReleased,
   WS_CHANNELS.previewAutomationPauseChanged,
@@ -385,6 +401,8 @@ export const WsPush = Schema.Union([
   WsPushPreviewEvent,
   WsPushPreviewLocalServersUpdated,
   WsPushPreviewAutomationRequest,
+  WsPushHtmlRenderRequest,
+  WsPushPullRequestWatchesChanged,
   WsPushPreviewAutomationOwnerRequested,
   WsPushPreviewAutomationOwnerReleased,
   WsPushPreviewAutomationPauseChanged,

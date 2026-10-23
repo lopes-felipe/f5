@@ -1,3 +1,4 @@
+import { writePullRequestReferenceDrag } from "../lib/pullRequestReference";
 import { waitForTimelineLayout } from "../test/timeline";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { resetProtocolStateForTests, setServerBootstrap } from "../protocolState";
@@ -75,6 +76,79 @@ import { requestComposerFocus, useComposerFocusRequestStore } from "../composerF
 vi.mock("./DiffWorkerPoolProvider", () => ({
   DiffWorkerPoolProvider: ({ children }: { children?: ReactNode }) => children ?? null,
 }));
+
+// Counts commits inside the timeline and composer subtrees for the render isolation tests.
+// The timeline wrapper is memoized like the real component, so it renders exactly when the
+// real one would; the composer wrapper is not, because the real composer is not memoized.
+const renderCommits = vi.hoisted(() => ({ timeline: 0, composer: 0 }));
+
+vi.mock("./chat/MessagesTimeline", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./chat/MessagesTimeline")>();
+  const { Profiler, createElement, memo } = await import("react");
+  const Timeline = actual.MessagesTimeline;
+  const ProfiledTimeline = memo(function ProfiledMessagesTimeline(
+    props: Parameters<typeof Timeline>[0],
+  ) {
+    return createElement(
+      Profiler,
+      {
+        id: "timeline",
+        onRender: () => {
+          renderCommits.timeline += 1;
+        },
+      },
+      createElement(Timeline, props),
+    );
+  });
+  return { ...actual, MessagesTimeline: ProfiledTimeline };
+});
+
+vi.mock("./chat/composer/ChatComposer", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./chat/composer/ChatComposer")>();
+  const { Profiler, createElement } = await import("react");
+  const Composer = actual.ChatComposer;
+  function ProfiledChatComposer(props: Parameters<typeof Composer>[0]) {
+    return createElement(
+      Profiler,
+      {
+        id: "composer",
+        onRender: () => {
+          renderCommits.composer += 1;
+        },
+      },
+      createElement(Composer, props),
+    );
+  }
+  return { ...actual, ChatComposer: ProfiledChatComposer };
+});
+
+const sidebarRenders = vi.hoisted(() => ({ count: 0 }));
+
+vi.mock("./Sidebar", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./Sidebar")>();
+  const { createElement } = await import("react");
+  const Sidebar = actual.default;
+  function CountedSidebar() {
+    sidebarRenders.count += 1;
+    return createElement(Sidebar);
+  }
+  return { ...actual, default: CountedSidebar };
+});
+
+// Counts renders of the right panel tab strip, not of the surface below it. The strip renders
+// the tab menu on every render, so the unmemoized menu stands in for the strip.
+const tabStripRenders = vi.hoisted(() => ({ count: 0 }));
+
+vi.mock("./RightPanelTabMenu", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./RightPanelTabMenu")>();
+  const { createElement } = await import("react");
+  const Menu = actual.RightPanelTabMenu;
+  function CountedRightPanelTabMenu(props: Parameters<typeof Menu>[0]) {
+    tabStripRenders.count += 1;
+    return createElement(Menu, props);
+  }
+  return { ...actual, RightPanelTabMenu: CountedRightPanelTabMenu };
+});
 
 const redesignBootstrapFixture = {
   ...baseServerBootstrapFixture,
@@ -1990,6 +2064,158 @@ async function mountChatView(options: {
 }
 
 describe("ChatView timeline (full app)", () => {
+  it.each(["message", "plan"] as const)(
+    "finds and reveals an unloaded older %s without changing the draft or sending",
+    async (kind) => {
+      const snapshot = createSnapshotForTargetUser({
+        targetMessageId: "find-current" as MessageId,
+        targetText: "Current conversation",
+        fillerPairCount: 25,
+        targetPairIndex: 24,
+      });
+      const oldMessage = {
+        ...snapshot.threads[0]!.messages[0]!,
+        id: "find-unloaded" as MessageId,
+        turnId: null,
+        text: "Needle in older history",
+        createdAt: "2025-01-01T00:00:00.000Z",
+        updatedAt: "2025-01-01T00:00:00.000Z",
+      };
+      const plan = {
+        id: "find-unloaded-plan",
+        turnId: null,
+        planMarkdown:
+          "# An older plan\n\n" +
+          "Other plan paragraph.\n\n".repeat(40) +
+          "Needle near the end of the expanded plan.",
+        implementedAt: null,
+        implementationThreadId: null,
+        createdAt: "2025-02-01T00:00:00.000Z",
+        updatedAt: "2025-02-01T00:00:00.000Z",
+      };
+      const requests: string[] = [];
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Keep this draft");
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot,
+        configureFixture: (next) => {
+          next.serverConfig = {
+            ...next.serverConfig,
+            keybindings: [createModKeybinding("chat.find", "f")],
+          };
+          next.resolveWsRequest = (body) => {
+            requests.push(body._tag);
+            if (body._tag === ORCHESTRATION_WS_METHODS.searchThread)
+              return {
+                type: "result",
+                result: {
+                  totalMatches: 1,
+                  activeIndex: 0,
+                  match: {
+                    entryId: kind === "message" ? oldMessage.id : plan.id,
+                    kind,
+                    occurrence: 0,
+                    snippet: "Needle",
+                    ...(kind === "plan" ? { plan } : {}),
+                  },
+                },
+              };
+            if (body._tag === ORCHESTRATION_WS_METHODS.getThreadHistoryPage)
+              return {
+                type: "result",
+                result: {
+                  threadId: THREAD_ID,
+                  messages: [oldMessage],
+                  checkpoints: [],
+                  activities: [],
+                  commandExecutions: [],
+                  hasOlderMessages: false,
+                  hasNewerMessages: true,
+                  hasOlderCheckpoints: false,
+                  hasOlderActivities: false,
+                  hasOlderCommandExecutions: false,
+                  oldestLoadedMessageCursor: {
+                    createdAt: oldMessage.createdAt,
+                    messageId: oldMessage.id,
+                  },
+                  newestLoadedMessageCursor: {
+                    createdAt: oldMessage.createdAt,
+                    messageId: oldMessage.id,
+                  },
+                  oldestLoadedCheckpointTurnCount: null,
+                  oldestLoadedActivityCursor: null,
+                  oldestLoadedCommandExecutionCursor: null,
+                  detailSequence: 1,
+                },
+              };
+            return null;
+          };
+        },
+      });
+      try {
+        const editor = await waitForComposerEditor();
+        for (const scope of ["terminal", "preview"]) {
+          const pane = document.createElement("div");
+          const input = document.createElement("textarea");
+          if (scope === "terminal") input.className = "xterm-helper-textarea";
+          else pane.dataset.findScope = "preview";
+          pane.append(input);
+          document.body.append(pane);
+          input.focus();
+          const key = new KeyboardEvent("keydown", {
+            key: "f",
+            metaKey: /Mac/.test(navigator.platform),
+            ctrlKey: !/Mac/.test(navigator.platform),
+            bubbles: true,
+            cancelable: true,
+          });
+          input.dispatchEvent(key);
+          expect(key.defaultPrevented).toBe(false);
+          expect(document.querySelector('input[aria-label="Find in thread"]')).toBeNull();
+          pane.remove();
+        }
+        editor.focus();
+        editor.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "f",
+            metaKey: /Mac/.test(navigator.platform),
+            ctrlKey: !/Mac/.test(navigator.platform),
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        await page.getByRole("textbox", { name: "Find in thread" }).fill("Needle");
+        await expect.element(page.getByRole("status").filter({ hasText: "1 of 1" })).toBeVisible();
+        await waitForTimelineRowVisible(
+          `[data-timeline-row-id="${kind === "message" ? oldMessage.id : plan.id}"]`,
+          "The search result should be visible in the timeline",
+        );
+        await vi.waitFor(() =>
+          expect([...(CSS.highlights.get("f5-thread-find-active") ?? [])][0]?.toString()).toBe(
+            "Needle",
+          ),
+        );
+        if (kind === "plan") {
+          await expect
+            .element(page.getByText("Needle near the end of the expanded plan.", { exact: true }))
+            .toBeVisible();
+          await expect
+            .element(page.getByRole("button", { name: "Expand plan" }))
+            .not.toBeInTheDocument();
+        }
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+          "Keep this draft",
+        );
+        expect(requests).not.toContain(WS_METHODS.nextTurnQueueSubmit);
+        expect(requests).not.toContain(ORCHESTRATION_WS_METHODS.dispatchCommand);
+        expect(
+          requests.filter((method) => method === ORCHESTRATION_WS_METHODS.getThreadHistoryPage),
+        ).toHaveLength(kind === "message" ? 1 : 0);
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
   beforeAll(async () => {
     fixture = buildFixture(
       createSnapshotForTargetUser({
@@ -2277,8 +2503,12 @@ describe("ChatView timeline (full app)", () => {
           timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight,
         ).toBeLessThanOrEqual(2);
         let previousHeight = form.getBoundingClientRect().height;
+        // Hold time so a slow runner can't finish or skip the expansion before it is seeked.
+        await cdp().send("Animation.enable");
+        await cdp().send("Animation.setPlaybackRate", { playbackRate: 0 });
         editor.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
         await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("false"));
+        await vi.waitFor(() => expect(form.hasAttribute("data-composer-resizing")).toBe(true));
         for (const fraction of [0.05, 0.15, 0.5]) {
           await seekComposerTransitions(form, fraction);
           expect(form.getBoundingClientRect().height).toBeGreaterThan(previousHeight);
@@ -2287,11 +2517,13 @@ describe("ChatView timeline (full app)", () => {
             timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight,
           ).toBeLessThanOrEqual(2);
         }
+        await cdp().send("Animation.setPlaybackRate", { playbackRate: 1 });
         await waitForComposerTransitions(form);
         expect(
           timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight,
         ).toBeLessThanOrEqual(2);
       } finally {
+        await cdp().send("Animation.setPlaybackRate", { playbackRate: 1 });
         await mounted.cleanup();
       }
     });
@@ -2386,6 +2618,8 @@ describe("ChatView timeline (full app)", () => {
     });
 
     it("reserves conversation space with long tasks, a tall draft, and an open terminal", async () => {
+      // Measures the task drawer in the tray, which the compact layout replaces with a chip.
+      persistAppSettings({ compactChatLayout: false });
       useComposerDraftStore.getState().setPrompt(THREAD_ID, "A tall draft line\n".repeat(30));
       useTerminalStateStore.getState().setTerminalHeight(THREAD_ID, 200);
       useTerminalStateStore.getState().setTerminalOpen(THREAD_ID, true);
@@ -2500,6 +2734,30 @@ describe("ChatView timeline (full app)", () => {
       }
     });
 
+    it("points the editor at the highlighted suggestion for screen readers", async () => {
+      const { mounted, editor } = await composerScrollFixture();
+      try {
+        expect(editor.getAttribute("aria-label")).toBe("Message");
+        expect(editor.getAttribute("aria-haspopup")).toBe("listbox");
+        expect(editor.hasAttribute("aria-activedescendant")).toBe(false);
+        await page.elementLocator(editor).fill("/");
+        const list = page.getByRole("listbox", { name: "Commands" });
+        await expect.element(list).toBeVisible();
+        await vi.waitFor(() => {
+          const activeId = editor.getAttribute("aria-activedescendant");
+          expect(editor.getAttribute("aria-controls")).toBe(list.element().id);
+          const option = activeId ? document.getElementById(activeId) : null;
+          expect(option?.getAttribute("role")).toBe("option");
+          expect(option?.getAttribute("aria-selected")).toBe("true");
+          expect(list.element().contains(option)).toBe(true);
+        });
+        await page.elementLocator(editor).fill("");
+        await vi.waitFor(() => expect(editor.hasAttribute("aria-activedescendant")).toBe(false));
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
     it("labels a single hidden attachment and links its expansion control to the tray", async () => {
       const { mounted, form, wheel } = await composerScrollFixture();
       try {
@@ -2605,6 +2863,91 @@ describe("ChatView timeline (full app)", () => {
       }
     });
   });
+
+  it.each(["Changed editor text", ""])(
+    "keeps a provider editor prefill editable and restores the original composer draft: %s",
+    async (answer) => {
+      const snapshot = createSnapshotForTargetUser({
+        targetMessageId: "editor-user" as MessageId,
+        targetText: "Ask me",
+      });
+      const question = createThreadActivity({
+        id: "editor-question",
+        createdAt: isoAt(201),
+        kind: "user-input.requested",
+        summary: "Edit",
+        payload: {
+          requestId: "editor-request",
+          questions: [
+            {
+              id: "editor",
+              header: "Edit",
+              question: "Edit draft",
+              options: [],
+              initialAnswer: "Provider prefilled draft",
+              optional: true,
+            },
+          ],
+        },
+      });
+      const withQuestion = {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) => ({ ...thread, activities: [question] })),
+      };
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: withQuestion,
+        configureFixture: () =>
+          useComposerDraftStore.getState().setPrompt(THREAD_ID, "Keep original composer draft"),
+      });
+      try {
+        const editor = await waitForComposerEditor();
+        await vi.waitFor(() => expect(editor.textContent).toContain("Provider prefilled draft"));
+        expect(
+          wsRequests.some(
+            (request) =>
+              (request.command as { type?: string } | undefined)?.type === "thread.turn.start",
+          ),
+        ).toBe(false);
+        // Clearing can remove a single character when fill's select-all lands before the editor
+        // settles its selection, so fill until the editor holds the answer.
+        await vi.waitFor(async () => {
+          await page.elementLocator(editor).fill(answer);
+          expect(editor.textContent).toBe(answer);
+        });
+        await page.getByRole("button", { name: "Submit answers", exact: true }).click();
+        await vi.waitFor(() =>
+          expect(wsRequests).toContainEqual(
+            expect.objectContaining({
+              command: expect.objectContaining({
+                type: "thread.user-input.respond",
+                answers: { editor: answer },
+              }),
+            }),
+          ),
+        );
+        const resolved = createThreadActivity({
+          id: "editor-resolved",
+          createdAt: isoAt(202),
+          kind: "user-input.resolved",
+          summary: "Answered",
+          payload: { requestId: "editor-request", answers: { editor: answer } },
+        });
+        useStore.getState().syncServerReadModel({
+          ...withQuestion,
+          threads: withQuestion.threads.map((thread) => ({
+            ...thread,
+            activities: [question, resolved],
+          })),
+        });
+        await vi.waitFor(() =>
+          expect(editor.textContent).toContain("Keep original composer draft"),
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
 
   it("submits a form with required free text and an empty optional field", async () => {
     const snapshot = createSnapshotForTargetUser({
@@ -4270,7 +4613,8 @@ describe("ChatView timeline (full app)", () => {
   });
 
   it("renders a collapsible task panel when the thread has tracked tasks", async () => {
-    persistAppSettings({ tasksPanelAutoOpen: true });
+    // The collapsible drawer is the classic layout; the compact one shows a chip.
+    persistAppSettings({ tasksPanelAutoOpen: true, compactChatLayout: false });
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -4417,6 +4761,171 @@ describe("ChatView timeline (full app)", () => {
         },
         { timeout: 8_000, interval: 16 },
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("folds non-critical notices into chips and the runtime row into the header in the compact layout", async () => {
+    persistAppSettings({ compactChatLayout: true });
+    const baseSnapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-compact-target" as MessageId,
+      targetText: "compact target",
+    });
+    const snapshot: OrchestrationReadModel = {
+      ...baseSnapshot,
+      threads: baseSnapshot.threads.map((thread) =>
+        thread.id === THREAD_ID
+          ? {
+              ...thread,
+              session: thread.session
+                ? { ...thread.session, lastError: "Provider crashed during the turn" }
+                : thread.session,
+            }
+          : thread,
+      ),
+    };
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot,
+      configureFixture: (nextFixture) => {
+        nextFixture.resolveWsRequest = (body) =>
+          body._tag === WS_METHODS.storageGetDiskSpace
+            ? {
+                type: "result",
+                result: {
+                  level: "low",
+                  checkedAt: NOW_ISO,
+                  lowThresholdBytes: 10 * 1024 ** 3,
+                  criticalThresholdBytes: 2 * 1024 ** 3,
+                  volumes: [
+                    {
+                      path: "/data",
+                      roles: ["userdata"],
+                      freeBytes: 8 * 1024 ** 3,
+                      totalBytes: 500 * 1024 ** 3,
+                      level: "low",
+                    },
+                  ],
+                  reclaimable: [],
+                },
+              }
+            : null;
+      },
+    });
+
+    try {
+      await vi.waitFor(
+        () => {
+          const strip = document.querySelector<HTMLElement>('[data-slot="composer-status-strip"]');
+          expect(strip?.querySelector('[data-status-chip="low-disk-space"]')).not.toBeNull();
+          // The thread error needs the user, so it stays inline in the tray.
+          const notices = document.querySelector<HTMLElement>(
+            '[data-slot="composer-tray"] [data-slot="thread-notice-stack"]',
+          );
+          expect(notices?.textContent).toContain("Provider crashed during the turn");
+          expect(notices?.textContent).not.toContain("Low disk space");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      await vi.waitFor(() => {
+        const headerControls = document.querySelector<HTMLElement>(
+          '[data-slot="header-runtime-controls"]',
+        );
+        expect(
+          headerControls?.querySelector('[data-slot="native-runtime-controls"]'),
+        ).not.toBeNull();
+        // Only the header copy remains; the separate runtime row is gone.
+        expect(document.querySelectorAll('[data-slot="native-runtime-controls"]')).toHaveLength(1);
+      });
+      await page.getByRole("button", { name: "Runtime details", exact: true }).click();
+      await expect.element(page.getByRole("dialog", { name: "Runtime details" })).toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens the queue chip and focuses its panel from the command palette", async () => {
+    persistAppSettings({ compactChatLayout: true });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-queue-palette" as MessageId,
+        targetText: "queue palette target",
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.resolveWsRequest = (body) =>
+          body._tag === WS_METHODS.nextTurnQueueList
+            ? {
+                type: "result",
+                result: {
+                  threadId: THREAD_ID,
+                  revision: 1,
+                  paused: false,
+                  blockedKind: null,
+                  reasonCode: null,
+                  reasonDetail: null,
+                  maxItems: 20,
+                  quarantinedCount: 0,
+                  items: [
+                    {
+                      itemId: "queue-palette-item",
+                      threadId: THREAD_ID,
+                      submissionId: "queue-palette-submission",
+                      position: 0,
+                      status: "queued",
+                      command: {
+                        type: "thread.turn.start",
+                        commandId: "queue-palette-command",
+                        threadId: THREAD_ID,
+                        message: {
+                          messageId: "queue-palette-message",
+                          role: "user",
+                          text: "Queued from the palette test",
+                          attachments: [],
+                        },
+                        runtimeMode: "full-access",
+                        interactionMode: "default",
+                        createdAt: NOW_ISO,
+                      },
+                      attemptCount: 0,
+                      notBefore: null,
+                      dispatchStartedAt: null,
+                      lastErrorCode: null,
+                      lastErrorDetail: null,
+                      createdAt: NOW_ISO,
+                      updatedAt: NOW_ISO,
+                    },
+                  ],
+                },
+              }
+            : null;
+      },
+    });
+
+    try {
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector('[data-status-chip="queue"]')).not.toBeNull();
+          expect(document.getElementById("next-turn-queue-panel")).toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      useCommandPaletteStore.getState().setOpen(true);
+      await page.getByTestId("command-palette").getByText("Focus queued turns").click();
+
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector('[data-testid="command-palette"]')).toBeNull();
+          expect(document.activeElement?.id).toBe("next-turn-queue-panel");
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+      await expect
+        .element(page.getByText("Queued from the palette test", { exact: true }))
+        .toBeVisible();
     } finally {
       await mounted.cleanup();
     }
@@ -4717,6 +5226,71 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it("steps reasoning effort with custom bindings without sending or changing other traits", async () => {
+    useComposerDraftStore.getState().setPrompt(THREAD_ID, "Keep this draft");
+    useComposerDraftStore
+      .getState()
+      .setModelOptions(THREAD_ID, { codex: { reasoningEffort: "low", fastMode: true } });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-effort-step" as MessageId,
+        targetText: "Effort target",
+      }),
+      configureFixture: (next) => {
+        next.serverConfig = {
+          ...next.serverConfig,
+          keybindings: [
+            createModKeybinding("composer.effortUp", "arrowup"),
+            createModKeybinding("composer.effortDown", "arrowdown"),
+          ],
+        };
+      },
+    });
+    try {
+      const editor = await waitForComposerEditor();
+      await userEvent.click(editor);
+      const useMetaForMod = isMacPlatform(navigator.platform);
+      await userEvent.keyboard(
+        useMetaForMod ? "{Meta>}{ArrowUp}{/Meta}" : "{Control>}{ArrowUp}{/Control}",
+      );
+      await vi.waitFor(() =>
+        expect(
+          useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.modelOptions?.codex,
+        ).toMatchObject({ reasoningEffort: "medium", fastMode: true }),
+      );
+      editor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "ArrowUp",
+          metaKey: useMetaForMod,
+          ctrlKey: !useMetaForMod,
+          repeat: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      expect(
+        useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.modelOptions?.codex
+          ?.reasoningEffort,
+      ).toBe("medium");
+      await userEvent.keyboard(
+        useMetaForMod ? "{Meta>}{ArrowDown}{/Meta}" : "{Control>}{ArrowDown}{/Control}",
+      );
+      await vi.waitFor(() =>
+        expect(
+          useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.modelOptions?.codex
+            ?.reasoningEffort,
+        ).toBe("low"),
+      );
+      expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+        "Keep this draft",
+      );
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("sends an explicit Codex effort for an untouched draft", async () => {
     // The draft stores no effort; the turn must still name the shown one so a
     // session reporting another default cannot substitute it.
@@ -4766,6 +5340,52 @@ describe("ChatView timeline (full app)", () => {
       ).toEqual([]);
       const command = getSubmittedTurnCommand(getDispatchCommandRequests("thread.turn.start")[0]!);
       expect(command?.message?.text).toBe(prompt.trim());
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("drops a linked PR as a context chip and sends only after explicit submission", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-pr-drag" as MessageId,
+        targetText: "PR target",
+      }),
+    });
+    try {
+      const transfer = new DataTransfer();
+      const url = "https://github.com/org/repo/pull/7";
+      const raw = `[PR #7](${url})`;
+      expect(writePullRequestReferenceDrag(transfer, url)).toBe(true);
+      (await waitForComposerShell()).dispatchEvent(
+        new DragEvent("drop", {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: transfer,
+        }),
+      );
+      await vi.waitFor(() => {
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+          `${raw} `,
+        );
+        expect(document.querySelector("[data-composer-pr-reference]")?.textContent).toBe(
+          "org/repo#7",
+        );
+      });
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+      expect(
+        wsRequests.filter((request) => request._tag === WS_METHODS.projectsAuthorizeEntry),
+      ).toEqual([]);
+      (await waitForSendButton()).click();
+      await vi.waitFor(() =>
+        expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(1),
+      );
+      const command = getSubmittedTurnCommand(getDispatchCommandRequests("thread.turn.start")[0]!);
+      expect(command?.message?.text).toBe(raw);
+      expect(
+        wsRequests.filter((request) => request._tag === WS_METHODS.projectsAuthorizeEntry),
+      ).toEqual([]);
     } finally {
       await mounted.cleanup();
     }
@@ -5134,6 +5754,34 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it("searches slash skills mid-message without offering commands or opening on paths", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithCodexRuntimeSkills(),
+    });
+
+    try {
+      const editor = await waitForComposerEditor();
+      await page.elementLocator(editor).fill("Please run /rev");
+      const list = page.getByRole("listbox", { name: "Commands" });
+      await expect.element(list).toBeVisible();
+      await vi.waitFor(() => {
+        const options = [...list.element().querySelectorAll('[role="option"]')].map(
+          (option) => option.textContent ?? "",
+        );
+        expect(options.some((label) => label.includes("review"))).toBe(true);
+        expect(options.some((label) => /\bplan\b|\bmodel\b/i.test(label))).toBe(false);
+      });
+
+      await page.elementLocator(editor).fill("Look in /Users/me/project");
+      await vi.waitFor(() =>
+        expect(document.querySelector("[data-composer-command-drawer]")).toBeNull(),
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("rewrites Codex runtime slash skills to dollar syntax when sending", async () => {
     const typedPrompt = "/review current diff";
 
@@ -5372,6 +6020,43 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it("restarts an idle agent session from the command palette and rescans providers", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-restart-session" as MessageId,
+        targetText: "restart session test",
+      }),
+    });
+    try {
+      useCommandPaletteStore.getState().setOpen(true);
+      const paletteInput = await waitForElement(
+        () => document.querySelector<HTMLInputElement>('[data-testid="command-palette"] input'),
+        "Command palette input should render.",
+      );
+      await page.elementLocator(paletteInput).fill("restart agent");
+      await vi.waitFor(() =>
+        expect(document.querySelector('[data-testid="command-palette"]')?.textContent).toContain(
+          "Restart agent session",
+        ),
+      );
+      await page.getByText("Restart agent session").click();
+      await vi.waitFor(() => {
+        expect(getDispatchCommandRequests("thread.session.stop")).toEqual([
+          expect.objectContaining({
+            command: expect.objectContaining({ type: "thread.session.stop", threadId: THREAD_ID }),
+          }),
+        ]);
+        expect(
+          wsRequests.some((request) => request._tag === WS_METHODS.serverRefreshProviders),
+        ).toBe(true);
+      });
+    } finally {
+      useCommandPaletteStore.getState().setOpen(false);
+      await mounted.cleanup();
+    }
+  });
+
   it("creates a new thread from the global chat.new shortcut", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -5575,6 +6260,8 @@ describe("ChatView timeline (full app)", () => {
         () => document.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]'),
         "Messages scroll container should render before testing scroll shortcuts.",
       );
+      // Scrolling up during the list's initial pin to the end gets undone.
+      await waitForTimelineScrollToSettle();
       scrollContainer.scrollTo({ top: 0, behavior: "auto" });
       scrollContainer.scrollTop = 0;
       scrollContainer.dispatchEvent(new Event("scroll"));
@@ -5866,6 +6553,139 @@ describe("ChatView timeline (full app)", () => {
           await new Promise((resolve) => setTimeout(resolve, 100));
           expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
         }
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it("runs a settled shell block in a fresh terminal rooted at the thread worktree", async () => {
+    const initial = createSnapshotForTargetUser({
+      targetMessageId: "shell-user" as MessageId,
+      targetText: "Show a command",
+      fillerPairCount: 1,
+      targetPairIndex: 0,
+    });
+    const snapshot = {
+      ...initial,
+      threads: initial.threads.map((thread) => ({
+        ...thread,
+        worktreePath: "/repo/worktree",
+        messages: thread.messages.map((message) =>
+          message.role === "assistant"
+            ? { ...message, text: "```bash\necho first\necho second\n```" }
+            : message,
+        ),
+      })),
+    };
+    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+    try {
+      const run = page.getByRole("button", { name: "Run in terminal", exact: true });
+      await expect.element(run).toBeVisible();
+      expect(wsRequests.filter((body) => body._tag === WS_METHODS.terminalWrite)).toHaveLength(0);
+      await run.click();
+      await vi.waitFor(() =>
+        expect(wsRequests.filter((body) => body._tag === WS_METHODS.terminalWrite)).toHaveLength(1),
+      );
+      const write = wsRequests.find((body) => body._tag === WS_METHODS.terminalWrite)!;
+      expect(write).toMatchObject({ threadId: THREAD_ID, data: "echo first\necho second\r" });
+      expect(write.terminalId).toMatch(/^terminal-/);
+      expect(
+        wsRequests.find(
+          (body) => body._tag === WS_METHODS.terminalOpen && body.terminalId === write.terminalId,
+        ),
+      ).toMatchObject({ cwd: "/repo/worktree" });
+      expect(
+        useTerminalStateStore.getState().terminalStateByThreadId[THREAD_ID]?.terminalOpen,
+      ).toBe(true);
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it.each(["accepted", "rejected", "left"])(
+    "send and new waits for durable admission (%s)",
+    async (outcome) => {
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Continue the work");
+      let admit!: (result: WsRequestResolution) => void;
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotForTargetUser({
+          targetMessageId: "send-new-user" as MessageId,
+          targetText: "Previous request",
+          fillerPairCount: 1,
+          targetPairIndex: 0,
+        }),
+        configureFixture: (next) => {
+          const binding = createModKeybinding("chat.sendAndNew", "enter");
+          next.serverConfig = {
+            ...next.serverConfig,
+            keybindings: [{ ...binding, shortcut: { ...binding.shortcut, altKey: true } }],
+          };
+          next.resolveWsRequest = (body) =>
+            body._tag === WS_METHODS.nextTurnQueueSubmit
+              ? new Promise((resolve) => {
+                  admit = resolve;
+                })
+              : null;
+        },
+      });
+      try {
+        const editor = await waitForComposerEditor();
+        editor.focus();
+        editor.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Enter",
+            metaKey: /Mac/.test(navigator.platform),
+            ctrlKey: !/Mac/.test(navigator.platform),
+            altKey: true,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        await vi.waitFor(() =>
+          expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(1),
+        );
+        expect(mounted.router.state.location.pathname).toBe(`/${THREAD_ID}`);
+        const submission = getDispatchCommandRequests("thread.turn.start")[0]!;
+        expect(getSubmittedTurnCommand(submission)?.message?.text).toBe("Continue the work");
+        if (outcome === "left") {
+          await mounted.router.navigate({ to: "/" });
+          admit({
+            type: "result",
+            result: { disposition: "started", submissionId: submission.submissionId, sequence: 1 },
+          });
+          await vi.waitFor(() =>
+            expect(
+              usePendingTurnDispatchStore.getState().pendingByThreadId[THREAD_ID]?.acceptedSequence,
+            ).toBe(1),
+          );
+          expect(mounted.router.state.location.pathname).toBe("/");
+        } else if (outcome === "accepted") {
+          admit({
+            type: "result",
+            result: { disposition: "started", submissionId: submission.submissionId, sequence: 1 },
+          });
+          await vi.waitFor(() =>
+            expect(mounted.router.state.location.pathname).toMatch(UUID_ROUTE_RE),
+          );
+          const draftId = mounted.router.state.location.pathname.slice(1) as ThreadId;
+          expect(draftId).not.toBe(THREAD_ID);
+          expect(useComposerDraftStore.getState().getDraftThread(draftId)?.projectId).toBe(
+            PROJECT_ID,
+          );
+          expect(useComposerDraftStore.getState().draftsByThreadId[draftId]?.prompt ?? "").toBe("");
+        } else {
+          admit({ type: "error", message: "Submission refused" });
+          await vi.waitFor(() =>
+            expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+              "Continue the work",
+            ),
+          );
+          expect(mounted.router.state.location.pathname).toBe(`/${THREAD_ID}`);
+        }
+        expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(1);
       } finally {
         await mounted.cleanup();
       }
@@ -6727,6 +7547,7 @@ describe("ChatView timeline (full app)", () => {
   // has zero rows. The panel now lives in the composer tray; keep checking
   // that it renders next to the "send a message to start..." copy.
   it("renders the tasks panel when the thread is empty but has tasks", async () => {
+    persistAppSettings({ compactChatLayout: false });
     const emptyThreadWithTasks: OrchestrationReadModel = {
       snapshotSequence: 1,
       projects: [
@@ -7738,4 +8559,310 @@ describe("ChatView timeline (full app)", () => {
       }
     },
   );
+
+  describe("render isolation", () => {
+    const OTHER_THREAD_ID = "thread-render-isolation-other" as ThreadId;
+    const NO_COMMITS = { timeline: 0, composer: 0 };
+
+    function resetRenderCommits() {
+      renderCommits.timeline = 0;
+      renderCommits.composer = 0;
+    }
+
+    // Waits until neither subtree has committed for a while, so late effects count.
+    async function waitForRenderQuiet() {
+      let previous = { ...renderCommits };
+      let stableSince = performance.now();
+      await vi.waitFor(
+        () => {
+          const now = performance.now();
+          if (
+            renderCommits.timeline !== previous.timeline ||
+            renderCommits.composer !== previous.composer
+          ) {
+            previous = { ...renderCommits };
+            stableSince = now;
+          }
+          expect(now - stableSince).toBeGreaterThan(400);
+        },
+        { timeout: 10_000, interval: 50 },
+      );
+    }
+
+    async function mountIsolatedChatView() {
+      let connectedClient: TestWsClient | null = null;
+      const snapshot = addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-render-isolation" as MessageId,
+          targetText: "render isolation",
+          targetAttachmentCount: 1,
+          fillerPairCount: 4,
+          targetPairIndex: 3,
+        }),
+        OTHER_THREAD_ID,
+      );
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot,
+        configureFixture: (next) => {
+          next.resolveWsRequest = (_body, client) => {
+            connectedClient = client;
+            return null;
+          };
+        },
+      });
+      await waitForComposerEditor();
+      await vi.waitFor(() => expect(connectedClient).not.toBeNull());
+      await waitForRenderQuiet();
+      // The profiled wrappers are mounted, so a zero below means "no commit", not "absent".
+      expect(renderCommits.timeline).toBeGreaterThan(0);
+      expect(renderCommits.composer).toBeGreaterThan(0);
+      return {
+        mounted,
+        client: connectedClient as unknown as TestWsClient,
+        nextSequence: snapshot.snapshotSequence + 1,
+      };
+    }
+
+    it("does not commit the timeline, composer or panel for a token on another thread", async () => {
+      const { mounted, client, nextSequence } = await mountIsolatedChatView();
+      try {
+        useRightPanelStore.getState().open(THREAD_ID, "files");
+        await vi.waitFor(() => expect(tabStripRenders.count).toBeGreaterThan(0));
+        await waitForRenderQuiet();
+        const tabStripBefore = tabStripRenders.count;
+        resetRenderCommits();
+        client.send(
+          JSON.stringify({
+            type: "push",
+            sequence: 2,
+            channel: ORCHESTRATION_WS_CHANNELS.domainEvent,
+            data: {
+              sequence: nextSequence,
+              eventId: EventId.makeUnsafe("event-render-isolation-other-token"),
+              aggregateKind: "thread",
+              aggregateId: OTHER_THREAD_ID,
+              occurredAt: isoAt(240),
+              commandId: null,
+              causationEventId: null,
+              correlationId: null,
+              metadata: {},
+              type: "thread.message-sent",
+              payload: {
+                threadId: OTHER_THREAD_ID,
+                messageId: "msg-render-isolation-other" as MessageId,
+                role: "assistant",
+                text: "background token",
+                turnId: TurnId.makeUnsafe("turn-render-isolation-other"),
+                streaming: true,
+                createdAt: isoAt(240),
+                updatedAt: isoAt(240),
+              },
+            } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>,
+          }),
+        );
+        await vi.waitFor(() => {
+          const thread = useStore.getState().threads.find((entry) => entry.id === OTHER_THREAD_ID);
+          expect(thread?.messages.some((message) => message.text === "background token")).toBe(
+            true,
+          );
+        });
+        await waitForRenderQuiet();
+        expect({ ...renderCommits }).toEqual(NO_COMMITS);
+        expect(tabStripRenders.count).toBe(tabStripBefore);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("does not commit the timeline or composer for an equal provider snapshot", async () => {
+      const { mounted, client } = await mountIsolatedChatView();
+      try {
+        resetRenderCommits();
+        client.send(
+          JSON.stringify({
+            type: "push",
+            sequence: 2,
+            channel: WS_CHANNELS.serverConfigUpdated,
+            data: {
+              source: "providers",
+              issues: [],
+              providers: structuredClone(fixture.serverConfig.providers),
+            },
+          }),
+        );
+        await waitForRenderQuiet();
+        expect({ ...renderCommits }).toEqual(NO_COMMITS);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("does not commit the timeline or composer for an unrelated settings write", async () => {
+      const { mounted } = await mountIsolatedChatView();
+      try {
+        resetRenderCommits();
+        const stored = JSON.parse(localStorage.getItem(APP_SETTINGS_STORAGE_KEY) ?? "{}");
+        localStorage.setItem(
+          APP_SETTINGS_STORAGE_KEY,
+          JSON.stringify({ ...stored, sidebarThreadPreviewCount: 9 }),
+        );
+        window.dispatchEvent(
+          new CustomEvent("t3code:local_storage_change", {
+            detail: { key: APP_SETTINGS_STORAGE_KEY },
+          }),
+        );
+        await vi.waitFor(() =>
+          expect(
+            parsePersistedAppSettings(localStorage.getItem(APP_SETTINGS_STORAGE_KEY))
+              .sidebarThreadPreviewCount,
+          ).toBe(9),
+        );
+        await waitForRenderQuiet();
+        expect({ ...renderCommits }).toEqual(NO_COMMITS);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("does not commit the conversation when an image preview opens", async () => {
+      const { mounted } = await mountIsolatedChatView();
+      try {
+        const preview = await waitForElement(
+          () =>
+            document.querySelector<HTMLButtonElement>('[aria-label="Preview attachment-1.png"]'),
+          "The user message image should render a preview button.",
+        );
+        resetRenderCommits();
+        preview.click();
+        await waitForElement(
+          () => document.querySelector('[aria-label="Expanded image preview"]'),
+          "Clicking the image should open the expanded preview.",
+        );
+        await waitForRenderQuiet();
+        expect(renderCommits.timeline).toBe(0);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("does not commit the conversation when a dialog opens", async () => {
+      const { mounted } = await mountIsolatedChatView();
+      try {
+        const addAction = await waitForButtonContainingText("Add action");
+        resetRenderCommits();
+        addAction.click();
+        await waitForElement(
+          () => document.querySelector('[data-slot="dialog-popup"]'),
+          "The add action dialog should open.",
+        );
+        await waitForRenderQuiet();
+        expect(renderCommits.timeline).toBe(0);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("does not commit the timeline while typing in the composer", async () => {
+      const { mounted } = await mountIsolatedChatView();
+      try {
+        const editor = await waitForComposerEditor();
+        editor.focus();
+        await waitForRenderQuiet();
+        resetRenderCommits();
+        await userEvent.keyboard("draft text");
+        await vi.waitFor(() => expect(editor.textContent).toContain("draft text"));
+        await waitForRenderQuiet();
+        expect(renderCommits.composer).toBeGreaterThan(0);
+        expect(renderCommits.timeline).toBe(0);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("does not re-render the sidebar for a router update that keeps the location", async () => {
+      const { mounted } = await mountIsolatedChatView();
+      try {
+        expect(sidebarRenders.count).toBeGreaterThan(0);
+        const before = sidebarRenders.count;
+        await mounted.router.invalidate();
+        await waitForRenderQuiet();
+        expect(sidebarRenders.count).toBe(before);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("does not commit the timeline or composer when the right panel toggles", async () => {
+      const { mounted } = await mountIsolatedChatView();
+      try {
+        resetRenderCommits();
+        // Not the plan panel: the composer shows whether that one is open.
+        useRightPanelStore.getState().open(THREAD_ID, "files");
+        await vi.waitFor(() => expect(tabStripRenders.count).toBeGreaterThan(0));
+        await waitForRenderQuiet();
+        expect({ ...renderCommits }).toEqual(NO_COMMITS);
+
+        useRightPanelStore.getState().close(THREAD_ID);
+        await vi.waitFor(() =>
+          expect(
+            selectThreadRightPanelState(useRightPanelStore.getState().byThreadId, THREAD_ID).isOpen,
+          ).toBe(false),
+        );
+        await waitForRenderQuiet();
+        expect({ ...renderCommits }).toEqual(NO_COMMITS);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("does not re-render the right panel tabs for a token on the open thread", async () => {
+      const { mounted, client, nextSequence } = await mountIsolatedChatView();
+      try {
+        useRightPanelStore.getState().open(THREAD_ID, "plan");
+        await vi.waitFor(() => expect(tabStripRenders.count).toBeGreaterThan(0));
+        await waitForRenderQuiet();
+        const before = tabStripRenders.count;
+        client.send(
+          JSON.stringify({
+            type: "push",
+            sequence: 2,
+            channel: ORCHESTRATION_WS_CHANNELS.domainEvent,
+            data: {
+              sequence: nextSequence,
+              eventId: EventId.makeUnsafe("event-render-isolation-own-token"),
+              aggregateKind: "thread",
+              aggregateId: THREAD_ID,
+              occurredAt: isoAt(240),
+              commandId: null,
+              causationEventId: null,
+              correlationId: null,
+              metadata: {},
+              type: "thread.message-sent",
+              payload: {
+                threadId: THREAD_ID,
+                messageId: "msg-render-isolation-own" as MessageId,
+                role: "assistant",
+                text: "foreground token",
+                turnId: TurnId.makeUnsafe("turn-render-isolation-own"),
+                streaming: true,
+                createdAt: isoAt(240),
+                updatedAt: isoAt(240),
+              },
+            } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>,
+          }),
+        );
+        await vi.waitFor(() => {
+          const thread = useStore.getState().threads.find((entry) => entry.id === THREAD_ID);
+          expect(thread?.messages.some((message) => message.text === "foreground token")).toBe(
+            true,
+          );
+        });
+        await waitForRenderQuiet();
+        expect(tabStripRenders.count).toBe(before);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+  });
 });

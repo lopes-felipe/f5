@@ -8,7 +8,7 @@
   A desktop and web workspace for coding agents, where each step of a workflow can run on a different provider and model.
 </p>
 
-F5 runs Codex, Claude Code, Cursor, OpenCode, Grok, Antigravity and Muse Code against your
+F5 runs Codex, Claude Code, Cursor, OpenCode, Grok, Antigravity, Muse Code and custom ACP agents against your
 repositories, and chains them into multi-model workflows: competing plans, cross-reviews, merges,
 implementation and code review, with every step on the provider and model you pick.
 

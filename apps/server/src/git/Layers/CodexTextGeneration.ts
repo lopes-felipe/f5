@@ -35,6 +35,7 @@ import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
+  threadTitleLinkedContextSections,
 } from "../Prompts.ts";
 import {
   type BranchNameGenerationInput,
@@ -49,6 +50,23 @@ import { classifyCliFailureKind } from "../Utils.ts";
 
 const DEFAULT_CODEX_REASONING_EFFORT = "low";
 const CODEX_TIMEOUT_MS = 180_000;
+const CODEX_MCP_LIST_TIMEOUT_MS = 10_000;
+const decodeCodexMcpServers = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Array(Schema.Struct({ name: Schema.String, enabled: Schema.Boolean })),
+  ),
+);
+
+/**
+ * The `--config` value that turns off each MCP server Codex would start.
+ * `mcp_servers={}` merges into the user's servers rather than replacing them,
+ * so each is named; quoting the name keeps one with a dot a single key.
+ */
+export function codexMcpServersOffConfig(names: ReadonlyArray<string>): string | null {
+  return names.length === 0
+    ? null
+    : `mcp_servers={${names.map((name) => `${JSON.stringify(name)}={enabled=false}`).join(",")}}`;
+}
 
 export function resolveCodexTextGenerationReasoningEffort(
   model: string,
@@ -236,6 +254,49 @@ export const makeCodexTextGeneration = (
         return { imagePaths };
       });
 
+    /**
+     * The MCP servers Codex would start for this configuration, by name. Text
+     * generation goes ahead with none listed if Codex cannot list them.
+     */
+    const listEnabledMcpServers = (input: {
+      readonly binary: string;
+      readonly cwd: string;
+      readonly environment: NodeJS.ProcessEnv;
+      readonly launchArgs: ReadonlyArray<string>;
+    }): Effect.Effect<ReadonlyArray<string>> =>
+      Effect.gen(function* () {
+        const invocation = yield* resolveInvocationEffect(
+          input.binary,
+          prependCodexCliTelemetryDisabledConfig([...input.launchArgs, "mcp", "list", "--json"], {
+            managedCredentials: input.environment.F5_PROFILE_ISOLATED === "1",
+          }),
+          input.environment,
+          { cwd: input.cwd },
+        );
+        const child = yield* commandSpawner.spawn(
+          ChildProcess.make(invocation.file, [...invocation.args], {
+            cwd: input.cwd,
+            env: input.environment,
+          }),
+        );
+        const [stdout, exitCode] = yield* Effect.all(
+          [child.stdout.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+          { concurrency: "unbounded" },
+        );
+        if (Number(exitCode) !== 0) return yield* Effect.fail("exit" as const);
+        const servers = yield* decodeCodexMcpServers(stdout);
+        return servers.filter((server) => server.enabled).map((server) => server.name);
+      }).pipe(
+        Effect.scoped,
+        Effect.timeoutOption(CODEX_MCP_LIST_TIMEOUT_MS),
+        Effect.map(Option.getOrElse((): ReadonlyArray<string> => [])),
+        Effect.catch((cause) =>
+          Effect.logWarning("codex mcp list failed; text generation keeps its MCP servers", {
+            cause: String(cause),
+          }).pipe(Effect.as<ReadonlyArray<string>>([])),
+        ),
+      );
+
     const runCodexJson = <S extends Schema.Top>({
       operation,
       cwd,
@@ -306,6 +367,21 @@ export const makeCodexTextGeneration = (
               dropped: launchArgs.dropped,
             });
           }
+          const binary = codexSettings?.binaryPath || "codex";
+          // Text generation never uses MCP tools. Each server the user's config
+          // would start is turned off by name, after the user's launch args so
+          // they cannot turn it back on.
+          const mcpServersOff = codexMcpServersOffConfig(
+            yield* listEnabledMcpServers({
+              binary,
+              cwd,
+              environment,
+              // `codex mcp` rejects --strict-config; the overrides still apply.
+              launchArgs: [...CODEX_PLUGINS_DISABLED_CONFIG_ARGS, ...launchArgs.argv].filter(
+                (arg) => arg !== "--strict-config",
+              ),
+            }),
+          );
           const args = prependCodexCliTelemetryDisabledConfig(
             [
               // Text generation never uses plugins; skip plugin startup tasks
@@ -313,6 +389,7 @@ export const makeCodexTextGeneration = (
               // the process ends before it finishes.
               ...CODEX_PLUGINS_DISABLED_CONFIG_ARGS,
               ...launchArgs.argv,
+              ...(mcpServersOff ? ["--config", mcpServersOff] : []),
               "exec",
               "--ephemeral",
               "--skip-git-repo-check",
@@ -332,12 +409,9 @@ export const makeCodexTextGeneration = (
             ],
             { managedCredentials: environment.F5_PROFILE_ISOLATED === "1" },
           );
-          const invocation = yield* resolveInvocationEffect(
-            codexSettings?.binaryPath || "codex",
-            args,
-            environment,
-            { cwd },
-          ).pipe(
+          const invocation = yield* resolveInvocationEffect(binary, args, environment, {
+            cwd,
+          }).pipe(
             Effect.mapError((cause) =>
               normalizeCodexError(operation, cause, "Failed to resolve Codex CLI process"),
             ),
@@ -558,6 +632,7 @@ export const makeCodexTextGeneration = (
           "",
           input.previousTitle !== undefined ? "Thread contents:" : "User message:",
           limitSection(input.message, 8_000),
+          ...threadTitleLinkedContextSections(input.linkedContext),
         ];
         if (attachmentLines.length > 0) {
           promptSections.push(

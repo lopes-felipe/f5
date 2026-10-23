@@ -1,4 +1,8 @@
 import {
+  ComposerPullRequestReferenceNode,
+  $createPullRequestReferenceNode,
+} from "./chat/composer/ComposerPullRequestReferenceNode";
+import {
   ComposerAssistantQuoteNode,
   $createAssistantQuoteNode,
   type AssistantQuote,
@@ -284,11 +288,16 @@ function $createComposerTerminalContextNode(
   return $applyNodeReplacement(new ComposerTerminalContextNode(context));
 }
 
-type ComposerInlineTokenNode = ComposerMentionNode | ComposerTerminalContextNode;
+type ComposerInlineTokenNode =
+  | ComposerMentionNode
+  | ComposerTerminalContextNode
+  | ComposerPullRequestReferenceNode;
 
 function isComposerInlineTokenNode(candidate: unknown): candidate is ComposerInlineTokenNode {
   return (
-    candidate instanceof ComposerMentionNode || candidate instanceof ComposerTerminalContextNode
+    candidate instanceof ComposerMentionNode ||
+    candidate instanceof ComposerTerminalContextNode ||
+    candidate instanceof ComposerPullRequestReferenceNode
   );
 }
 
@@ -621,6 +630,10 @@ function $setComposerEditorPrompt(
 
   const segments = splitPromptIntoComposerSegments(prompt, terminalContexts, mentions);
   for (const segment of segments) {
+    if (segment.type === "pull-request") {
+      paragraph.append($createPullRequestReferenceNode(segment.raw));
+      continue;
+    }
     if (segment.type === "mention") {
       paragraph.append($createComposerMentionNode(segment.path, segment.raw, segment.id));
       continue;
@@ -676,6 +689,11 @@ interface ComposerPromptEditorProps {
   disabled: boolean;
   placeholder: string;
   className?: string;
+  ariaLabel?: string | undefined;
+  /** Identifies an editor with suggestions, even while its list is closed. */
+  suggestionListId?: string | undefined;
+  /** References the highlighted option only while its list is rendered. */
+  activeSuggestionId?: string | undefined;
   onRemoveTerminalContext: (contextId: string) => void;
   onChange: (
     nextValue: string,
@@ -1042,6 +1060,9 @@ function ComposerPromptEditorInner({
   disabled,
   placeholder,
   className,
+  ariaLabel,
+  suggestionListId,
+  activeSuggestionId,
   onRemoveTerminalContext,
   onChange,
   onCommandKeyDown,
@@ -1300,6 +1321,17 @@ function ComposerPromptEditorInner({
                 className,
               )}
               data-testid="composer-editor"
+              ariaMultiline
+              {...(ariaLabel ? { ariaLabel } : {})}
+              {...(suggestionListId
+                ? {
+                    ariaAutoComplete: "list" as const,
+                    "aria-haspopup": "listbox" as const,
+                    ...(activeSuggestionId
+                      ? { ariaControls: suggestionListId, ariaActiveDescendant: activeSuggestionId }
+                      : {}),
+                  }
+                : {})}
               aria-placeholder={placeholder}
               placeholder={<span />}
               onPaste={onPaste}
@@ -1340,6 +1372,9 @@ export const ComposerPromptEditor = forwardRef<
     disabled,
     placeholder,
     className,
+    ariaLabel,
+    suggestionListId,
+    activeSuggestionId,
     onRemoveTerminalContext,
     onChange,
     onCommandKeyDown,
@@ -1354,7 +1389,12 @@ export const ComposerPromptEditor = forwardRef<
     () => ({
       namespace: "t3tools-composer-editor",
       editable: true,
-      nodes: [ComposerMentionNode, ComposerTerminalContextNode, ComposerAssistantQuoteNode],
+      nodes: [
+        ComposerMentionNode,
+        ComposerTerminalContextNode,
+        ComposerAssistantQuoteNode,
+        ComposerPullRequestReferenceNode,
+      ],
       editorState: () => {
         $setComposerEditorPrompt(
           initialValueRef.current,
@@ -1379,6 +1419,9 @@ export const ComposerPromptEditor = forwardRef<
         terminalContexts={terminalContexts}
         disabled={disabled}
         placeholder={placeholder}
+        ariaLabel={ariaLabel}
+        suggestionListId={suggestionListId}
+        activeSuggestionId={activeSuggestionId}
         onRemoveTerminalContext={onRemoveTerminalContext}
         onChange={onChange}
         onPaste={onPaste}

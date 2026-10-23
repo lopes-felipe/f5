@@ -40,6 +40,8 @@ export default defineConfig({
       "@pierre/diffs/react",
       "@pierre/diffs/worker/worker.js",
       "react-dom/client",
+      "effect/Encoding",
+      "effect/Result",
       // Imported only by the code highlight worker, so the dev server would
       // otherwise discover them late and reload the page.
       "shiki/core",

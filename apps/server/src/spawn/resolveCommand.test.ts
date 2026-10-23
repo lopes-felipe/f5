@@ -10,7 +10,9 @@ import { Effect } from "effect";
 import {
   clearCommandResolutionCache,
   CommandNotFoundError,
+  preferGitForWindowsBinary,
   resolveExecutable,
+  resolveGitExecutable,
   resolveInvocation,
 } from "./resolveCommand.ts";
 import { runProviderCliCommand } from "../provider/providerCli.ts";
@@ -68,6 +70,88 @@ describe("resolveExecutable", () => {
     expect(resolveExecutable(executable, {}, { platform: "linux", useCache: false })).toBe(
       executable,
     );
+  });
+});
+
+describe("preferGitForWindowsBinary", () => {
+  const files =
+    (...paths: Array<string>) =>
+    (filePath: string) =>
+      paths.includes(filePath);
+
+  it("runs the git.exe Git for Windows' launcher would start", () => {
+    // 2.56+ on x64. The PATHEXT scan returns the extension in PATHEXT's case.
+    expect(
+      preferGitForWindowsBinary(
+        "C:\\Program Files\\Git\\cmd\\git.EXE",
+        {},
+        files(
+          "C:\\Program Files\\Git\\ucrt64\\bin\\git.exe",
+          "C:\\Program Files\\Git\\mingw64\\bin\\git.exe",
+        ),
+      ),
+    ).toBe("C:\\Program Files\\Git\\ucrt64\\bin\\git.exe");
+    // Before 2.56, and the portable build's bin launcher.
+    expect(
+      preferGitForWindowsBinary(
+        "D:\\PortableGit\\bin\\git.exe",
+        {},
+        files("D:\\PortableGit\\mingw64\\bin\\git.exe"),
+      ),
+    ).toBe("D:\\PortableGit\\mingw64\\bin\\git.exe");
+    expect(
+      preferGitForWindowsBinary(
+        "C:\\Program Files\\Git\\cmd\\git.exe",
+        {},
+        files("C:\\Program Files\\Git\\clangarm64\\bin\\git.exe"),
+      ),
+    ).toBe("C:\\Program Files\\Git\\clangarm64\\bin\\git.exe");
+  });
+
+  it("keeps the launcher when MSYSTEM is set", () => {
+    // The real git.exe only adds its own folders to PATH when MSYSTEM is unset;
+    // without them a `#!/bin/sh` hook cannot start.
+    expect(
+      preferGitForWindowsBinary(
+        "C:\\Program Files\\Git\\cmd\\git.exe",
+        { MSYSTEM: "MINGW64" },
+        files("C:\\Program Files\\Git\\mingw64\\bin\\git.exe"),
+      ),
+    ).toBe("C:\\Program Files\\Git\\cmd\\git.exe");
+  });
+
+  it("keeps the launcher when no git.exe sits beside it", () => {
+    expect(preferGitForWindowsBinary("C:\\Program Files\\Git\\cmd\\git.exe", {}, () => false)).toBe(
+      "C:\\Program Files\\Git\\cmd\\git.exe",
+    );
+  });
+
+  it("leaves other gits and other launchers alone", () => {
+    const everything = () => true;
+    expect(preferGitForWindowsBinary("C:\\Users\\me\\scoop\\shims\\git.exe", {}, everything)).toBe(
+      "C:\\Users\\me\\scoop\\shims\\git.exe",
+    );
+    expect(preferGitForWindowsBinary("C:\\Program Files\\Git\\cmd\\gitk.exe", {}, everything)).toBe(
+      "C:\\Program Files\\Git\\cmd\\gitk.exe",
+    );
+  });
+});
+
+describe("resolveGitExecutable", () => {
+  it("leaves the lookup to the platform off Windows", () => {
+    expect(resolveGitExecutable({ PATH: "/usr/bin" }, "darwin")).toBe("git");
+  });
+
+  it("spawns a git.exe found on PATH directly, but leaves a git.cmd wrapper to Node", () => {
+    const exeDirectory = tempDir("f5-resolve-git-");
+    writeExecutable(path.join(exeDirectory, "git.EXE"));
+    expect(
+      resolveGitExecutable({ PATH: exeDirectory, PATHEXT: ".EXE", MSYSTEM: "MINGW64" }, "win32"),
+    ).toBe(path.join(exeDirectory, "git.EXE"));
+
+    const cmdDirectory = tempDir("f5-resolve-git-");
+    writeExecutable(path.join(cmdDirectory, "git.CMD"));
+    expect(resolveGitExecutable({ PATH: cmdDirectory, PATHEXT: ".CMD;.EXE" }, "win32")).toBe("git");
   });
 });
 

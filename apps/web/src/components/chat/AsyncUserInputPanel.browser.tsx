@@ -59,6 +59,66 @@ describe("async questions", () => {
     mocks.dispatch.mockReset().mockResolvedValue({ sequence: 1 });
     mocks.release.mockReset().mockResolvedValue(undefined);
   });
+  it("links URLs and files in the question text", async () => {
+    const url = "https://accounts.example.com/device?user_code=RTJS-TQGS";
+    const linked: PendingUserInput = {
+      ...question,
+      questions: [
+        { ...question.questions[0]!, question: `Open ${url} and check [notes](./notes.md).` },
+      ],
+    };
+    const screen = await render(
+      <>
+        <AsyncUserInputPanel threadId={threadId} input={linked} cwd="/repo" />
+        <ComposerPendingUserInputPanel
+          pendingUserInputs={[{ ...linked, responseMode: undefined }]}
+          cwd="/repo"
+          respondingRequestIds={[]}
+          answers={{}}
+          questionIndex={0}
+          onSelectOption={() => {}}
+          onToggleOption={() => {}}
+          onAdvance={() => {}}
+        />
+      </>,
+    );
+    try {
+      const links = page.getByRole("link", { name: url }).all();
+      expect(links).toHaveLength(2);
+      for (const link of links) await expect.element(link).toHaveAttribute("href", url);
+      expect(screen.container.querySelectorAll(".chat-markdown-file-link")).toHaveLength(2);
+    } finally {
+      await screen.unmount();
+    }
+  });
+  it("shows an editable prefill and submits an explicitly cleared editor without restoring its old text", async () => {
+    const input = {
+      ...question,
+      questions: [
+        {
+          id: "editor",
+          header: "Edit",
+          question: "Edit draft",
+          options: [],
+          initialAnswer: "Existing draft",
+          optional: true,
+        },
+      ],
+    };
+    const screen = await render(<AsyncUserInputPanel threadId={threadId} input={input} />);
+    try {
+      const editor = page.getByRole("textbox");
+      await expect.element(editor).toHaveValue("Existing draft");
+      expect(mocks.dispatch).not.toHaveBeenCalled();
+      await editor.fill("");
+      await page.getByRole("button", { name: "Send (0/1)", exact: true }).click();
+      expect(mocks.dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({ answers: { editor: { answers: [] } } }),
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
   it("preserves multiple selected choices and typed answers in one response", async () => {
     const screen = await render(<AsyncUserInputPanel threadId={threadId} input={question} />);
     try {

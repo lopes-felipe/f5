@@ -56,7 +56,7 @@ describe("makeLocalPushFriendlyGitService", () => {
     expect(base.calls.some((call) => call.args[0] === "push")).toBe(false);
     expect(base.calls.map((call) => [call.cwd, call.args])).toContainEqual([
       "/remote.git",
-      ["fetch", "/repo", "abc123:refs/heads/feature/test"],
+      ["--git-dir=.", "fetch", "/repo", "abc123:refs/heads/feature/test"],
     ]);
     expect(base.calls.map((call) => call.args)).toContainEqual([
       "update-ref",
@@ -91,7 +91,7 @@ describe("makeLocalPushFriendlyGitService", () => {
     expect(base.calls.some((call) => call.args[0] === "rev-parse")).toBe(false);
     expect(base.calls.map((call) => [call.cwd, call.args])).toContainEqual([
       "/remote.git",
-      ["update-ref", "-d", "refs/heads/obsolete"],
+      ["--git-dir=.", "update-ref", "-d", "refs/heads/obsolete"],
     ]);
     expect(base.calls.map((call) => [call.cwd, call.args])).toContainEqual([
       "/repo",

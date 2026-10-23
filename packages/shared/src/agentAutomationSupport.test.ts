@@ -16,10 +16,11 @@ describe("automation support reporting", () => {
       expect(COMPUTER_UNAVAILABLE_LABEL[reason]).toBeTruthy();
     expect(computerAgentProviderFor("claudeAgent")).toBe("claude");
     expect(computerAgentProviderFor("opencode")).toBeUndefined();
+    expect(computerAgentProviderFor("acp")).toBeUndefined();
     expect(Object.isFrozen(ACP_COMPUTER_CATALOG_VERIFIED)).toBe(true);
     expect(Object.isFrozen(ACP_PREVIEW_CATALOG_VERIFIED)).toBe(true);
-    expect(Object.values(ACP_PREVIEW_CATALOG_VERIFIED)).toEqual([false, false, false]);
-    expect(Object.values(ACP_COMPUTER_CATALOG_VERIFIED)).toEqual([false, false, false]);
+    expect(Object.values(ACP_PREVIEW_CATALOG_VERIFIED)).toEqual([false, false, false, false]);
+    expect(Object.values(ACP_COMPUTER_CATALOG_VERIFIED)).toEqual([false, false, false, false]);
   });
   it("names known operations and never interprets a server name as a tool", () => {
     expect(computerToolHeading("computer_wait", "completed")).toBe("Waited");

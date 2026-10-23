@@ -5,9 +5,11 @@ import { useSnapShotRouting } from "../hooks/useSnapShotRouting";
 import { useDesktopLinkRouting } from "../hooks/useDesktopLinkRouting";
 import { QuitHoldOverlay } from "../components/QuitHoldOverlay";
 import { ProjectCloneController } from "../components/ProjectCloneController";
+import { ProjectCreateNewController } from "../components/ProjectCreateNewController";
+import { DesktopPromptLinkController } from "../components/promptLinks/DesktopPromptLinkController";
 import { ThreadNavigationController } from "../components/ThreadNavigationController";
-import { Outlet, createFileRoute, useLocation, useNavigate } from "@tanstack/react-router";
-import { useEffect, useLayoutEffect, useState, type CSSProperties } from "react";
+import { Outlet, createFileRoute, useNavigate, useRouter } from "@tanstack/react-router";
+import { lazy, Suspense, useEffect, useLayoutEffect, useState, type CSSProperties } from "react";
 
 import { CommandPalette } from "../components/CommandPalette";
 import ThreadStatusNotificationController from "../components/ThreadStatusNotificationController";
@@ -21,10 +23,9 @@ import { NextTurnQueueController } from "../components/NextTurnQueueController";
 import { LegacyPinnedThreadsMigrationController } from "../components/LegacyPinnedThreadsMigrationController";
 import { SnoozedThreadWakeController } from "../components/SnoozedThreadWakeController";
 import ThreadSidebar from "../components/Sidebar";
-import { WorkflowCreateDialog } from "../components/workflow/WorkflowCreateDialog";
 import { useWorkflowCreateDialogStore } from "../workflowCreateDialogStore";
 import { Sidebar, SidebarProvider, SidebarRail } from "~/components/ui/sidebar";
-import { resolveSettingsNavigationSearch } from "~/components/settings/settingsCategories";
+import { resolveSettingsNavigationSearch } from "~/components/settings/settingsRouting";
 import {
   canAcceptThreadSidebarWidth,
   readInitialThreadSidebarWidth,
@@ -36,20 +37,28 @@ import {
 } from "../threadSidebarWidth";
 
 /** App-wide "New workflow" dialog, opened through `workflowCreateDialogStore`. */
+const WorkflowCreateDialog = lazy(() =>
+  import("../components/workflow/WorkflowCreateDialog").then((module) => ({
+    default: module.WorkflowCreateDialog,
+  })),
+);
+
 function WorkflowCreateDialogHost() {
   const projectId = useWorkflowCreateDialogStore((state) => state.projectId);
   const close = useWorkflowCreateDialogStore((state) => state.close);
   const notifyCreated = useWorkflowCreateDialogStore((state) => state.notifyCreated);
   if (!projectId) return null;
   return (
-    <WorkflowCreateDialog
-      open
-      projectId={projectId}
-      onOpenChange={(open) => {
-        if (!open) close();
-      }}
-      onWorkflowCreated={notifyCreated}
-    />
+    <Suspense fallback={null}>
+      <WorkflowCreateDialog
+        open
+        projectId={projectId}
+        onOpenChange={(open) => {
+          if (!open) close();
+        }}
+        onWorkflowCreated={notifyCreated}
+      />
+    </Suspense>
   );
 }
 
@@ -57,7 +66,8 @@ function ChatRouteLayout() {
   useDesktopLinkRouting();
   useSnapShotRouting();
   useServerUpdateOutcome();
-  const location = useLocation();
+  // The location is read when the menu action fires, so navigation does not re-render the layout.
+  const router = useRouter();
   const navigate = useNavigate();
   const [initialThreadSidebarWidth, setInitialThreadSidebarWidth] = useState(() =>
     readInitialThreadSidebarWidth(),
@@ -94,14 +104,14 @@ function ChatRouteLayout() {
       if (action !== "open-settings") return;
       void navigate({
         to: "/settings",
-        search: resolveSettingsNavigationSearch(location),
+        search: resolveSettingsNavigationSearch(router.state.location),
       });
     });
 
     return () => {
       unsubscribe?.();
     };
-  }, [location, navigate]);
+  }, [navigate, router]);
 
   return (
     <SidebarProvider
@@ -130,6 +140,8 @@ function ChatRouteLayout() {
         <ThreadRecencyController />
         <ThreadNavigationController />
         <ProjectCloneController />
+        <ProjectCreateNewController />
+        <DesktopPromptLinkController />
         <ModelRecencyController />
         <ThreadStatusNotificationController />
         <QuitHoldOverlay />

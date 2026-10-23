@@ -580,3 +580,46 @@ it("keeps server progress visible when the original update RPC disconnects", asy
     await screen.unmount();
   }
 });
+
+it("edits custom ACP arguments as a typed array while retaining environment and unknown config", async () => {
+  const driver = ProviderDriverKind.make("acp"),
+    onUpdate = vi.fn();
+  const screen = await renderCard({
+    instanceId: ProviderInstanceId.make("acp_custom"),
+    instance: {
+      driver,
+      config: {
+        command: "/custom/agent",
+        args: ["--old"],
+        env: { AGENT_HOME: "/private" },
+        extensionOwned: true,
+      },
+    },
+    driverOption: DRIVER_OPTIONS.find((option) => option.value === driver),
+    liveProvider: makeLiveProvider({ driver, instanceId: ProviderInstanceId.make("acp_custom") }),
+    isExpanded: true,
+    onUpdate,
+  });
+  try {
+    const args = page.getByRole("textbox", { name: "Arguments (JSON)" });
+    await expect.element(args).toHaveValue('["--old"]');
+    await args.fill('["--acp","one argument with spaces"]');
+    await userEvent.keyboard("{Tab}");
+    expect(onUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: {
+          command: "/custom/agent",
+          args: ["--acp", "one argument with spaces"],
+          env: { AGENT_HOME: "/private" },
+          extensionOwned: true,
+        },
+      }),
+    );
+    onUpdate.mockClear();
+    await args.fill("[42]");
+    await userEvent.keyboard("{Tab}");
+    expect(onUpdate).not.toHaveBeenCalled();
+  } finally {
+    await screen.unmount();
+  }
+});

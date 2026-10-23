@@ -4,6 +4,8 @@ import { setupProjectScript } from "../projectScripts";
 import { switchConversationWorkspace } from "../lib/workspaceTransitions";
 import { toastManager } from "./ui/toast";
 import type { ThreadId } from "@t3tools/contracts";
+import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { FolderIcon, GitForkIcon } from "lucide-react";
 import { useCallback } from "react";
 
@@ -33,6 +35,8 @@ interface BranchToolbarProps {
   onOpenTerminal?: () => void;
   onCheckoutPullRequestRequest?: (reference: string) => void;
   onComposerFocusRequest?: () => void;
+  /** The server is still creating this thread's worktree. */
+  preparingWorktree?: boolean;
 }
 
 export default function BranchToolbar({
@@ -43,6 +47,7 @@ export default function BranchToolbar({
   onOpenTerminal,
   onCheckoutPullRequestRequest,
   onComposerFocusRequest,
+  preparingWorktree = false,
 }: BranchToolbarProps) {
   // Only the workspace fields; a streaming delta on this thread does not re-render the toolbar.
   const serverThread = useStore(
@@ -74,12 +79,16 @@ export default function BranchToolbar({
   const activeThreadId = serverThread?.id ?? (draftThread ? threadId : undefined);
   const activeThreadBranch = serverThread?.branch ?? draftThread?.branch ?? null;
   const activeWorktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
-  const branchCwd = activeWorktreePath ?? activeProject?.cwd ?? null;
+  const branchCwd = isScratchProject(activeProject)
+    ? null
+    : (threadWorkspaceCwd(serverThread ?? draftThread, activeProject) ?? null);
   const hasServerThread = serverThread !== undefined;
+  const creatingWorktree = hasServerThread && !activeWorktreePath && preparingWorktree;
   const effectiveEnvMode = resolveEffectiveEnvMode({
     activeWorktreePath,
     hasServerThread,
     draftThreadEnvMode: draftThread?.envMode,
+    preparingWorktree: creatingWorktree,
   });
 
   const workspaceVersion = serverThread?.sessionVersion ?? "null";
@@ -101,6 +110,7 @@ export default function BranchToolbar({
         activeWorktreePath: latest.worktreePath,
         hasServerThread: Boolean(latestServer),
         draftThreadEnvMode: latestDraft?.envMode,
+        preparingWorktree: creatingWorktree,
       }) === effectiveEnvMode,
     );
   };
@@ -155,16 +165,17 @@ export default function BranchToolbar({
       data-slot="branch-toolbar"
       className="mx-auto flex min-h-7 w-full flex-wrap max-w-(--chat-content-max-width) shrink-0 items-center justify-between gap-2 px-1 text-2xs text-muted-foreground"
     >
-      {envLocked || activeWorktreePath || effectiveEnvMode === "local" ? (
+      {creatingWorktree || envLocked || activeWorktreePath || effectiveEnvMode === "local" ? (
         <WorktreeChip
           threadId={threadId}
           projectId={activeProject.id}
           branch={activeThreadBranch}
           path={activeWorktreePath ?? activeProject.cwd}
           isWorktree={Boolean(activeWorktreePath)}
-          canMove={hasServerThread && !activeWorktreePath}
+          creatingWorktree={creatingWorktree}
+          canMove={hasServerThread && !activeWorktreePath && !creatingWorktree}
           moveDisabled={serverThread?.moveDisabled ?? false}
-          {...(!envLocked && !activeWorktreePath
+          {...(!envLocked && !activeWorktreePath && !creatingWorktree
             ? { onNewWorktree: () => onEnvModeChange("worktree") }
             : {})}
           {...(onOpenTerminal ? { onOpenTerminal } : {})}

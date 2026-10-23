@@ -67,6 +67,45 @@ export function usageLimitFromWindows(
   };
 }
 
+const CLAUDE_GATEWAY_LIMIT =
+  /^API Error: 503 \[[^\]\r\n]+\] \[429\]: \{"type":"error","error":\{"type":"rate_limit_error",[^\r\n]*\} \(reset after (?:(\d+)h ?)?(?:(\d+)m ?)?(?:(\d+)s)?\)/;
+
+/**
+ * Some Claude gateways (9router) wrap an upstream 429 in a 503 and append the
+ * cooldown, with no rate_limit_event. Treat that cooldown as the reset so the
+ * queue can resume the turn once it passes.
+ */
+export function claudeGatewayUsageLimit(
+  result: {
+    readonly subtype: string;
+    readonly is_error?: boolean;
+    readonly terminal_reason?: string;
+    readonly api_error_status?: number | null;
+    readonly result?: string;
+  },
+  at: string,
+): RuntimeUsageLimit | undefined {
+  if (
+    result.subtype !== "success" ||
+    !result.is_error ||
+    result.terminal_reason !== "api_error" ||
+    result.api_error_status !== 503
+  )
+    return undefined;
+  const match = CLAUDE_GATEWAY_LIMIT.exec(result.result ?? "");
+  if (!match) return undefined;
+  const seconds =
+    Number(match[1] ?? 0) * 3_600 + Number(match[2] ?? 0) * 60 + Number(match[3] ?? 0);
+  const resetMs = Date.parse(at) + seconds * 1_000;
+  if (!(seconds > 0) || !(resetMs < 8.64e15)) return undefined;
+  return {
+    windows: [],
+    resetsAt: new Date(resetMs).toISOString(),
+    evidence: "message",
+    resetSource: "message",
+  };
+}
+
 /** Only successful account reads made after the failure may resolve its reset. */
 export function resolveAccountUsageLimit(
   limit: RuntimeUsageLimit,

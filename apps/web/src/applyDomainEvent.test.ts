@@ -950,6 +950,29 @@ describe("applyDomainEvent", () => {
     expect(next.threads[0]?.lastInteractionAt).toBe("2026-04-01T09:07:00.000Z");
   });
 
+  it("uses verified delivery message bindings when reverting retried turns", () => {
+    const thread = makeThread();
+    const messages = ["abandoned", "accepted", "later"].map((id, index) => ({
+      id: MessageId.makeUnsafe(id),
+      role: "user" as const,
+      text: id,
+      attachments: [],
+      createdAt: `2026-10-22T12:00:0${index}.000Z`,
+      updatedAt: `2026-10-22T12:00:0${index}.000Z`,
+      streaming: false,
+    }));
+    const next = applyDomainEvent(
+      makeState({ threads: [{ ...thread, messages }] }),
+      makeEvent("thread.reverted", {
+        threadId: thread.id,
+        turnCount: 1,
+        retainedTurnIds: [TurnId.makeUnsafe("retried-turn")],
+        retainedMessageIds: [MessageId.makeUnsafe("accepted")],
+      }),
+    );
+    expect(next.threads[0]?.messages.map((message) => message.id)).toEqual(["accepted"]);
+  });
+
   it("applies native task tracking and keeps retained-turn tasks across a revert", () => {
     const turn1 = TurnId.makeUnsafe("turn-1");
     const turn2 = TurnId.makeUnsafe("turn-2");
@@ -1562,6 +1585,72 @@ it.each(["running", "interrupted"] as const)(
     expect(next.threads[0]?.latestTurn?.completedAt).toBe(thread.latestTurn?.completedAt);
   },
 );
+
+it("removes only identified native rewind turns while preserving the active turn and unrelated history", () => {
+  const now = "2026-10-19T00:00:00.000Z";
+  const ids = ["other-provider", "kept-pi", "removed-pi", "native-command"].map((id) =>
+    TurnId.make(id),
+  );
+  const latestTurn = {
+    turnId: ids[3]!,
+    state: "running" as const,
+    requestedAt: now,
+    startedAt: now,
+    completedAt: null,
+    assistantMessageId: null,
+  };
+  const thread = makeThread({
+    latestTurn,
+    messages: ids.map((turnId, index) => ({
+      id: MessageId.make(`native-${index}`),
+      role: "assistant" as const,
+      text: turnId,
+      turnId,
+      streaming: false,
+      createdAt: now,
+    })),
+    activities: ids.map((turnId, index) => ({
+      id: EventId.make(`native-${index}`),
+      kind: "tool.completed",
+      tone: "tool" as const,
+      summary: turnId,
+      turnId,
+      payload: {},
+      createdAt: now,
+    })),
+  });
+  thread.messages.push({
+    id: MessageId.make("user-removed"),
+    role: "user",
+    text: "Removed prompt",
+    turnId: null,
+    streaming: false,
+    createdAt: now,
+  });
+  thread.messages.push({
+    id: MessageId.make("user-unlocated"),
+    role: "user",
+    text: "Preserve unlocated",
+    turnId: null,
+    streaming: false,
+    createdAt: now,
+  });
+  const event = makeEvent("thread.reverted", {
+    threadId: thread.id,
+    turnCount: 0,
+    nativeTurnId: ids[3]!,
+    removedTurnIds: [ids[2]!],
+    removedMessageIds: [MessageId.make("user-removed")],
+  });
+  const next = applyDomainEvent(makeState({ threads: [thread] }), event).threads[0]!;
+  expect(next.messages.map((message) => message.turnId)).toEqual([ids[0], ids[1], ids[3], null]);
+  expect(next.messages.at(-1)?.id).toBe("user-unlocated");
+  expect(next.activities.map((activity) => activity.turnId)).toEqual([ids[0], ids[1], ids[3]]);
+  expect(next.latestTurn).toBe(latestTurn);
+  expect(applyDomainEvent(makeState({ threads: [next] }), event).threads[0]?.messages).toEqual(
+    next.messages,
+  );
+});
 
 describe("streaming batch and timeline work", () => {
   it("copies the thread collection once and reuses timeline structure for text-only updates", () => {

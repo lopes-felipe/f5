@@ -148,8 +148,17 @@ describe.concurrent("real Git smoke", () => {
     fs.writeFileSync(path.join(cwd, "README.md"), "updated\n", "utf8");
     fs.writeFileSync(path.join(cwd, "ignored.txt"), "ignored\n", "utf8");
 
+    const indexBefore = fs.readFileSync(path.join(cwd, ".git", "index"));
     const context = await Effect.runPromise(core.prepareCommitContext(cwd, ["README.md"]));
-    const commit = await Effect.runPromise(core.commit(cwd, "Update readme", "Smoke coverage"));
+    expect(fs.readFileSync(path.join(cwd, ".git", "index"))).toEqual(indexBefore);
+    expect(
+      await git(service, cwd, ["--no-optional-locks", "diff", "--cached", "--name-only"]),
+    ).toBe("");
+    expect(fs.readFileSync(path.join(cwd, ".git", "index"))).toEqual(indexBefore);
+    const commit = await Effect.runPromise(
+      core.commitPrepared(cwd, "Update readme", "Smoke coverage", context!),
+    );
+    if (commit.status !== "created") throw new Error("Commit context unexpectedly changed.");
     const range = await Effect.runPromise(core.readRangeContext(cwd, "HEAD~1"));
 
     expect(context?.stagedPatch).toContain("updated");
@@ -185,6 +194,8 @@ describe.concurrent("real Git smoke", () => {
     expect(fs.existsSync(worktreePath)).toBe(false);
   });
 
+  // Four worktree removal attempts and their rechecks spawn enough Git processes to
+  // pass 15s on Windows runners.
   it("rechecks ignored approvals at the Git removal boundary without overriding local changes", async () => {
     const { git: service, core } = await makeServices();
     const cwd = await initRepository(service, core);
@@ -243,7 +254,7 @@ describe.concurrent("real Git smoke", () => {
     expect(
       await git(service, cwd, ["rev-parse", "--verify", "refs/heads/ignored-boundary"]),
     ).toMatch(/^[0-9a-f]{40}$/);
-  });
+  }, 45_000);
 
   it("sets upstream on local push and skips a second up-to-date push", async () => {
     const { git: service, core } = await makeServices();
@@ -256,7 +267,9 @@ describe.concurrent("real Git smoke", () => {
 
     expect(first).toMatchObject({ status: "pushed", branch: "main", setUpstream: true });
     expect(second).toMatchObject({ status: "skipped_up_to_date", branch: "main" });
-    expect(await git(service, remote, ["rev-parse", "refs/heads/main"])).toMatch(/^[0-9a-f]{40}$/u);
+    expect(await git(service, remote, ["--git-dir=.", "rev-parse", "refs/heads/main"])).toMatch(
+      /^[0-9a-f]{40}$/u,
+    );
   });
 
   it("pulls a commit created by another clone", async () => {
@@ -288,7 +301,7 @@ describe.concurrent("real Git smoke", () => {
     const headSha = await git(service, cwd, ["rev-parse", "HEAD"]);
     await git(service, cwd, ["remote", "add", "origin", remote]);
     await git(service, cwd, ["push", "origin", "HEAD:main"]);
-    await git(service, remote, ["update-ref", "refs/pull/7/head", headSha]);
+    await git(service, remote, ["--git-dir=.", "update-ref", "refs/pull/7/head", headSha]);
 
     await Effect.runPromise(
       core.fetchPullRequestBranch({ cwd, prNumber: 7, branch: "review/pr-7" }),
@@ -340,7 +353,11 @@ describe.concurrent("real Git smoke", () => {
       pr: { status: "created", number: 91 },
     });
     expect(
-      await git(service, remote, ["rev-parse", "refs/heads/feature/generated-commit"]),
+      await git(service, remote, [
+        "--git-dir=.",
+        "rev-parse",
+        "refs/heads/feature/generated-commit",
+      ]),
     ).toMatch(/^[0-9a-f]{40}$/u);
   });
 });

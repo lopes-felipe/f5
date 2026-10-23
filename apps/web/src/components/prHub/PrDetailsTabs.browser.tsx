@@ -482,12 +482,18 @@ describe("PrDetailsTabs", () => {
       .toHaveValue("");
     expect(api.replyReviewThread).toHaveBeenCalledTimes(1);
     await page.getByRole("button", { name: "Resolve conversation" }).click();
-    await expect
-      .element(page.getByRole("button", { name: "Reopen conversation" }))
-      .toBeInTheDocument();
     expect(api.setReviewThreadState).toHaveBeenCalledWith(
       expect.objectContaining({ threadId: "thread-1", resolved: true }),
     );
+    // Resolved threads are hidden by default; showing them offers the reopen action.
+    await expect
+      .element(page.getByText("No loaded threads match these filters."))
+      .toBeInTheDocument();
+    await page.getByRole("button", { name: "Filter comments" }).click();
+    await page.getByRole("menuitemcheckbox", { name: "Resolved threads" }).click();
+    await expect
+      .element(page.getByRole("button", { name: "Reopen conversation" }))
+      .toBeInTheDocument();
   });
 
   it("retains an edited comment draft when the remote mutation fails", async () => {

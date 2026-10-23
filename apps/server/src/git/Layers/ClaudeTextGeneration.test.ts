@@ -11,7 +11,7 @@ import { expect } from "vitest";
 import { ServerConfig } from "../../config.ts";
 import { type TextGenerationShape } from "../Services/TextGeneration.ts";
 import { sanitizeThreadTitle } from "../Utils.ts";
-import { makeClaudeTextGeneration } from "./ClaudeTextGeneration.ts";
+import { claudeErrorResult, makeClaudeTextGeneration } from "./ClaudeTextGeneration.ts";
 
 const ClaudeTextGenerationTestLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-claude-text-generation-test-",
@@ -29,7 +29,7 @@ const env = process.env;
 const argv = process.argv.slice(2);
 const args = argv.join(" ");
 const value = (flag) => argv[argv.indexOf(flag) + 1];
-if (!argv.includes("--tools") || value("--tools") !== "" || !argv.includes("--disable-slash-commands") || !argv.includes("--strict-mcp-config") || argv.includes("--dangerously-skip-permissions")) throw new Error("unsafe metadata capabilities");
+if (!argv.includes("--tools") || value("--tools") !== "" || !argv.includes("--disable-slash-commands") || !argv.includes("--strict-mcp-config") || value("--permission-mode") !== "dontAsk" || argv.includes("--dangerously-skip-permissions")) throw new Error("unsafe metadata capabilities");
 if (JSON.parse(value("--settings")).disableAllHooks !== true) throw new Error("hooks enabled");
 if (!require("node:path").basename(process.cwd()).startsWith("f5-claude-metadata-")) throw new Error("metadata cwd not isolated");
 const input = fs.readFileSync(0, "utf8");
@@ -243,7 +243,8 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
     withFakeClaudeEnv(
       {
         output: JSON.stringify({ structured_output: { groups: [] } }),
-        argsMustContain: "--disable-slash-commands --strict-mcp-config",
+        // The fake CLI also rejects any call without empty tools, strict MCP and dontAsk.
+        argsMustContain: "--tools  --disable-slash-commands --permission-mode dontAsk",
       },
       (generation, lastCwdPath) =>
         Effect.gen(function* () {
@@ -544,4 +545,17 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
         }),
     ),
   );
+});
+
+it("reports the CLI's own error result instead of wrapper output", () => {
+  expect(
+    claudeErrorResult(
+      JSON.stringify([
+        { type: "system", subtype: "init" },
+        { type: "result", is_error: true, result: "API Error: 529 Overloaded" },
+      ]),
+    ),
+  ).toBe("API Error: 529 Overloaded");
+  expect(claudeErrorResult(JSON.stringify({ is_error: true, result: "  " }))).toBeUndefined();
+  expect(claudeErrorResult("mise WARN not trusted")).toBeUndefined();
 });

@@ -188,3 +188,28 @@ it("removes standalone launcher state from inherited and overridden provider env
   };
   expect(buildProviderChildProcessEnv(values, values)).toEqual({ PATH: "/user/node" });
 });
+
+it("isolates Pi configuration and multi-provider credentials while retaining explicit instance keys", () => {
+  const stateDir = Path.join(Path.sep, "tmp", "pi-profile");
+  const input = {
+    purpose: "provider" as const,
+    profile: { ...fallbackDefaultProfile(stateDir), isDefault: false },
+    stateDir,
+    baseEnv: {
+      PI_CODING_AGENT_DIR: "/private/other-account",
+      OPENROUTER_API_KEY: "ambient",
+      AWS_PROFILE: "ambient",
+    },
+    instance: [{ name: "OPENROUTER_API_KEY", value: "explicit", sensitive: true }],
+  };
+  const env = buildAccountExecutionEnvironment(input);
+  expect(env.PI_CODING_AGENT_DIR).toBeUndefined();
+  expect(env.AWS_PROFILE).toBeUndefined();
+  expect(env.OPENROUTER_API_KEY).toBe("explicit");
+  expect(() =>
+    buildAccountExecutionEnvironment({
+      ...input,
+      instance: [{ name: "PI_CODING_AGENT_DIR", value: "/other", sensitive: false }],
+    }),
+  ).toThrow("reserved");
+});

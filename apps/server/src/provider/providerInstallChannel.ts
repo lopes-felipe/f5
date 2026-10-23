@@ -15,6 +15,7 @@ export const NPM_UPDATE_SOURCES: Readonly<Record<string, string>> = {
   codex: "@openai/codex",
   claudeAgent: "@anthropic-ai/claude-code",
   opencode: "opencode-ai",
+  pi: "@earendil-works/pi-coding-agent",
 };
 
 export type ProviderLatestSource =
@@ -170,6 +171,21 @@ export function detectProviderInstallTarget(
       { blockedReason: "unsupported_source" },
     );
   }
+  if (input.driver === "pi")
+    return make(
+      "self-update",
+      executable,
+      resolved,
+      `pi-self-update:${resolved}`,
+      npmSource,
+      "Update with Pi's built-in updater: pi update --self.",
+      {
+        selfUpdateArgs: ["update", "--self"],
+        ...(!deps.canWrite(path.dirname(resolved))
+          ? { blockedReason: "permissions" as const }
+          : {}),
+      },
+    );
   const unmanaged = (
     guidance = "Update this CLI using its original installer, then refresh and verify.",
     blockedReason: "unsupported_source" | "custom_registry" = "unsupported_source",

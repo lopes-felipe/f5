@@ -140,7 +140,7 @@ export interface NextTurnQueueStoreShape {
     readonly command: ThreadTurnStartCommand;
     readonly atHead: boolean;
     readonly notBefore?: string | undefined;
-    readonly scheduleReason?: "usage_limit_reset" | undefined;
+    readonly scheduleReason?: "usage_limit_reset" | "pull_request_watch" | undefined;
     readonly scheduleLimitKey?: string | undefined;
     readonly scheduleProviderInstanceId?: string | undefined;
     readonly supersedeUsageResume?: boolean | undefined;

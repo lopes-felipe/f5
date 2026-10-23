@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { blockingIgnoredEntries, type IgnoredFilesRemovalPolicy } from "./worktreeIgnoredFiles.ts";
 
-it("keeps automatic cleanup's node_modules exception without approving other ignored paths", () => {
+it("keeps the conservative default node_modules exception without approving other ignored paths", () => {
   expect(
     blockingIgnoredEntries(["node_modules/", "apps/web/node_modules/", ".env", "dist/"]),
   ).toEqual([".env", "dist/"]);
@@ -60,4 +60,29 @@ it("lets storage cleanup delete rebuildable outputs but keeps other ignored file
 it("ignores approval data in protection mode and retains the node_modules exemption", () => {
   const policy = { kind: "protect", approvedEntries: [".env"] } as IgnoredFilesRemovalPolicy;
   expect(blockingIgnoredEntries([".env", "node_modules/"], policy)).toEqual([".env"]);
+});
+
+it("lets automatic cleanup delete build output but never local files", () => {
+  const entries = [
+    "dist/",
+    "private.db",
+    ".envrc",
+    "node_modules/",
+    ".env",
+    "nested/.env.production",
+  ];
+  expect(
+    blockingIgnoredEntries([...entries, "id_rsa", "terraform.tfstate"], { kind: "rebuildable" }),
+  ).toEqual([
+    "private.db",
+    ".envrc",
+    ".env",
+    "nested/.env.production",
+    "id_rsa",
+    "terraform.tfstate",
+  ]);
+  expect(blockingIgnoredEntries(entries, { kind: "manual" })).toEqual(entries);
+  expect(blockingIgnoredEntries(entries, { kind: "protect" })).toEqual(
+    entries.filter((entry) => entry !== "node_modules/"),
+  );
 });

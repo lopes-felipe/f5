@@ -2,9 +2,12 @@ import { once } from "node:events";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 
 import { Effect, Layer, Sink, Stream } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
+import type { ChatAttachment } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 import { createOpencodeClient } from "@opencode-ai/sdk/v2";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -14,9 +17,18 @@ import {
   buildOpenCodeWorkflowPermissionRules,
   OpenCodeRuntime,
   OpenCodeRuntimeLive,
+  openCodeRuntimeErrorDetail,
   resolveOpenCodeInvocation,
   loadOpenCodeSkills,
+  toOpenCodeFileParts,
 } from "./opencodeRuntime.ts";
+
+it("formats an error whose message is not a string", () => {
+  const timeout = new Error("placeholder");
+  Object.defineProperty(timeout, "message", { value: undefined });
+  expect(() => openCodeRuntimeErrorDetail(timeout)).not.toThrow();
+  expect(openCodeRuntimeErrorDetail(new Error("  connection reset  "))).toBe("connection reset");
+});
 
 it("bounds a stuck CLI probe and closes its process scope", async () => {
   const started = Date.now();
@@ -67,6 +79,32 @@ it("reads workspace skills over the SDK without the CLI's pipe-size truncation",
     enabled: true,
   });
   expect(skills[0]).not.toHaveProperty("content");
+});
+
+it("sends only plain text, PDFs and images as native OpenCode file parts", () => {
+  const attachment = (mimeType: string, type: "file" | "image" = "file") =>
+    ({
+      type,
+      id: `att-${mimeType.replace("/", "-")}`,
+      name: `file.${mimeType.split("/")[1]}`,
+      mimeType,
+      sizeBytes: 10,
+    }) as ChatAttachment;
+  const parts = toOpenCodeFileParts({
+    attachments: [
+      attachment("text/plain"),
+      attachment("text/html"),
+      attachment("text/markdown"),
+      attachment("text/csv"),
+      attachment("application/pdf"),
+      attachment("application/zip"),
+      attachment("image/png", "image"),
+    ],
+    resolveAttachmentPath: (item) => `/attachments/${item.id}`,
+  });
+  // HTML, Markdown and CSV reach the model API as raw file parts, which providers reject;
+  // they still reach the agent as paths in the attachment context.
+  expect(parts.map((part) => part.mime)).toEqual(["text/plain", "application/pdf", "image/png"]);
 });
 
 describe("buildOpenCodePermissionRules", () => {
@@ -194,6 +232,15 @@ describe("resolveOpenCodeInvocation", () => {
   );
 });
 
+function within<T>(promise: Promise<T>, waitingFor: string, ms = 5_000): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Timed out waiting for ${waitingFor}`)), ms).unref(),
+    ),
+  ]);
+}
+
 it("aborts an in-flight SDK request when the owning server lifetime ends", async () => {
   const { createServer } = await import("node:http");
   const received = Promise.withResolvers<void>();
@@ -212,16 +259,24 @@ it("aborts an in-flight SDK request when the owning server lifetime ends", async
     );
     const client = runtime.createOpenCodeSdkClient({
       baseUrl: `http://127.0.0.1:${address.port}`,
-      directory: process.cwd(),
+      directory: "/workspace",
       signal: lifetime.signal,
     });
     const result = client.session.list().then(
       () => "completed",
       () => "aborted",
     );
-    await received.promise;
+    // Bounded phases name the step that stalls instead of ending in the test timeout.
+    await within(received.promise, "the request to reach the server");
+    // A collection mid-request must not drop the abort (a weakly followed signal did, on CI).
+    setFlagsFromString("--expose-gc");
+    const gc = runInNewContext("gc") as () => void;
+    for (let pass = 0; pass < 3; pass++) {
+      gc();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
     lifetime.abort(new Error("server exited"));
-    expect(await result).toBe("aborted");
+    expect(await within(result, "the request to abort")).toBe("aborted");
   } finally {
     lifetime.abort();
     server.closeAllConnections();

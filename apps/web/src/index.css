@@ -582,6 +582,10 @@ label:has(> select#reasoning-effort) select {
   opacity: 0.8;
 }
 
+.chat-markdown a[data-markdown-image-link] {
+  text-decoration: none;
+}
+
 .chat-markdown a.chat-markdown-file-link {
   display: inline-flex;
   align-items: center;
@@ -951,4 +955,16 @@ label:has(> select#reasoning-effort) select {
   flex-shrink: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+::highlight(f5-thread-find) {
+  background: color-mix(in oklch, var(--primary) 25%, transparent);
+}
+::highlight(f5-thread-find-active) {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+[data-thread-find-active="true"] {
+  outline: 1px solid color-mix(in oklch, var(--primary) 35%, transparent);
+  outline-offset: -1px;
 }

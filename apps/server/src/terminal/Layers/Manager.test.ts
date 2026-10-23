@@ -275,6 +275,70 @@ describe("TerminalManager", () => {
     return { logsDir, ptyAdapter, manager };
   }
 
+  it("closes only freshly verified idle terminals and retains their history", async () => {
+    const { manager, ptyAdapter } = makeManager(5, {
+      processTableReader: async () => new Set([9001]),
+    });
+    try {
+      await manager.open(openInput());
+      ptyAdapter.processes[0]!.emitData("kept history\n");
+      await manager.open({ ...openInput(), terminalId: "busy" });
+      await manager.closeIdleForThread("thread-1");
+      expect(ptyAdapter.processes[0]!.killed).toBe(true);
+      expect(ptyAdapter.processes[1]!.killed).toBe(false);
+      expect(manager.listSessions().map((session) => session.terminalId)).toEqual(["busy"]);
+      expect((await manager.open(openInput())).history).toContain("kept history");
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it("preserves a terminal that receives input while its idle probe is in flight", async () => {
+    let hold = false;
+    let release: ((parents: ReadonlySet<number>) => void) | undefined;
+    const { manager, ptyAdapter } = makeManager(5, {
+      subprocessPollIntervalMs: 100_000,
+      processTableReader: () =>
+        hold
+          ? new Promise<ReadonlySet<number>>((resolve) => {
+              release = resolve;
+            })
+          : Promise.resolve(new Set()),
+    });
+    try {
+      await manager.open(openInput());
+      hold = true;
+      const closing = manager.closeIdleForThread("thread-1");
+      await vi.waitFor(() => expect(release).toBeDefined());
+      await manager.write({ threadId: "thread-1", data: "new work\n" });
+      release!(new Set());
+      await closing;
+      expect(ptyAdapter.processes[0]!.killed).toBe(false);
+      expect(manager.listSessions()).toHaveLength(1);
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it("retains terminals when the fresh idle probe fails", async () => {
+    let fail = false;
+    const { manager, ptyAdapter } = makeManager(5, {
+      processTableReader: async () => {
+        if (fail) throw new Error("Unavailable");
+        return new Set();
+      },
+    });
+    try {
+      await manager.open(openInput());
+      fail = true;
+      await expect(manager.closeIdleForThread("thread-1")).rejects.toThrow("Unavailable");
+      expect(ptyAdapter.processes[0]!.killed).toBe(false);
+      expect(manager.listSessions()).toHaveLength(1);
+    } finally {
+      manager.dispose();
+    }
+  });
+
   it("captures monotonic read-only snapshots across output, clear, resize, restart and backend replacement", async () => {
     const { manager, ptyAdapter } = makeManager();
     const events: TerminalEvent[] = [];
@@ -855,6 +919,34 @@ describe("TerminalManager", () => {
       await manager.dispose();
       expect(write).toHaveBeenCalledTimes(1);
     } finally {
+      await manager.dispose();
+    }
+  });
+
+  it("batches live history writes every 250 ms and flushes the latest output on close", async () => {
+    const writes: string[] = [];
+    const { manager, ptyAdapter, logsDir } = makeManager(5000, {
+      writeHistory: async (filePath: string, history: string) => {
+        writes.push(history);
+        await fs.promises.writeFile(filePath, history, "utf8");
+      },
+    });
+    try {
+      await manager.open(openInput());
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      ptyAdapter.processes[0]!.emitData("first");
+      await vi.advanceTimersByTimeAsync(200);
+      expect(writes).toEqual([]);
+      ptyAdapter.processes[0]!.emitData(" second");
+      await vi.advanceTimersByTimeAsync(50);
+      vi.useRealTimers();
+      await waitFor(() => writes.length === 1);
+      expect(writes).toEqual(["first second"]);
+      ptyAdapter.processes[0]!.emitData(" third");
+      await manager.close({ threadId: "thread-1" });
+      expect(fs.readFileSync(historyLogPath(logsDir), "utf8")).toBe("first second third");
+    } finally {
+      vi.useRealTimers();
       await manager.dispose();
     }
   });

@@ -491,6 +491,7 @@ async function createHarness(
       Layer.provideMerge(Layer.succeed(OrchestrationEngineService, engine)),
       Layer.provideMerge(
         Layer.succeed(ProjectionSnapshotQuery, {
+          searchThread: () => Effect.die("unused thread search"),
           getSnapshot: () => Effect.succeed(snapshot),
           getBootstrapSnapshot: () => Effect.succeed(snapshot),
           getStartupSnapshot: () =>

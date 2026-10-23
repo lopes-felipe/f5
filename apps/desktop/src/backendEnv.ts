@@ -74,6 +74,9 @@ export function buildDesktopBackendEnv(
     F5_PROFILE: options.profileSlug ?? "default",
     T3CODE_MODE: "desktop",
     T3CODE_NO_BROWSER: "1",
+    // The backend starts after syncShellEnvironment, so baseEnv already holds
+    // the login-shell or registry PATH; the server skips probing it again.
+    F5_SHELL_ENVIRONMENT_PREPARED: "1",
     T3CODE_PORT: String(options.backendPort),
     ...stateDirEnv,
     T3CODE_AUTH_TOKEN: options.authToken,

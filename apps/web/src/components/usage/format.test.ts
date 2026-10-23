@@ -1,7 +1,31 @@
 import type { UsageMetrics, UsageSummary } from "@t3tools/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { cacheRateText, costDelta, formatDelta, tokenDelta, tokenFieldDisplay } from "./format";
+import {
+  cacheRateText,
+  costDelta,
+  formatDelta,
+  resolveUsageTimeZone,
+  tokenDelta,
+  tokenFieldDisplay,
+} from "./format";
+
+describe("resolveUsageTimeZone", () => {
+  it("keeps a valid zone and degrades an unknown or missing one to UTC", () => {
+    const resolved = new Intl.DateTimeFormat().resolvedOptions();
+    const resolvedOptions = vi.spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions");
+    try {
+      resolvedOptions.mockReturnValue({ ...resolved, timeZone: "Europe/Helsinki" });
+      expect(resolveUsageTimeZone()).toBe("Europe/Helsinki");
+      resolvedOptions.mockReturnValue({ ...resolved, timeZone: "Etc/Unknown" });
+      expect(resolveUsageTimeZone()).toBe("UTC");
+      resolvedOptions.mockReturnValue({ ...resolved, timeZone: "" });
+      expect(resolveUsageTimeZone()).toBe("UTC");
+    } finally {
+      resolvedOptions.mockRestore();
+    }
+  });
+});
 
 function metrics(overrides: Partial<UsageMetrics> = {}): UsageMetrics {
   return {

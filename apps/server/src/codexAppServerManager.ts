@@ -1,3 +1,5 @@
+import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
+import { findMcpAppToolPolicy } from "@t3tools/shared/mcpApp";
 import { raceWithAbort } from "@t3tools/shared/abortSignal";
 import { probeCodexCliVersion } from "./codex/cliVersionProbe.ts";
 import { Utf8Lines } from "@t3tools/shared/utf8Lines";
@@ -126,6 +128,8 @@ interface PendingApprovalRequest {
   /** Decisions and execpolicy prefix the command request offered; responses must match. */
   commandOffer?: CodexCommandApprovalOffer;
   requestedPermissions?: Record<string, unknown>;
+  /** The session allowance read when the request arrived; a session answer adds to it. */
+  sessionAllowance?: Set<ProviderRequestKind>;
   threadId: ThreadId;
   turnId?: TurnId;
   itemId?: ProviderItemId;
@@ -165,6 +169,13 @@ interface CodexSessionContext {
   writer: JsonRpcStdinWriter;
   pending: Map<PendingRequestKey, PendingRequest>;
   pendingApprovals: Map<ApprovalRequestId, PendingApprovalRequest>;
+  /**
+   * Approval kinds the user chose "Always allow this session" for. Codex's own
+   * acceptForSession only skips the exact command or patch it answered, so every
+   * new command would ask again. A different runtime mode ends the allowance, and
+   * so does the session closing, like Codex's own session approvals.
+   */
+  sessionApprovals?: { runtimeMode: RuntimeMode; kinds: Set<ProviderRequestKind> };
   memoryThreadIds?: Set<string>;
   pendingUserInputs: Map<ApprovalRequestId, PendingUserInputRequest>;
   /** MCP form/URL requests answered privately; optional for hand-built test contexts. */
@@ -422,6 +433,21 @@ function codexPermissionApprovalResponse(
   return { permissions: {} };
 }
 
+/**
+ * The answer to a command or file-change request the user already allowed for the session,
+ * or null when the request does not offer a session (or plain) approval and must ask.
+ */
+export function codexSessionAllowedResponse(
+  responseKind: PendingApprovalRequest["responseKind"],
+  commandOffer: CodexCommandApprovalOffer | undefined,
+): Record<string, unknown> | null {
+  if (responseKind === "legacy-decision") return { decision: "approved_for_session" };
+  if (responseKind !== "decision") return null;
+  const offered = commandOffer?.decisions;
+  if (!offered || offered.has("acceptForSession")) return { decision: "acceptForSession" };
+  return offered.has("accept") ? { decision: "accept" } : null;
+}
+
 function codexApprovalResponse(
   pendingRequest: PendingApprovalRequest,
   decision: ProviderApprovalDecision,
@@ -614,6 +640,15 @@ export function mapCodexRuntimeMode(runtimeMode: RuntimeMode): {
   }
 }
 
+/**
+ * Config overrides sent with every thread start, resume and fork, layered above
+ * the user's and project's `config.toml`. Codex waits this long for MCP servers
+ * before the first model request and leaves out any server still starting
+ * (default 1 s, too short for cold `npx`/`uvx` servers). A hung server delays
+ * only the first turn of a session, not its 30 s startup timeout.
+ */
+export const CODEX_THREAD_CONFIG = { mcp_optional_startup_grace_ms: 10_000 } as const;
+
 export function buildCodexThreadOpenRequestParams(input: {
   readonly cwd?: string;
   readonly model?: string;
@@ -627,6 +662,7 @@ export function buildCodexThreadOpenRequestParams(input: {
     model: input.model ?? null,
     ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
     cwd: input.cwd ?? null,
+    config: CODEX_THREAD_CONFIG,
     ...(input.workflowExecutionProfile
       ? {
           approvalPolicy: "never" as const,
@@ -1084,6 +1120,12 @@ export function isRecoverableThreadResumeError(error: unknown): boolean {
   return RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS.some((snippet) => message.includes(snippet));
 }
 
+/** Codex refuses to resume a session the user archived until it is unarchived. */
+export function isArchivedThreadResumeError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\bsession \S+ is archived\b|\bcodex unarchive\b/i.test(message);
+}
+
 export interface CodexAppServerManagerEvents {
   event: [event: ProviderEvent];
 }
@@ -1334,11 +1376,22 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (resumeThreadId) {
         try {
           threadOpenMethod = "thread/resume";
-          threadOpenResponse = await this.sendRequest(
-            context,
-            "thread/resume",
-            threadOpenParams.resume!,
-          );
+          try {
+            threadOpenResponse = await this.sendRequest(
+              context,
+              "thread/resume",
+              threadOpenParams.resume!,
+            );
+          } catch (error) {
+            if (!isArchivedThreadResumeError(error)) throw error;
+            // An archived session keeps its history; unarchive it and resume again.
+            await this.sendRequest(context, "thread/unarchive", { threadId: resumeThreadId });
+            threadOpenResponse = await this.sendRequest(
+              context,
+              "thread/resume",
+              threadOpenParams.resume!,
+            );
+          }
         } catch (error) {
           if (!isRecoverableThreadResumeError(error)) {
             this.emitErrorEvent(
@@ -2615,6 +2668,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
     this.markNativeRequestResolvedLocally(context, correlation);
     context.pendingApprovals.delete(requestId);
+    // Only an explicit session answer allows the kind. An "always" answer is an execpolicy rule
+    // for one command prefix and must not widen into every command.
+    if (decision === "acceptForSession")
+      pendingRequest.sessionAllowance?.add(pendingRequest.requestKind);
 
     this.emitEvent({
       ...context.mcpEventIdentity,
@@ -2836,6 +2893,97 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     } catch {
       return undefined;
     }
+  }
+
+  private readonly mcpAppIdentities = new WeakMap<object, string>();
+  getMcpAppSessionIdentity(threadId: ThreadId): string {
+    const context = this.requireSession(threadId);
+    if (!this.isLiveContext(context) || !["ready", "running"].includes(context.session.status))
+      throw new Error("Send a message to reconnect.");
+    const observation = this.getMcpObservationContext(threadId);
+    let identity = this.mcpAppIdentities.get(observation);
+    if (!identity) {
+      identity = randomUUID();
+      this.mcpAppIdentities.set(observation, identity);
+    }
+    return identity;
+  }
+
+  /** App calls use the already-running session and never start or recover one. */
+  async callMcpAppTool(
+    threadId: ThreadId,
+    server: string,
+    tool: string,
+    args: Record<string, unknown>,
+    expectedIdentity: string,
+    approved: boolean,
+  ): Promise<unknown> {
+    const context = this.requireSession(threadId);
+    if (!this.isLiveContext(context) || !["ready", "running"].includes(context.session.status))
+      throw new Error("Send a message to reconnect.");
+    if (
+      !server.trim() ||
+      server.length > 256 ||
+      !tool.trim() ||
+      tool.length > 256 ||
+      stringifyWithinBytes(args, 65536) === undefined
+    )
+      throw new Error("Invalid MCP app tool request.");
+    const generation = this.getMcpObservationContext(threadId);
+    if (this.getMcpAppSessionIdentity(threadId) !== expectedIdentity)
+      throw new Error("The MCP app session changed before approval was used.");
+    const listing = await this.getMcpServerStatuses(threadId, { deadline: Date.now() + 10000 });
+    const policy = findMcpAppToolPolicy(
+      Object.values(listing.entries.find((entry) => entry.name === server)?.tools ?? {}),
+      tool,
+    );
+    if (!listing.complete || !policy || (!approved && !policy.readOnlyHint))
+      throw new Error("The MCP app tool needs approval or is unavailable.");
+    if (
+      !this.isLiveContext(context) ||
+      generation !== this.getMcpObservationContext(threadId) ||
+      this.getMcpAppSessionIdentity(threadId) !== expectedIdentity
+    )
+      throw new Error("The MCP app session changed before dispatch.");
+    const result = await this.sendRequest(
+      context,
+      "mcpServer/tool/call",
+      { threadId: this.nativeThreadId(context), server, tool, arguments: args },
+      30000,
+    );
+    if (!this.isLiveContext(context) || generation !== this.getMcpObservationContext(threadId))
+      throw new Error(
+        "The MCP app session changed; the tool outcome is unknown. Do not retry automatically.",
+      );
+    return result;
+  }
+
+  async readMcpAppResource(
+    threadId: ThreadId,
+    server: string,
+    uri: string,
+    expectedIdentity?: string,
+  ): Promise<unknown> {
+    const context = this.requireSession(threadId);
+    if (!this.isLiveContext(context) || !["ready", "running"].includes(context.session.status))
+      throw new Error("Send a message to reconnect.");
+    if (!server.trim() || server.length > 256 || !uri.trim() || uri.length > 4096)
+      throw new Error("Invalid MCP app resource request.");
+    const generation = this.getMcpObservationContext(threadId);
+    if (
+      expectedIdentity !== undefined &&
+      this.getMcpAppSessionIdentity(threadId) !== expectedIdentity
+    )
+      throw new Error("The MCP app session changed before capture.");
+    const result = await this.sendRequest(
+      context,
+      "mcpServer/resource/read",
+      { threadId: this.nativeThreadId(context), server, uri },
+      10000,
+    );
+    if (!this.isLiveContext(context) || generation !== this.getMcpObservationContext(threadId))
+      throw new Error("The MCP app session changed.");
+    return result;
   }
 
   getMcpObservationContext(threadId: ThreadId): object {
@@ -3501,6 +3649,22 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
     const approvalRequest = this.approvalRequestForMethod(request.method);
     const requestKind = approvalRequest?.requestKind;
+    const sessionAllowance =
+      requestKind === "command" || requestKind === "file-change"
+        ? this.sessionAllowance(context)
+        : undefined;
+    if (approvalRequest && requestKind && sessionAllowance?.has(requestKind)) {
+      const allowed = codexSessionAllowedResponse(
+        approvalRequest.responseKind,
+        approvalRequest.method === "item/commandExecution/requestApproval"
+          ? readCodexCommandApprovalOffer(request.params)
+          : undefined,
+      );
+      if (allowed) {
+        this.writeServerRequestResponse(context, { id: request.id, result: allowed });
+        return;
+      }
+    }
     let requestId: ApprovalRequestId | undefined;
     let responseChannel: NativeRequestCorrelation["responseChannel"] | undefined;
     if (approvalRequest) {
@@ -3524,6 +3688,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           ? { commandOffer: readCodexCommandApprovalOffer(request.params) }
           : {}),
         ...(requestedPermissions !== undefined ? { requestedPermissions } : {}),
+        ...(sessionAllowance ? { sessionAllowance } : {}),
         threadId: context.session.threadId,
         ...(route.turnId ? { turnId: route.turnId } : {}),
         ...(route.itemId ? { itemId: route.itemId } : {}),
@@ -4013,6 +4178,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       ...updates,
       updatedAt: new Date().toISOString(),
     };
+  }
+
+  /** The kinds allowed for the session in its current runtime mode. */
+  private sessionAllowance(context: CodexSessionContext): Set<ProviderRequestKind> {
+    const runtimeMode = context.session.runtimeMode;
+    if (context.sessionApprovals?.runtimeMode !== runtimeMode)
+      context.sessionApprovals = { runtimeMode, kinds: new Set() };
+    return context.sessionApprovals.kinds;
   }
 
   private approvalRequestForMethod(method: string):

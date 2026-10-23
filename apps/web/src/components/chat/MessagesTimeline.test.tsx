@@ -348,6 +348,18 @@ describe("MessagesTimeline", () => {
     expect(
       workingActivity(render({ kind: "tool", providerItemId: "item-missing", title: "Grep" })),
     ).toBe("Grep");
+    // The latest thought stays above the tool that followed it.
+    const withThought = render({
+      kind: "tool",
+      providerItemId: "item-missing",
+      title: "Grep",
+      thought: "Found the cause in the adapter",
+    });
+    expect(workingActivity(withThought)).toBe("Grep");
+    expect(withThought).toMatch(/data-working-thought=""[^]*Found the cause in the adapter/);
+    expect(render({ kind: "tool", providerItemId: "item-missing", title: "Grep" })).not.toContain(
+      "data-working-thought",
+    );
     expect(workingActivity(render(null))).toBeNull();
     expect(workingActivity(render({ kind: "reconnecting", attempt: "2/5" }))).toBe(
       "Reconnecting (2/5)",

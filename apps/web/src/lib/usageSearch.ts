@@ -1,9 +1,4 @@
-import {
-  isKnownProviderKind,
-  ProjectId,
-  type ProviderKind,
-  type UsageRange,
-} from "@t3tools/contracts";
+import { ProjectId, type UsageRange } from "@t3tools/contracts";
 
 export type UsageTab = "activity" | "limits";
 export type UsageMetric = "tokens" | "cost" | "turns";
@@ -11,7 +6,6 @@ export type UsageMetric = "tokens" | "cost" | "turns";
 export interface UsageSearch {
   readonly tab?: UsageTab;
   readonly range?: UsageRange;
-  readonly provider?: ProviderKind;
   readonly projectId?: ProjectId;
   readonly metric?: UsageMetric;
 }
@@ -32,7 +26,6 @@ export function validateUsageSearch(search: Record<string, unknown>): UsageSearc
     ...(typeof search.range === "string" && RANGES.has(search.range)
       ? { range: search.range as UsageRange }
       : {}),
-    ...(isKnownProviderKind(search.provider) ? { provider: search.provider } : {}),
     ...(typeof search.projectId === "string" && search.projectId.trim()
       ? { projectId: ProjectId.makeUnsafe(search.projectId.trim()) }
       : {}),

@@ -91,6 +91,13 @@ export function museApprovalOptions(
   return choices.map((choice) => ({ decision: choice.decision, label: choice.label }));
 }
 
+/** Workflow child IDs belong to Muse's child run, never an F5 parent turn. */
+export function museApprovalTurnId(
+  params: Pick<ApprovalRequestParams, "turnId" | "subagentOrigin">,
+): string | undefined {
+  return params.subagentOrigin ? undefined : params.turnId;
+}
+
 export function museRequestType(params: Pick<ApprovalRequestParams, "subject" | "toolName">) {
   const kind = params.subject.kind.toLowerCase();
   if (params.subject.command || kind.includes("command") || kind.includes("shell")) {
@@ -132,6 +139,15 @@ export function decodeMuseApproval(raw: unknown): ApprovalRequestParams | undefi
   }
   if (!isRecord(raw.subject) || typeof raw.subject.kind !== "string") return undefined;
   if (typeof raw.toolName !== "string" || typeof raw.turnId !== "string") return undefined;
+  if (raw.subagentOrigin !== undefined) {
+    if (!isRecord(raw.subagentOrigin)) return undefined;
+    const origin = raw.subagentOrigin;
+    for (const field of ["subagentId", "childRunId", "childSessionId"] as const) {
+      const value = origin[field];
+      if (field !== "subagentId" && value === undefined) continue;
+      if (typeof value !== "string" || !value.trim() || value.length > 1024) return undefined;
+    }
+  }
   return raw as unknown as ApprovalRequestParams;
 }
 

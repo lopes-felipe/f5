@@ -15,12 +15,15 @@ import {
   GetProjectionThreadInput,
   ListProjectionThreadsByProjectInput,
   ProjectionThread,
+  ProjectionThreadActivityState,
+  TouchProjectionThreadInput,
   ProjectionThreadRepository,
   type ProjectionThreadRepositoryShape,
 } from "../Services/ProjectionThreads.ts";
 
 const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
   Struct.assign({
+    autoSettleDisabled: Schema.BooleanFromBit,
     tasks: Schema.fromJsonString(ProjectionThread.fields.tasks),
     tasksTracking: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadTaskTracking))).pipe(
       Schema.withDecodingDefault(() => null),
@@ -49,6 +52,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           interaction_mode,
           branch,
           worktree_path,
+          scratch_path,
           latest_turn_id,
           tasks_json,
           tasks_turn_id,
@@ -59,6 +63,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           model_context_window_tokens,
           session_notes_json,
           thread_references_json,
+          settled_at, settled_by, auto_settle_disabled,
           archived_at,
           pinned_at,
           pin_order_key,
@@ -85,6 +90,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.interactionMode},
           ${row.branch},
           ${row.worktreePath},
+          ${row.scratchPath ?? null},
           ${row.latestTurnId},
           ${JSON.stringify(row.tasks)},
           ${row.tasksTurnId},
@@ -95,6 +101,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.modelContextWindowTokens},
           ${row.sessionNotes === null ? null : JSON.stringify(row.sessionNotes)},
           ${JSON.stringify(row.threadReferences)},
+          ${row.settledAt ?? null}, ${row.settledBy ?? null}, ${row.autoSettleDisabled ? 1 : 0},
           ${row.archivedAt},
           ${row.pinnedAt},
           ${row.pinOrderKey},
@@ -121,6 +128,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           interaction_mode = excluded.interaction_mode,
           branch = excluded.branch,
           worktree_path = excluded.worktree_path,
+          scratch_path = excluded.scratch_path,
           latest_turn_id = excluded.latest_turn_id,
           tasks_json = excluded.tasks_json,
           tasks_turn_id = excluded.tasks_turn_id,
@@ -131,6 +139,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           model_context_window_tokens = excluded.model_context_window_tokens,
           session_notes_json = excluded.session_notes_json,
           thread_references_json = excluded.thread_references_json,
+          settled_at=excluded.settled_at, settled_by=excluded.settled_by, auto_settle_disabled=excluded.auto_settle_disabled,
           archived_at = excluded.archived_at,
           pinned_at = excluded.pinned_at,
           pin_order_key = excluded.pin_order_key,
@@ -149,6 +158,28 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
       `,
   });
 
+  const getProjectionThreadActivityState = SqlSchema.findOneOption({
+    Request: GetProjectionThreadInput,
+    Result: ProjectionThreadActivityState.mapFields(
+      Struct.assign({ hasProviderTokenUsage: Schema.BooleanFromBit }),
+    ),
+    execute: ({ threadId }) => sql`
+      SELECT thread.estimated_context_tokens AS "estimatedContextTokens",
+        CASE WHEN session.token_usage_source = 'provider' THEN 1 ELSE 0 END AS "hasProviderTokenUsage"
+      FROM projection_threads AS thread
+      LEFT JOIN projection_thread_sessions AS session ON session.thread_id = thread.thread_id
+      WHERE thread.thread_id = ${threadId}
+    `,
+  });
+
+  const touchProjectionThread = SqlSchema.void({
+    Request: TouchProjectionThreadInput,
+    execute: (input) =>
+      input.estimatedContextTokens === undefined
+        ? sql`UPDATE projection_threads SET last_interaction_at = ${input.occurredAt}, updated_at = ${input.occurredAt} WHERE thread_id = ${input.threadId}`
+        : sql`UPDATE projection_threads SET estimated_context_tokens = ${input.estimatedContextTokens}, last_interaction_at = ${input.occurredAt}, updated_at = ${input.occurredAt} WHERE thread_id = ${input.threadId}`,
+  });
+
   const getProjectionThreadRow = SqlSchema.findOneOption({
     Request: GetProjectionThreadInput,
     Result: ProjectionThreadDbRowSchema,
@@ -164,6 +195,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
+          scratch_path AS "scratchPath",
           latest_turn_id AS "latestTurnId",
           tasks_json AS "tasks",
           tasks_turn_id AS "tasksTurnId",
@@ -174,6 +206,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           model_context_window_tokens AS "modelContextWindowTokens",
           session_notes_json AS "sessionNotes",
           thread_references_json AS "threadReferences",
+          settled_at AS "settledAt",settled_by AS "settledBy",auto_settle_disabled AS "autoSettleDisabled",
           archived_at AS "archivedAt",
           pinned_at AS "pinnedAt",
           pin_order_key AS "pinOrderKey",
@@ -209,6 +242,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
+          scratch_path AS "scratchPath",
           latest_turn_id AS "latestTurnId",
           tasks_json AS "tasks",
           tasks_turn_id AS "tasksTurnId",
@@ -219,6 +253,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           model_context_window_tokens AS "modelContextWindowTokens",
           session_notes_json AS "sessionNotes",
           thread_references_json AS "threadReferences",
+          settled_at AS "settledAt",settled_by AS "settledBy",auto_settle_disabled AS "autoSettleDisabled",
           archived_at AS "archivedAt",
           pinned_at AS "pinnedAt",
           pin_order_key AS "pinOrderKey",
@@ -254,6 +289,16 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("ProjectionThreadRepository.upsert:query")),
     );
 
+  const touchActivity: ProjectionThreadRepositoryShape["touchActivity"] = (input) =>
+    touchProjectionThread(input).pipe(
+      Effect.mapError(toPersistenceSqlError("ProjectionThreadRepository.touchActivity:query")),
+    );
+
+  const getActivityState: ProjectionThreadRepositoryShape["getActivityState"] = (input) =>
+    getProjectionThreadActivityState(input).pipe(
+      Effect.mapError(toPersistenceSqlError("ProjectionThreadRepository.getActivityState:query")),
+    );
+
   const getById: ProjectionThreadRepositoryShape["getById"] = (input) =>
     getProjectionThreadRow(input).pipe(
       Effect.mapError(toPersistenceSqlError("ProjectionThreadRepository.getById:query")),
@@ -282,6 +327,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
 
   return {
     listProjectIdsByWorktreePath,
+    touchActivity,
+    getActivityState,
     upsert,
     getById,
     listByProjectId,

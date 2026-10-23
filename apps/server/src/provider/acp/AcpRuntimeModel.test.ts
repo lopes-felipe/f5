@@ -366,6 +366,177 @@ describe("AcpRuntimeModel", () => {
     expect(JSON.stringify(event).length).toBeLessThan(hugeText.length);
   });
 
+  it.each([
+    [undefined, "pending"],
+    [undefined, "inProgress"],
+    ["unchanged detail", "pending"],
+    ["unchanged detail", "inProgress"],
+  ] as const)("emits status transitions with detail %s and next status %s", (detail, status) => {
+    const previous: AcpToolCallState = {
+      toolCallId: "status",
+      title: "Inspect repository",
+      status: status === "pending" ? "inProgress" : "pending",
+      ...(detail ? { detail } : {}),
+      data: {},
+    };
+    expect(
+      decideToolCallUpdateEmission({
+        previous,
+        next: { ...previous, status },
+        lastEmittedDetailLength: detail?.length,
+        skippedSinceEmit: 0,
+      }),
+    ).toEqual({ emit: true, skippedSinceEmit: 0 });
+  });
+
+  it("emits first tool state and title-only changes without detail text", () => {
+    const first: AcpToolCallState = {
+      toolCallId: "title",
+      title: "Inspect repository",
+      status: "pending",
+      data: {},
+    };
+    expect(
+      decideToolCallUpdateEmission({
+        previous: undefined,
+        next: first,
+        lastEmittedDetailLength: undefined,
+        skippedSinceEmit: 0,
+      }).emit,
+    ).toBe(true);
+    expect(
+      decideToolCallUpdateEmission({
+        previous: first,
+        next: { ...first, title: "Renamed tool" },
+        lastEmittedDetailLength: undefined,
+        skippedSinceEmit: 4,
+      }),
+    ).toEqual({ emit: true, skippedSinceEmit: 0 });
+  });
+
+  it("emits changed structured output immediately while ignoring identical snapshots", () => {
+    const previous: AcpToolCallState = {
+      toolCallId: "output",
+      status: "inProgress",
+      detail: "Tool output",
+      data: { rawOutput: { text: "first" } },
+    };
+    expect(
+      decideToolCallUpdateEmission({
+        previous,
+        next: { ...previous, data: { rawOutput: { text: "other" } } },
+        lastEmittedDetailLength: previous.detail?.length,
+        skippedSinceEmit: 0,
+      }),
+    ).toEqual({ emit: true, skippedSinceEmit: 0 });
+    expect(
+      decideToolCallUpdateEmission({
+        previous,
+        next: { ...previous, data: { rawOutput: { text: "first" } } },
+        lastEmittedDetailLength: previous.detail?.length,
+        skippedSinceEmit: 0,
+      }),
+    ).toEqual({ emit: false, skippedSinceEmit: 0 });
+  });
+
+  it.each(["rawInput", "diff"] as const)(
+    "samples argument-only %s updates every ten changes and keeps the exact terminal state",
+    (kind) => {
+      let previous: AcpToolCallState = {
+        toolCallId: "arguments",
+        title: "Write file",
+        status: "inProgress",
+        detail: "Write file",
+        data: {},
+      };
+      let skippedSinceEmit = 0;
+      const emitted: AcpToolCallState[] = [];
+      for (let index = 1; index <= 120; index++) {
+        const data =
+          kind === "rawInput"
+            ? { rawInput: { path: "/fixture/file", content: "x".repeat(index) } }
+            : {
+                content: [
+                  { type: "diff", path: "/fixture/file", oldText: "", newText: "x".repeat(index) },
+                ],
+              };
+        const next = { ...previous, data };
+        const decision = decideToolCallUpdateEmission({
+          previous,
+          next,
+          lastEmittedDetailLength: previous.detail?.length,
+          skippedSinceEmit,
+        });
+        skippedSinceEmit = decision.skippedSinceEmit;
+        previous = next;
+        if (decision.emit) emitted.push(next);
+      }
+      expect(emitted).toHaveLength(12);
+      expect(emitted.at(-1)).toEqual(previous);
+      expect(
+        decideToolCallUpdateEmission({
+          previous,
+          next: { ...previous, status: "completed" },
+          lastEmittedDetailLength: previous.detail?.length,
+          skippedSinceEmit,
+        }).emit,
+      ).toBe(true);
+      // Repeated snapshots must not manufacture progress or spend a sampling slot.
+      expect(
+        decideToolCallUpdateEmission({
+          previous,
+          next: JSON.parse(JSON.stringify(previous)),
+          lastEmittedDetailLength: previous.detail?.length,
+          skippedSinceEmit: 3,
+        }),
+      ).toEqual({ emit: false, skippedSinceEmit: 3 });
+    },
+  );
+
+  it.each([
+    ["read", "Read file"],
+    ["execute", "Ran command"],
+    ["edit", "Changed files"],
+    ["search", "Searched files"],
+    ["other", "Tool"],
+    ["other", "Tool call"],
+    [undefined, "Read file"],
+    [undefined, "Ran command"],
+  ] as const)("keeps empty %s/%s placeholders hidden through status changes", (kind, title) => {
+    const previous: AcpToolCallState = {
+      toolCallId: "placeholder",
+      ...(kind ? { kind } : {}),
+      title,
+      status: "pending",
+      data: { rawInput: {} },
+    };
+    expect(
+      decideToolCallUpdateEmission({
+        previous: undefined,
+        next: previous,
+        lastEmittedDetailLength: undefined,
+        skippedSinceEmit: 0,
+      }).emit,
+    ).toBe(false);
+    const next = { ...previous, status: "inProgress" as const };
+    expect(
+      decideToolCallUpdateEmission({
+        previous,
+        next,
+        lastEmittedDetailLength: undefined,
+        skippedSinceEmit: 0,
+      }).emit,
+    ).toBe(false);
+    expect(
+      decideToolCallUpdateEmission({
+        previous: next,
+        next: { ...next, status: "completed" },
+        lastEmittedDetailLength: undefined,
+        skippedSinceEmit: 0,
+      }).emit,
+    ).toBe(true);
+  });
+
   it("coalesces 1000 rapid cumulative tool_call_update notifications for a redrawing progress bar", () => {
     let previous: AcpToolCallState | undefined;
     let lastEmittedDetailLength: number | undefined;

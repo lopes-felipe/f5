@@ -55,8 +55,9 @@ import {
 } from "../lib/orchestrationReactQuery";
 import { invalidateGitQueries } from "../lib/gitReactQuery";
 import { invalidateReviewQueries } from "../lib/reviewReactQuery";
-import { useAppSettings } from "../appSettings";
+import { readAppSettingsSnapshot, type useAppSettings } from "../appSettings";
 import { deriveOnboardingLiteState } from "../lib/onboardingLite";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 
 import {
   cancelLiveThreadWarmScheduler,
@@ -266,7 +267,6 @@ export interface OrchestrationSyncControllerDeps extends StoreActions {
     replace: boolean;
   }) => Promise<void>;
   readonly updateSettings: ReturnType<typeof useAppSettings>["updateSettings"];
-  readonly appSettingsRef: Current<AppSettings>;
   readonly pathnameRef: Current<string>;
   readonly visibleRouteMatchRef: Current<VisibleRouteMatch>;
   readonly handledBootstrapThreadIdRef: Current<string | null>;
@@ -278,7 +278,6 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
   const {
     api,
     environment,
-    appSettingsRef,
     applyDomainEvent,
     applyDomainEventBatch,
     invalidateThreadDetails,
@@ -320,7 +319,7 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
     const { threads, projects } = useStore.getState();
     const thread = threads.find((entry) => entry.id === threadId);
     const project = thread ? projects.find((entry) => entry.id === thread.projectId) : undefined;
-    const cwd = thread?.worktreePath ?? project?.cwd;
+    const cwd = threadWorkspaceCwd(thread, project);
     return thread && cwd ? { cwd, projectId: thread.projectId } : null;
   };
   // Turn diffs and reverts refresh the affected workspace (file contents,
@@ -663,7 +662,8 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
         const recoveredBootstrapThreadId = await completeWelcomeRecovery();
         if (disposed) return;
         const onboardingLiteState = deriveOnboardingLiteState({
-          settings: appSettingsRef.current,
+          // Read at recovery time; the root subscribes only to the settings it renders.
+          settings: readAppSettingsSnapshot(),
           projects: useStore.getState().projects,
           threads: useStore.getState().threads,
           draftThreadsByProjectId: new Map(

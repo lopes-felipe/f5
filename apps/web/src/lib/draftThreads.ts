@@ -97,7 +97,9 @@ export function getProjectActiveThreadsWithPinnedDraft<T extends ThreadListItem>
   readonly projectModel?: string | null;
 }): Array<T | Thread> {
   const activeThreads = sortThreadsByActivity(
-    getProjectThreadsWithDraft(input).filter((thread) => thread.archivedAt === null),
+    getProjectThreadsWithDraft(input).filter(
+      (thread) => thread.archivedAt === null && !thread.settledAt,
+    ),
   );
   const { draftThread } = input;
   if (!draftThread || draftThread.projectId !== input.projectId) {

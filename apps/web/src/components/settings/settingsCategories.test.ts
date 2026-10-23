@@ -11,6 +11,7 @@ import {
   SETTINGS_CATEGORY_GROUPS,
   SETTINGS_CATEGORY_LABELS,
   SETTINGS_ITEM_DESCRIPTORS,
+  SETTINGS_ITEM_ROUTES,
   filterSettingsItems,
   getSettingsItemDescriptor,
   isProjectSettingsCategory,
@@ -20,6 +21,19 @@ import {
 } from "./settingsCategories";
 
 describe("settings navigation groups", () => {
+  it("keeps every route backed by exactly one descriptor with the same scope", () => {
+    expect(SETTINGS_ITEM_DESCRIPTORS.map((item) => item.id).toSorted()).toEqual(
+      Object.keys(SETTINGS_ITEM_ROUTES).toSorted(),
+    );
+    for (const item of SETTINGS_ITEM_DESCRIPTORS) {
+      const route = SETTINGS_ITEM_ROUTES[item.id as keyof typeof SETTINGS_ITEM_ROUTES];
+      expect({ id: item.id, category: item.category, scope: item.scope ?? "global" }).toEqual({
+        id: route.id,
+        category: route.category,
+        scope: "scope" in route ? route.scope : "global",
+      });
+    }
+  });
   it("lists every global category exactly once, in category order", () => {
     expect(SETTINGS_CATEGORY_GROUPS.flatMap((group) => group.categories)).toEqual([
       ...GLOBAL_SETTINGS_CATEGORIES,
@@ -85,6 +99,7 @@ describe("settings item descriptors", () => {
       "storage.backup-credentials",
     );
     expect(filterSettingsItems("merge method")[0]?.id).toBe("git.merge-method");
+    expect(filterSettingsItems("manage worktrees")[0]?.id).toBe("git.manage-worktrees");
   });
 
   it("limits search to the items the current scope renders", () => {

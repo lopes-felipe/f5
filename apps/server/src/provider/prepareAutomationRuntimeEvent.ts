@@ -78,12 +78,12 @@ export function createAutomationRuntimeEventPreparer<E>(
     });
 }
 
-export const makeAutomationRuntimeEventPreparer = Effect.gen(function* () {
+export const makeToolResultImageStore = Effect.gen(function* () {
   const config = yield* Effect.serviceOption(ServerConfig);
   const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
   const fileSystem = yield* Effect.serviceOption(FileSystem.FileSystem);
   const path = yield* Effect.serviceOption(Path.Path);
-  return createAutomationRuntimeEventPreparer((event, image) =>
+  return (event: ProviderRuntimeEvent, image: ExtractedToolResultImage) =>
     Effect.gen(function* () {
       if (
         Option.isNone(config) ||
@@ -108,6 +108,9 @@ export const makeAutomationRuntimeEventPreparer = Effect.gen(function* () {
         Effect.provideService(FileSystem.FileSystem, fileSystem.value),
         Effect.provideService(Path.Path, path.value),
       );
-    }),
-  );
+    });
 });
+
+export const makeAutomationRuntimeEventPreparer = makeToolResultImageStore.pipe(
+  Effect.map(createAutomationRuntimeEventPreparer),
+);

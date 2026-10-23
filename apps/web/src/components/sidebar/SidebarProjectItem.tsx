@@ -1,4 +1,5 @@
 import type { ProjectId, ThreadId } from "@t3tools/contracts";
+import { isScratchProject } from "@t3tools/shared/scratchProject";
 import {
   type CollisionDetection,
   DndContext,
@@ -10,7 +11,7 @@ import { restrictToFirstScrollableAncestor, restrictToVerticalAxis } from "@dnd-
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronRightIcon, EllipsisIcon, SquarePenIcon, WorkflowIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import type { DraftThreadState } from "../../composerDraftStore";
 import { getVisibleThreadsWithPinnedDraft, isDraftThreadId } from "../../lib/draftThreads";
@@ -246,6 +247,8 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
     prependUnseenKeys: sidebarLists.projectDraftThreadId ? [sidebarLists.projectDraftThreadId] : [],
   });
   const snoozedThreads = sidebarLists.snoozedThreads;
+  const [settledExpanded, setSettledExpanded] = useState(false);
+  const settledThreads = sidebarLists.settledThreads;
   const projectPinnedSortableIds = activeThreads
     .filter((thread) => thread.pinnedAt != null)
     .map((thread) => pinnedThreadSortableId(thread.id));
@@ -380,30 +383,33 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
               />
               <TooltipPopup side="top">Project actions</TooltipPopup>
             </Tooltip>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <SidebarMenuAction
-                    render={
-                      <button type="button" aria-label={`Create workflow in ${project.name}`} />
-                    }
-                    showOnHover
-                    className={cn(PROJECT_ACTION_CLASS_NAME, "right-8")}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      projectActions.onCreateWorkflow(project.id);
-                    }}
-                  >
-                    <WorkflowIcon className="size-4" />
-                  </SidebarMenuAction>
-                }
-              />
-              <TooltipPopup side="top" className="flex items-center gap-2">
-                New workflow
-                {props.workflowShortcutLabel ? <Kbd>{props.workflowShortcutLabel}</Kbd> : null}
-              </TooltipPopup>
-            </Tooltip>
+            {/* Workflows review and implement in a repository, which a thread without a project lacks. */}
+            {isScratchProject(project) ? null : (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <SidebarMenuAction
+                      render={
+                        <button type="button" aria-label={`Create workflow in ${project.name}`} />
+                      }
+                      showOnHover
+                      className={cn(PROJECT_ACTION_CLASS_NAME, "right-8")}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        projectActions.onCreateWorkflow(project.id);
+                      }}
+                    >
+                      <WorkflowIcon className="size-4" />
+                    </SidebarMenuAction>
+                  }
+                />
+                <TooltipPopup side="top" className="flex items-center gap-2">
+                  New workflow
+                  {props.workflowShortcutLabel ? <Kbd>{props.workflowShortcutLabel}</Kbd> : null}
+                </TooltipPopup>
+              </Tooltip>
+            )}
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -539,6 +545,29 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
                       ))
                     : null}
 
+                  {settledThreads.length > 0 ? (
+                    <SectionToggleRow
+                      label={`Settled (${settledThreads.length})`}
+                      expanded={settledExpanded}
+                      onToggle={() => setSettledExpanded((value) => !value)}
+                    />
+                  ) : null}
+                  {settledExpanded
+                    ? settledThreads.map((thread) => (
+                        <SidebarThreadRow
+                          key={`settled:${thread.id}`}
+                          thread={thread}
+                          section="settled"
+                          isActive={routeThreadId === thread.id}
+                          orderedIds={orderedProjectThreadIds}
+                          isRenaming={threadActions.renamingThreadId === thread.id}
+                          actions={threadActions}
+                          {...indicatorsForThread(thread)}
+                          threadStatus={null}
+                          terminalStatus={null}
+                        />
+                      ))
+                    : null}
                   {archivedSidebarItems.length > 0 ? (
                     <SectionToggleRow
                       label="Archived"

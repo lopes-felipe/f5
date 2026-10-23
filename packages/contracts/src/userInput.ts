@@ -12,6 +12,8 @@ export const UserInputQuestion = Schema.Struct({
   header: TrimmedNonEmptyString,
   question: TrimmedNonEmptyString,
   options: Schema.Array(UserInputQuestionOption),
+  /** Editable provider-supplied draft; never an implicitly submitted answer. */
+  initialAnswer: Schema.optional(Schema.String.check(Schema.isMaxLength(64 * 1024))),
   multiSelect: Schema.optional(Schema.Boolean),
   optional: Schema.optional(Schema.Boolean),
 });

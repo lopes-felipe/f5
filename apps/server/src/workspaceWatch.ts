@@ -14,7 +14,8 @@ import type { ProjectWatchedPathChange } from "@t3tools/contracts";
  * saves (write a temp file, rename it over the target), renames and deletes
  * are reported from what is on disk. When a watch cannot be established or
  * fails, the path is polled instead and subscribers are told they are
- * degraded, so they can keep broader refresh triggers.
+ * degraded, so they can keep broader refresh triggers. One shared timer also
+ * reconciles healthy watches because native notifications can silently be lost.
  */
 
 export type WorkspaceWatchKind = "file" | "directory";
@@ -130,6 +131,7 @@ export class WorkspaceWatchRegistry<S> {
   /** Serializes each subscriber's calls; `released` stops a pending call from committing. */
   private readonly callsBySubscriber = new Map<S, { tail: Promise<void>; released: boolean }>();
   private flushScheduled = false;
+  private reconciliationTimer: ReturnType<typeof setInterval> | null = null;
   private readonly debounceMs: number;
   private readonly maxDebounceMs: number;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -273,6 +275,7 @@ export class WorkspaceWatchRegistry<S> {
         if (entry && entry.registrations.size === 0) {
           this.closeEntry(entry);
           this.entries.delete(key);
+          this.stopReconciliationIfEmpty();
         }
       }
     }
@@ -299,6 +302,7 @@ export class WorkspaceWatchRegistry<S> {
     this.callsBySubscriber.clear();
     for (const entry of this.entries.values()) this.closeEntry(entry);
     this.entries.clear();
+    this.stopReconciliationIfEmpty();
     this.keysBySubscriber.clear();
     this.pendingBySubscriber.clear();
   }
@@ -372,6 +376,7 @@ export class WorkspaceWatchRegistry<S> {
         });
         entry.watcher = watcher;
         this.stopPolling(entry);
+        this.startReconciliation();
         return;
       } catch {
         // Unsupported file system, watch limit reached, or permissions.
@@ -455,6 +460,34 @@ export class WorkspaceWatchRegistry<S> {
       void this.check(entry);
     }, delay);
     entry.debounceTimer.unref?.();
+  }
+
+  private startReconciliation(): void {
+    if (this.reconciliationTimer) return;
+    this.reconciliationTimer = setInterval(() => {
+      for (const entry of this.entries.values()) {
+        // Failed watches already poll. Do not accumulate observations behind
+        // slow I/O or a pending native event's debounce.
+        if (
+          entry.registrations.size > 0 &&
+          entry.watcher &&
+          !entry.polling &&
+          !entry.disposed &&
+          !entry.checking &&
+          !entry.debounceTimer
+        ) {
+          entry.needsRearm = true;
+          void this.check(entry);
+        }
+      }
+    }, this.pollIntervalMs);
+    this.reconciliationTimer.unref?.();
+  }
+
+  private stopReconciliationIfEmpty(): void {
+    if (this.entries.size !== 0 || !this.reconciliationTimer) return;
+    clearInterval(this.reconciliationTimer);
+    this.reconciliationTimer = null;
   }
 
   private async check(entry: WatchEntry<S>): Promise<void> {
@@ -555,6 +588,7 @@ export class WorkspaceWatchRegistry<S> {
     if (entry.registrations.size > 0) return;
     this.closeEntry(entry);
     this.entries.delete(key);
+    this.stopReconciliationIfEmpty();
   }
 
   private closeEntry(entry: WatchEntry<S>): void {

@@ -121,6 +121,8 @@ it.effect("rejects when no focused owner exists", () =>
       assert.equal(Option.isSome(error), true);
       if (Option.isSome(error)) {
         assert.equal(error.value._tag, "PreviewAutomationNoFocusedOwnerError");
+        assert.include(error.value.message, "Do not retry");
+        assert.include(error.value.message, "F5 desktop app");
       }
     }
   }),

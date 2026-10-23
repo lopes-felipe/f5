@@ -15,11 +15,16 @@ export const MAC_BACKEND_COMPUTER_SANDBOX = String.raw`(version 1)
 (deny mach-lookup
   (global-name-regex #"^com\.apple\.(windowserver|WindowServer|tccd|accessibility|axserver|AXRuntime|replayd|screencapture|ScreenCaptureKit|CARenderServer|coreservices\.(appleevents|launchservices))"))`;
 
-export function isolatedBackendCommand(platform: string, executable: string, entry: string) {
+export function isolatedBackendCommand(
+  platform: string,
+  executable: string,
+  entry: string,
+  nodeArgs: ReadonlyArray<string> = [],
+) {
   return platform === "darwin"
     ? {
         executable: "/usr/bin/sandbox-exec",
-        args: ["-p", MAC_BACKEND_COMPUTER_SANDBOX, executable, entry],
+        args: ["-p", MAC_BACKEND_COMPUTER_SANDBOX, executable, ...nodeArgs, entry],
       }
-    : { executable, args: [entry] };
+    : { executable, args: [...nodeArgs, entry] };
 }

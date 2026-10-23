@@ -1,5 +1,7 @@
+import { resolveProjectProviderInstanceEnabled } from "@t3tools/shared/serverSettings";
 import { providerSelectionsToModelOptions } from "../providerModelOptions";
 import { inferProviderForModel } from "@t3tools/shared/model";
+import { isScratchProject } from "@t3tools/shared/scratchProject";
 import {
   cachedGlobalDraftSettings,
   defaultDraftRuntimeMode,
@@ -8,14 +10,17 @@ import {
 import { ensureNativeApi } from "../nativeApi";
 import {
   isKnownProviderKind,
+  ProviderInstanceId,
+  DEFAULT_MODEL_BY_PROVIDER,
   type ProjectId,
+  type ProviderKind,
   type ServerSettings,
   ThreadId,
 } from "@t3tools/contracts";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { useCallback } from "react";
 
-import { useAppSettings, type AppSettings } from "../appSettings";
+import { type AppSettings, updateAppSettings, useAppSettingsSelector } from "../appSettings";
 import {
   type DraftThreadEnvMode,
   type DraftThreadState,
@@ -27,6 +32,8 @@ import { getModelPreferences } from "../modelPreferencesStore";
 import { useStore } from "../store";
 
 export interface CreateProjectBackedDraftThreadOptions {
+  /** Rechecked after async settings resolution, immediately before navigation. */
+  canNavigate?: () => boolean;
   branch?: string | null;
   worktreePath?: string | null;
   envMode?: DraftThreadEnvMode;
@@ -53,7 +60,10 @@ export function seedDraftThreadFromModelPreferences(
   serverSettings = cachedGlobalDraftSettings(),
 ): void {
   const project = useStore.getState().projects.find((entry) => entry.id === projectId);
-  if (project?.defaultModelSelection) {
+  const enabled = (instanceId: ProviderInstanceId) =>
+    resolveProjectProviderInstanceEnabled(serverSettings, projectId, instanceId);
+  let needsFallback = !enabled(ProviderInstanceId.make("codex"));
+  if (project?.defaultModelSelection && enabled(project.defaultModelSelection.instanceId)) {
     const selection = project.defaultModelSelection;
     const driver =
       serverSettings.providerInstances[selection.instanceId]?.driver ?? selection.instanceId;
@@ -67,24 +77,51 @@ export function seedDraftThreadFromModelPreferences(
     draft.setModelOptions(threadId, providerSelectionsToModelOptions(provider, selection.options));
     return;
   }
+  if (project?.defaultModelSelection) needsFallback = true;
   if (project?.defaultModel) {
-    const draft = useComposerDraftStore.getState();
-    draft.setProvider(threadId, inferProviderForModel(project.defaultModel, "codex"));
-    draft.setModel(threadId, project.defaultModel);
-    return;
+    const provider = inferProviderForModel(project.defaultModel, "codex");
+    if (enabled(ProviderInstanceId.make(provider))) {
+      const draft = useComposerDraftStore.getState();
+      draft.setProvider(threadId, provider);
+      draft.setModel(threadId, project.defaultModel);
+      return;
+    }
+    needsFallback = true;
   }
   const preferences = getModelPreferences();
   const { setModel, setModelOptions, setProvider } = useComposerDraftStore.getState();
-  if (preferences.lastProvider) {
+  if (preferences.lastProvider && enabled(ProviderInstanceId.make(preferences.lastProvider))) {
     setProvider(threadId, preferences.lastProvider);
     const rememberedModel = preferences.lastModelByProvider[preferences.lastProvider];
     if (rememberedModel) {
       setModel(threadId, rememberedModel);
     }
   }
-  if (preferences.lastModelOptions) {
-    setModelOptions(threadId, preferences.lastModelOptions);
-  }
+  if (preferences.lastProvider && !enabled(ProviderInstanceId.make(preferences.lastProvider)))
+    needsFallback = true;
+  else if (preferences.lastModelOptions) setModelOptions(threadId, preferences.lastModelOptions);
+  if (
+    !needsFallback ||
+    (preferences.lastProvider && enabled(ProviderInstanceId.make(preferences.lastProvider)))
+  )
+    return;
+  const fallback = [
+    ...Object.keys(serverSettings.providers),
+    ...Object.keys(serverSettings.providerInstances),
+  ]
+    .map((id) => ProviderInstanceId.make(id))
+    .find(
+      (id) =>
+        enabled(id) && isKnownProviderKind(serverSettings.providerInstances[id]?.driver ?? id),
+    );
+  if (!fallback) return;
+  const driver = serverSettings.providerInstances[fallback]?.driver ?? fallback;
+  if (!isKnownProviderKind(driver)) return;
+  const draft = useComposerDraftStore.getState();
+  draft.setProvider(threadId, driver);
+  draft.setProviderInstance(threadId, fallback);
+  draft.setModel(threadId, DEFAULT_MODEL_BY_PROVIDER[driver as ProviderKind]);
+  draft.setModelOptions(threadId, null);
 }
 
 function maybeMarkOnboardingLiteCompleted(
@@ -170,7 +207,7 @@ export async function createProjectBackedDraftThread({
       onboardingLiteStatus,
       updateSettings,
     );
-    if (routeThreadId !== storedDraftThread.threadId) {
+    if (routeThreadId !== storedDraftThread.threadId && options?.canNavigate?.() !== false) {
       await navigate({
         to: "/$threadId",
         params: { threadId: storedDraftThread.threadId },
@@ -218,10 +255,12 @@ export async function createProjectBackedDraftThread({
   seedDraftThreadFromModelPreferences(threadId, projectId, resolvedSettings);
   maybeMarkOnboardingLiteCompleted(projectId, threadId, onboardingLiteStatus, updateSettings);
 
-  await navigate({
-    to: "/$threadId",
-    params: { threadId },
-  });
+  if (options?.canNavigate?.() !== false) {
+    await navigate({
+      to: "/$threadId",
+      params: { threadId },
+    });
+  }
 
   return {
     projectId,
@@ -231,7 +270,7 @@ export async function createProjectBackedDraftThread({
 
 export function useCreateProjectBackedDraftThread() {
   const navigate = useNavigate();
-  const { settings, updateSettings } = useAppSettings();
+  const onboardingLiteStatus = useAppSettingsSelector((settings) => settings.onboardingLiteStatus);
   const resolveProjectThreadEnvMode = useProjectThreadEnvModeResolver();
   const routeThreadId = useParams({
     strict: false,
@@ -241,6 +280,21 @@ export function useCreateProjectBackedDraftThread() {
   return useCallback(
     async (projectId: ProjectId, options?: CreateProjectBackedDraftThreadOptions) => {
       const { forceNonDefaultEnvMode = false, ...draftOptions } = options ?? {};
+      // A thread without a project gets its own folder from the server: no branch, no worktree.
+      if (isScratchProject(useStore.getState().projects.find((entry) => entry.id === projectId)))
+        return createProjectBackedDraftThread({
+          navigate,
+          onboardingLiteStatus,
+          projectId,
+          routeThreadId,
+          updateSettings: updateAppSettings,
+          options: {
+            ...draftOptions,
+            branch: null,
+            worktreePath: null,
+            envMode: "local",
+          },
+        });
       const requested =
         draftOptions.envMode ?? (draftOptions.worktreePath ? "worktree" : undefined);
       const envMode = await resolveProjectThreadEnvMode(projectId, {
@@ -249,19 +303,13 @@ export function useCreateProjectBackedDraftThread() {
       });
       return createProjectBackedDraftThread({
         navigate,
-        onboardingLiteStatus: settings.onboardingLiteStatus,
+        onboardingLiteStatus,
         projectId,
         routeThreadId,
-        updateSettings,
+        updateSettings: updateAppSettings,
         options: { ...draftOptions, envMode },
       });
     },
-    [
-      navigate,
-      resolveProjectThreadEnvMode,
-      routeThreadId,
-      settings.onboardingLiteStatus,
-      updateSettings,
-    ],
+    [navigate, onboardingLiteStatus, resolveProjectThreadEnvMode, routeThreadId],
   );
 }

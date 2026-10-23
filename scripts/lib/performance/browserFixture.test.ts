@@ -1,7 +1,33 @@
-import { WorktreesThreadStateResult } from "@t3tools/contracts";
-import { Schema } from "effect";
 import { expect, it } from "vitest";
 import { createBrowserFixture } from "./browserFixture";
+import {
+  WorktreesGetTransitionResult,
+  WorktreesThreadStateResult,
+  PullRequestWatchEntry,
+} from "@t3tools/contracts";
+import { Schema } from "effect";
+
+it("answers current worktree and PR-watch reads with valid idle responses", () => {
+  const fixture = createBrowserFixture();
+  expect(
+    Schema.is(WorktreesGetTransitionResult)(
+      fixture.rpc({ _tag: "worktrees.getTransition", threadId: "perf-small" }),
+    ),
+  ).toBe(true);
+  expect(
+    Schema.is(WorktreesThreadStateResult)(
+      fixture.rpc({ _tag: "worktrees.threadState", threadId: "perf-small" }),
+    ),
+  ).toBe(true);
+  expect(
+    Schema.is(Schema.Array(PullRequestWatchEntry))(
+      fixture.rpc({ _tag: "pullRequestWatches.list", threadId: "perf-small" }),
+    ),
+  ).toBe(true);
+  expect([...fixture.unknownMethods]).toEqual([]);
+  fixture.rpc({ _tag: "unsupported.fixture.method" });
+  expect([...fixture.unknownMethods]).toEqual(["unsupported.fixture.method"]);
+});
 
 it("uses the tested build's protocol without changing the benchmark workload", () => {
   const current = createBrowserFixture(42);

@@ -1,4 +1,12 @@
-import { forwardRef, useEffect, useRef } from "react";
+import { usePrQuickActionModifier } from "../../hooks/usePrQuickActionModifier";
+import {
+  prQuickActions,
+  PR_QUICK_ACTION_LABELS,
+  type PrQuickAction,
+} from "../../lib/prQuickActions";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { Button } from "../ui/button";
+import { forwardRef, useEffect, useRef, useState } from "react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { XCircleIcon } from "lucide-react";
 import type { PullRequestKey, TrackedPullRequest } from "@t3tools/contracts";
@@ -10,21 +18,35 @@ import { attentionAccentClass } from "./prHubPresentation";
 const VIRTUALIZE_THRESHOLD = 60;
 
 const PrSpineRow = forwardRef<
-  HTMLButtonElement,
+  HTMLDivElement,
   {
     pr: TrackedPullRequest;
     selected: boolean;
     onSelect: (key: PullRequestKey) => void;
+    quick: boolean;
+    onQuickAction?: ((pr: TrackedPullRequest, action: PrQuickAction) => void) | undefined;
+    onMenu: (pr: TrackedPullRequest, x: number, y: number) => void;
   }
->(function PrSpineRow({ pr, selected, onSelect }, ref) {
+>(function PrSpineRow({ pr, selected, onSelect, quick, onQuickAction, onMenu }, ref) {
   const ciFailing = pr.checkRollup === "failure" || pr.checkRollup === "error";
   return (
-    <button
+    <div
       ref={ref}
-      type="button"
+      tabIndex={0}
       role="option"
       aria-selected={selected}
       onClick={() => onSelect(pr.key)}
+      onKeyDown={(event) => {
+        if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+          event.preventDefault();
+          onSelect(pr.key);
+        }
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onMenu(pr, event.clientX, event.clientY);
+      }}
       className={cn(
         "flex w-full items-center gap-2.5 border-b border-border px-3 py-2 text-left last:border-b-0",
         selected ? "bg-primary/8 ring-1 ring-inset ring-primary/35" : "hover:bg-accent/24",
@@ -53,7 +75,25 @@ const PrSpineRow = forwardRef<
           aria-label="CI failed"
         />
       ) : null}
-    </button>
+      {quick && onQuickAction ? (
+        <span className="flex shrink-0 gap-1">
+          {prQuickActions(pr).map((action) => (
+            <Button
+              key={action}
+              size="xs"
+              variant="outline"
+              aria-label={`${PR_QUICK_ACTION_LABELS[action]} PR #${pr.number}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onQuickAction(pr, action);
+              }}
+            >
+              {PR_QUICK_ACTION_LABELS[action]}
+            </Button>
+          ))}
+        </span>
+      ) : null}
+    </div>
   );
 });
 
@@ -67,15 +107,48 @@ export function PrSpineList({
   prs,
   selectedKey,
   onSelect,
+  onQuickAction,
 }: {
   prs: readonly TrackedPullRequest[];
   selectedKey: PullRequestKey | null;
   onSelect: (key: PullRequestKey) => void;
+  onQuickAction?: ((pr: TrackedPullRequest, action: PrQuickAction) => void) | undefined;
 }) {
+  const quick = usePrQuickActionModifier();
+  const [menu, setMenu] = useState<{ pr: TrackedPullRequest; x: number; y: number } | null>(null);
+  const onMenu = (pr: TrackedPullRequest, x: number, y: number) => setMenu({ pr, x, y });
+  const menuContent = (
+    <Menu open={menu !== null} onOpenChange={(open) => !open && setMenu(null)}>
+      <MenuTrigger tabIndex={-1} aria-hidden="true" className="sr-only">
+        PR row actions
+      </MenuTrigger>
+      <MenuPopup
+        anchor={
+          menu ? { getBoundingClientRect: () => new DOMRect(menu.x, menu.y, 0, 0) } : undefined
+        }
+        align="start"
+      >
+        <MenuItem
+          onClick={() => {
+            if (menu) onSelect(menu.pr.key);
+          }}
+        >
+          Open pull request
+        </MenuItem>
+        {menu && onQuickAction
+          ? prQuickActions(menu.pr).map((action) => (
+              <MenuItem key={action} onClick={() => onQuickAction(menu.pr, action)}>
+                {PR_QUICK_ACTION_LABELS[action]}…
+              </MenuItem>
+            ))
+          : null}
+      </MenuPopup>
+    </Menu>
+  );
   const virtualize = prs.length > VIRTUALIZE_THRESHOLD;
   const selectedIndex = prs.findIndex((pr) => pr.key === selectedKey);
   const listRef = useRef<LegendListRef | null>(null);
-  const selectedRowRef = useRef<HTMLButtonElement | null>(null);
+  const selectedRowRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (selectedIndex < 0) return;
@@ -89,13 +162,21 @@ export function PrSpineList({
   if (virtualize) {
     return (
       <div role="listbox" aria-label="Pull requests" className="min-h-0 flex-1">
+        {menuContent}
         <LegendList<TrackedPullRequest>
           ref={listRef}
           data={prs as TrackedPullRequest[]}
-          extraData={selectedKey}
+          extraData={`${selectedKey}:${quick}`}
           keyExtractor={(pr) => pr.key}
           renderItem={({ item }) => (
-            <PrSpineRow pr={item} selected={item.key === selectedKey} onSelect={onSelect} />
+            <PrSpineRow
+              pr={item}
+              selected={item.key === selectedKey}
+              onSelect={onSelect}
+              quick={quick}
+              onQuickAction={onQuickAction}
+              onMenu={onMenu}
+            />
           )}
           estimatedItemSize={52}
           style={{ height: "100%" }}
@@ -106,6 +187,7 @@ export function PrSpineList({
 
   return (
     <div role="listbox" aria-label="Pull requests" className="min-h-0 flex-1 overflow-y-auto">
+      {menuContent}
       {prs.map((pr) => {
         const selected = pr.key === selectedKey;
         return (
@@ -115,6 +197,9 @@ export function PrSpineList({
             pr={pr}
             selected={selected}
             onSelect={onSelect}
+            quick={quick}
+            onQuickAction={onQuickAction}
+            onMenu={onMenu}
           />
         );
       })}

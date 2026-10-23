@@ -96,6 +96,13 @@ export const ProviderSessionStartInput = Schema.Struct({
 export type ProviderSessionStartInput = typeof ProviderSessionStartInput.Type;
 
 export const ProviderSendTurnInput = Schema.Struct({
+  /** Internal queue admission for already-buffered native output; never a new prompt. */
+  continuationRequestId: Schema.optional(
+    TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(128)),
+  ),
+
+  /** Server-supplied latest app state; kept separate from the user message limit. */
+  mcpAppContext: Schema.optional(Schema.String.check(Schema.isMaxLength(256 * 1024))),
   /** Server-controlled attribution; never accepts native SDK origin objects. */
   submissionSource: Schema.optional(Schema.Literals(["human", "automation"])),
   threadId: ThreadId,

@@ -8,6 +8,10 @@ import { CLAUDE_SDK_BASELINE_VERSION } from "@t3tools/shared/claudeSdkManifest";
 import { makePreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
 import { forceClaudeChromeFlag, makeClaudePreviewMcpServer } from "./claudeAgentBrowser.ts";
 import { FakeClaudeCodeProcess, respondToInitializeRequest } from "./ClaudeSdk.testUtils.ts";
+import { createClaudeQueryWithPrivateMcp } from "../claudeMcpStartup.ts";
+import { makeClaudeThreadMcpServer } from "./claudeThreadTools.ts";
+import { makeThreadMcpBroker } from "../../mcp/threadMcpTools.ts";
+import { Effect } from "effect";
 
 async function* emptyPrompt(): AsyncGenerator<never> {}
 
@@ -30,6 +34,88 @@ beforeAll(() => {
 });
 
 describe("Claude SDK host contract transport", () => {
+  it("declares F5 thread tools in-process without credentials in CLI arguments", async () => {
+    const broker = await Effect.runPromise(makeThreadMcpBroker);
+    const server = makeClaudeThreadMcpServer({
+      broker,
+      threadId: ThreadId.makeUnsafe("thread-probe"),
+      existingServerNames: new Set(["f5_thread"]),
+    });
+    let initialize: Record<string, unknown> | undefined;
+    let spawn: SpawnOptions | undefined;
+    const runtime = query({
+      prompt: emptyPrompt(),
+      options: {
+        persistSession: false,
+        mcpServers: { [server.serverName]: server.config },
+        spawnClaudeCodeProcess: (args) => {
+          spawn = args;
+          return new FakeClaudeCodeProcess((message, child) => {
+            if (respondToInitializeRequest(message, child))
+              initialize = message.request as Record<string, unknown>;
+          });
+        },
+      },
+    });
+    try {
+      await runtime.initializationResult();
+      expect(initialize?.sdkMcpServers).toEqual([server.serverName]);
+      expect(server.serverName).not.toBe("f5_thread");
+      expect(JSON.stringify(spawn?.args)).not.toContain("F5_THREAD_MCP_TOKEN");
+    } finally {
+      runtime.close();
+    }
+  });
+  it("transmits configured MCP headers and env over stdin while keeping actual CLI argv private", async () => {
+    const servers = {
+      remote: {
+        type: "http",
+        url: "https://example.invalid/mcp",
+        headers: { Authorization: "Bearer header-value-fixture" },
+      },
+      local: { type: "stdio", command: "node", env: { ACCESS_TOKEN: "env-value-fixture" } },
+    } satisfies NonNullable<Options["mcpServers"]>;
+    let spawn: SpawnOptions | undefined;
+    let applied: unknown;
+    const runtime = await createClaudeQueryWithPrivateMcp(
+      {
+        prompt: emptyPrompt(),
+        options: {
+          persistSession: false,
+          mcpServers: servers,
+          spawnClaudeCodeProcess: (args) => {
+            spawn = args;
+            return new FakeClaudeCodeProcess((message, child) => {
+              if (respondToInitializeRequest(message, child)) return;
+              if (
+                message.type === "control_request" &&
+                (message.request as { subtype?: string })?.subtype === "mcp_set_servers"
+              ) {
+                applied = (message.request as { servers: unknown }).servers;
+                child.emitJson({
+                  type: "control_response",
+                  response: {
+                    subtype: "success",
+                    request_id: message.request_id,
+                    response: { added: ["remote", "local"], removed: [], errors: {} },
+                  },
+                });
+              }
+            });
+          },
+        },
+      },
+      query,
+    );
+    try {
+      expect(applied).toEqual(servers);
+      expect(JSON.stringify(spawn!.args)).not.toContain("header-value-fixture");
+      expect(JSON.stringify(spawn!.args)).not.toContain("env-value-fixture");
+      expect(spawn!.args).not.toContain("--mcp-config");
+    } finally {
+      runtime.close();
+    }
+  });
   it.each([undefined, "550e8400-e29b-41d4-a716-446655440000"])(
     "serializes host instructions and mandatory flags (resume=%s)",
     async (resume) => {

@@ -1,3 +1,5 @@
+import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import path from "node:path";
 
 import type {
@@ -42,16 +44,17 @@ export const listWorktreeInventory = (
       try: () => readOtherProfileManagedRoots(config),
       catch: asError,
     });
-    const projects = model.projects.filter((p) => p.deletedAt === null);
+    // Worktrees belong to Git checkouts; the scratch project and its folders are not one.
+    const projects = model.projects.filter((p) => p.deletedAt === null && !isScratchProject(p));
     if (input.projectId && !projects.some((p) => p.id === input.projectId))
       return yield* Effect.fail(new Error("Unknown project"));
-    const projectRoots = new Map(projects.map((p) => [p.id, p.workspaceRoot]));
+    const projectsById = new Map(projects.map((p) => [p.id, p]));
     const threads = model.threads.filter(
-      (t) => t.deletedAt === null && projectRoots.has(t.projectId),
+      (t) => t.deletedAt === null && projectsById.has(t.projectId),
     );
-    const distinctPaths = [
-      ...new Set(threads.map((t) => t.worktreePath ?? projectRoots.get(t.projectId)!)),
-    ];
+    const workspaceOf = (thread: (typeof threads)[number]) =>
+      threadWorkspaceCwd(thread, projectsById.get(thread.projectId))!;
+    const distinctPaths = [...new Set(threads.map(workspaceOf))];
     const paths = new Map(
       yield* Effect.forEach(
         distinctPaths,
@@ -67,7 +70,7 @@ export const listWorktreeInventory = (
     );
     const linkedByPath = new Map<string, WorktreeListEntry["linkedThreads"][number][]>();
     for (const thread of threads) {
-      const path = paths.get(thread.worktreePath ?? projectRoots.get(thread.projectId)!);
+      const path = paths.get(workspaceOf(thread));
       if (!path) continue;
       const linked = linkedByPath.get(path) ?? [];
       linked.push({
@@ -122,7 +125,7 @@ export const listWorktreeInventory = (
             ]),
           );
           for (const thread of threads) {
-            const recordedPath = thread.worktreePath ?? projectRoots.get(thread.projectId)!;
+            const recordedPath = workspaceOf(thread);
             const resolved = paths.get(recordedPath);
             if (thread.projectId === project.id && !resolved)
               return yield* Effect.fail(

@@ -1,5 +1,7 @@
+import { serverConfigQueryOptions } from "../lib/serverReactQuery";
+import { deriveProviderInstanceEntries } from "../providerInstances";
 import type { ProviderSessionCapabilities, ThreadId } from "@t3tools/contracts";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
   BotIcon,
@@ -18,6 +20,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAgentsPanelStore, type AgentsPanelScope } from "../agentsPanelStore";
 import {
   buildAgentsPanelModel,
+  resolveAgentProviderName,
   countAgentsByStatus,
   filterAgentsPanelEntries,
   type AgentsPanelEntry,
@@ -85,6 +88,7 @@ export interface AgentsPanelLiveCounts {
 export interface AgentsPanelViewProps {
   /** Unfiltered model for the selected scope. */
   readonly model: AgentsPanelModel;
+  readonly providerName?: (entry: AgentsPanelEntry) => string | undefined;
   readonly scope: AgentsPanelScope;
   readonly liveCounts: AgentsPanelLiveCounts;
   readonly loading: boolean;
@@ -305,6 +309,7 @@ function EntryList(props: {
           <AgentRow
             key={entry.id}
             entry={entry}
+            providerName={view.providerName?.(entry)}
             now={view.now}
             expanded={props.expandedId === entry.id}
             showThread={props.showThread}
@@ -649,6 +654,19 @@ export function AgentsPanel(props: {
 }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const providers = useQuery({
+    ...serverConfigQueryOptions(),
+    select: (config) => config.providers,
+  }).data;
+  const providerName = useMemo(() => {
+    const instances = new Map(
+      deriveProviderInstanceEntries(providers ?? []).map((instance) => [
+        instance.instanceId,
+        instance,
+      ]),
+    );
+    return (entry: AgentsPanelEntry) => resolveAgentProviderName(entry, instances);
+  }, [providers]);
   const now = useAgentsClock(props.model.liveCount > 0);
   const scope = useAgentsPanelStore((state) => state.scope);
   const statusFilter = useAgentsPanelStore((state) => state.statusFilter);
@@ -728,6 +746,7 @@ export function AgentsPanel(props: {
   return (
     <AgentsPanelView
       model={props.model}
+      providerName={providerName}
       scope={scope}
       liveCounts={props.liveCounts}
       loading={props.loading}

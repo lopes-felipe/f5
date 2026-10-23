@@ -22,7 +22,7 @@ import {
 } from "../Layers/claudeAgentBrowser";
 import { AcpCredentialScrubber, redactAcpLogPayload } from "./AcpNativeLogging";
 
-type AcpProvider = "cursor" | "grok" | "antigravity";
+type AcpProvider = "cursor" | "grok" | "antigravity" | "acp";
 const object = (value: unknown): Record<string, unknown> | undefined =>
   value !== null &&
   typeof value === "object" &&
@@ -148,6 +148,8 @@ export const prepareAcpAutomationCatalogs = (input: {
   computer?: ComputerAutomationBrokerRuntime;
   readOnlyWorkflow: boolean;
   ordinarySession: boolean;
+  /** Thread tools also work on the web server; automation remains desktop-only. */
+  threadSession?: boolean;
   computerCapableLineage?: boolean;
   /** Certification/test seam; production drivers never supply overrides. */
   verification?: { preview?: boolean; computer?: boolean };
@@ -345,7 +347,22 @@ export const prepareAcpAutomationCatalogs = (input: {
           configs.push(preview);
           state.preview = { serverName: preview.serverName, installed: true, verified: true };
         }
-        let detail = `Computer control for ${COMPUTER_AGENT_DISPLAY[input.provider].label} is awaiting verification`;
+        if (
+          input.preview?.supportsThreadCatalog &&
+          http &&
+          !input.readOnlyWorkflow &&
+          (input.threadSession ?? input.ordinarySession)
+        ) {
+          const thread = input.preview.createSessionConfig({
+            threadId: input.threadId,
+            provider: input.provider,
+            catalog: "thread",
+            existingServerNames: new Set(configs.map((config) => config.serverName)),
+          });
+          for (const credential of Object.values(thread.env)) scrubber.register(credential);
+          configs.push(thread);
+        }
+        let detail = `Computer control for ${input.provider === "acp" ? "Custom ACP agent" : COMPUTER_AGENT_DISPLAY[input.provider].label} is awaiting verification`;
         if (input.verification?.computer ?? ACP_COMPUTER_CATALOG_VERIFIED[input.provider]) {
           if (input.readOnlyWorkflow)
             detail = "Computer control is unavailable in read-only workflows";

@@ -18,117 +18,8 @@ import {
 } from "./SourceControlProvider.ts";
 
 export type ForgeKind = "gitlab" | "bitbucket" | "azure-devops" | "forgejo";
-const COMMON = {
-  diff: true,
-  labels: false,
-  viewedFiles: "f5",
-  stacks: false,
-  stackActions: false,
-  edit: { changeRequest: true, comment: true },
-  reviewers: { request: true, listCandidates: true },
-} as const;
-export const FORGE_CAPABILITIES: Readonly<Record<ForgeKind, ForgeCapabilities>> = {
-  gitlab: {
-    ...COMMON,
-    comment: true,
-    actions: [
-      "merge",
-      "ready",
-      "draft",
-      "close",
-      "reopen",
-      "update-branch",
-      "enable-auto-merge",
-      "disable-auto-merge",
-    ],
-    mergeMethods: ["merge", "squash", "rebase"],
-    updateMethods: ["rebase"],
-    search: true,
-    reactions: true,
-    review: { inlineComment: true, reply: true, resolve: true, verdicts: ["comment", "approve"] },
-  },
-  bitbucket: {
-    ...COMMON,
-    comment: true,
-    actions: ["close"],
-    mergeMethods: [],
-    updateMethods: [],
-    search: true,
-    reactions: false,
-    review: {
-      inlineComment: true,
-      reply: true,
-      resolve: true,
-      verdicts: ["comment", "approve", "request-changes"],
-    },
-  },
-  "azure-devops": {
-    ...COMMON,
-    comment: false,
-    actions: [
-      "merge",
-      "ready",
-      "draft",
-      "close",
-      "reopen",
-      "enable-auto-merge",
-      "disable-auto-merge",
-    ],
-    mergeMethods: ["merge", "squash"],
-    updateMethods: [],
-    search: false,
-    reactions: false,
-    review: { inlineComment: false, reply: false, resolve: false, verdicts: [] },
-    reviewers: { request: true, listCandidates: false },
-    edit: { changeRequest: true, comment: false },
-  },
-  forgejo: {
-    ...COMMON,
-    comment: true,
-    actions: ["merge", "close", "reopen", "update-branch"],
-    mergeMethods: ["merge", "squash", "rebase"],
-    updateMethods: ["merge", "rebase"],
-    search: false,
-    reactions: true,
-    labels: true,
-    review: {
-      inlineComment: true,
-      reply: false,
-      resolve: false,
-      verdicts: ["comment", "approve", "request-changes"],
-    },
-  },
-};
-export const GITHUB_FORGE_CAPABILITIES: ForgeCapabilities = {
-  ...COMMON,
-  viewedFiles: "host",
-  comment: true,
-  labels: true,
-  actions: [
-    "merge",
-    "ready",
-    "draft",
-    "close",
-    "reopen",
-    "update-branch",
-    "enable-auto-merge",
-    "disable-auto-merge",
-    "revert",
-    "approve-workflows",
-  ],
-  mergeMethods: ["merge", "squash", "rebase"],
-  updateMethods: ["merge", "rebase"],
-  search: true,
-  reactions: true,
-  review: {
-    inlineComment: true,
-    reply: true,
-    resolve: true,
-    verdicts: ["comment", "approve", "request-changes"],
-  },
-  stacks: true,
-  stackActions: true,
-};
+export { FORGE_CAPABILITIES, GITHUB_FORGE_CAPABILITIES } from "@t3tools/shared/forgeCapabilities";
+import { FORGE_CAPABILITIES } from "@t3tools/shared/forgeCapabilities";
 export interface ForgeAccount {
   readonly kind: ForgeKind;
   readonly host: string;
@@ -191,6 +82,7 @@ export interface ForgeProvider extends SourceControlProvider {
   readonly performAction: (input: {
     readonly ref: SourceControlPullRequestRef;
     readonly action: ForgeAction;
+    readonly removeAgentCreditsOnMerge?: boolean;
     readonly method?: "merge" | "squash" | "rebase";
     readonly expectedHeadOid?: string;
   }) => Effect.Effect<unknown, SourceControlProviderError>;
@@ -330,6 +222,13 @@ export function makeForgeSourceControlProvider(options: {
           .some((part) => !part || part === "." || part === ".." || /[\\?#\s]/.test(part))
       )
         return yield* error("repository", "Invalid repository name.", "forbidden");
+      // `/repositories/<workspace>` lists a workspace, so a one-part name never names a repository.
+      if (kind === "bitbucket" && repositoryOverride && repositoryOverride.split("/").length !== 2)
+        return yield* error(
+          "repository",
+          "Bitbucket repositories must be specified as workspace/repository.",
+          "forbidden",
+        );
       const url = `${root(repositoryOverride ? { ...a, repository: repositoryOverride } : a)}${suffix}${kind === "azure-devops" ? `${suffix.includes("?") ? "&" : "?"}api-version=7.1` : ""}`;
       const budget = forgeRequestBudget(a);
       if (!budget)
@@ -517,11 +416,23 @@ export function makeForgeSourceControlProvider(options: {
             head.sha ??
             object(source.commit).hash ??
             object(v.lastMergeSourceCommit).commitId,
+        ).trim() || null,
+      updatedAt:
+        text(
+          v.updated_at ??
+            v.updated_on ??
+            v.lastUpdatedDate ??
+            v.updatedDate ??
+            v.closedDate ??
+            v.creationDate,
         ) || null,
       state:
         status === "merged" || status === "completed" || v.merged === true
           ? "merged"
-          : status === "closed" || status === "declined" || status === "abandoned"
+          : status === "closed" ||
+              status === "declined" ||
+              status === "abandoned" ||
+              status === "superseded"
             ? "closed"
             : "open",
       isCrossRepository:
@@ -1163,22 +1074,29 @@ export function makeForgeSourceControlProvider(options: {
     execute: () => unsupported("execute"),
     query: () => unsupported("graphql"),
     getPullRequest: (input) => refFrom(input.reference, input.cwd).pipe(Effect.flatMap(getDetail)),
-    listOpenPullRequests: (input) =>
-      request(
-        undefined,
-        input.cwd,
+    listOpenPullRequests: (input) => {
+      const all = input.state === "all";
+      const limit = Math.max(1, Math.min(input.limit ?? 100, kind === "bitbucket" ? 50 : 100));
+      const endpoint =
         kind === "gitlab"
-          ? `/merge_requests?state=opened&source_branch=${enc(input.headSelector)}&per_page=${Math.min(input.limit ?? 100, 100)}`
+          ? `/merge_requests?state=${all ? "all" : "opened"}&source_branch=${enc(input.headSelector)}&per_page=${limit}&order_by=updated_at&sort=desc`
           : kind === "azure-devops"
-            ? `/pullrequests?searchCriteria.status=active&searchCriteria.sourceRefName=${enc(`refs/heads/${input.headSelector}`)}`
-            : `/${kind === "forgejo" ? "pulls" : "pullrequests"}?${kind === "bitbucket" ? `q=${enc(`state="OPEN" AND source.branch.name="${input.headSelector.replace(/["\\]/g, "")}"`)}` : `state=open&head=${enc(input.headSelector)}&limit=${Math.min(input.limit ?? 100, 100)}`}`,
-      ).pipe(
-        Effect.map((result) =>
-          rows(result)
-            .map((value) => summary(value))
-            .filter((value) => kind !== "forgejo" || value.headRefName === input.headSelector),
-        ),
-      ),
+            ? `/pullrequests?searchCriteria.status=${all ? "all" : "active"}&searchCriteria.sourceRefName=${enc(`refs/heads/${input.headSelector}`)}&$top=${limit}`
+            : kind === "bitbucket"
+              ? `/pullrequests?${(all ? ["OPEN", "MERGED", "DECLINED", "SUPERSEDED"] : ["OPEN"]).map((state) => `state=${state}`).join("&")}&q=${enc(`source.branch.name=${JSON.stringify(input.headSelector)}`)}&pagelen=${limit}&sort=-updated_on`
+              : `/pulls?state=${all ? "all" : "open"}&head=${enc(input.headSelector)}&limit=${limit}`;
+      return request(undefined, input.cwd, endpoint).pipe(
+        Effect.flatMap((result) => {
+          if (all && (object(result).next || rows(result).length >= limit))
+            return unsupported("listOpenPullRequests: incomplete branch page");
+          return Effect.succeed(
+            rows(result)
+              .map((value) => summary(value))
+              .filter((value) => value.headRefName === input.headSelector),
+          );
+        }),
+      );
+    },
     searchPullRequests: (input) =>
       !caps.search
         ? unsupported("search")

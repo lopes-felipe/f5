@@ -11,6 +11,7 @@ import { resolveAttachmentPathById } from "../attachmentStore.ts";
 import { ensureAttachmentSchema } from "../persistence/Migrations/AttachmentSchema.ts";
 import ownerKindsMigration from "../persistence/Migrations/095_AttachmentOwnerKinds.ts";
 import activityOwnerMigration from "../persistence/Migrations/109_AttachmentOwnerActivity.ts";
+import { ingestActivityAttachment } from "../activityAttachments.ts";
 import * as SqliteClient from "../persistence/NodeSqliteClient.ts";
 import { scrubInlineImagesReplacer } from "../provider/Layers/EventNdjsonLogger.ts";
 import {
@@ -156,6 +157,41 @@ describe("ingestToolResultImage", () => {
     });
     expect(servedPath && fs.readFileSync(servedPath).equals(Buffer.from(image!.bytes))).toBe(true);
     expect(stagedEntries(result.attachmentsDir)).toEqual([]);
+  });
+
+  it("registers generated HTML through the same owned and recoverable attachment path", async () => {
+    const result = await run((attachmentsDir) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const ref = yield* ingestActivityAttachment({
+          attachmentsDir,
+          threadId: "thread-1",
+          itemKey: "html-1",
+          activityId: "html-activity",
+          file: {
+            type: "file",
+            name: "render.html",
+            mimeType: "text/html",
+            bytes: Buffer.from("<p>Hello</p>"),
+          },
+        });
+        const rows = yield* sql<{
+          type: string;
+          mime: string;
+          owner: string;
+        }>`SELECT a.type AS type,a.mime_type AS mime,o.owner_id AS owner FROM attachments a JOIN attachment_owners o USING(attachment_id)`;
+        return { ref, rows };
+      }),
+    );
+    expect(result.value.rows).toEqual([
+      { type: "file", mime: "text/html", owner: "html-activity" },
+    ]);
+    const stored = resolveAttachmentPathById({
+      attachmentsDir: result.attachmentsDir,
+      attachmentId: result.value.ref!.attachmentId,
+    });
+    expect(stored?.endsWith(".html")).toBe(true);
+    expect(fs.readFileSync(stored!, "utf8")).toBe("<p>Hello</p>");
   });
 
   it("reuses the attachment when the same item is replayed or updated", async () => {

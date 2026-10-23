@@ -70,7 +70,7 @@ async function resolveNetworkRemote(
   if (!remote.includes(":") && !remote.includes("/") && !remote.includes("\\")) {
     const result = await runProcess(
       "git",
-      ["remote", "get-url", "--all", ...(operation === "push" ? ["--push"] : []), remote],
+      ["remote", "get-url", "--all", ...(operation === "push" ? ["--push"] : []), "--", remote],
       {
         cwd: cwd,
         env: environment,

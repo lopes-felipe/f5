@@ -36,6 +36,27 @@ function fixture(kind: ForgeKind, responses: unknown[] = [], login = `viewer-${+
 }
 
 describe("forge adapters", () => {
+  it.each([
+    ["gitlab", { sha: "abc1234", diff_refs: null, merge_commit_sha: "wrong" }, "abc1234"],
+    ["gitlab", { sha: "  " }, null],
+    ["gitlab", { sha: null }, null],
+    ["forgejo", { head: { sha: "head-commit" } }, "head-commit"],
+    ["bitbucket", { source: { commit: { hash: "9f3a7c2d8b1e" } } }, "9f3a7c2d8b1e"],
+    [
+      "bitbucket",
+      { source: { commit: { hash: "9f3a7c2d8b1e6f045a9c3d7e2b8f1a6c0d4e5f93" } } },
+      "9f3a7c2d8b1e6f045a9c3d7e2b8f1a6c0d4e5f93",
+    ],
+    ["bitbucket", { source: { commit: null } }, null],
+  ] as const)(
+    "preserves %s native PR head commits without inventing absent heads",
+    async (kind, metadata, head) => {
+      const { provider, ref } = fixture(kind, [
+        { id: 7, iid: 7, number: 7, title: "Change", ...metadata },
+      ]);
+      expect((await Effect.runPromise(provider.getDetail(ref))).headRefOid).toBe(head);
+    },
+  );
   it("posts GitLab context discussions with both native coordinates and rename paths", async () => {
     const { provider, ref, calls } = fixture("gitlab");
     await Effect.runPromise(
@@ -491,6 +512,21 @@ it("matches quoted native UTF8 filenames and ignores header-like hunk contents",
   ]);
   expect((await Effect.runPromise(provider.getFiles(ref)))[0]?.patch).toBe(diff);
 });
+it("rejects a Bitbucket repository that is not workspace/repository before any request", async () => {
+  for (const repository of ["repo", "team/repo/extra"]) {
+    const { provider, calls } = fixture("bitbucket");
+    const failure = await Effect.runPromise(
+      Effect.flip(provider.getRepositoryCloneUrls({ cwd: "/w", repository })),
+    );
+    expect(failure.message).toContain("workspace/repository");
+    expect(calls).toEqual([]);
+  }
+  const { provider, calls } = fixture("bitbucket", [
+    { links: { clone: [{ name: "https", href: "https://bitbucket.org/team/other.git" }] } },
+  ]);
+  await Effect.runPromise(provider.getRepositoryCloneUrls({ cwd: "/w", repository: "team/other" }));
+  expect(calls[0]?.url).toContain("api.bitbucket.org/2.0/repositories/team/other");
+});
 it("continues native Bitbucket metadata pagination without following arbitrary next URLs", async () => {
   const { provider, ref, calls } = fixture("bitbucket", [
     {
@@ -506,4 +542,108 @@ it("continues native Bitbucket metadata pagination without following arbitrary n
     "api.bitbucket.org/2.0/repositories/team/repo/pullrequests/7/diffstat?pagelen=100&page=2",
   );
   expect(calls.every((call) => !call.url.includes("untrusted"))).toBe(true);
+});
+
+it.each(["gitlab", "bitbucket", "azure-devops", "forgejo"] as const)(
+  "lists terminal %s branch PRs when all states are requested",
+  async (kind) => {
+    const row =
+      kind === "gitlab"
+        ? {
+            iid: 7,
+            title: "Change",
+            source_branch: "topic",
+            target_branch: "main",
+            state: "merged",
+            sha: "head",
+            updated_at: "2026-10-02T00:00:00Z",
+          }
+        : kind === "bitbucket"
+          ? {
+              id: 7,
+              title: "Change",
+              state: "MERGED",
+              source: { branch: { name: "topic" }, commit: { hash: "head" } },
+              destination: { branch: { name: "main" } },
+              updated_on: "2026-10-02T00:00:00Z",
+            }
+          : kind === "azure-devops"
+            ? {
+                pullRequestId: 7,
+                title: "Change",
+                status: "completed",
+                sourceRefName: "refs/heads/topic",
+                targetRefName: "refs/heads/main",
+                lastMergeSourceCommit: { commitId: "head" },
+                closedDate: "2026-10-02T00:00:00Z",
+              }
+            : {
+                number: 7,
+                title: "Change",
+                state: "closed",
+                merged: true,
+                head: { ref: "topic", sha: "head" },
+                base: { ref: "main" },
+                updated_at: "2026-10-02T00:00:00Z",
+              };
+    const payload =
+      kind === "bitbucket" ? { values: [row] } : kind === "azure-devops" ? { value: [row] } : [row];
+    const f = fixture(kind, [payload]);
+    const result = await Effect.runPromise(
+      f.provider.listOpenPullRequests({
+        cwd: "/repo",
+        headSelector: "topic",
+        state: "all",
+        limit: 100,
+      }),
+    );
+    expect(result).toMatchObject([
+      {
+        number: 7,
+        state: "merged",
+        headRefOid: "head",
+        headRefName: "topic",
+        updatedAt: "2026-10-02T00:00:00Z",
+      },
+    ]);
+    const url = new URL(f.calls[0]!.url);
+    expect(url.searchParams.get(kind === "azure-devops" ? "searchCriteria.status" : "state")).toBe(
+      kind === "bitbucket" ? "OPEN" : "all",
+    );
+    if (kind === "bitbucket") {
+      expect(url.searchParams.getAll("state")).toEqual([
+        "OPEN",
+        "MERGED",
+        "DECLINED",
+        "SUPERSEDED",
+      ]);
+      expect(url.searchParams.get("pagelen")).toBe("50");
+    }
+  },
+);
+it("refuses a partial Bitbucket all-state page instead of treating its terminal rows as complete proof", async () => {
+  const f = fixture("bitbucket", [{ values: [], next: "https://api.bitbucket.org/page/2" }]);
+  expect(
+    (
+      await Effect.runPromise(
+        f.provider
+          .listOpenPullRequests({ cwd: "/repo", headSelector: "topic", state: "all" })
+          .pipe(Effect.result),
+      )
+    )._tag,
+  ).toBe("Failure");
+});
+it("checks the raw page bound before filtering unrelated branches", async () => {
+  const f = fixture("forgejo", [
+    [
+      { number: 7, state: "closed", merged: true, head: { ref: "topic", sha: "head" } },
+      { number: 8, state: "open", head: { ref: "another", sha: "other" } },
+    ],
+  ]);
+  const result = await Effect.runPromise(
+    f.provider
+      .listOpenPullRequests({ cwd: "/repo", headSelector: "topic", state: "all", limit: 2 })
+      .pipe(Effect.result),
+  );
+  expect(result._tag).toBe("Failure");
 });

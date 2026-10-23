@@ -17,7 +17,7 @@ export type ActivityOrderedThread = Pick<Thread, "id" | "createdAt" | "lastInter
 
 /** The fields list filtering and ordering read. */
 export type ListedThread = ActivityOrderedThread &
-  Pick<Thread, "projectId" | "archivedAt" | "snoozedUntil">;
+  Pick<Thread, "projectId" | "archivedAt" | "snoozedUntil" | "settledAt">;
 
 export function compareThreadsByActivity(
   left: ActivityOrderedThread,
@@ -92,6 +92,7 @@ export function getVisibleThreads<T extends ListedThread>(
   return threads.filter(
     (thread) =>
       !isArchivedThread(thread) &&
+      !thread.settledAt &&
       !isSnoozedThread(thread) &&
       !hiddenWorkflowThreadIds.has(thread.id),
   );

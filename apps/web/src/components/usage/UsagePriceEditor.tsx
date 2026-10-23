@@ -29,6 +29,7 @@ function priceRates(price: UsagePriceOverride): Array<string> {
 export function UsagePriceEditor({ draft }: { draft?: UsagePriceDraft | null }) {
   const client = useQueryClient();
   const prices = useSettings((settings) => settings.usagePriceOverrides);
+  const aliases = useSettings((settings) => settings.usageModelAliases);
   const { updateSettings } = useUpdateSettings();
   const [provider, setProvider] = useState<ProviderKind>("codex");
   const [model, setModel] = useState("");
@@ -36,6 +37,8 @@ export function UsagePriceEditor({ draft }: { draft?: UsagePriceDraft | null }) 
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [open, setOpen] = useState(false);
+  const [aliasModel, setAliasModel] = useState("");
+  const [aliasTarget, setAliasTarget] = useState("");
   const inputPriceRef = useRef<HTMLInputElement | null>(null);
   const [focusRequest, setFocusRequest] = useState<number | null>(null);
   useEffect(() => {
@@ -61,18 +64,27 @@ export function UsagePriceEditor({ draft }: { draft?: UsagePriceDraft | null }) 
     input?.focus();
     setFocusRequest(null);
   }, [open, focusRequest]);
-  const save = async (next: readonly UsagePriceOverride[]) => {
+  const persist = async (
+    patch: Parameters<typeof updateSettings>[0],
+    failure: string,
+  ): Promise<boolean> => {
     setSaving(true);
     setError(null);
     try {
-      await updateSettings({ usagePriceOverrides: [...next] });
+      await updateSettings(patch);
       await refreshUsageSummaries(client);
+      return true;
     } catch {
-      setError("Could not save usage prices.");
+      setError(failure);
+      return false;
     } finally {
       setSaving(false);
     }
   };
+  const save = (next: readonly UsagePriceOverride[]) =>
+    persist({ usagePriceOverrides: [...next] }, "Could not save usage prices.");
+  const saveAliases = (next: Readonly<Record<string, string>>) =>
+    persist({ usageModelAliases: { ...next } }, "Could not save model mappings.");
   return (
     <details
       className="rounded-xl border p-3"
@@ -189,6 +201,73 @@ export function UsagePriceEditor({ draft }: { draft?: UsagePriceDraft | null }) 
           Save price
         </Button>
       </form>
+      <section aria-label="Model mappings" className="mt-4 space-y-2 border-t pt-3">
+        <h3 className="text-sm font-medium">Model mappings</h3>
+        <p className="text-xs text-muted-foreground">
+          Count one model as another, such as a preview model under its released name. A mapped
+          model leaves Usage: its tokens and cost move to the target and use the target&apos;s
+          price.
+        </p>
+        {Object.entries(aliases).map(([source, target]) => (
+          <div key={source} className="flex items-center justify-between gap-2 py-1 text-xs">
+            <span>
+              {source} → {target}
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={saving}
+              aria-label={`Remove mapping for ${source}`}
+              onClick={() =>
+                void saveAliases(
+                  Object.fromEntries(Object.entries(aliases).filter(([key]) => key !== source)),
+                )
+              }
+            >
+              Remove
+            </Button>
+          </div>
+        ))}
+        <form
+          className="grid gap-2 sm:grid-cols-[1fr_1fr_auto] sm:items-end"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const source = aliasModel.trim();
+            const target = aliasTarget.trim();
+            if (!source || !target || source === target) {
+              setError("Enter two different model IDs to map.");
+              return;
+            }
+            void saveAliases({ ...aliases, [source]: target }).then((saved) => {
+              if (!saved) return;
+              setAliasModel("");
+              setAliasTarget("");
+            });
+          }}
+        >
+          <label className="text-xs">
+            Mapped model
+            <input
+              className="block w-full rounded border p-2"
+              value={aliasModel}
+              placeholder="gpt-5.6-preview"
+              onChange={(event) => setAliasModel(event.target.value)}
+            />
+          </label>
+          <label className="text-xs">
+            Map to
+            <input
+              className="block w-full rounded border p-2"
+              value={aliasTarget}
+              placeholder="gpt-5.6"
+              onChange={(event) => setAliasTarget(event.target.value)}
+            />
+          </label>
+          <Button type="submit" disabled={saving}>
+            Save mapping
+          </Button>
+        </form>
+      </section>
       {error && (
         <p role="alert" className="mt-2 text-xs">
           {error}

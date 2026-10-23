@@ -1,3 +1,17 @@
+import { McpAppService } from "./mcpApps/McpAppService.ts";
+import { MCP_APPS_WS_METHODS } from "@t3tools/contracts";
+import { ThreadSettlementService } from "./orchestration/Layers/ThreadSettlementService.ts";
+import { THREAD_SETTLEMENT_WS_METHODS } from "@t3tools/contracts";
+import { PullRequestWatchService } from "./orchestration/Layers/PullRequestWatchService.ts";
+import { PR_WATCH_WS_METHODS, PR_WATCH_CHANGED_CHANNEL } from "@t3tools/contracts";
+import { HTML_RENDER_WS_METHODS } from "@t3tools/contracts";
+import { makeHtmlPreviewBroker } from "./htmlRender/HtmlPreviewBroker.ts";
+import { makeHtmlRenderRuntime } from "./htmlRender/HtmlRenderRuntime.ts";
+import { ThreadMcpBroker } from "./mcp/threadMcpTools.ts";
+import { makeThreadToolHandler } from "./mcp/threadToolRuntime.ts";
+import { PrHubFederation } from "./prHub/Layers/PrHubFederation.ts";
+import { PrHubReviewGuideService } from "./prHub/Layers/PrHubReviewGuideService.ts";
+import { publicOtlpConfiguration, resolveOtlpConfiguration } from "@t3tools/shared/observability";
 import { registerShutdown, ServerShutdown } from "./shutdown.ts";
 import { streamFileHandle } from "./assetHttp.ts";
 import { makeSocketLiveness, closeSocketsWithin } from "./wsServer/socketLiveness.ts";
@@ -19,6 +33,21 @@ import {
   type GitWorkspaceSwitchHandler,
 } from "./git/workspaceSwitch.ts";
 import { inspectAttachableWorkspace } from "./project/workspaceAttachment.ts";
+import { discoverSourceControlProviderIdentities } from "./sourceControl/discovery.ts";
+import {
+  initializeNewProject,
+  projectFolderSlug,
+  reserveProjectFolder,
+  resolveProjectsRoot,
+} from "./project/createNewProject.ts";
+import {
+  prepareScratchRoot,
+  scratchProjectIdFor,
+  scratchRootFor,
+  scratchWorkspaceRefusal,
+} from "./project/scratchProject.ts";
+import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { readWorktreeClaims } from "./project/worktreeClaims.ts";
 import { withRepositoryLifecycleLock } from "./project/Layers/WorktreeLifecycleCoordinator.ts";
 import { GitHubCli } from "./git/Services/GitHubCli.ts";
@@ -800,6 +829,7 @@ export type ServerCoreRuntimeServices =
   | ProjectMcpConfigService
   | PreviewAutomationBroker
   | PrHubAdvisoryService
+  | PrHubReviewGuideService
   | PrHubService;
 
 export type ServerRuntimeServices =
@@ -926,6 +956,9 @@ function formatServerLifecycleRouteFailure(error: ServerLifecycleError): string 
 const ORCHESTRATION_RUNTIME_ROUTE_WAIT_MS = 55_000;
 
 interface OrchestrationRuntimeServices {
+  readonly mcpApps: McpAppService["Service"];
+  readonly threadSettlement: ThreadSettlementService["Service"];
+  readonly pullRequestWatches: PullRequestWatchService["Service"];
   readonly projectSkillSyncService: ProjectSkillSyncServiceShape;
   readonly threadBackgroundWork: ThreadBackgroundWorkShape;
   readonly usageService: UsageServiceShape;
@@ -1005,10 +1038,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const previewAutomationBroker = yield* PreviewAutomationBroker;
   const computerAutomationBroker = yield* Effect.serviceOption(ComputerAutomationBroker);
   const forgeAccounts = yield* Effect.serviceOption(ForgeAccounts);
+  const htmlPreviewBroker = makeHtmlPreviewBroker();
+  yield* Effect.addFinalizer(() => Effect.sync(() => htmlPreviewBroker.close()));
+  const threadMcpBroker = yield* Effect.serviceOption(ThreadMcpBroker);
+  const threadMcpFederation = yield* Effect.serviceOption(PrHubFederation);
   const prHubExtensions = yield* Effect.serviceOption(PrHubExtensions);
   const diskSpaceMonitor = yield* Effect.serviceOption(DiskSpaceMonitor);
   const prHub = yield* PrHubService;
   const prHubAdvisory = yield* PrHubAdvisoryService;
+  const prHubReviewGuide = yield* PrHubReviewGuideService;
   const git = yield* GitCore;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -2091,6 +2129,22 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           );
           return;
         }
+        if (url.pathname.startsWith("/api/html-renders/preview/")) {
+          const id = url.pathname.slice("/api/html-renders/preview/".length);
+          const html = /^[a-f0-9-]{36}$/.test(id) ? htmlPreviewBroker.readInput(id) : null;
+          const allowed = req.method === "GET" || req.method === "HEAD";
+          respond(
+            allowed ? (html === null ? 410 : 200) : 405,
+            {
+              "Cache-Control": "no-store",
+              "Content-Type": "text/plain; charset=utf-8",
+              "X-Content-Type-Options": "nosniff",
+              "Content-Security-Policy": "sandbox; default-src 'none'",
+            },
+            req.method === "HEAD" ? undefined : (html ?? "Preview expired."),
+          );
+          return;
+        }
         if (url.pathname === "/api/prhub/media") {
           const accounts = Option.isSome(forgeAccounts)
             ? yield* forgeAccounts.value.listAccounts()
@@ -2523,9 +2577,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       const workspace = await Effect.runPromise(
         projectionWorkspaceQuery.getProjectWorkspace(ProjectId.makeUnsafe(projectId)),
       );
+      // The scratch root is shared by every thread without a project; only a thread scope
+      // reaches one of its folders.
       return Option.match(workspace, {
         onNone: () => null,
-        onSome: (value) => value.workspaceRoot,
+        onSome: (value) => (isScratchProject(value) ? null : value.workspaceRoot),
       });
     },
     resolveThreadWorkspaceRoot: async (threadId) => {
@@ -2774,6 +2830,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         orchestrationRuntimeServices,
         NextTurnQueueDispatcher,
       );
+      const mcpApps = ServiceMap.get(orchestrationRuntimeServices, McpAppService);
+      const threadSettlement = ServiceMap.get(
+        orchestrationRuntimeServices,
+        ThreadSettlementService,
+      );
+      const pullRequestWatches = ServiceMap.get(
+        orchestrationRuntimeServices,
+        PullRequestWatchService,
+      );
       const worktreeManager = ServiceMap.get(orchestrationRuntimeServices, WorktreeManager);
       const workspaceTransition = ServiceMap.get(orchestrationRuntimeServices, WorkspaceTransition);
       const worktreeSetup = ServiceMap.get(orchestrationRuntimeServices, WorktreeSetup);
@@ -2790,6 +2855,31 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         orchestrationRuntimeServices,
         DefaultBranchAutoPull,
       );
+
+      if (
+        Option.isSome(threadMcpBroker) &&
+        Option.isSome(threadMcpFederation) &&
+        Option.isSome(prHubExtensions)
+      ) {
+        const html = yield* makeHtmlRenderRuntime({
+          engine: orchestrationEngine,
+          attachmentsDir: serverConfig.attachmentsDir,
+          preview: htmlPreviewBroker,
+        });
+        yield* threadMcpBroker.value
+          .register(
+            makeThreadToolHandler({
+              engine: orchestrationEngine,
+              federation: threadMcpFederation.value,
+              guides: prHubReviewGuide,
+              watches: pullRequestWatches,
+              settlement: threadSettlement,
+              links: prHubExtensions.value,
+              html,
+            }),
+          )
+          .pipe(Effect.provideService(Scope.Scope, subscriptionsScope), Effect.orDie);
+      }
 
       yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
         Effect.gen(function* () {
@@ -2915,6 +3005,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         }),
       ).pipe(Effect.forkIn(subscriptionsScope));
       yield* Scope.provide(storageCleanupWorker.start, subscriptionsScope);
+      yield* Stream.runForEach(pullRequestWatches.changes, (threadId) =>
+        pushBus.publishAll(PR_WATCH_CHANGED_CHANNEL, { threadId }),
+      ).pipe(Effect.forkIn(subscriptionsScope));
+      yield* Scope.provide(pullRequestWatches.start, subscriptionsScope);
+      yield* Scope.provide(threadSettlement.start, subscriptionsScope);
       yield* Scope.provide(defaultBranchAutoPull.start, subscriptionsScope);
       if (diskSpaceMonitor._tag === "Some")
         yield* Scope.provide(
@@ -2926,6 +3021,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       yield* Ref.set(nextTurnQueueDispatcherRef, nextTurnQueueDispatcher);
       yield* readiness.markOrchestrationSubscriptionsReady;
       yield* Deferred.succeed(orchestrationRuntime, {
+        mcpApps,
+        threadSettlement,
+        pullRequestWatches,
         threadBackgroundWork,
         usageService,
         orchestrationEngine,
@@ -3778,13 +3876,14 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             (entry) => entry.id === threadId && entry.deletedAt === null,
           );
           const project = model.projects.find((entry) => entry.id === thread?.projectId);
+          const workspace = threadWorkspaceCwd(thread, project);
           if (
             !thread ||
             !project ||
+            isScratchProject(project) ||
+            !workspace ||
             (yield* Effect.tryPromise(() => canonicalWorktreePath(input.cwd))) !==
-              (yield* Effect.tryPromise(() =>
-                canonicalWorktreePath(thread.worktreePath ?? project.workspaceRoot),
-              ))
+              (yield* Effect.tryPromise(() => canonicalWorktreePath(workspace)))
           )
             return yield* Effect.fail(
               new Error("The checkout does not match this conversation's workspace."),
@@ -3865,6 +3964,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       });
 
   const routeRequest = Effect.fnUntraced(function* (ws: WebSocket, request: WebSocketRequest) {
+    const requestCwd = (request.body as { readonly cwd?: unknown }).cwd;
+    if (typeof requestCwd === "string") {
+      const refusal = scratchWorkspaceRefusal({
+        scratchRoot: scratchRootFor(serverConfig.stateDir),
+        method: request.body._tag,
+        cwd: requestCwd,
+      });
+      if (refusal) return yield* new RouteRequestError({ message: refusal });
+    }
     switch (request.body._tag) {
       case WS_METHODS.githubLoginStart:
         return yield* profileCall(() => githubLogin.start());
@@ -4155,7 +4263,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           (entry) => entry.id === input.threadId && entry.deletedAt === null,
         );
         const project = snapshot.projects.find((entry) => entry.id === source?.projectId);
-        if (!source || !project || !providerService.nativeOperations?.executeWithApply)
+        // A fork gets its own Git worktree, which a thread without a project cannot have.
+        if (
+          !source ||
+          !project ||
+          isScratchProject(project) ||
+          !providerService.nativeOperations?.executeWithApply
+        )
           return yield* new RouteRequestError({ message: "This conversation cannot be forked." });
         if (!/^[0-9a-f-]{36}$/i.test(input.operationId))
           return yield* new RouteRequestError({ message: "Invalid fork identifier." });
@@ -4227,7 +4341,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                   .pipe(Effect.mapError(validation));
               }),
             createConfiguredWorktree({
-              cwd: source.worktreePath ?? project.workspaceRoot,
+              cwd: threadWorkspaceCwd(source, project) ?? project.workspaceRoot,
               branch: source.branch ?? "HEAD",
               baseRefName: source.branch ?? "HEAD",
               newBranch: branch,
@@ -4386,6 +4500,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             hasOlderActivities: result.hasOlderActivities,
           }),
         });
+      }
+
+      case ORCHESTRATION_WS_METHODS.searchThread: {
+        return yield* projectionReadModelQuery.searchThread(stripRequestTag(request.body));
       }
 
       case ORCHESTRATION_WS_METHODS.getThreadHistoryPage: {
@@ -4842,6 +4960,146 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }
       case WS_METHODS.projectsCloneList:
         return projectClones.list();
+      case WS_METHODS.projectsEnsureScratch: {
+        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+        const workspaceRoot = yield* Effect.tryPromise({
+          try: () => prepareScratchRoot(serverConfig.stateDir),
+          catch: (cause) =>
+            new RouteRequestError({
+              message:
+                cause instanceof Error
+                  ? cause.message
+                  : "Could not create the folder for threads without a project.",
+            }),
+        });
+        const findLive = orchestrationEngine
+          .getReadModel()
+          .pipe(
+            Effect.map((model) =>
+              model.projects.find((project) => isScratchProject(project) && !project.deletedAt),
+            ),
+          );
+        const existing = yield* findLive;
+        if (existing) return { projectId: existing.id };
+        // The id and command id depend only on the profile, so racing or retried creates
+        // converge on one project: a duplicate either replays the receipt or is refused.
+        const projectId = ProjectId.makeUnsafe(scratchProjectIdFor(activeProfile.id));
+        yield* orchestrationEngine
+          .dispatch({
+            type: "project.scratch.create",
+            commandId: CommandId.makeUnsafe(`scratch-project-create:${projectId}`),
+            projectId,
+            workspaceRoot,
+            createdAt: new Date().toISOString(),
+          })
+          .pipe(
+            Effect.catch((error) =>
+              findLive.pipe(
+                Effect.flatMap((raced) =>
+                  raced
+                    ? Effect.void
+                    : Effect.fail(new RouteRequestError({ message: String(error) })),
+                ),
+              ),
+            ),
+          );
+        const created = yield* findLive;
+        if (!created)
+          return yield* new RouteRequestError({
+            message: "Could not create the home for threads without a project.",
+          });
+        return { projectId: created.id };
+      }
+      case WS_METHODS.projectsCreateNew: {
+        const body = stripRequestTag(request.body);
+        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+        const settings = yield* serverSettings.getSettings.pipe(
+          Effect.mapError(
+            () => new RouteRequestError({ message: "Could not read the projects folder setting." }),
+          ),
+        );
+        const created = yield* Effect.tryPromise({
+          try: async () => {
+            const root = resolveProjectsRoot({
+              setting: settings.projectsRoot,
+              profileId: activeProfile.id,
+              isDefaultProfile: serverConfig.profile?.isDefault ?? true,
+            });
+            const folder = await reserveProjectFolder(root, projectFolderSlug(body.name));
+            const { warning } = await initializeNewProject({
+              folder,
+              name: body.name,
+              authorName: settings.gitAuthorName,
+              authorEmail: settings.gitAuthorEmail,
+            });
+            return { folder, warning };
+          },
+          catch: (cause) =>
+            new RouteRequestError({
+              message: `Could not create the project: ${cause instanceof Error ? cause.message : String(cause)}`,
+            }),
+        });
+        const projectId = ProjectId.makeUnsafe(randomUUID());
+        yield* orchestrationEngine
+          .dispatch({
+            type: "project.create",
+            commandId: CommandId.makeUnsafe(`project-create-new:${projectId}`),
+            projectId,
+            title: body.name,
+            workspaceRoot: created.folder,
+            defaultModel: DEFAULT_MODEL_BY_PROVIDER.codex,
+            createdAt: new Date().toISOString(),
+          })
+          .pipe(
+            Effect.mapError(
+              (error) =>
+                new RouteRequestError({
+                  message: `The folder ${created.folder} was created but could not be added as a project: ${String(error)}`,
+                }),
+            ),
+          );
+        return { projectId, workspaceRoot: created.folder, warning: created.warning };
+      }
+      case WS_METHODS.projectsFindByRepository: {
+        const body = stripRequestTag(request.body);
+        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+        const model = yield* orchestrationEngine.getReadModel();
+        const owner = body.owner.toLowerCase();
+        const name = body.name.toLowerCase().replace(/\.git$/, "");
+        // Bounded concurrency and a per-project deadline keep one slow or unmounted
+        // volume from stalling the link; such a project simply does not match.
+        const candidates = model.projects.filter(
+          (project) => project.deletedAt === null && !isScratchProject(project),
+        );
+        const matched = yield* Effect.forEach(
+          candidates,
+          (project) =>
+            git.listRemotes(project.workspaceRoot).pipe(
+              Effect.timeoutOption("5 seconds"),
+              Effect.map(Option.getOrElse(() => [])),
+              Effect.orElseSucceed(() => []),
+              Effect.map((remotes) =>
+                discoverSourceControlProviderIdentities(remotes, {
+                  githubHosts: ["github.com"],
+                }).some(
+                  (identity) =>
+                    identity.kind === "github" &&
+                    identity.host?.toLowerCase() === "github.com" &&
+                    identity.owner?.toLowerCase() === owner &&
+                    identity.repository?.toLowerCase() === name,
+                ),
+              ),
+            ),
+          { concurrency: 6 },
+        );
+        return candidates
+          .filter((_, index) => matched[index])
+          .map((project) => ({
+            projectId: project.id,
+            title: project.title,
+            workspaceRoot: project.workspaceRoot,
+          }));
+      }
       case WS_METHODS.projectsCloneCancel: {
         yield* projectClones.cancel(request.body.operationId);
         return undefined;
@@ -5628,6 +5886,43 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* prHubAdvisory.analyzeAdvisories(body);
       }
 
+      case MCP_APPS_WS_METHODS.toolInfo:
+        return yield* (yield* awaitOrchestrationRuntimeForRoute).mcpApps.toolInfo(
+          stripRequestTag(request.body),
+        );
+      case MCP_APPS_WS_METHODS.callTool:
+        return yield* (yield* awaitOrchestrationRuntimeForRoute).mcpApps.callTool(
+          stripRequestTag(request.body),
+        );
+      case MCP_APPS_WS_METHODS.readResource:
+        return yield* (yield* awaitOrchestrationRuntimeForRoute).mcpApps.readResource(
+          stripRequestTag(request.body),
+        );
+      case MCP_APPS_WS_METHODS.updateModelContext:
+        return yield* (yield* awaitOrchestrationRuntimeForRoute).mcpApps.updateModelContext(
+          stripRequestTag(request.body),
+        );
+      case THREAD_SETTLEMENT_WS_METHODS.settleProjectIdle:
+        return yield* (yield* awaitOrchestrationRuntimeForRoute).threadSettlement.settleProjectIdle(
+          request.body.projectId,
+        );
+      case PR_WATCH_WS_METHODS.list:
+        return yield* (yield* awaitOrchestrationRuntimeForRoute).pullRequestWatches.list(
+          request.body.threadId,
+        );
+      case PR_WATCH_WS_METHODS.start:
+        return yield* (yield* awaitOrchestrationRuntimeForRoute).pullRequestWatches.startWatch(
+          stripRequestTag(request.body),
+        );
+      case PR_WATCH_WS_METHODS.stop:
+        return yield* (yield* awaitOrchestrationRuntimeForRoute).pullRequestWatches.stopWatch(
+          stripRequestTag(request.body),
+        );
+      case PR_HUB_WS_METHODS.getReviewGuide:
+        return yield* prHubReviewGuide.get(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.generateReviewGuide:
+        return yield* prHubReviewGuide.generate(stripRequestTag(request.body));
+
       case PR_HUB_WS_METHODS.getAdvisories: {
         const body = stripRequestTag(request.body);
         return yield* prHubAdvisory.getAdvisories(body);
@@ -5899,6 +6194,20 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return undefined;
       }
 
+      case HTML_RENDER_WS_METHODS.host: {
+        const body = stripRequestTag(request.body);
+        if (body.available)
+          htmlPreviewBroker.register(getPreviewAutomationHostId(ws), {
+            push: (request) => pushBus.publishClient(ws, WS_CHANNELS.htmlRenderRequest, request),
+          });
+        else htmlPreviewBroker.unregister(getPreviewAutomationHostId(ws));
+        return undefined;
+      }
+      case HTML_RENDER_WS_METHODS.respond: {
+        const body = stripRequestTag(request.body);
+        htmlPreviewBroker.respond(getPreviewAutomationHostId(ws), body);
+        return undefined;
+      }
       case WS_METHODS.previewAutomationRespond: {
         const body = stripRequestTag(request.body);
         yield* previewAutomationBroker.respond(
@@ -6029,6 +6338,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           providers,
           availableEditors,
           settings,
+          diagnostics: publicOtlpConfiguration(
+            resolveOtlpConfiguration(settings.observability, process.env),
+          ),
         };
 
       case WS_METHODS.serverGetProjectSettings: {
@@ -7469,7 +7781,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           Effect.andThen(
             Effect.gen(function* () {
               const hostId = previewAutomationHostIdByWs.get(ws);
-              if (hostId) yield* previewAutomationBroker.unregisterHost(hostId);
+              if (hostId) {
+                htmlPreviewBroker.unregister(hostId);
+                yield* previewAutomationBroker.unregisterHost(hostId);
+              }
               const clientIds = previewAutomationClientIdsByWs.get(ws);
               if (!clientIds) return;
               previewAutomationClientIdsByWs.delete(ws);

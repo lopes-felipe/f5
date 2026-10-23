@@ -1,6 +1,7 @@
+import { isManualRemovalIgnoredBlocker } from "./cleanupSafety.ts";
 export type IgnoredFilesRemovalPolicy =
   | { readonly kind: "protect" }
-  /** Storage cleanup: well-known build and cache outputs may be deleted too. */
+  /** Storage and automatic cleanup: well-known build and cache outputs may be deleted too. */
   | { readonly kind: "rebuildable" }
   | {
       readonly kind: "manual";
@@ -52,6 +53,6 @@ export function blockingIgnoredEntries(
   return entries.filter((entry) => {
     if (policy.kind === "manual") return !approved.has(entry);
     if (policy.kind === "rebuildable") return !isRebuildableIgnoredEntry(entry);
-    return !/(^|\/)node_modules\/?$/.test(entry);
+    return isManualRemovalIgnoredBlocker(entry);
   });
 }

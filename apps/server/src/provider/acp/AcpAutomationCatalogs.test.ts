@@ -16,6 +16,85 @@ const init = {
 } as InitializeResponse;
 
 describe("ACP catalogs and privacy", () => {
+  it("offers thread tools on the web without installing desktop automation catalogs", async () => {
+    const dispose = vi.fn();
+    const createSessionConfig = vi.fn(() => ({
+      serverName: "f5_thread",
+      env: { THREAD_TOKEN: "thread-private-token" },
+      serverDefinition: {
+        type: "http",
+        url: "http://127.0.0.1:1234/mcp/thread",
+        bearerTokenEnvVar: "THREAD_TOKEN",
+      },
+      dispose,
+    }));
+    const scope = await Effect.runPromise(Scope.make());
+    const catalogs = await Effect.runPromise(
+      prepareAcpAutomationCatalogs({
+        threadId,
+        provider: "cursor",
+        scope,
+        ordinarySession: false,
+        threadSession: true,
+        readOnlyWorkflow: false,
+        preview: {
+          supportsThreadCatalog: true,
+          createSessionConfig,
+        } as unknown as PreviewMcpHttpServerShape,
+      }),
+    );
+    expect(catalogs.mcpServers(init)).toHaveLength(1);
+    expect(createSessionConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ catalog: "thread" }),
+    );
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+  it.each([true, false])(
+    "offers thread tools only to an ordinary HTTP-capable agent (%s)",
+    async (http) => {
+      const dispose = vi.fn();
+      const createSessionConfig = vi.fn(() => ({
+        serverName: "f5_thread",
+        env: { THREAD_TOKEN: "thread-private-token" },
+        serverDefinition: {
+          type: "http",
+          url: "http://127.0.0.1:1234/mcp/thread",
+          bearerTokenEnvVar: "THREAD_TOKEN",
+        },
+        dispose,
+      }));
+      const scope = await Effect.runPromise(Scope.make());
+      const catalogs = await Effect.runPromise(
+        prepareAcpAutomationCatalogs({
+          threadId,
+          provider: "cursor",
+          scope,
+          ordinarySession: true,
+          readOnlyWorkflow: false,
+          preview: {
+            supportsThreadCatalog: true,
+            createSessionConfig,
+          } as unknown as PreviewMcpHttpServerShape,
+        }),
+      );
+      const offered = catalogs.mcpServers({
+        ...init,
+        agentCapabilities: { mcpCapabilities: { http } },
+      });
+      expect(offered).toHaveLength(http ? 1 : 0);
+      if (http)
+        expect(createSessionConfig).toHaveBeenCalledWith(
+          expect.objectContaining({ threadId, catalog: "thread" }),
+        );
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+      expect(dispose).toHaveBeenCalledTimes(http ? 1 : 0);
+      if (http)
+        expect(
+          JSON.stringify(catalogs.redactForLog({ error: "thread-private-token" })),
+        ).not.toContain("thread-private-token");
+    },
+  );
   it.each([
     { kind: "execute", rawInput: { text: "marker" } },
     { kind: "read", rawInput: { input: { tool: "computer_type", text: "marker" } } },

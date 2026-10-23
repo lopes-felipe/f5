@@ -120,6 +120,12 @@ describe("PreviewRuntime", () => {
 
     await expect(runtime.setColorScheme("tab-1", "dark")).resolves.toBe(true);
 
+    // Dark-scheme pages without their own background need an opaque base.
+    expect(mock.commands).toContainEqual({
+      method: "Emulation.setDefaultBackgroundColorOverride",
+      params: { color: { r: 255, g: 255, b: 255, a: 1 } },
+    });
+
     expect(runtime.lookupTab("tab-1")?.colorScheme).toBe("dark");
     expect(mock.commands).toContainEqual({
       method: "Emulation.setEmulatedMedia",

@@ -1,3 +1,5 @@
+import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { isPrHubRepositoryExcluded } from "../repositoryPolicy.ts";
 import { resolveLocalCheckout as discoverLocalCheckout } from "../localCheckout.ts";
 import { nextPrHubRefreshAt } from "../refreshSchedule.ts";
 import { GitHubCliError } from "../../git/Errors.ts";
@@ -118,7 +120,7 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
           if (!roots.has(root)) projectRepositoryCache.delete(root);
         const candidates: PrHubLocalCheckoutCandidate[] = [];
         for (const project of allProjects) {
-          if (project.deletedAt !== null) continue;
+          if (project.deletedAt !== null || isScratchProject(project)) continue;
           let cached = projectRepositoryCache.get(project.workspaceRoot);
           if (!cached || Date.now() - cached.checkedAt >= 15 * 60_000) {
             const remotes = yield* git.listRemotes(project.workspaceRoot).pipe(
@@ -417,11 +419,17 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
             const provider = yield* sourceControlProviders.get(pr.provider);
             const { owner, repo } = yield* repositoryParts(pr);
             const variables = yield* decodeDetailResponse(pr, "prHub.getTimeline.cursor", () =>
-              githubTimelineVariables({ owner, repo, number: pr.number, cursor: input.cursor }),
+              githubTimelineVariables({
+                owner,
+                repo,
+                number: pr.number,
+                cursor: input.cursor,
+                commentsOnly: input.commentsOnly,
+              }),
             );
             return yield* readPrDetailCache({
               cache: timelineCache,
-              key: `${pr.key}|${input.cursor ?? "first"}`,
+              key: `${pr.key}|${input.cursor ?? "first"}|${input.commentsOnly ? "comments" : "all"}`,
               mode: input.mode ?? "if_stale",
               fetch: provider
                 .query({
@@ -433,7 +441,11 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
                 .pipe(
                   Effect.flatMap((response) =>
                     decodeDetailResponse(pr, "prHub.getTimeline.decode", () => {
-                      const decoded = decodeGitHubPrTimeline(response, input.cursor);
+                      const decoded = decodeGitHubPrTimeline(
+                        response,
+                        input.cursor,
+                        input.commentsOnly,
+                      );
                       return {
                         entries: [...decoded.entries],
                         pageInfo: decoded.pageInfo,
@@ -684,11 +696,7 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
           return yield* prHubActionError("GitHub returned an inconsistent pull request identity.");
         // Exclusion changes during an on-demand read take precedence over tracking.
         const latest = yield* settings.getSettings.pipe(Effect.orDie);
-        if (
-          latest.prHub.excludeRepos.some(
-            (repo) => repo.trim().toLowerCase() === ref.repository.toLowerCase(),
-          )
-        )
+        if (isPrHubRepositoryExcluded(latest, ref.repository))
           return yield* prHubActionError("This repository is excluded from PR monitoring.");
         const previous = yield* viewerStateMap(String(viewer.context.viewerId));
         const pr = {

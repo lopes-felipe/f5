@@ -1,6 +1,5 @@
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
-  GitForkIcon,
   GitMergeIcon,
   GaugeIcon,
   GitPullRequestIcon,
@@ -101,7 +100,6 @@ export function SidebarNav(props: {
   const navigate = useNavigate();
   const isOnHome = useLocation({ select: (loc) => loc.pathname === "/" });
   const isOnPullRequests = useLocation({ select: (loc) => loc.pathname === "/pull-requests" });
-  const isOnWorktrees = useLocation({ select: (loc) => loc.pathname === "/worktrees" });
   const isOnUsage = useLocation({ select: (loc) => loc.pathname === "/usage" });
   const isOnUpstream = useLocation({ select: (loc) => loc.pathname === "/upstream" });
   const prHubNeedsYouCount = usePrHubNeedsYouCount();
@@ -167,14 +165,6 @@ export function SidebarNav(props: {
             />
           </SidebarMenuItem>
         )}
-        <SidebarMenuItem>
-          <NavRow
-            icon={GitForkIcon}
-            label="Worktrees"
-            isActive={isOnWorktrees}
-            onSelect={() => void navigate({ to: "/worktrees" })}
-          />
-        </SidebarMenuItem>
         <SidebarMenuItem>
           <NavRow
             icon={GaugeIcon}

@@ -1,3 +1,4 @@
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { lstat } from "node:fs/promises";
 import { CommandId, EventId, WORKTREE_SETUP_TAIL_LINES } from "@t3tools/contracts";
 import { projectScriptRuntimeEnv, setupProjectScript } from "@t3tools/shared/projectScripts";
@@ -348,7 +349,7 @@ export const makeWorktreePreparationService = Effect.gen(function* () {
         yield* Effect.gen(function* () {
           for (const thread of model.threads) {
             const project = model.projects.find((project) => project.id === thread.projectId);
-            const workspace = thread.worktreePath ?? project?.workspaceRoot;
+            const workspace = threadWorkspaceCwd(thread, project);
             if (
               `thread:${thread.id}` !== receipt.owner &&
               (!workspace || (yield* canonical(workspace)) !== receipt.path)

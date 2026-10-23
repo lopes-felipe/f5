@@ -85,28 +85,34 @@ export function ForgeControls({ pr }: { pr: TrackedPullRequest }) {
   const [title, setTitle] = useState(pr.title),
     [body, setBody] = useState("");
   if (!caps || pr.repositoryArchived) return null;
-  const methods = action === "update-branch" ? caps.updateMethods : caps.mergeMethods;
+  const actions = caps.actions.filter(
+    (action) => action !== "delete-branch" || pr.state === "merged" || pr.state === "closed",
+  );
+  const availableAction = actions.includes(action) ? action : actions[0]!;
+  const methods = availableAction === "update-branch" ? caps.updateMethods : caps.mergeMethods;
   return (
     <div className="space-y-4 rounded-lg border border-border p-3">
       <ForgeComposer pr={pr} />
-      {caps.actions.length ? (
+      {actions.length ? (
         <section className="space-y-2">
           <label className="text-xs">
             Forge action{" "}
             <select
               aria-label="Forge action"
-              value={action}
+              value={availableAction}
               onChange={(e) => setAction(e.target.value as typeof action)}
               className="ml-2 rounded border border-border bg-background p-1"
             >
-              {caps.actions.map((value) => (
+              {actions.map((value) => (
                 <option key={value} value={value}>
                   {value.replaceAll("-", " ")}
                 </option>
               ))}
             </select>
           </label>
-          {action === "merge" || action === "update-branch" || action === "enable-auto-merge" ? (
+          {availableAction === "merge" ||
+          availableAction === "update-branch" ||
+          availableAction === "enable-auto-merge" ? (
             <select
               aria-label="Forge action method"
               value={methods.includes(method) ? method : methods[0]}
@@ -122,8 +128,10 @@ export function ForgeControls({ pr }: { pr: TrackedPullRequest }) {
             pr={pr}
             payload={{
               kind: "action",
-              action,
-              ...(action === "merge" || action === "update-branch" || action === "enable-auto-merge"
+              action: availableAction,
+              ...(availableAction === "merge" ||
+              availableAction === "update-branch" ||
+              availableAction === "enable-auto-merge"
                 ? { method: methods.includes(method) ? method : methods[0]! }
                 : {}),
             }}

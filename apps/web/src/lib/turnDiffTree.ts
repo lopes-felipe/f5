@@ -1,4 +1,5 @@
 import type { TurnDiffFileChange } from "../types";
+import { compareFilePaths } from "./filePathCollator";
 
 export interface TurnDiffStat {
   additions: number;
@@ -30,8 +31,6 @@ interface MutableDirectoryNode {
   files: TurnDiffTreeFileNode[];
 }
 
-const SORT_LOCALE_OPTIONS: Intl.CollatorOptions = { numeric: true, sensitivity: "base" };
-
 function normalizePathSegments(pathValue: string): string[] {
   return pathValue
     .replaceAll("\\", "/")
@@ -40,7 +39,7 @@ function normalizePathSegments(pathValue: string): string[] {
 }
 
 function compareByName(a: { name: string }, b: { name: string }): number {
-  return a.name.localeCompare(b.name, undefined, SORT_LOCALE_OPTIONS);
+  return compareFilePaths(a.name, b.name);
 }
 
 function readStat(file: DiffStatSource): TurnDiffStat | null {

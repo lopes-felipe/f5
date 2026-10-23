@@ -8,6 +8,7 @@ import {
   derivePendingUserInputProgress,
   findFirstUnansweredPendingUserInputQuestionIndex,
   resolvePendingUserInputAnswer,
+  seedPendingUserInputAnswers,
   setPendingUserInputCustomAnswer,
   togglePendingUserInputOption,
 } from "./pendingUserInput";
@@ -306,4 +307,25 @@ it("allows empty optional questions without treating required questions as answe
   expect(
     derivePendingUserInputProgress(questions, { required: { customAnswer: "Ada" } }, 1),
   ).toMatchObject({ isComplete: true, canAdvance: true });
+});
+
+it("seeds editor drafts once and preserves edits, empty answers and unrelated questions", () => {
+  const question = {
+    id: "editor",
+    header: "Edit",
+    question: "Edit draft",
+    options: [],
+    initialAnswer: "Existing\n draft",
+  };
+  const empty = {};
+  const seeded = seedPendingUserInputAnswers([question], empty);
+  expect(seeded).toEqual({ editor: { customAnswer: "Existing\n draft" } });
+  expect(empty).toEqual({});
+  for (const customAnswer of ["Changed", ""]) {
+    const edited = { editor: { customAnswer }, other: { customAnswer: "Keep" } };
+    expect(seedPendingUserInputAnswers([question], edited)).toBe(edited);
+  }
+  expect(seedPendingUserInputAnswers([{ ...question, initialAnswer: undefined }], empty)).toBe(
+    empty,
+  );
 });

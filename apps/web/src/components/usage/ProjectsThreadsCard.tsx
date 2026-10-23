@@ -6,7 +6,13 @@ import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Card, CardHeader, CardPanel, CardTitle } from "../ui/card";
 import type { UsageChartMetric } from "./charts/StackedBarChart";
-import { costLabel, recordCountDisplay, tokenFieldDisplay, totalCost } from "./format";
+import {
+  costLabel,
+  isCostUnknown,
+  recordCountDisplay,
+  tokenFieldDisplay,
+  usageMetricValue,
+} from "./format";
 
 const INITIAL_PROJECT_ROWS = 10;
 const TOP_THREAD_ROWS = 10;
@@ -22,17 +28,11 @@ interface Row {
   readonly unattributed: boolean;
 }
 
-function metricValue(metrics: UsageMetrics, metric: UsageChartMetric): number {
-  if (metric === "cost") return totalCost(metrics);
-  if (metric === "turns") return recordCountDisplay(metrics).count;
-  return metrics.totalTokens;
-}
-
 function sortRows(rows: ReadonlyArray<Row>, metric: UsageChartMetric): Array<Row> {
   return [...rows].sort(
     (left, right) =>
       Number(left.unattributed) - Number(right.unattributed) ||
-      metricValue(right.metrics, metric) - metricValue(left.metrics, metric) ||
+      usageMetricValue(right.metrics, metric) - usageMetricValue(left.metrics, metric) ||
       left.name.localeCompare(right.name) ||
       left.key.localeCompare(right.key),
   );
@@ -41,19 +41,23 @@ function sortRows(rows: ReadonlyArray<Row>, metric: UsageChartMetric): Array<Row
 export function ProjectsThreadsCard(props: {
   readonly scope: UsageProjectScope;
   readonly metric: UsageChartMetric;
-  /** Tokens of the (possibly project-filtered) summary; the Threads denominator. */
-  readonly totalTokens: number;
+  /** Metrics of the (possibly project-filtered) summary; the Threads denominator. */
+  readonly totalMetrics: UsageMetrics;
   readonly projectName: (projectId: ProjectId, title: string | null) => string;
   readonly onSelectProject: (projectId: ProjectId | undefined) => void;
 }) {
   const [view, setView] = useState<"projects" | "threads">("projects");
   const [showAll, setShowAll] = useState(false);
   const { scope } = props;
-  // Projects ignore the project filter, so their shares use the catalog total.
+  // Shares follow the selected metric. Projects ignore the project filter, so
+  // their shares use the catalog total.
   const shareDenominator =
     view === "projects"
-      ? scope.byProject.reduce((sum, project) => sum + project.metrics.totalTokens, 0)
-      : props.totalTokens;
+      ? scope.byProject.reduce(
+          (sum, project) => sum + usageMetricValue(project.metrics, props.metric),
+          0,
+        )
+      : usageMetricValue(props.totalMetrics, props.metric);
   const showShare = shareDenominator > 0;
 
   const projectRows = sortRows(
@@ -145,7 +149,14 @@ export function ProjectsThreadsCard(props: {
                 <th className="px-4 py-2 text-right font-medium">Recorded turns</th>
                 <th className="px-4 py-2 text-right font-medium">Known tokens</th>
                 <th className="px-4 py-2 text-right font-medium">Known cost</th>
-                {showShare ? <th className="px-4 py-2 text-right font-medium">Share</th> : null}
+                {showShare ? (
+                  <th
+                    className="px-4 py-2 text-right font-medium"
+                    title={`Share of ${props.metric}`}
+                  >
+                    Share
+                  </th>
+                ) : null}
               </tr>
             </thead>
             <tbody>
@@ -207,7 +218,12 @@ export function ProjectsThreadsCard(props: {
                     </td>
                     {showShare ? (
                       <td className="px-4 py-2.5 text-right tabular-nums">
-                        {Math.round((row.metrics.totalTokens / shareDenominator) * 100)}%
+                        {props.metric === "cost" && isCostUnknown(row.metrics)
+                          ? ""
+                          : `${Math.round(
+                              (usageMetricValue(row.metrics, props.metric) / shareDenominator) *
+                                100,
+                            )}%`}
                       </td>
                     ) : null}
                   </tr>

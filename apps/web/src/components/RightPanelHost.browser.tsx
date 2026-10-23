@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
-import type { RightPanelSurface } from "../rightPanelStore";
+import { useRightPanelStore, type RightPanelSurface } from "../rightPanelStore";
 import { RightPanelHost } from "./RightPanelHost";
 import { SurfaceErrorBoundary } from "./ui/SurfaceErrorBoundary";
 
@@ -133,5 +133,89 @@ describe("SurfaceErrorBoundary", () => {
     fail = false;
     await screen.rerender(ui("c"));
     await expect.element(page.getByText("row ok")).toBeVisible();
+  });
+});
+
+describe("right panel drag order", () => {
+  afterEach(() => {
+    useRightPanelStore.setState({ byThreadId: {}, closedHistory: [], tabMenuThreadId: null });
+    document.body.innerHTML = "";
+  });
+  function ReorderHarness() {
+    const state = useRightPanelStore((store) => store.byThreadId[THREAD_ID]);
+    if (!state) return null;
+    return (
+      <div style={{ height: 500, width: 600 }}>
+        <RightPanelHost
+          mode="sidebar"
+          threadId={THREAD_ID}
+          state={state}
+          renderSurface={(surface) => <p>{surface.kind} body</p>}
+          onActivate={(surface) =>
+            useRightPanelStore.getState().activateSurface(THREAD_ID, surface.id)
+          }
+          onCloseSurface={noop}
+          onCloseOtherSurfaces={noop}
+          onCloseSurfacesToRight={noop}
+          onCloseAllSurfaces={noop}
+          onCopyFilePath={noop}
+          onAddPreview={noop}
+          onAddFiles={noop}
+          onAddDiff={noop}
+          onAddPlan={noop}
+          onAddAgents={noop}
+          previewAvailable={false}
+          filesAvailable={false}
+          diffAvailable
+          planAvailable
+          agentsAvailable
+          liveAgentCount={0}
+        />
+      </div>
+    );
+  }
+  it("drags a tab to a new position without changing the selected tab", async () => {
+    useRightPanelStore.setState({
+      byThreadId: {
+        [THREAD_ID]: {
+          isOpen: true,
+          activeSurfaceId: "plan",
+          surfaces: [
+            { id: "diff", kind: "diff" },
+            { id: "plan", kind: "plan" },
+            { id: "agents", kind: "agents" },
+          ],
+        },
+      },
+    });
+    const screen = await render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ReorderHarness />
+      </QueryClientProvider>,
+    );
+    const from = screen
+      .getByRole("button", { name: "Agents", exact: true })
+      .element()
+      .closest("[draggable='true']")!;
+    const to = screen
+      .getByRole("button", { name: "Diff", exact: true })
+      .element()
+      .closest("[draggable='true']")!;
+    const transfer = new DataTransfer();
+    from.dispatchEvent(new DragEvent("dragstart", { bubbles: true, dataTransfer: transfer }));
+    to.dispatchEvent(
+      new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: transfer }),
+    );
+    to.dispatchEvent(
+      new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }),
+    );
+    await vi.waitFor(() =>
+      expect(
+        Array.from(document.querySelectorAll("[data-active-tab]")).map(
+          (element) => element.querySelector("button")?.textContent,
+        ),
+      ).toEqual(["Agents", "Diff", "Plan"]),
+    );
+    expect(useRightPanelStore.getState().byThreadId[THREAD_ID]?.activeSurfaceId).toBe("plan");
   });
 });

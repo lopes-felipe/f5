@@ -6,6 +6,14 @@ import { describe, expect, it, vi } from "vitest";
 import { runProcess } from "./processRunner";
 
 describe("runProcess", () => {
+  it("passes the same bare-repository protection to direct Git callers", async () => {
+    const result = await runProcess("git", ["config", "--get", "--", "safe.bareRepository"], {
+      env: process.env,
+      allowNonZeroExit: true,
+    });
+    expect(result.stdout.trim()).toBe("explicit");
+  });
+
   it("fails when output exceeds max buffer in default mode", async () => {
     await expect(
       runProcess("node", ["-e", "process.stdout.write('x'.repeat(2048))"], {

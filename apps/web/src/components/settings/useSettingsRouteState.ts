@@ -1,5 +1,6 @@
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
+import { withoutScratchProjects } from "@t3tools/shared/scratchProject";
 import { invalidateWorkflowQueries } from "../../lib/workflowQueries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -91,7 +92,9 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
   const settings = useSettings();
   const defaults = { ...DEFAULT_UNIFIED_SETTINGS, ...appDefaults };
   const { updateSettings } = useUpdateSettings();
-  const projects = useStore((state) => state.projects);
+  const storeProjects = useStore((state) => state.projects);
+  // The home for threads without a project has no project settings of its own.
+  const projects = useMemo(() => withoutScratchProjects(storeProjects), [storeProjects]);
   const projectsHydrated = useStore((state) => state.threadsHydrated);
   const syncStartupSnapshot = useStore((state) => state.syncStartupSnapshot);
   const notificationPermission = useThreadStatusNotificationPermissionState();

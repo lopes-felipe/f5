@@ -118,6 +118,7 @@ export type GitHubPullRequestNumber = typeof GitHubPullRequestNumber.Type;
 
 /** Forge functionality is separate from the legacy Git workflow action seam. */
 export const ForgeAction = Schema.Literals([
+  "delete-branch",
   "merge",
   "ready",
   "draft",

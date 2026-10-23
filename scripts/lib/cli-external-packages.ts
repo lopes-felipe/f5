@@ -7,6 +7,7 @@ export const CLI_RUNTIME_EXTERNAL_PREFIXES = [
   "node-addon-api",
   "bufferutil",
   "utf-8-validate",
+  "undici",
 ] as const;
 export function isRuntimeExternalCliDependency(id: string): boolean {
   return CLI_RUNTIME_EXTERNAL_PREFIXES.some((prefix) => id.startsWith(prefix));

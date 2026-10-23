@@ -1,3 +1,4 @@
+import type { PrQuickActionRequest } from "../../lib/prQuickActions";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   PrHubAdvisory,
@@ -52,6 +53,10 @@ export function PrInboxView({
 }: PrModeViewProps) {
   const ordered = useMemo(() => [...prs].sort(comparePrPriority), [prs]);
   const [selectedKey, setSelectedKey] = useState<PullRequestKey | null>(null);
+  const [quickRequest, setQuickRequest] = useState<{
+    key: PullRequestKey;
+    request: PrQuickActionRequest;
+  } | null>(null);
   const detailRef = useRef<HTMLDivElement | null>(null);
   // The deep-link is honoured exactly once per distinct `focusedPrKey` value, so
   // that subsequent keyboard/mouse selection isn't snapped back to it.
@@ -139,7 +144,15 @@ export function PrInboxView({
   return (
     <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[22rem_minmax(0,1fr)]">
       <div className="flex min-h-0 flex-col border-b border-border lg:border-b-0 lg:border-e">
-        <PrSpineList prs={ordered} selectedKey={selectedKey} onSelect={setSelectedKey} />
+        <PrSpineList
+          prs={ordered}
+          selectedKey={selectedKey}
+          onSelect={setSelectedKey}
+          onQuickAction={(pr, kind) => {
+            setSelectedKey(pr.key);
+            setQuickRequest({ key: pr.key, request: { kind, id: crypto.randomUUID() } });
+          }}
+        />
         <footer className="hidden shrink-0 items-center gap-3 border-t border-border px-3 py-1.5 text-2xs text-muted-foreground lg:flex">
           <span className="flex items-center gap-1">
             <Kbd>↑</Kbd>
@@ -160,6 +173,12 @@ export function PrInboxView({
           <PrDetailPanel
             key={selectedPr.key}
             pr={selectedPr}
+            initialAction={quickRequest?.key === selectedPr.key ? quickRequest.request : undefined}
+            onInitialActionHandled={() =>
+              setQuickRequest((current) =>
+                current?.request.id === quickRequest?.request.id ? null : current,
+              )
+            }
             advisory={selectedAdvisory}
             isAnalyzingAdvisory={isAnalyzing(selectedPr, analyzingKeys, selectedAdvisory)}
             onAnalyzeAdvisory={() => onAnalyzeAdvisory(selectedPr.key)}

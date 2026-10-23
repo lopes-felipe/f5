@@ -63,6 +63,9 @@ export function readPrDetailCache<A extends PrDetailReadMetadata>(input: {
           ? Effect.succeed({
               ...cached.value,
               stale: true,
+              readErrorKind:
+                error.kind === "rate_limited" ? ("rate_limited" as const) : ("failed" as const),
+              ...(error.rateLimit ? { rateLimit: error.rateLimit } : {}),
               warning: error.detail,
             })
           : Effect.fail(error),

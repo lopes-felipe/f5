@@ -1,6 +1,6 @@
 import { getDrainableWorkerSnapshots } from "@t3tools/shared/DrainableWorker";
 import { RotatingFileSink } from "@t3tools/shared/logging";
-import { Duration, Effect, Exit, Metric, ServiceMap } from "effect";
+import { Clock, Duration, Effect, Exit, Metric, ServiceMap, Tracer } from "effect";
 import { dual } from "effect/Function";
 
 import {
@@ -180,6 +180,31 @@ export const deliveryAmbiguousTotal = Metric.counter("t3_delivery_ambiguous_tota
   description: "Provider deliveries recorded as ambiguous (sent with unknown outcome).",
 });
 
+const retainedEventLoopStalls: Array<{ recordedAt: string; durationMs: number }> = [];
+export const recentEventLoopStalls = () => retainedEventLoopStalls.map((entry) => ({ ...entry }));
+
+/** Independent root spans measure the stall itself, not the cost of reporting it. */
+export const recordEventLoopStall = (durationMs: number) =>
+  Effect.gen(function* () {
+    if (!Number.isFinite(durationMs) || durationMs < 50) return;
+    retainedEventLoopStalls.push({ recordedAt: new Date().toISOString(), durationMs });
+    if (retainedEventLoopStalls.length > 128) retainedEventLoopStalls.shift();
+    const clock = yield* Clock.Clock;
+    const tracer = yield* Tracer.Tracer;
+    const end = clock.currentTimeNanosUnsafe();
+    const span = tracer.span({
+      name: "event-loop.stall",
+      parent: undefined,
+      annotations: ServiceMap.empty(),
+      links: [],
+      startTime: end - BigInt(Math.round(durationMs * 1_000_000)),
+      kind: "internal",
+      root: true,
+      sampled: true,
+    });
+    span.attribute("event_loop.delay_ms", durationMs);
+    span.end(end, Exit.void);
+  });
 export const workerQueueEntries = Metric.gauge("f5_worker_queue_entries");
 export const workerQueueBytes = Metric.gauge("f5_worker_queue_bytes");
 export const workerQueueOldestAgeMs = Metric.gauge("f5_worker_queue_oldest_age_ms");
@@ -217,6 +242,7 @@ export const sampleEventLoopDelay = Effect.gen(function* () {
   yield* Effect.sleep(Duration.millis(EVENT_LOOP_DELAY_SAMPLE_INTERVAL_MS));
   const lateness = performance.now() - startedAt - EVENT_LOOP_DELAY_SAMPLE_INTERVAL_MS;
   yield* Metric.update(eventLoopDelay, Duration.millis(Math.max(0, lateness)));
+  yield* recordEventLoopStall(lateness);
   let fanoutBacklog = 0;
   for (const read of runtimeFanouts) {
     const result = yield* Effect.exit(read());

@@ -10,15 +10,17 @@ import {
 import { useState, type ReactNode } from "react";
 
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
 import { Input } from "../ui/input";
+import { Select, SelectTrigger, SelectValue, SelectPopup, SelectItem } from "../ui/select";
 import { Spinner } from "../ui/spinner";
 import { toastManager } from "../ui/toast";
-import { SettingsCard } from "./SettingsCard";
+import { SettingsCard, SettingsRow } from "./SettingsCard";
 import {
   GITHUB_TOKEN_SCOPES,
   type GithubConnection,
@@ -541,7 +543,36 @@ export function GithubAccountPanel() {
             </p>
           </div>
         </Disclosure>
+        <GithubTransportSetting />
       </div>
     </SettingsCard>
+  );
+}
+
+/** The one-release fallback to `gh api` for GitHub requests. */
+function GithubTransportSetting() {
+  const githubTransport = useSettings((settings) => settings.githubTransport);
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      title="GitHub requests"
+      description="F5 talks to GitHub's API directly. Choose GitHub CLI to send the same requests through gh api if direct requests fail on your network."
+      control={
+        <Select
+          value={githubTransport}
+          onValueChange={(value) => {
+            if (value === "http" || value === "gh") updateSettings({ githubTransport: value });
+          }}
+        >
+          <SelectTrigger className="w-48" aria-label="GitHub requests">
+            <SelectValue>{githubTransport === "gh" ? "GitHub CLI" : "Direct"}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup>
+            <SelectItem value="http">Direct</SelectItem>
+            <SelectItem value="gh">GitHub CLI</SelectItem>
+          </SelectPopup>
+        </Select>
+      }
+    />
   );
 }

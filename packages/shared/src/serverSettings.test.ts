@@ -1,12 +1,14 @@
 import {
   DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
+  ProjectId,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 import { createModelSelection } from "./model";
 import {
   applyServerSettingsPatch,
+  resolveProjectProviderInstanceEnabled,
   extractPersistedServerObservabilitySettings,
   normalizePersistedServerSettingString,
   parsePersistedServerObservabilitySettings,
@@ -293,4 +295,60 @@ describe("serverSettings helpers", () => {
       binaryPath: "opencode",
     });
   });
+});
+
+describe("project provider policy", () => {
+  const project = ProjectId.makeUnsafe("policy-project");
+  const codex = ProviderInstanceId.make("codex");
+  const personal = ProviderInstanceId.make("personal");
+  it("supports explicit true/false, inheritance, custom instances and missing instances", () => {
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [personal]: { driver: ProviderDriverKind.make("codex"), enabled: false },
+      },
+      projectSettingsOverrides: {
+        [project]: {
+          providerInstances: { [codex]: { enabled: false }, [personal]: { enabled: true } },
+        },
+      },
+    };
+    expect(resolveProjectProviderInstanceEnabled(settings, project, codex)).toBe(false);
+    expect(resolveProjectProviderInstanceEnabled(settings, null, codex)).toBe(true);
+    expect(resolveProjectProviderInstanceEnabled(settings, project, personal)).toBe(true);
+    expect(resolveProjectProviderInstanceEnabled(settings, null, personal)).toBe(false);
+    expect(
+      resolveProjectProviderInstanceEnabled(settings, project, ProviderInstanceId.make("missing")),
+    ).toBe(false);
+  });
+  it("preserves a policy through partial project patches and clears only an explicit empty map or project reset", () => {
+    const policy = { [codex]: { enabled: false } };
+    const initial = {
+      ...DEFAULT_SERVER_SETTINGS,
+      projectSettingsOverrides: { [project]: { providerInstances: policy } },
+    };
+    const patched = applyServerSettingsPatch(initial, {
+      projectSettingsOverrides: { [project]: { defaultRuntimeMode: "approval-required" } },
+    });
+    expect(patched.projectSettingsOverrides[project]?.providerInstances).toEqual(policy);
+    expect(
+      applyServerSettingsPatch(patched, {
+        projectSettingsOverrides: { [project]: { providerInstances: {} } },
+      }).projectSettingsOverrides[project]?.providerInstances,
+    ).toEqual({});
+    expect(
+      applyServerSettingsPatch(patched, { projectSettingsOverrides: { [project]: null } })
+        .projectSettingsOverrides[project],
+    ).toBeUndefined();
+  });
+});
+
+it("does not invent a globally enabled ACP runtime for an unconfigured instance", () => {
+  expect(
+    resolveProjectProviderInstanceEnabled(
+      DEFAULT_SERVER_SETTINGS,
+      null,
+      ProviderInstanceId.make("acp"),
+    ),
+  ).toBe(false);
 });

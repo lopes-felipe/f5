@@ -277,6 +277,36 @@ export const ProjectCloneCancelInput = Schema.Struct({
   operationId: ProjectCloneInput.fields.operationId,
 });
 export type ProjectCloneCancelInput = typeof ProjectCloneCancelInput.Type;
+
+/** The profile's home for threads without a project, created on first request. */
+export const ProjectEnsureScratchResult = Schema.Struct({
+  projectId: ProjectId,
+});
+export type ProjectEnsureScratchResult = typeof ProjectEnsureScratchResult.Type;
+
+/** A new, empty Git project created from just a name under the profile's projects folder. */
+export const ProjectCreateNewInput = Schema.Struct({
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+});
+export type ProjectCreateNewInput = typeof ProjectCreateNewInput.Type;
+export const ProjectCreateNewResult = Schema.Struct({
+  projectId: ProjectId,
+  workspaceRoot: Schema.String,
+  /** Set when the folder was kept but Git setup or the first commit did not finish. */
+  warning: Schema.NullOr(Schema.String),
+});
+export type ProjectCreateNewResult = typeof ProjectCreateNewResult.Type;
+
+/** Projects whose Git remotes point at one GitHub repository, for prompt links. */
+export const ProjectFindByRepositoryInput = Schema.Struct({
+  owner: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+});
+export type ProjectFindByRepositoryInput = typeof ProjectFindByRepositoryInput.Type;
+export const ProjectFindByRepositoryResult = Schema.Array(
+  Schema.Struct({ projectId: ProjectId, title: Schema.String, workspaceRoot: Schema.String }),
+);
+export type ProjectFindByRepositoryResult = typeof ProjectFindByRepositoryResult.Type;
 export const ProjectCloneJob = Schema.Struct({
   ...ProjectCloneInput.fields,
   destination: Schema.String,

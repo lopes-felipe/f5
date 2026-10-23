@@ -1,9 +1,11 @@
 import "../../index.css";
+import { useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { PullRequestKey, type TrackedPullRequest, type NativeApi } from "@t3tools/contracts";
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
+import { PrDetailPanel } from "./PrDetailPanel";
 import { PrActionDialogs } from "./PrActionDialogs";
 import { PrTimelineTab } from "./PrTimelineTab";
 import type { PrActionDialogProps } from "./usePrActions";
@@ -15,6 +17,10 @@ const api = vi.hoisted(() => ({
   getOperation: vi.fn(),
   getTimeline: vi.fn(),
   legacy: vi.fn(),
+  markSeen: vi.fn(),
+}));
+vi.mock("./PrDetailsTabs", () => ({
+  PrDetailsTabs: ({ summary }: { summary: React.ReactNode }) => <>{summary}</>,
 }));
 vi.mock("../../nativeApi", () => ({
   ensureNativeApi: () => ({ prHub: api }) as unknown as NativeApi,
@@ -107,6 +113,7 @@ let active: Awaited<ReturnType<typeof render>> | undefined;
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
+  api.markSeen.mockResolvedValue(undefined);
   api.getOperation.mockResolvedValue(null);
   api.prepareOperation.mockImplementation((input) =>
     Promise.resolve({ ...input, status: "prepared" }),
@@ -228,4 +235,117 @@ it("native comment edits and reactions use saved operations instead of GitHub RP
   await expect
     .element(page.getByRole("button", { name: "Prepare reaction to comment 4", exact: true }))
     .toBeInTheDocument();
+});
+
+it("panel merge confirmations stay in place and require an explicit second action", async () => {
+  await mount(
+    <div>
+      <label>
+        Thread draft
+        <input aria-label="Thread draft" defaultValue="Keep draft" />
+      </label>
+      <PrActionDialogs {...dialogProps("merge")} confirmationMode="inline" />
+    </div>,
+  );
+  expect(page.getByRole("dialog").query()).toBeNull();
+  await expect
+    .element(page.getByRole("textbox", { name: "Thread draft" }))
+    .toHaveValue("Keep draft");
+  expect(api.prepareOperation).not.toHaveBeenCalled();
+  await page.getByRole("button", { name: "Prepare merge", exact: true }).click();
+  expect(api.submitOperation).not.toHaveBeenCalled();
+  await page.getByRole("button", { name: "Confirm merge", exact: true }).click();
+  expect(api.submitOperation).toHaveBeenCalledTimes(1);
+  await expect
+    .element(page.getByRole("textbox", { name: "Thread draft" }))
+    .toHaveValue("Keep draft");
+});
+
+it("a requested quick close opens its inline preview and requires explicit preparation and confirmation", async () => {
+  const handled = vi.fn();
+  const subject = nativePr();
+  await mount(
+    <PrDetailPanel
+      pr={{
+        ...subject,
+        forgeCapabilities: {
+          ...subject.forgeCapabilities!,
+          actions: [...subject.forgeCapabilities!.actions, "close"],
+        },
+      }}
+      confirmationMode="inline"
+      initialAction={{ kind: "close", id: "explicit-quick-close" }}
+      onInitialActionHandled={handled}
+    />,
+  );
+  await expect
+    .element(page.getByRole("button", { name: "Prepare close pull request", exact: true }))
+    .toBeVisible();
+  expect(handled).toHaveBeenCalledTimes(1);
+  expect(page.getByRole("dialog").query()).toBeNull();
+  expect(api.prepareOperation).not.toHaveBeenCalled();
+  expect(api.submitOperation).not.toHaveBeenCalled();
+  await page.getByRole("button", { name: "Prepare close pull request", exact: true }).click();
+  expect(api.prepareOperation).toHaveBeenCalledWith(
+    expect.objectContaining({
+      payload: { kind: "action", action: "close" },
+      expectedHeadOid: "head",
+    }),
+  );
+  expect(api.submitOperation).not.toHaveBeenCalled();
+  await page.getByRole("button", { name: "Confirm close pull request", exact: true }).click();
+  expect(api.submitOperation).toHaveBeenCalledTimes(1);
+});
+
+it("rejects a quick action outside the freshly loaded PR capabilities without preparing it", async () => {
+  const handled = vi.fn();
+  await mount(
+    <PrDetailPanel
+      pr={nativePr()}
+      confirmationMode="inline"
+      initialAction={{ kind: "close", id: "no-close-permission" }}
+      onInitialActionHandled={handled}
+    />,
+  );
+  expect(handled).toHaveBeenCalledTimes(1);
+  expect(
+    page.getByRole("button", { name: "Prepare close pull request", exact: true }).query(),
+  ).toBeNull();
+  expect(api.prepareOperation).not.toHaveBeenCalled();
+  expect(api.submitOperation).not.toHaveBeenCalled();
+});
+
+it("branch cleanup is opt-in and its choice is frozen in the saved close preview", async () => {
+  function Subject() {
+    const [deleteBranch, setDeleteBranch] = useState(false);
+    const pr = {
+      ...makePr(),
+      forgeCapabilities: {
+        ...nativePr().forgeCapabilities!,
+        actions: ["delete-branch", "close"] as const,
+      },
+    };
+    return (
+      <PrActionDialogs
+        {...dialogProps("close")}
+        pr={pr}
+        deleteBranch={deleteBranch}
+        setDeleteBranch={setDeleteBranch}
+      />
+    );
+  }
+  await mount(<Subject />);
+  const toggle = page.getByRole("switch", { name: "Delete source branch after this action" });
+  await expect.element(toggle).not.toBeChecked();
+  expect(api.prepareOperation).not.toHaveBeenCalled();
+  await toggle.click();
+  await expect.element(toggle).toBeChecked();
+  await page.getByRole("button", { name: "Prepare close pull request", exact: true }).click();
+  expect(api.prepareOperation).toHaveBeenCalledWith(
+    expect.objectContaining({ payload: { kind: "action", action: "close", deleteBranch: true } }),
+  );
+  await expect.element(toggle).toBeDisabled();
+  expect(api.submitOperation).not.toHaveBeenCalled();
+  await page.getByRole("button", { name: "Confirm close pull request", exact: true }).click();
+  expect(api.submitOperation).toHaveBeenCalledTimes(1);
 });

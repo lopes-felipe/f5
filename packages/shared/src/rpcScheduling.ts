@@ -74,6 +74,7 @@ export class RpcAdmission {
 }
 
 const READ_ONLY_METHODS = new Set([
+  "threads.search",
   "storage.getUsage",
   "storage.getStatus",
   "storage.getOperation",

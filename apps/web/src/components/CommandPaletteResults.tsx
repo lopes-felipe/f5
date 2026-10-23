@@ -1,17 +1,17 @@
 import { type ResolvedKeybindingsConfig } from "@t3tools/contracts";
+import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { ChevronRightIcon } from "lucide-react";
+import { type RefObject } from "react";
 import { shortcutLabelForCommand } from "../keybindings";
 import {
   type CommandPaletteActionItem,
-  type CommandPaletteGroup,
+  type CommandPaletteRow,
   type CommandPaletteSubmenuItem,
 } from "./CommandPalette.logic";
 import {
-  CommandCollection,
-  CommandGroup,
-  CommandGroupLabel,
   CommandItem,
-  CommandList,
+  CommandListHeading,
+  CommandListVirtualized,
   CommandShortcut,
 } from "./ui/command";
 import { ThreadStatusPillBadge } from "./thread/ThreadStatusPillBadge";
@@ -19,16 +19,37 @@ import { cn } from "~/lib/utils";
 
 interface CommandPaletteResultsProps {
   emptyStateMessage?: string;
-  groups: ReadonlyArray<CommandPaletteGroup>;
+  rows: ReadonlyArray<CommandPaletteRow>;
+  listRef: RefObject<LegendListRef | null>;
   highlightedItemValue?: string | null;
   isActionsOnly: boolean;
   keybindings: ResolvedKeybindingsConfig;
   onExecuteItem: (item: CommandPaletteActionItem | CommandPaletteSubmenuItem) => void;
 }
 
+const RESULT_LIST_CONTENT_STYLE = { paddingInline: "0.5rem" } as const;
+
+/**
+ * Scrolls a keyboard highlight into view: nearest edge when its row is mounted,
+ * otherwise through the list, which mounts it.
+ */
+export function scrollCommandPaletteRowIntoView(list: LegendListRef | null, rowIndex: number) {
+  const element = list?.getState?.().elementAtIndex(rowIndex);
+  if (element instanceof HTMLElement) {
+    element.scrollIntoView({ block: "nearest" });
+    return;
+  }
+  void list?.scrollIndexIntoView?.({ index: rowIndex, animated: false });
+}
+
+/**
+ * Renders only the visible rows. The palette passes the flat item order to the
+ * Command root as `items` with `virtualized`, scrolls keyboard highlights into
+ * view through `listRef`, and runs Enter itself since the row may be unmounted.
+ */
 export function CommandPaletteResults(props: CommandPaletteResultsProps) {
   "use memo";
-  if (props.groups.length === 0) {
+  if (props.rows.length === 0) {
     return (
       <div className="py-10 text-center text-sm text-muted-foreground">
         {props.emptyStateMessage ??
@@ -40,28 +61,39 @@ export function CommandPaletteResults(props: CommandPaletteResultsProps) {
   }
 
   return (
-    <CommandList>
-      {props.groups.map((group) => (
-        <CommandGroup items={group.items} key={group.value}>
-          <CommandGroupLabel>{group.label}</CommandGroupLabel>
-          <CommandCollection>
-            {(item) => (
-              <CommandPaletteResultRow
-                item={item}
-                key={item.value}
-                keybindings={props.keybindings}
-                isActive={props.highlightedItemValue === item.value}
-                onExecuteItem={props.onExecuteItem}
-              />
-            )}
-          </CommandCollection>
-        </CommandGroup>
-      ))}
-    </CommandList>
+    <CommandListVirtualized>
+      <LegendList<CommandPaletteRow>
+        ref={props.listRef}
+        data={props.rows}
+        keyExtractor={(row) => row.key}
+        getItemType={(row) => row.kind}
+        extraData={props.highlightedItemValue}
+        renderItem={({ item: row }) =>
+          row.kind === "label" ? (
+            <div className={row.first ? undefined : "pt-1.5"}>
+              <CommandListHeading>{row.label}</CommandListHeading>
+            </div>
+          ) : (
+            <CommandPaletteResultRow
+              index={row.itemIndex}
+              item={row.item}
+              keybindings={props.keybindings}
+              isActive={props.highlightedItemValue === row.item.value}
+              onExecuteItem={props.onExecuteItem}
+            />
+          )
+        }
+        estimatedItemSize={40}
+        drawDistance={400}
+        contentContainerStyle={RESULT_LIST_CONTENT_STYLE}
+        className="min-h-0 scroll-py-2 overflow-x-hidden overscroll-y-contain py-2"
+      />
+    </CommandListVirtualized>
   );
 }
 
 function CommandPaletteResultRow(props: {
+  index: number;
   item: CommandPaletteActionItem | CommandPaletteSubmenuItem;
   isActive: boolean;
   keybindings: ResolvedKeybindingsConfig;
@@ -74,6 +106,7 @@ function CommandPaletteResultRow(props: {
 
   return (
     <CommandItem
+      index={props.index}
       value={props.item.value}
       className={cn(
         "cursor-pointer gap-2 hover:bg-transparent hover:text-inherit data-highlighted:bg-transparent data-highlighted:text-inherit data-selected:bg-transparent data-selected:text-inherit [&[data-highlighted][data-selected]]:bg-transparent [&[data-highlighted][data-selected]]:text-inherit",

@@ -1,4 +1,6 @@
 import { Effect, Layer, Option } from "effect";
+import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 
 import { ProjectionProjectRepositoryLive } from "../../persistence/Layers/ProjectionProjects.ts";
 import { ProjectionThreadRepositoryLive } from "../../persistence/Layers/ProjectionThreads.ts";
@@ -14,17 +16,19 @@ const makeProjectionWorkspaceQuery = Effect.gen(function* () {
   const threads = yield* ProjectionThreadRepository;
 
   const getProjectWorkspace: ProjectionWorkspaceQueryShape["getProjectWorkspace"] = (projectId) =>
-    projects
-      .getById({ projectId })
-      .pipe(
-        Effect.map(
-          Option.flatMap((project) =>
-            project.deletedAt === null
-              ? Option.some({ projectId: project.projectId, workspaceRoot: project.workspaceRoot })
-              : Option.none(),
-          ),
+    projects.getById({ projectId }).pipe(
+      Effect.map(
+        Option.flatMap((project) =>
+          project.deletedAt === null
+            ? Option.some({
+                projectId: project.projectId,
+                kind: project.kind ?? "standard",
+                workspaceRoot: project.workspaceRoot,
+              })
+            : Option.none(),
         ),
-      );
+      ),
+    );
 
   const getThreadProjectId: ProjectionWorkspaceQueryShape["getThreadProjectId"] = (threadId) =>
     threads
@@ -46,11 +50,14 @@ const makeProjectionWorkspaceQuery = Effect.gen(function* () {
 
       const thread = threadOption.value;
       const projectOption = yield* getProjectWorkspace(thread.projectId);
-      return Option.map(projectOption, (project) => ({
-        threadId: thread.threadId,
-        projectId: thread.projectId,
-        workspaceRoot: thread.worktreePath ?? project.workspaceRoot,
-      }));
+      return Option.flatMap(projectOption, (project) =>
+        Option.map(Option.fromNullishOr(threadWorkspaceCwd(thread, project)), (workspaceRoot) => ({
+          threadId: thread.threadId,
+          projectId: thread.projectId,
+          workspaceRoot,
+          scratch: isScratchProject(project),
+        })),
+      );
     });
 
   return {

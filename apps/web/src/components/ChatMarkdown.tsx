@@ -5,6 +5,7 @@ import { ChatAssetImage } from "./ChatAssetImage";
 import { useContext } from "react";
 import { RepositoryLinks } from "../repositoryLinkContext";
 import { remarkIssueReferences } from "../lib/remarkIssueReferences";
+import { remarkKeepWindowsPathDestinations } from "../lib/remarkWindowsPathDestinations";
 import { GitHubIcon } from "./Icons";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { CheckIcon, CopyIcon } from "lucide-react";
@@ -41,12 +42,21 @@ import {
 } from "../lib/streamingMarkdown";
 import { useFileNavigation } from "../fileNavigationContext";
 import { useTheme } from "../hooks/useTheme";
-import { resolveMarkdownFileLinkMeta, type MarkdownFileLinkMeta } from "../markdown-links";
+import {
+  collectMarkdownLinkHrefs,
+  chatMarkdownUrlTransform,
+  isMarkdownFileLinkLabel,
+  resolveMarkdownFileLinkMeta,
+  type MarkdownFileLinkMeta,
+} from "../markdown-links";
 import { readNativeApi } from "../nativeApi";
 import { inferEntryKindFromPath } from "../vscode-icons";
 import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { SurfaceErrorBoundary } from "./ui/SurfaceErrorBoundary";
+import { MermaidDiagram } from "./chat/MermaidDiagram";
+import { useTerminalCommand } from "../terminalCommandContext";
+import { hasClosedCodeFence, runnableShellCode } from "../lib/shellCodeBlock";
 
 /**
  * `default` renders trusted assistant output. `external-bot` renders content an
@@ -157,7 +167,19 @@ function getHighlighterPromise(language: string): Promise<MarkdownHighlighter> {
   return promise;
 }
 
-function MarkdownCodeBlock({ code, children }: { code: string; children: ReactNode }) {
+function MarkdownCodeBlock({
+  code,
+  command,
+  children,
+}: {
+  code: string;
+  command?: string | null;
+  children: ReactNode;
+}) {
+  const runCommand = useTerminalCommand();
+  const [running, setRunning] = useState(false);
+  const runningRef = useRef(false);
+  const [runError, setRunError] = useState(false);
   const wordWrap = useDiffWordWrap();
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -191,6 +213,30 @@ function MarkdownCodeBlock({ code, children }: { code: string; children: ReactNo
       className={`chat-markdown-codeblock${wordWrap ? " chat-markdown-codeblock-wrap" : ""}`}
       data-word-wrap={wordWrap ? "true" : "false"}
     >
+      {runCommand && command ? (
+        <div className="flex items-center gap-2 px-3 pt-2 pr-12 text-xs text-muted-foreground">
+          <button
+            type="button"
+            disabled={running}
+            className="underline underline-offset-2 disabled:opacity-50"
+            onClick={() => {
+              if (runningRef.current) return;
+              runningRef.current = true;
+              setRunning(true);
+              setRunError(false);
+              void runCommand(command)
+                .catch(() => setRunError(true))
+                .finally(() => {
+                  runningRef.current = false;
+                  setRunning(false);
+                });
+            }}
+          >
+            Run in terminal
+          </button>
+          {runError ? <span role="status">Could not run command. Try again.</span> : null}
+        </div>
+      ) : null}
       <button
         type="button"
         className="chat-markdown-copy-button"
@@ -378,23 +424,6 @@ function WorkerHighlightedCode({
   );
 }
 
-// Matches inline markdown links: `[text](href)` / `[text](href "title")`.
-// Used once per message to compute basename-collision disambiguation ahead of
-// react-markdown's element-by-element rendering, so each chip's suffix stays
-// stable no matter which element renders first.
-const MARKDOWN_INLINE_LINK_REGEX = /\[(?:\\.|[^\]\\])*\]\(\s*(<[^>]+>|[^()\s]+)[^)]*\)/g;
-
-function collectMarkdownLinkHrefs(text: string): string[] {
-  const hrefs: string[] = [];
-  for (const match of text.matchAll(MARKDOWN_INLINE_LINK_REGEX)) {
-    const raw = match[1];
-    if (!raw) continue;
-    const href = raw.startsWith("<") && raw.endsWith(">") ? raw.slice(1, -1) : raw;
-    hrefs.push(href);
-  }
-  return hrefs;
-}
-
 function parentDirDisambiguator(displayPath: string): string | null {
   const normalized = displayPath.replace(/[\\/]+/g, "/");
   const lastSlash = normalized.lastIndexOf("/");
@@ -516,6 +545,8 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
           return (
             <a
               {...props}
+              // An image-only link (a badge, a screenshot) gets no underline.
+              data-markdown-image-link={nodeToPlainText(children).trim() === "" || undefined}
               href={href}
               target="_blank"
               rel="noreferrer"
@@ -523,7 +554,12 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
                 if (!href || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0)
                   return;
                 event.preventDefault();
-                void openLink(href).catch(() => undefined);
+                // Option/Alt-click leaves the app like the other modifiers. Chromium would
+                // otherwise turn it into a download, so open it here while the key is still
+                // down, which lets link routers such as Finicky read it.
+                void openLink(href, event.altKey ? { external: true } : undefined).catch(
+                  () => undefined,
+                );
               }}
             >
               {isGitHub ? (
@@ -553,7 +589,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
           }
         };
 
-        return (
+        const chip = (
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger
@@ -591,8 +627,16 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
             </Tooltip>
           </TooltipProvider>
         );
+        // `[validates the input](src/a.ts:12)` keeps its prose next to the chip.
+        return isMarkdownFileLinkLabel(nodeToPlainText(children), meta) ? (
+          chip
+        ) : (
+          <span>
+            {children} {chip}
+          </span>
+        );
       },
-      pre({ node: _node, children, ...props }) {
+      pre({ node, children, ...props }) {
         const codeBlock = extractCodeBlock(children);
         if (!codeBlock) {
           return <pre {...props}>{children}</pre>;
@@ -606,8 +650,27 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
           );
         }
 
+        if (extractFenceLanguage(codeBlock.className) === "mermaid") {
+          return (
+            <MarkdownCodeBlock code={codeBlock.code}>
+              <MermaidDiagram
+                source={codeBlock.code}
+                theme={resolvedTheme}
+                code={<pre {...props}>{children}</pre>}
+              />
+            </MarkdownCodeBlock>
+          );
+        }
+
         return (
-          <MarkdownCodeBlock code={codeBlock.code}>
+          <MarkdownCodeBlock
+            code={codeBlock.code}
+            command={
+              hasClosedCodeFence(text, node?.position?.start.offset, node?.position?.end.offset)
+                ? runnableShellCode(extractFenceLanguage(codeBlock.className), codeBlock.code)
+                : null
+            }
+          >
             {/* Not keyed on the code: a failed highlighter load would retry on every streaming delta. */}
             <SurfaceErrorBoundary
               name="code-highlight"
@@ -651,12 +714,17 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         );
       },
     }),
-    [cwd, diffThemeName, disambiguatorMap, mode, resolvedTheme, wordWrap, openLink],
+    [cwd, diffThemeName, disambiguatorMap, mode, resolvedTheme, wordWrap, openLink, text],
   );
 
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm, [remarkIssueReferences, repositoryLinks]]}
+      remarkPlugins={[
+        remarkGfm,
+        remarkKeepWindowsPathDestinations,
+        [remarkIssueReferences, repositoryLinks],
+      ]}
+      urlTransform={chatMarkdownUrlTransform}
       components={markdownComponents}
     >
       {text}

@@ -134,6 +134,11 @@ interface OwnerWaiter {
   readonly reject: (error: PreviewAutomationBrokerError) => void;
 }
 
+// Agents read these messages, so each names the next step and not only the failure.
+const PREVIEW_FALLBACK_GUIDANCE =
+  "Do not retry. To check a page, use a headless browser from the shell, such as Playwright, or curl.";
+export const PREVIEW_NO_DESKTOP_MESSAGE = `No F5 desktop window is connected to host the browser preview. Preview tools run in the F5 desktop app while it is open; the server has no browser of its own. ${PREVIEW_FALLBACK_GUIDANCE} Or ask the user to open this thread in the F5 desktop app.`;
+export const PREVIEW_DISABLED_MESSAGE = `Agent browser access is disabled for this project. ${PREVIEW_FALLBACK_GUIDANCE} The user can turn on "Agent browser access" in Settings.`;
 const PREVIEW_OWNER_LEASE_MS = 30_000;
 const PREVIEW_OWNER_SWEEP_MS = 5_000;
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -370,7 +375,7 @@ export function makePreviewAutomationBroker(
         if (hostIds.size === 0) {
           reject(
             new PreviewAutomationNoFocusedOwnerError({
-              message: "No F5 desktop window is connected to host the browser preview.",
+              message: PREVIEW_NO_DESKTOP_MESSAGE,
             }),
           );
           return;
@@ -444,7 +449,7 @@ export function makePreviewAutomationBroker(
     return (
       candidates[0] ??
       new PreviewAutomationNoFocusedOwnerError({
-        message: "No desktop browser preview is available for this thread.",
+        message: PREVIEW_NO_DESKTOP_MESSAGE,
       })
     );
   };
@@ -485,7 +490,7 @@ export function makePreviewAutomationBroker(
       if (input.operation !== "open" && input.operation !== "status" && !targetTabId) {
         reject(
           new PreviewAutomationTabNotFoundError({
-            message: "The browser preview does not have an active tab.",
+            message: "The browser preview does not have an active tab. Call preview_open first.",
           }),
         );
         return;
@@ -568,7 +573,7 @@ export function makePreviewAutomationBroker(
 
   const disabledError = () =>
     new PreviewAutomationUnavailableError({
-      message: "Agent browser access is disabled for this project.",
+      message: PREVIEW_DISABLED_MESSAGE,
       reason: "disabled",
     });
 

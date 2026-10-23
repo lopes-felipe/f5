@@ -1,4 +1,6 @@
-/** Lossless parser for `git worktree list --porcelain -z`. No filesystem IO. */
+import { unquoteGitPatchPath } from "@t3tools/shared/gitPatchPath";
+
+/** Lossless parser for Git worktree porcelain. No filesystem IO. */
 export interface WorktreeListEntry {
   readonly path: string;
   readonly headSha: string | null;
@@ -10,14 +12,23 @@ export interface WorktreeListEntry {
   readonly isMain: boolean;
 }
 
-export function parseWorktreeListPorcelain(stdoutZ: string): WorktreeListEntry[] {
+export function parseWorktreeListPorcelain(
+  stdout: string,
+  format: "nul" | "line" = "nul",
+): WorktreeListEntry[] {
   const entries: WorktreeListEntry[] = [];
   let entry: { -readonly [K in keyof WorktreeListEntry]: WorktreeListEntry[K] } | null = null;
-  for (const field of stdoutZ.split("\0")) {
+  const fields = format === "line" ? stdout.split(/\r?\n/) : stdout.split("\0");
+  for (const field of fields) {
     if (field.startsWith("worktree ")) {
       if (entry) entries.push(entry);
       entry = {
-        path: field.slice(9),
+        // In -z output even quote characters are literal. Only the legacy
+        // line form applies Git's C quoting (including UTF-8 octal escapes).
+        path:
+          format === "line" && field.slice(9).startsWith('"') && field.endsWith('"')
+            ? unquoteGitPatchPath(field.slice(9))
+            : field.slice(9),
         headSha: null,
         branch: null,
         bare: false,

@@ -35,7 +35,8 @@ import { useRecoveryStateStore } from "../recoveryStateStore";
 import { useStore } from "../store";
 import { useTerminalStateStore } from "../terminalStateStore";
 
-import { useAppSettings } from "../appSettings";
+import { type AppSettings, updateAppSettings, useAppSettingsSelector } from "../appSettings";
+import { HtmlPreviewHost } from "../components/HtmlPreviewHost";
 
 import { useAppearanceSettingsSync } from "../hooks/useAppearanceSettings";
 import { useTheme } from "../hooks/useTheme";
@@ -93,6 +94,7 @@ function RootRouteView() {
       <AnchoredToastProvider>
         <EventRouter />
         <DesktopProjectBootstrap />
+        <HtmlPreviewHost />
         <SlowRpcWarningToastCoordinator />
         <WebSocketConnectionSurface>
           <Outlet />
@@ -116,6 +118,15 @@ function RootRouteNotFoundView() {
   );
 }
 
+// The root reads few settings; selecting them keeps other settings writes from re-rendering it.
+function selectRootSettings(settings: AppSettings) {
+  return {
+    diffColorPalette: settings.diffColorPalette,
+    dismissedProviderUpdateAdvisories: settings.dismissedProviderUpdateAdvisories,
+    showFileChangeDiffsInline: settings.showFileChangeDiffsInline,
+  };
+}
+
 function EventRouter() {
   const applyDomainEvent = useStore((store) => store.applyDomainEvent);
   const applyDomainEventBatch = useStore((store) => store.applyDomainEventBatch);
@@ -131,7 +142,8 @@ function EventRouter() {
   const queryClient = useQueryClient();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const navigate = useNavigate();
-  const { settings, updateSettings } = useAppSettings();
+  const settings = useAppSettingsSelector(selectRootSettings);
+  const updateSettings = updateAppSettings;
   useEffect(() => startThreadDetailRetention(queryClient), [queryClient]);
   useEffect(() => startWorkspaceWatchSync(queryClient), [queryClient]);
   useEffect(() => {
@@ -153,14 +165,12 @@ function EventRouter() {
   const pathnameRef = useRef(pathname);
   const visibleRouteMatchRef = useRef(visibleRouteMatch);
   const handledBootstrapThreadIdRef = useRef<string | null>(null);
-  const appSettingsRef = useRef(settings);
   const threadWarmProfileRef = useRef<ThreadWarmProfile>({
     includeFileChanges: settings.showFileChangeDiffsInline,
   });
 
   pathnameRef.current = pathname;
   visibleRouteMatchRef.current = visibleRouteMatch;
-  appSettingsRef.current = settings;
   threadWarmProfileRef.current = {
     includeFileChanges: settings.showFileChangeDiffsInline,
   };
@@ -190,7 +200,6 @@ function EventRouter() {
     if (!api) return;
     const controller = createOrchestrationSyncController({
       api,
-      appSettingsRef,
       applyDomainEvent,
       applyDomainEventBatch,
       invalidateThreadDetails,

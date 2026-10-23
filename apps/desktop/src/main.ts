@@ -1,3 +1,10 @@
+import { registerHtmlPreviewIpc } from "./htmlPreview";
+import {
+  createEmbeddedFrameNavigationGuard,
+  installAppFramePermissionPolicy,
+} from "./appFramePolicy";
+import { createDesktopCliInstaller } from "./cliCommand";
+import { compileCachePreloadArgs } from "./compileCachePreload";
 import { offerApplicationsMove, createBootstrapGate } from "./startupInstallation";
 import { createUpdatePoller } from "./updatePoller";
 import { getUpdateErrorMessage } from "./updateErrors";
@@ -12,6 +19,7 @@ import { isolatedBackendCommand } from "./backendComputerIsolation";
 import { profilePreviewPartition } from "./profileRuntime";
 import { CaptureShortcut } from "./snapShot/CaptureShortcut";
 import { captureBoundedPage } from "./preview/capture";
+import { capturePreviewSnapshotPage } from "./preview/snapshotScript";
 import {
   PreviewAutomationControl,
   PreviewDiagnostics,
@@ -31,6 +39,8 @@ import {
   gateMainFrameRequests,
 } from "./preview/previewNavigationGuard";
 import { registerPreviewWindowOpen } from "./preview/previewWindowOpen";
+import { installAgentDownloadHandler } from "./preview/agentDownloads";
+import { installPreviewPermissionPolicy } from "./preview/previewPermissions";
 import { captureMacWindow } from "./snapShot/MacSnapShot";
 import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { closeWindowsForQuit } from "./quitPreflight";
@@ -51,6 +61,13 @@ import { registerComputerIpc } from "./computer/registerComputerIpc";
 import { capturePermissions, openComputerPermissionSettings } from "./computer/permissions";
 import type { ProfileRecord } from "@t3tools/contracts";
 import { desktopDefaultProfile, readDesktopProfiles } from "./profileRegistryRead";
+import {
+  PromptLinkInbox,
+  promptLinkInArgv,
+  promptLinkSchemeFor,
+  entryScriptInArgv,
+  protocolClientRegistration,
+} from "./promptLinkInbox";
 import {
   profilePartition,
   profileWindowArguments,
@@ -203,8 +220,6 @@ const PREVIEW_WEBVIEW_PREFERENCES = "contextIsolation=true,sandbox=true,nodeInte
 const PREVIEW_DEFAULT_ZOOM_FACTOR = 1;
 const PREVIEW_CAPTURE_MAX_EDGE_PX = 1600;
 const PREVIEW_CAPTURE_MAX_PIXELS = 2_000_000;
-const PREVIEW_AUTOMATION_MAX_TEXT_LENGTH = 20_000;
-const PREVIEW_AUTOMATION_MAX_ELEMENTS = 80;
 const PREVIEW_AUTOMATION_MAX_EVALUATION_BYTES = 64_000;
 const PREVIEW_AUTOMATION_EVALUATE_DEFAULT_TIMEOUT_MS = 15_000;
 const PREVIEW_AUTOMATION_WAIT_INTERVAL_MS = 100;
@@ -928,6 +943,22 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
   entry.removeListeners = [];
   entry.ownerWebContentsId = guest.hostWebContents?.id ?? null;
   entry.webContentsId = webContentsId;
+  installAgentDownloadHandler(guest.session, {
+    // Each profile keeps its own downloads; sessions can outlive the guest that installed this.
+    directoryFor: (sourceId) => {
+      const hostId = electronWebContents.fromId(sourceId)?.hostWebContents?.id;
+      const profileId = hostId === undefined ? undefined : profileByWebContentsId.get(hostId);
+      const runtime = profileId ? backends.get(profileId) : undefined;
+      return runtime
+        ? Path.join(profileStateDir(STATE_DIR, runtime.profile), "preview-downloads")
+        : undefined;
+    },
+    isAgentDriven: (sourceId) =>
+      [...previewTabs.entries()].some(
+        ([candidateTabId, candidate]) =>
+          candidate.webContentsId === sourceId && isAgentPreviewNavigation(candidateTabId),
+      ),
+  });
   // Preserve the new-tab zoom default rather than inheriting an unrelated guest zoom.
 
   const owner = guest.hostWebContents ? BrowserWindow.fromWebContents(guest.hostWebContents) : null;
@@ -1664,78 +1695,16 @@ function waitPreviewAutomationPoll(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, PREVIEW_AUTOMATION_WAIT_INTERVAL_MS));
 }
 
-function buildPreviewAutomationSnapshotScript(): string {
-  return String.raw`
-(() => {
-  const selectorFor = (element) => {
-    if (!element || element.nodeType !== Node.ELEMENT_NODE) return "";
-    if (element.id) return "#" + CSS.escape(element.id);
-    for (const attribute of ["data-testid", "name", "aria-label"]) {
-      const value = element.getAttribute(attribute);
-      if (value) return element.tagName.toLowerCase() + "[" + attribute + "=" + JSON.stringify(value) + "]";
-    }
-    const parts = [];
-    let current = element;
-    while (current && current.nodeType === Node.ELEMENT_NODE && parts.length < 8) {
-      const parent = current.parentElement;
-      const siblings = parent
-        ? Array.from(parent.children).filter((child) => child.tagName === current.tagName)
-        : [];
-      const base = current.tagName.toLowerCase();
-      parts.unshift(siblings.length > 1 ? base + ":nth-of-type(" + (siblings.indexOf(current) + 1) + ")" : base);
-      current = parent;
-    }
-    return parts.join(" > ");
-  };
-  const visible = (element) => {
-    const style = getComputedStyle(element);
-    const rect = element.getBoundingClientRect();
-    return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
-  };
-  const elements = Array.from(document.querySelectorAll("a[href],button,input,textarea,select,[role],[tabindex],[contenteditable='true']"))
-    .filter(visible)
-    .slice(0, ${PREVIEW_AUTOMATION_MAX_ELEMENTS})
-    .map((element) => {
-      const rect = element.getBoundingClientRect();
-      return {
-        tag: element.tagName.toLowerCase(),
-        role: element.getAttribute("role"),
-        name: element.getAttribute("aria-label") || element.getAttribute("name") || element.innerText || element.textContent || element.value || "",
-        selector: selectorFor(element),
-        x: rect.x,
-        y: rect.y,
-        width: rect.width,
-        height: rect.height
-      };
-    });
-  return {
-    url: location.href,
-    title: document.title,
-    loading: document.readyState !== "complete",
-    visibleText: (document.body?.innerText || "").slice(0, ${PREVIEW_AUTOMATION_MAX_TEXT_LENGTH}),
-    interactiveElements: elements,
-    accessibilityTree: null,
-    consoleEntries: [],
-    networkEntries: [],
-    actionTimeline: []
-  };
-})()
-`;
-}
-
 async function previewAutomationSnapshot(
   tabId: string,
   save = false,
 ): Promise<PreviewAutomationSnapshot> {
   const guest = requirePreviewWebContents(tabId);
   requireAllowedPreviewPage(tabId, guest);
-  const scriptedPage = await executePreviewJavaScript<
-    Omit<PreviewAutomationSnapshot, "screenshot">
-  >(guest, buildPreviewAutomationSnapshotScript());
+  const scriptedPage = await capturePreviewSnapshotPage(guest, previewDiagnostics.read(tabId));
   const popupOpen = (lookupPreviewTabEntry(tabId)?.popupCount ?? 0) > 0;
   const page = boundSnapshotPageData({
     ...scriptedPage,
-    ...previewDiagnostics.read(tabId),
     ...(popupOpen ? { popupOpen } : {}),
   });
   const viewport = normalizePickViewport(
@@ -2178,6 +2147,7 @@ protocol.registerSchemesAsPrivileged([
       secure: true,
       supportFetchAPI: true,
       corsEnabled: true,
+      codeCache: true,
     },
   },
 ]);
@@ -2939,7 +2909,12 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
 
   const backendIncarnation = Crypto.randomUUID();
   const captureBackendLogs = backendLogSink !== null;
-  const isolated = isolatedBackendCommand(process.platform, process.execPath, backendEntry);
+  const isolated = isolatedBackendCommand(
+    process.platform,
+    process.execPath,
+    backendEntry,
+    app.isPackaged ? compileCachePreloadArgs(__dirname) : [],
+  );
   const child = ChildProcess.spawn(isolated.executable, isolated.args, {
     cwd: resolveBackendCwd(),
     // In Electron main, process.execPath points to the Electron binary.
@@ -3213,11 +3188,53 @@ async function openProfileOnce(profileId: string): Promise<boolean> {
   return true;
 }
 
+const PROMPT_LINK_SCHEME_FOR_BUILD = promptLinkSchemeFor(isDevelopment);
+const PROMPT_LINKS_AVAILABLE_CHANNEL = "desktop:prompt-links-available";
+const promptLinks = new PromptLinkInbox(PROMPT_LINK_SCHEME_FOR_BUILD);
+
+function registerPromptLinkProtocol(): void {
+  const entryScript = entryScriptInArgv(process.argv);
+  const registration = protocolClientRegistration({
+    defaultApp: Boolean(process.defaultApp),
+    execPath: process.execPath,
+    entryScript: entryScript ? Path.resolve(entryScript) : undefined,
+  });
+  const registered = registration
+    ? app.setAsDefaultProtocolClient(PROMPT_LINK_SCHEME_FOR_BUILD, registration.path, [
+        ...registration.args,
+      ])
+    : app.setAsDefaultProtocolClient(PROMPT_LINK_SCHEME_FOR_BUILD);
+  writeDesktopLogHeader(
+    `prompt link protocol ${PROMPT_LINK_SCHEME_FOR_BUILD} registered=${registered}`,
+  );
+}
+
+/**
+ * The running instance opens every link in the profile in use, so a link never starts a second
+ * F5. Renderers take queued links when they load, when told, and when their window gains focus.
+ */
+function receivePromptLink(url: string): void {
+  // Before the app is ready no profile window exists, so the first one to load takes the link.
+  const profileId = app.isReady() ? reopenTargetProfileId() : null;
+  if (!promptLinks.receive(url, profileId)) {
+    writeDesktopLogHeader("prompt link ignored: not a link this build opens");
+    return;
+  }
+  if (!app.isReady() || isQuitting) return;
+  reopenApplication();
+  for (const window of BrowserWindow.getAllWindows())
+    if (!window.isDestroyed()) window.webContents.send(PROMPT_LINKS_AVAILABLE_CHANNEL);
+}
+
+/** The profile a reopen brings forward: the focused window's, else the last one opened. */
+function reopenTargetProfileId(): string {
+  const window = BrowserWindow.getFocusedWindow();
+  return (window && profileByWebContentsId.get(window.webContents.id)) ?? lastOpenedProfileId;
+}
+
 function reopenApplication(): void {
   if (!app.isReady() || isQuitting) return;
-  const window = BrowserWindow.getFocusedWindow();
-  const profileId =
-    (window && profileByWebContentsId.get(window.webContents.id)) ?? lastOpenedProfileId;
+  const profileId = reopenTargetProfileId();
   void openProfile(profileId).catch((error) => {
     writeDesktopLogHeader(
       `profile reopen failed profile=${profileId}: ${formatErrorMessage(error)}`,
@@ -3227,6 +3244,19 @@ function reopenApplication(): void {
 }
 
 function registerIpcHandlers(): void {
+  registerHtmlPreviewIpc(ipcMain, (event) => {
+    if (
+      !appRendererWebContentsIds.has(event.sender.id) ||
+      event.senderFrame !== event.sender.mainFrame
+    )
+      throw new Error("HTML previews require an F5 app main frame.");
+    const expectedOrigin = isDevelopment
+      ? new URL(mainRendererUrl()).origin
+      : `${DESKTOP_SCHEME}://app`;
+    if (event.senderFrame.origin !== expectedOrigin)
+      throw new Error("Untrusted HTML preview origin.");
+    runtimeForRenderer(event.sender.id);
+  });
   ipcMain.on("desktop:get-ws-url", (event) => {
     try {
       if (event.senderFrame !== event.sender.mainFrame)
@@ -3235,6 +3265,39 @@ function registerIpcHandlers(): void {
     } catch {
       event.returnValue = null;
     }
+  });
+  const cliInstaller = createDesktopCliInstaller({
+    executable: process.execPath,
+    entry: resolveBackendEntry(),
+    launcherDirectory: Path.join(app.getPath("userData"), "cli"),
+    home: OS.homedir(),
+    transientPaths: Boolean(process.env.APPIMAGE),
+  });
+  for (const [channel, action] of [
+    ["desktop:cli-command-state", cliInstaller.state],
+    ["desktop:cli-command-install", cliInstaller.install],
+  ] as const) {
+    ipcMain.handle(channel, async (event) => {
+      assertUpdateCaller(event, runtimeForRenderer);
+      if (!app.isPackaged) {
+        if (channel === "desktop:cli-command-state")
+          return { supported: false, installedPaths: { f5: null, t3: null }, onPath: false };
+        throw new Error("The CLI installer requires a packaged desktop application.");
+      }
+      return action();
+    });
+  }
+  ipcMain.handle("desktop:take-prompt-links", (event) => {
+    const runtime = runtimeForRenderer(event.sender.id);
+    const links = promptLinks.take(runtime.profile.id);
+    let profileCount = 1;
+    try {
+      profileCount = readDesktopProfiles(STATE_DIR).length;
+    } catch {
+      // Without a readable registry there is only the default profile to name.
+    }
+    // With several profiles, the user is told which one the link opened in.
+    return { links, profileName: profileCount > 1 ? runtime.profile.name : null };
   });
   ipcMain.handle("desktop:switch-profile", async (event, id: unknown) => {
     runtimeForRenderer(event.sender.id);
@@ -3772,9 +3835,11 @@ function createWindow(
   runtime: BackendRuntime = defaultBackend,
 ): BrowserWindow {
   const partition = profilePartition(runtime.profile);
-  registerDesktopProtocol(
-    partition ? electronSession.fromPartition(partition) : electronSession.defaultSession,
-  );
+  const appSession = partition
+    ? electronSession.fromPartition(partition)
+    : electronSession.defaultSession;
+  registerDesktopProtocol(appSession);
+  installAppFramePermissionPolicy(appSession);
   const rendererUrl = rendererUrlForThread(mainRendererUrl(), initialThreadId);
   const window = new BrowserWindow({
     width: 1100,
@@ -3819,6 +3884,16 @@ function createWindow(
     // before this tab's allowlist and navigation listeners exist. The renderer navigates
     // once the guest registers and those are in place.
     params.src = "about:blank";
+    installPreviewPermissionPolicy(electronSession.fromPartition(partition), {
+      isUserDriven: (guest) => {
+        const id = (guest as { readonly id?: unknown }).id;
+        return [...previewTabs.entries()].some(
+          ([tabId, tab]) => tab.webContentsId === id && !isAgentPreviewNavigation(tabId),
+        );
+      },
+    });
+    // A page that goes fullscreen fills its own webview instead of the whole F5 window.
+    webPreferences.disableHtmlFullscreenWindowResize = true;
     // Agent-driven previews may be hidden or headless; keep timers and rendering running.
     webPreferences.backgroundThrottling = false;
     webPreferences.sandbox = true;
@@ -3894,6 +3969,19 @@ function createWindow(
   window.webContents.on("will-navigate", (_event, url) => {
     if (url === rendererUrl) rendererCrashRecovery.beginManualRetry();
   });
+  const blocksEmbeddedFrameNavigation = createEmbeddedFrameNavigationGuard();
+  window.webContents.on("will-frame-navigate", (event) => {
+    const frameIds: number[] = [];
+    for (let frame = event.frame; frame; frame = frame.parent) frameIds.push(frame.frameTreeNodeId);
+    const blocked = blocksEmbeddedFrameNavigation({
+      isMainFrame: event.isMainFrame,
+      isSameDocument: event.isSameDocument,
+      frameIds,
+      frameUrl: event.frame?.url,
+      url: event.url,
+    });
+    if (blocked) event.preventDefault();
+  });
 
   const applyWindowTitle = (pageTitle: string) =>
     window.setTitle(
@@ -3936,7 +4024,21 @@ function createWindow(
 app.setPath("userData", resolveUserDataPath());
 
 if (!app.requestSingleInstanceLock()) app.exit(0);
-app.on("second-instance", reopenApplication);
+app.on("second-instance", (_event, argv) => {
+  const link = promptLinkInArgv(argv, PROMPT_LINK_SCHEME_FOR_BUILD);
+  if (link) receivePromptLink(link);
+  else reopenApplication();
+});
+// macOS delivers links as `open-url`, possibly before the app is ready; Windows and Linux pass
+// them on the command line, to this launch or to a second one.
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  receivePromptLink(url);
+});
+{
+  const launchLink = promptLinkInArgv(process.argv, PROMPT_LINK_SCHEME_FOR_BUILD);
+  if (launchLink) promptLinks.receive(launchLink);
+}
 configureAppIdentity();
 
 async function bootstrap(): Promise<void> {
@@ -4078,6 +4180,7 @@ app
     }
     configureApplicationMenu();
     registerDesktopProtocol();
+    registerPromptLinkProtocol();
     configureAutoUpdater();
     const bootstrapReady = bootstrapGate.start(bootstrap);
     void bootstrapReady.catch((error) => {

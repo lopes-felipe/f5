@@ -50,6 +50,7 @@ import {
 } from "effect";
 import * as Semaphore from "effect/Semaphore";
 import { writeFileStringAtomically } from "./atomicWrite";
+import { watchSettingsFile } from "./watchSettingsFile.ts";
 import { ServerConfig } from "./config";
 
 export {
@@ -259,8 +260,6 @@ const makeKeybindings = Effect.gen(function* () {
   const resolvedConfigCacheKey = "resolved" as const;
   const changesPubSub = yield* PubSub.unbounded<KeybindingsChangeEvent>();
   const startedRef = yield* Ref.make(false);
-  const pendingSelfWriteIds = yield* Ref.make<ReadonlySet<number>>(new Set());
-  const nextSelfWriteId = yield* Ref.make(0);
   const startedDeferred = yield* Deferred.make<void, KeybindingsConfigError>();
   const watcherScope = yield* Scope.make("sequential");
   yield* Effect.addFinalizer(() => Scope.close(watcherScope, Exit.void));
@@ -395,6 +394,7 @@ const makeKeybindings = Effect.gen(function* () {
       Effect.flatMap((encoded) =>
         writeFileStringAtomically({
           filePath: keybindingsConfigPath,
+          followSymlinks: true,
           contents: encoded,
         }).pipe(
           Effect.provideService(FileSystem.FileSystem, fs),
@@ -410,50 +410,6 @@ const makeKeybindings = Effect.gen(function* () {
           }),
       ),
     );
-
-  const SELF_WRITE_SUPPRESSION_WINDOW_MS = 500;
-  const registerSelfWrite = Effect.gen(function* () {
-    const writeId = yield* Ref.modify(nextSelfWriteId, (current) => [current, current + 1]);
-    yield* Ref.update(pendingSelfWriteIds, (ids) => {
-      const next = new Set(ids);
-      next.add(writeId);
-      return next;
-    });
-    yield* Effect.sync(() => {
-      const timeout = setTimeout(() => {
-        Effect.runFork(
-          Ref.update(pendingSelfWriteIds, (ids) => {
-            if (!ids.has(writeId)) {
-              return ids;
-            }
-            const next = new Set(ids);
-            next.delete(writeId);
-            return next;
-          }),
-        );
-      }, SELF_WRITE_SUPPRESSION_WINDOW_MS);
-      timeout.unref?.();
-    });
-    return writeId;
-  });
-
-  const clearSelfWrite = (writeId: number) =>
-    Ref.update(pendingSelfWriteIds, (ids) => {
-      if (!ids.has(writeId)) {
-        return ids;
-      }
-      const next = new Set(ids);
-      next.delete(writeId);
-      return next;
-    });
-
-  const writeConfigForServiceMutation = (rules: readonly KeybindingRule[]) =>
-    Effect.gen(function* () {
-      const writeId = yield* registerSelfWrite;
-      return yield* writeConfigAtomically(rules).pipe(
-        Effect.tapError(() => clearSelfWrite(writeId)),
-      );
-    });
 
   const isLegacyPersistedDefault = (rule: KeybindingRule) =>
     hasEquivalentKeybindingRule(DEFAULT_KEYBINDINGS, rule) ||
@@ -489,7 +445,7 @@ const makeKeybindings = Effect.gen(function* () {
           maxEntries: MAX_KEYBINDINGS_COUNT,
         });
       }
-      yield* writeConfigForServiceMutation(cappedConfig);
+      yield* writeConfigAtomically(cappedConfig);
       const nextState = buildConfigState(cappedConfig, issues);
       yield* Cache.set(resolvedConfigCache, resolvedConfigCacheKey, nextState);
       yield* emitChange(nextState);
@@ -513,16 +469,18 @@ const makeKeybindings = Effect.gen(function* () {
 
   const revalidateAndEmit = upsertSemaphore.withPermits(1)(
     Effect.gen(function* () {
+      const previous = yield* loadConfigStateFromCacheOrDisk;
       yield* Cache.invalidate(resolvedConfigCache, resolvedConfigCacheKey);
       const configState = yield* loadConfigStateFromCacheOrDisk;
-      yield* emitChange(configState);
+      // Coalesced filesystem events may contain both self-writes and external edits.
+      if (JSON.stringify(previous) !== JSON.stringify(configState)) yield* emitChange(configState);
     }),
   );
 
   const syncDefaultKeybindingsOnStartup = upsertSemaphore.withPermits(1)(
     Effect.gen(function* () {
       if (!(yield* readConfigExists)) {
-        yield* writeConfigForServiceMutation([]);
+        yield* writeConfigAtomically([]);
         yield* Cache.invalidate(resolvedConfigCache, resolvedConfigCacheKey);
         return;
       }
@@ -553,7 +511,7 @@ const makeKeybindings = Effect.gen(function* () {
       }
 
       if (removedObsoleteDefaults > 0) {
-        yield* writeConfigForServiceMutation(sanitizedConfig);
+        yield* writeConfigAtomically(sanitizedConfig);
       }
       yield* Cache.invalidate(resolvedConfigCache, resolvedConfigCacheKey);
     }),
@@ -561,8 +519,6 @@ const makeKeybindings = Effect.gen(function* () {
 
   const startWatcher = Effect.gen(function* () {
     const keybindingsConfigDir = path.dirname(keybindingsConfigPath);
-    const keybindingsConfigFile = path.basename(keybindingsConfigPath);
-    const keybindingsConfigPathResolved = path.resolve(keybindingsConfigPath);
 
     yield* fs.makeDirectory(keybindingsConfigDir, { recursive: true }).pipe(
       Effect.mapError(
@@ -577,27 +533,24 @@ const makeKeybindings = Effect.gen(function* () {
 
     const revalidateAndEmitSafely = revalidateAndEmit.pipe(Effect.ignoreCause({ log: true }));
 
-    yield* Stream.runForEach(fs.watch(keybindingsConfigDir), (event) => {
-      const isTargetConfigEvent =
-        event.path === keybindingsConfigFile ||
-        event.path === keybindingsConfigPath ||
-        path.resolve(keybindingsConfigDir, event.path) === keybindingsConfigPathResolved;
-      if (!isTargetConfigEvent) {
-        return Effect.void;
-      }
-      const skipSelfWrite = Ref.modify(pendingSelfWriteIds, (ids) => {
-        const [writeId] = ids;
-        if (writeId === undefined) {
-          return [false, ids];
-        }
-        const next = new Set(ids);
-        next.delete(writeId);
-        return [true, next];
-      });
-      return skipSelfWrite.pipe(
-        Effect.flatMap((shouldSkip) => (shouldSkip ? Effect.void : revalidateAndEmitSafely)),
-      );
-    }).pipe(Effect.ignoreCause({ log: true }), Effect.forkIn(watcherScope), Effect.asVoid);
+    const events = yield* watchSettingsFile(keybindingsConfigPath).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, path),
+      Scope.provide(watcherScope),
+      Effect.mapError(
+        (cause) =>
+          new KeybindingsConfigError({
+            configPath: keybindingsConfigPath,
+            detail: "failed to watch keybindings file",
+            cause,
+          }),
+      ),
+    );
+    yield* Stream.runForEach(events, () => revalidateAndEmitSafely).pipe(
+      Effect.ignoreCause({ log: true }),
+      Effect.forkIn(watcherScope),
+      Effect.asVoid,
+    );
   });
 
   const start = Effect.gen(function* () {

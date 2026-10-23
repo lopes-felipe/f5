@@ -70,6 +70,10 @@ import {
 } from "../opencodeRuntime.ts";
 import { normalizeSupportedSlashCommands } from "../supportedSlashCommands.ts";
 import { buildProviderAttachmentRuntimeContext } from "../attachmentRuntimeContext.ts";
+import {
+  isOpenCodePasswordUnavailable,
+  OPENCODE_PASSWORD_UNAVAILABLE,
+} from "../../serverSettingsSecrets.ts";
 
 const PROVIDER: ProviderKind = "opencode";
 
@@ -1333,6 +1337,13 @@ export function makeOpenCodeAdapter(
         const binaryPath = openCodeSettings.binaryPath;
         const serverUrl = openCodeSettings.serverUrl;
         const serverPassword = openCodeSettings.serverPassword;
+        if (serverUrl.trim().length > 0 && isOpenCodePasswordUnavailable(openCodeSettings)) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "startSession",
+            issue: OPENCODE_PASSWORD_UNAVAILABLE,
+          });
+        }
         const directory = input.cwd ?? serverConfig.cwd;
         const existing = sessions.get(input.threadId);
         if (existing) {
@@ -1375,9 +1386,10 @@ export function makeOpenCodeAdapter(
                 ...(server.external && serverPassword ? { serverPassword } : {}),
               });
               const openCodeSession = yield* runOpenCodeSdk("session.create", (signal) =>
+                // No title: OpenCode only generates one from the first prompt
+                // when session.create leaves it unset.
                 client.session.create(
                   {
-                    title: `T3 Code ${input.threadId}`,
                     permission: input.workflowExecutionProfile
                       ? buildOpenCodeWorkflowPermissionRules(input.workflowExecutionProfile)
                       : buildOpenCodePermissionRules(input.runtimeMode),

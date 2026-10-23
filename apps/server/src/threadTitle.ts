@@ -8,7 +8,9 @@ import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
 } from "@t3tools/contracts";
 import { isUnsupportedCodexModelError } from "./provider/codexErrors.ts";
-import { Cause, Effect } from "effect";
+import { Cause, Effect, ServiceMap } from "effect";
+import type * as Duration from "effect/Duration";
+import * as Schedule from "effect/Schedule";
 
 import type { TextGenerationShape } from "./git/Services/TextGeneration.ts";
 
@@ -145,6 +147,12 @@ export function isUnsupportedCodexChatGptModelError(reason: string): boolean {
   return isUnsupportedCodexModelError(reason) && normalized.includes("chatgpt account");
 }
 
+/** First backoff before retrying a failed title generation; tests shorten it. */
+export const ThreadTitleRetryDelay = ServiceMap.Reference<Duration.Input>(
+  "t3/threadTitle/ThreadTitleRetryDelay",
+  { defaultValue: () => "2 seconds" },
+);
+
 export const resolveBestEffortGeneratedTitleResult = (input: {
   readonly cwd: string | null | undefined;
   readonly titleSourceText: string;
@@ -152,6 +160,7 @@ export const resolveBestEffortGeneratedTitleResult = (input: {
   readonly titleGenerationModel?: string | undefined;
   readonly titleGenerationModelSelection?: ModelSelection | undefined;
   readonly previousTitle?: string | undefined;
+  readonly linkedContext?: string | undefined;
   readonly defaultTitle: string;
   readonly textGeneration: TextGenerationShape;
   readonly logPrefix: string;
@@ -178,22 +187,34 @@ export const resolveBestEffortGeneratedTitleResult = (input: {
       requestedModelSelection?.model ??
       input.titleGenerationModel ??
       DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER.codex;
+    const retryDelay = yield* ThreadTitleRetryDelay;
     const generateTitle = (model: string) =>
-      input.textGeneration.generateThreadTitle({
-        cwd,
-        message: input.titleSourceText,
-        ...(input.previousTitle !== undefined ? { previousTitle: input.previousTitle } : {}),
-        ...(input.attachments.length > 0 ? { attachments: input.attachments } : {}),
-        model,
-        ...(requestedModelSelection
-          ? {
-              modelSelection:
-                requestedModelSelection.model === model
-                  ? requestedModelSelection
-                  : { ...requestedModelSelection, model },
-            }
-          : {}),
-      });
+      Effect.suspend(() =>
+        input.textGeneration.generateThreadTitle({
+          cwd,
+          message: input.titleSourceText,
+          ...(input.previousTitle !== undefined ? { previousTitle: input.previousTitle } : {}),
+          ...(input.linkedContext !== undefined ? { linkedContext: input.linkedContext } : {}),
+          ...(input.attachments.length > 0 ? { attachments: input.attachments } : {}),
+          model,
+          ...(requestedModelSelection
+            ? {
+                modelSelection:
+                  requestedModelSelection.model === model
+                    ? requestedModelSelection
+                    : { ...requestedModelSelection, model },
+              }
+            : {}),
+        }),
+      ).pipe(
+        // A timeout or a busy CLI is usually gone a few seconds later. An unsupported model is
+        // not, and has its own fallback below.
+        Effect.retry({
+          times: 2,
+          schedule: Schedule.exponential(retryDelay),
+          while: (error) => !isUnsupportedCodexChatGptModelError(String(error)),
+        }),
+      );
 
     let generatedResult = yield* Effect.exit(generateTitle(requestedModel));
 

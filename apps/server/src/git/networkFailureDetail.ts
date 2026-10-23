@@ -31,8 +31,22 @@ export function networkFailureDetail(stderr: string): string {
   ) {
     return "Git could not access the remote repository. Check the remote URL and repository permissions on the server.";
   }
-  if (/cannot lock ref|Unable to create .+\.lock/i.test(stderr)) {
+  if (isRefLockFailure(stderr)) {
     return "Git could not update a local reference. Check for another Git operation or a stale lock, then retry.";
   }
   return "The remote operation failed. Check the remote configuration and repository access on the server, then retry.";
+}
+
+/**
+ * A fetch that lost a ref update to another Git process. Git 2.53+ reports it as
+ * "fetching ref <ref> failed: ..."; older Git says "cannot lock ref".
+ */
+export function isRefLockFailure(stderr: string): boolean {
+  return stderr
+    .split(/\r?\n/)
+    .some((line) =>
+      /(?:cannot lock ref\b|Unable to create .+\.lock|^error: fetching ref \S+ failed: (?:incorrect old value provided|reference already exists)$)/i.test(
+        line.trim(),
+      ),
+    );
 }

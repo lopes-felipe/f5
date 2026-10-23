@@ -9,7 +9,9 @@ import type { VariantProps } from "class-variance-authority";
 import { ChevronDownIcon } from "lucide-react";
 import { Button, buttonVariants } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
+import { Kbd } from "../ui/kbd";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { shortcutLabelForCommand } from "../../keybindings";
 import { cn } from "~/lib/utils";
 import { ModelPickerContent } from "./ModelPickerContent";
 import {
@@ -55,6 +57,9 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   const triggerTitle = getTriggerDisplayModelName(selectedModel);
   const triggerSubtitle = selectedModel.subProvider;
   const triggerLabel = getTriggerDisplayModelLabel(selectedModel);
+  const shortcutLabel = props.keybindings
+    ? shortcutLabelForCommand(props.keybindings, "modelPicker.toggle")
+    : null;
 
   const setOpen = useCallback(
     (open: boolean) => {
@@ -148,7 +153,10 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
                 triggerTitle
               )}
             </TooltipTrigger>
-            <TooltipPopup side="top">{triggerLabel}</TooltipPopup>
+            <TooltipPopup side="top" className="flex items-center gap-2">
+              {triggerLabel}
+              {shortcutLabel ? <Kbd>{shortcutLabel}</Kbd> : null}
+            </TooltipPopup>
           </Tooltip>
           <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-60" />
         </span>

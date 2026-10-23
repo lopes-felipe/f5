@@ -1,3 +1,5 @@
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
+import { literalGitPathspec } from "@t3tools/shared/git";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -63,6 +65,7 @@ function runGit(
         GIT_TERMINAL_PROMPT: "0",
         GIT_CONFIG_NOSYSTEM: "1",
         ...options?.env,
+        GIT_OPTIONAL_LOCKS: "0",
       },
     }).then(
       (result) => resume(Effect.succeed(result)),
@@ -99,7 +102,9 @@ function resolveThreadCwd(
   const project = readModel.projects.find((candidate) => candidate.id === thread.projectId);
   if (!project) return Effect.fail(failure("project_not_found", "Thread project not found."));
 
-  const registeredPath = thread.worktreePath ?? project.workspaceRoot;
+  const registeredPath = threadWorkspaceCwd(thread, project);
+  if (!registeredPath)
+    return Effect.fail(failure("workspace_invalid", "Thread workspace could not be resolved."));
   return Effect.tryPromise({
     try: () => canonicalRegisteredPath(registeredPath),
     catch: () => failure("workspace_invalid", "Thread workspace could not be resolved."),
@@ -231,7 +236,7 @@ function makeWorkingTreePatch(
         for (let offset = 0; offset < paths.length; offset += 64) {
           const add = yield* runGit(
             cwd,
-            ["add", "-N", "--", ...paths.slice(offset, offset + 64)],
+            ["add", "-N", "--", ...paths.slice(offset, offset + 64).map(literalGitPathspec)],
             {
               env,
             },

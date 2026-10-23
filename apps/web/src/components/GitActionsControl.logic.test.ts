@@ -1032,3 +1032,23 @@ it("only records new PR observations for server threads", () => {
     ),
   );
 });
+
+it("reports a changed commit context without presenting success", () => {
+  assert.deepEqual(
+    summarizeGitResult({
+      action: "commit_push_pr",
+      branch: { status: "skipped_not_requested" },
+      commit: {
+        status: "context_changed",
+        subject: "Keep suggestion",
+        suggestedMessage: "Keep suggestion\n\nFull body",
+      },
+      push: { status: "skipped_not_requested" },
+      pr: { status: "skipped_not_requested" },
+    }),
+    {
+      title: "Files or staging changed",
+      description: "Review the suggested message and current changes before trying again.",
+    },
+  );
+});

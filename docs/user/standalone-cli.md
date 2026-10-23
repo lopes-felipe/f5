@@ -4,6 +4,19 @@ Run the F5 server without the desktop app, for example on a home server you reac
 [remote access](../../REMOTE.md). The archive includes everything it needs, so you don't need
 Node, npm or a compiler.
 
+## Install from the desktop app
+
+On macOS and Linux, open **Settings → About → Command-line tools** and select
+**Install CLI commands**. F5 links the bundled server as `f5` and `t3` in
+`/usr/local/bin`, falling back to `~/.local/bin` without administrator prompts.
+The installed launcher uses the desktop app's bundled runtime; Node is not required.
+Keep the application installed at that location for these commands to work.
+
+Existing files and symlinks are preserved. If another `f5` or `t3` runs first on
+PATH, installation reports its location and stops. If the chosen directory is
+not on PATH, Settings shows the paths to add. The separate archive installer
+below remains available for servers without the desktop app.
+
 ## How to
 
 1. Download the archive for your system from an

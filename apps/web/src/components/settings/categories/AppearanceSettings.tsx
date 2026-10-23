@@ -357,7 +357,7 @@ export function AppearanceSettings() {
           </p>
         </div>
         <div
-          className="grid gap-2 sm:grid-cols-3"
+          className="grid grid-cols-2 gap-2 sm:grid-cols-4"
           role="radiogroup"
           aria-label="Conversation width"
         >

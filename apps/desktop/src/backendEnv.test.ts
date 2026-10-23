@@ -27,6 +27,7 @@ describe("buildDesktopBackendEnv", () => {
       PATH: "/usr/bin",
       T3CODE_MODE: "desktop",
       T3CODE_NO_BROWSER: "1",
+      F5_SHELL_ENVIRONMENT_PREPARED: "1",
       T3CODE_PORT: "3773",
       F5_STATE_DIR: "/tmp/t3-state",
       T3CODE_STATE_DIR: "/tmp/t3-state",

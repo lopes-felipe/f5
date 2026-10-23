@@ -214,6 +214,7 @@ function useEntryPrompt(entry: AgentsPanelEntry, load: () => Promise<string | nu
 
 function AgentDetail(props: {
   readonly entry: AgentsPanelEntry;
+  readonly providerName?: string | undefined;
   readonly now: number;
   readonly showThread: boolean;
   readonly actions: AgentRowActions;
@@ -290,8 +291,13 @@ function AgentDetail(props: {
             <span className="font-mono">{entry.model}</span>
           </MetadataRow>
         ) : null}
+        {entry.effort ? (
+          <MetadataRow label="Effort">
+            <span className="font-mono">{entry.effort}</span>
+          </MetadataRow>
+        ) : null}
         <MetadataRow label="Provider">
-          <span className="font-mono">{entry.provider}</span>
+          <span>{props.providerName ?? entry.provider}</span>
         </MetadataRow>
         <MetadataRow label="Started">{new Date(entry.startedAt).toLocaleString()}</MetadataRow>
         {elapsed ? <MetadataRow label="Duration">{elapsed}</MetadataRow> : null}
@@ -349,6 +355,7 @@ function AgentDetail(props: {
 
 export function AgentRow(props: {
   readonly entry: AgentsPanelEntry;
+  readonly providerName?: string | undefined;
   readonly now: number;
   readonly expanded: boolean;
   readonly showThread: boolean;
@@ -396,12 +403,18 @@ export function AgentRow(props: {
                 {typeLabel}
               </span>
             ) : null}
-            <span className="ml-auto shrink-0 font-mono text-2xs text-muted-foreground tabular-nums group-hover/agent:invisible group-focus-within/agent:invisible">
+            <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums group-hover/agent:invisible group-focus-within/agent:invisible">
               {elapsed}
             </span>
           </span>
-          {line ? (
+          {props.providerName || line ? (
             <span className="mt-0.5 block min-w-0 truncate text-xs text-muted-foreground">
+              {props.providerName ? (
+                <>
+                  <span>{props.providerName}</span>
+                  {line ? " · " : null}
+                </>
+              ) : null}
               {line}
             </span>
           ) : null}
@@ -446,6 +459,7 @@ export function AgentRow(props: {
         <div id={detailId}>
           <AgentDetail
             entry={entry}
+            providerName={props.providerName}
             now={props.now}
             showThread={props.showThread}
             actions={actions}

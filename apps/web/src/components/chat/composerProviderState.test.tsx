@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import {
   getComposerProviderState,
+  getComposerReasoningStep,
   renderProviderTraitsMenuContent,
   renderProviderTraitsPicker,
 } from "./composerProviderState";
@@ -235,5 +236,63 @@ describe("provider traits render guards", () => {
 
     expect(renderProviderTraitsPicker(args)).toBeNull();
     expect(renderProviderTraitsMenuContent(args)).toBeNull();
+  });
+});
+
+describe("composer reasoning steps", () => {
+  it("uses the Codex picker's fallback efforts without dropping other selections", () => {
+    expect(
+      getComposerReasoningStep({
+        provider: PROVIDER,
+        model: "gpt-5",
+        models: [],
+        modelOptions: selections(["reasoningEffort", "low"], ["fastMode", true]),
+        direction: 1,
+      }),
+    ).toEqual(selections(["fastMode", true], ["reasoningEffort", "medium"]));
+  });
+  it("honors an explicit no-effort report", () => {
+    expect(
+      getComposerReasoningStep({
+        provider: PROVIDER,
+        model: MODEL,
+        models: [
+          {
+            slug: MODEL,
+            name: MODEL,
+            isCustom: false,
+            capabilities: { source: "reported", supportsEffort: false, optionDescriptors: [] },
+          },
+        ],
+        modelOptions: selections(["reasoningEffort", "high"]),
+        direction: 1,
+      }),
+    ).toBeNull();
+  });
+  it("steps only through a reported effort subset", () => {
+    expect(
+      getComposerReasoningStep({
+        provider: PROVIDER,
+        model: MODEL,
+        models: [
+          {
+            slug: MODEL,
+            name: MODEL,
+            isCustom: false,
+            capabilities: {
+              source: "reported",
+              optionDescriptors: [
+                selectDescriptor("reasoningEffort", [
+                  { id: "low", label: "Low", isDefault: true },
+                  { id: "high", label: "High" },
+                ]),
+              ],
+            },
+          },
+        ],
+        modelOptions: selections(["reasoningEffort", "low"], ["fastMode", true]),
+        direction: 1,
+      }),
+    ).toEqual(selections(["fastMode", true], ["reasoningEffort", "high"]));
   });
 });

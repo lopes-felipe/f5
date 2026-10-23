@@ -1,3 +1,4 @@
+import { backgroundWorkSessionIdentity } from "../../provider/backgroundWorkIdentity.ts";
 import { withProviderThreadAccess } from "../../provider/providerThreadAccess.ts";
 import { CodexMcpEventBus } from "../../codex/CodexMcpEventBus.ts";
 import { withFixtureWorkspaceWrites } from "../testUtils/workspaceWrites.ts";
@@ -2046,6 +2047,63 @@ describe("ProviderRuntimeIngestion", () => {
     },
   );
 
+  it.each([
+    { enabled: true, live: false },
+    { enabled: false, live: false },
+    { enabled: true, live: true },
+  ])("reconciles background work after an unplanned restart (%j)", async ({ enabled, live }) => {
+    const harness = await createHarness({
+      startIngestion: false,
+      settings: { resumeActiveTurnsAfterRestart: enabled },
+    });
+    const threadId = asThreadId("thread-1");
+    const at = new Date().toISOString();
+    for (const busy of [true, false])
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.makeUnsafe(`background-parent:${busy}`),
+          threadId,
+          createdAt: at,
+          session: {
+            threadId,
+            providerName: "codex",
+            status: busy ? "running" : "ready",
+            runtimeMode: "approval-required",
+            activeTurnId: busy ? asTurnId("background-parent") : null,
+            lastError: null,
+            updatedAt: at,
+          },
+        }),
+      );
+    await Effect.runPromise(
+      harness.providerSessionDirectory.upsert({
+        threadId,
+        provider: "codex",
+        status: "running",
+        runtimeMode: "approval-required",
+        runtimePayload: { activeTurnId: null, sessionGeneration: 3 },
+      }),
+    );
+    const binding = Option.getOrThrow(
+      await Effect.runPromise(harness.providerSessionDirectory.getBinding(threadId)),
+    );
+    await Effect.runPromise(
+      harness.sql`INSERT INTO projection_thread_background_work (thread_id, provider_work_item_id, provider_name, provider_instance_id, provider_session_identity, turn_id, classification, ownership, status, active, kind, started_at, updated_at, last_seen_at) VALUES (${threadId}, 'native-task', 'codex', ${binding.providerInstanceId ?? null}, ${backgroundWorkSessionIdentity(binding)}, 'background-parent', 'working', 'direct-subagent', 'running', 1, 'agent', ${at}, ${at}, ${at})`,
+    );
+    if (!live) harness.clearProviderSessions();
+    await harness.startIngestion();
+    await harness.drain();
+    const markers = await Effect.runPromise(
+      harness.sql`SELECT interrupted_background_work FROM restart_turn_markers WHERE thread_id = ${threadId}`,
+    );
+    expect(markers).toEqual(enabled && !live ? [{ interrupted_background_work: 1 }] : []);
+    const work = await Effect.runPromise(
+      harness.sql`SELECT active, status FROM projection_thread_background_work WHERE thread_id = ${threadId}`,
+    );
+    expect(work).toEqual([{ active: live ? 1 : 0, status: live ? "running" : "interrupted" }]);
+  });
+
   it("settles an orphaned active turn from a stopped provider generation on startup", async () => {
     const harness = await createHarness({ startIngestion: false });
     const threadId = asThreadId("thread-1");
@@ -2190,6 +2248,41 @@ describe("ProviderRuntimeIngestion", () => {
       `,
     );
     expect(receipts).toEqual([{ count: 0 }]);
+  });
+
+  it("keeps Pi's authoritative context occupancy separate from billable multi-message turn totals", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("pi-usage");
+    const now = new Date().toISOString();
+    harness.emit({
+      type: "thread.token-usage.updated",
+      eventId: asEventId("pi-context"),
+      provider: "pi",
+      threadId,
+      turnId,
+      createdAt: now,
+      payload: { usage: {}, contextTokens: 42, modelContextWindowTokens: 128_000 },
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("pi-billing"),
+      provider: "pi",
+      threadId,
+      turnId,
+      createdAt: now,
+      payload: {
+        state: "completed",
+        usage: { input_tokens: 100_000, output_tokens: 2000, total_tokens: 102_000 },
+        totalCostUsd: 0.25,
+      },
+    });
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.status === "ready" && entry.session.updatedAt === now,
+    );
+    expect(thread.estimatedContextTokens).toBe(42);
+    expect(thread.session?.estimatedContextTokens).toBe(42);
   });
 
   it("extracts provider-reported context tokens from non-Claude turn.completed usage", async () => {
@@ -4361,28 +4454,44 @@ describe("ProviderRuntimeIngestion", () => {
           thread.session?.activeTurnId === "turn-plan-buffer",
       );
 
+      const deltas = Array.from({ length: 100 }, (_, index) =>
+        index === 0 ? "## Buffered plan\n\n- step 0" : `\n- step ${index}`,
+      );
+      for (const [index, delta] of deltas.entries()) {
+        harness.emit({
+          type: "turn.proposed.delta",
+          eventId: asEventId(`evt-plan-delta-${index}`),
+          provider: "codex",
+          createdAt: now,
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId("turn-plan-buffer"),
+          payload: { delta },
+        });
+      }
+      // A projected marker proves the ordered ingestion worker consumed all deltas.
       harness.emit({
-        type: "turn.proposed.delta",
-        eventId: asEventId("evt-plan-delta-1"),
+        type: "turn.plan.updated",
+        eventId: asEventId("evt-plan-buffer-drained"),
         provider: "codex",
         createdAt: now,
         threadId: asThreadId("thread-1"),
         turnId: asTurnId("turn-plan-buffer"),
-        payload: {
-          delta: "## Buffered plan\n\n- first",
-        },
+        payload: { plan: [{ step: "All proposal deltas consumed", status: "in_progress" }] },
       });
-      harness.emit({
-        type: "turn.proposed.delta",
-        eventId: asEventId("evt-plan-delta-2"),
-        provider: "codex",
-        createdAt: now,
-        threadId: asThreadId("thread-1"),
-        turnId: asTurnId("turn-plan-buffer"),
-        payload: {
-          delta: "\n- second",
-        },
-      });
+      await waitForThread(harness.engine, (thread) =>
+        thread.activities.some((activity) => activity.id === "evt-plan-buffer-drained"),
+      );
+      await harness.drain();
+      const planWrites = () =>
+        Effect.runPromise(harness.sql<{ count: number }>`
+        SELECT COUNT(*) AS count FROM orchestration_events
+        WHERE stream_id = 'thread-1' AND event_type = 'thread.proposed-plan-upserted'
+      `);
+      expect(await planWrites()).toEqual([{ count: 0 }]);
+      const beforeCompletion = await Effect.runPromise(harness.engine.getReadModel());
+      expect(
+        beforeCompletion.threads.find((thread) => thread.id === "thread-1")?.proposedPlans,
+      ).toEqual([]);
       harness.emit({
         type: "turn.completed",
         eventId: asEventId("evt-turn-completed-plan-buffer"),
@@ -4396,6 +4505,7 @@ describe("ProviderRuntimeIngestion", () => {
       });
 
       await harness.drain();
+      expect(await planWrites()).toEqual([{ count: state === "completed" ? 1 : 0 }]);
       if (state !== "completed") {
         const snapshot = await Effect.runPromise(harness.engine.getReadModel());
         expect(snapshot.threads.find((thread) => thread.id === "thread-1")?.proposedPlans).toEqual(
@@ -4413,7 +4523,7 @@ describe("ProviderRuntimeIngestion", () => {
         (entry: ProviderRuntimeTestProposedPlan) =>
           entry.id === "plan:thread-1:turn:turn-plan-buffer",
       );
-      expect(proposedPlan?.planMarkdown).toBe("## Buffered plan\n\n- first\n- second");
+      expect(proposedPlan?.planMarkdown).toBe(deltas.join(""));
     },
   );
 
@@ -5907,6 +6017,7 @@ describe("ProviderRuntimeIngestion", () => {
           claude_code_version: "2.1.80",
           session_id: "session-123",
           fast_mode_state: "off",
+          fast_mode_disabled_reason: "extra_usage_disabled",
           effort: "max",
           reasoning: "high",
           context_window: "200k",
@@ -5943,6 +6054,7 @@ describe("ProviderRuntimeIngestion", () => {
       claudeCodeVersion: "2.1.80",
       sessionId: "session-123",
       fastModeState: "off",
+      fastModeDisabledReason: "extra_usage_disabled",
       effort: "max",
       reasoning: "high",
       contextWindow: "200k",
@@ -7926,6 +8038,41 @@ describe("ProviderRuntimeIngestion", () => {
     );
   });
 
+  it("never lets a provider name overwrite a title the user set", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.makeUnsafe("cmd-user-rename"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        title: "My own title",
+      }),
+    );
+    harness.emit({
+      type: "thread.metadata.updated",
+      eventId: asEventId("evt-provider-rename-after-user"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      payload: { name: "Provider name" },
+    });
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-after-provider-rename"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-after-rename"),
+      createdAt: now,
+      payload: {},
+    });
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) => entry.latestTurn?.turnId === "turn-after-rename",
+    );
+    expect(thread.title).toBe("My own title");
+  });
+
   it("consumes P1 runtime events into thread metadata, diff checkpoints, and activities", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
@@ -8069,6 +8216,58 @@ describe("ProviderRuntimeIngestion", () => {
     expect(checkpoint?.status).toBe("missing");
     expect(checkpoint?.assistantMessageId).toBe("assistant:item-p1-assistant");
     expect(checkpoint?.checkpointRef).toBe("provider-diff:evt-turn-diff-updated");
+  });
+
+  it("skips a tool update only when it matches the last update for that item", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const update = (eventId: string, detail: string, itemId = "item-repeat-tool") =>
+      harness.emit({
+        type: "item.updated",
+        eventId: asEventId(eventId),
+        provider: "opencode",
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-repeat"),
+        itemId: asItemId(itemId),
+        payload: { itemType: "command_execution", status: "in_progress", title: "Run", detail },
+      });
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("repeat-start"),
+      provider: "opencode",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-repeat"),
+      createdAt: now,
+      payload: {},
+    });
+    update("repeat-1", "bun test");
+    update("repeat-2", "bun test");
+    update("repeat-3", "bun test --watch");
+    update("repeat-4", "bun test");
+    update("repeat-other", "bun test", "item-other-tool");
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("repeat-done"),
+      provider: "opencode",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-repeat"),
+      itemId: asItemId("item-repeat-tool"),
+      payload: { itemType: "command_execution", status: "completed", title: "Run" },
+    });
+    update("repeat-5", "bun test");
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some((activity: ProviderRuntimeTestActivity) => activity.id === "repeat-5"),
+    );
+    expect(
+      thread.activities
+        .filter((activity: ProviderRuntimeTestActivity) => activity.kind === "tool.updated")
+        .map((activity: ProviderRuntimeTestActivity) => activity.id)
+        .toSorted(),
+    ).toEqual(["repeat-1", "repeat-3", "repeat-4", "repeat-5", "repeat-other"]);
   });
 
   it("reuses the same checkpoint turn count for repeated turn.diff.updated events in one turn", async () => {

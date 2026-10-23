@@ -9,7 +9,7 @@ import {
 import {
   resolveSettingsSearch,
   type SettingsCategory,
-} from "./components/settings/settingsCategories";
+} from "./components/settings/settingsRouting";
 
 export type TabTargetKey = string;
 

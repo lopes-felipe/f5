@@ -132,6 +132,19 @@ heap. The separate soak measures retained heap.
 
 ## Reproducing the pinned baseline
 
+The SQLite checkpoint gate can also run independently:
+
+```sh
+bun run perf:server sqlite-checkpoint --output=/tmp/f5-checkpoint-report.json
+```
+
+It uses five warmups and thirty measured repetitions. Each repetition prepares a
+40 MiB WAL before timing, then measures event-loop delay while the production
+Node checkpoint worker drains it. Every measured p99 must be below 50 ms. The
+report records fixture, harness, dependency and machine metadata. This is an
+absolute checkpoint-latency gate; it does not establish comparative CPU gains or
+replace the other server, browser or retained-memory gates.
+
 Create a detached disposable checkout without changing its production source:
 
 ```sh
@@ -411,3 +424,27 @@ checked between groups. Large-group write stalls remain an explicit tradeoff;
 observe production statement/event-loop data before starting the gated SQLite
 worker track. A deterministic interruption test verifies the writer remains
 blocked until rollback and then resumes.
+
+## October diagnostics
+
+General settings includes a Diagnostics card for OTLP trace/metric destinations
+and collector headers. Restart F5 after editing these fields. Header values live
+in the profile secret store, and reads expose only their names and redaction
+markers. Explicit signal settings override `OTEL_EXPORTER_OTLP_*_ENDPOINT`, then
+`OTEL_EXPORTER_OTLP_ENDPOINT` with `/v1/traces` or `/v1/metrics` appended. JSON
+and protobuf HTTP protocols are supported. `OTEL_SDK_DISABLED=true` disables
+observability, and `OTEL_TRACES_EXPORTER=none` / `OTEL_METRICS_EXPORTER=none`
+disable external export per signal. Export is inactive without a destination.
+
+Trace export retains at most 4,096 records and 4 MiB, including an in-flight
+batch. It sends one request at a time, bounds individual exports and requests,
+and drops failed batches with backoff. Metrics snapshots export serially. The
+local disk writer retains its independent queue and failure isolation. Collector
+headers and URL query strings are omitted from public diagnostic source metadata.
+
+`f5 trace summarize [--file <trace.ndjson>]` reads a trace incrementally and
+prints the twenty slowest spans, failure and event-loop stall counts. Without a
+file it resolves the selected profile's trace path. While local diagnostics is
+enabled, `SIGUSR2` explicitly writes a heap snapshot under the profile's
+`logs/observability` directory (except Windows). A heap snapshot pauses the
+process and can contain application data; it is never taken automatically.

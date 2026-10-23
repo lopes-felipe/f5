@@ -2,7 +2,7 @@ import type { PrHubReviewThread } from "@t3tools/contracts";
 export type ReviewThreadFact = PrHubReviewThread;
 export type ReviewCommentFact = PrHubReviewThread["comments"][number];
 
-export const GITHUB_REVIEW_COMMENT_FIELDS = `id body bodyText url author { login ... on User { databaseId } } createdAt updatedAt outdated diffHunk`;
+export const GITHUB_REVIEW_COMMENT_FIELDS = `id body bodyText url viewerCanUpdate authorAssociation author { __typename login ... on User { databaseId } } createdAt updatedAt outdated diffHunk`;
 export const GITHUB_REVIEW_THREAD_FIELDS = `id isResolved isOutdated path line originalLine diffSide startLine originalStartLine startDiffSide viewerCanReply viewerCanResolve viewerCanUnresolve`;
 export const GITHUB_REVIEW_THREADS_SELECTION = `
   reviewThreads(first:100) {
@@ -82,8 +82,13 @@ export function parseReviewThreads(connection: unknown): ReviewThreadFact[] {
       : {}),
     comments: nodeArray(thread.comments).map((comment) => ({
       id: stringValue(comment.id) ?? "",
+      ...(typeof comment.viewerCanUpdate === "boolean" ? { canEdit: comment.viewerCanUpdate } : {}),
       url: stringValue(comment.url) ?? "",
       author: stringValue(asRecord(comment.author)?.login),
+      ...(typeof comment.authorAssociation === "string"
+        ? { authorAssociation: comment.authorAssociation }
+        : {}),
+      ...(asRecord(comment.author)?.__typename === "Bot" ? { authorIsBot: true } : {}),
       bodyText: stringValue(comment.bodyText) ?? "",
       ...(typeof comment.body === "string" ? { body: comment.body } : {}),
       createdAt: stringValue(comment.createdAt),

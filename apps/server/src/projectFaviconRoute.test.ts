@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { makeWorkspaceAssetAuthorizer } from "./WorkspaceAssetAuthorizer";
 import { makeCheckedInProjectFileService } from "./project/CheckedInProjectFileService";
 import { tryHandleProjectFaviconRequest } from "./projectFaviconRoute";
+import { fakePng, icns } from "./icns.testkit";
 
 interface HttpResponse {
   statusCode: number;
@@ -141,6 +142,24 @@ describe("tryHandleProjectFaviconRequest", () => {
     });
   });
 
+  it("serves a macOS app icon as its embedded PNG", async () => {
+    const projectRoot = makeTempDir("f5-favicon-route-icns-");
+    fs.mkdirSync(path.join(projectRoot, "Resources"), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectRoot, "Resources", "AppIcon.icns"),
+      icns([
+        ["ic10", Buffer.concat([fakePng(1024), Buffer.alloc(1024 * 1024)])],
+        ["ic07", fakePng(128)],
+      ]),
+    );
+    await withRouteServer(new Map([[PROJECT_ID, projectRoot]]), async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/project-favicon?projectId=${PROJECT_ID}`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("image/png");
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(fakePng(128));
+    });
+  });
+
   it("prefers an authorized f5.json icon over discovered favicon candidates", async () => {
     const projectRoot = makeTempDir("f5-favicon-route-config-");
     fs.mkdirSync(path.join(projectRoot, "assets"), { recursive: true });
@@ -163,13 +182,15 @@ describe("tryHandleProjectFaviconRequest", () => {
     });
   });
 
-  it("falls back for missing, oversized, spoofed, and symlink-escaped icons", async () => {
+  it("falls back for missing, oversized, spoofed, PNG-less and symlink-escaped icons", async () => {
     const outside = makeTempDir("f5-favicon-route-outside-");
     fs.writeFileSync(path.join(outside, "logo.svg"), "<svg>outside</svg>", "utf8");
     const cases: Array<(root: string) => void> = [
       () => undefined,
       (root) => fs.writeFileSync(path.join(root, "favicon.png"), Buffer.alloc(1024 * 1024 + 1)),
       (root) => fs.writeFileSync(path.join(root, "favicon.png"), "not a png", "utf8"),
+      (root) =>
+        fs.writeFileSync(path.join(root, "AppIcon.icns"), icns([["is32", Buffer.alloc(64)]])),
       (root) => fs.symlinkSync(path.join(outside, "logo.svg"), path.join(root, "favicon.svg")),
     ];
 

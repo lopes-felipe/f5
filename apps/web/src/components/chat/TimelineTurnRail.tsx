@@ -18,7 +18,18 @@ export function TimelineTurnRail(props: {
   hitStripWidth: number;
   activeTickIndex: number;
   onSelect: (item: TimelineTurnRailItem) => void;
+  /** Native, non-passive wheel listener so the rail can scroll the timeline under it. */
+  onWheel?: (event: WheelEvent) => void;
 }) {
+  const { onWheel } = props;
+  const wheelTargetRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (!node || !onWheel) return;
+      node.addEventListener("wheel", onWheel, { passive: false });
+      return () => node.removeEventListener("wheel", onWheel);
+    },
+    [onWheel],
+  );
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const resolvedActiveIndex =
     activeIndex !== null && activeIndex < props.items.length ? activeIndex : null;
@@ -60,6 +71,7 @@ export function TimelineTurnRail(props: {
 
   return (
     <div
+      ref={wheelTargetRef}
       className={cn(
         "group/turn-rail pointer-events-none absolute inset-y-0 left-0 z-20 hidden w-18 [@media(pointer:fine)]:block",
         props.hasPersistentGutter

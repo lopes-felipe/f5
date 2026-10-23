@@ -138,6 +138,43 @@ function metricsCost(metrics: UsageMetrics): number {
 }
 
 /**
+ * Resolves user model mappings to their final target, so `a -> b` and
+ * `b -> c` both land on `c`. A model whose chain enters a loop is left
+ * unmapped.
+ */
+export function resolveModelAliases(
+  aliases: Readonly<Record<string, string>>,
+): ReadonlyMap<string, string> {
+  const resolved = new Map<string, string>();
+  for (const model of Object.keys(aliases)) {
+    const seen = new Set([model]);
+    let target = aliases[model]!;
+    while (Object.hasOwn(aliases, target) && !seen.has(target)) {
+      seen.add(target);
+      target = aliases[target]!;
+    }
+    // Stopping on a mapped model means the chain entered a loop.
+    if (!Object.hasOwn(aliases, target) && target !== model) resolved.set(model, target);
+  }
+  return resolved;
+}
+
+/**
+ * Renames mapped models before aggregation, so their rows merge into the
+ * target model and take the target's price.
+ */
+export function applyModelAliases<Row extends UsageAggregateRow>(
+  rows: ReadonlyArray<Row>,
+  aliases: ReadonlyMap<string, string>,
+): ReadonlyArray<Row> {
+  if (aliases.size === 0) return rows;
+  return rows.map((row) => {
+    const model = row.model === null ? undefined : aliases.get(row.model);
+    return model === undefined ? row : { ...row, model };
+  });
+}
+
+/**
  * Applies the user's price for the row's provider/model when the provider
  * omitted cost and every turn in the row reported input and output tokens.
  */

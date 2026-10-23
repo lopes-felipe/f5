@@ -194,6 +194,17 @@ describe("parsePersistedAppSettings", () => {
     expect(parsePersistedAppSettings(null).showProviderRuntimeMetadata).toBe(false);
   });
 
+  it("defaults the compact chat layout to on, including for settings saved before it", () => {
+    expect(parsePersistedAppSettings(null).compactChatLayout).toBe(true);
+    expect(
+      parsePersistedAppSettings(JSON.stringify({ showProviderRuntimeMetadata: true }))
+        .compactChatLayout,
+    ).toBe(true);
+    expect(
+      parsePersistedAppSettings(JSON.stringify({ compactChatLayout: false })).compactChatLayout,
+    ).toBe(false);
+  });
+
   it("defaults onboarding lite status to eligible", () => {
     expect(parsePersistedAppSettings(null).onboardingLiteStatus).toBe("eligible");
   });

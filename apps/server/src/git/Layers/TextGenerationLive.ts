@@ -1,3 +1,8 @@
+import { resolveProjectProviderInstanceEnabled } from "@t3tools/shared/serverSettings";
+import { readProjectSettings, readProjectForCwd } from "../../project/projectSettings.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
+import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
+import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
 /**
  * TextGenerationLive — registry-backed implementation of the `TextGeneration`
  * service tag.
@@ -25,7 +30,7 @@
  *
  * @module git/Layers/TextGenerationLive
  */
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Schema } from "effect";
 
 import { readRepositoryWritingContext } from "../repositoryInstructions.ts";
 import { TextGenerationError } from "../Errors.ts";
@@ -100,9 +105,14 @@ const resolveInstanceSelection = (
 export const makeTextGenerationFromRegistry = (
   registry: ProviderInstanceRegistryShape,
   getProviders: Effect.Effect<ReadonlyArray<ServerProvider>> = Effect.succeed([]),
+  resolveSelection: (
+    operation: TextGenerationOp,
+    input: { cwd: string; modelSelection?: ModelSelection; model?: string },
+  ) => Effect.Effect<ModelSelection, TextGenerationError> = (_operation, input) =>
+    Effect.succeed(input.modelSelection ?? defaultCodexModelSelection(input.model)),
 ): TextGenerationShape => ({
   generateCommitMessage: (input) =>
-    Effect.succeed(input.modelSelection ?? defaultCodexModelSelection(input.model)).pipe(
+    resolveSelection("generateCommitMessage", input).pipe(
       Effect.flatMap((modelSelection) =>
         resolveInstanceSelection(
           registry,
@@ -131,7 +141,7 @@ export const makeTextGenerationFromRegistry = (
       ),
     ),
   generatePrContent: (input) =>
-    Effect.succeed(input.modelSelection ?? defaultCodexModelSelection(input.model)).pipe(
+    resolveSelection("generatePrContent", input).pipe(
       Effect.flatMap((modelSelection) =>
         resolveInstanceSelection(registry, "generatePrContent", modelSelection, getProviders).pipe(
           Effect.flatMap(({ instance, modelSelection }) =>
@@ -155,7 +165,7 @@ export const makeTextGenerationFromRegistry = (
       ),
     ),
   generateBranchName: (input) =>
-    Effect.succeed(input.modelSelection ?? defaultCodexModelSelection(input.model)).pipe(
+    resolveSelection("generateBranchName", input).pipe(
       Effect.flatMap((modelSelection) =>
         resolveInstanceSelection(registry, "generateBranchName", modelSelection, getProviders).pipe(
           Effect.flatMap(({ instance: tg, modelSelection }) =>
@@ -165,7 +175,7 @@ export const makeTextGenerationFromRegistry = (
       ),
     ),
   generateThreadTitle: (input) =>
-    Effect.succeed(input.modelSelection ?? defaultCodexModelSelection(input.model)).pipe(
+    resolveSelection("generateThreadTitle", input).pipe(
       Effect.flatMap((modelSelection) =>
         resolveInstanceSelection(
           registry,
@@ -180,7 +190,7 @@ export const makeTextGenerationFromRegistry = (
       ),
     ),
   generateStructuredJson: (input) =>
-    Effect.succeed(input.modelSelection ?? defaultCodexModelSelection(input.model)).pipe(
+    resolveSelection("generateStructuredJson", input).pipe(
       Effect.flatMap((modelSelection) =>
         resolveInstanceSelection(
           registry,
@@ -229,7 +239,43 @@ export const TextGenerationLive = Layer.effect(
   Effect.gen(function* () {
     const registry = yield* ProviderInstanceRegistry;
     const providers = yield* ProviderRegistry;
-    return makeTextGenerationFromRegistry(registry, providers.getProviders);
+    const settings = yield* ServerSettingsService;
+    const projects = yield* ProjectionProjectRepository;
+    const threads = yield* ProjectionThreadRepository;
+    return makeTextGenerationFromRegistry(registry, providers.getProviders, (operation, input) =>
+      Effect.gen(function* () {
+        const global = yield* settings.getSettings;
+        const project = yield* readProjectForCwd(input.cwd).pipe(
+          Effect.provideService(ProjectionProjectRepository, projects),
+          Effect.provideService(ProjectionThreadRepository, threads),
+        );
+        const selected = input.modelSelection ?? defaultCodexModelSelection(input.model);
+        if (resolveProjectProviderInstanceEnabled(global, project?.projectId, selected.instanceId))
+          return selected;
+        if (project) {
+          const resolved = (yield* readProjectSettings(global, {
+            ...project,
+            id: project.projectId,
+          })).settings;
+          const fallback = resolved.textGenerationModelSelection;
+          if (resolveProjectProviderInstanceEnabled(global, project.projectId, fallback.instanceId))
+            return fallback;
+        }
+        return yield* new TextGenerationError({
+          operation,
+          detail: "No enabled provider is available for this project's text generation.",
+        });
+      }).pipe(
+        Effect.mapError((cause) =>
+          Schema.is(TextGenerationError)(cause)
+            ? cause
+            : new TextGenerationError({
+                operation,
+                detail: "Project provider settings could not be read.",
+              }),
+        ),
+      ),
+    );
   }),
 );
 

@@ -116,6 +116,8 @@ function buildLayer(input: {
     upsert: notImplemented,
     listByProjectId: notImplemented,
     listProjectIdsByWorktreePath: notImplemented,
+    touchActivity: notImplemented,
+    getActivityState: notImplemented,
     deleteById: notImplemented,
   };
   const projectRepository: ProjectionProjectRepositoryShape = {

@@ -47,9 +47,9 @@ export function extractContextTokens(usage: unknown): number | undefined {
 export function extractTurnCompletedContextTokens(
   event: TurnCompletedRuntimeEvent,
 ): number | undefined {
-  // Claude `result.usage` aggregates the entire agentic turn. Occupancy
-  // snapshots for the badge come from per-message usage stream events instead.
-  if (event.provider === "claudeAgent") {
+  // Claude and Pi aggregate billable usage across all messages in an agentic
+  // turn. Occupancy comes from their separate authoritative context snapshots.
+  if (event.provider === "claudeAgent" || event.provider === "pi") {
     return undefined;
   }
 

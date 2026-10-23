@@ -83,3 +83,19 @@ find ~/.codex_p -mindepth 1 ! -name auth.json -exec rm -rf {} +
 - [Claude](claude.md)
 - [Worktrees and storage automation](../user/worktrees-and-storage-automation.md)
 - [Codex implementation and release notes](../reviews/codex-provider-releases.md) (contributors)
+
+## Interactive MCP apps
+
+Completed MCP tools that supply a UI resource can open an app inside the thread.
+Apps run in an isolated frame and use the current Codex session. Send a message
+to reconnect when the session is offline. Older apps remain visible when earlier
+work logs collapse.
+
+F5 asks before running a tool unless the server explicitly declares it read-only.
+Every message sent by an app also needs confirmation. The approval shows the full
+arguments in a scrollable area. Navigating away stops the app; reload it to start
+a fresh frame. Escape or a pending approval returns fullscreen apps to the thread.
+
+Apps can save their latest state for the next user turn. This state is kept as
+separate tool data and does not replace the composer draft. Calls that fail or time
+out are never retried automatically; inspect the session before retrying an action.

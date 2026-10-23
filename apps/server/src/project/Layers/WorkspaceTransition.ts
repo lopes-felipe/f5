@@ -1,3 +1,5 @@
+import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { setupProjectScript } from "@t3tools/shared/projectScripts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { readProjectSettings } from "../projectSettings.ts";
@@ -839,6 +841,9 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
         return worker ? yield* Deferred.await(worker.result) : existing;
       }
       const { thread, project } = yield* context(input.threadId);
+      // Branches and worktrees belong to a Git checkout; a thread without a project has neither.
+      if (isScratchProject(project))
+        return yield* Effect.fail(new Error("Threads without a project have no branch to switch."));
       const queueState = (yield* queue.listByThread(thread.id)).state;
       if (
         setupOwnerToken &&
@@ -857,7 +862,9 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
       const repository = yield* git
         .resolveCommonDir(project.workspaceRoot)
         .pipe(Effect.flatMap(canonicalWorkspace));
-      const sourcePath = yield* canonicalWorkspace(thread.worktreePath ?? project.workspaceRoot);
+      const sourcePath = yield* canonicalWorkspace(
+        threadWorkspaceCwd(thread, project) ?? project.workspaceRoot,
+      );
       // Missing sources are supported by recovery; all other inspection errors remain blocking.
       const source = yield* inspect(sourcePath).pipe(
         Effect.map(identity),

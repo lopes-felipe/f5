@@ -1,4 +1,9 @@
-import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
+import {
+  DEFAULT_GIT_TEXT_GENERATION_MODEL,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t3tools/contracts/settings";
 import { describe, expect, it } from "vitest";
 import { deriveProviderInstanceEntries } from "./providerInstances";
@@ -455,6 +460,34 @@ describe("instance-scoped model selection", () => {
       instanceId: ProviderInstanceId.make("claude_openrouter"),
       model: "openai/gpt-5.5",
     });
+  });
+
+  it("falls back to the text generation default, not the chat default, for a removed model", () => {
+    const providers = [provider({ instanceId: "codex", models: ["gpt-6-astra", "gpt-6-luna"] })];
+    const settings: UnifiedSettings = {
+      ...settingsWithProviderInstances(),
+      textGenerationModelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.6-luna",
+      },
+    };
+
+    expect(resolveAppModelSelectionState(settings, providers).model).toBe(
+      DEFAULT_GIT_TEXT_GENERATION_MODEL,
+    );
+  });
+
+  it("keeps a saved text generation model the catalog still lists", () => {
+    const providers = [provider({ instanceId: "codex", models: ["gpt-6-astra", "gpt-6-luna"] })];
+    const settings: UnifiedSettings = {
+      ...settingsWithProviderInstances(),
+      textGenerationModelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-6-astra",
+      },
+    };
+
+    expect(resolveAppModelSelectionState(settings, providers).model).toBe("gpt-6-astra");
   });
 });
 

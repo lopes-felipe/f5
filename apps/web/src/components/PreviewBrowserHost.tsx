@@ -110,6 +110,7 @@ function PersistentPreviewInstance({
 
   return (
     <div
+      data-find-scope="preview"
       aria-hidden={!projected}
       inert={!projected}
       className="fixed flex min-h-0 flex-col overflow-hidden bg-background"

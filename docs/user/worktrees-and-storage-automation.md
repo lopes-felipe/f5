@@ -77,8 +77,10 @@ Restoring a backup takes effect on restart.
 > F5 never removes a worktree that has uncommitted or untracked files, initialized submodules,
 > an open terminal or provider session, queued turns,
 > or an active turn in another conversation using it. Automatic cleanup always keeps the branch,
-> so the next message recreates the worktree. Automatic cleanup also keeps ignored files other
-> than `node_modules/`; deleting ignored files requires confirmation through manual removal.
+> so the next message recreates the worktree. Automatic cleanup removes ignored files only when
+> they are well-known build or cache output such as `node_modules/`, `dist/` or `.turbo/`. Any
+> other ignored file, such as `.env`, `.envrc`, a private key or a local database, keeps the
+> worktree; deleting it requires confirmation through manual removal.
 
 - Cleanup and auto-pull can be set per project, but never from a checked-in `f5.json`.
 - If F5 restarts mid-setup, the setup shows as failed and nothing is removed.
@@ -283,3 +285,20 @@ a conversation cancels the worker, waits for filesystem writes to settle, releas
 private ref, and records any retained checkout and branch for manual review. Recovery can
 accept a verified complete copy, or keep the original workspace and clean up only proven
 copies. Untracked nested repositories must be committed, ignored, or removed before moving.
+
+## Settlement scripts and cleanup
+
+**When the thread is settled** is a separate cleanup rule and starts off. It uses
+the same checkout, queue, session, process and environment-file safety checks as
+other automatic cleanup rules and retains the branch. Like the other rules, it
+removes ignored build and cache output but keeps the worktree when it holds any
+other ignored file, such as a database, `.envrc` or a private key.
+
+A project script's **Run when worktree settles** option also starts off. Enabled
+scripts run sequentially in that linked worktree before cleanup can remove it.
+The runner owns each process, limits a script to two minutes and the job to five,
+and captures at most 20 scripts in a 64 KiB snapshot. A failure adds a notice and
+allows cleanup to continue through its safety checks. Waking or archiving the
+thread cancels its owned job and waits for process exit before releasing the
+worktree claim. A server restart never replays an already-running script. Its
+unverified process claim keeps the checkout protected and a notice explains why.

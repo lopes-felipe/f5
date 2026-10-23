@@ -2,6 +2,7 @@ import { useStore } from "../../store";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ThreadId, WorktreesMoveThreadResult } from "@t3tools/contracts";
+import { resolveThreadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { ensureNativeApi } from "../../nativeApi";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -26,8 +27,7 @@ export async function discardMovedChanges(
   const linked = state.threads.filter(
     (thread) =>
       thread.id !== threadId &&
-      (thread.worktreePath ??
-        state.projects.find((project) => project.id === thread.projectId)?.cwd) === sourcePath,
+      resolveThreadWorkspaceCwd({ thread, projects: state.projects }) === sourcePath,
   );
   const stashMessage = `f5: copied to ${branch} (${operationId})`;
   const confirmed = await api.dialogs.confirm(

@@ -1249,6 +1249,33 @@ describe("deriveProviderRuntimeInfoEntries", () => {
     ]);
   });
 
+  it("explains a refused fast mode only when the user requested it", () => {
+    const input = {
+      provider: "claudeAgent" as const,
+      threadModel: "claude-opus-5-5",
+      configuredRuntime: {
+        fastModeState: "off",
+        fastModeDisabledReason: "extra_usage_disabled",
+        runtimeInfo: { requested: { fastMode: "on" }, effective: { fastMode: "off" } },
+      },
+      rerouteActivity: null,
+      cliVersion: null,
+      mcpSummary: null,
+    };
+    expect(deriveProviderRuntimeInfoEntries(input)).toEqual([
+      { label: "Fast mode", value: "off (usage credits not enabled)" },
+    ]);
+    expect(
+      deriveProviderRuntimeInfoEntries({
+        ...input,
+        configuredRuntime: {
+          ...input.configuredRuntime,
+          runtimeInfo: { requested: { fastMode: "off" }, effective: { fastMode: "off" } },
+        },
+      }),
+    ).toEqual([{ label: "Fast mode", value: "off" }]);
+  });
+
   it("uses Codex's reported model rather than labeling the requested model as actual", () => {
     const input = {
       provider: "codex" as const,

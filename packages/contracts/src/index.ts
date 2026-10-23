@@ -1,4 +1,6 @@
 export * from "./nativeOperation";
+export * from "./threadTools";
+export * from "./pullRequestWatch";
 export * from "./baseSchemas";
 export { PendingUserInput } from "./userInput";
 export * from "./elicitation";
@@ -27,6 +29,7 @@ export * from "./preview";
 export * from "./previewAutomation";
 export * from "./computerAutomation";
 export * from "./orchestration";
+export * from "./threadSearch";
 export * from "./mcp";
 export * from "./mcpServer";
 export * from "./planningWorkflow";
@@ -60,3 +63,7 @@ export * from "./workflowSummary";
 export * from "./worktrees";
 
 export * from "./upstreamPorts";
+
+export * from "./threadSettlement";
+
+export * from "./mcpApps";

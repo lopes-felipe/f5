@@ -29,6 +29,8 @@ export interface WorktreeSetupCardProps {
   readonly onRetry: (() => void) | null;
   readonly onWorkLocally: (() => void) | null;
   readonly variant?: ComposerPanelVariant | undefined;
+  /** Opens a collapsible (warnings-only) setup expanded, as in its status-strip popover. */
+  readonly defaultExpanded?: boolean | undefined;
 }
 
 function formatElapsed(ms: number): string {
@@ -199,7 +201,7 @@ export function WorktreeSetupCard(props: WorktreeSetupCardProps) {
   const ended = snapshot.endedAt ? Date.parse(snapshot.endedAt) : nowMs;
   const scriptStage = snapshot.stages.find((stage) => stage.id === "setup-script");
   const collapsible = isWorktreeSetupCollapsible(snapshot);
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(props.defaultExpanded ?? false);
   const collapsed = collapsible && !expanded;
   const warningCount = snapshot.stages.filter((stage) => stage.status === "warning").length;
   return (

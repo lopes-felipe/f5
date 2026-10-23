@@ -23,8 +23,8 @@ import {
 } from "@t3tools/contracts";
 import { isArchivedWorkflow } from "@t3tools/shared/workflowArchive";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { useLocation, useNavigate, useParams } from "@tanstack/react-router";
-import { useAppSettings } from "../appSettings";
+import { useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
+import { type AppSettings, useAppSettingsSelector } from "../appSettings";
 import { selectProjectDraftThread, useComposerDraftStore } from "../composerDraftStore";
 import { useStartupReady } from "../lib/startupReady";
 import { cn, newCommandId } from "../lib/utils";
@@ -87,7 +87,7 @@ import {
 } from "./Sidebar.logic";
 import { isWsInteractionBlocked, useWsConnectionState } from "../wsConnectionState";
 import { StartupSidebarSkeleton } from "./StartupLoadingState";
-import { resolveSettingsNavigationSearch } from "./settings/settingsCategories";
+import { resolveSettingsNavigationSearch } from "./settings/settingsRouting";
 import { orderedPinnedThreadIds, replacePinnedThreads } from "../threadPinSnooze";
 import { SidebarThreadSearchResults } from "./SidebarThreadSearch";
 import { SidebarAddProjectForm, useAddProject } from "./sidebar/SidebarAddProjectForm";
@@ -110,6 +110,9 @@ import {
 } from "./sidebar/sidebarLists";
 import { useDesktopUpdate } from "./sidebar/useDesktopUpdate";
 import { useSidebarThreadActions } from "./sidebar/useSidebarThreadActions";
+import { isScratchProject, withoutScratchProjects } from "@t3tools/shared/scratchProject";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
+import { useStartScratchThread } from "../hooks/useStartScratchThread";
 
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 
@@ -135,6 +138,15 @@ async function deleteProjectWithThreads(input: {
   });
 }
 
+function selectSidebarSettings(settings: AppSettings) {
+  return {
+    sidebarThreadPreviewCount: settings.sidebarThreadPreviewCount,
+    confirmThreadDelete: settings.confirmThreadDelete,
+    gitStatusAutoRefreshIntervalSeconds: settings.gitStatusAutoRefreshIntervalSeconds,
+    expandWorkflowThreadsByDefault: settings.expandWorkflowThreadsByDefault,
+  };
+}
+
 export default function Sidebar() {
   "use memo";
   const testRenderCountProps = useTestRenderCountProps();
@@ -157,16 +169,12 @@ export default function Sidebar() {
     (store) => store.clearProjectDraftThreadId,
   );
   const navigate = useNavigate();
-  const settingsLocation = useLocation({
-    select: (location) => ({
-      pathname: location.pathname,
-      search: location.search,
-    }),
-  });
+  // Read at click time: an object selector here re-rendered the sidebar on every router update.
+  const router = useRouter();
   const isOnSettings = useLocation({ select: (loc) => loc.pathname === "/settings" });
   const isOnUsage = useLocation({ select: (loc) => loc.pathname === "/usage" });
   const pathname = useLocation({ select: (loc) => loc.pathname });
-  const { settings: appSettings } = useAppSettings();
+  const appSettings = useAppSettingsSelector(selectSidebarSettings);
   const threadPreviewLimit = appSettings.sidebarThreadPreviewCount;
   const wsConnectionState = useWsConnectionState();
   const wsInteractionBlocked = isWsInteractionBlocked(wsConnectionState.phase);
@@ -209,18 +217,20 @@ export default function Sidebar() {
   const sidebarHoverAnchorRef = useRef<HTMLDivElement | null>(null);
   const [sidebarSearchQuery, setSidebarSearchQuery] = useState("");
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
-  const firstProjectId = projects[0]?.id ?? null;
+  const listedProjects = useMemo(() => withoutScratchProjects(projects), [projects]);
+  const firstProjectId = listedProjects[0]?.id ?? null;
   const mostRecentProjectId = useMemo(
     () =>
       getMostRecentProject(
-        projects,
+        listedProjects,
         threads,
         planningWorkflows,
         codeReviewWorkflows,
         investigationWorkflows,
       )?.id ?? null,
-    [codeReviewWorkflows, investigationWorkflows, planningWorkflows, projects, threads],
+    [codeReviewWorkflows, investigationWorkflows, listedProjects, planningWorkflows, threads],
   );
+  const startScratchThread = useStartScratchThread();
   const primaryProjectId = resolvePrimaryNewThreadProjectId({
     activeThreadProjectId: activeThread?.projectId,
     activeDraftProjectId: activeDraftThread?.projectId,
@@ -244,8 +254,8 @@ export default function Sidebar() {
   const desktopUpdate = useDesktopUpdate();
 
   const persistedThreadIds = useMemo(() => new Set(threads.map((thread) => thread.id)), [threads]);
-  const projectCwdById = useMemo(
-    () => new Map(projects.map((project) => [project.id, project.cwd] as const)),
+  const projectById = useMemo(
+    () => new Map(projects.map((project) => [project.id, project] as const)),
     [projects],
   );
   const threadGitTargets = useMemo(
@@ -253,9 +263,9 @@ export default function Sidebar() {
       threads.map((thread) => ({
         threadId: thread.id,
         branch: thread.branch,
-        cwd: thread.worktreePath ?? projectCwdById.get(thread.projectId) ?? null,
+        cwd: threadWorkspaceCwd(thread, projectById.get(thread.projectId)) ?? null,
       })),
-    [projectCwdById, threads],
+    [projectById, threads],
   );
   const threadGitStatusCwds = useMemo(
     () => [
@@ -275,6 +285,8 @@ export default function Sidebar() {
         autoRefresh: appSettings.gitStatusAutoRefreshIntervalSeconds > 0,
         staleTimeMs: 30_000,
         refetchIntervalMs: appSettings.gitStatusAutoRefreshIntervalSeconds * 1000,
+        // Rows only show the branch's PR, so they never fetch from the remote.
+        includeRemote: false,
       }),
     })),
   });
@@ -626,18 +638,35 @@ export default function Sidebar() {
     async (projectId: ProjectId, position: { x: number; y: number }) => {
       const api = readNativeApi();
       if (!api) return;
+      // The home for threads without a project has no path, worktrees or identity to change.
+      const scratch = isScratchProject(projects.find((entry) => entry.id === projectId));
       const clicked = await api.contextMenu.show(
-        [
-          { id: "worktrees", label: "Worktrees…" },
-          { id: "icon", label: "Change project icon..." },
-          { id: "change-path", label: "Change project path..." },
-          { id: "rename", label: "Rename project" },
-          { id: "delete", label: "Remove project", destructive: true },
-        ],
+        scratch
+          ? [{ id: "settle-idle", label: "Settle idle threads" }]
+          : [
+              { id: "worktrees", label: "Worktrees…" },
+              { id: "settle-idle", label: "Settle idle threads" },
+              { id: "icon", label: "Change project icon..." },
+              { id: "change-path", label: "Change project path..." },
+              { id: "rename", label: "Rename project" },
+              { id: "delete", label: "Remove project", destructive: true },
+            ],
         position,
       );
       const project = projects.find((entry) => entry.id === projectId);
       if (!project) return;
+      if (clicked === "settle-idle") {
+        try {
+          const result = await api.threadSettlement.settleProjectIdle({ projectId });
+          toastManager.add({
+            type: "success",
+            title: `Settled ${result.settled} idle thread${result.settled === 1 ? "" : "s"}`,
+          });
+        } catch {
+          toastManager.add({ type: "error", title: "Could not settle idle threads" });
+        }
+        return;
+      }
       if (clicked === "worktrees") {
         await navigate({ to: "/worktrees", search: { projectId } });
         return;
@@ -823,7 +852,8 @@ export default function Sidebar() {
       });
 
       if (command === "workflow.new") {
-        if (!projectId) return;
+        if (!projectId || isScratchProject(projects.find((entry) => entry.id === projectId)))
+          return;
         event.preventDefault();
         event.stopPropagation();
         openWorkflowCreateDialog(projectId);
@@ -834,6 +864,13 @@ export default function Sidebar() {
         event.preventDefault();
         event.stopPropagation();
         void navigate({ to: "/pull-requests" });
+        return;
+      }
+
+      if (command === "chat.newScratch") {
+        event.preventDefault();
+        event.stopPropagation();
+        void startScratchThread();
         return;
       }
 
@@ -880,7 +917,9 @@ export default function Sidebar() {
     mostRecentProjectId,
     navigate,
     openWorkflowCreateDialog,
+    projects,
     routeThreadId,
+    startScratchThread,
     terminalStateByThreadId,
     wsInteractionBlocked,
   ]);
@@ -1050,7 +1089,12 @@ export default function Sidebar() {
         newThreadShortcutLabel={newThreadShortcutLabel}
         workflowShortcutLabel={workflowShortcutLabel}
         onNewThread={threadActions.createThreadInProject}
-        onNewWorkflow={openWorkflowCreateDialog}
+        onNewWorkflow={(projectId) => {
+          // Workflows need a repository; from a thread without a project, pick a project first.
+          if (!isScratchProject(projects.find((entry) => entry.id === projectId)))
+            openWorkflowCreateDialog(projectId);
+          else if (firstProjectId) openWorkflowCreateDialog(firstProjectId);
+        }}
         onAddProject={addProject.handleStartAddProject}
       />
 
@@ -1160,12 +1204,20 @@ export default function Sidebar() {
 
           {!startupReady && projects.length === 0 && !addProject.showPathEntry ? (
             <StartupSidebarSkeleton />
-          ) : startupReady && projects.length === 0 && !addProject.showPathEntry ? (
+          ) : startupReady && listedProjects.length === 0 && !addProject.showPathEntry ? (
             <div className="mx-1 mt-2 flex flex-col items-center gap-2 rounded-xl border border-dashed border-border px-3 py-5 text-center">
               <p className="text-ui text-muted-foreground">No projects yet</p>
               <Button size="sm" variant="outline" onClick={addProject.handleStartAddProject}>
                 <PlusIcon className="size-4" />
                 Add a project
+              </Button>
+              <Button
+                size="sm"
+                variant="link"
+                data-testid="sidebar-start-without-project"
+                onClick={() => void startScratchThread()}
+              >
+                or start without a project
               </Button>
             </div>
           ) : null}
@@ -1231,7 +1283,7 @@ export default function Sidebar() {
                   onClick={() =>
                     void navigate({
                       to: "/settings",
-                      search: resolveSettingsNavigationSearch(settingsLocation),
+                      search: resolveSettingsNavigationSearch(router.state.location),
                     })
                   }
                 >

@@ -45,7 +45,12 @@ export function normalizeProviderLimits(
   }
   if (provider === "grok") {
     const config = asRecord(body.config);
-    const percent = asNonNegativeNumber(config?.creditUsagePercent);
+    // xAI leaves the percentage out, rather than sending 0, until usage registers. Reading
+    // that as unsupported told a freshly signed-in account its CLI could not report limits.
+    const percent =
+      config && config.creditUsagePercent === undefined
+        ? 0
+        : asNonNegativeNumber(config?.creditUsagePercent);
     return percent === null
       ? []
       : [

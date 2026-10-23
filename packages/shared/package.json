@@ -4,6 +4,14 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./nativeHistoryReconciliation": {
+      "types": "./src/nativeHistoryReconciliation.ts",
+      "import": "./src/nativeHistoryReconciliation.ts"
+    },
+    "./forgeCapabilities": {
+      "types": "./src/forgeCapabilities.ts",
+      "import": "./src/forgeCapabilities.ts"
+    },
     "./rpcScheduling": {
       "types": "./src/rpcScheduling.ts",
       "import": "./src/rpcScheduling.ts"
@@ -84,6 +92,10 @@
       "types": "./src/DrainableWorker.ts",
       "import": "./src/DrainableWorker.ts"
     },
+    "./symlink": {
+      "types": "./src/symlink.ts",
+      "import": "./src/symlink.ts"
+    },
     "./schemaJson": {
       "types": "./src/schemaJson.ts",
       "import": "./src/schemaJson.ts"
@@ -95,6 +107,10 @@
     "./serverSettings": {
       "types": "./src/serverSettings.ts",
       "import": "./src/serverSettings.ts"
+    },
+    "./subagentDisplay": {
+      "types": "./src/subagentDisplay.ts",
+      "import": "./src/subagentDisplay.ts"
     },
     "./toolActivity": {
       "types": "./src/toolActivity.ts",
@@ -179,6 +195,18 @@
     "./path": {
       "types": "./src/path.ts",
       "import": "./src/path.ts"
+    },
+    "./scratchProject": {
+      "types": "./src/scratchProject.ts",
+      "import": "./src/scratchProject.ts"
+    },
+    "./promptLinks": {
+      "types": "./src/promptLinks.ts",
+      "import": "./src/promptLinks.ts"
+    },
+    "./threadWorkspace": {
+      "types": "./src/threadWorkspace.ts",
+      "import": "./src/threadWorkspace.ts"
     },
     "./appStatePaths": {
       "types": "./src/appStatePaths.ts",
@@ -350,6 +378,27 @@
     },
     "./mcpTools": "./src/mcpTools.ts",
     "./mcpSecrets": "./src/mcpSecrets.ts",
+    "./observability": "./src/observability.ts",
+    "./htmlRender": {
+      "types": "./src/htmlRender.ts",
+      "import": "./src/htmlRender.ts"
+    },
+    "./mcpApp": {
+      "types": "./src/mcpApp.ts",
+      "import": "./src/mcpApp.ts"
+    },
+    "./boundedJson": {
+      "types": "./src/boundedJson.ts",
+      "import": "./src/boundedJson.ts"
+    },
+    "./threadSearch": {
+      "types": "./src/threadSearch.ts",
+      "import": "./src/threadSearch.ts"
+    },
+    "./threadFindText": {
+      "types": "./src/threadFindText.ts",
+      "import": "./src/threadFindText.ts"
+    },
     "./utf8Lines": {
       "types": "./src/utf8Lines.ts",
       "import": "./src/utf8Lines.ts"
@@ -382,6 +431,9 @@
   "dependencies": {
     "@t3tools/contracts": "workspace:*",
     "effect": "catalog:",
+    "mdast-util-from-markdown": "2.0.3",
+    "mdast-util-gfm": "3.1.0",
+    "micromark-extension-gfm": "3.0.0",
     "smol-toml": "1.6.0"
   },
   "devDependencies": {

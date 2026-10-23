@@ -9,6 +9,15 @@ import { Button } from "../ui/button";
 
 const RECLAIMABLE_SHOWN = 3;
 
+/** The watched volume closest to full, which the banner and its chip describe. */
+export function fullestLowDiskVolume(
+  status: DiskSpaceStatus,
+): DiskSpaceStatus["volumes"][number] | undefined {
+  return status.volumes
+    .filter((volume) => volume.level !== "ok")
+    .toSorted((left, right) => left.freeBytes - right.freeBytes)[0];
+}
+
 /**
  * Persistent while a watched volume is below the low threshold; not
  * dismissible, because below the critical threshold new turns are held.
@@ -23,9 +32,7 @@ export const LowDiskSpaceBanner = memo(function LowDiskSpaceBanner({
 }) {
   if (!status || status.level === "ok") return null;
   const critical = status.level === "critical";
-  const fullest = status.volumes
-    .filter((volume) => volume.level !== "ok")
-    .toSorted((left, right) => left.freeBytes - right.freeBytes)[0];
+  const fullest = fullestLowDiskVolume(status);
   const reclaimable = status.reclaimable.slice(0, RECLAIMABLE_SHOWN);
 
   return (

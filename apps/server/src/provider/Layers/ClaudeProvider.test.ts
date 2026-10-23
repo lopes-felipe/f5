@@ -103,6 +103,33 @@ function runStatusForVersion(version: string) {
   );
 }
 
+it("runs the version and auth probes in the given directory", async () => {
+  const cwds: Array<string | undefined> = [];
+  const spawner = Layer.succeed(
+    ChildProcessSpawner.ChildProcessSpawner,
+    ChildProcessSpawner.make((command) => {
+      const cmd = command as unknown as {
+        args: ReadonlyArray<string>;
+        options?: { cwd?: string };
+      };
+      cwds.push(cmd.options?.cwd);
+      return Effect.succeed(
+        mockHandle({
+          stdout: cmd.args[0] === "--version" ? "claude 2.1.0\n" : '{"loggedIn":true}',
+          stderr: "",
+          code: 0,
+        }),
+      );
+    }),
+  );
+  await Effect.runPromise(
+    checkClaudeProviderStatus(claudeSettings, capabilitiesProbe, {}, "/state/dir").pipe(
+      Effect.provide(Layer.merge(NodeServices.layer, spawner)),
+    ),
+  );
+  expect(cwds).toEqual(["/state/dir", "/state/dir"]);
+});
+
 function runStatusForVersionWithSettings(version: string, settings: ClaudeSettings) {
   return Effect.runPromise(
     checkClaudeProviderStatus(settings, capabilitiesProbe).pipe(

@@ -216,6 +216,68 @@ export function resolveExecutable(
   return resolved;
 }
 
+// Git for Windows 2.56 moved x64 builds from mingw64 to ucrt64; ARM64 builds
+// live in clangarm64 and 32-bit ones in mingw32.
+const GIT_FOR_WINDOWS_BUILDS = ["ucrt64", "clangarm64", "mingw64", "mingw32"] as const;
+
+/**
+ * Swaps Git for Windows' launcher (`<Git>\cmd\git.exe`, the only git its
+ * installer puts on PATH, or the portable build's `<Git>\bin\git.exe`) for the
+ * git.exe it starts. The launcher costs a second process on every git command,
+ * and each launch leaks a kernel token reference that slows process creation
+ * machine-wide until reboot. The real binary sets HOME itself, but adds its own
+ * folders to PATH for hooks, ssh and credential helpers only when MSYSTEM is
+ * unset, so the launcher stays when MSYSTEM is set. Anything else is returned
+ * as is.
+ */
+export function preferGitForWindowsBinary(
+  executable: string,
+  env: NodeJS.ProcessEnv,
+  fileExists: (filePath: string) => boolean = isFile,
+): string {
+  if (findEnvironmentValue(env, "MSYSTEM")) return executable;
+  const path = NodePath.win32;
+  if (path.basename(executable).toLowerCase() !== "git.exe") return executable;
+  const launcherDirectory = path.dirname(executable);
+  const launcherFolder = path.basename(launcherDirectory).toLowerCase();
+  if (launcherFolder !== "cmd" && launcherFolder !== "bin") return executable;
+  const installRoot = path.dirname(launcherDirectory);
+  for (const build of GIT_FOR_WINDOWS_BUILDS) {
+    const candidate = path.join(installRoot, build, "bin", "git.exe");
+    if (fileExists(candidate)) return candidate;
+  }
+  return executable;
+}
+
+/**
+ * The executable to spawn for git. Off Windows, and when PATH holds a git.cmd
+ * wrapper (which would need cmd.exe, cutting multi-line commit messages at the
+ * first newline), this stays `git` for the platform's own lookup.
+ */
+export function resolveGitExecutable(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform !== "win32") return "git";
+  const cacheKey = `${resolutionCacheKey("git", platform, env, undefined)}\0real-git\0${
+    findEnvironmentValue(env, "MSYSTEM") ? "msystem" : ""
+  }`;
+  const cached = resolutionCache.get(cacheKey);
+  // Cached with the PATH scan: its file checks would otherwise run before every
+  // git launch.
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const found = resolveExecutable("git", env, { platform });
+  const resolved =
+    found && NodePath.win32.extname(found).toLowerCase() === ".exe"
+      ? preferGitForWindowsBinary(found, env)
+      : "git";
+  resolutionCache.set(cacheKey, {
+    value: resolved,
+    expiresAt: Date.now() + POSITIVE_RESOLUTION_CACHE_TTL_MS,
+  });
+  return resolved;
+}
+
 export function isCommandAvailable(
   command: string,
   options: CommandResolutionOptions & { readonly env?: NodeJS.ProcessEnv } = {},

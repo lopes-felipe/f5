@@ -85,6 +85,12 @@ describe("provider limits", () => {
     expect(
       normalizeProviderLimits("grok", { config: { creditUsagePercent: 140 } })[0]?.usedPercent,
     ).toBe(100);
+    // A billing read with nothing metered yet is a 0% meter, not an unsupported account.
+    expect(normalizeProviderLimits("grok", { config: { currentPeriod: { end: "bad" } } })).toEqual([
+      { id: "subscription", label: "Subscription", usedPercent: 0, resetsAt: null },
+    ]);
+    expect(normalizeProviderLimits("grok", { config: { creditUsagePercent: "n/a" } })).toEqual([]);
+    expect(normalizeProviderLimits("grok", {})).toEqual([]);
     expect(
       normalizeProviderLimits("opencode", { usage: { weekly: { percent: 0, resetsAt: "bad" } } }),
     ).toEqual([{ id: "weekly", label: "Go · weekly", usedPercent: 0, resetsAt: null }]);

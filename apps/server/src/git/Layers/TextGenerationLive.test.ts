@@ -1,15 +1,26 @@
+import { ServerSettingsService } from "../../serverSettings.ts";
+import {
+  ProjectionProjectRepository,
+  type ProjectionProject,
+} from "../../persistence/Services/ProjectionProjects.ts";
+import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
+import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { it } from "@effect/vitest";
-import { Effect, PubSub, Result, Schema, Stream } from "effect";
+import { Effect, Layer, PubSub, Result, Schema, Stream } from "effect";
 import { describe, expect } from "vitest";
 
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { DEFAULT_SERVER_SETTINGS, ProjectId, ProviderInstanceId } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 
 import type { ProviderInstance } from "../../provider/ProviderDriver.ts";
-import type { ProviderInstanceRegistryShape } from "../../provider/Services/ProviderInstanceRegistry.ts";
-import type { TextGenerationShape } from "../Services/TextGeneration.ts";
+import {
+  ProviderInstanceRegistry,
+  type ProviderInstanceRegistryShape,
+} from "../../provider/Services/ProviderInstanceRegistry.ts";
+import { TextGeneration, type TextGenerationShape } from "../Services/TextGeneration.ts";
 
 import {
+  TextGenerationLive,
   resolveAuxiliaryTextModel,
   makeTextGenerationFromRegistry,
   supportsNoWorkspaceIsolation,
@@ -229,5 +240,84 @@ it.each(["failed", "partial"] as const)(
       models: [{ slug: "claude-haiku-5-5", isUnlisted: true }, { slug: "claude-haiku-4-5" }],
     } as unknown as import("@t3tools/contracts").ServerProvider;
     expect(resolveAuxiliaryTextModel(selection, snapshot).model).toBe("claude-haiku-4-5");
+  },
+);
+
+it.effect(
+  "uses the project policy for title and Git generation in linked worktrees and fails when all providers are disabled",
+  () => {
+    const projectId = ProjectId.makeUnsafe("generation-policy-project");
+    const codex = ProviderInstanceId.make("codex"),
+      claude = ProviderInstanceId.make("claudeAgent");
+    const calls: string[] = [];
+    const instance = makeStubInstance(
+      claude,
+      makeStubTextGeneration({
+        generateBranchName: (input) =>
+          Effect.sync(() => {
+            calls.push(`branch:${input.modelSelection?.instanceId}`);
+            return { branch: "project-policy" };
+          }),
+        generateThreadTitle: (input) =>
+          Effect.sync(() => {
+            calls.push(`title:${input.modelSelection?.instanceId}`);
+            return { title: "Project policy" };
+          }),
+      }),
+    );
+    const settingsLayer = ServerSettingsService.layerTest({
+      projectSettingsOverrides: {
+        [projectId]: { providerInstances: { [codex]: { enabled: false } } },
+      },
+    });
+    const layer = TextGenerationLive.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(ProviderInstanceRegistry, makeStubRegistry([instance])),
+          Layer.mock(ProviderRegistry)({
+            getProviders: Effect.succeed([]),
+            streamChanges: Stream.empty,
+          }),
+          settingsLayer,
+          Layer.mock(ProjectionProjectRepository)({
+            listAll: () =>
+              Effect.succeed([
+                {
+                  projectId,
+                  workspaceRoot: "/project-policy-root",
+                  deletedAt: null,
+                } as ProjectionProject,
+              ]),
+          }),
+          Layer.mock(ProjectionThreadRepository)({
+            listProjectIdsByWorktreePath: (cwd) =>
+              Effect.succeed(cwd === "/linked-policy-worktree" ? [projectId] : []),
+          }),
+        ),
+      ),
+    );
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const generation = yield* TextGeneration;
+        const settings = yield* ServerSettingsService;
+        const request = {
+          cwd: "/linked-policy-worktree",
+          message: "Rename",
+          modelSelection: createModelSelection(codex, "gpt-5"),
+        };
+        expect((yield* generation.generateBranchName(request)).branch).toBe("project-policy");
+        expect((yield* generation.generateThreadTitle(request)).title).toBe("Project policy");
+        expect(calls).toEqual([`branch:${claude}`, `title:${claude}`]);
+        const off = Object.fromEntries(
+          Object.keys(DEFAULT_SERVER_SETTINGS.providers).map((id) => [id, { enabled: false }]),
+        );
+        yield* settings.updateSettings({
+          projectSettingsOverrides: { [projectId]: { providerInstances: off } },
+        });
+        const failure = yield* generation.generateThreadTitle(request).pipe(Effect.flip);
+        expect(failure.detail).toContain("No enabled provider");
+        expect(calls).toHaveLength(2);
+      }),
+    ).pipe(Effect.provide(layer.pipe(Layer.provideMerge(settingsLayer))));
   },
 );

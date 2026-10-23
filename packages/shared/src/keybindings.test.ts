@@ -11,6 +11,28 @@ import {
 } from "./keybindings";
 
 describe("shared keybinding helpers", () => {
+  it("limits send-and-new to an existing thread's composer", () => {
+    const binding = DEFAULT_RESOLVED_KEYBINDINGS.find(
+      (entry) => entry.command === "chat.sendAndNew",
+    );
+    expect(binding?.whenAst).toBeDefined();
+    const context = {
+      composerFocus: true,
+      newThreadComposer: false,
+      terminalFocus: false,
+      dialogFocus: false,
+    };
+    expect(evaluateWhenNode(binding!.whenAst!, context)).toBe(true);
+    for (const overrides of [
+      { composerFocus: false },
+      { newThreadComposer: true },
+      { terminalFocus: true },
+      { dialogFocus: true },
+    ]) {
+      expect(evaluateWhenNode(binding!.whenAst!, { ...context, ...overrides })).toBe(false);
+    }
+    expect(DEFAULT_KEYBINDINGS.some((entry) => entry.command === "chat.steerTurn")).toBe(false);
+  });
   it("includes the main sidebar toggle default", () => {
     expect(DEFAULT_KEYBINDINGS).toContainEqual({
       key: "mod+b",

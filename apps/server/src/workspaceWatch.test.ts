@@ -1,8 +1,8 @@
 import fs from "node:fs";
-import { EventEmitter } from "node:events";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { EventEmitter } from "node:events";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -299,6 +299,38 @@ describe("WorkspaceWatchRegistry", () => {
     fs.utimesSync(dir, 1_700_000_000, 1_700_000_000);
     hint("rename");
     await waitForChange("client", { relativePath: "src", change: "changed" });
+  });
+
+  it("reconciles directory changes when a native watcher silently misses its events", async () => {
+    registry.dispose();
+    const close = vi.fn();
+    class SilentWatcher extends EventEmitter implements fs.FSWatcher {
+      close = close;
+      ref() {
+        return this;
+      }
+      unref() {
+        return this;
+      }
+    }
+    const watch = vi.fn(() => new SilentWatcher());
+    registry = createRegistry({ watch });
+    await registry.setWatchedPaths(client, { cwd: root, files: [], directories: ["src"] });
+
+    await fsp.writeFile(path.join(root, "src", "missed.ts"), "");
+    await waitForChange("client", { relativePath: "src", change: "changed" });
+    notifications = [];
+    await fsp.rename(path.join(root, "src", "missed.ts"), path.join(root, "src", "renamed.ts"));
+    await waitForChange("client", { relativePath: "src", change: "changed" });
+
+    expect(notifications.every((notification) => !notification.degraded)).toBe(true);
+    expect(watch).toHaveBeenCalledOnce();
+    registry.releaseSubscriber(client);
+    expect(close).toHaveBeenCalledOnce();
+    notifications = [];
+    await fsp.writeFile(path.join(root, "src", "after-release.ts"), "");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(notifications).toEqual([]);
   });
 
   it("shares one watch between subscribers and releases it with the last one", async () => {

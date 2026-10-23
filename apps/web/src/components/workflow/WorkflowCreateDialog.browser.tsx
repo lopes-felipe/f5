@@ -426,6 +426,8 @@ describe("WorkflowCreateDialog", () => {
           grok: [{ slug: "grok-build", name: "Grok Build" }],
           antigravity: [],
           muse: [],
+          acp: [],
+          pi: [],
         }}
         onProviderModelChange={() => {}}
         onModelOptionsChange={onModelOptionsChange}
@@ -473,6 +475,8 @@ describe("WorkflowCreateDialog", () => {
           grok: [{ slug: "grok-build", name: "Grok Build" }],
           antigravity: [],
           muse: [],
+          acp: [],
+          pi: [],
         }}
         onProviderModelChange={() => {}}
         onModelOptionsChange={onModelOptionsChange}
@@ -513,6 +517,8 @@ describe("WorkflowCreateDialog", () => {
           grok: [{ slug: "grok-build", name: "Grok Build" }],
           antigravity: [],
           muse: [],
+          acp: [],
+          pi: [],
         }}
         onProviderModelChange={() => {}}
         onModelOptionsChange={onModelOptionsChange}

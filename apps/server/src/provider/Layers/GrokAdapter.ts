@@ -79,6 +79,7 @@ import {
   makeAcpToolCallEvent,
 } from "../acp/AcpCoreRuntimeEvents.ts";
 import { parsePermissionRequest } from "../acp/AcpRuntimeModel.ts";
+import { canonicalJson } from "../../canonicalJsonHash.ts";
 import { makeAcpNativeLoggers, redactAcpLogPayload } from "../acp/AcpNativeLogging.ts";
 import {
   applyGrokAcpModelSelection,
@@ -159,6 +160,8 @@ interface GrokSessionContext {
   turns: Array<{ id: TurnId; items: Array<unknown> }>;
   lastPlanFingerprint: string | undefined;
   activeTurnId: TurnId | undefined;
+  /** The last turn this adapter emitted `turn.completed` for. */
+  completedTurnId: TurnId | undefined;
   promptsInFlight: number;
   currentModelId: string | undefined;
   stopped: boolean;
@@ -216,7 +219,29 @@ function selectPermissionOptionId(
       : decision === "accept"
         ? "allow_once"
         : "reject_once";
-  return request.options.find((entry) => entry.kind === kind)?.optionId.trim() || undefined;
+  const optionId = (entryKind: string) =>
+    request.options.find((entry) => entry.kind === entryKind)?.optionId.trim() || undefined;
+  // Grok often omits allow_always. "Always allow this session" then approves this request once,
+  // and the adapter remembers the operation for the rest of the session.
+  return optionId(kind) ?? (decision === "acceptForSession" ? optionId("allow_once") : undefined);
+}
+
+/**
+ * Identifies an operation for "Always allow this session": the same command, or the same tool
+ * with the same input, never every future call of a tool. A generic title with no input cannot
+ * identify an operation, so it is not remembered.
+ */
+function sessionApprovalKey(request: EffectAcpSchema.RequestPermissionRequest): string | undefined {
+  const { kind, title, rawInput, locations } = request.toolCall;
+  const command = parsePermissionRequest(request).toolCall?.command;
+  let input = rawInput;
+  if (isRecord(rawInput) && rawInput.variant === "Bash") {
+    const { description: _description, ...shellInput } = rawInput;
+    input = shellInput;
+  }
+  return command || (isRecord(rawInput) && Object.keys(rawInput).length > 0)
+    ? canonicalJson({ kind, title, command, input, locations })
+    : undefined;
 }
 
 function selectAutoApprovedPermissionOption(
@@ -231,7 +256,8 @@ function selectAutoApprovedPermissionOption(
 export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapterLiveOptions) {
   return Effect.gen(function* () {
     const PROVIDER = options?.provider ?? "grok";
-    const providerLabel = PROVIDER === "antigravity" ? "Antigravity" : "Grok";
+    const providerLabel =
+      PROVIDER === "acp" ? "Custom ACP agent" : PROVIDER === "antigravity" ? "Antigravity" : "Grok";
     const normalizeModel = options?.normalizeModel ?? resolveGrokAcpBaseModelId;
     const adapterScope = yield* Scope.Scope;
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make(PROVIDER);
@@ -523,7 +549,13 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             threadId: ctx.threadId,
             turnId: ctx.activeTurnId,
           } as ProviderRuntimeEvent);
-        if (ctx.activeTurnId && ctx.promptsInFlight > 0) {
+        // After an agent exit its failed prompt may already have left the
+        // in-flight count, so an uncompleted active turn is enough.
+        if (
+          ctx.activeTurnId &&
+          (failure ? ctx.completedTurnId !== ctx.activeTurnId : ctx.promptsInFlight > 0)
+        ) {
+          ctx.completedTurnId = ctx.activeTurnId;
           yield* offerRuntimeEvent({
             type: "turn.completed",
             ...(yield* makeEventStamp(ctx)),
@@ -540,9 +572,28 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           ...(yield* makeEventStamp(ctx)),
           provider: PROVIDER,
           threadId: ctx.threadId,
-          payload: { exitKind: failure ? "error" : "graceful" },
+          payload: failure
+            ? { exitKind: "error", reason: failure, recoverable: true }
+            : { exitKind: "graceful" },
         });
       });
+
+    // The ACP event stream never ends on its own, so an agent that dies
+    // mid-turn would otherwise leave a live-looking session whose turn never
+    // settles and whose later prompts all fail.
+    const handleUnexpectedAgentExit = (ctx: GrokSessionContext, code: number | undefined) =>
+      withThreadLock(
+        ctx.threadId,
+        Effect.gen(function* () {
+          if (ctx.stopped || sessions.get(ctx.threadId) !== ctx) return;
+          yield* stopSessionInternal(
+            ctx,
+            code === undefined
+              ? `The ${providerLabel} agent exited unexpectedly.`
+              : `The ${providerLabel} agent exited unexpectedly (code ${code}).`,
+          );
+        }),
+      );
 
     const startSession: GrokAdapterShape["startSession"] = (input) =>
       withThreadLock(
@@ -572,6 +623,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           }
 
           const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
+          const sessionApprovedOperations = new Set<string>();
           const pendingUserInputs = getOrCreateStartupPendingUserInputs(input.threadId);
           yield* settlePendingUserInputsAsCancelled(pendingUserInputs);
           pendingUserInputs.clear();
@@ -591,7 +643,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           const resumeSessionId = parseGrokResume(input.resumeCursor)?.sessionId;
           const catalogs = yield* prepareAcpAutomationCatalogs({
             threadId: input.threadId,
-            provider: PROVIDER as "cursor" | "grok" | "antigravity",
+            provider: PROVIDER as "cursor" | "grok" | "antigravity" | "acp",
             scope: sessionScope,
             ...(options?.previewMcpHttpServer ? { preview: options.previewMcpHttpServer } : {}),
             ...(options?.computerAutomationBroker
@@ -601,6 +653,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               ? { verification: options.automationCatalogVerification }
               : {}),
             readOnlyWorkflow: !!input.workflowExecutionProfile,
+            threadSession:
+              !isSyntheticOneOffThreadId(input.threadId) && !input.workflowExecutionProfile,
             ordinarySession:
               serverConfig.mode === "desktop" &&
               !isSyntheticOneOffThreadId(input.threadId) &&
@@ -628,6 +682,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
 
           const acp = yield* (options?.makeRuntime ?? makeGrokAcpRuntime)({
             grokSettings,
+            runtimeMode: input.runtimeMode,
             ...(options?.environment ? { environment: options.environment } : {}),
             childProcessSpawner,
             cwd,
@@ -783,6 +838,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     return { outcome: { outcome: "cancelled" as const } };
                   yield* logNative(input.threadId, "session/request_permission", params);
                   const computerRequest = catalogs.classify(params.toolCall);
+                  const approvalKey = computerRequest ? undefined : sessionApprovalKey(params);
                   if (computerRequest)
                     params = {
                       ...params,
@@ -831,6 +887,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       }
                     );
                   }
+                  const sessionApprovedOptionId =
+                    approvalKey !== undefined && sessionApprovedOperations.has(approvalKey)
+                      ? selectPermissionOptionId(params, "accept")
+                      : undefined;
+                  if (sessionApprovedOptionId !== undefined)
+                    return {
+                      outcome: { outcome: "selected" as const, optionId: sessionApprovedOptionId },
+                    };
                   const runtimeMode: RuntimeMode = input.runtimeMode;
                   switch (runtimeMode) {
                     case "full-access": {
@@ -902,6 +966,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   );
                   const selectedOptionId =
                     resolved === "cancel" ? undefined : selectPermissionOptionId(params, resolved);
+                  if (resolved === "acceptForSession" && selectedOptionId && approvalKey)
+                    sessionApprovedOperations.add(approvalKey);
                   return {
                     outcome: selectedOptionId
                       ? {
@@ -948,9 +1014,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             : undefined;
           const boundModelId = yield* applyGrokAcpModelSelection({
             runtime: acp,
+            defaultModelId: PROVIDER === "acp" ? "acp-default" : "grok-build",
             currentModelId: currentGrokModelIdFromSessionSetup(started.sessionSetupResult),
             requestedModelId:
-              PROVIDER === "antigravity" && requestedStartModelId === "antigravity-default"
+              (PROVIDER === "antigravity" && requestedStartModelId === "antigravity-default") ||
+              (PROVIDER === "acp" && requestedStartModelId === "acp-default")
                 ? undefined
                 : requestedStartModelId,
             mapError: (cause) =>
@@ -996,6 +1064,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             turns: [],
             lastPlanFingerprint: undefined,
             activeTurnId: undefined,
+            completedTurnId: undefined,
             promptsInFlight: 0,
             currentModelId: boundModelId,
             stopped: false,
@@ -1157,6 +1226,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           sessions.set(input.threadId, ctx);
           startupPendingUserInputs.delete(input.threadId);
           sessionScopeTransferred = true;
+          const watchedCtx = ctx;
+          // Settle outside the session scope: stopping closes that scope.
+          yield* acp.awaitExit.pipe(
+            Effect.flatMap((code) =>
+              Effect.forkDetach(handleUnexpectedAgentExit(watchedCtx, code)),
+            ),
+            Effect.forkIn(sessionScope),
+          );
 
           yield* offerRuntimeEvent({
             type: "session.started",
@@ -1239,9 +1316,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 : undefined;
               const currentModelId = yield* applyGrokAcpModelSelection({
                 runtime: ctx.acp,
+                defaultModelId: PROVIDER === "acp" ? "acp-default" : "grok-build",
                 currentModelId: ctx.currentModelId,
                 requestedModelId:
-                  PROVIDER === "antigravity" && requestedTurnModelId === "antigravity-default"
+                  (PROVIDER === "antigravity" && requestedTurnModelId === "antigravity-default") ||
+                  (PROVIDER === "acp" && requestedTurnModelId === "acp-default")
                     ? undefined
                     : requestedTurnModelId,
                 mapError: (cause) =>
@@ -1431,6 +1510,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     turnId: prepared.turnId,
                   } as ProviderRuntimeEvent);
                 yield* settleElicitationsForTurn(input.threadId, prepared.turnId);
+                ctx.completedTurnId = prepared.turnId;
                 yield* offerRuntimeEvent({
                   type: "turn.completed",
                   ...(yield* makeEventStamp(ctx)),

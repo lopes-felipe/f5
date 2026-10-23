@@ -1,3 +1,7 @@
+import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
+import { readMcpAppToolResult } from "@t3tools/shared/mcpApp";
+import { snapshotMcpApp } from "../../mcpApps/McpAppSnapshot.ts";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
   registerNotificationQueueResources,
   providerNotificationOverflows,
@@ -86,14 +90,16 @@ import {
   codexThreadItemDisposition,
 } from "@t3tools/shared/codexProtocolManifest";
 import {
-  Semaphore,
   Cause,
   Effect,
+  FileSystem,
   Layer,
   Metric,
   Option,
+  Path,
   Queue,
   Schema,
+  Semaphore,
   ServiceMap,
   Stream,
 } from "effect";
@@ -2512,6 +2518,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     };
     const computerMcpSessions = new Map<ThreadId, PreviewMcpSessionConfig>();
     const previewMcpSessions = new Map<ThreadId, PreviewMcpSessionConfig>();
+    const threadMcpSessions = new Map<ThreadId, PreviewMcpSessionConfig>();
     const automationGenerations = new Map<ThreadId, number | undefined>();
     // Sessions pin F5's MCP servers with `-c mcp_servers=...` at launch, so a
     // reload cannot change that set; a different desired set needs a restart.
@@ -2522,6 +2529,8 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           session.dispose();
         }
         previewMcpSessions.clear();
+        for (const session of threadMcpSessions.values()) session.dispose();
+        threadMcpSessions.clear();
         for (const session of computerMcpSessions.values()) session.dispose();
         computerMcpSessions.clear();
         computerDecisions.clear();
@@ -2541,10 +2550,13 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
 
       let computerMcpSession: PreviewMcpSessionConfig | undefined;
       let previewMcpSession: PreviewMcpSessionConfig | undefined;
+      let threadMcpSession: PreviewMcpSessionConfig | undefined;
       const disposePreviewMcpSession = () => {
         computerMcpSession?.dispose();
         computerMcpSessions.delete(input.threadId);
         computerDecisions.delete(input.threadId);
+        threadMcpSession?.dispose();
+        threadMcpSessions.delete(input.threadId);
         previewMcpSession?.dispose();
         previewMcpSessions.delete(input.threadId);
       };
@@ -2621,10 +2633,33 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             kind: "f5-computer",
           });
         }
+        threadMcpSessions.get(input.threadId)?.dispose();
+        threadMcpSessions.delete(input.threadId);
+        threadMcpSession =
+          options?.previewMcpHttpServer?.supportsThreadCatalog &&
+          !input.workflowExecutionProfile &&
+          !isSyntheticOneOffThreadId(input.threadId)
+            ? options.previewMcpHttpServer.createSessionConfig({
+                threadId: input.threadId,
+                catalog: "thread",
+                ...(input.providerInstanceId
+                  ? { providerInstanceId: input.providerInstanceId }
+                  : {}),
+                existingServerNames: new Set([
+                  ...Object.keys(baseProviderMcpServers ?? {}),
+                  ...(previewMcpSession ? [previewMcpSession.serverName] : []),
+                  ...(computerMcpSession ? [computerMcpSession.serverName] : []),
+                ]),
+              })
+            : undefined;
+        if (threadMcpSession) threadMcpSessions.set(input.threadId, threadMcpSession);
         const providerMcpServers =
-          previewMcpSession || computerMcpSession
+          previewMcpSession || computerMcpSession || threadMcpSession
             ? {
                 ...baseProviderMcpServers,
+                ...(threadMcpSession
+                  ? { [threadMcpSession.serverName]: threadMcpSession.serverDefinition }
+                  : {}),
                 ...(previewMcpSession
                   ? { [previewMcpSession.serverName]: previewMcpSession.serverDefinition }
                   : {}),
@@ -2706,8 +2741,14 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           ...(providerMcpServers
             ? { mcpServers: translateMcpForCodex(providerMcpServers) ?? {} }
             : {}),
-          ...(previewMcpSession || computerMcpSession
-            ? { mcpEnvironment: { ...previewMcpSession?.env, ...computerMcpSession?.env } }
+          ...(previewMcpSession || computerMcpSession || threadMcpSession
+            ? {
+                mcpEnvironment: {
+                  ...previewMcpSession?.env,
+                  ...computerMcpSession?.env,
+                  ...threadMcpSession?.env,
+                },
+              }
             : {}),
           ...(mcpOAuthCallbackConfig.port
             ? { mcpOAuthCallbackPort: mcpOAuthCallbackConfig.port }
@@ -2781,7 +2822,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           { concurrency: 1 },
         );
         const providerInput = appendProviderAttachmentRuntimeContext(
-          input.input,
+          input.mcpAppContext ? `${input.input ?? ""}${input.mcpAppContext}` : input.input,
           input.resolvedAttachments ?? [],
         );
 
@@ -2966,6 +3007,8 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
 
     const stopSession: CodexAdapterShape["stopSession"] = (threadId) =>
       Effect.sync(() => {
+        threadMcpSessions.get(threadId)?.dispose();
+        threadMcpSessions.delete(threadId);
         previewMcpSessions.get(threadId)?.dispose();
         previewMcpSessions.delete(threadId);
         computerMcpSessions.get(threadId)?.dispose();
@@ -3075,6 +3118,8 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           session.dispose();
         }
         previewMcpSessions.clear();
+        for (const session of threadMcpSessions.values()) session.dispose();
+        threadMcpSessions.clear();
         for (const session of computerMcpSessions.values()) session.dispose();
         computerMcpSessions.clear();
         computerDecisions.clear();
@@ -3102,6 +3147,12 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         }
       });
 
+    const appSql = yield* Effect.serviceOption(SqlClient.SqlClient);
+    const appFs = yield* Effect.serviceOption(FileSystem.FileSystem);
+    const appPath = yield* Effect.serviceOption(Path.Path);
+    const appCaptures = new Map<ThreadId, number>();
+    const capturePermit = yield* Semaphore.make(2);
+    let captureCount = 0;
     const runtimeEventQueue = yield* Queue.bounded<{
       event: ProviderRuntimeEvent;
       units: number;
@@ -3254,6 +3305,53 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           }
           // Retain synchronously at admission: asynchronous logging/image storage
           // can still be running when a replacement retires this provider process.
+          const nativeItem =
+            event.method === "item/completed" ? asObject(asObject(event.payload)?.item) : undefined;
+          const appUri =
+            asString(asObject(nativeItem?.mcpAppUi)?.resourceUri) ??
+            asString(nativeItem?.mcpAppResourceUri);
+          const eligibleApp =
+            nativeItem?.type === "mcpToolCall" &&
+            nativeItem.status === "completed" &&
+            nativeItem.error == null &&
+            captureCount < 8 &&
+            (appCaptures.get(event.threadId) ?? 0) < 4;
+          const initialResult =
+            eligibleApp && appUri?.startsWith("ui://") && appUri.length <= 4096
+              ? readMcpAppToolResult(nativeItem?.result)
+              : undefined;
+          const initialJson =
+            nativeItem && initialResult
+              ? stringifyWithinBytes(
+                  { arguments: asObject(nativeItem.arguments) ?? {}, result: initialResult },
+                  192 * 1024,
+                )
+              : undefined;
+          const appBootstrap = initialJson
+            ? (JSON.parse(initialJson) as Record<string, unknown>)
+            : undefined;
+          const appCapture = eligibleApp && appBootstrap !== undefined;
+          let appIdentity: string | undefined;
+          if (appCapture) {
+            try {
+              appIdentity = manager.getMcpAppSessionIdentity(event.threadId);
+            } catch {
+              /* Ordinary tool fallback. */
+            }
+          }
+          let releaseAppCapture: (() => void) | undefined;
+          if (appCapture) {
+            // Captures run inside this session's ordered preparation, so later
+            // output waits behind them; the caps bound how long that can be.
+            captureCount++;
+            appCaptures.set(event.threadId, (appCaptures.get(event.threadId) ?? 0) + 1);
+            releaseAppCapture = () => {
+              captureCount--;
+              const pending = (appCaptures.get(event.threadId) ?? 1) - 1;
+              if (pending > 0) appCaptures.set(event.threadId, pending);
+              else appCaptures.delete(event.threadId);
+            };
+          }
           const releaseProvenance = automationEventSanitizer.retain(event.threadId);
           const controller = new AbortController();
           preparationControllers.add(controller);
@@ -3288,7 +3386,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 : undefined;
               if (ownsAutomation && event.method === "turn/completed" && event.turnId)
                 computerMcpSessions.get(event.threadId)?.endTurn?.(event.turnId);
-              const runtimeEvents = withAgentBrowserPreview(
+              let runtimeEvents = withAgentBrowserPreview(
                 mapToRuntimeEvents(
                   event,
                   event.threadId,
@@ -3300,6 +3398,69 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 ownsAutomation ? computerMcpSessions.get(event.threadId)?.serverName : undefined,
                 ownsAutomation ? computerDecisions.get(event.threadId) : undefined,
               );
+              if (
+                appCapture &&
+                nativeItem &&
+                appUri &&
+                appIdentity &&
+                Option.isSome(appSql) &&
+                Option.isSome(appFs) &&
+                Option.isSome(appPath)
+              ) {
+                const server = asString(nativeItem.server),
+                  tool = asString(nativeItem.tool);
+                if (server && tool) {
+                  const reference = yield* capturePermit
+                    .withPermits(1)(
+                      Effect.tryPromise({
+                        try: () =>
+                          manager.readMcpAppResource(event.threadId, server, appUri, appIdentity),
+                        catch: (cause) =>
+                          toRequestError(event.threadId, "mcpServer/resource/read", cause),
+                      }).pipe(
+                        Effect.flatMap((response) =>
+                          snapshotMcpApp({
+                            attachmentsDir: serverConfig.attachmentsDir,
+                            threadId: event.threadId,
+                            activityId: `${event.id}:mcp-app`,
+                            itemKey: `mcp-app:${String(nativeItem.id)}`,
+                            server,
+                            tool,
+                            resourceUri: appUri,
+                            response,
+                          }),
+                        ),
+                        Effect.provideService(SqlClient.SqlClient, appSql.value),
+                        Effect.provideService(FileSystem.FileSystem, appFs.value),
+                        Effect.provideService(Path.Path, appPath.value),
+                      ),
+                    )
+                    .pipe(
+                      Effect.timeout("10 seconds"),
+                      Effect.catchCause((cause) =>
+                        Cause.hasInterruptsOnly(cause)
+                          ? Effect.interrupt
+                          : Effect.succeed(undefined),
+                      ),
+                    );
+                  if (reference)
+                    runtimeEvents = runtimeEvents.map((item) =>
+                      item.type === "item.completed"
+                        ? {
+                            ...item,
+                            payload: {
+                              ...item.payload,
+                              data: {
+                                ...asObject(item.payload.data),
+                                mcpApp: reference,
+                                mcpAppBootstrap: appBootstrap,
+                              },
+                            },
+                          }
+                        : item,
+                    );
+                }
+              }
               // Redact at admission, before lifecycle cleanup removes provenance.
               const safeRuntimeEvents = yield* Effect.forEach(runtimeEvents, (runtimeEvent) =>
                 prepareRuntimeEvent({
@@ -3374,6 +3535,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             .finally(() => {
               releaseAdmission();
               releaseProvenance();
+              releaseAppCapture?.();
               preparationControllers.delete(controller);
               if (eventPreparation.get(key) === next) eventPreparation.delete(key);
             })
@@ -3447,6 +3609,37 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           try: () => manager.renameThread(threadId, title),
           catch: (cause) => toRequestError(threadId, "thread/name/set", cause),
         }),
+      mcpApps: {
+        identity: (threadId) =>
+          Effect.try({
+            try: () => manager.getMcpAppSessionIdentity(threadId),
+            catch: (cause) => toRequestError(threadId, "mcpApps.identity", cause),
+          }),
+        listTools: ({ threadId, server }) =>
+          Effect.tryPromise({
+            try: async () => {
+              const listing = await manager.getMcpServerStatuses(threadId, {
+                deadline: Date.now() + 10000,
+              });
+              if (!listing.complete) throw new Error("MCP tool inventory is incomplete.");
+              return Object.values(
+                listing.entries.find((entry) => entry.name === server)?.tools ?? {},
+              );
+            },
+            catch: (cause) => toRequestError(threadId, "mcpServerStatus/list", cause),
+          }),
+        callTool: ({ threadId, server, tool, arguments: args, sessionIdentity, approved }) =>
+          Effect.tryPromise({
+            try: () =>
+              manager.callMcpAppTool(threadId, server, tool, args, sessionIdentity, approved),
+            catch: (cause) => toRequestError(threadId, "mcpServer/tool/call", cause),
+          }),
+        readResource: ({ threadId, server, uri }) =>
+          Effect.tryPromise({
+            try: () => manager.readMcpAppResource(threadId, server, uri),
+            catch: (cause) => toRequestError(threadId, "mcpServer/resource/read", cause),
+          }),
+      },
       startSession,
       sendTurn,
       steerTurn: sendTurn,

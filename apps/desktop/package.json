@@ -2,7 +2,7 @@
   "name": "@t3tools/desktop",
   "version": "0.1.0",
   "private": true,
-  "main": "dist-electron/main.js",
+  "main": "dist-electron/boot.js",
   "scripts": {
     "dev": "bun run --parallel dev:bundle dev:electron",
     "dev:bundle": "node node_modules/tsdown/dist/run.mjs --config tsdown.config.mts --watch",
@@ -11,7 +11,9 @@
     "start": "bun run scripts/start-electron.mjs",
     "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
     "test": "node node_modules/vitest/vitest.mjs run",
-    "smoke-test": "node scripts/smoke-test.mjs"
+    "smoke-test": "node scripts/smoke-test.mjs",
+    "test:preview-snapshot:browser": "node scripts/preview-snapshot-browser-smoke.mjs",
+    "test:preview-snapshot:electron": "node scripts/preview-snapshot-electron-smoke.mjs"
   },
   "dependencies": {
     "effect": "catalog:",

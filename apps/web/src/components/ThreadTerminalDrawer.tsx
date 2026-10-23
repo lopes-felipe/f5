@@ -41,6 +41,7 @@ import {
   isTerminalClearShortcut,
   terminalDeleteShortcutData,
   terminalNavigationShortcutData,
+  terminalScrollbackShortcut,
 } from "../keybindings";
 import {
   DEFAULT_THREAD_TERMINAL_HEIGHT,
@@ -84,10 +85,15 @@ function maxDrawerHeight(): number {
   return Math.max(MIN_DRAWER_HEIGHT, Math.floor(window.innerHeight * MAX_DRAWER_HEIGHT_RATIO));
 }
 
-function clampDrawerHeight(height: number): number {
+/** The stored height preference: valid and above the minimum, but not capped by the window. */
+export function normalizeDrawerHeight(height: number): number {
   const safeHeight = Number.isFinite(height) ? height : DEFAULT_THREAD_TERMINAL_HEIGHT;
-  const maxHeight = maxDrawerHeight();
-  return Math.min(Math.max(Math.round(safeHeight), MIN_DRAWER_HEIGHT), maxHeight);
+  return Math.max(Math.round(safeHeight), MIN_DRAWER_HEIGHT);
+}
+
+/** The rendered height: the preference as the current window caps it. */
+export function clampDrawerHeight(height: number, maxHeight = maxDrawerHeight()): number {
+  return Math.min(normalizeDrawerHeight(height), maxHeight);
 }
 
 function writeSystemMessage(terminal: Terminal, message: string): void {
@@ -483,6 +489,19 @@ function TerminalViewport({
           copyToClipboard(terminal.getSelection(), undefined);
           terminal.clearSelection();
         } else void pasteClipboard();
+        return false;
+      }
+      const scrollback = terminalScrollbackShortcut(event);
+      // Full-screen programs keep Home/End; they have no scrollback to jump through.
+      if (
+        scrollback === "select-all" ||
+        (scrollback !== null && terminal.buffer.active.type === "normal")
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (scrollback === "select-all") terminal.selectAll();
+        else if (scrollback === "top") terminal.scrollToTop();
+        else terminal.scrollToBottom();
         return false;
       }
       const navigationData = terminalNavigationShortcutData(event);
@@ -978,15 +997,22 @@ export default function ThreadTerminalDrawer({
 }: ThreadTerminalDrawerProps) {
   const profileName = useProfileState((state) => state.active?.name);
   const appearance = useAppearanceSettings();
-  const [drawerHeight, setDrawerHeight] = useState(() => clampDrawerHeight(height));
+  // The stored height is the user's preference; the window only caps what renders,
+  // so a window that shrinks and grows back restores the drawer's height.
+  const [preferredHeight, setPreferredHeight] = useState(() => normalizeDrawerHeight(height));
+  const [windowMaxHeight, setWindowMaxHeight] = useState(maxDrawerHeight);
+  const drawerHeight = clampDrawerHeight(preferredHeight, windowMaxHeight);
   const [resizeEpoch, setResizeEpoch] = useState(0);
   const drawerHeightRef = useRef(drawerHeight);
-  const lastSyncedHeightRef = useRef(clampDrawerHeight(height));
+  const preferredHeightRef = useRef(preferredHeight);
+  const lastSyncedHeightRef = useRef(normalizeDrawerHeight(height));
   const onHeightChangeRef = useRef(onHeightChange);
   const resizeStateRef = useRef<{
     pointerId: number;
     startY: number;
     startHeight: number;
+    startPreferredHeight: number;
+    drawer: HTMLElement | null;
   } | null>(null);
   const didResizeDuringDragRef = useRef(false);
 
@@ -1142,18 +1168,22 @@ export default function ThreadTerminalDrawer({
     drawerHeightRef.current = drawerHeight;
   }, [drawerHeight]);
 
+  useEffect(() => {
+    preferredHeightRef.current = preferredHeight;
+  }, [preferredHeight]);
+
   const syncHeight = useCallback((nextHeight: number) => {
-    const clampedHeight = clampDrawerHeight(nextHeight);
-    if (lastSyncedHeightRef.current === clampedHeight) return;
-    lastSyncedHeightRef.current = clampedHeight;
-    onHeightChangeRef.current(clampedHeight);
+    const normalizedHeight = normalizeDrawerHeight(nextHeight);
+    if (lastSyncedHeightRef.current === normalizedHeight) return;
+    lastSyncedHeightRef.current = normalizedHeight;
+    onHeightChangeRef.current(normalizedHeight);
   }, []);
 
   useEffect(() => {
-    const clampedHeight = clampDrawerHeight(height);
-    setDrawerHeight(clampedHeight);
-    drawerHeightRef.current = clampedHeight;
-    lastSyncedHeightRef.current = clampedHeight;
+    const normalizedHeight = normalizeDrawerHeight(height);
+    setPreferredHeight(normalizedHeight);
+    preferredHeightRef.current = normalizedHeight;
+    lastSyncedHeightRef.current = normalizedHeight;
   }, [height, threadId]);
 
   const handleResizePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -1165,9 +1195,13 @@ export default function ThreadTerminalDrawer({
       pointerId: event.pointerId,
       startY: event.clientY,
       startHeight: drawerHeightRef.current,
+      startPreferredHeight: preferredHeightRef.current,
+      drawer: event.currentTarget.parentElement,
     };
   }, []);
 
+  // Writes the height straight to the drawer while dragging so the edge lands in the
+  // pointer's frame; React state, the terminal fit and persistence follow on release.
   const handleResizePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const resizeState = resizeStateRef.current;
     if (!resizeState || resizeState.pointerId !== event.pointerId) return;
@@ -1180,7 +1214,7 @@ export default function ThreadTerminalDrawer({
     }
     didResizeDuringDragRef.current = true;
     drawerHeightRef.current = clampedHeight;
-    setDrawerHeight(clampedHeight);
+    resizeState.drawer?.style.setProperty("height", `${clampedHeight}px`);
   }, []);
 
   const handleResizePointerEnd = useCallback(
@@ -1194,6 +1228,16 @@ export default function ThreadTerminalDrawer({
       if (!didResizeDuringDragRef.current) {
         return;
       }
+      if (drawerHeightRef.current === resizeState.startHeight) {
+        // A drag that returns to where it started keeps the taller preference
+        // the window was capping, instead of replacing it with the capped value.
+        preferredHeightRef.current = resizeState.startPreferredHeight;
+        setPreferredHeight(resizeState.startPreferredHeight);
+        setResizeEpoch((value) => value + 1);
+        return;
+      }
+      preferredHeightRef.current = drawerHeightRef.current;
+      setPreferredHeight(drawerHeightRef.current);
       syncHeight(drawerHeightRef.current);
       setResizeEpoch((value) => value + 1);
     },
@@ -1202,26 +1246,19 @@ export default function ThreadTerminalDrawer({
 
   useEffect(() => {
     const onWindowResize = () => {
-      const clampedHeight = clampDrawerHeight(drawerHeightRef.current);
-      const changed = clampedHeight !== drawerHeightRef.current;
-      if (changed) {
-        setDrawerHeight(clampedHeight);
-        drawerHeightRef.current = clampedHeight;
-      }
-      if (!resizeStateRef.current) {
-        syncHeight(clampedHeight);
-      }
+      // Only the cap changes; the stored preference survives a smaller window.
+      setWindowMaxHeight(maxDrawerHeight());
       setResizeEpoch((value) => value + 1);
     };
     window.addEventListener("resize", onWindowResize);
     return () => {
       window.removeEventListener("resize", onWindowResize);
     };
-  }, [syncHeight]);
+  }, []);
 
   useEffect(() => {
     return () => {
-      syncHeight(drawerHeightRef.current);
+      syncHeight(preferredHeightRef.current);
     };
   }, [syncHeight]);
 

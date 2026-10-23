@@ -194,35 +194,40 @@ export const makeProjectionTurnRepository = Effect.gen(function* () {
       `,
   });
 
+  // COALESCE short-circuits the indexed fallback for already-bound turns.
+  // Accepted steers share a turn but never define its conversation boundary.
+  const projectionTurnColumns = sql`
+    t.thread_id AS "threadId", t.turn_id AS "turnId",
+    COALESCE(t.pending_message_id, (
+      SELECT d.message_id FROM provider_turn_deliveries d
+      WHERE d.thread_id = t.thread_id AND d.provider_turn_id = t.turn_id
+        AND d.state = 'accepted'
+        AND json_extract(d.event_json, '$.type') IS NOT 'thread.turn-steer-requested'
+      ORDER BY d.created_at, d.rowid LIMIT 1
+    )) AS "pendingMessageId",
+    t.assistant_message_id AS "assistantMessageId", t.state,
+    t.requested_at AS "requestedAt", t.started_at AS "startedAt",
+    t.completed_at AS "completedAt", t.processing_quiesced_at AS "processingQuiescedAt",
+    t.checkpoint_turn_count AS "checkpointTurnCount", t.checkpoint_ref AS "checkpointRef",
+    t.checkpoint_status AS "checkpointStatus", t.checkpoint_files_json AS "checkpointFiles"
+  `;
+
   const listProjectionTurnsByThread = SqlSchema.findAll({
     Request: ListProjectionTurnsByThreadInput,
     Result: ProjectionTurnDbRowSchema,
     execute: ({ threadId }) =>
       sql`
-        SELECT
-          thread_id AS "threadId",
-          turn_id AS "turnId",
-          pending_message_id AS "pendingMessageId",
-          assistant_message_id AS "assistantMessageId",
-          state,
-          requested_at AS "requestedAt",
-          started_at AS "startedAt",
-          completed_at AS "completedAt",
-          processing_quiesced_at AS "processingQuiescedAt",
-          checkpoint_turn_count AS "checkpointTurnCount",
-          checkpoint_ref AS "checkpointRef",
-          checkpoint_status AS "checkpointStatus",
-          checkpoint_files_json AS "checkpointFiles"
-        FROM projection_turns
-        WHERE thread_id = ${threadId}
+        SELECT ${projectionTurnColumns}
+        FROM projection_turns t
+        WHERE t.thread_id = ${threadId}
         ORDER BY
           CASE
-            WHEN checkpoint_turn_count IS NULL THEN 1
+            WHEN t.checkpoint_turn_count IS NULL THEN 1
             ELSE 0
           END ASC,
-          checkpoint_turn_count ASC,
-          requested_at ASC,
-          turn_id ASC
+          t.checkpoint_turn_count ASC,
+          t.requested_at ASC,
+          t.turn_id ASC
       `,
   });
 
@@ -231,21 +236,8 @@ export const makeProjectionTurnRepository = Effect.gen(function* () {
     Result: ProjectionTurnByIdDbRowSchema,
     execute: ({ threadId, turnId }) =>
       sql`
-        SELECT
-          thread_id AS "threadId",
-          turn_id AS "turnId",
-          pending_message_id AS "pendingMessageId",
-          assistant_message_id AS "assistantMessageId",
-          state,
-          requested_at AS "requestedAt",
-          started_at AS "startedAt",
-          completed_at AS "completedAt",
-          processing_quiesced_at AS "processingQuiescedAt",
-          checkpoint_turn_count AS "checkpointTurnCount",
-          checkpoint_ref AS "checkpointRef",
-          checkpoint_status AS "checkpointStatus",
-          checkpoint_files_json AS "checkpointFiles"
-        FROM projection_turns
+        SELECT ${projectionTurnColumns}
+        FROM projection_turns t
         WHERE thread_id = ${threadId}
           AND turn_id = ${turnId}
         LIMIT 1
@@ -257,21 +249,8 @@ export const makeProjectionTurnRepository = Effect.gen(function* () {
     Result: ProjectionTurnByIdDbRowSchema,
     execute: ({ threadId }) =>
       sql`
-        SELECT
-          thread_id AS "threadId",
-          turn_id AS "turnId",
-          pending_message_id AS "pendingMessageId",
-          assistant_message_id AS "assistantMessageId",
-          state,
-          requested_at AS "requestedAt",
-          started_at AS "startedAt",
-          completed_at AS "completedAt",
-          processing_quiesced_at AS "processingQuiescedAt",
-          checkpoint_turn_count AS "checkpointTurnCount",
-          checkpoint_ref AS "checkpointRef",
-          checkpoint_status AS "checkpointStatus",
-          checkpoint_files_json AS "checkpointFiles"
-        FROM projection_turns
+        SELECT ${projectionTurnColumns}
+        FROM projection_turns t
         WHERE thread_id = ${threadId}
           AND turn_id IS NOT NULL
           AND state = 'running'
@@ -285,21 +264,8 @@ export const makeProjectionTurnRepository = Effect.gen(function* () {
     Result: ProjectionTurnByIdDbRowSchema,
     execute: ({ threadId }) =>
       sql`
-        SELECT
-          thread_id AS "threadId",
-          turn_id AS "turnId",
-          pending_message_id AS "pendingMessageId",
-          assistant_message_id AS "assistantMessageId",
-          state,
-          requested_at AS "requestedAt",
-          started_at AS "startedAt",
-          completed_at AS "completedAt",
-          processing_quiesced_at AS "processingQuiescedAt",
-          checkpoint_turn_count AS "checkpointTurnCount",
-          checkpoint_ref AS "checkpointRef",
-          checkpoint_status AS "checkpointStatus",
-          checkpoint_files_json AS "checkpointFiles"
-        FROM projection_turns
+        SELECT ${projectionTurnColumns}
+        FROM projection_turns t
         WHERE thread_id = ${threadId}
           AND turn_id IS NOT NULL
           AND state IN ('interrupted', 'completed', 'error')
@@ -313,21 +279,8 @@ export const makeProjectionTurnRepository = Effect.gen(function* () {
     Result: ProjectionTurnByIdDbRowSchema,
     execute: () =>
       sql`
-        SELECT
-          thread_id AS "threadId",
-          turn_id AS "turnId",
-          pending_message_id AS "pendingMessageId",
-          assistant_message_id AS "assistantMessageId",
-          state,
-          requested_at AS "requestedAt",
-          started_at AS "startedAt",
-          completed_at AS "completedAt",
-          processing_quiesced_at AS "processingQuiescedAt",
-          checkpoint_turn_count AS "checkpointTurnCount",
-          checkpoint_ref AS "checkpointRef",
-          checkpoint_status AS "checkpointStatus",
-          checkpoint_files_json AS "checkpointFiles"
-        FROM projection_turns
+        SELECT ${projectionTurnColumns}
+        FROM projection_turns t
         WHERE turn_id IS NOT NULL
           AND state IN ('interrupted', 'completed', 'error')
           AND processing_quiesced_at IS NULL

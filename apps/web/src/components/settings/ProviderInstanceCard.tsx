@@ -35,7 +35,8 @@ import { DraftInput } from "../ui/draft-input";
 import { ScrollArea } from "../ui/scroll-area";
 import { Switch } from "../ui/switch";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import type { DriverOption } from "./providerDriverMeta";
+import { decodeDriverConfigField, readDriverConfigField } from "./providerConfigFields";
+import type { DriverFieldDef, DriverOption } from "./providerDriverMeta";
 import { ProviderModelsSection } from "./ProviderModelsSection";
 import { ProviderInventorySection } from "./ProviderInventorySection";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
@@ -95,20 +96,6 @@ function redactedEmailPlaceholder(email: string): string {
     if (char === "@" || char === "." || char === "-" || char === "_") return char;
     return nextChar();
   }).join("");
-}
-
-/**
- * Read a string value at `key` from the opaque per-driver config blob.
- * Returns an empty string when the key is missing or the stored value is
- * not a string. The permissive shape reflects that `config` is
- * `Schema.Unknown` at the contract boundary — forks may populate it with
- * non-string values that the built-in UI should round-trip without
- * throwing.
- */
-function readConfigString(config: unknown, key: string): string {
-  if (config === null || typeof config !== "object") return "";
-  const value = (config as Record<string, unknown>)[key];
-  return typeof value === "string" ? value : "";
 }
 
 /**
@@ -563,14 +550,24 @@ export function ProviderInstanceCard({
     );
   };
 
-  const updateConfigField = (key: string, value: string) => {
-    const nextConfig = nextConfigBlobWithString(instance.config, key, value);
+  const updateConfigField = (field: DriverFieldDef, value: string) => {
+    let nextConfig: Record<string, unknown> | undefined;
+    try {
+      const decoded = decodeDriverConfigField(field, value);
+      nextConfig =
+        decoded === undefined
+          ? nextConfigBlobWithString(instance.config, field.key, "")
+          : nextConfigBlobWithValue(instance.config, field.key, decoded);
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: "Check provider configuration",
+        description: error instanceof Error ? error.message : "Invalid field value.",
+      });
+      return;
+    }
     const { config: _omit, ...rest } = instance;
-    onUpdate(
-      nextConfig !== undefined
-        ? ({ ...rest, config: nextConfig } as ProviderInstanceConfig)
-        : (rest as ProviderInstanceConfig),
-    );
+    onUpdate(nextConfig !== undefined ? { ...rest, config: nextConfig } : rest);
   };
 
   const updateCustomModels = (next: ReadonlyArray<CustomModelSetting>) => {
@@ -924,8 +921,8 @@ export function ProviderInstanceCard({
                     className="mt-1.5"
                     type={field.type === "password" ? "password" : undefined}
                     autoComplete={field.type === "password" ? "off" : undefined}
-                    value={readConfigString(instance.config, field.key)}
-                    onCommit={(next) => updateConfigField(field.key, next)}
+                    value={readDriverConfigField(instance.config, field)}
+                    onCommit={(next) => updateConfigField(field, next)}
                     placeholder={field.placeholder}
                     spellCheck={false}
                   />

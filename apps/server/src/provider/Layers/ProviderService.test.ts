@@ -1,3 +1,4 @@
+import { backgroundWorkSessionIdentity } from "../backgroundWorkIdentity.ts";
 import { ProviderSessionDirectoryPersistenceError } from "../Errors.ts";
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { ServerShutdown, ShutdownRegistry } from "../../shutdown.ts";
@@ -436,6 +437,46 @@ function makeProviderServiceLayerForAdapters(
     NodeServices.layer,
   );
 }
+
+it.effect(
+  "reads capabilities from exact explicit instances without requiring a legacy default",
+  () => {
+    const first = makeFakeCodexAdapter("pi");
+    const second = {
+      ...first.adapter,
+      capabilities: { sessionModelSwitch: "restart-session" as const },
+    };
+    const a = ProviderInstanceId.make("pi-a"),
+      b = ProviderInstanceId.make("pi-b");
+    const base = makeAdapterRegistryMock({ pi: first.adapter });
+    const layer = makeProviderServiceLayerForAdapters(new Map([["pi", first.adapter]]), {
+      listInstances: () => Effect.succeed([a, b]),
+      getByInstance: (id) =>
+        id === a
+          ? Effect.succeed(first.adapter)
+          : id === b
+            ? Effect.succeed(second)
+            : base.getByInstance(id),
+      getByProvider: (provider) =>
+        Effect.die(new Error(`Unexpected legacy capability lookup for ${provider}`)),
+      getInstanceInfo: (id) =>
+        base
+          .getInstanceInfo(ProviderInstanceId.make("pi"))
+          .pipe(Effect.map((info) => ({ ...info, instanceId: id }))),
+    });
+    return Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      assert.equal((yield* provider.getCapabilities("pi", a)).sessionModelSwitch, "in-session");
+      assert.equal(
+        (yield* provider.getCapabilities("pi", b)).sessionModelSwitch,
+        "restart-session",
+      );
+      const mismatch = yield* provider.getCapabilities("acp", a).pipe(Effect.flip);
+      assert.equal(mismatch._tag, "ProviderUnsupportedError");
+      assert.equal(first.startSession.mock.calls.length, 0);
+    }).pipe(Effect.provide(layer));
+  },
+);
 
 it.effect("ignores a delayed Claude exit cursor from before transcript repair", () => {
   const claude = makeFakeCodexAdapter("claudeAgent");
@@ -966,6 +1007,59 @@ it.effect("does not fall back to compaction for explicitly selected unsupported 
     ),
   );
 });
+it.effect(
+  "allows a project-only provider while rejecting the same instance in other projects",
+  () => {
+    const codex = makeFakeCodexAdapter();
+    const projectId = ProjectId.makeUnsafe("provider-only-project");
+    const settingsLayer = ServerSettingsService.layerTest({
+      providers: { codex: { enabled: false } },
+      projectSettingsOverrides: {
+        [projectId]: {
+          providerInstances: { [ProviderInstanceId.make("codex")]: { enabled: true } },
+        },
+      },
+    });
+    const layer = makeProviderServiceLayerForAdapters(new Map([["codex", codex.adapter]])).pipe(
+      Layer.provideMerge(settingsLayer),
+    );
+    return Effect.gen(function* () {
+      const service = yield* ProviderService;
+      const threadId = asThreadId("project-only-provider");
+      const input = { threadId, provider: "codex" as const, runtimeMode: "full-access" as const };
+      const failure = yield* service.startSession(threadId, input).pipe(Effect.flip);
+      assert.equal(failure._tag, "ProviderValidationError");
+      assert.equal(codex.startSession.mock.calls.length, 0);
+      yield* service.startSession(threadId, { ...input, projectId });
+      assert.equal(codex.startSession.mock.calls.length, 1);
+      const other = asThreadId("other-project-provider");
+      const rejected = yield* service
+        .startSession(other, {
+          ...input,
+          threadId: other,
+          projectId: ProjectId.makeUnsafe("other-project"),
+        })
+        .pipe(Effect.result);
+      assert.equal(rejected._tag, "Failure");
+      assert.equal(codex.startSession.mock.calls.length, 1);
+      const settings = yield* ServerSettingsService;
+      yield* settings.updateSettings({
+        projectSettingsOverrides: {
+          [projectId]: {
+            providerInstances: { [ProviderInstanceId.make("codex")]: { enabled: false } },
+          },
+        },
+      });
+      const blocked = yield* service
+        .sendTurn({ threadId, input: "New work", attachments: [] })
+        .pipe(Effect.flip);
+      assert.equal(blocked._tag, "ProviderTurnDeliveryError");
+      assert.equal(codex.sendTurn.mock.calls.length, 0);
+      yield* service.stopSession({ threadId });
+    }).pipe(Effect.provide(layer));
+  },
+);
+
 it.effect("rejects disabled explicit summary instances", () => {
   const codex = makeFakeCodexAdapter();
   const registry = makeAdapterRegistryMock({ codex: codex.adapter });
@@ -1259,6 +1353,77 @@ it.effect(
 
       fs.rmSync(tempDir, { recursive: true, force: true });
     }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("ProviderServiceLive shutdown leaves settled stopped sessions untouched", () =>
+  Effect.gen(function* () {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-service-settled-"));
+    const persistenceLayer = makeSqlitePersistenceLive(path.join(tempDir, "orchestration.sqlite"));
+    const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+      Layer.provide(persistenceLayer),
+    );
+    const settledThreadId = asThreadId("thread-settled");
+    const settledRow = {
+      threadId: settledThreadId,
+      projectId: null,
+      providerName: "codex",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      adapterKey: "codex",
+      runtimeMode: "full-access",
+      status: "stopped",
+      lastSeenAt: "2026-01-01T00:00:00.000Z",
+      mcpEffectiveConfigVersion: null,
+      launchFingerprint: null,
+      resumeCursor: { threadId: "provider-thread-settled" },
+      runtimePayload: {
+        lastRuntimeEvent: "provider.stopSession",
+        lastRuntimeEventAt: "2026-01-01T00:00:00.000Z",
+      },
+    } as const;
+    yield* Effect.gen(function* () {
+      const repository = yield* ProviderSessionRuntimeRepository;
+      yield* repository.upsert(settledRow);
+    }).pipe(Effect.provide(runtimeRepositoryLayer));
+
+    const codex = makeFakeCodexAdapter();
+    const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(providerServiceConfigLayer),
+      Layer.provide(
+        Layer.succeed(ProviderAdapterRegistry, makeAdapterRegistryMock({ codex: codex.adapter })),
+      ),
+      Layer.provide(ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer))),
+      Layer.provide(makeProjectMcpConfigServiceTestLayer()),
+      Layer.provide(AnalyticsService.layerTest),
+    );
+    const liveThreadId = asThreadId("thread-live");
+    yield* Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      yield* provider.startSession(liveThreadId, {
+        provider: "codex",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        threadId: liveThreadId,
+      });
+    }).pipe(Effect.provide(providerLayer));
+
+    const [settled, live] = yield* Effect.gen(function* () {
+      const repository = yield* ProviderSessionRuntimeRepository;
+      return [
+        yield* repository.getByThreadId({ threadId: settledThreadId }),
+        yield* repository.getByThreadId({ threadId: liveThreadId }),
+      ] as const;
+    }).pipe(Effect.provide(runtimeRepositoryLayer));
+    assert.equal(Option.getOrUndefined(settled)?.lastSeenAt, settledRow.lastSeenAt);
+    assert.deepEqual(Option.getOrUndefined(settled)?.runtimePayload, settledRow.runtimePayload);
+    assert.equal(Option.getOrUndefined(live)?.status, "stopped");
+    assert.equal(
+      (Option.getOrUndefined(live)?.runtimePayload as Record<string, unknown> | undefined)
+        ?.lastRuntimeEvent,
+      "provider.stopAll",
+    );
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 routing.layer("ProviderServiceLive routing", (it) => {
@@ -4015,6 +4180,91 @@ it.effect(
       Effect.provide(makeProviderServiceLayerForAdapters(new Map([["codex", fake.adapter]]))),
     );
   },
+);
+
+it.effect("marks only an opted-in idle session's owned live background work for restart", () =>
+  Effect.gen(function* () {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "f5-background-restart-"));
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => fs.rmSync(tempDir, { recursive: true, force: true })),
+    );
+    const persistence = makeSqlitePersistenceLive(path.join(tempDir, "state.sqlite"));
+    const repository = ProviderSessionRuntimeRepositoryLive.pipe(Layer.provide(persistence));
+    const directory = ProviderSessionDirectoryLive.pipe(Layer.provide(repository));
+    const codex = makeFakeCodexAdapter();
+    const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(providerServiceConfigLayer),
+      Layer.provide(
+        Layer.succeed(ProviderAdapterRegistry, makeAdapterRegistryMock({ codex: codex.adapter })),
+      ),
+      Layer.provide(directory),
+      Layer.provide(makeProjectMcpConfigServiceTestLayer()),
+      Layer.provide(AnalyticsService.layerTest),
+      Layer.provide(
+        ServerSettingsService.layerTest({
+          resumeActiveTurnsAfterRestart: true,
+          projectSettingsOverrides: {
+            [ProjectId.makeUnsafe("opted-out")]: { resumeActiveTurnsAfterRestart: false },
+          },
+        }),
+      ),
+      Layer.provideMerge(persistence),
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* ProviderService;
+      const sql = yield* SqlClient.SqlClient;
+      const directoryService = yield* ProviderSessionDirectory;
+      const at = new Date().toISOString();
+      for (const id of [
+        "owned",
+        "other-owner",
+        "old-generation",
+        "inert",
+        "workflow",
+        "empty",
+        "opted-out",
+        "archived",
+      ]) {
+        const threadId = asThreadId(id);
+        yield* sql`INSERT INTO projection_threads (thread_id, project_id, title, model, created_at, last_interaction_at, updated_at, archived_at) VALUES (${id}, ${id}, ${id}, 'gpt-5', ${at}, ${at}, ${at}, ${id === "archived" ? at : null})`;
+        yield* sql`INSERT INTO projection_turns (thread_id, turn_id, pending_message_id, state, requested_at, started_at, checkpoint_files_json) VALUES (${id}, ${`turn-${id}`}, 'user-message', 'completed', ${at}, ${at}, '[]')`;
+        yield* service.startSession(threadId, {
+          provider: "codex",
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          threadId,
+        });
+        const binding = Option.getOrThrow(yield* directoryService.getBinding(threadId));
+        const identity = backgroundWorkSessionIdentity(
+          id === "old-generation"
+            ? { ...binding, runtimePayload: { sessionGeneration: 0 } }
+            : binding,
+        );
+        if (id !== "empty")
+          yield* sql`INSERT INTO projection_thread_background_work (thread_id, provider_work_item_id, provider_name, provider_instance_id, provider_session_identity, turn_id, classification, ownership, status, active, kind, started_at, updated_at, last_seen_at) VALUES (${id}, 'native-task', 'codex', ${binding.providerInstanceId}, ${id === "other-owner" ? "other-owner" : identity}, ${`turn-${id}`}, ${id === "inert" ? "inert" : "working"}, ${id === "workflow" ? "workflow" : "direct-subagent"}, 'running', 1, 'agent', ${at}, ${at}, ${at})`;
+      }
+      yield* sql`WITH RECURSIVE extra(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM extra WHERE n < 250) INSERT INTO projection_thread_background_work (thread_id, provider_work_item_id, provider_name, provider_instance_id, provider_session_identity, turn_id, classification, ownership, status, active, kind, started_at, updated_at, last_seen_at) SELECT w.thread_id, 'overflow-' || extra.n, w.provider_name, w.provider_instance_id, w.provider_session_identity, w.turn_id, w.classification, w.ownership, w.status, w.active, w.kind, w.started_at, w.updated_at, w.last_seen_at FROM projection_thread_background_work w CROSS JOIN extra WHERE w.thread_id = 'owned' AND w.provider_work_item_id = 'native-task'`;
+      assert.equal(
+        (yield* service.listSessions()).every((session) => !session.activeTurnId),
+        true,
+      );
+    }).pipe(Effect.provide(Layer.mergeAll(providerLayer, directory)));
+    const markers = yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      return yield* sql<{
+        thread_id: string;
+      }>`SELECT thread_id FROM restart_turn_markers ORDER BY thread_id`;
+    }).pipe(Effect.provide(persistence));
+    assert.deepEqual(
+      markers.map((row) => row.thread_id),
+      ["owned"],
+    );
+    const counts = yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      return yield* sql`SELECT interrupted_background_work FROM restart_turn_markers WHERE thread_id = 'owned'`;
+    }).pipe(Effect.provide(persistence));
+    assert.deepEqual(counts, [{ interrupted_background_work: 201 }]);
+  }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.effect.each(["interrupt", "approval", "input", "stop"] as const)(

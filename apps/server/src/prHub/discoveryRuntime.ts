@@ -6,7 +6,7 @@ import { PR_HUB_MERGE_STATE_QUERY, recheckUnknownMergeStates } from "./mergeStat
 
 import type { SearchTask } from "./discovery.ts";
 
-import { githubRequestScheduler, GitHubRequestPriority } from "../git/githubRequestScheduler.ts";
+import { GitHubRequestPriority, githubCooldownActive } from "../git/githubRequestScheduler.ts";
 
 import { defaultPrHubCoverage } from "./readModel.ts";
 
@@ -122,7 +122,7 @@ export function createPrHubDiscovery(
             if (
               ids.length > 1 &&
               shouldSplitDetailChunk(result.cause) &&
-              !githubRequestScheduler.status(host).retryAt
+              !(yield* githubCooldownActive(host))
             ) {
               const mid = Math.ceil(ids.length / 2);
               yield* hydrateChunk(ids.slice(0, mid));
@@ -186,12 +186,11 @@ export function createPrHubDiscovery(
             Exit.isFailure(response) &&
             targets.length > 1 &&
             shouldSplitDetailChunk(response.cause) &&
-            !githubRequestScheduler.status(host).retryAt
+            !(yield* githubCooldownActive(host))
           ) {
             const mid = Math.ceil(targets.length / 2);
             yield* hydrateNumberChunk(targets.slice(0, mid));
-            if (!githubRequestScheduler.status(host).retryAt)
-              yield* hydrateNumberChunk(targets.slice(mid));
+            if (!(yield* githubCooldownActive(host))) yield* hydrateNumberChunk(targets.slice(mid));
             return;
           }
           const body = Exit.isSuccess(response) ? asRecord(response.value) : null;
@@ -220,7 +219,7 @@ export function createPrHubDiscovery(
           }
         });
       for (let index = 0; index < numbered.length; index += PR_HUB_DETAILS_CHUNK_SIZE) {
-        if (githubRequestScheduler.status(host).retryAt) {
+        if (yield* githubCooldownActive(host)) {
           degraded = true;
           break;
         }
@@ -237,7 +236,7 @@ export function createPrHubDiscovery(
         const ids = knownIds.slice(index, index + PR_HUB_DETAILS_CHUNK_SIZE);
         if (ids.length === 0) continue;
         const rank = Math.max(...ids.map((id) => priorities?.get(id)?.priority ?? 0));
-        if (githubRequestScheduler.status(host).retryAt) {
+        if (yield* githubCooldownActive(host)) {
           degraded = true;
           break;
         }
@@ -466,7 +465,7 @@ export function createPrHubDiscovery(
         });
       let recoveredPullRequests: readonly NormalizedPr[] = [];
       let recoveryError: string | undefined;
-      if (!githubRequestScheduler.status(host).retryAt) {
+      if (!(yield* githubCooldownActive(host))) {
         yield* enqueuePrHubTracked(account, excluded).pipe(Effect.orDie);
         const recovery = yield* selectPrHubHydration(account, excluded).pipe(Effect.orDie);
         if (recovery.size > 0) {
@@ -509,7 +508,7 @@ export function createPrHubDiscovery(
             "GitHub GraphQL search request failed.",
           );
           yield* ingestPrHubSearch(account, scope, null, excluded).pipe(Effect.orDie);
-          if (githubRequestScheduler.status(host).retryAt) break;
+          if (yield* githubCooldownActive(host)) break;
           continue;
         }
         const response = asRecord(result.value);
@@ -597,7 +596,7 @@ export function createPrHubDiscovery(
             ),
           )
         : null;
-      const hydration = githubRequestScheduler.status(host).retryAt
+      const hydration = (yield* githubCooldownActive(host))
         ? new Map()
         : yield* selectPrHubHydration(account, excluded).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
@@ -765,7 +764,7 @@ export function createPrHubDiscovery(
         { alias: "mentioned", args: ["--mentions", "@me", "--state", "open"] },
         { alias: "involved", args: ["--involves", "@me", "--state", "open"] },
       ] as const;
-      if (githubRequestScheduler.status(host).retryAt)
+      if (yield* githubCooldownActive(host))
         return {
           pullRequests: [],
           cappedBuckets: [],
@@ -777,7 +776,7 @@ export function createPrHubDiscovery(
       let deferred = false;
       const nodesByUrl = new Map<string, { node: Record<string, unknown>; aliases: Set<string> }>();
       for (const bucket of buckets) {
-        if (githubRequestScheduler.status(host).retryAt) {
+        if (yield* githubCooldownActive(host)) {
           deferred = true;
           break;
         }

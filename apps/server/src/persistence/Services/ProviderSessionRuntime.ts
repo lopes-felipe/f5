@@ -117,12 +117,12 @@ export interface ProviderSessionRuntimeRepositoryShape {
   /**
    * List all provider runtime rows.
    *
-   * Returned in ascending last-seen order.
+   * Returned in ascending last-seen order. `excludeStopped` skips stopped
+   * rows in the query, so their payloads are never decoded.
    */
-  readonly list: () => Effect.Effect<
-    ReadonlyArray<ProviderSessionRuntime>,
-    ProviderSessionRuntimeRepositoryError
-  >;
+  readonly list: (options?: {
+    readonly excludeStopped?: boolean;
+  }) => Effect.Effect<ReadonlyArray<ProviderSessionRuntime>, ProviderSessionRuntimeRepositoryError>;
 
   /**
    * List provider runtime rows for one project.

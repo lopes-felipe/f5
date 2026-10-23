@@ -447,6 +447,10 @@ export function useSidebarThreadActions(input: {
     cancelRename,
     commitRename,
     archiveThread,
+    unsettleThread: (threadId: ThreadId) =>
+      executeThreadAction(threadId, "unsettle").catch(() => {
+        toastManager.add({ type: "error", title: "Could not unsettle thread" });
+      }),
     deleteThreads,
     openThreadContextMenu,
     openThread,

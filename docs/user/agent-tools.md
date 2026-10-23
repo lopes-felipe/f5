@@ -40,6 +40,13 @@ In project scope, **Effective JSON export** shows the merged config a thread in 
 
 ## F5 browser and computer tools
 
+F5 also provides a thread catalog with `thread_status`, `html_render`, `html_preview`,
+`pull_request_review_guide_read` and `pull_request_review_guide_write`. Guide tools accept
+a PR URL or F5 PR key; omit it only when the thread has exactly one linked PR. Writing a
+guide starts generation with the model chosen under **Settings → Git**. Reading reports
+the saved guide and its running or failed state. See [HTML renders](html-renders.md) and
+[PR Hub](pr-hub-forges.md).
+
 Computer control is opt-in on macOS. See **Settings → Browser & Computer → Agent support**
 for each enabled provider and a readable readiness reason.
 

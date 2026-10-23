@@ -1,3 +1,4 @@
+import { ThreadSettlementSettings } from "../ThreadSettlementSettings";
 import { DEFAULT_GIT_TEXT_GENERATION_MODEL, type ServerSettings } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -22,6 +23,7 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Switch } from "../../ui/switch";
 import { Textarea } from "../../ui/textarea";
 import { toastManager } from "../../ui/toast";
+import { ReviewGuideSettings } from "../ReviewGuideSettings";
 import { WorktreeDisposablePathsEditor } from "../WorktreeDisposablePathsEditor";
 
 export { GIT_SETTINGS_DESCRIPTORS } from "./GitSettings.descriptors";
@@ -66,6 +68,8 @@ export function GitSettings() {
       <SyncSettings />
       <WritingSettings />
       <PullRequestSettings />
+      <ReviewGuideSettings />
+      <ThreadSettlementSettings />
     </>
   );
 }
@@ -88,6 +92,16 @@ function WorktreeSettings() {
         ) : null
       }
     >
+      <SettingsRow
+        title="Manage worktrees"
+        searchTarget="git.manage-worktrees"
+        description="Browse checkouts for each project, see which conversations use them, and switch or remove them."
+        control={
+          <Button size="xs" variant="outline" render={<Link to="/worktrees" />}>
+            Open worktrees
+          </Button>
+        }
+      />
       <SettingsRow
         title="Worktree submodules"
         description="Which git submodules a new worktree checks out."
@@ -418,6 +432,7 @@ function WritingSettings() {
 function PullRequestSettings() {
   const { settings, updateSettings } = useSettingsRouteContext();
   const defaultMergeMethod = useSettings((unified) => unified.prHubDefaultMergeMethod);
+  const removeAgentCredits = useSettings((unified) => unified.removeAgentCreditsOnMerge);
   const { updateSettings: updateServerSettings } = useUpdateSettings();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const queryClient = useQueryClient();
@@ -487,6 +502,26 @@ function PullRequestSettings() {
               <SelectItem value="rebase">{MERGE_METHOD_LABELS.rebase}</SelectItem>
             </SelectPopup>
           </Select>
+        }
+      />
+      <SettingsRow
+        title="Remove agent credits when merging"
+        description="Remove recognized agent co-author and generated-by lines from GitHub merge and squash messages. Keeps human credits and original commits. Includes auto-merge; excludes merge queues and stack merges."
+        control={
+          <Switch
+            aria-label="Remove agent credits when merging"
+            checked={removeAgentCredits}
+            onCheckedChange={(enabled) =>
+              void updateServerSettings({ removeAgentCreditsOnMerge: enabled }).catch(
+                (error: unknown) =>
+                  toastManager.add({
+                    type: "error",
+                    title: "Could not save merge-message setting",
+                    description: errorMessage(error),
+                  }),
+              )
+            }
+          />
         }
       />
       <SettingsRow

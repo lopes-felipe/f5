@@ -34,7 +34,7 @@ export interface ProjectionStateRepositoryShape {
    * Upserts by projector name.
    */
   readonly upsert: (row: ProjectionState) => Effect.Effect<void, ProjectionRepositoryError>;
-  /** One statement, retaining the caller's existing transaction boundary. */
+  /** Advance a group of projector cursors in one statement. Empty groups do nothing. */
   readonly upsertMany: (
     rows: ReadonlyArray<ProjectionState>,
   ) => Effect.Effect<void, ProjectionRepositoryError>;

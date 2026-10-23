@@ -1,3 +1,4 @@
+import { makeGitHubHttpOperations } from "../git/githubHttpOperations.ts";
 import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
 import { makeFakeGitHubCli } from "../git/testDoubles.ts";
@@ -22,7 +23,7 @@ const pr = {
   base: { ref: "main", repo: { full_name: "team/repo" } },
   requested_reviewers: [],
 };
-function fixture(responses: unknown[] = []) {
+function fixture(responses: unknown[] = [], mergeMessage?: Record<string, unknown>) {
   const calls: GitHubApiRequest[] = [];
   const queries: Array<{ query: string; variables: unknown }> = [];
   const github = makeFakeGitHubCli().service;
@@ -45,6 +46,8 @@ function fixture(responses: unknown[] = []) {
     },
     runGraphql: (input: Parameters<typeof github.runGraphql>[0]) => {
       queries.push({ query: input.query, variables: input.variables });
+      if (input.query.includes("F5PullRequestMergeMessage"))
+        return Effect.succeed({ data: { repository: { pullRequest: mergeMessage } } });
       if (input.query.startsWith("mutation")) {
         const field = /\{\s*([A-Za-z0-9_]+)\s*\(/.exec(input.query)?.[1] ?? "mutation";
         return Effect.succeed({
@@ -66,7 +69,12 @@ function fixture(responses: unknown[] = []) {
       });
     },
   };
-  return { provider: makeGitHubForge(scoped, "/repo"), calls, queries };
+  const http = makeGitHubHttpOperations(scoped, () => Effect.succeed(""));
+  return {
+    provider: makeGitHubForge({ ...scoped, mergePullRequest: http.mergePullRequest }, "/repo"),
+    calls,
+    queries,
+  };
 }
 describe("typed GitHub forge", () => {
   it("updates branches with the prepared head revision in the mutation", async () => {
@@ -229,4 +237,77 @@ describe("typed GitHub forge", () => {
     ).toBe("Failure");
     expect(changed.calls.some((call) => call.method === "POST")).toBe(false);
   });
+});
+
+it("reads diff text through the captured HTTP request without gh", async () => {
+  const f = fixture(["diff --git a/a b/a\n+hello\n"]);
+  expect(await Effect.runPromise(f.provider.getDiff(ref))).toBe("diff --git a/a b/a\n+hello\n");
+  expect(f.calls[0]).toMatchObject({
+    endpoint: "repos/team/repo/pulls/7",
+    method: "GET",
+    accept: "application/vnd.github.diff",
+  });
+});
+
+it("auto-merge preserves the prepared head and cleaned body, including an explicitly empty body", async () => {
+  const { provider, queries } = fixture([], {
+    isMergeQueueEnabled: false,
+    headRefOid: "head-sha",
+    viewerMergeBodyText: "Co-authored-by: Claude <noreply@anthropic.com>",
+  });
+  await Effect.runPromise(
+    provider.performAction({
+      ref,
+      action: "enable-auto-merge",
+      method: "squash",
+      expectedHeadOid: "head-sha",
+      removeAgentCreditsOnMerge: true,
+    }),
+  );
+  expect(queries[0]?.variables).toMatchObject({ method: "SQUASH" });
+  expect(queries[1]?.query).toContain("expectedHeadOid:$head");
+  expect(queries[1]?.query).toContain("commitBody:$body");
+  expect(queries[1]?.variables).toMatchObject({ head: "head-sha", method: "SQUASH", body: "" });
+});
+it("keeps the host auto-merge message for a merge queue and rebase", async () => {
+  for (const method of ["merge", "rebase"] as const) {
+    const { provider, queries } = fixture([], {
+      isMergeQueueEnabled: true,
+      headRefOid: "head-sha",
+      viewerMergeBodyText: "Co-authored-by: Claude <noreply@anthropic.com>",
+    });
+    await Effect.runPromise(
+      provider.performAction({
+        ref,
+        action: "enable-auto-merge",
+        method,
+        expectedHeadOid: "head-sha",
+        removeAgentCreditsOnMerge: true,
+      }),
+    );
+    const mutation = queries.at(-1)!;
+    expect(mutation.query).not.toContain("commitBody");
+    expect(mutation.variables).not.toHaveProperty("body");
+    expect(mutation.variables).toMatchObject({ head: "head-sha" });
+    if (method === "rebase") expect(queries).toHaveLength(1);
+  }
+});
+it("does not activate auto-merge after the prepared head changes", async () => {
+  const { provider, queries } = fixture([], {
+    isMergeQueueEnabled: false,
+    headRefOid: "new-head",
+    viewerMergeBodyText: "Co-authored-by: Claude <noreply@anthropic.com>",
+  });
+  const result = await Effect.runPromise(
+    provider
+      .performAction({
+        ref,
+        action: "enable-auto-merge",
+        expectedHeadOid: "head-sha",
+        removeAgentCreditsOnMerge: true,
+      })
+      .pipe(Effect.result),
+  );
+  expect(result._tag).toBe("Failure");
+  expect(queries.some((entry) => entry.query.startsWith("mutation"))).toBe(false);
 });

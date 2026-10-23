@@ -19,6 +19,7 @@ import {
 import {
   type CodexAppServerStartSessionInput,
   buildCodexInitializeParams,
+  buildCodexThreadForkParams,
   buildCodexThreadOpenRequestParams,
   buildCodexTurnStartParams,
   CODEX_ELICITATION_OPENED_METHOD,
@@ -32,6 +33,7 @@ import {
   isRecoverableThreadResumeError,
   isUnknownMethodError,
   legacyCodexApprovalDecision,
+  codexSessionAllowedResponse,
   normalizeCodexModelSlug,
   readCodexAccountSnapshot,
   readEnabledSkillsFromSkillsListResponse,
@@ -571,6 +573,15 @@ describe("Codex runtime-mode thread configuration", () => {
     },
   );
 
+  it("gives slow MCP servers a startup grace on start, resume and fork", () => {
+    const input = { runtimeMode: "full-access", resumeThreadId: "provider-thread-1" } as const;
+    const params = buildCodexThreadOpenRequestParams(input);
+    const config = { mcp_optional_startup_grace_ms: 10_000 };
+    expect(params.start.config).toEqual(config);
+    expect(params.resume?.config).toEqual(config);
+    expect(buildCodexThreadForkParams(input, "provider-thread-1").config).toEqual(config);
+  });
+
   it.each(["unattended-readonly", "attended-readonly"] as const)(
     "forces read-only, never-approve configuration for %s",
     (workflowExecutionProfile) => {
@@ -764,6 +775,50 @@ describe("startSession", () => {
       expect(first.collaborationMode.settings.developer_instructions).toContain(
         "Recovered requirement",
       );
+    } finally {
+      manager.stopAll();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("unarchives an archived Codex session and resumes it instead of starting fresh", async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "codex-archived-resume-"));
+    const binaryPath = path.join(directory, "codex.cjs");
+    writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", { mode: 0o755 });
+    const manager = new CodexAppServerManager();
+    vi.spyOn(
+      manager as unknown as { assertSupportedCodexCliVersion: () => string },
+      "assertSupportedCodexCliVersion",
+    ).mockReturnValue("0.162.0");
+    let resumes = 0;
+    const requests = vi
+      .spyOn(
+        manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+        "sendRequest",
+      )
+      .mockImplementation(async (_context, method) => {
+        if (method === "thread/resume" && resumes++ === 0)
+          throw new Error(
+            "thread/resume failed: session archived-thread is archived. Run `codex unarchive archived-thread`.",
+          );
+        if (method === "thread/resume") return { thread: { id: "archived-thread" } };
+        return {};
+      });
+    try {
+      await manager.startSession({
+        threadId: asThreadId("archived"),
+        cwd: directory,
+        runtimeMode: "full-access",
+        providerOptions: { codex: { binaryPath } },
+        resumeCursor: { threadId: "archived-thread" },
+      });
+      const methods = requests.mock.calls.map((call) => call[1]);
+      expect(methods).toContain("thread/unarchive");
+      expect(methods).not.toContain("thread/start");
+      expect(methods.filter((method) => method === "thread/resume")).toHaveLength(2);
+      expect(requests.mock.calls.find((call) => call[1] === "thread/unarchive")?.[2]).toEqual({
+        threadId: "archived-thread",
+      });
     } finally {
       manager.stopAll();
       rmSync(directory, { recursive: true, force: true });
@@ -3195,6 +3250,60 @@ describe("Codex server requests", () => {
         resolutionSource: "server",
       },
     });
+  });
+
+  it("stops asking for commands the user allowed for the session, until the mode changes", async () => {
+    const manager = new CodexAppServerManager();
+    const context = requestContext(manager);
+    const internals = manager as unknown as {
+      handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
+      requireSession: (threadId: string) => unknown;
+      writeMessage: (...args: unknown[]) => Promise<void>;
+    };
+    vi.spyOn(internals, "requireSession").mockReturnValue(context);
+    const writeMessage = vi.spyOn(internals, "writeMessage").mockResolvedValue();
+    const command = (id: number, method = "item/commandExecution/requestApproval") =>
+      internals.handleServerRequest(context, {
+        id,
+        method,
+        params: { threadId: "thread_1", turnId: "turn_1", itemId: `item-${id}`, command: "ls" },
+      });
+
+    command(90);
+    const [first] = context.pendingApprovals.keys();
+    await manager.respondToRequest(asThreadId("thread_1"), first!, "acceptForSession");
+    expect(context.pendingApprovals.size).toBe(0);
+
+    // A new command in the same mode is answered without a prompt.
+    command(91);
+    await vi.waitFor(() =>
+      expect(writeMessage).toHaveBeenCalledWith(context, {
+        id: 91,
+        result: { decision: "acceptForSession" },
+      }),
+    );
+    expect(context.pendingApprovals.size).toBe(0);
+
+    // File changes were never allowed, so they still ask.
+    command(92, "item/fileChange/requestApproval");
+    expect(context.pendingApprovals.size).toBe(1);
+    context.pendingApprovals.clear();
+
+    // Another runtime mode ends the allowance.
+    (context.session as { runtimeMode: string }).runtimeMode = "approval-required";
+    command(93);
+    expect(context.pendingApprovals.size).toBe(1);
+  });
+
+  it("answers a session-allowed request only with a decision the request offers", () => {
+    expect(codexSessionAllowedResponse("legacy-decision", undefined)).toEqual({
+      decision: "approved_for_session",
+    });
+    expect(
+      codexSessionAllowedResponse("decision", { decisions: new Set(["accept", "decline"]) }),
+    ).toEqual({ decision: "accept" });
+    expect(codexSessionAllowedResponse("decision", { decisions: new Set(["decline"]) })).toBeNull();
+    expect(codexSessionAllowedResponse("permissions", undefined)).toBeNull();
   });
 
   it("answers currentTime/read without creating a prompt", async () => {

@@ -1,6 +1,7 @@
 import type { UsageAccount } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 import {
+  claudeGatewayUsageLimit,
   claudeLimitState,
   usageLimitMessage,
   usageLimitFromWindows,
@@ -15,6 +16,37 @@ import {
 
 describe("provider usage-limit messages", () => {
   const reset = Date.parse("2026-09-29T12:00:00Z") / 1000;
+  it.each([
+    { cooldown: "4m 6s", seconds: 246 },
+    { cooldown: "1h 2m 3s", seconds: 3723 },
+    { cooldown: "7s", seconds: 7 },
+    { cooldown: "0s", seconds: 0 },
+    { cooldown: "unknown", seconds: 0 },
+    { cooldown: "999999999999999999999999h", seconds: 0 },
+    { cooldown: "4m 6s", seconds: 0, errorType: "overloaded_error" },
+    { cooldown: "4m 6s", seconds: 0, status: 401 },
+  ])("reads a wrapped Claude gateway cooldown of $cooldown", (input) => {
+    const at = "2026-10-10T10:00:00.000Z";
+    const status = input.status ?? 503;
+    const limit = claudeGatewayUsageLimit(
+      {
+        subtype: "success",
+        is_error: true,
+        terminal_reason: "api_error",
+        api_error_status: status,
+        result: `API Error: ${status} [claude/claude-opus-5-5] [429]: {"type":"error","error":{"type":"${input.errorType ?? "rate_limit_error"}","message":"Please try again later."}} (reset after ${input.cooldown}).`,
+      },
+      at,
+    );
+    if (input.seconds === 0) expect(limit).toBeUndefined();
+    else
+      expect(limit).toEqual({
+        windows: [],
+        resetsAt: new Date(Date.parse(at) + input.seconds * 1_000).toISOString(),
+        evidence: "message",
+        resetSource: "message",
+      });
+  });
   it("names Claude's rejected window and reset", () => {
     const state = claudeLimitState({
       status: "rejected",

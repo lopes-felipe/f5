@@ -10,6 +10,7 @@ describe("syncShellEnvironment", () => {
     };
     const readEnvironment = vi.fn(() => ({
       PATH: "/opt/homebrew/bin:/usr/bin",
+      __MISE_DIFF: "mise-diff",
       SSH_AUTH_SOCK: "/tmp/secretive.sock",
     }));
 
@@ -18,15 +19,37 @@ describe("syncShellEnvironment", () => {
       readEnvironment,
     });
 
+    expect(env.__MISE_DIFF).toBe("mise-diff");
     expect(readEnvironment).toHaveBeenCalledWith("/bin/zsh", [
       "PATH",
+      "__MISE_DIFF",
       "SSH_AUTH_SOCK",
       "LANG",
       "LC_ALL",
       "LC_CTYPE",
+      "SSL_CERT_FILE",
+      "SSL_CERT_DIR",
+      "NODE_EXTRA_CA_CERTS",
     ]);
     expect(env.PATH).toBe("/opt/homebrew/bin:/usr/bin");
     expect(env.SSH_AUTH_SOCK).toBe("/tmp/secretive.sock");
+  });
+
+  it("imports missing CA trust variables while retaining inherited trust", async () => {
+    const env: NodeJS.ProcessEnv = { SSL_CERT_DIR: "/inherited/certs" };
+    await syncShellEnvironment(env, {
+      platform: "darwin",
+      readEnvironment: () => ({
+        SSL_CERT_FILE: "/shell/root.pem",
+        SSL_CERT_DIR: "/shell/certs",
+        NODE_EXTRA_CA_CERTS: "/shell/company.pem",
+      }),
+    });
+    expect(env).toMatchObject({
+      SSL_CERT_FILE: "/shell/root.pem",
+      SSL_CERT_DIR: "/inherited/certs",
+      NODE_EXTRA_CA_CERTS: "/shell/company.pem",
+    });
   });
 
   it.each([

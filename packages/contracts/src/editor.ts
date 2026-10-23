@@ -14,7 +14,8 @@ export const EDITORS = [
   },
   { id: "vscodium", label: "VSCodium", command: "codium", supportsGoto: true },
   { id: "zed", label: "Zed", command: "zed", supportsGoto: false },
-  { id: "antigravity", label: "Antigravity", command: "agy", supportsGoto: false },
+  // `agy` is the standalone Antigravity CLI, not the IDE; the IDE bundle ships `antigravity-ide`.
+  { id: "antigravity", label: "Antigravity", command: "antigravity-ide", supportsGoto: false },
   { id: "kiro", label: "Kiro", command: "kiro", supportsGoto: true },
   // Uses --line/--column instead of --goto; handled in apps/server/src/open.ts.
   { id: "idea", label: "IntelliJ IDEA", command: "idea", supportsGoto: false },

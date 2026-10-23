@@ -1051,6 +1051,62 @@ describe("Thread sidebar", () => {
     document.body.innerHTML = "";
   });
 
+  it("keeps settled threads in a collapsed bucket and reachable by their existing route", async () => {
+    const mounted = await mountApp({
+      width: 1400,
+      initialEntries: [`/${THREAD_ID}`],
+      configureFixture: (next) => {
+        next.snapshot = createSnapshot([
+          createSnapshotThread({
+            id: THREAD_ID,
+            title: "Settled conversation",
+            settledAt: NOW_ISO,
+            settledBy: "user",
+          }),
+        ]);
+      },
+    });
+    try {
+      await expect
+        .element(page.getByRole("button", { name: "Settled (1)", exact: true }))
+        .toBeVisible();
+      expect(querySidebarThreadRowsByTitle("Settled conversation")).toHaveLength(0);
+      expect(mounted.router.state.location.pathname).toBe(`/${THREAD_ID}`);
+      await page.getByRole("button", { name: "Settled (1)", exact: true }).click();
+      await expect.poll(() => querySidebarThreadRowsByTitle("Settled conversation").length).toBe(1);
+      const row = page.getByTestId(`thread-row-${THREAD_ID}`);
+      await row.hover();
+      await page
+        .getByRole("button", { name: "Unsettle Settled conversation", exact: true })
+        .click();
+      await expect
+        .poll(() =>
+          wsRequests.some(
+            (body) =>
+              body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              (body.command as { type?: string } | undefined)?.type === "thread.unsettle",
+          ),
+        )
+        .toBe(true);
+      useStore.getState().syncServerReadModel(
+        createSnapshot([
+          createSnapshotThread({
+            id: THREAD_ID,
+            title: "Settled conversation",
+            settledAt: null,
+            settledBy: null,
+          }),
+        ]),
+      );
+      await expect
+        .element(page.getByRole("button", { name: "Settled (1)", exact: true }))
+        .not.toBeInTheDocument();
+      expect(querySidebarThreadRowsByTitle("Settled conversation")).toHaveLength(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("does not invalidate an in-flight startup snapshot for a rejected profile welcome", async () => {
     const startupResponse = createDeferred<WsRequestResolution>();
     let socket: TestWsClient | undefined;
@@ -1067,7 +1123,8 @@ describe("Thread sidebar", () => {
     });
     const previousProfile = useProfileState.getState();
     try {
-      await vi.waitFor(() => expect(socket).toBeDefined());
+      // The startup request can take over a second to arrive on a loaded runner.
+      await vi.waitFor(() => expect(socket).toBeDefined(), { timeout: 8_000, interval: 16 });
       const profile = {
         id: ProfileId.makeUnsafe("1".repeat(32)),
         slug: "one",
@@ -1154,6 +1211,70 @@ describe("Thread sidebar", () => {
         expect(document.body.textContent).toContain("No projects yet");
         expect(document.body.textContent).toContain("Add a project to get started.");
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("starts a thread without a project from the empty sidebar", async () => {
+    seedAppSettings({ onboardingLiteStatus: "dismissed" });
+    const scratchProjectId = "5c7a0e3b-0d2f-5a51-8f00-000000000001" as ProjectId;
+    let ensureCalls = 0;
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: ["/"],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = createEmptySnapshot();
+        nextFixture.resolveWsRequest = (body) => {
+          if (body._tag !== WS_METHODS.projectsEnsureScratch) return null;
+          ensureCalls += 1;
+          // The project.created event lands after the reply, as it would over the socket.
+          setTimeout(() =>
+            useStore.setState((state) => ({
+              projects: [
+                ...state.projects,
+                {
+                  id: scratchProjectId,
+                  kind: "scratch",
+                  name: "No project",
+                  cwd: "/state/scratch",
+                  model: "gpt-5",
+                  createdAt: NOW_ISO,
+                  expanded: true,
+                  scripts: [],
+                  memories: [],
+                },
+              ],
+            })),
+          );
+          return { type: "result", result: { projectId: scratchProjectId } };
+        };
+      },
+    });
+
+    try {
+      const start = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>(
+            '[data-testid="sidebar-start-without-project"]',
+          ),
+        "The empty sidebar offers a thread without a project.",
+      );
+      start.click();
+      await vi.waitFor(() => {
+        const drafts = Object.values(useComposerDraftStore.getState().draftThreadsByThreadId);
+        expect(drafts).toEqual([
+          expect.objectContaining({
+            projectId: scratchProjectId,
+            branch: null,
+            worktreePath: null,
+            envMode: "local",
+          }),
+        ]);
+      });
+      expect(ensureCalls).toBe(1);
+      // The scratch project is a home for threads, not one more project to pick.
+      expect(document.body.textContent).toContain("No projects yet");
     } finally {
       await mounted.cleanup();
     }
@@ -1617,6 +1738,81 @@ describe("Thread sidebar", () => {
       await page.elementLocator(paletteInput).fill("keyboard shortcuts");
       await page.getByText("Show keyboard shortcuts", { exact: true }).click();
       await waitForElement(findDialog, "The palette action should open the dialog.");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("virtualizes long palette results and runs an off-screen row from the keyboard", async () => {
+    const matchCount = 60;
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.resolveWsRequest = (body) => {
+          if (body._tag !== WS_METHODS.projectsSearchContents) return null;
+          return {
+            type: "result",
+            result: {
+              requestId: body.requestId,
+              matches: Array.from({ length: matchCount }, (_, index) => ({
+                path: `src/match-${index}.ts`,
+                lineNumber: 1,
+                lineContent: "const needle = true;",
+                matchRanges: [{ start: 6, end: 12 }],
+              })),
+              truncated: false,
+              indexedPathCount: matchCount,
+              indexTruncated: false,
+            },
+          };
+        };
+      },
+    });
+
+    try {
+      useCommandPaletteStore.getState().toggleMode("content");
+      const palette = await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>(
+            '[data-testid="command-palette"][data-palette-mode="content"]',
+          ),
+        "Content palette should open in content mode.",
+      );
+      const input = palette.querySelector<HTMLInputElement>("input");
+      if (!input) throw new Error("Content palette input should render.");
+      setInputValue(input, "needle");
+      await vi.waitFor(() => expect(palette.textContent).toContain("src/match-0.ts:1"), {
+        timeout: 4_000,
+        interval: 16,
+      });
+
+      const renderedRows = () => palette.querySelectorAll('[data-slot="command-item"]').length;
+      expect(renderedRows()).toBeGreaterThan(0);
+      expect(renderedRows()).toBeLessThan(matchCount);
+
+      input.focus();
+      await vi.waitFor(() => expect(document.activeElement).toBe(input));
+      for (let step = 1; step < matchCount; step += 1) {
+        await userEvent.keyboard("{ArrowDown}");
+      }
+      const lastRow = await waitForElement(
+        () =>
+          Array.from(palette.querySelectorAll<HTMLElement>('[data-slot="command-item"]')).find(
+            (row) => row.textContent?.includes(`src/match-${matchCount - 1}.ts:1`),
+          ) ?? null,
+        "Arrowing to the last match should mount its row.",
+      );
+      await vi.waitFor(() => expect(lastRow.hasAttribute("data-highlighted")).toBe(true));
+
+      await userEvent.keyboard("{Enter}");
+      await vi.waitFor(
+        () =>
+          expect(JSON.stringify(mounted.router.state.location.search)).toContain(
+            `src/match-${matchCount - 1}.ts`,
+          ),
+        { timeout: 4_000, interval: 16 },
+      );
     } finally {
       await mounted.cleanup();
     }

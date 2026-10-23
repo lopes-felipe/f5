@@ -1,3 +1,23 @@
+import type { ThreadSearchInput, ThreadSearchResult } from "./threadSearch";
+import type {
+  McpAppCallToolInput,
+  McpAppReadResourceInput,
+  McpAppToolInfoInput,
+  McpAppToolInfo,
+  McpAppToolResult,
+  McpAppUpdateModelContextInput,
+} from "./mcpApps";
+import type {
+  PullRequestWatchEntry,
+  PullRequestWatchInput,
+  PullRequestWatchChanged,
+} from "./pullRequestWatch";
+import type {
+  HtmlPreviewRequest,
+  HtmlPreviewHostRequest,
+  HtmlPreviewResult,
+  HtmlPreviewResponse,
+} from "./threadTools";
 import type { ReportClientDiagnosticsInput } from "./server";
 import type {
   WorktreesMoveThreadInput,
@@ -138,6 +158,11 @@ import type {
   ProjectCloneInput,
   ProjectCloneCancelInput,
   ProjectCloneJob,
+  ProjectEnsureScratchResult,
+  ProjectCreateNewInput,
+  ProjectCreateNewResult,
+  ProjectFindByRepositoryInput,
+  ProjectFindByRepositoryResult,
   ProjectListDirectoryInput,
   ProjectListEntriesResult,
   ProjectReadFileInput,
@@ -384,6 +409,8 @@ import type {
   PrHubReviewDraftResult,
   PrHubUnresolvedThreadsResult,
   PrHubGetAdvisoriesInput,
+  PrHubReviewGuideInput,
+  PullRequestReviewGuideResult,
   PrHubIgnoreInput,
   PrHubLocalCandidatesInput,
   PrHubResolveCheckoutInput,
@@ -602,7 +629,19 @@ export type QuitShortcutHintEvent =
   | { state: "up" }
   | { state: "down"; mode: Exclude<QuitShortcutMode, "direct"> };
 
+export interface DesktopCliCommandState {
+  readonly supported: boolean;
+  readonly installedPaths: Readonly<Record<"f5" | "t3", string | null>>;
+  readonly onPath: boolean;
+  readonly shadowedBy?: string;
+}
+
 export interface DesktopBridge {
+  htmlPreview?: (input: HtmlPreviewRequest) => Promise<HtmlPreviewResult>;
+  cliCommand?: {
+    state: () => Promise<DesktopCliCommandState>;
+    install: () => Promise<DesktopCliCommandState>;
+  };
   /** F5-native computer control; reports why it is unavailable until certified. */
   computerAutomation?: DesktopComputerAutomationBridge;
   setQuitShortcutMode?: (mode: QuitShortcutMode) => Promise<void>;
@@ -613,6 +652,13 @@ export interface DesktopBridge {
   switchProfile?: (profileId: string) => Promise<boolean>;
   stopProfile?: (profileId: string) => Promise<boolean>;
   onProfilesChanged?: (listener: () => void) => () => void;
+  /** Takes the prompt links the OS opened F5 with, oldest first. */
+  takePromptLinks?: () => Promise<{
+    readonly links: readonly string[];
+    /** The profile the links opened in, when there is more than one to choose from. */
+    readonly profileName: string | null;
+  }>;
+  onPromptLinksAvailable?: (listener: () => void) => () => void;
   getWsUrl: () => string | null;
   getPathForFile?: (file: File) => string | null;
   resolveRealPath?: (pathValue: string) => string | null;
@@ -717,6 +763,26 @@ export interface DesktopPreviewBridge {
 }
 
 export interface NativeApi {
+  mcpApps: {
+    toolInfo: (input: McpAppToolInfoInput) => Promise<McpAppToolInfo>;
+    callTool: (input: McpAppCallToolInput) => Promise<McpAppToolResult>;
+    readResource: (input: McpAppReadResourceInput) => Promise<unknown>;
+    updateModelContext: (input: McpAppUpdateModelContextInput) => Promise<void>;
+  };
+  threadSettlement: {
+    settleProjectIdle: (input: { projectId: ProjectId }) => Promise<{ settled: number }>;
+  };
+  pullRequestWatches: {
+    list: (input: { threadId: ThreadId }) => Promise<ReadonlyArray<PullRequestWatchEntry>>;
+    start: (input: PullRequestWatchInput) => Promise<PullRequestWatchEntry>;
+    stop: (input: PullRequestWatchInput) => Promise<void>;
+    onChanged: (callback: (input: typeof PullRequestWatchChanged.Type) => void) => () => void;
+  };
+  htmlRender: {
+    setHost: (input: { available: boolean }) => Promise<void>;
+    respond: (input: HtmlPreviewResponse) => Promise<void>;
+    onRequest: (callback: (input: HtmlPreviewHostRequest) => void) => () => void;
+  };
   chrome?: {
     listTransactions: (
       provider: "claude" | "codex",
@@ -825,6 +891,11 @@ export interface NativeApi {
     authorizeEntry: (input: ProjectAuthorizeEntryInput) => Promise<ProjectAuthorizeEntryResult>;
     clone: (input: ProjectCloneInput) => Promise<ProjectCloneJob>;
     cloneList: () => Promise<ReadonlyArray<ProjectCloneJob>>;
+    ensureScratch: () => Promise<ProjectEnsureScratchResult>;
+    createNew: (input: ProjectCreateNewInput) => Promise<ProjectCreateNewResult>;
+    findByRepository: (
+      input: ProjectFindByRepositoryInput,
+    ) => Promise<ProjectFindByRepositoryResult>;
     cloneCancel: (input: ProjectCloneCancelInput) => Promise<void>;
     listDirectory: (input: ProjectListDirectoryInput) => Promise<ProjectListEntriesResult>;
     listEntries: (input: ProjectListEntriesInput) => Promise<ProjectListEntriesResult>;
@@ -1137,6 +1208,8 @@ export interface NativeApi {
     markNotified: (input: PrHubMarkNotifiedInput) => Promise<PrHubOverview>;
     analyzeAdvisories: (input?: PrHubAnalyzeAdvisoriesInput) => Promise<PrHubAdvisorySnapshot>;
     getAdvisories: (input?: PrHubGetAdvisoriesInput) => Promise<PrHubAdvisorySnapshot>;
+    getReviewGuide: (input: PrHubReviewGuideInput) => Promise<PullRequestReviewGuideResult>;
+    generateReviewGuide: (input: PrHubReviewGuideInput) => Promise<PullRequestReviewGuideResult>;
     resolveLocalCheckout: (input: PrHubResolveCheckoutInput) => Promise<PrHubResolvedCheckout[]>;
     listLocalCheckoutCandidates: (
       input: PrHubLocalCandidatesInput,
@@ -1174,6 +1247,7 @@ export interface NativeApi {
     onAdvisoriesUpdated: (callback: (snapshot: PrHubAdvisoriesChanged) => void) => () => void;
   };
   orchestration: {
+    searchThread: (input: ThreadSearchInput) => Promise<ThreadSearchResult>;
     getLatestSequence: () => Promise<OrchestrationGetLatestSequenceResult>;
     getSnapshot: () => Promise<OrchestrationReadModel>;
     getStartupSnapshot: (

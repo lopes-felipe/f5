@@ -72,8 +72,8 @@ import { StorageMaintenance } from "./StorageMaintenance.ts";
  *
  * A worktree is removed only when it lives under this profile's managed
  * worktrees directory, contains no project root, is a linked worktree, has a
- * clean tree (ignored `node_modules/` excepted; any other ignored file such as
- * `.env` blocks removal, because `git worktree remove` would delete it), and
+ * clean tree (ignored environment files block removal; other ignored paths
+ * are recorded in the audit entry), and
  * nothing else claims it: no other thread, queued turn, live terminal or
  * agent session. Every check is repeated under the worktree lifecycle lock
  * right before `git worktree remove` (never `--force`). The branch and the
@@ -116,6 +116,21 @@ const PURGE_THREADS_PER_PASS = 10;
 
 export { blockingIgnoredEntries } from "../project/worktreeClaims.ts";
 
+/** Keep path previews small and unambiguous even for unusual filesystem names. */
+export function summarizeIgnoredCleanupPaths(entries: ReadonlyArray<string>): string {
+  const paths: string[] = [];
+  let bytes = 0;
+  for (const entry of entries) {
+    const label = JSON.stringify(entry);
+    const size = Buffer.byteLength(label) + 2;
+    if (paths.length === 32 || bytes + size > 4096) break;
+    paths.push(label);
+    bytes += size;
+  }
+  const omitted = entries.length - paths.length;
+  return `${entries.length} path(s): ${paths.join(", ")}${omitted ? ` (${omitted} more paths)` : ""}`;
+}
+
 /** Audit and dry-run label for a path: `~`-relative when under the user's home. */
 export function redactHomePath(value: string, home: string = OS.homedir()): string {
   const relative = Path.relative(home, value);
@@ -139,15 +154,20 @@ export type WorktreeCleanupRuleMatch =
 export function matchWorktreeCleanupRule(input: {
   readonly rules: WorktreeCleanupRules;
   readonly deleted: boolean;
+  readonly settled?: boolean;
   readonly lastInteractionAt: string;
   readonly nowMs: number;
   readonly headInDefaultBranch: boolean | null;
   readonly pullRequestMerged: boolean | null;
+  /** The merged pull request names the worktree's exact HEAD as its head commit. */
+  readonly pullRequestHeadIsWorktreeHead?: boolean;
 }): WorktreeCleanupRuleMatch | null {
   if (input.deleted && input.rules.onDelete) {
     return { kind: "remove", reason: "the thread was deleted" };
   }
   if (input.deleted) return null;
+  if (input.settled && input.rules.onSettle)
+    return { kind: "remove", reason: "the thread was settled" };
   // An unreadable timestamp counts as just active: never removes early.
   const parsedIdleMs = input.nowMs - Date.parse(input.lastInteractionAt);
   const idleMs = Number.isFinite(parsedIdleMs) ? parsedIdleMs : 0;
@@ -157,7 +177,11 @@ export function matchWorktreeCleanupRule(input: {
   const contentReason =
     input.rules.unchanged && input.headInDefaultBranch === true
       ? "no commits beyond the default branch"
-      : input.rules.onMerge && input.headInDefaultBranch === true && input.pullRequestMerged
+      : // A squash or rebase merge leaves HEAD outside the default branch, so the
+        // merged pull request must then name this exact commit.
+        input.rules.onMerge &&
+          input.pullRequestMerged &&
+          (input.headInDefaultBranch === true || input.pullRequestHeadIsWorktreeHead === true)
         ? "the pull request was merged"
         : null;
   if (contentReason === null) return null;
@@ -186,6 +210,7 @@ interface RuleInputs {
   readonly rules: WorktreeCleanupRules;
   readonly headInDefaultBranch: boolean | null;
   readonly pullRequestMerged: boolean | null;
+  readonly pullRequestHeadIsWorktreeHead: boolean;
 }
 
 type Evaluation =
@@ -348,19 +373,30 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
         .pipe(Effect.orElseSucceed(() => null));
       let headInDefaultBranch: boolean | null = null;
       let pullRequestMerged: boolean | null = null;
+      let pullRequestHeadIsWorktreeHead = false;
       if ((rules.unchanged || rules.onMerge) && headSha !== null && thread.deletedAt === null) {
         headInDefaultBranch = (yield* resolveHeadInDefaultBranch(git, projectRoot, headSha)).merged;
-        if (rules.onMerge && headInDefaultBranch === true && Option.isSome(gitManager)) {
-          pullRequestMerged = yield* gitManager.value.status({ cwd: worktreePath }).pipe(
-            Effect.map((status) => status.pr?.state === "merged"),
-            Effect.orElseSucceed(() => null),
+        if (rules.onMerge && headInDefaultBranch !== null && Option.isSome(gitManager)) {
+          const pr = yield* gitManager.value.status({ cwd: worktreePath }).pipe(
+            Effect.map((status) => status.pr),
+            Effect.orElseSucceed(() => undefined),
           );
+          if (pr !== undefined) {
+            pullRequestMerged = pr?.state === "merged";
+            pullRequestHeadIsWorktreeHead = pr?.headOid?.toLowerCase() === headSha.toLowerCase();
+          }
         }
       }
-      const ruleInputs = { rules, headInDefaultBranch, pullRequestMerged };
+      const ruleInputs = {
+        rules,
+        headInDefaultBranch,
+        pullRequestMerged,
+        pullRequestHeadIsWorktreeHead,
+      };
       const matched = matchWorktreeCleanupRule({
         ...ruleInputs,
         deleted: thread.deletedAt !== null,
+        settled: !!thread.settledAt,
         lastInteractionAt: worktreeLastInteraction(thread, worktreePath, input.activity),
         nowMs: input.nowMs,
       });
@@ -471,6 +507,7 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
               const rematched = matchWorktreeCleanupRule({
                 ...evaluation.ruleInputs,
                 deleted: current.deletedAt !== null,
+                settled: !!current.settledAt,
                 lastInteractionAt: worktreeLastInteraction(
                   current,
                   evaluation.worktreePath,
@@ -519,7 +556,9 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
               beforeRef: head,
               afterRef: null,
               result: "removed",
-              reason: evaluation.target.reason,
+              reason: removed.ignoredEntries.length
+                ? `${evaluation.target.reason}; removed ignored paths: ${summarizeIgnoredCleanupPaths(removed.ignoredEntries)}`
+                : evaluation.target.reason,
             });
             yield* storageMaintenance.noteStorageMutated;
             return evaluation.target;
@@ -1060,7 +1099,10 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
       return trigger.pipe(Effect.forkScoped, Effect.asVoid);
     }).pipe(Effect.forkScoped);
     yield* Stream.runForEach(engine.streamDomainEvents, (event) =>
-      event.type === "thread.deleted"
+      event.type === "thread.deleted" ||
+      event.type === "thread.settled" ||
+      (event.type === "thread.activity-appended" &&
+        event.payload.activity.kind === "settlement.script")
         ? trigger.pipe(Effect.forkScoped, Effect.asVoid)
         : Effect.void,
     ).pipe(Effect.forkScoped({ startImmediately: true }));

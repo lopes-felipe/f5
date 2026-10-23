@@ -95,7 +95,9 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       Effect.gen(function* () {
         const readModel = yield* orchestrationEngine.getReadModel();
         const threadsById = new Map(readModel.threads.map((thread) => [thread.id, thread]));
-        const bindings = yield* directory.listBindings();
+        // Stopped rows stay for their resume cursors and far outnumber live
+        // ones, so the query skips them.
+        const bindings = yield* directory.listBindings({ excludeStopped: true });
         const now = yield* Clock.currentTimeMillis;
         const freshSince = new Date(now - inactivityThresholdMs).toISOString();
         yield* threadBackgroundWork.expireStale({

@@ -120,6 +120,30 @@ describe("KeybindingEditor", () => {
     }
   });
 
+  it("groups rows by area and hides sections the search empties", async () => {
+    const screen = await renderEditor();
+    try {
+      const sections = () =>
+        [...document.querySelectorAll("[data-keybinding-editor] section h3")].map(
+          (heading) => heading.textContent,
+        );
+      await expect
+        .element(
+          page.getByRole("region", { name: "Navigation" }).getByText("Toggle command palette"),
+        )
+        .toBeInTheDocument();
+      await expect
+        .element(page.getByRole("region", { name: "Terminal" }).getByText("Toggle terminal"))
+        .toBeInTheDocument();
+      expect(sections()).toEqual(["Navigation", "Terminal"]);
+
+      await page.getByLabelText("Search keybindings").fill("terminal");
+      await expect.poll(sections).toEqual(["Terminal"]);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("validates invalid when expressions before submitting", async () => {
     nativeApiRef.current = {
       server: {

@@ -3,6 +3,7 @@ import "../../index.css";
 import {
   ProjectId,
   ProviderInstanceId,
+  type ProviderKind,
   ThreadId,
   type UsageAccounts,
   type UsageBucket,
@@ -21,6 +22,7 @@ import {
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
+import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
@@ -51,7 +53,10 @@ const connection = vi.hoisted(() => ({
   },
 }));
 const settings = vi.hoisted(() => ({
-  current: { usagePriceOverrides: [] as Array<Record<string, unknown>> },
+  current: {
+    usagePriceOverrides: [] as Array<Record<string, unknown>>,
+    usageModelAliases: {} as Record<string, string>,
+  },
 }));
 vi.mock("../../hooks/useSettings", () => ({
   useSettings: (select: (value: typeof settings.current) => unknown) => select(settings.current),
@@ -64,6 +69,7 @@ const listeners = vi.hoisted(() => ({
 vi.mock("../../nativeApi", () => ({
   ensureNativeApi: () => ({
     usage: api,
+    server: { getConfig: async () => ({ keybindings: DEFAULT_RESOLVED_KEYBINDINGS }) },
     orchestration: {
       onDomainEvent: (listener: (event: { type: string; payload?: unknown }) => void) => {
         listeners.domain.add(listener);
@@ -303,7 +309,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.resetAllMocks();
-  settings.current = { usagePriceOverrides: [] };
+  settings.current = { usagePriceOverrides: [], usageModelAliases: {} };
   focusManager.setFocused(undefined);
   onlineManager.setOnline(true);
   document.body.innerHTML = "";
@@ -492,6 +498,78 @@ describe("UsageDashboardView", () => {
       await expect.element(page.getByRole("cell", { name: "75%" })).toBeVisible();
       await expect.element(page.getByRole("cell", { name: "25%" })).toBeVisible();
       expect(document.body.textContent).not.toContain("300%");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("ranks and shares rows by the selected metric", async () => {
+    const value = scoped();
+    const unknownCost = metrics({
+      totalTokens: 0,
+      providerReportedCostUsd: null,
+      pricedTurnCount: 0,
+    });
+    const ranked: UsageSummary = {
+      ...value,
+      byProvider: [
+        ...value.byProvider,
+        {
+          provider: "claudeAgent",
+          model: "claude-opus",
+          metrics: metrics({ totalTokens: 100, providerReportedCostUsd: 2 }),
+        },
+      ],
+      projectScope: {
+        ...value.projectScope!,
+        byProject: [
+          {
+            projectId: projectA,
+            title: "Alpha",
+            deleted: false,
+            metrics: metrics({ totalTokens: 900, providerReportedCostUsd: 0.1 }),
+          },
+          {
+            projectId: projectB,
+            title: "Beta",
+            deleted: false,
+            metrics: metrics({ totalTokens: 300, providerReportedCostUsd: 0.3 }),
+          },
+          { projectId: null, title: null, deleted: false, metrics: unknownCost },
+        ],
+      },
+    };
+    const view = (metric: "tokens" | "cost") => (
+      <UsageDashboardView summary={ranked} range="7d" fetching={false} metric={metric} />
+    );
+    const tables = () => [...document.querySelectorAll("table")];
+    const projectRows = () =>
+      [...tables()[0]!.querySelectorAll("tbody tr")].map((row) =>
+        [...row.querySelectorAll("td")].map((cell) => cell.textContent),
+      );
+    const models = () =>
+      [...tables()[1]!.querySelectorAll("tbody tr td:nth-child(2)")].map(
+        (cell) => cell.textContent,
+      );
+    const screen = await renderWithRouter(view("tokens"));
+    try {
+      await expect.element(page.getByText("Projects and threads")).toBeVisible();
+      expect(projectRows().map((row) => [row[0], row.at(-1)])).toEqual([
+        ["Alpha", "75%"],
+        ["Beta", "25%"],
+        ["Unattributed historical cost", "0%"],
+      ]);
+      expect(models()).toEqual(["gpt-5.6", "claude-opus", "cursor-agent"]);
+
+      await screen.rerender(view("cost"));
+      await expect.poll(() => projectRows()[0]?.[0]).toBe("Beta");
+      // An unknown cost has no cost share.
+      expect(projectRows().map((row) => [row[0], row.at(-1)])).toEqual([
+        ["Beta", "75%"],
+        ["Alpha", "25%"],
+        ["Unattributed historical cost", ""],
+      ]);
+      expect(models()).toEqual(["claude-opus", "gpt-5.6", "cursor-agent"]);
     } finally {
       await screen.unmount();
     }
@@ -1031,6 +1109,87 @@ describe("query-connected usage dashboard", () => {
     }
   });
 
+  it("hides filtered providers from history and account cards on both tabs", async () => {
+    api.getSummary.mockResolvedValue(summary());
+    api.getAccounts.mockResolvedValue(accounts());
+    const onHiddenProvidersChange = vi.fn();
+    const queryClient = client();
+    const view = (tab: "activity" | "limits", hiddenProviders: ReadonlyArray<ProviderKind>) => (
+      <QueryClientProvider client={queryClient}>
+        <UsageDashboard
+          search={{ tab }}
+          onSearchChange={() => {}}
+          hiddenProviders={hiddenProviders}
+          onHiddenProvidersChange={onHiddenProvidersChange}
+        />
+      </QueryClientProvider>
+    );
+    const screen = await render(view("activity", []));
+    const accountCard = () => page.getByRole("heading", { name: "Codex — default configuration" });
+    try {
+      await expect.element(accountCard()).toBeVisible();
+      await page.getByRole("button", { name: "Usage providers" }).click();
+      await page.getByRole("menuitemcheckbox", { name: "Codex" }).click();
+      expect(onHiddenProvidersChange).toHaveBeenLastCalledWith(["codex"]);
+
+      await screen.rerender(view("activity", ["codex", "cursor"]));
+      await vi.waitFor(() =>
+        expect(api.getSummary).toHaveBeenLastCalledWith(
+          expect.objectContaining({ hiddenProviders: ["codex", "cursor"] }),
+        ),
+      );
+      await expect
+        .element(page.getByRole("button", { name: "Usage providers" }))
+        .toHaveTextContent(/providers/);
+      await expect.element(accountCard()).not.toBeInTheDocument();
+      await screen.rerender(view("limits", ["codex"]));
+      await expect.element(page.getByRole("button", { name: "Refresh limits" })).toBeVisible();
+      await expect.element(accountCard()).not.toBeInTheDocument();
+      await screen.rerender(view("limits", []));
+      await expect.element(accountCard()).toBeVisible();
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
+  it("switches views with page keys, leaves typing alone and goes back on Escape", async () => {
+    api.getSummary.mockResolvedValue(summary());
+    api.getAccounts.mockResolvedValue(accounts());
+    const onSearchChange = vi.fn();
+    const onBack = vi.fn();
+    const queryClient = client();
+    const screen = await renderDashboard(
+      queryClient,
+      <UsageDashboard search={{}} onSearchChange={onSearchChange} onBack={onBack} />,
+    );
+    const field = document.createElement("input");
+    document.body.append(field);
+    try {
+      await expect.element(page.getByRole("tab", { name: "Activity" })).toBeVisible();
+      await vi.waitFor(async () => {
+        await userEvent.keyboard("c");
+        expect(onSearchChange).toHaveBeenLastCalledWith({ tab: "activity", metric: "cost" });
+      });
+      await userEvent.keyboard("l");
+      expect(onSearchChange).toHaveBeenLastCalledWith({ tab: "limits" });
+      await userEvent.keyboard("3");
+      expect(onSearchChange).toHaveBeenLastCalledWith({ range: "30d" });
+      await userEvent.keyboard("{Escape}");
+      expect(onBack).toHaveBeenCalledTimes(1);
+
+      onSearchChange.mockClear();
+      field.focus();
+      await userEvent.keyboard("ct4{Escape}");
+      expect(onSearchChange).not.toHaveBeenCalled();
+      expect(onBack).toHaveBeenCalledTimes(1);
+    } finally {
+      field.remove();
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
   it("preserves other params when one control changes and falls back to saved defaults", async () => {
     api.getSummary.mockResolvedValue(summary());
     api.getAccounts.mockResolvedValue(accounts());
@@ -1039,7 +1198,7 @@ describe("query-connected usage dashboard", () => {
     const screen = await renderDashboard(
       queryClient,
       <UsageDashboard
-        search={{ provider: "codex" }}
+        search={{ metric: "cost" }}
         defaults={{ tab: "activity", range: "30d" }}
         onSearchChange={onSearchChange}
       />,
@@ -1048,9 +1207,7 @@ describe("query-connected usage dashboard", () => {
       await expect
         .element(page.getByRole("button", { name: "30 days" }))
         .toHaveAttribute("aria-pressed", "true");
-      expect(api.getSummary).toHaveBeenCalledWith(
-        expect.objectContaining({ range: "30d", provider: "codex" }),
-      );
+      expect(api.getSummary).toHaveBeenCalledWith(expect.objectContaining({ range: "30d" }));
       await page.getByRole("button", { name: "7 days" }).click();
       expect(onSearchChange).toHaveBeenCalledWith({ range: "7d" });
       await page.getByRole("tab", { name: "Limits" }).click();
@@ -1068,7 +1225,9 @@ describe("query-connected usage dashboard", () => {
     const screen = await renderDashboard(queryClient);
     try {
       await page.getByRole("button", { name: "Set price for cursor-agent" }).click();
-      await expect.element(page.getByLabelText("Model")).toHaveValue("cursor-agent");
+      await expect
+        .element(page.getByLabelText("Model", { exact: true }))
+        .toHaveValue("cursor-agent");
       await expect.element(page.getByRole("combobox", { name: /^Provider/ })).toHaveValue("cursor");
       await expect.element(page.getByLabelText("Input price")).toHaveFocus();
     } finally {
@@ -1089,6 +1248,7 @@ describe("query-connected usage dashboard", () => {
           cacheWriteUsdPerMillion: null,
         },
       ],
+      usageModelAliases: {},
     };
     api.getSummary.mockResolvedValue(summary());
     api.getAccounts.mockResolvedValue(accounts());

@@ -16,34 +16,54 @@ let storageAvailable = true;
 export const editorDraftRecoveryAvailable = () => storageAvailable;
 let database: Promise<IDBDatabase> | undefined;
 function db(): Promise<IDBDatabase> {
-  if (!database)
-    database = new Promise<IDBDatabase>((resolve, reject) => {
+  if (!database) {
+    const opening: Promise<IDBDatabase> = new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open("f5-editor-drafts", 1);
       request.onupgradeneeded = () => {
         const store = request.result.createObjectStore("drafts", { keyPath: "key" });
         store.createIndex("fileKey", "fileKey");
       };
-      request.onsuccess = () => resolve(request.result);
+      request.onsuccess = () => {
+        // The browser can close a connection itself, e.g. after evicting site
+        // storage. Concurrent callers then share one fresh connection.
+        request.result.onclose = () => {
+          if (database === opening) database = undefined;
+        };
+        resolve(request.result);
+      };
       request.onerror = () => reject(request.error);
       request.onblocked = () => reject(new Error("Draft storage is blocked by another window."));
     }).catch((error) => {
-      database = undefined;
+      if (database === opening) database = undefined;
       throw error;
     });
-  return database!;
+    database = opening;
+  }
+  return database;
 }
+
+const isClosingConnection = (error: unknown) =>
+  error instanceof DOMException && error.name === "InvalidStateError";
 
 async function transaction<T>(
   mode: IDBTransactionMode,
   work: (store: IDBObjectStore, complete: (value: T) => void) => void,
 ): Promise<T> {
-  const connection = await db();
+  const options = mode === "readwrite" ? { durability: "strict" as const } : undefined;
+  let connection = await db();
+  let tx: IDBTransaction;
+  try {
+    tx = connection.transaction("drafts", mode, options);
+  } catch (error) {
+    // The close event can arrive after a transaction already sees the closing handle.
+    if (!isClosingConnection(error)) throw error;
+    const stale = database;
+    if (stale && (await stale) === connection) database = undefined;
+    connection.close();
+    connection = await db();
+    tx = connection.transaction("drafts", mode, options);
+  }
   return new Promise((resolve, reject) => {
-    const tx = connection.transaction(
-      "drafts",
-      mode,
-      mode === "readwrite" ? { durability: "strict" } : undefined,
-    );
     let value: T;
     tx.oncomplete = () => resolve(value);
     tx.onerror = tx.onabort = () => reject(tx.error ?? new Error("Draft transaction failed."));

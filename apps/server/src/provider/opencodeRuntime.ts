@@ -78,7 +78,10 @@ export class OpenCodeRuntimeError extends Data.TaggedError(OPENCODE_RUNTIME_ERRO
 
 export function openCodeRuntimeErrorDetail(cause: unknown): string {
   if (OpenCodeRuntimeError.is(cause)) return cause.detail;
-  if (cause instanceof Error && cause.message.trim().length > 0) return cause.message.trim();
+  // Effect's TimeoutError can be constructed without a message, so `message`
+  // is not guaranteed to be a string on every Error that reaches here.
+  if (cause instanceof Error && typeof cause.message === "string" && cause.message.trim())
+    return cause.message.trim();
   if (cause && typeof cause === "object") {
     // SDK v2 throws { response, request, error? } shapes — extract what's useful
     const anyCause = cause as Record<string, unknown>;
@@ -216,10 +219,14 @@ export function toOpenCodeFileParts(input: {
     switch (attachment.type) {
       case "file":
       case "image": {
+        // OpenCode inlines only text/plain itself. Other text types (HTML, Markdown, CSV)
+        // reach the model API as raw file parts, which Anthropic and OpenAI reject, so they
+        // ride only as the file path in the attachment context.
+        const mimeType = attachment.mimeType.trim().toLowerCase();
         if (
           attachment.type === "file" &&
-          !attachment.mimeType.startsWith("text/") &&
-          attachment.mimeType !== "application/pdf"
+          mimeType !== "text/plain" &&
+          mimeType !== "application/pdf"
         )
           continue;
         const attachmentPath = input.resolveAttachmentPath(attachment);
@@ -672,9 +679,9 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
                   request instanceof Request
                     ? new Request(request, init)
                     : new Request(String(request), init);
-                return fetch(
-                  new Request(source, { signal: AbortSignal.any([source.signal, input.signal!]) }),
-                );
+                // Hand the signal to fetch itself. A Request built around it follows the signal
+                // only weakly, so a garbage collection mid-request would drop the abort.
+                return fetch(source, { signal: AbortSignal.any([source.signal, input.signal!]) });
               },
               { preconnect: fetch.preconnect },
             ),

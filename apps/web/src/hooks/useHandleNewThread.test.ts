@@ -5,6 +5,7 @@ import {
   ProjectId,
   ThreadId,
   ProviderInstanceId,
+  ProviderDriverKind,
 } from "@t3tools/contracts";
 
 import { useComposerDraftStore } from "../composerDraftStore";
@@ -95,7 +96,14 @@ describe("seedDraftThreadFromModelPreferences", () => {
         },
       })),
     });
-    seedDraftThreadFromModelPreferences(threadId, PROJECT_ID);
+    seedDraftThreadFromModelPreferences(threadId, PROJECT_ID, {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [ProviderInstanceId.make("claude-work")]: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+        },
+      },
+    });
     expect(useComposerDraftStore.getState().draftsByThreadId[threadId]).toMatchObject({
       provider: "claudeAgent",
       providerInstanceId: "claude-work",
@@ -278,4 +286,29 @@ describe("createProjectBackedDraftThread", () => {
     );
     expect(updateSettings).toHaveBeenCalledWith({ onboardingLiteStatus: "completed" });
   });
+});
+
+it("seeds an enabled project fallback instead of disabled remembered or project defaults", () => {
+  const threadId = ThreadId.makeUnsafe("disabled-project-default");
+  useModelPreferencesStore.setState({
+    lastProvider: "codex",
+    lastModelByProvider: { codex: "gpt-5" },
+    lastModelOptions: { codex: { fastMode: true } },
+  });
+  const settings = {
+    ...DEFAULT_SERVER_SETTINGS,
+    projectSettingsOverrides: {
+      [PROJECT_ID]: {
+        providerInstances: { [ProviderInstanceId.make("codex")]: { enabled: false } },
+      },
+    },
+  };
+  seedDraftThreadFromModelPreferences(threadId, PROJECT_ID, settings);
+  expect(useComposerDraftStore.getState().draftsByThreadId[threadId]).toMatchObject({
+    provider: "claudeAgent",
+    providerInstanceId: "claudeAgent",
+  });
+  expect(
+    useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelOptions?.codex,
+  ).toBeUndefined();
 });

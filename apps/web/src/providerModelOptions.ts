@@ -1,4 +1,6 @@
 import {
+  PI_THINKING_LEVELS,
+  type PiModelOptions,
   type ClaudeCodeEffort,
   type ClaudeModelOptions,
   type CodexModelOptions,
@@ -63,6 +65,7 @@ export function normalizeProviderModelOptions(
   const openCodeCandidate = readRecordField(candidate, "opencode");
   const grokCandidate = readRecordField(candidate, "grok");
   const museCandidate = readRecordField(candidate, "muse");
+  const piCandidate = readRecordField(candidate, "pi");
 
   const codexReasoningEffort =
     readCodexReasoningEffort(codexCandidate?.reasoningEffort) ??
@@ -142,7 +145,9 @@ export function normalizeProviderModelOptions(
     ? { reasoningEffort: museReasoningEffort }
     : undefined;
 
-  if (!codex && !claude && !cursor && !opencode && !grok && !muse) {
+  const thinking = PI_THINKING_LEVELS.find((level) => level === piCandidate?.thinking);
+  const pi: PiModelOptions | undefined = thinking ? { thinking } : undefined;
+  if (!codex && !claude && !cursor && !opencode && !grok && !muse && !pi) {
     return null;
   }
   return {
@@ -152,6 +157,7 @@ export function normalizeProviderModelOptions(
     ...(opencode ? { opencode } : {}),
     ...(grok ? { grok } : {}),
     ...(muse ? { muse } : {}),
+    ...(pi ? { pi } : {}),
   };
 }
 
@@ -214,6 +220,9 @@ export function providerSelectionsToModelOptions(
             : {}),
         },
       });
+    case "pi":
+      return normalizeProviderModelOptions({ pi: { thinking: stringValue("thinking") } });
+    case "acp":
     case "antigravity":
     case "grok":
       return null;
@@ -277,6 +286,10 @@ export function providerModelOptionsToSelections(
       pushString("reasoningEffort", museOptions.reasoningEffort);
       break;
     }
+    case "pi":
+      pushString("thinking", (providerOptions as PiModelOptions).thinking);
+      break;
+    case "acp":
     case "antigravity":
     case "grok":
       break;

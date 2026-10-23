@@ -30,7 +30,7 @@ import { threadFileChangeQueryOptions } from "~/lib/orchestrationReactQuery";
 import { checkpointDiffQueryOptions } from "~/lib/providerReactQuery";
 import { reviewPreviewDiffQueryOptions } from "~/lib/reviewReactQuery";
 import { cn } from "~/lib/utils";
-import { useAppSettings } from "../appSettings";
+import { type AppSettings, updateAppSettings, useAppSettingsSelector } from "../appSettings";
 import { readNativeApi } from "../nativeApi";
 import { resolvePathLinkTarget } from "../terminal-links";
 import { clearTurnDiffSearchParams, parseDiffRouteSearch } from "../diffRouteSearch";
@@ -55,7 +55,10 @@ import {
   isChangedFileExpandedByDefault,
   resolveChangedFilesPresentation,
 } from "./chat/changedFilesPresentation";
+import { compareFilePaths } from "../lib/filePathCollator";
 import { changedLineCount } from "../lib/turnDiffTree";
+import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 
 type DiffThemeType = "light" | "dark";
 
@@ -71,10 +74,22 @@ export {
   resolveFileDiffPath,
 } from "../lib/diffPatch";
 
+function selectDiffPanelSettings(settings: AppSettings) {
+  return {
+    diffFileDefaultState: settings.diffFileDefaultState,
+    diffIgnoreWhitespace: settings.diffIgnoreWhitespace,
+    diffRenderMode: settings.diffRenderMode,
+    diffWordWrap: settings.diffWordWrap,
+    gitStatusAutoRefreshIntervalSeconds: settings.gitStatusAutoRefreshIntervalSeconds,
+    timestampFormat: settings.timestampFormat,
+  };
+}
+
 export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
   const navigate = useNavigate();
   const { resolvedTheme } = useTheme();
-  const { settings, updateSettings } = useAppSettings();
+  const settings = useAppSettingsSelector(selectDiffPanelSettings);
+  const updateSettings = updateAppSettings;
   const diffRenderMode = settings.diffRenderMode;
   const [collapsedFileOverrides, setCollapsedFileOverrides] = useState<
     Readonly<Record<string, boolean>>
@@ -96,17 +111,18 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
   const activeProject = useStore((store) =>
     activeProjectId ? store.projects.find((project) => project.id === activeProjectId) : undefined,
   );
-  const activeCwd = activeThread?.worktreePath ?? activeProject?.cwd;
+  const activeCwd = threadWorkspaceCwd(activeThread, activeProject);
   const gitAutoRefreshIntervalMs = settings.gitStatusAutoRefreshIntervalSeconds * 1000;
   const gitAutoRefreshEnabled = settings.gitStatusAutoRefreshIntervalSeconds > 0;
+  const scratch = isScratchProject(activeProject);
   const gitBranchesQuery = useQuery(
     gitBranchesQueryOptions({
-      cwd: activeCwd ?? null,
+      cwd: scratch ? null : (activeCwd ?? null),
       autoRefresh: gitAutoRefreshEnabled,
       refetchIntervalMs: gitAutoRefreshIntervalMs,
     }),
   );
-  const isGitRepo = gitBranchesQuery.data?.isRepo ?? true;
+  const isGitRepo = !scratch && (gitBranchesQuery.data?.isRepo ?? true);
   const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
     useTurnDiffSummaries(activeThread);
   const orderedTurnDiffSummaries = useMemo(
@@ -254,10 +270,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
       return [];
     }
     return renderablePatch.files.toSorted((left, right) =>
-      resolveFileDiffPath(left).localeCompare(resolveFileDiffPath(right), undefined, {
-        numeric: true,
-        sensitivity: "base",
-      }),
+      compareFilePaths(resolveFileDiffPath(left), resolveFileDiffPath(right)),
     );
   }, [renderablePatch]);
   const diffLogicalScope = useMemo(() => {

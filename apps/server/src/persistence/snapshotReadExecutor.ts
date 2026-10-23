@@ -64,7 +64,9 @@ export const makeLeasedSqlClient = (client: SqlClient.SqlClient, cooperative = f
     acquirer: acquire,
     transactionAcquirer: acquire,
     compiler: Statement.makeCompilerSqlite(),
-    beginTransaction: "BEGIN DEFERRED",
+    // Writers take the write lock up front so a transaction never fails upgrading
+    // from a read lock; query-only readers share snapshots.
+    beginTransaction: cooperative ? "BEGIN DEFERRED" : "BEGIN IMMEDIATE",
     spanAttributes: [["db.system.name", "sqlite"]],
   }).pipe(Effect.provide(Reactivity.layer));
 };

@@ -1,3 +1,4 @@
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
@@ -25,6 +26,18 @@ export const callRpc = <A>(
     ),
   );
 
+/** Notifications have no reply. Isolate each handler, while preserving owner cancellation. */
+export const isolateNotificationHandler = <E, R>(handler: () => Effect.Effect<void, E, R>) =>
+  Effect.suspend(handler).pipe(
+    Effect.catchCause((cause) =>
+      Cause.hasInterrupts(cause)
+        ? Effect.interrupt
+        : Cause.hasDies(cause)
+          ? Effect.logError("ACP notification handler failed", cause)
+          : Effect.void,
+    ),
+  );
+
 export const runHandler = Effect.fnUntraced(function* <A, B>(
   handler: ((payload: A) => Effect.Effect<B, AcpError.AcpError>) | undefined,
   payload: A,
@@ -33,12 +46,18 @@ export const runHandler = Effect.fnUntraced(function* <A, B>(
   if (!handler) {
     return yield* Effect.fail(AcpError.AcpRequestError.methodNotFound(method).toProtocolError());
   }
-  return yield* handler(payload).pipe(
+  return yield* Effect.suspend(() => handler(payload)).pipe(
     Effect.mapError((error) =>
       Schema.is(AcpError.AcpRequestError)(error)
         ? error.toProtocolError()
         : AcpError.AcpRequestError.internalError(error.message).toProtocolError(),
     ),
+    Effect.catchCause((cause) => {
+      if (!Cause.hasDies(cause) || Cause.hasInterrupts(cause)) return Effect.failCause(cause);
+      return Effect.logError(`ACP request handler failed for '${method}'`, cause).pipe(
+        Effect.andThen(Effect.fail(AcpError.AcpRequestError.internalError().toProtocolError())),
+      );
+    }),
   );
 });
 

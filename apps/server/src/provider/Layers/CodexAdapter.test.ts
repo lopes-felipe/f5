@@ -649,6 +649,15 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       return sessionErrorManager.sendTurnImpl.mock.calls[0]?.[0];
     });
 
+  it.effect("adds app context to native turn input without changing the user's input", () =>
+    Effect.gen(function* () {
+      const context = '\n<untrusted_mcp_app_state>{"city":"Berlin"}</untrusted_mcp_app_state>';
+      const request = yield* sendSelectionTurn({ mcpAppContext: context });
+      assert.equal(request?.input, `hello${context}`);
+      assert.equal(request?.threadId, asThreadId("sess-missing"));
+    }),
+  );
+
   it.effect("reads effort and fast mode from a selection bound to this instance", () =>
     Effect.gen(function* () {
       const request = yield* sendSelectionTurn({

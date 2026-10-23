@@ -7,9 +7,14 @@ import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 
-it.each(["node", "bun"])(
-  "%s waits for a separate SQLite writer",
-  async (runtime) => {
+it.each([
+  ["node", "insert"],
+  ["bun", "insert"],
+  ["node", "transaction"],
+  ["bun", "transaction"],
+] as const)(
+  "%s waits for a separate SQLite writer (%s)",
+  async (runtime, operation) => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "f5-sqlite-busy-"));
     const filename = path.join(directory, "state.sqlite");
     const child = spawn(
@@ -18,6 +23,7 @@ it.each(["node", "bun"])(
         ...(runtime === "node" ? ["--experimental-strip-types"] : []),
         fileURLToPath(new URL("./fixtures/sqliteBusyWriter.ts", import.meta.url)),
         filename,
+        operation,
       ],
       { stdio: ["pipe", "pipe", "pipe"] },
     );
@@ -48,6 +54,7 @@ it.each(["node", "bun"])(
       const [code] = await exited;
       expect(code, errors).toBe(0);
       expect(output).toContain("written:");
+      if (operation === "transaction") expect(output).toContain("read:1");
       const elapsed = Number(/written:([0-9.]+)/.exec(output)?.[1]);
       expect(elapsed).toBeGreaterThanOrEqual(200);
       expect(database.prepare("SELECT value FROM contention_test ORDER BY rowid").all()).toEqual([

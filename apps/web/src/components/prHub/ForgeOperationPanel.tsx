@@ -1,3 +1,4 @@
+import { toastManager } from "../ui/toast";
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Schema from "effect/Schema";
@@ -12,11 +13,13 @@ export function ForgeOperationPanel({
   payload,
   label,
   onSucceeded,
+  onPendingChange,
 }: {
   pr: TrackedPullRequest;
   payload: ForgeMutationPayload;
   label: string;
   onSucceeded?: (() => void) | undefined;
+  onPendingChange?: ((pending: boolean) => void) | undefined;
 }) {
   const client = useQueryClient();
   const generation = getPrHubAccountGeneration();
@@ -46,6 +49,10 @@ export function ForgeOperationPanel({
     }
   }, [query.data, setOperationId]);
   const active = operation && ["prepared", "running", "outcome_unknown"].includes(operation.status);
+  useEffect(() => {
+    onPendingChange?.(!!active || busy);
+  }, [active, busy, onPendingChange]);
+  useEffect(() => () => onPendingChange?.(false), [onPendingChange]);
   async function run(action: () => Promise<ForgeOperation>, id = operationId) {
     setBusy(true);
     setError(null);
@@ -54,6 +61,8 @@ export function ForgeOperationPanel({
       setOperation(value);
       client.setQueryData(["prHub", "forgeOperation", generation, pr.key, label, id], value);
       if (value.status === "succeeded") {
+        if (value.warning)
+          toastManager.add({ type: "info", title: "Branch cleanup", description: value.warning });
         onSucceeded?.();
         await client.invalidateQueries({ queryKey: ["prHub"] });
       }
@@ -67,6 +76,8 @@ export function ForgeOperationPanel({
   return (
     <div className="space-y-2">
       {error || query.error ? <p role="alert">{error ?? query.error?.message}</p> : null}
+      {operation?.warning ? <p role="status">{operation.warning}</p> : null}
+      {!active && operation?.error ? <p role="alert">{operation.error}</p> : null}
       {active ? (
         <>
           <p role="status">Saved operation: {operation.status.replaceAll("_", " ")}</p>

@@ -14,7 +14,7 @@ import {
   makeRuntimeSqliteLayer,
   makeSqlitePersistenceLive,
 } from "../Layers/Sqlite.ts";
-import { MIGRATIONS } from "../Migrations.ts";
+import { LATEST_MIGRATION_ID, MIGRATIONS } from "../Migrations.ts";
 import { ProviderTerminalEventRepository } from "../Services/ProviderTerminalEvents.ts";
 import createLegacyReceipts from "./074_ProviderTerminalEvents.ts";
 import addRetry from "./124_ProviderTerminalRetry.ts";
@@ -63,7 +63,7 @@ it("upgrades an existing file database and reopens it with the preceding migrati
           const applied = yield* sql<{
             id: number;
           }>`SELECT migration_id AS id FROM effect_sql_migrations ORDER BY migration_id DESC LIMIT 1`;
-          assert.isAtLeast(applied[0]?.id ?? 0, 126);
+          assert.equal(applied[0]?.id, LATEST_MIGRATION_ID);
           const indexes = yield* sql<{
             name: string;
             sql: string;

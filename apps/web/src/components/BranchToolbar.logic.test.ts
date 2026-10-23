@@ -6,9 +6,31 @@ import {
   resolveBranchSelectionTarget,
   resolveDraftEnvModeAfterBranchChange,
   resolveBranchToolbarValue,
+  resolveEffectiveEnvMode,
   shouldIncludeBranchPickerItem,
   sanitizeNewRefName,
 } from "./BranchToolbar.logic";
+
+describe("resolveEffectiveEnvMode", () => {
+  it("reads a server thread still creating its worktree as a new worktree", () => {
+    const thread = {
+      activeWorktreePath: null,
+      hasServerThread: true,
+      draftThreadEnvMode: undefined,
+    };
+    expect(resolveEffectiveEnvMode(thread)).toBe("local");
+    expect(resolveEffectiveEnvMode({ ...thread, preparingWorktree: true })).toBe("worktree");
+    expect(
+      resolveEffectiveEnvMode({ ...thread, activeWorktreePath: "/repo/.t3/worktrees/a" }),
+    ).toBe("worktree");
+  });
+
+  it("keeps the draft's own choice before the server thread exists", () => {
+    const draft = { activeWorktreePath: null, hasServerThread: false };
+    expect(resolveEffectiveEnvMode({ ...draft, draftThreadEnvMode: "worktree" })).toBe("worktree");
+    expect(resolveEffectiveEnvMode({ ...draft, draftThreadEnvMode: "local" })).toBe("local");
+  });
+});
 
 describe("resolveDraftEnvModeAfterBranchChange", () => {
   it("switches to local mode when returning from an existing worktree to the main worktree", () => {
