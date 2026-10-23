@@ -56,8 +56,8 @@ If you want full control instead of hashing, set `F5_PORT_OFFSET` to a numeric o
 ## Upstream port ledger
 
 Upstream t3code tracking lives in ledger v7 under `upstream/`, declared by the
-`upstream` block in `f5.json`. F5's Upstream page will be the only writer of the
-ledger-state files.
+`upstream` block in `f5.json`. F5's Upstream page is the only writer of the
+ledger-state files; see [Upstream ports](user/upstream-ports.md) for the workflow.
 
 ```
 upstream/
@@ -108,8 +108,8 @@ no backslashes or trailing slash) so it matches the plain paths Git reports.
 Trailers on the checked commits that name unknown topics, or epochs above the ledger's,
 are warnings, because a port PR may merge before its ledger PR.
 
-Coverage refresh is paused until the F5 Upstream page ships. Do not hand-edit `upstream/intervals`,
-`upstream/legacy`, `upstream/topics` or `upstream/archive`; `policy.md` and `rules.json` are
+Do not hand-edit `upstream/intervals`, `upstream/legacy`, `upstream/topics` or
+`upstream/archive`; the Upstream page writes them. `policy.md` and `rules.json` are
 human-edited.
 
 ### Migrating from schema 6

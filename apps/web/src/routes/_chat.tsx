@@ -14,6 +14,7 @@ import { lazy, Suspense, useEffect, useLayoutEffect, useState, type CSSPropertie
 import { CommandPalette } from "../components/CommandPalette";
 import ThreadStatusNotificationController from "../components/ThreadStatusNotificationController";
 import PrAttentionNotificationController from "../components/prHub/PrAttentionNotificationController";
+import UpstreamNotificationController from "../components/upstream/UpstreamNotificationController";
 import { PreviewBrowserHost } from "../components/PreviewBrowserHost";
 import { ComputerUseBanner } from "../components/ComputerUseBanner";
 import ModelRecencyController from "../components/ModelRecencyController";
@@ -148,6 +149,7 @@ function ChatRouteLayout() {
         <LegacyPinnedThreadsMigrationController />
         <SnoozedThreadWakeController />
         <PrAttentionNotificationController />
+        <UpstreamNotificationController />
         <PreviewBrowserHost>
           <Outlet />
         </PreviewBrowserHost>

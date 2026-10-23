@@ -27,6 +27,24 @@ export const MODEL_PICKER_KEYBINDING_COMMANDS = [
 ] as const;
 export type ModelPickerKeybindingCommand = (typeof MODEL_PICKER_KEYBINDING_COMMANDS)[number];
 
+/** Upstream page list commands, in the order of their default keys. */
+export const UPSTREAM_KEYBINDING_COMMANDS = [
+  "upstream.next",
+  "upstream.previous",
+  "upstream.toggleSelect",
+  "upstream.selectAll",
+  "upstream.acceptSuggestion",
+  "upstream.port",
+  "upstream.skip",
+  "upstream.watch",
+  "upstream.decline",
+  "upstream.reopen",
+  "upstream.openDetail",
+  "upstream.openUpstreamPr",
+  "upstream.startPort",
+] as const;
+export type UpstreamKeybindingCommand = (typeof UPSTREAM_KEYBINDING_COMMANDS)[number];
+
 export const STATIC_KEYBINDING_COMMANDS = [
   "thread.stop",
   "thread.togglePin",
@@ -52,6 +70,7 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "modelPicker.previousProvider",
   "modelPicker.nextProvider",
   "prHub.copyNumber",
+  ...UPSTREAM_KEYBINDING_COMMANDS,
   "sidebar.toggle",
   "terminal.toggle",
   "terminal.split",

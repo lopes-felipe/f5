@@ -148,6 +148,71 @@ See the full schema for more details: [`packages/contracts/src/keybindings.ts`](
     "key": "mod+enter",
     "command": "chat.newBackground",
     "when": "newThreadComposer && !dialogFocus"
+  },
+  {
+    "key": "j",
+    "command": "upstream.next",
+    "when": "upstreamListFocus && !editableFocus && !dialogFocus"
+  },
+  {
+    "key": "k",
+    "command": "upstream.previous",
+    "when": "upstreamListFocus && !editableFocus && !dialogFocus"
+  },
+  {
+    "key": "x",
+    "command": "upstream.toggleSelect",
+    "when": "upstreamListFocus && !editableFocus && !dialogFocus"
+  },
+  {
+    "key": "shift+a",
+    "command": "upstream.selectAll",
+    "when": "upstreamListFocus && !editableFocus && !dialogFocus"
+  },
+  {
+    "key": "a",
+    "command": "upstream.acceptSuggestion",
+    "when": "upstreamListFocus && !editableFocus && !dialogFocus"
+  },
+  {
+    "key": "p",
+    "command": "upstream.port",
+    "when": "upstreamListFocus && !editableFocus && !dialogFocus"
+  },
+  {
+    "key": "s",
+    "command": "upstream.skip",
+    "when": "upstreamListFocus && !editableFocus && !dialogFocus"
+  },
+  {
+    "key": "w",
+    "command": "upstream.watch",
+    "when": "upstreamListFocus && !editableFocus && !dialogFocus"
+  },
+  {
+    "key": "d",
+    "command": "upstream.decline",
+    "when": "upstreamListFocus && !editableFocus && !dialogFocus"
+  },
+  {
+    "key": "u",
+    "command": "upstream.reopen",
+    "when": "upstreamListFocus && !editableFocus && !dialogFocus"
+  },
+  {
+    "key": "enter",
+    "command": "upstream.openDetail",
+    "when": "upstreamListFocus && !editableFocus && !dialogFocus"
+  },
+  {
+    "key": "o",
+    "command": "upstream.openUpstreamPr",
+    "when": "upstreamListFocus && !editableFocus && !dialogFocus"
+  },
+  {
+    "key": "shift+p",
+    "command": "upstream.startPort",
+    "when": "upstreamListFocus && !editableFocus && !dialogFocus"
   }
 ]
 ```
@@ -189,6 +254,7 @@ Invalid rules are ignored. Invalid config files are ignored. Warnings are logged
 - `palette.files`: open the command palette in project-file mode
 - `projectContentSearch.toggle`: open the command palette in project-content mode
 - `script.{id}.run`: run a project script by id (for example `script.test.run`)
+- `upstream.*`: Upstream page list commands; see [Upstream page](#upstream-page)
 
 ### Key Syntax
 
@@ -215,6 +281,8 @@ Currently available context keys:
 - `terminalOpen`
 - `composerFocus`
 - `dialogFocus`
+- `editableFocus` (an input, textarea or editable element has focus)
+- `upstreamListFocus` (the Upstream page topic list has focus)
 
 Supported operators:
 
@@ -236,3 +304,25 @@ Unknown condition keys evaluate to `false`.
 - Rules are evaluated in array order.
 - For a key event, the last rule where both `key` matches and `when` evaluates to `true` wins.
 - That means precedence is across commands, not only within the same command.
+
+## Upstream page
+
+These single-key shortcuts work while the Upstream topic list has focus and no text field or
+dialog does. Decisions apply to the selected topics, or to the focused topic when none are
+selected, and focus moves to the next row.
+
+| Key       | Command                     | Action                                                     |
+| --------- | --------------------------- | ---------------------------------------------------------- |
+| `j`       | `upstream.next`             | Next topic                                                 |
+| `k`       | `upstream.previous`         | Previous topic                                             |
+| `x`       | `upstream.toggleSelect`     | Select or unselect the focused topic                       |
+| `Shift+a` | `upstream.selectAll`        | Select or clear all loaded topics                          |
+| `a`       | `upstream.acceptSuggestion` | Accept each selected topic's triage suggestion             |
+| `p`       | `upstream.port`             | Mark for porting                                           |
+| `s`       | `upstream.skip`             | Skip, with the reason menu preselected from the suggestion |
+| `w`       | `upstream.watch`            | Watch for 30 days                                          |
+| `d`       | `upstream.decline`          | Decline with a reason                                      |
+| `u`       | `upstream.reopen`           | Move back to Inbox                                         |
+| `Enter`   | `upstream.openDetail`       | Move focus to the detail pane                              |
+| `o`       | `upstream.openUpstreamPr`   | Open the first upstream PR                                 |
+| `Shift+p` | `upstream.startPort`        | Open Start port for Ready topics                           |

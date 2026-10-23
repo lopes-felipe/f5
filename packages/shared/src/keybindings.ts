@@ -7,6 +7,7 @@ import {
   MODEL_PICKER_JUMP_KEYBINDING_COMMANDS,
   type ResolvedKeybindingRule,
   type ResolvedKeybindingsConfig,
+  UPSTREAM_KEYBINDING_COMMANDS,
 } from "@t3tools/contracts";
 
 type WhenToken =
@@ -16,6 +17,25 @@ type WhenToken =
   | { type: "or" }
   | { type: "lparen" }
   | { type: "rparen" };
+
+/** Upstream page list shortcuts; the list container provides `upstreamListFocus`. */
+const UPSTREAM_LIST_WHEN = "upstreamListFocus && !editableFocus && !dialogFocus";
+/** Default keys for `UPSTREAM_KEYBINDING_COMMANDS`, index for index. */
+const UPSTREAM_DEFAULT_KEYS = [
+  "j",
+  "k",
+  "x",
+  "shift+a",
+  "a",
+  "p",
+  "s",
+  "w",
+  "d",
+  "u",
+  "enter",
+  "o",
+  "shift+p",
+] as const satisfies { readonly length: (typeof UPSTREAM_KEYBINDING_COMMANDS)["length"] };
 
 export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+t", command: "rightPanel.tabMenu", when: "!terminalFocus && !dialogFocus" },
@@ -132,6 +152,11 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "3", command: "usage.period.month", when: "usagePageOpen" },
   { key: "4", command: "usage.period.quarter", when: "usagePageOpen" },
   { key: "mod+enter", command: "chat.newBackground", when: "newThreadComposer && !dialogFocus" },
+  ...UPSTREAM_KEYBINDING_COMMANDS.map((command, index) => ({
+    key: UPSTREAM_DEFAULT_KEYS[index]!,
+    command,
+    when: UPSTREAM_LIST_WHEN,
+  })),
 ];
 
 export const OBSOLETE_DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [

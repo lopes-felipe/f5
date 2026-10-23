@@ -208,6 +208,32 @@ export function formatKeybindingCommandLabel(
       return "Next provider";
     case "prHub.copyNumber":
       return "Copy PR number";
+    case "upstream.next":
+      return "Next upstream topic";
+    case "upstream.previous":
+      return "Previous upstream topic";
+    case "upstream.toggleSelect":
+      return "Select upstream topic";
+    case "upstream.selectAll":
+      return "Select all upstream topics";
+    case "upstream.acceptSuggestion":
+      return "Accept triage suggestion";
+    case "upstream.port":
+      return "Mark topic to port";
+    case "upstream.skip":
+      return "Skip topic";
+    case "upstream.watch":
+      return "Watch topic";
+    case "upstream.decline":
+      return "Decline topic";
+    case "upstream.reopen":
+      return "Reopen topic";
+    case "upstream.openDetail":
+      return "Open topic details";
+    case "upstream.openUpstreamPr":
+      return "Open upstream PR";
+    case "upstream.startPort":
+      return "Start port";
 
     case "sidebar.toggle":
       return "Toggle main sidebar";

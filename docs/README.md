@@ -17,6 +17,7 @@ packaged release may lag behind them.
 | [Usage and limits](user/usage-limits.md)                                     | Recorded activity, account limits and cost                             |
 | [Project settings](user/project-settings.md)                                 | Per-project overrides and checked-in defaults                          |
 | [PR Hub and forges](user/pr-hub-forges.md)                                   | Pull requests from GitHub, GitLab, Bitbucket, Azure DevOps and Forgejo |
+| [Upstream ports](user/upstream-ports.md)                                     | Triage and port changes from the repository you forked                 |
 | [Preview browser](user/preview-browser.md)                                   | Browser profiles, cookie import and SnapShot                           |
 | [Agent browser and computer use](user/agent-browser-and-computer-use.md)     | Let agents drive the preview browser and macOS apps                    |
 | [Standalone CLI](user/standalone-cli.md)                                     | Run F5 as a server without the desktop app                             |
