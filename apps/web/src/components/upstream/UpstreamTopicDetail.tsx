@@ -21,6 +21,7 @@ import { Textarea } from "../ui/textarea";
 import { UpstreamActionButton } from "./UpstreamActionButton";
 import { UpstreamChangedFiles, UpstreamTopicHistory } from "./UpstreamTopicExtras";
 import {
+  canAcceptSuggestion,
   equivalentFromLink,
   formatConfidence,
   suggestionBadgeVariant,
@@ -62,7 +63,7 @@ export function UpstreamTopicDetail(props: {
   readonly onStartPort: () => void;
   readonly onCopyPrompt: () => void;
   readonly onUnlink: (link: UpstreamPortLinkSummary) => void;
-  readonly onOpenTopic: (topicId: string, state: UpstreamTopicState | null) => void;
+  readonly onOpenTopic: (topicId: string, state: UpstreamTopicState) => void;
 }) {
   const navigate = useNavigate();
   const query = useQuery(upstreamTopicQueryOptions(props.projectId, props.topicId));
@@ -83,11 +84,12 @@ export function UpstreamTopicDetail(props: {
     );
   const { topic, state } = detail.row;
   const suggestion = topic.suggestion;
-  const disabled = props.readOnly || props.busy || props.pending;
+  // Decisions only wait for this topic; runs and Start port hold `busy`, which gates starting a port.
+  const disabled = props.readOnly || props.pending;
   const trimmedScope = scope.trim();
   const portDecision: UpstreamDecision = { kind: "port", ...(trimmedScope ? { scope: trimmedScope } : {}) };
   const portable = state === "ready" || state === "in-progress";
-  const acceptable = suggestion && !suggestion.triageError && !(suggestion.status === "skip" && !suggestion.reasonKey);
+  const acceptable = canAcceptSuggestion(suggestion);
   return (
     <article className="space-y-4 p-4 text-sm" aria-label={topic.title}>
       <header className="space-y-1.5">
@@ -270,7 +272,13 @@ export function UpstreamTopicDetail(props: {
         )}
         {portable && (
           <div className="flex flex-wrap gap-1.5">
-            <UpstreamActionButton size="sm" label="Start port…" command="upstream.startPort" disabled={disabled} onClick={props.onStartPort} />
+            <UpstreamActionButton
+              size="sm"
+              label="Start port…"
+              command="upstream.startPort"
+              disabled={disabled || props.busy}
+              onClick={props.onStartPort}
+            />
             <Button size="sm" variant="outline" disabled={props.busy} onClick={props.onCopyPrompt}>
               Copy port prompt
             </Button>
@@ -362,20 +370,33 @@ export function UpstreamTopicDetail(props: {
         <section className="space-y-1">
           <h3 className="font-medium">Related topics</h3>
           <ul className="space-y-0.5 text-xs">
-            {detail.related.map((related) => (
-              <li key={related.id}>
-                <button
-                  type="button"
-                  className="text-left hover:underline"
-                  onClick={() => props.onOpenTopic(related.id, related.state)}
-                >
+            {detail.related.map((related) => {
+              const state = related.state;
+              const label = (
+                <>
                   <span className="font-mono">{related.id}</span> {related.title}
-                </button>{" "}
+                </>
+              );
+              return (
+              <li key={related.id}>
+                {state ? (
+                  <button
+                    type="button"
+                    className="text-left hover:underline"
+                    onClick={() => props.onOpenTopic(related.id, state)}
+                  >
+                    {label}
+                  </button>
+                ) : (
+                  // Not in the ledger view (yet), so there is no list to open it in.
+                  <span>{label}</span>
+                )}{" "}
                 <span className="text-muted-foreground">
-                  ({related.state ? UPSTREAM_STATE_LABELS[related.state] : "unknown"})
+                  ({state ? UPSTREAM_STATE_LABELS[state] : "unknown"})
                 </span>
               </li>
-            ))}
+              );
+            })}
           </ul>
         </section>
       )}
