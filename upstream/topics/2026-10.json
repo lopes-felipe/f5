@@ -54074,9 +54074,11 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-26T18:29:57.754Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-8992",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "server",
@@ -54236,12 +54238,14 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-26T18:30:04.716Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-9078",
       "relatedTopics": [
         "pr-12173"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
