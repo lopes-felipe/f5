@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { DesktopBridge } from "@t3tools/contracts";
+import { createFileActionGesture } from "./fileActionGesture";
 
 const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
 const CONFIRM_CHANNEL = "desktop:confirm";
@@ -59,11 +60,14 @@ const systemLocale = argument("f5-system-locale");
 
 // The isolated preload observes actual DOM gestures; renderer-supplied booleans are ignored.
 let computerGestureAt = -Infinity;
+const takeFileActionGesture = createFileActionGesture(window);
 for (const eventName of ["click", "keydown"] as const) {
   window.addEventListener(
     eventName,
     (event) => {
-      if (event.isTrusted) computerGestureAt = performance.now();
+      if (event.isTrusted) {
+        computerGestureAt = performance.now();
+      }
     },
     true,
   );
@@ -131,11 +135,25 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   pickFolder: () => ipcRenderer.invoke(PICK_FOLDER_CHANNEL),
   confirm: (message) => ipcRenderer.invoke(CONFIRM_CHANNEL, message),
   setTheme: (theme) => ipcRenderer.invoke(SET_THEME_CHANNEL, theme),
-  showContextMenu: (items, position) => ipcRenderer.invoke(CONTEXT_MENU_CHANNEL, items, position),
+  showContextMenu: (items, position, fileAction) =>
+    ipcRenderer.invoke(CONTEXT_MENU_CHANNEL, items, position, fileAction),
   readClipboardText: (source) => ipcRenderer.invoke(READ_CLIPBOARD_TEXT_CHANNEL, source),
   copyImage: (pngBytes) => ipcRenderer.invoke(COPY_IMAGE_CHANNEL, pngBytes),
   downloadImage: (bytes, filename) => ipcRenderer.invoke(DOWNLOAD_IMAGE_CHANNEL, bytes, filename),
   openExternal: (url: string) => ipcRenderer.invoke(OPEN_EXTERNAL_CHANNEL, url),
+  prepareEditorOpen: (targetPath?: string) =>
+    ipcRenderer.invoke("desktop:prepare-editor-open", targetPath, takeFileActionGesture()),
+  releaseEditorOpen: (authorization: string) =>
+    ipcRenderer.invoke("desktop:release-editor-open", authorization),
+  openInVSCode: (targetPath: string, authorization?: string) =>
+    ipcRenderer.invoke(
+      "desktop:open-in-vscode",
+      targetPath,
+      takeFileActionGesture(),
+      authorization,
+    ),
+  revealFile: (filePath: string) =>
+    ipcRenderer.invoke("desktop:reveal-file", filePath, takeFileActionGesture()),
   openThreadInNewWindow: (threadId: string) =>
     ipcRenderer.invoke(OPEN_THREAD_WINDOW_CHANNEL, threadId),
   onMenuAction: (listener) => {

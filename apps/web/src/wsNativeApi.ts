@@ -713,8 +713,12 @@ export function createWsNativeApi(): NativeApi {
       browse: requestMethod(WS_METHODS.filesystemBrowse),
     },
     shell: {
-      openInEditor: (cwd, editor) =>
-        transport.request(WS_METHODS.shellOpenInEditor, { cwd, editor }),
+      openInEditor: (cwd, editor, authorization) =>
+        editor === "vscode" && window.desktopBridge?.openInVSCode
+          ? authorization
+            ? window.desktopBridge.openInVSCode(cwd, authorization)
+            : window.desktopBridge.openInVSCode(cwd)
+          : transport.request(WS_METHODS.shellOpenInEditor, { cwd, editor }),
       revealInFileManager: requestMethod(WS_METHODS.shellRevealInFileManager),
       openExternal: async (url) => {
         if (window.desktopBridge) {
@@ -766,9 +770,14 @@ export function createWsNativeApi(): NativeApi {
       show: async <T extends string>(
         items: readonly ContextMenuItem<T>[],
         position?: { x: number; y: number },
+        fileAction?: { editorTarget: string },
       ): Promise<T | null> => {
         if (window.desktopBridge) {
-          return window.desktopBridge.showContextMenu(items, position) as Promise<T | null>;
+          return (
+            fileAction
+              ? window.desktopBridge.showContextMenu(items, position, fileAction)
+              : window.desktopBridge.showContextMenu(items, position)
+          ) as Promise<T | null>;
         }
         return showContextMenuFallback(items, position);
       },

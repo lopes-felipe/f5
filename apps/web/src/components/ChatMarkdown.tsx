@@ -27,7 +27,7 @@ import type { Components } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useDiffWordWrap } from "../appSettings";
-import { openInPreferredEditor } from "../editorPreferences";
+import { openFileInEditor } from "../lib/openFileInEditor";
 import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
 import { fnv1a32 } from "../lib/diffRendering";
 import { LRUCache } from "../lib/lruCache";
@@ -49,7 +49,6 @@ import {
   resolveMarkdownFileLinkMeta,
   type MarkdownFileLinkMeta,
 } from "../markdown-links";
-import { readNativeApi } from "../nativeApi";
 import { inferEntryKindFromPath } from "../vscode-icons";
 import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
@@ -588,12 +587,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
           if (handleFileNavigationRef.current(meta.targetPath)) {
             return;
           }
-          const api = readNativeApi();
-          if (api) {
-            void openInPreferredEditor(api, meta.targetPath);
-          } else {
-            console.warn("Native API not found. Unable to open file in editor.");
-          }
+          void openFileInEditor(meta.targetPath);
         };
 
         const chip = (

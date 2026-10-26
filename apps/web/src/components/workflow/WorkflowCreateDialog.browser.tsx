@@ -299,6 +299,12 @@ async function seedModelPreferences(state: {
   await useModelPreferencesStore.persist.rehydrate();
 }
 
+async function typeRequirementPrompt(text: string): Promise<void> {
+  // Exercise Lexical's input events instead of racing its controlled draft with fill().
+  await page.getByTestId("composer-editor").click();
+  await userEvent.keyboard(text);
+}
+
 function createWorkflowButton(): HTMLButtonElement {
   const button = Array.from(document.querySelectorAll("button")).find((element) =>
     element.textContent?.trim().startsWith("Start workflow"),
@@ -615,7 +621,7 @@ describe("WorkflowCreateDialog", () => {
       await vi.waitFor(() => {
         expect(findProviderFieldButton("Author B").textContent ?? "").toContain("Fable 5");
       });
-      await page.getByTestId("composer-editor").fill("Plan the gated workflow");
+      await typeRequirementPrompt("Plan the gated workflow");
       await page.getByRole("button", { name: /Start workflow/ }).click();
       await vi.waitFor(() => {
         expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1);
@@ -657,7 +663,7 @@ describe("WorkflowCreateDialog", () => {
       await vi.waitFor(() => {
         expect(findProviderFieldButton("Author B").textContent ?? "").toContain("Opus 5");
       });
-      await page.getByTestId("composer-editor").fill("Plan the Opus workflow");
+      await typeRequirementPrompt("Plan the Opus workflow");
       await page.getByRole("button", { name: /Start workflow/ }).click();
       await vi.waitFor(() => {
         expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1);
@@ -697,7 +703,7 @@ describe("WorkflowCreateDialog", () => {
       },
     );
     try {
-      await page.getByTestId("composer-editor").fill("Plan Fable support");
+      await typeRequirementPrompt("Plan Fable support");
       await page.getByRole("button", { name: /Start workflow/ }).click();
       await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));
       expect(nativeApiMocks.createWorkflow.mock.calls[0]?.[0].branchB).toEqual({
@@ -836,7 +842,7 @@ describe("WorkflowCreateDialog", () => {
       ).toBe(false);
       expect(createWorkflowButton().disabled).toBe(true);
 
-      await page.getByTestId("composer-editor").fill("Plan the new workflow behavior");
+      await typeRequirementPrompt("Plan the new workflow behavior");
 
       await vi.waitFor(() => {
         expect(createWorkflowButton().disabled).toBe(false);
@@ -869,7 +875,7 @@ describe("WorkflowCreateDialog", () => {
     };
     try {
       await page.getByRole("button", { name: "Document", exact: true }).click();
-      await page.getByTestId("composer-editor").fill("Describe the migration");
+      await typeRequirementPrompt("Describe the migration");
       await chooseClaude("Author B", "Claude Sonnet 4.6");
       expect(findProviderFieldButton("Reader model").textContent).toContain("Sonnet 4.6");
       const authorA = findProviderFieldButton("Author A").textContent;
@@ -903,7 +909,7 @@ describe("WorkflowCreateDialog", () => {
       await page.getByRole("button", { name: "Document", exact: true }).click();
       await page.getByRole("combobox", { name: "Document type" }).click();
       await page.getByRole("option", { name: "ADR", exact: true }).click();
-      await page.getByTestId("composer-editor").fill("Record why we chose queues");
+      await typeRequirementPrompt("Record why we chose queues");
       expect(document.body.textContent).toContain("/ 24,000");
       expect(document.body.textContent).not.toContain("Plans directory");
       expect(document.body.textContent).not.toContain("Compare against branch");
@@ -954,7 +960,7 @@ describe("WorkflowCreateDialog", () => {
       await expect
         .element(page.getByRole("textbox", { name: "Reader persona (optional)" }))
         .not.toBeInTheDocument();
-      await page.getByTestId("composer-editor").fill("Fund the migration");
+      await typeRequirementPrompt("Fund the migration");
       await page.getByRole("button", { name: /Start workflow/ }).click();
       await vi.waitFor(() => expect(nativeApiMocks.createRun).toHaveBeenCalledTimes(1));
       expect(nativeApiMocks.createRun.mock.calls[0]![0].input).toMatchObject({
@@ -1112,7 +1118,7 @@ describe("WorkflowCreateDialog", () => {
 
     try {
       const prompt = page.getByTestId("composer-editor");
-      await prompt.fill("Plan the new workflow behavior");
+      await typeRequirementPrompt("Plan the new workflow behavior");
 
       dispatchModifiedEnter(prompt.element());
 
@@ -1171,7 +1177,7 @@ describe("WorkflowCreateDialog", () => {
 
     try {
       const prompt = page.getByTestId("composer-editor");
-      await prompt.fill("Plan the new workflow behavior");
+      await typeRequirementPrompt("Plan the new workflow behavior");
 
       const composingEvent = createModifiedEnterEvent();
       Object.defineProperty(composingEvent, "isComposing", { value: true });
@@ -1227,7 +1233,7 @@ describe("WorkflowCreateDialog", () => {
     );
 
     try {
-      await page.getByTestId("composer-editor").fill("Plan the new workflow behavior");
+      await typeRequirementPrompt("Plan the new workflow behavior");
 
       await vi.waitFor(() => {
         expect(createWorkflowButton().disabled).toBe(false);
@@ -1278,7 +1284,7 @@ describe("WorkflowCreateDialog", () => {
     try {
       await page.getByRole("button", { name: "Code Review" }).click();
 
-      await page.getByTestId("composer-editor").fill("Review the workflow changes");
+      await typeRequirementPrompt("Review the workflow changes");
 
       await vi.waitFor(() => {
         expect(createWorkflowButton().disabled).toBe(false);
@@ -1327,7 +1333,7 @@ describe("WorkflowCreateDialog", () => {
 
     try {
       await page.getByRole("button", { name: "Investigation" }).click();
-      await page.getByTestId("composer-editor").fill("Investigate checkout timeouts");
+      await typeRequirementPrompt("Investigate checkout timeouts");
       // Own-model review lives in the collapsed Options section.
       await page.getByRole("button", { name: /^Options/ }).click();
       await page.getByText("Own-model review", { exact: true }).click();
@@ -1398,11 +1404,8 @@ describe("WorkflowCreateDialog", () => {
       <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
     );
     try {
-      await page
-        .getByRole("textbox")
-        .first()
-        .fill('Use @creditornot/wolt-auth and @"src/main.ts" please');
-      createWorkflowButton().click();
+      await typeRequirementPrompt('Use @creditornot/wolt-auth and @"src/main.ts" please');
+      await page.getByRole("button", { name: /Start workflow/ }).click();
       await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));
       expect(nativeApiMocks.authorizeEntry).not.toHaveBeenCalled();
       expect(nativeApiMocks.createWorkflow.mock.calls[0]?.[0].requirementPrompt).toBe(

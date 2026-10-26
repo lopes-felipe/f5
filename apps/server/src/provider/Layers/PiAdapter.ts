@@ -112,6 +112,8 @@ export interface PiAdapterOptions {
   readonly instanceId: ProviderInstanceId;
   readonly environment: NodeJS.ProcessEnv;
   readonly cacheDir: string;
+  /** Instance-owned output buffer; this adapter shuts it down on disposal. */
+  readonly eventBuffer?: PubSub.PubSub<ProviderRuntimeEvent>;
   readonly offerContinuation?: (request: ProviderContinuationRequest) => Effect.Effect<boolean>;
   readonly reconcileNativeHistory?: (
     request: NativeHistoryReconciliation,
@@ -134,7 +136,7 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const storeImage = yield* makeToolResultImageStore;
     const extensionPath = yield* materializePiMcpExtension(options.cacheDir);
-    const events = yield* PubSub.bounded<ProviderRuntimeEvent>(512);
+    const events = options.eventBuffer ?? (yield* PubSub.bounded<ProviderRuntimeEvent>(512));
     yield* Effect.addFinalizer(() => PubSub.shutdown(events));
     let closing = false;
     const sessions = new Map<ThreadId, PiContext>();

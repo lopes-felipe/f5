@@ -1,6 +1,6 @@
 import { tmpdir } from "node:os";
 import { ApprovalRequestId, type ProviderRuntimeEvent } from "@t3tools/contracts";
-import { Deferred, Effect, Exit, Fiber, Option, Queue, Scope, Stream } from "effect";
+import { Deferred, Effect, Exit, Fiber, Option, PubSub, Queue, Scope, Stream } from "effect";
 import { expect, it } from "vitest";
 import type { ProviderContinuationRequest } from "../ProviderContinuationRequests.ts";
 import { run } from "../pi/PiMetadata.testkit.ts";
@@ -358,11 +358,19 @@ it("closes a backpressured event stream before waiting for owned session cleanup
     await run(
       Effect.scoped(
         Effect.gen(function* () {
-          const owner = yield* Scope.make("sequential");
-          const adapter = yield* makePiAdapter(settings, options).pipe(Scope.provide(owner));
+          const owner = yield* Effect.acquireRelease(Scope.make("sequential"), (scope) =>
+            Scope.close(scope, Exit.void),
+          );
+          // Fill this buffer without overflowing the independent RPC transport queue.
+          const events = yield* PubSub.bounded<ProviderRuntimeEvent>(4);
+          const adapter = yield* makePiAdapter(settings, { ...options, eventBuffer: events }).pipe(
+            Scope.provide(owner),
+          );
           yield* adapter.streamEvents.pipe(
-            Stream.runForEach(() => Effect.never),
-            Effect.forkScoped,
+            Stream.runForEach((event) =>
+              event.type === "runtime.warning" ? Effect.never : Effect.void,
+            ),
+            Effect.forkScoped({ startImmediately: true }),
           );
           yield* adapter.startSession({
             threadId,
@@ -371,17 +379,29 @@ it("closes a backpressured event stream before waiting for owned session cleanup
           });
           yield* adapter.sendTurn({ threadId, input: "Flood fixture" });
           yield* Effect.repeat(
-            Effect.tryPromise(trace).pipe(
-              Effect.flatMap((records) =>
-                records.some((record) => record.type === "flood-done")
-                  ? Effect.succeed(true)
-                  : Effect.sleep("10 millis").pipe(Effect.as(false)),
+            PubSub.size(events).pipe(
+              Effect.flatMap((size) =>
+                size >= 4 ? Effect.succeed(true) : Effect.sleep("10 millis").pipe(Effect.as(false)),
               ),
             ),
-            { until: (done) => done },
-          ).pipe(Effect.timeout("5 seconds"));
+            { until: (full) => full },
+          ).pipe(
+            Effect.timeoutOrElse({
+              duration: "5 seconds",
+              onTimeout: () => Effect.fail(new Error("Pi output buffer did not fill.")),
+            }),
+          );
+          expect(yield* adapter.hasSession(threadId)).toBe(true);
+          expect(yield* PubSub.isShutdown(events)).toBe(false);
           // A backpressured close never finishes; Windows tree kills alone may take 2 seconds.
-          yield* Scope.close(owner, Exit.void).pipe(Effect.timeout("5 seconds"));
+          yield* Scope.close(owner, Exit.void).pipe(
+            Effect.timeoutOrElse({
+              duration: "5 seconds",
+              onTimeout: () => Effect.fail(new Error("Pi owner scope did not finish cleanup.")),
+            }),
+          );
+          expect(yield* PubSub.isShutdown(events)).toBe(true);
+          expect(yield* adapter.listSessions()).toEqual([]);
         }),
       ),
     );

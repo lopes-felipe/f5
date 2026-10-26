@@ -372,6 +372,7 @@ describe("FileBrowserPanel", () => {
           expect.objectContaining({ id: "reveal-in-file-manager" }),
         ]),
         { x: 16, y: 24 },
+        { editorTarget: "/repo/project/README.md" },
       );
     } finally {
       unregister();

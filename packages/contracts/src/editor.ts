@@ -36,5 +36,8 @@ export const RevealInFileManagerInput = Schema.Struct({
   threadId: ThreadId,
   relativePath: TrimmedNonEmptyString,
   kind: Schema.optional(Schema.Literals(["file", "directory"])),
+  // Caller-selected absolute directory for external file reveals, as with
+  // projects.readFile. This is not a registered-project authorization boundary.
+  cwd: Schema.optional(FilesystemPath),
 });
 export type RevealInFileManagerInput = typeof RevealInFileManagerInput.Type;

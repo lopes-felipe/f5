@@ -27,9 +27,32 @@ export function resolveAndPersistPreferredEditor(
 }
 
 export async function openInPreferredEditor(api: NativeApi, targetPath: string): Promise<EditorId> {
-  const { availableEditors } = await api.server.getConfig();
-  const editor = resolveAndPersistPreferredEditor(availableEditors);
-  if (!editor) throw new Error("No available editors found.");
-  await api.shell.openInEditor(targetPath, editor);
-  return editor;
+  return withEditorOpenAuthorization(targetPath, async (authorization) => {
+    const { availableEditors } = await api.server.getConfig();
+    const editor = resolveAndPersistPreferredEditor(availableEditors);
+    if (!editor) throw new Error("No available editors found.");
+    if (authorization) await api.shell.openInEditor(targetPath, editor, authorization);
+    else await api.shell.openInEditor(targetPath, editor);
+    return editor;
+  });
+}
+
+/** Capture before async work; release unused grants for other editors and failed queries. */
+export async function withEditorOpenAuthorization<T>(
+  targetPath: string | undefined,
+  open: (authorization: string | undefined) => Promise<T>,
+): Promise<T> {
+  const bridge = typeof window !== "undefined" ? window.desktopBridge : undefined;
+  const authorization = await bridge?.prepareEditorOpen?.(targetPath);
+  try {
+    return await open(authorization);
+  } finally {
+    if (authorization && bridge?.releaseEditorOpen) {
+      try {
+        await bridge.releaseEditorOpen(authorization);
+      } catch {
+        // A closed renderer cannot release its grant; main still expires it.
+      }
+    }
+  }
 }

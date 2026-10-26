@@ -1,7 +1,7 @@
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
-import { ORCHESTRATION_WS_CHANNELS } from "@t3tools/contracts";
+import { ORCHESTRATION_WS_CHANNELS, type OrchestrationEvent } from "@t3tools/contracts";
 import { Effect, Ref, Stream } from "effect";
 import { makeServerPushBus, makeWebSocketSendController } from "../../src/wsServer/pushBus.ts";
 import { closeSocketsWithin } from "../../src/wsServer/socketLiveness.ts";
@@ -27,6 +27,7 @@ export const makeClientTransport = (
     let latestSocket: WebSocket | undefined;
     let closes = 0;
     let configureNext: ((socket: WebSocket) => void) | undefined;
+    let broadcastSequence = 0;
     server.on("connection", (socket) => {
       latestSocket = socket;
       const configure = configureNext;
@@ -61,7 +62,9 @@ export const makeClientTransport = (
     const push = yield* makeServerPushBus({
       clients,
       sendClient: controller.send,
-      logOutgoingPush: () => {},
+      logOutgoingPush: (push) => {
+        broadcastSequence = (push.data as OrchestrationEvent).sequence;
+      },
     });
     yield* Stream.runForEach(harness.engine.streamDomainEvents, (event) =>
       push.publishAll(ORCHESTRATION_WS_CHANNELS.domainEvent, event),
@@ -77,5 +80,9 @@ export const makeClientTransport = (
         configureNext = configure;
       },
       controller,
+      waitForBroadcast: (sequence: number) =>
+        Effect.gen(function* () {
+          while (broadcastSequence < sequence) yield* Effect.sleep("10 millis");
+        }).pipe(Effect.timeout("5 seconds")),
     };
   });

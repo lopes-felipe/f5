@@ -15,10 +15,13 @@ const api = vi.hoisted(() => ({
   writeFile: vi.fn(),
   setWatchedPaths: vi.fn(),
   onWatchedPathsChanged: vi.fn(),
+  openInEditor: vi.fn(),
+  revealInFileManager: vi.fn(),
+  getConfig: vi.fn(),
 }));
 vi.mock("../nativeApi", () => ({
-  ensureNativeApi: () => ({ projects: api }),
-  readNativeApi: () => ({ projects: api }),
+  ensureNativeApi: () => ({ projects: api, shell: api, server: api }),
+  readNativeApi: () => ({ projects: api, shell: api, server: api }),
 }));
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => vi.fn(),
@@ -53,9 +56,80 @@ beforeEach(() => {
   noteWsConnectionOpened();
   noteWsSynchronized();
 });
+
+it.each([
+  ["src/app.ts", "/repo/src/app.ts", "/repo", "src/app.ts"],
+  ["/tmp/external/report.json", "/tmp/external/report.json", "/tmp/external", "report.json"],
+])(
+  "opens %s in VS Code and reveals the actual file",
+  async (file, absolutePath, cwd, relativePath) => {
+    route.fileViewPath = file;
+    api.readFile.mockResolvedValue({
+      relativePath,
+      contents: "{}",
+      byteLength: 2,
+      truncated: false,
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <FileViewPanel mode="sheet" />
+      </QueryClientProvider>,
+    );
+    try {
+      await screen.getByRole("button", { name: "Open in VS Code", exact: true }).click();
+      await expect.poll(() => api.openInEditor.mock.calls).toEqual([[absolutePath, "vscode"]]);
+      await screen.getByRole("button", { name: "Reveal in file manager", exact: true }).click();
+      await expect
+        .poll(() => api.revealInFileManager.mock.calls)
+        .toEqual([
+          [
+            {
+              projectId: "project-1",
+              threadId: "thread-1",
+              ...(file.startsWith("/") ? { cwd } : {}),
+              relativePath,
+              kind: "file",
+            },
+          ],
+        ]);
+    } finally {
+      await screen.unmount();
+      client.clear();
+    }
+  },
+);
 afterEach(() => {
   vi.clearAllMocks();
   route.fileViewPath = "app.ts";
+  localStorage.removeItem("t3code:last-editor");
+});
+
+it("uses the configured preferred editor while retaining an explicit VS Code action", async () => {
+  localStorage.setItem("t3code:last-editor", JSON.stringify("zed"));
+  api.getConfig.mockResolvedValue({ availableEditors: ["vscode", "zed"] });
+  api.readFile.mockResolvedValue({
+    relativePath: "app.ts",
+    contents: "{}",
+    byteLength: 2,
+    truncated: false,
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const screen = await render(
+    <QueryClientProvider client={client}>
+      <FileViewPanel mode="sheet" />
+    </QueryClientProvider>,
+  );
+  try {
+    await screen.getByRole("button", { name: "Open in preferred editor", exact: true }).click();
+    await expect.poll(() => api.openInEditor.mock.calls).toEqual([["/repo/app.ts", "zed"]]);
+    await expect
+      .element(screen.getByRole("button", { name: "Open in VS Code", exact: true }))
+      .toBeVisible();
+  } finally {
+    await screen.unmount();
+    client.clear();
+  }
 });
 
 it("preserves the draft base and blocks saves when a refetch arrives during editing", async () => {
@@ -289,24 +363,33 @@ it("watches the open file and turns an external edit into a conflict for a dirty
   }
 });
 
-it("shows the attempted path and workspace folder when a file cannot be read", async () => {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  route.fileViewPath = "src/missing.ts";
-  api.setWatchedPaths.mockResolvedValue({ watched: 1, degraded: false, rejected: [] });
-  api.onWatchedPathsChanged.mockReturnValue(() => undefined);
-  api.readFile.mockRejectedValue(new Error("File not found."));
-  const screen = await render(
-    <QueryClientProvider client={client}>
-      <FileViewPanel mode="sheet" />
-    </QueryClientProvider>,
-  );
-  try {
-    await vi.waitFor(() => {
-      const text = document.body.textContent ?? "";
-      expect(text).toContain("File not found.");
-      expect(text).toContain("Attempted path src/missing.ts in workspace folder /repo");
-    });
-  } finally {
-    await screen.unmount();
-  }
-});
+it.each([
+  ["src/missing.ts", "/repo", "src/missing.ts", "in workspace folder /repo"],
+  ["/tmp/export/missing.json", "/tmp/export", "missing.json", "in folder /tmp/export"],
+])(
+  "shows the actual read directory when %s cannot be read",
+  async (file, cwd, relativePath, folder) => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    route.fileViewPath = file;
+    api.setWatchedPaths.mockResolvedValue({ watched: 1, degraded: false, rejected: [] });
+    api.onWatchedPathsChanged.mockReturnValue(() => undefined);
+    api.readFile.mockRejectedValue(new Error("File not found."));
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <FileViewPanel mode="sheet" />
+      </QueryClientProvider>,
+    );
+    try {
+      await vi.waitFor(() => {
+        const text = document.body.textContent ?? "";
+        expect(text).toContain("File not found.");
+        expect(text).toContain(`Attempted path ${relativePath} ${folder}`);
+        if (file.startsWith("/")) expect(text).not.toContain("in workspace folder /repo");
+      });
+      expect(api.readFile).toHaveBeenCalledWith({ cwd, relativePath });
+    } finally {
+      await screen.unmount();
+      client.clear();
+    }
+  },
+);

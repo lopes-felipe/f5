@@ -150,12 +150,17 @@ it.live(
         }) as typeof oldSocket.send;
         yield* append("first");
         yield* Effect.promise(() => sent.promise);
-        for (let i = 0; i < 12; i++) yield* append("delta".repeat(128));
         const serverClosed = once(oldSocket, "close");
+        let lastFloodSequence = 0;
+        for (let i = 0; i < 12; i++)
+          lastFloodSequence = (yield* append("delta".repeat(128))).sequence;
         yield* Effect.promise(() => client.next("closed"));
         yield* Effect.promise(() => serverClosed);
         release?.();
         assert.equal(transport.closes(), 1);
+        // Dispatch acknowledges persistence before the push bus finishes sending.
+        // Drain the old flood so it cannot overload the replacement connection.
+        yield* transport.waitForBroadcast(lastFloodSequence);
 
         // Install the same delayed callback on the replacement before its snapshot
         // request. A legitimate oversized response must not consume push backlog.

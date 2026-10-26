@@ -191,7 +191,7 @@ describe("FileViewPanel", () => {
 
     expect(markup).toContain("Unable to read src/app.ts");
     expect(markup).toContain("Retry");
-    expect(markup).toContain("Open in editor");
+    expect(markup).toContain("Open in preferred editor");
   });
 
   it("hands binary files to the media viewer instead of the text error", async () => {
@@ -210,26 +210,39 @@ describe("FileViewPanel", () => {
     expect(markup).not.toContain("Binary file cannot be displayed");
   });
 
-  it("shows an editor-only message for files outside the workspace", async () => {
-    searchState = {
-      diff: "1",
-      fileViewPath: "/tmp/f3-code-random-snippet-91ddf119.ts",
-    };
+  it("reads external files from their own directory and disables editing", async () => {
+    searchState = { fileViewPath: "/tmp/natura-imagens-categorias/imagens.json" };
     useQueryMock.mockReturnValue({
       isLoading: false,
       isError: false,
-      error: null,
-      data: undefined,
-      refetch: vi.fn(),
+      data: { contents: '{"images":8}', contentSha256: "hash", truncated: false },
     });
 
     const markup = await renderPanel();
 
+    expect(useQueryMock.mock.calls[0]?.[0]).toMatchObject({
+      queryKey: ["fileContent", "/tmp/natura-imagens-categorias", "imagens.json"],
+      enabled: true,
+    });
+    expect(markup).toContain("Read-only preview");
+    expect(markup).toContain("images");
+    expect(
+      mockedValues.capturedButtons.find((props) => props["aria-label"] === "Edit file")?.disabled,
+    ).toBe(true);
+  });
+
+  it.each([
+    "File not found: report.json",
+    "Permission denied: report.json",
+    "Binary file cannot be displayed: report.json",
+  ])("shows external read failures instead of using workspace media: %s", async (message) => {
+    searchState = { fileViewPath: "/tmp/export/report.json" };
+    useQueryMock.mockReturnValue({ isLoading: false, isError: true, error: new Error(message) });
+    const markup = await renderPanel();
     expect(markup).toContain("Unable to display file");
-    expect(markup).toContain(
-      "Files outside the current workspace can only be opened in your editor.",
-    );
-    expect(markup).toContain("Open in editor");
+    expect(markup).toContain(message);
+    expect(markup).toContain("/tmp/export/report.json");
+    expect(markup).toContain("Retry");
   });
 
   it("renders the file contents and selected line range", async () => {

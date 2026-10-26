@@ -74,7 +74,7 @@ import { SectionLabel } from "../ui/section-label";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import { FileChip } from "./FileChip";
 import { ComposerDockSpacer } from "./composer/ComposerDock";
-import { openInPreferredEditor } from "../../editorPreferences";
+import { openFileInEditor } from "../../lib/openFileInEditor";
 import { useFileNavigation } from "../../fileNavigationContext";
 import { Button } from "../ui/button";
 import { TooltipScrollDismissArea } from "../ui/tooltip";
@@ -127,7 +127,6 @@ import {
 import { relativePathForDisplay } from "~/lib/attachedFiles";
 import { cn } from "~/lib/utils";
 import { type AppSettings, type TimestampFormat, useAppSettingsSelector } from "../../appSettings";
-import { readNativeApi } from "../../nativeApi";
 import {
   extractTerminalLinks,
   resolvePathLinkTarget,
@@ -2640,15 +2639,8 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       if (handleFileNavigation(filePath, workEntry.turnId ?? undefined)) {
         return;
       }
-      const api = readNativeApi();
-      if (!api) {
-        console.warn("Native API not found. Unable to open file in editor.");
-        return;
-      }
       const targetPath = workspaceRoot ? resolvePathLinkTarget(filePath, workspaceRoot) : filePath;
-      void openInPreferredEditor(api, targetPath).catch((error) => {
-        console.warn("Failed to open file in editor.", error);
-      });
+      void openFileInEditor(targetPath);
     },
     [handleFileNavigation, workEntry.turnId, workspaceRoot],
   );

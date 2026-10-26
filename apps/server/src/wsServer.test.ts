@@ -3199,6 +3199,48 @@ describe("WebSocket Server", () => {
     });
     expect(escapeResponse.error).toBeDefined();
     expect(revealCalls).toHaveLength(2);
+    const external = makeTempDir("t3code-reveal-external-");
+    fs.writeFileSync(path.join(external, "report.json"), "{}");
+    const localReveal = await sendRequest(ws, WS_METHODS.shellRevealInFileManager, {
+      projectId,
+      threadId,
+      cwd: external,
+      relativePath: "report.json",
+      kind: "file",
+    });
+    expect(localReveal.error).toBeUndefined();
+    expect(revealCalls[2]).toBe(path.join(fs.realpathSync(external), "report.json"));
+    for (const input of [
+      { cwd: "relative-directory", relativePath: "report.json", kind: "file" },
+      { cwd: external, relativePath: ".", kind: "directory" },
+    ]) {
+      const denied = await sendRequest(ws, WS_METHODS.shellRevealInFileManager, {
+        projectId,
+        threadId,
+        ...input,
+      });
+      expect(denied.error).toBeDefined();
+    }
+    for (const relativePath of ["missing.json", "../report.json"]) {
+      const rejected = await sendRequest(ws, WS_METHODS.shellRevealInFileManager, {
+        projectId,
+        threadId,
+        cwd: external,
+        relativePath,
+        kind: "file",
+      });
+      expect(rejected.error).toBeDefined();
+    }
+    fs.symlinkSync(workspaceRoot, path.join(external, "escape"), "dir");
+    const symlinkEscape = await sendRequest(ws, WS_METHODS.shellRevealInFileManager, {
+      projectId,
+      threadId,
+      cwd: external,
+      relativePath: "escape/src/app.ts",
+      kind: "file",
+    });
+    expect(symlinkEscape.error).toBeDefined();
+    expect(revealCalls).toHaveLength(3);
     const inventory = await sendRequest(ws, WS_METHODS.worktreesList, { projectId });
     expect(inventory.error).toBeUndefined();
     expect(inventory.result).toMatchObject({
@@ -6758,6 +6800,32 @@ describe("WebSocket Server", () => {
       byteLength: Buffer.byteLength("# Plan\n\n- step 1\n"),
       truncated: false,
       contentSha256: sha256Hex("# Plan\n\n- step 1\n"),
+    });
+  });
+
+  it("reads an external preview through a canonicalized parent without changing the project root", async () => {
+    const workspace = makeTempDir("t3code-preview-project-");
+    const external = makeTempDir("t3code-preview-external-");
+    const aliasRoot = makeTempDir("t3code-preview-alias-");
+    const alias = path.join(aliasRoot, "external");
+    fs.writeFileSync(path.join(external, "report.json"), '{"images":8}', "utf8");
+    fs.symlinkSync(external, alias, "dir");
+    server = await createTestServer({ cwd: workspace });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const response = await sendRequest(ws, WS_METHODS.projectsReadFile, {
+      cwd: alias,
+      relativePath: "report.json",
+    });
+    expect(response.error).toBeUndefined();
+    expect(response.result).toMatchObject({
+      workspaceIdentity: fs.realpathSync(external),
+      fileIdentity: fs.realpathSync(path.join(external, "report.json")),
+      contents: '{"images":8}',
+      truncated: false,
     });
   });
 

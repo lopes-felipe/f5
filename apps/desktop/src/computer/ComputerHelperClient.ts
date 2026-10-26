@@ -54,6 +54,7 @@ export class ComputerHelperClient implements ComputerHelper {
   private ready = false;
   private closing = false;
   private terminalFailure = false;
+  private failureGeneration = 0;
   private observationRecovery: ChildProcessWithoutNullStreams | undefined;
   private childExited: Promise<void> = Promise.resolve();
   private helperCapabilities: ReadonlyArray<string> = [];
@@ -102,6 +103,10 @@ export class ComputerHelperClient implements ComputerHelper {
     });
     this.child = child;
     this.childExited = new Promise<void>((done) => child.once("exit", () => done()));
+    // Pipe errors are emitted by the streams, independently of ChildProcess
+    // errors. In particular, a helper can close stdin just after its hello.
+    for (const stream of [child.stdin, child.stdout, child.stderr])
+      stream.on("error", () => this.failTransport(child));
     this.ready = false;
     this.terminalFailure = false;
     this.helperState = undefined;
@@ -125,6 +130,7 @@ export class ComputerHelperClient implements ComputerHelper {
       };
       let end: number;
       while ((end = buffer.indexOf("\n")) >= 0) {
+        if (this.child !== child) return;
         const line = buffer.slice(0, end);
         buffer = buffer.slice(end + 1);
         if (Buffer.byteLength(line) > 12 * 1024 * 1024) {
@@ -157,10 +163,7 @@ export class ComputerHelperClient implements ComputerHelper {
       this.fail(this.terminalFailure ? this.state : { available: false, reason: "helper-crashed" });
       if (this.closing) return;
       if (this.terminalFailure) return;
-      this.crashes = this.crashes.filter((time) => this.now() - time < 60_000);
-      if (this.observationRecovery !== child) this.crashes.push(this.now());
-      if (this.crashes.length < 3)
-        this.restartTimer = setTimeout(() => this.start(), 500 * 2 ** (this.crashes.length - 1));
+      this.scheduleCrashRestart(child, this.childExited);
     });
     const handshakeTimer = setTimeout(() => {
       if (this.child === child && !this.ready) {
@@ -233,8 +236,11 @@ export class ComputerHelperClient implements ComputerHelper {
   }
   private fail(status: ComputerAutomationBackendStatus): void {
     if (JSON.stringify(this.state) === JSON.stringify(status) && this.pending.size === 0) return;
+    const generation = ++this.failureGeneration;
     this.state = status;
     this.control({ type: "suspend" });
+    // A synchronous pipe failure may have retired the helper during suspend.
+    if (this.failureGeneration !== generation) return;
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timer);
       pending.reject(
@@ -249,7 +255,36 @@ export class ComputerHelperClient implements ComputerHelper {
     for (const listener of this.listeners) listener({ type: "status", status });
   }
   control(message: Record<string, unknown>): void {
-    if (this.child?.stdin.writable) this.child.stdin.write(`${JSON.stringify(message)}\n`);
+    const child = this.child;
+    if (!child) return;
+    if (!child.stdin.writable || child.stdin.destroyed) {
+      this.failTransport(child);
+      return;
+    }
+    try {
+      child.stdin.write(`${JSON.stringify(message)}\n`, (error) => {
+        if (error) this.failTransport(child);
+      });
+    } catch {
+      this.failTransport(child);
+    }
+  }
+  private failTransport(child: ChildProcessWithoutNullStreams): void {
+    if (this.child !== child) return;
+    const exited = this.childExited;
+    // Detach before fail() sends suspend, so a broken pipe cannot recurse.
+    this.child = null;
+    this.ready = false;
+    this.fail(this.terminalFailure ? this.state : { available: false, reason: "helper-crashed" });
+    child.kill("SIGKILL");
+    if (this.closing || this.terminalFailure) return;
+    this.scheduleCrashRestart(child, exited);
+  }
+  private scheduleCrashRestart(child: ChildProcessWithoutNullStreams, exited: Promise<void>): void {
+    this.crashes = this.crashes.filter((time) => this.now() - time < 60_000);
+    if (this.observationRecovery !== child) this.crashes.push(this.now());
+    if (this.crashes.length < 3)
+      void this.restartAfterExit(exited, 500 * 2 ** (this.crashes.length - 1));
   }
   request(
     request: ComputerAutomationRequest,
@@ -398,7 +433,7 @@ export class ComputerHelperClient implements ComputerHelper {
     if (!child) this.start();
     else void this.restartAfterExit(exited);
   }
-  private async restartAfterExit(exited: Promise<void>): Promise<void> {
+  private async restartAfterExit(exited: Promise<void>, delay = 0): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const confirmed = await Promise.race([
@@ -407,8 +442,10 @@ export class ComputerHelperClient implements ComputerHelper {
           timer = setTimeout(() => done(false), 2000);
         }),
       ]);
-      if (confirmed) this.start();
-      else
+      if (confirmed) {
+        if (delay > 0) this.restartTimer = setTimeout(() => this.start(), delay);
+        else this.start();
+      } else
         this.fail({
           available: false,
           reason: "helper-crashed",

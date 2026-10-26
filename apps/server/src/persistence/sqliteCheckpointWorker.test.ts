@@ -89,7 +89,12 @@ const checkpointed = (filename: string) => () =>
     const observer = new DatabaseSync(filename);
     try {
       const row = observer.prepare("PRAGMA wal_checkpoint(NOOP)").get()!;
-      return row.log === row.checkpointed || Number(row.log) < 1000;
+      return (
+        row.busy === 0 &&
+        Number(row.log) >= 0 &&
+        Number(row.checkpointed) >= 0 &&
+        (row.log === row.checkpointed || Number(row.log) < 1000)
+      );
     } finally {
       observer.close();
     }
@@ -101,6 +106,7 @@ describe("SQLite checkpoint worker", () => {
     let idle!: () => void;
     let checkpointed = 1500;
     let noopBusy = false;
+    let busyTimeoutConfigured = false;
     const messages: Array<{ blocked: boolean }> = [];
     const passive = vi.fn(() => ({ log: 2000, checkpointed, busy: 0 }));
     runInNewContext(checkpointWorkerSource, {
@@ -120,8 +126,11 @@ describe("SQLite checkpoint worker", () => {
         if (module === "node:sqlite")
           return {
             DatabaseSync: class {
-              exec() {}
+              exec(sql: string) {
+                if (sql.includes("busy_timeout=5000")) busyTimeoutConfigured = true;
+              }
               prepare(sql: string) {
+                expect(busyTimeoutConfigured).toBe(true);
                 return {
                   get: sql.includes("sqlite_version")
                     ? () => ({ version: "3.51.2" })
@@ -176,7 +185,10 @@ describe("SQLite checkpoint worker", () => {
           yield* until(checkpointed(filename));
           yield* sql`INSERT INTO payload VALUES (zeroblob(1))`;
           expect(statSync(`${filename}-wal`).size).toBeLessThanOrEqual(33554432);
-          expect((yield* Metric.value(sqliteWalBytes)).value).toBeGreaterThan(0);
+          yield* until(
+            () => Metric.value(sqliteWalBytes).pipe(Effect.map((state) => state.value > 0)),
+            "the worker WAL metric",
+          );
         }),
       );
     },

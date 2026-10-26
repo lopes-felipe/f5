@@ -41,6 +41,7 @@ import {
 import { isWorktreeSetupChip, summarizeQueueChip } from "./chat/composer/ComposerStatusStrip.logic";
 import { workspaceBasenameMatch } from "../lib/workspaceBasename";
 import { resolveChatAssetTarget } from "../lib/chatAssetTarget";
+import { isExternalTextPreviewPath, resolveFilePreviewTarget } from "../lib/filePreviewTarget";
 import { WorkspaceMediaView } from "./WorkspaceMediaView";
 import { Dialog, DialogPopup, DialogTitle } from "./ui/dialog";
 import { PROVIDER_DISPLAY_NAMES, type ProjectIssueAssetUrlInput } from "@t3tools/contracts";
@@ -6964,7 +6965,28 @@ export default memo(function ChatView({
       }
 
       const parsed = normalizeFilePathForDiffLookup(filePath, workspaceRoot);
-      if (!parsed || !parsed.workspaceRelative) {
+      if (!parsed) return false;
+      const openFile = (previewPath: string) => {
+        if (generation !== fileNavigationGeneration.current) return;
+        const target = resolveFilePreviewTarget(previewPath, workspaceRoot);
+        void queryClient.invalidateQueries({
+          queryKey: providerQueryKeys.fileContent({
+            cwd: target?.cwd,
+            relativePath: target?.relativePath,
+          }),
+        });
+        void navigate({
+          to: "/$threadId",
+          params: { threadId },
+          search: (previous) => ({
+            ...clearFileViewSearchParams(previous),
+            fileViewPath: previewPath,
+            ...(parsed.line ? { fileLine: parsed.line } : {}),
+            ...(parsed.column ? { fileColumn: parsed.column } : {}),
+          }),
+        });
+      };
+      if (!parsed.workspaceRelative) {
         const roots = useStore.getState();
         const target = resolveChatAssetTarget(
           filePath,
@@ -6976,7 +6998,7 @@ export default memo(function ChatView({
           setReferencedAsset({ ...target, name: target.path });
           return true;
         }
-        const basename = filePath.split(/[\\/]/u).at(-1);
+        const basename = parsed.path.split(/[\\/]/u).at(-1);
         for (const thread of roots.threads)
           for (const message of thread.messages)
             for (const attachment of message.attachments ?? []) {
@@ -7000,6 +7022,13 @@ export default memo(function ChatView({
                 /* An optimistic attachment may not have a durable URL yet. */
               }
             }
+        if (
+          isExternalTextPreviewPath(parsed.path) &&
+          resolveFilePreviewTarget(parsed.path, workspaceRoot)
+        ) {
+          openFile(parsed.path);
+          return true;
+        }
         return false;
       }
 
@@ -7028,25 +7057,6 @@ export default memo(function ChatView({
         return true;
       }
 
-      const openFile = (relativePath: string) => {
-        if (generation !== fileNavigationGeneration.current) return;
-        void queryClient.invalidateQueries({
-          queryKey: providerQueryKeys.fileContent({
-            cwd: workspaceRoot,
-            relativePath,
-          }),
-        });
-        void navigate({
-          to: "/$threadId",
-          params: { threadId },
-          search: (previous) => ({
-            ...clearFileViewSearchParams(previous),
-            fileViewPath: relativePath,
-            ...(parsed.line ? { fileLine: parsed.line } : {}),
-            ...(parsed.column ? { fileColumn: parsed.column } : {}),
-          }),
-        });
-      };
       const api = readNativeApi();
       if (workspaceRoot && api && !/[\\/]/u.test(parsed.path) && parsed.path.length <= 256) {
         void api.projects

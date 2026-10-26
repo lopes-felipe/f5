@@ -3952,6 +3952,281 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  describe("file reference previews", () => {
+    it.each(["/tmp/screenshot.png", "/tmp/report.pdf"])(
+      "keeps the editor/viewer handoff for external media %s",
+      async (filePath) => {
+        const base = createSnapshotForTargetUser({
+          targetMessageId: "msg-media" as MessageId,
+          targetText: "Open media",
+          fillerPairCount: 1,
+          targetPairIndex: 0,
+        });
+        const snapshot = {
+          ...base,
+          threads: base.threads.map((thread) => ({
+            ...thread,
+            messages: [
+              createAssistantMessage({
+                id: "msg-media-ref" as MessageId,
+                text: `[media](${filePath})`,
+                offsetSeconds: 1,
+              }),
+            ],
+          })),
+        };
+        const mounted = await mountChatView({
+          viewport: { name: "wide", width: 1600, height: 1000 },
+          snapshot,
+          configureFixture(next) {
+            next.serverConfig = { ...next.serverConfig, availableEditors: ["vscode"] };
+          },
+        });
+        try {
+          await page.getByRole("link", { name: filePath.split("/").at(-1)!, exact: true }).click();
+          await expect
+            .poll(() => wsRequests.find((body) => body._tag === WS_METHODS.shellOpenInEditor))
+            .toMatchObject({ cwd: filePath, editor: "vscode" });
+          expect(wsRequests.some((body) => body._tag === WS_METHODS.projectsReadFile)).toBe(false);
+        } finally {
+          await mounted.cleanup();
+        }
+      },
+    );
+
+    it("resolves a legacy absolute reference to its persisted non-UUID attachment before external fallback", async () => {
+      const base = createSnapshotForTargetUser({
+        targetMessageId: "msg-legacy" as MessageId,
+        targetText: "Open attachment",
+        fillerPairCount: 1,
+        targetPairIndex: 0,
+      });
+      const snapshot = {
+        ...base,
+        threads: base.threads.map((thread) => ({
+          ...thread,
+          messages: [
+            {
+              ...createUserMessage({
+                id: "msg-legacy-upload" as MessageId,
+                text: "saved attachment",
+                offsetSeconds: 0,
+              }),
+              attachments: [
+                {
+                  type: "image" as const,
+                  id: "screenshot.png",
+                  name: "screenshot.png",
+                  mimeType: "image/png",
+                  sizeBytes: 128,
+                  sourceUrl: "/attachments/screenshot.png",
+                  previewUrl: "/attachments/screenshot.png",
+                },
+              ],
+            },
+            createAssistantMessage({
+              id: "msg-legacy-ref" as MessageId,
+              text: "[saved screenshot](/old-profile/attachments/screenshot.png)",
+              offsetSeconds: 1,
+            }),
+          ],
+        })),
+      };
+      const mounted = await mountChatView({
+        viewport: { name: "wide", width: 1600, height: 1000 },
+        snapshot,
+        configureFixture(next) {
+          next.resolveWsRequest = (body) =>
+            body._tag === WS_METHODS.projectsIssueAssetUrl
+              ? {
+                  type: "result",
+                  result: [
+                    {
+                      relativePath: "screenshot.png",
+                      url: "/attachments/screenshot.png",
+                      expiresAt: "2099-01-01T00:00:00Z",
+                    },
+                  ],
+                }
+              : undefined;
+        },
+      });
+      try {
+        await page.getByRole("link", { name: "screenshot.png", exact: true }).click();
+        await expect.element(page.getByRole("dialog")).toBeVisible();
+        await expect
+          .poll(() => wsRequests.find((body) => body._tag === WS_METHODS.projectsIssueAssetUrl))
+          .toMatchObject({
+            identity: { kind: "attachments" },
+            files: [{ relativePath: "screenshot.png", grant: "file" }],
+          });
+        expect(wsRequests.some((body) => body._tag === WS_METHODS.projectsReadFile)).toBe(false);
+        expect(wsRequests.some((body) => body._tag === WS_METHODS.shellOpenInEditor)).toBe(false);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+    it("reports editor failures when panel previews are disabled", async () => {
+      persistAppSettings({ openFileLinksInPanel: false });
+      const base = createSnapshotForTargetUser({
+        targetMessageId: "msg-editor-fallback" as MessageId,
+        targetText: "Open the export",
+        fillerPairCount: 1,
+        targetPairIndex: 0,
+      });
+      const snapshot = {
+        ...base,
+        threads: base.threads.map((thread) => ({
+          ...thread,
+          messages: [
+            createAssistantMessage({
+              id: "msg-editor-reference" as MessageId,
+              text: "[report.json](/tmp/export/report.json)",
+              offsetSeconds: 1,
+            }),
+          ],
+        })),
+      };
+      const mounted = await mountChatView({
+        viewport: { name: "wide", width: 1600, height: 1000 },
+        snapshot,
+        configureFixture: (next) => {
+          next.serverConfig = { ...next.serverConfig, availableEditors: ["vscode"] };
+          next.resolveWsRequest = (body) =>
+            body._tag === WS_METHODS.shellOpenInEditor
+              ? { type: "error", message: "Editor launch failed" }
+              : undefined;
+        },
+      });
+      try {
+        await page.getByRole("link", { name: "report.json", exact: true }).click();
+        await expect
+          .element(page.getByText("/tmp/export/report.json: Editor launch failed", { exact: true }))
+          .toBeVisible();
+        expect(wsRequests.some((body) => body._tag === WS_METHODS.projectsReadFile)).toBe(false);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it.each([
+      {
+        name: "external JSON",
+        filePath: "/tmp/natura-imagens-categorias/imagens.json",
+        cwd: "/tmp/natura-imagens-categorias",
+        relativePath: "imagens.json",
+        error: null,
+      },
+      {
+        name: "workspace JSON",
+        filePath: "agente/skills/discovery.json",
+        cwd: "/repo/project",
+        relativePath: "agente/skills/discovery.json",
+        error: null,
+      },
+      {
+        name: "missing external file",
+        filePath: "/tmp/export/missing.json",
+        cwd: "/tmp/export",
+        relativePath: "missing.json",
+        error: "File not found: missing.json",
+      },
+      {
+        name: "unreadable external file",
+        filePath: "/tmp/export/private.json",
+        cwd: "/tmp/export",
+        relativePath: "private.json",
+        error: "Failed to read file: Permission denied",
+      },
+    ])(
+      "opens $name in the right panel with content or a visible error",
+      async ({ filePath, cwd, relativePath, error }) => {
+        const baseSnapshot = createSnapshotForTargetUser({
+          targetMessageId: "msg-file-reference" as MessageId,
+          targetText: "Save the image metadata",
+          fillerPairCount: 1,
+          targetPairIndex: 0,
+        });
+        const snapshot = {
+          ...baseSnapshot,
+          threads: baseSnapshot.threads.map((thread) => ({
+            ...thread,
+            messages: [
+              createAssistantMessage({
+                id: "msg-assistant-reference" as MessageId,
+                text: `Saved the [links and dimensions of the eight images](${filePath}).`,
+                offsetSeconds: 1,
+              }),
+            ],
+          })),
+        };
+        const mounted = await mountChatView({
+          viewport: { name: "wide", width: 1600, height: 1000 },
+          snapshot,
+          configureFixture: (next) => {
+            next.resolveWsRequest = (body) => {
+              if (body._tag !== WS_METHODS.projectsReadFile) return;
+              return error
+                ? { type: "error", message: error }
+                : {
+                    type: "result",
+                    result: {
+                      relativePath,
+                      contents: '{"previewRegression":8}',
+                      byteLength: 23,
+                      truncated: false,
+                      contentSha256: "preview-hash",
+                    },
+                  };
+            };
+          },
+        });
+        try {
+          await page.getByRole("link", { name: filePath.split("/").at(-1)!, exact: true }).click();
+          await expect
+            .poll(() => wsRequests.find((body) => body._tag === WS_METHODS.projectsReadFile))
+            .toMatchObject({ cwd, relativePath });
+          await expect
+            .poll(
+              () =>
+                selectThreadRightPanelState(useRightPanelStore.getState().byThreadId, THREAD_ID)
+                  .activeSurfaceId,
+            )
+            .toBe(`file:${filePath}`);
+          if (error) {
+            await expect.element(page.getByRole("alert").filter({ hasText: error })).toBeVisible();
+            await expect
+              .element(page.getByRole("button", { name: "Retry", exact: true }))
+              .toBeVisible();
+          } else {
+            await expect
+              .poll(() => {
+                const surface = document.querySelector(".file-view-surface");
+                return [
+                  surface?.textContent,
+                  ...Array.from(surface?.querySelectorAll("*") ?? []).map(
+                    (node) => node.shadowRoot?.textContent,
+                  ),
+                ].join(" ");
+              })
+              .toContain("previewRegression");
+            if (filePath.startsWith("/tmp/")) {
+              await expect
+                .element(page.getByRole("button", { name: "Edit file", exact: true }))
+                .toBeDisabled();
+              await expect
+                .element(page.getByText("Read-only preview", { exact: true }))
+                .toBeVisible();
+            }
+          }
+          expect(wsRequests.some((body) => body._tag === WS_METHODS.shellOpenInEditor)).toBe(false);
+        } finally {
+          await mounted.cleanup();
+        }
+      },
+    );
+  });
+
   describe("header Diff toggle", () => {
     const WIDE_VIEWPORT: ViewportSpec = { name: "wide", width: 1_600, height: 1_000 };
     const rightPanel = () =>

@@ -21,10 +21,12 @@ const { parentPort, workerData } = require("node:worker_threads");
 const { DatabaseSync } = require("node:sqlite");
 const { closeSync, fstatSync, openSync } = require("node:fs");
 const db = new DatabaseSync(workerData.filename);
+// Startup can overlap the writer's schema or journal-mode initialization.
+// Install the busy handler before preparing the first statement.
+db.exec("PRAGMA busy_timeout=5000; PRAGMA checkpoint_fullfsync=ON;");
 const version = db.prepare("SELECT sqlite_version() AS version").get().version;
 const [major, minor] = version.split(".").map(Number);
 if (major < 3 || (major === 3 && minor < 51)) throw new Error("SQLite " + version + " has no NOOP checkpoint");
-db.exec("PRAGMA busy_timeout=5000; PRAGMA checkpoint_fullfsync=ON;");
 const frames = db.prepare("PRAGMA wal_checkpoint(NOOP)");
 const checkpoint = db.prepare("PRAGMA wal_checkpoint(PASSIVE)");
 let idle;

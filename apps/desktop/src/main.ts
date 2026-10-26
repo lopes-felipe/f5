@@ -16,6 +16,11 @@ import { createUpdateController } from "./updateController";
 import { initializeUpdatePreferences, writeUpdatePreferences } from "./updateChannel";
 import { migrateUserData } from "./userDataMigration";
 import { isolatedBackendCommand } from "./backendComputerIsolation";
+import {
+  assertFileActionCaller,
+  finderRevealArgs,
+  registerDesktopFileActions,
+} from "./fileActions";
 import { profilePreviewPartition } from "./profileRuntime";
 import { CaptureShortcut } from "./snapShot/CaptureShortcut";
 import { captureBoundedPage } from "./preview/capture";
@@ -3321,6 +3326,30 @@ function reopenApplication(): void {
 }
 
 function registerIpcHandlers(): void {
+  const assertFileCaller = (event: Electron.IpcMainInvokeEvent) => {
+    assertFileActionCaller({
+      registered: appRendererWebContentsIds.has(event.sender.id),
+      mainFrame: event.senderFrame === event.sender.mainFrame,
+      origin: event.senderFrame?.origin ?? "",
+      expectedOrigin: isDevelopment ? new URL(mainRendererUrl()).origin : `${DESKTOP_SCHEME}://app`,
+    });
+    runtimeForRenderer(event.sender.id);
+  };
+  const fileActions = registerDesktopFileActions(ipcMain, {
+    assertCaller: assertFileCaller,
+    openExternal: (url) => shell.openExternal(url, { activate: true }),
+    revealFile: (filePath) =>
+      process.platform !== "darwin"
+        ? Promise.resolve(shell.showItemInFolder(filePath))
+        : new Promise<void>((resolve, reject) => {
+            ChildProcess.execFile(
+              "/usr/bin/osascript",
+              finderRevealArgs(filePath),
+              { timeout: 5000 },
+              (error) => (error ? reject(error) : resolve()),
+            );
+          }),
+  });
   registerHtmlPreviewIpc(ipcMain, (event) => {
     if (
       !appRendererWebContentsIds.has(event.sender.id) ||
@@ -3428,7 +3457,13 @@ function registerIpcHandlers(): void {
   ipcMain.removeHandler(CONTEXT_MENU_CHANNEL);
   ipcMain.handle(
     CONTEXT_MENU_CHANNEL,
-    async (_event, items: ContextMenuItem[], position?: { x: number; y: number }) => {
+    async (
+      event,
+      items: ContextMenuItem[],
+      position?: { x: number; y: number },
+      fileAction?: { editorTarget: string },
+    ) => {
+      if (fileAction) assertFileCaller(event);
       const normalizedItems = items
         .filter((item) => typeof item.id === "string" && typeof item.label === "string")
         .map((item) => ({
@@ -3463,7 +3498,11 @@ function registerIpcHandlers(): void {
           const itemOption: MenuItemConstructorOptions = {
             label: item.label,
             enabled: !item.disabled,
-            click: () => resolve(item.id),
+            click: () => {
+              if (item.id === "open-in-editor" && typeof fileAction?.editorTarget === "string")
+                fileActions.nativeMenuSelected(event.sender.id, fileAction.editorTarget);
+              resolve(item.id);
+            },
           };
           if (item.destructive) {
             const destructiveIcon = getDestructiveMenuIcon();

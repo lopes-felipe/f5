@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
 const APP_DISPLAY_NAME = isDevelopment ? "F5 (Dev)" : "F5";
 const APP_BUNDLE_ID = "io.github.lopesfelipe.f5.dev";
-const LAUNCHER_VERSION = 2;
+const LAUNCHER_VERSION = 3;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const desktopDir = resolve(__dirname, "..");
@@ -97,6 +97,12 @@ function readJson(path) {
   }
 }
 
+export function copyMacAppBundle(source, destination) {
+  // Framework links must resolve within the copied app. Node otherwise turns
+  // relative links into absolute links back into the source Electron bundle.
+  cpSync(source, destination, { recursive: true, verbatimSymlinks: true });
+}
+
 function buildMacLauncher(electronBinaryPath) {
   const sourceAppBundlePath = resolve(electronBinaryPath, "../../..");
   const runtimeDir = join(desktopDir, ".electron-runtime");
@@ -124,7 +130,7 @@ function buildMacLauncher(electronBinaryPath) {
   }
 
   rmSync(targetAppBundlePath, { recursive: true, force: true });
-  cpSync(sourceAppBundlePath, targetAppBundlePath, { recursive: true });
+  copyMacAppBundle(sourceAppBundlePath, targetAppBundlePath);
   patchMainBundleInfoPlist(targetAppBundlePath, iconPath);
   patchHelperBundleInfoPlists(targetAppBundlePath);
   writeFileSync(metadataPath, `${JSON.stringify(expectedMetadata, null, 2)}\n`);

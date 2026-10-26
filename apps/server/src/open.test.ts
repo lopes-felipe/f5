@@ -2,6 +2,8 @@ import { writeCliCommand } from "./testUtils/cli.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -281,6 +283,29 @@ it("builds platform-specific file reveal commands", () => {
 });
 
 it.layer(NodeServices.layer)("launchDetached", (it) => {
+  it.effect("accepts Explorer-style exit 1 for reveals and file-manager opens", () =>
+    Effect.gen(function* () {
+      for (const target of ["/select,C:\\repo\\report.json", "C:\\repo"]) {
+        const result = yield* launchDetached(
+          { command: process.execPath, args: ["-e", "process.exit(1)", target] },
+          false,
+        ).pipe(Effect.result);
+        assertSuccess(result, undefined);
+      }
+    }),
+  );
+  it.effect("reports an early editor CLI failure without retaining a stderr pipe", () =>
+    Effect.gen(function* () {
+      const result = yield* launchDetached({
+        command: process.execPath,
+        args: ["-e", "console.error('Cannot connect to editor'); process.exit(7)"],
+      }).pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.match(result.failure.message, /Launcher failed \(7\)/);
+      }
+    }),
+  );
   it.effect("resolves when command can be spawned", () =>
     Effect.gen(function* () {
       const result = yield* launchDetached({
@@ -301,6 +326,25 @@ it.layer(NodeServices.layer)("launchDetached", (it) => {
     }),
   );
 });
+
+vitestIt(
+  "a detached child can keep writing stderr after its launcher process exits",
+  async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "f5-detached-stderr-"));
+    const marker = path.join(root, "survived.txt");
+    const child = `setTimeout(() => process.stderr.write('still running\\n', (error) => { if (!error) require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ok'); }), 1600)`;
+    const modulePath = path.resolve("src/open.ts");
+    const parent = `import { Effect } from 'effect'; import { launchDetached } from ${JSON.stringify(modulePath)}; await Effect.runPromise(launchDetached({command:${JSON.stringify(process.execPath)},args:['-e',${JSON.stringify(child)}]})); process.exit(0);`;
+    try {
+      await promisify(execFile)("bun", ["-e", parent], { timeout: 10_000 });
+      await expect.poll(() => fs.existsSync(marker), { timeout: 5000 }).toBe(true);
+      expect(fs.readFileSync(marker, "utf8")).toBe("ok");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  },
+  15_000,
+);
 
 vitestIt.skipIf(process.platform !== "win32")(
   "launchDetached preserves metacharacters when launching a Windows cmd shim",
@@ -336,6 +380,15 @@ it.layer(NodeServices.layer)("OpenLive observability", (it) => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-open-observability-"));
       const cursorCommand = path.join(tempDir, "cursor");
       writeCliCommand(cursorCommand, "process.exit(0)");
+      const fileManagerCommand = path.join(
+        tempDir,
+        process.platform === "win32"
+          ? "explorer"
+          : process.platform === "darwin"
+            ? "open"
+            : "xdg-open",
+      );
+      writeCliCommand(fileManagerCommand, "process.exit(1)");
 
       const originalPath = process.env.PATH ?? "";
       try {
@@ -346,6 +399,8 @@ it.layer(NodeServices.layer)("OpenLive observability", (it) => {
           cwd: "/tmp/workspace",
           editor: "cursor",
         });
+        yield* open.openInEditor({ cwd: "/tmp/workspace", editor: "file-manager" });
+        yield* open.revealInFileManager("/tmp/workspace/report.json");
 
         process.env.PATH = "";
         yield* Effect.exit(
@@ -356,6 +411,15 @@ it.layer(NodeServices.layer)("OpenLive observability", (it) => {
         );
 
         const snapshots = yield* Metric.snapshot;
+        assert.equal(
+          snapshots.some(
+            (snapshot) =>
+              snapshot.id === "t3_editor_launch_total" &&
+              snapshot.attributes?.editorId === "file-manager" &&
+              snapshot.attributes?.outcome === "success",
+          ),
+          true,
+        );
         assert.equal(
           snapshots.some(
             (snapshot) =>

@@ -39,11 +39,10 @@ case 'extension_ui_response':if(awaitingModel){reply(awaitingModel,{});awaitingM
 case 'prompt':{
  const mode=process.env.F5_PI_CASE;
  if(mode==='flood'){
-  reply(record,{});let emitted=0;const timer=setInterval(()=>{
-   // 20 per tick: Windows timers fire about every 16ms, so one per tick took 10 seconds.
-   for(let batch=0;batch<20;batch++)emit({type:'extension_ui_request',method:'notify',message:'Native notification'});
-   if((emitted+=20)===600){clearInterval(timer);trace({type:'flood-done'});}
-  },1);break;
+  reply(record,{});
+  // Saturate the adapter's injected output buffer, staying below the RPC frame budget.
+  for(let emitted=0;emitted<32;emitted++)emit({type:'extension_ui_request',method:'notify',message:'Native notification'});
+  trace({type:'flood-done'});break;
  }
  if(mode==='crash'){process.exit(23);break;}
  if(mode==='reject'){emit({type:'response',id:record.id,command:'prompt',success:false,error:'PRIVATE_FAILURE'});break;}

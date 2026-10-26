@@ -30,7 +30,10 @@ import {
 import { QueryClient } from "@tanstack/react-query";
 
 import { toastManager } from "../components/ui/toast";
-import { resolveAndPersistPreferredEditor } from "../editorPreferences";
+import {
+  withEditorOpenAuthorization,
+  resolveAndPersistPreferredEditor,
+} from "../editorPreferences";
 import { serverConfigQueryOptions, serverQueryKeys } from "../lib/serverReactQuery";
 
 import {
@@ -930,22 +933,22 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
       actionProps: {
         children: "Open keybindings.json",
         onClick: () => {
-          void queryClient
-            .ensureQueryData(serverConfigQueryOptions())
-            .then((config) => {
-              const editor = resolveAndPersistPreferredEditor(config.availableEditors);
-              if (!editor) {
-                throw new Error("No available editors found.");
-              }
-              return api.shell.openInEditor(config.keybindingsConfigPath, editor);
-            })
-            .catch((error) => {
-              toastManager.add({
-                type: "error",
-                title: "Unable to open keybindings file",
-                description: error instanceof Error ? error.message : "Unknown error opening file.",
-              });
+          void withEditorOpenAuthorization(undefined, async (authorization) => {
+            const config = await queryClient.ensureQueryData(serverConfigQueryOptions());
+            const editor = resolveAndPersistPreferredEditor(config.availableEditors);
+            if (!editor) {
+              throw new Error("No available editors found.");
+            }
+            return authorization
+              ? api.shell.openInEditor(config.keybindingsConfigPath, editor, authorization)
+              : api.shell.openInEditor(config.keybindingsConfigPath, editor);
+          }).catch((error) => {
+            toastManager.add({
+              type: "error",
+              title: "Unable to open keybindings file",
+              description: error instanceof Error ? error.message : "Unknown error opening file.",
             });
+          });
         },
       },
     });

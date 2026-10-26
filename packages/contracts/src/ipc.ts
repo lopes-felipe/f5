@@ -672,11 +672,17 @@ export interface DesktopBridge {
   showContextMenu: <T extends string>(
     items: readonly ContextMenuItem<T>[],
     position?: { x: number; y: number },
+    fileAction?: { editorTarget: string },
   ) => Promise<T | null>;
   readClipboardText?: (source: "clipboard" | "selection") => Promise<string>;
   copyImage?: (pngBytes: Uint8Array) => Promise<void>;
   downloadImage?: (bytes: Uint8Array, filename: string) => Promise<DesktopImageDownloadResult>;
   openExternal: (url: string) => Promise<boolean>;
+  /** User-initiated local file actions run in main, outside the backend GUI sandbox. */
+  prepareEditorOpen?: (targetPath?: string) => Promise<string>;
+  releaseEditorOpen?: (authorization: string) => Promise<void>;
+  openInVSCode?: (targetPath: string, authorization?: string) => Promise<void>;
+  revealFile?: (filePath: string) => Promise<void>;
   openThreadInNewWindow?: (threadId: string) => Promise<boolean>;
   onMenuAction: (listener: (action: string) => void) => () => void;
   checkForUpdates?: () => Promise<DesktopUpdateActionResult>;
@@ -963,7 +969,7 @@ export interface NativeApi {
     browse: (input: FilesystemBrowseInput) => Promise<FilesystemBrowseResult>;
   };
   shell: {
-    openInEditor: (cwd: string, editor: EditorId) => Promise<void>;
+    openInEditor: (cwd: string, editor: EditorId, authorization?: string) => Promise<void>;
     revealInFileManager: (input: RevealInFileManagerInput) => Promise<void>;
     openExternal: (url: string) => Promise<void>;
   };
@@ -994,6 +1000,7 @@ export interface NativeApi {
     show: <T extends string>(
       items: readonly ContextMenuItem<T>[],
       position?: { x: number; y: number },
+      fileAction?: { editorTarget: string },
     ) => Promise<T | null>;
   };
   server: {
