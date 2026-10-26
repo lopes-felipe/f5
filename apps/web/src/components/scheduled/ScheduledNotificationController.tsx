@@ -1,13 +1,15 @@
 import { useEffect } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { ensureNativeApi } from "../../nativeApi";
+import { readNativeApi } from "../../nativeApi";
 import { subscribeWsConnectionState, getWsConnectionState } from "../../wsConnectionState";
 import { toastManager } from "../ui/toast";
 /** Push/reconnect/lease driven. Notification permission is requested only by the page's button. */
 export function ScheduledNotificationController() {
   const navigate = useNavigate();
   useEffect(() => {
-    const api = ensureNativeApi().scheduledTasks;
+    // Hosts without the scheduled-tasks API (older bridges, route tests) have nothing to drain.
+    const api = readNativeApi()?.scheduledTasks;
+    if (!api) return;
     const owner = `browser:${crypto.randomUUID()}`;
     let stopped = false,
       busy = false,
