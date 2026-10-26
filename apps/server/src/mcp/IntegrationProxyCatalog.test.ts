@@ -95,6 +95,8 @@ describe("forwardedCallMeta", () => {
 
   it("falls back on missing, malformed, incomplete or oversized metadata", () => {
     const big = { session_id: "s", turn_id: "t", pad: "x".repeat(17 * 1024) };
+    // Under 16 KiB in UTF-16 code units, over it in UTF-8 bytes.
+    const wide = { session_id: "s", turn_id: "t", pad: "é".repeat(12 * 1024) };
     for (const meta of [
       undefined,
       null,
@@ -106,6 +108,8 @@ describe("forwardedCallMeta", () => {
       { [CODEX_TURN_METADATA_KEY]: ["s", "t"] },
       { [CODEX_TURN_METADATA_KEY]: big },
       { [CODEX_TURN_METADATA_KEY]: JSON.stringify(big) },
+      { [CODEX_TURN_METADATA_KEY]: wide },
+      { [CODEX_TURN_METADATA_KEY]: JSON.stringify(wide) },
     ])
       expect(forwardedCallMeta(meta, identity)).toEqual(fallback);
   });

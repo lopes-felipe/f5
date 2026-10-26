@@ -54,7 +54,7 @@ export function forwardedCallMeta(
     meta && typeof meta === "object" && !Array.isArray(meta)
       ? (meta as Record<string, unknown>)[CODEX_TURN_METADATA_KEY]
       : undefined;
-  if (typeof value === "string" && value.length <= MAX_TURN_METADATA_BYTES) {
+  if (typeof value === "string" && Buffer.byteLength(value) <= MAX_TURN_METADATA_BYTES) {
     try {
       value = JSON.parse(value);
     } catch {
@@ -67,7 +67,7 @@ export function forwardedCallMeta(
     !Array.isArray(value) &&
     typeof (value as Record<string, unknown>).session_id === "string" &&
     typeof (value as Record<string, unknown>).turn_id === "string" &&
-    JSON.stringify(value).length <= MAX_TURN_METADATA_BYTES;
+    Buffer.byteLength(JSON.stringify(value)) <= MAX_TURN_METADATA_BYTES;
   return {
     [CODEX_TURN_METADATA_KEY]: usable
       ? value
