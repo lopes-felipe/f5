@@ -433,6 +433,40 @@ describe("CheckpointStoreLive", () => {
     });
   });
 
+  it("captures untracked files without expiring the repository's shared split index", async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), "f5-checkpoint-split-"));
+    const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" });
+    try {
+      git("init", "-q");
+      git("config", "user.email", "test@example.com");
+      git("config", "user.name", "Test");
+      writeFileSync(path.join(cwd, "file.txt"), "base\n");
+      git("add", "file.txt");
+      git("commit", "-q", "-m", "base");
+      writeFileSync(path.join(cwd, "file.txt"), "staged\n");
+      git("add", "file.txt");
+      git("config", "core.splitIndex", "true");
+      git("config", "splitIndex.sharedIndexExpire", "now");
+      git("update-index", "--split-index");
+      writeFileSync(path.join(cwd, "untracked.txt"), "new\n");
+      const checkpointRef = CheckpointRef.makeUnsafe("refs/t3/checkpoints/split/0");
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* (yield* CheckpointStore).captureCheckpoint({ cwd, checkpointRef });
+        }).pipe(
+          Effect.provide(
+            CheckpointStoreLiveWithoutCredentials.pipe(Layer.provideMerge(NodeServices.layer)),
+          ),
+        ),
+      );
+      expect(git("show", `${checkpointRef}:untracked.txt`)).toBe("new\n");
+      expect(git("ls-files", "--cached")).toBe("file.txt\n");
+      expect(git("diff", "--cached", "--name-only")).toBe("file.txt\n");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("omits whitespace flags by default", async () => {
     const calls: ExecuteGitInput[] = [];
     const layer = makeLayer(calls);

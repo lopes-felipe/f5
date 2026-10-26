@@ -129,8 +129,11 @@ const makeCheckpointStore = Effect.gen(function* () {
   const captureCheckpoint: CheckpointStoreShape["captureCheckpoint"] = (input) =>
     Effect.gen(function* () {
       const operation = "CheckpointStore.captureCheckpoint";
+      // Scratch index writes must not expire sharedindex files used by the real index.
       const indexConfig = gitConfigArgs([
         ["core.fsmonitor", "false"],
+        ["core.splitIndex", "false"],
+        ["splitIndex.sharedIndexExpire", "never"],
         ["sparse.expectFilesOutsideOfPatterns", "false"],
       ]);
 
