@@ -48,7 +48,9 @@ import {
   type UpstreamStartPortResult,
   type UpstreamTopic,
   type UpstreamTopicDetail,
+  type UpstreamTopicFiles,
   type UpstreamTopicRow,
+  type UpstreamUndoDecisionsInput,
   type UpstreamUnlinkPortInput,
 } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -93,7 +95,7 @@ import {
   portThreadTitle,
 } from "./admission.ts";
 import { decisionFields, DecisionError, suggestionDecision } from "./decisions.ts";
-import type { UpstreamGit } from "./git.ts";
+import type { CommitNumstat, UpstreamGit } from "./git.ts";
 import { parseGitHubRepo, type UpstreamGitHub } from "./github.ts";
 import {
   BASE_FETCH_MIN_INTERVAL_MS,
@@ -119,6 +121,8 @@ import {
 } from "./store.ts";
 import type { TriageCall } from "./triage.ts";
 import {
+  buildTopicFiles,
+  buildTopicHistory,
   buildView,
   countStates,
   deriveRows,
@@ -249,6 +253,21 @@ const decisionSignature = (fields: DecisionFields) => {
   return canonicalJson(rest);
 };
 
+export const UNDO_TOKENS_PER_PROJECT = 20;
+export const UNDO_TTL_MS = 15 * 60_000;
+/** Changed files cover at most this many of a topic's commits. */
+const TOPIC_FILES_MAX_COMMITS = 50;
+
+interface UndoRecord {
+  readonly token: string;
+  readonly expiresAt: number;
+  readonly entries: ReadonlyArray<{
+    readonly topicId: string;
+    readonly before: DecisionFields;
+    readonly afterSignature: string;
+  }>;
+}
+
 export interface UpstreamPortsService {
   readonly listProjects: Effect.Effect<UpstreamPortsListProjectsResult, UpstreamPortsError>;
   readonly getOverview: (
@@ -269,6 +288,12 @@ export interface UpstreamPortsService {
   readonly acceptSuggestions: (
     input: UpstreamAcceptSuggestionsInput,
   ) => Effect.Effect<UpstreamDecideResult, UpstreamPortsError>;
+  readonly undoDecisions: (
+    input: UpstreamUndoDecisionsInput,
+  ) => Effect.Effect<UpstreamDecideResult, UpstreamPortsError>;
+  readonly getTopicFiles: (
+    input: UpstreamGetTopicInput,
+  ) => Effect.Effect<UpstreamTopicFiles, UpstreamPortsError>;
   readonly run: (
     input: UpstreamRunInput & { readonly trigger?: UpstreamRunTrigger },
   ) => Effect.Effect<UpstreamRunResult, UpstreamPortsError>;
@@ -320,6 +345,12 @@ export function makeUpstreamPortsService(
     const publishDue = new Map<string, number>();
     const publishing = new Set<string>();
     const commonDirs = new Map<string, string>();
+    /** Newest last per project; tokens are single-use and in memory only. */
+    const undoTokens = new Map<string, UndoRecord[]>();
+    const pathsAtBase = new Map<
+      string,
+      { readonly baseSha: string; readonly paths: Set<string> }
+    >();
 
     const track = <A, E>(effect: Effect.Effect<A, E>) =>
       Effect.gen(function* () {
@@ -585,6 +616,21 @@ export function makeUpstreamPortsService(
 
     // ── Recording ──
 
+    /**
+     * The ledger the new ops will apply to. A decision supersedes the open
+     * decisions for its topic, so those drop out; this lets an undo restore
+     * the epoch an unpublished reopen bumped.
+     */
+    const ledgerReplacing = (view: LedgerView, ops: ReadonlyArray<UpstreamLedgerOp>) => {
+      const replaced = new Set(ops.flatMap((op) => (op.kind === "decision" ? [op.topicId] : [])));
+      const kept = view.openOps.filter(
+        (record) => !(record.op.kind === "decision" && replaced.has(record.op.topicId)),
+      );
+      return kept.length === view.openOps.length
+        ? view.ledger
+        : buildView(view.baseSha, view.base, kept).ledger;
+    };
+
     /** Records ops under the repository lock after the writer check; pushes `ledger-updated`. */
     const recordOps = (
       context: ProjectContext,
@@ -603,7 +649,7 @@ export function makeUpstreamPortsService(
             yield* requireParsedLedger(snapshot.base);
             const check = buildView(
               snapshot.base.baseSha,
-              snapshot.view.ledger,
+              ledgerReplacing(snapshot.view, ops),
               ops.map((op, index) => ({
                 opId: `check-${index}`,
                 projectId: context.projectId,
@@ -1183,6 +1229,7 @@ export function makeUpstreamPortsService(
         const ops: UpstreamLedgerOp[] = [];
         const updated: string[] = [];
         const unchanged: string[] = [];
+        const undo: Array<UndoRecord["entries"][number]> = [];
         for (const topicId of new Set(input.topicIds)) {
           const row = rowsById.get(topicId);
           if (!row) return yield* fail("not-found", `Topic ${topicId} does not exist.`);
@@ -1206,16 +1253,124 @@ export function makeUpstreamPortsService(
                 message: error instanceof DecisionError ? error.message : describe(error),
               }),
           });
-          if (decisionSignature(fields) === decisionSignature(pickDecisionFields(row.topic))) {
+          const before = pickDecisionFields(row.topic);
+          const afterSignature = decisionSignature(fields);
+          if (afterSignature === decisionSignature(before)) {
             unchanged.push(topicId);
             continue;
           }
           ops.push({ kind: "decision", topicId, fields });
           updated.push(topicId);
+          undo.push({ topicId, before, afterSignature });
         }
         yield* recordOps(context, ops, "user");
         const after = yield* currentView(context);
-        return { revision: after.revision, updated, unchanged } as UpstreamDecideResult;
+        return {
+          revision: after.revision,
+          updated,
+          unchanged,
+          undoToken: undo.length ? saveUndo(context.projectId, undo) : null,
+        } as UpstreamDecideResult;
+      });
+
+    const saveUndo = (projectId: string, entries: UndoRecord["entries"]) => {
+      const token = mintId();
+      const at = now().getTime();
+      const kept = (undoTokens.get(projectId) ?? []).filter((record) => record.expiresAt > at);
+      kept.push({ token, expiresAt: at + UNDO_TTL_MS, entries });
+      undoTokens.set(projectId, kept.slice(-UNDO_TOKENS_PER_PROJECT));
+      return token;
+    };
+
+    /** Removes the token so it works once; `undefined` when it is unknown or expired. */
+    const takeUndo = (projectId: string, token: string) => {
+      const records = undoTokens.get(projectId) ?? [];
+      const record = records.find((entry) => entry.token === token);
+      if (record)
+        undoTokens.set(
+          projectId,
+          records.filter((entry) => entry !== record),
+        );
+      return record && record.expiresAt > now().getTime() ? record : undefined;
+    };
+
+    /** Puts back a token whose undo failed before recording anything. */
+    const returnUndo = (projectId: string, record: UndoRecord) =>
+      Effect.sync(() => {
+        const records = undoTokens.get(projectId) ?? [];
+        undoTokens.set(
+          projectId,
+          [...records, record]
+            .toSorted((left, right) => left.expiresAt - right.expiresAt)
+            .slice(-UNDO_TOKENS_PER_PROJECT),
+        );
+      });
+
+    /**
+     * Restores each topic's fields from before the decision, epoch and
+     * timestamp included. Topics decided again since, now in progress, or
+     * whose decision another writer built on stay as they are.
+     */
+    const applyUndo = (input: UpstreamUndoDecisionsInput) =>
+      Effect.gen(function* () {
+        const context = yield* resolveContext(input.projectId);
+        yield* requireConfig(context);
+        yield* requireWriter(context.cwd);
+        const record = takeUndo(context.projectId, input.undoToken);
+        if (!record) return yield* fail("not-found", "This undo has expired.");
+        return yield* restoreDecisions(context, record).pipe(
+          Effect.tapError(() => returnUndo(context.projectId, record)),
+        );
+      });
+
+    const restoreDecisions = (context: ProjectContext, record: UndoRecord) =>
+      Effect.gen(function* () {
+        const snapshot = yield* currentView(context);
+        yield* requireParsedLedger(snapshot.base);
+        const rowsById = new Map(snapshot.rows.map((row) => [row.topic.id, row]));
+        const candidates = record.entries.flatMap((entry) => {
+          const row = rowsById.get(entry.topicId);
+          if (!row || decisionSignature(pickDecisionFields(row.topic)) !== entry.afterSignature)
+            return [];
+          const linked = snapshot.links.some(
+            (link) =>
+              link.topicId === entry.topicId &&
+              link.state === "active" &&
+              link.epoch === row.topic.epoch,
+          );
+          return linked ? [] : [entry];
+        });
+        const ledger = ledgerReplacing(
+          snapshot.view,
+          candidates.map((entry) => ({
+            kind: "decision" as const,
+            topicId: entry.topicId,
+            fields: entry.before,
+          })),
+        );
+        const epochs = new Map(ledger.topics.map((topic) => [topic.id, topic.epoch]));
+        const restorable = candidates.filter(
+          (entry) => (epochs.get(entry.topicId) ?? Infinity) <= entry.before.epoch,
+        );
+        yield* recordOps(
+          context,
+          restorable.map((entry) => ({
+            kind: "decision" as const,
+            topicId: entry.topicId,
+            fields: entry.before,
+          })),
+          "user",
+        );
+        const after = yield* currentView(context);
+        const restored = new Set(restorable.map((entry) => entry.topicId));
+        return {
+          revision: after.revision,
+          updated: [...restored],
+          unchanged: record.entries
+            .map((entry) => entry.topicId)
+            .filter((topicId) => !restored.has(topicId)),
+          undoToken: null,
+        } as UpstreamDecideResult;
       });
 
     // ── RPC ──
@@ -1411,6 +1566,15 @@ export function makeUpstreamPortsService(
         if (!row) return yield* fail("not-found", `Topic ${input.topicId} does not exist.`);
         const [full] = yield* toRows([row], snapshot.links);
         const rowsById = new Map(snapshot.rows.map((entry) => [entry.topic.id, entry]));
+        const ops = yield* store
+          .listTopicDecisionOps(context.projectId, row.topic.id)
+          .pipe(Effect.mapError(internal));
+        const history = buildTopicHistory({
+          topic: row.topic,
+          baseTopic: snapshot.view.base.topics.find((topic) => topic.id === row.topic.id),
+          ops,
+          links: snapshot.links,
+        });
         return {
           revision: snapshot.revision,
           repository: config.repository,
@@ -1423,7 +1587,50 @@ export function makeUpstreamPortsService(
             title: rowsById.get(id)?.topic.title ?? id,
             state: rowsById.get(id)?.state ?? null,
           })),
+          history,
         } satisfies UpstreamTopicDetail;
+      }).pipe(Effect.mapError(internal));
+
+    /** Paths on origin/<base>, kept per base SHA; `null` when git cannot list them. */
+    const basePaths = (context: ProjectContext, baseSha: string | null) =>
+      Effect.gen(function* () {
+        if (baseSha === null) return null;
+        const cached = pathsAtBase.get(context.projectId);
+        if (cached?.baseSha === baseSha) return cached.paths;
+        const paths = yield* git
+          .listPathsAtRef(context.cwd, baseSha)
+          .pipe(Effect.orElseSucceed(() => null));
+        if (paths) pathsAtBase.set(context.projectId, { baseSha, paths });
+        return paths;
+      });
+
+    const getTopicFiles: UpstreamPortsService["getTopicFiles"] = (input) =>
+      Effect.gen(function* () {
+        const context = yield* resolveContext(input.projectId);
+        yield* requireConfig(context);
+        const snapshot = yield* currentView(context);
+        if (!snapshot.view.topicsById.has(input.topicId))
+          return yield* fail("not-found", `Topic ${input.topicId} does not exist.`);
+        const shas = (snapshot.view.members.get(input.topicId) ?? [])
+          .map((member) => member.sha)
+          .slice(0, TOPIC_FILES_MAX_COMMITS);
+        // One missing commit fails the whole `git log`; retry one by one to find it.
+        const numstat = yield* git
+          .streamNumstat(context.cwd, { kind: "shas", shas })
+          .pipe(
+            Effect.catch(() =>
+              Effect.forEach(
+                shas,
+                (sha) =>
+                  git
+                    .streamNumstat(context.cwd, { kind: "shas", shas: [sha] })
+                    .pipe(Effect.orElseSucceed(() => new Map<string, CommitNumstat>())),
+                { concurrency: 4 },
+              ).pipe(Effect.map((maps) => new Map(maps.flatMap((map) => [...map])))),
+            ),
+          );
+        const paths = yield* basePaths(context, snapshot.base.baseSha);
+        return buildTopicFiles(shas, numstat, paths);
       }).pipe(Effect.mapError(internal));
 
     const decide: UpstreamPortsService["decide"] = (input) =>
@@ -1431,6 +1638,9 @@ export function makeUpstreamPortsService(
 
     const acceptSuggestions: UpstreamPortsService["acceptSuggestions"] = (input) =>
       applyDecisions(input, suggestionDecision).pipe(Effect.mapError(internal));
+
+    const undoDecisions: UpstreamPortsService["undoDecisions"] = (input) =>
+      applyUndo(input).pipe(Effect.mapError(internal));
 
     const run: UpstreamPortsService["run"] = (input) =>
       Effect.gen(function* () {
@@ -1730,6 +1940,8 @@ export function makeUpstreamPortsService(
       getTopic,
       decide,
       acceptSuggestions,
+      undoDecisions,
+      getTopicFiles,
       run,
       startPort,
       unlinkPort,

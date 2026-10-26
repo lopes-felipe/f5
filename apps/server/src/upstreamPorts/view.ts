@@ -8,6 +8,13 @@
 import {
   UPSTREAM_LIST_DEFAULT_LIMIT,
   UPSTREAM_LIST_IDS_MAX,
+  UPSTREAM_MAX_FILES_PER_COMMIT,
+  type UpstreamChangedFile,
+  type ThreadId,
+  type UpstreamCommitFiles,
+  type UpstreamHistoryPublication,
+  type UpstreamTopicFiles,
+  type UpstreamTopicHistoryEntry,
   type UpstreamListTopicsInput,
   type UpstreamListTopicsResult,
   type UpstreamStateCounts,
@@ -31,8 +38,8 @@ import {
   type UpstreamLedger,
 } from "@t3tools/shared/upstreamPorts";
 
-import type { TrailerCommit } from "./git.ts";
-import type { OpRecord, PortLinkRecord } from "./store.ts";
+import type { CommitNumstat, TrailerCommit } from "./git.ts";
+import type { OpRecord, OpState, PortLinkRecord } from "./store.ts";
 
 export interface TrailerIndex {
   readonly epochs: EpochIndex;
@@ -392,4 +399,131 @@ export function pageRows<Row extends DerivedRow>(
     total: selected.length,
     facets,
   };
+}
+
+// ── Topic detail extras ──
+
+/**
+ * Files per commit: the counted files first (git numstat counts at most 15),
+ * then the remaining paths without counts. A commit missing from `numstat`
+ * is not in the local clone.
+ */
+export function buildTopicFiles(
+  shas: ReadonlyArray<string>,
+  numstat: ReadonlyMap<string, CommitNumstat>,
+  pathsInF5: ReadonlySet<string> | null,
+): UpstreamTopicFiles {
+  const exists = (file: string) => (pathsInF5 ? pathsInF5.has(file) : null);
+  const unique = new Set<string>();
+  const totals = { files: 0, added: 0, deleted: 0, existingInF5: 0 };
+  const commits = shas.map((sha): UpstreamCommitFiles => {
+    const entry = numstat.get(sha);
+    if (!entry) return { sha, available: false, files: [], totalFiles: 0, truncated: false };
+    const counted = new Set(entry.files.map((file) => file.path));
+    const all: UpstreamChangedFile[] = [
+      ...entry.files.map((file) => ({ ...file, existsInF5: exists(file.path) })),
+      ...entry.paths
+        .filter((file) => !counted.has(file))
+        .map((file) => ({ path: file, added: null, deleted: null, existsInF5: exists(file) })),
+    ];
+    for (const file of all) {
+      totals.added += file.added ?? 0;
+      totals.deleted += file.deleted ?? 0;
+      if (unique.has(file.path)) continue;
+      unique.add(file.path);
+      totals.files += 1;
+      if (file.existsInF5) totals.existingInF5 += 1;
+    }
+    const totalFiles = Math.max(entry.totalFiles, all.length);
+    const files = all.slice(0, UPSTREAM_MAX_FILES_PER_COMMIT);
+    return { sha, available: true, files, totalFiles, truncated: files.length < totalFiles };
+  });
+  return { commits, totals };
+}
+
+const PUBLICATION_BY_STATE: Record<OpState, UpstreamHistoryPublication> = {
+  recorded: "pending",
+  merged: "published",
+  superseded: "superseded",
+  discarded: "discarded",
+};
+
+const decisionDetails = (fields: {
+  readonly status: UpstreamTopic["status"];
+  readonly decidedBy?: UpstreamTopic["decidedBy"];
+  readonly reasonKey?: string;
+  readonly reason?: string;
+}) => ({
+  status: fields.status,
+  ...(fields.decidedBy ? { decidedBy: fields.decidedBy } : {}),
+  ...(fields.reasonKey ? { reasonKey: fields.reasonKey } : {}),
+  ...(fields.reason ? { reason: fields.reason } : {}),
+});
+
+/**
+ * The topic's timeline, oldest first: its creation, this profile's decision
+ * ops, the decision on the base ledger when no op accounts for it (another
+ * writer, or a decision older than the kept ops), and port threads. Links
+ * have no unlink time, so an unlink follows its port start.
+ */
+export function buildTopicHistory(input: {
+  readonly topic: UpstreamTopic;
+  /** The topic on origin/<base>, or undefined while only an open op has it. */
+  readonly baseTopic: UpstreamTopic | undefined;
+  readonly ops: ReadonlyArray<OpRecord>;
+  readonly links: ReadonlyArray<PortLinkRecord>;
+}): UpstreamTopicHistoryEntry[] {
+  const { topic, baseTopic } = input;
+  const timed: UpstreamTopicHistoryEntry[] = [];
+  const decisions = input.ops.filter((record) => record.op.kind === "decision");
+  for (const record of decisions) {
+    if (record.op.kind !== "decision") continue;
+    timed.push({
+      at: record.createdAt,
+      kind: "decided",
+      epoch: record.op.fields.epoch,
+      publication: PUBLICATION_BY_STATE[record.state],
+      ...decisionDetails(record.op.fields),
+    });
+  }
+  const decidedAt = baseTopic?.decidedAt;
+  if (
+    baseTopic &&
+    decidedAt &&
+    !decisions.some(
+      (record) => record.op.kind === "decision" && record.op.fields.decidedAt === decidedAt,
+    )
+  )
+    timed.push({
+      at: decidedAt,
+      kind: "decided",
+      epoch: baseTopic.epoch,
+      publication: "ledger",
+      ...decisionDetails(baseTopic),
+    });
+  const links = input.links.filter((link) => link.topicId === topic.id);
+  const untimed: UpstreamTopicHistoryEntry[] = [];
+  const unlinkedAfter = new Map<UpstreamTopicHistoryEntry, UpstreamTopicHistoryEntry>();
+  for (const link of links) {
+    const started: UpstreamTopicHistoryEntry = {
+      at: link.startedAt ?? null,
+      kind: "port-started",
+      epoch: link.epoch,
+      threadId: link.threadId as ThreadId,
+    };
+    (started.at === null ? untimed : timed).push(started);
+    if (link.state === "unlinked")
+      unlinkedAfter.set(started, { ...started, at: null, kind: "unlinked" });
+  }
+  timed.sort((left, right) => (left.at! < right.at! ? -1 : left.at! > right.at! ? 1 : 0));
+  const created: UpstreamTopicHistoryEntry = {
+    at: topic.createdAt,
+    kind: "created",
+    epoch: 1,
+    publication: baseTopic ? "published" : "pending",
+  };
+  return [created, ...untimed, ...timed].flatMap((entry) => {
+    const unlinked = unlinkedAfter.get(entry);
+    return unlinked ? [entry, unlinked] : [entry];
+  });
 }

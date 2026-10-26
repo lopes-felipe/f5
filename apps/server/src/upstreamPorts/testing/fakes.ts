@@ -177,9 +177,10 @@ export class FakeGitRepo {
           this.numstatTimeouts -= 1;
           return Effect.fail(gitError("numstat", "Git command timed out after 120000ms"));
         }
-        return Effect.succeed(
-          this.numstat(source.kind === "range" ? this.range(source.from, source.to) : source.shas),
-        );
+        const shas = source.kind === "range" ? this.range(source.from, source.to) : source.shas;
+        const missing = shas.find((sha) => !this.commits.has(sha));
+        if (missing) return Effect.fail(gitError("numstat", `bad object ${missing}`));
+        return Effect.succeed(this.numstat(shas));
       }),
     streamPatches: (_cwd, source) =>
       Effect.sync(

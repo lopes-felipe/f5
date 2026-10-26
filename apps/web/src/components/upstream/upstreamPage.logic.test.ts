@@ -6,6 +6,7 @@ import {
   activeFilterChips,
   adjacentList,
   adjustCounts,
+  aggregateTopicFiles,
   bulkActionsForList,
   canMoveFocusAfterDecision,
   decisionBatches,
@@ -14,9 +15,12 @@ import {
   extendSelection,
   filterFromSearch,
   focusAfterRemoval,
+  formatFileTotals,
   hasActiveFilters,
   headerCheckState,
+  historyEntryLabel,
   ledgerChipLabel,
+  liveUndoEntries,
   moveFocus,
   portableTopicIds,
   portLimitError,
@@ -32,6 +36,8 @@ import {
   suggestionChipLabel,
   toggleId,
   toggleValue,
+  undoToastTitle,
+  upstreamBlobUrl,
   upstreamSettingsOverrides,
   watchFromBlocked,
   withoutFilters,
@@ -323,5 +329,61 @@ describe("upstream page logic", () => {
       }),
     ).toBe("mobile");
     expect(preselectedSkipReason({})).toBeNull();
+  });
+});
+
+describe("undo, files and history", () => {
+  it("keeps only undo entries that have not expired", () => {
+    const entry = (id: string, expiresAt: number) => ({ id, projectId: "p" as never, tokens: ["t"], expiresAt });
+    expect(liveUndoEntries([entry("old", 100), entry("new", 300)], 200).map((e) => e.id)).toEqual(["new"]);
+    expect(undoToastTitle(1)).toBe("Undid the decision for 1 topic");
+    expect(undoToastTitle(3)).toBe("Undid the decision for 3 topics");
+  });
+
+  it("merges a path's counts across commits and links the newest commit", () => {
+    const rows = aggregateTopicFiles({
+      commits: [
+        {
+          sha: "a".repeat(40),
+          available: true,
+          files: [
+            { path: "x.ts", added: 2, deleted: 1, existsInF5: true },
+            { path: "logo.png", added: null, deleted: null, existsInF5: false },
+          ],
+          totalFiles: 2,
+          truncated: false,
+        },
+        {
+          sha: "b".repeat(40),
+          available: true,
+          files: [{ path: "x.ts", added: 3, deleted: null, existsInF5: true }],
+          totalFiles: 1,
+          truncated: false,
+        },
+      ],
+      totals: { files: 2, added: 5, deleted: 1, existingInF5: 1 },
+    });
+    expect(rows).toEqual([
+      { path: "x.ts", added: 5, deleted: 1, sha: "b".repeat(40), existsInF5: true },
+      { path: "logo.png", added: null, deleted: null, sha: "a".repeat(40), existsInF5: false },
+    ]);
+    expect(formatFileTotals({ files: 1, added: 1200, deleted: 0, existingInF5: 1 })).toBe(
+      "1 file · +1,200 −0 · 1 exist in f5",
+    );
+  });
+
+  it("links files on GitHub only, encoding each path segment", () => {
+    expect(upstreamBlobUrl("https://github.com/o/r.git", "abc", "docs/a b.md")).toBe(
+      "https://github.com/o/r/blob/abc/docs/a%20b.md",
+    );
+    expect(upstreamBlobUrl("https://gitlab.com/o/r", "abc", "a.md")).toBeNull();
+  });
+
+  it("labels history entries by kind and status", () => {
+    expect(historyEntryLabel({ at: null, kind: "decided", epoch: 1, status: "port" })).toBe("Marked ready");
+    expect(historyEntryLabel({ at: null, kind: "unlinked", epoch: 2 })).toBe("Port thread unlinked");
+    expect(historyEntryLabel({ at: "2026-10-01T00:00:00Z", kind: "created", epoch: 1 })).toBe(
+      "Triaged into the ledger",
+    );
   });
 });

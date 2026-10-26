@@ -197,6 +197,91 @@ layer("upstream ports service", (it) => {
       assert.strictEqual(detail.row.topic.scope, undefined);
       assert.strictEqual(detail.row.state, "inbox");
       assert.ok(fixture.host.published.some((entry) => entry.reason === "ledger-updated"));
+      assert.deepStrictEqual(
+        detail.history.map((entry) => [entry.kind, entry.status, entry.epoch, entry.publication]),
+        [
+          ["created", undefined, 1, "published"],
+          ["decided", "port", 1, "superseded"],
+          ["decided", "inbox", 2, "pending"],
+        ],
+      );
+    }),
+  );
+
+  it.effect("undoes a decision once, restoring the epoch an unpublished reopen bumped", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup();
+      const service = yield* fixture.make();
+      const input = { projectId: PROJECT_ID, topicIds: ["pr-1"] };
+      const ready = yield* service.decide({ ...input, decision: { kind: "port", scope: "Panel" } });
+      const reopen = yield* service.decide({ ...input, decision: { kind: "inbox" } });
+      assert.strictEqual(
+        (yield* service.getTopic({ ...input, topicId: "pr-1" })).row.topic.epoch,
+        2,
+      );
+
+      const undone = yield* service.undoDecisions({ ...input, undoToken: reopen.undoToken! });
+      assert.deepStrictEqual(
+        [undone.updated, undone.unchanged, undone.undoToken],
+        [["pr-1"], [], null],
+      );
+      const restored = (yield* service.getTopic({ ...input, topicId: "pr-1" })).row;
+      assert.strictEqual(restored.state, "ready");
+      assert.strictEqual(restored.topic.epoch, 1);
+      assert.strictEqual(restored.topic.scope, "Panel");
+      const reused = yield* Effect.flip(
+        service.undoDecisions({ ...input, undoToken: reopen.undoToken! }),
+      );
+      assert.deepStrictEqual(
+        [reused.code, reused.message],
+        ["not-found", "This undo has expired."],
+      );
+
+      yield* service.undoDecisions({ ...input, undoToken: ready.undoToken! });
+      const original = (yield* service.getTopic({ ...input, topicId: "pr-1" })).row.topic;
+      assert.deepStrictEqual([original.status, original.decidedBy], ["inbox", undefined]);
+
+      // A topic decided again since the token was minted stays as it is.
+      const watch = yield* service.decide({ ...input, decision: { kind: "watch" } });
+      yield* service.decide({ ...input, decision: { kind: "port" } });
+      const stale = yield* service.undoDecisions({ ...input, undoToken: watch.undoToken! });
+      assert.deepStrictEqual([stale.updated, stale.unchanged], [[], ["pr-1"]]);
+
+      const late = yield* service.decide({ ...input, decision: { kind: "watch" } });
+      fixture.clock.now = new Date(fixture.clock.now.getTime() + 16 * 60_000);
+      const expired = yield* Effect.flip(
+        service.undoDecisions({ ...input, undoToken: late.undoToken! }),
+      );
+      assert.strictEqual(expired.code, "not-found");
+      const noop = yield* service.decide({ ...input, decision: { kind: "watch" } });
+      assert.strictEqual(noop.undoToken, null);
+    }),
+  );
+
+  it.effect("lists a topic's changed files and whether f5 has each path", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup();
+      const service = yield* fixture.make();
+      const files = yield* service.getTopicFiles({ projectId: PROJECT_ID, topicId: "pr-1" });
+      assert.deepStrictEqual(files, {
+        commits: [
+          {
+            sha: fixture.target0,
+            available: true,
+            files: [{ path: "apps/web/settings.tsx", added: 1, deleted: 0, existsInF5: true }],
+            totalFiles: 1,
+            truncated: false,
+          },
+        ],
+        totals: { files: 1, added: 1, deleted: 0, existingInF5: 1 },
+      });
+      fixture.repo.commits.delete(fixture.target0);
+      const missing = yield* service.getTopicFiles({ projectId: PROJECT_ID, topicId: "pr-1" });
+      assert.strictEqual(missing.commits[0]!.available, false);
+      const unknown = yield* Effect.flip(
+        service.getTopicFiles({ projectId: PROJECT_ID, topicId: "pr-404" }),
+      );
+      assert.strictEqual(unknown.code, "not-found");
     }),
   );
 
@@ -625,7 +710,11 @@ layer("upstream ports service", (it) => {
           })
           .pipe(Effect.flip);
         assert.strictEqual(notReady.code, "invalid");
-        yield* service.decide({ projectId: PROJECT_ID, topicIds: ids, decision: { kind: "port" } });
+        const marked = yield* service.decide({
+          projectId: PROJECT_ID,
+          topicIds: ids,
+          decision: { kind: "port" },
+        });
 
         const promptOnly = yield* service.getPortPrompt({
           projectId: PROJECT_ID,
@@ -680,6 +769,12 @@ layer("upstream ports service", (it) => {
         const counts = (yield* service.getOverview(PROJECT_ID)).counts;
         assert.strictEqual(counts["in-progress"], 1);
         assert.strictEqual(counts.ready, 1);
+        // The topic with a port thread keeps its decision; the other goes back to the inbox.
+        const undone = yield* service.undoDecisions({
+          projectId: PROJECT_ID,
+          undoToken: marked.undoToken!,
+        });
+        assert.deepStrictEqual([undone.updated, undone.unchanged], [[ids[1]], [ids[0]]]);
         const tooMany = yield* service
           .startPort({
             ...input,
@@ -707,6 +802,15 @@ layer("upstream ports service", (it) => {
         yield* unlink;
         assert.strictEqual(yield* linksVersion(), before + 1);
         assert.strictEqual((yield* service.getOverview(PROJECT_ID)).counts["in-progress"], 0);
+        const history = (yield* service.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! }))
+          .history;
+        assert.deepStrictEqual(
+          history.slice(-2).map((entry) => [entry.kind, entry.threadId, entry.at !== null]),
+          [
+            ["port-started", first.groups[0]!.threadId, true],
+            ["unlinked", first.groups[0]!.threadId, false],
+          ],
+        );
         assert.strictEqual((yield* Effect.flip(unlink)).code, "not-found");
       }),
   );

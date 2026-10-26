@@ -55,6 +55,18 @@ with a prompt that carries the topic's commits and the trailer that completes it
 - The strip under the Inbox tabs counts the suggestions (`Port 6 · Skip 1,204 …`). Click one,
   tick the header checkbox, click **Select all N matching**, then **Accept suggestions** to
   confirm hundreds of skips in three clicks.
+- Every decision shows a toast with **Undo**; `z` undoes the newest one. Undo restores each
+  topic exactly as it was, epoch included, for 15 minutes. A topic decided again since, or with a
+  port thread running, keeps its new state, and the toast says how many. Undo lives in memory, so
+  a restart of F5 drops it.
+- The detail pane lists the **Files changed** across the topic's commits, with line counts and
+  a GitHub link per file. Paths that do not exist on f5's default branch are dimmed and marked
+  `not in f5`, which often means the change belongs to a subsystem f5 does not have. A commit
+  missing from the local clone shows a note; fetch the upstream remote.
+- **History** at the bottom of the detail pane shows when the topic was triaged, each decision
+  made from this profile (unpublished, published, replaced by a later one or discarded), the
+  decision on the default branch when another profile made it, and port threads started or
+  unlinked.
 - Click **Add scope note** before **Mark ready** to limit a mixed commit to the parts you want.
   On a Ready topic, edit the note and click **Save scope**.
 - **Copy port prompt** puts the same prompt on the clipboard without creating a link, for a

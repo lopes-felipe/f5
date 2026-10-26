@@ -10,7 +10,10 @@ import {
   portThreadTitle,
 } from "./admission.ts";
 import { SEED_RULES, topic } from "./testFixtures.ts";
+import type { OpRecord, PortLinkRecord } from "./store.ts";
 import {
+  buildTopicFiles,
+  buildTopicHistory,
   indexTrailers,
   listTopicIds,
   pageRows,
@@ -226,7 +229,7 @@ describe("listing", () => {
       const paged: string[] = [];
       let cursor: string | null = null;
       do {
-        const page = pageRows(
+        const page: ReturnType<typeof pageRows> = pageRows(
           inbox,
           { projectId, ...input, limit: 1, ...(cursor ? { cursor } : {}) },
           "rev",
@@ -409,5 +412,140 @@ describe("admission helpers", () => {
     expect(command.bootstrap?.runSetupScript).toBe(true);
     expect(command.commandId).toBe("upstream-port:req:0");
     expect(command.provider).toBe("claudeAgent");
+  });
+});
+
+describe("topic files", () => {
+  const sha = (n: number) => String(n).repeat(40);
+
+  it("lists counted files first, then uncounted paths, capped per commit", () => {
+    const paths = Array.from({ length: 320 }, (_, index) => `src/file${index}.ts`);
+    const files = buildTopicFiles(
+      [sha(1), sha(2)],
+      new Map([
+        [
+          sha(1),
+          {
+            files: [
+              { path: "src/file1.ts", added: 4, deleted: 1 },
+              { path: "logo.png", added: null, deleted: null },
+            ],
+            paths: ["src/file0.ts", "src/file1.ts", "logo.png"],
+            totalFiles: 3,
+          },
+        ],
+        [sha(2), { files: [], paths, totalFiles: paths.length }],
+      ]),
+      new Set(["src/file1.ts"]),
+    );
+    expect(files.commits[0]!.files).toEqual([
+      { path: "src/file1.ts", added: 4, deleted: 1, existsInF5: true },
+      { path: "logo.png", added: null, deleted: null, existsInF5: false },
+      { path: "src/file0.ts", added: null, deleted: null, existsInF5: false },
+    ]);
+    expect(files.commits[1]!.files).toHaveLength(300);
+    expect(files.commits[1]!.truncated).toBe(true);
+    expect(files.commits[1]!.totalFiles).toBe(320);
+    // Paths count once across commits.
+    expect(files.totals).toEqual({ files: 321, added: 4, deleted: 1, existingInF5: 1 });
+  });
+
+  it("marks commits missing from the clone, and unknown f5 paths as null", () => {
+    const files = buildTopicFiles(
+      [sha(1), sha(2)],
+      new Map([
+        [
+          sha(1),
+          { files: [{ path: "a.ts", added: 1, deleted: 0 }], paths: ["a.ts"], totalFiles: 1 },
+        ],
+      ]),
+      null,
+    );
+    expect(files.commits[0]!.files[0]!.existsInF5).toBeNull();
+    expect(files.commits[1]).toEqual({
+      sha: sha(2),
+      available: false,
+      files: [],
+      totalFiles: 0,
+      truncated: false,
+    });
+  });
+});
+
+describe("topic history", () => {
+  const op = (
+    seq: number,
+    state: OpRecord["state"],
+    fields: Extract<OpRecord["op"], { kind: "decision" }>["fields"],
+  ): OpRecord => ({
+    opId: `op-${seq}`,
+    projectId: "project-1",
+    seq,
+    op: { kind: "decision", topicId: "pr-1", fields },
+    state,
+    createdAt: `2026-10-0${seq + 1}T00:00:00.000Z`,
+  });
+  const link = (overrides: Partial<PortLinkRecord>): PortLinkRecord => ({
+    projectId: "project-1",
+    topicId: "pr-1",
+    epoch: 1,
+    threadId: "thread-1",
+    clientRequestId: "request-1",
+    groupIndex: 0,
+    state: "active",
+    startedAt: null,
+    ...overrides,
+  });
+  const created = topic({ id: "pr-1", createdAt: "2026-10-01T00:00:00.000Z" });
+
+  it("orders ops and port threads by time and maps op states to publication", () => {
+    const history = buildTopicHistory({
+      topic: created,
+      baseTopic: created,
+      ops: [
+        op(1, "merged", { status: "port", epoch: 1, decidedBy: "user", decidedAt: "x" }),
+        op(3, "superseded", { status: "skip", epoch: 1, reasonKey: "mobile" }),
+        op(4, "recorded", { status: "watch", epoch: 1 }),
+      ],
+      links: [
+        link({ startedAt: "2026-10-03T00:00:00.000Z", state: "unlinked" }),
+        link({ topicId: "pr-2" }),
+      ],
+    });
+    expect(history.map((entry) => [entry.kind, entry.publication ?? null, entry.at])).toEqual([
+      ["created", "published", "2026-10-01T00:00:00.000Z"],
+      ["decided", "published", "2026-10-02T00:00:00.000Z"],
+      ["port-started", null, "2026-10-03T00:00:00.000Z"],
+      ["unlinked", null, null],
+      ["decided", "superseded", "2026-10-04T00:00:00.000Z"],
+      ["decided", "pending", "2026-10-05T00:00:00.000Z"],
+    ]);
+    expect(history[4]).toMatchObject({ status: "skip", reasonKey: "mobile" });
+  });
+
+  it("adds the base ledger decision no local op accounts for, and untimed links after creation", () => {
+    const base = topic({
+      id: "pr-1",
+      createdAt: "2026-10-01T00:00:00.000Z",
+      status: "skip",
+      reasonKey: "mobile",
+      decidedBy: "llm",
+      decidedAt: "2026-10-01T06:00:00.000Z",
+    });
+    const history = buildTopicHistory({
+      topic: base,
+      baseTopic: base,
+      ops: [],
+      links: [link({})],
+    });
+    expect(history.map((entry) => [entry.kind, entry.publication ?? null])).toEqual([
+      ["created", "published"],
+      ["port-started", null],
+      ["decided", "ledger"],
+    ]);
+    expect(history[2]).toMatchObject({ decidedBy: "llm", status: "skip" });
+    expect(
+      buildTopicHistory({ topic: base, baseTopic: undefined, ops: [], links: [] }),
+    ).toMatchObject([{ kind: "created", publication: "pending" }]);
   });
 });

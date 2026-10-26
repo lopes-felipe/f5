@@ -35,6 +35,9 @@ export const upstreamPortsQueryKeys = {
   ) => ["upstreamPorts", "topics", projectId, list, filter, sort] as const,
   topic: (projectId: ProjectId, topicId: string) =>
     ["upstreamPorts", "topic", projectId, topicId] as const,
+  /** Outside `all`: commits do not change, so decisions need not refetch them. */
+  topicFiles: (projectId: ProjectId, topicId: string) =>
+    ["upstreamPortsFiles", projectId, topicId] as const,
 };
 
 export function upstreamProjectsQueryOptions() {
@@ -86,6 +89,15 @@ export function upstreamTopicQueryOptions(projectId: ProjectId, topicId: string 
     queryFn: () => ensureNativeApi().upstreamPorts.getTopic({ projectId, topicId: topicId! }),
     enabled: topicId !== null,
     staleTime: 30_000,
+  });
+}
+
+export function upstreamTopicFilesQueryOptions(projectId: ProjectId, topicId: string | null) {
+  return queryOptions({
+    queryKey: upstreamPortsQueryKeys.topicFiles(projectId, topicId ?? ""),
+    queryFn: () => ensureNativeApi().upstreamPorts.getTopicFiles({ projectId, topicId: topicId! }),
+    enabled: topicId !== null,
+    staleTime: 10 * 60_000,
   });
 }
 

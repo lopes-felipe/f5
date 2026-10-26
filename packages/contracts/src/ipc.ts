@@ -99,6 +99,8 @@ import type {
   UpstreamStartPortInput,
   UpstreamStartPortResult,
   UpstreamTopicDetail,
+  UpstreamTopicFiles,
+  UpstreamUndoDecisionsInput,
   UpstreamUnlinkPortInput,
 } from "./upstreamPorts";
 import type { PullRequestKey } from "./prHub";
@@ -1211,8 +1213,10 @@ export interface NativeApi {
     listTopics: (input: UpstreamListTopicsInput) => Promise<UpstreamListTopicsResult>;
     listTopicIds: (input: UpstreamListTopicIdsInput) => Promise<UpstreamListTopicIdsResult>;
     getTopic: (input: UpstreamGetTopicInput) => Promise<UpstreamTopicDetail>;
+    getTopicFiles: (input: UpstreamGetTopicInput) => Promise<UpstreamTopicFiles>;
     decide: (input: UpstreamDecideInput) => Promise<UpstreamDecideResult>;
     acceptSuggestions: (input: UpstreamAcceptSuggestionsInput) => Promise<UpstreamDecideResult>;
+    undoDecisions: (input: UpstreamUndoDecisionsInput) => Promise<UpstreamDecideResult>;
     run: (input: UpstreamRunInput) => Promise<UpstreamRunResult>;
     startPort: (input: UpstreamStartPortInput) => Promise<UpstreamStartPortResult>;
     unlinkPort: (input: UpstreamUnlinkPortInput) => Promise<UpstreamRevisionResult>;

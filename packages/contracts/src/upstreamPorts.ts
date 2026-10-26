@@ -538,14 +538,77 @@ export const UpstreamRelatedTopic = Schema.Struct({
 });
 export type UpstreamRelatedTopic = typeof UpstreamRelatedTopic.Type;
 
+/**
+ * Where a history entry stands: `pending` until published, `published` once
+ * merged, `ledger` when it came from the ledger rather than this profile.
+ */
+export const UpstreamHistoryPublication = Schema.Literals([
+  "pending",
+  "published",
+  "superseded",
+  "discarded",
+  "ledger",
+]);
+export type UpstreamHistoryPublication = typeof UpstreamHistoryPublication.Type;
+
+export const UpstreamTopicHistoryEntry = Schema.Struct({
+  /** `null` for port links recorded before link times were kept. */
+  at: Schema.NullOr(Schema.String),
+  kind: Schema.Literals(["created", "decided", "port-started", "unlinked"]),
+  epoch: PositiveInt,
+  /** Set on `created` and `decided` entries. */
+  publication: Schema.optionalKey(UpstreamHistoryPublication),
+  status: Schema.optionalKey(UpstreamTopicStatus),
+  decidedBy: Schema.optionalKey(UpstreamDecidedBy),
+  reasonKey: Schema.optionalKey(Schema.String),
+  reason: Schema.optionalKey(Schema.String),
+  threadId: Schema.optionalKey(ThreadId),
+});
+export type UpstreamTopicHistoryEntry = typeof UpstreamTopicHistoryEntry.Type;
+
 export const UpstreamTopicDetail = Schema.Struct({
   revision: Schema.String,
   repository: Schema.String,
   row: UpstreamTopicRow,
   members: Schema.Array(UpstreamTopicMember),
   related: Schema.Array(UpstreamRelatedTopic),
+  /** Oldest first. */
+  history: Schema.Array(UpstreamTopicHistoryEntry),
 });
 export type UpstreamTopicDetail = typeof UpstreamTopicDetail.Type;
+
+export const UPSTREAM_MAX_FILES_PER_COMMIT = 300;
+
+export const UpstreamChangedFile = Schema.Struct({
+  path: Schema.String,
+  /** `null` for binary files and for paths past the per-commit count limit. */
+  added: Schema.NullOr(NonNegativeInt),
+  deleted: Schema.NullOr(NonNegativeInt),
+  /** Whether the path exists on f5's default branch; `null` when that is unknown. */
+  existsInF5: Schema.NullOr(Schema.Boolean),
+});
+export type UpstreamChangedFile = typeof UpstreamChangedFile.Type;
+
+export const UpstreamCommitFiles = Schema.Struct({
+  sha: UpstreamSha,
+  /** False when the commit is not in the local clone (fetch the upstream remote). */
+  available: Schema.Boolean,
+  files: Schema.Array(UpstreamChangedFile),
+  totalFiles: NonNegativeInt,
+  truncated: Schema.Boolean,
+});
+export type UpstreamCommitFiles = typeof UpstreamCommitFiles.Type;
+
+export const UpstreamTopicFiles = Schema.Struct({
+  commits: Schema.Array(UpstreamCommitFiles),
+  totals: Schema.Struct({
+    files: NonNegativeInt,
+    added: NonNegativeInt,
+    deleted: NonNegativeInt,
+    existingInF5: NonNegativeInt,
+  }),
+});
+export type UpstreamTopicFiles = typeof UpstreamTopicFiles.Type;
 
 export const UpstreamDecision = Schema.Union([
   Schema.Struct({
@@ -596,8 +659,16 @@ export const UpstreamDecideResult = Schema.Struct({
   revision: Schema.String,
   updated: Schema.Array(UpstreamTopicId),
   unchanged: Schema.Array(UpstreamTopicId),
+  /** Reverts `updated` through `undoDecisions` for a while; `null` when nothing changed. */
+  undoToken: Schema.NullOr(Schema.String),
 });
 export type UpstreamDecideResult = typeof UpstreamDecideResult.Type;
+
+export const UpstreamUndoDecisionsInput = Schema.Struct({
+  projectId: ProjectId,
+  undoToken: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+});
+export type UpstreamUndoDecisionsInput = typeof UpstreamUndoDecisionsInput.Type;
 
 export const UpstreamRunInput = Schema.Struct({
   projectId: ProjectId,
