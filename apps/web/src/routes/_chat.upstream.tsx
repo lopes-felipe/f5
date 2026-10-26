@@ -5,7 +5,10 @@ import { RouteErrorView } from "../components/RouteErrorView";
 import { SidebarInset } from "../components/ui/sidebar";
 import { UpstreamPage } from "../components/upstream/UpstreamPage";
 // Keep the eagerly loaded route definition free of page helpers.
-import { validateUpstreamSearch } from "../components/upstream/upstreamSearch";
+import {
+  compactUpstreamSearch,
+  validateUpstreamSearch,
+} from "../components/upstream/upstreamSearch";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 
 function UpstreamRouteView() {
@@ -19,14 +22,7 @@ function UpstreamRouteView() {
         <UpstreamPage
           search={search}
           onSearchChange={(next) =>
-            void navigate({
-              replace: true,
-              search: {
-                ...(next.project ? { project: next.project } : {}),
-                ...(next.list && next.list !== "inbox" ? { list: next.list } : {}),
-                ...(next.topic ? { topic: next.topic } : {}),
-              },
-            })
+            void navigate({ replace: true, search: compactUpstreamSearch(next) })
           }
         />
       </div>

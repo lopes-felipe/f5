@@ -1,13 +1,16 @@
-import type {
-  ProjectId,
-  UpstreamDecision,
-  UpstreamOverview,
-  UpstreamPortLinkSummary,
-  UpstreamResolvePublicationInput,
-  UpstreamTopicRow,
+import {
+  UPSTREAM_MAX_PORT_TOPICS,
+  type ProjectId,
+  type UpstreamDecision,
+  type UpstreamOverview,
+  type UpstreamPortLinkSummary,
+  type UpstreamResolvePublicationInput,
+  type UpstreamRunKind,
+  type UpstreamRunTriage,
+  type UpstreamTopicRow,
+  type UpstreamTopicState,
 } from "@t3tools/contracts";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
-import { PlayIcon, RefreshCwIcon } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { writeTextToClipboard } from "../../hooks/useCopyToClipboard";
@@ -25,10 +28,13 @@ import {
   type UpstreamTopicFilter,
 } from "../../lib/upstreamPortsReactQuery";
 import { ensureNativeApi } from "../../nativeApi";
-import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Kbd } from "../ui/kbd";
+import { Skeleton } from "../ui/skeleton";
 import { toastManager } from "../ui/toast";
-import { PublicationBanner } from "./PublicationBanner";
+import { useUpstreamShortcut } from "./UpstreamActionButton";
+import { UpstreamAttention } from "./UpstreamAttention";
+import { UpstreamBulkBar } from "./UpstreamBulkBar";
 import {
   ConfirmDialog,
   DeclineDialog,
@@ -37,23 +43,40 @@ import {
   type ConfirmRequest,
 } from "./UpstreamDialogs";
 import { UpstreamConfigEmptyState } from "./UpstreamConfigEmptyState";
-import { UpstreamSettingsPopover } from "./UpstreamSettingsPopover";
+import { UpstreamHeader } from "./UpstreamHeader";
+import { UpstreamListEmpty } from "./UpstreamListEmpty";
 import { UpstreamTopicDetail } from "./UpstreamTopicDetail";
-import { UpstreamTopicList, type UpstreamTopicListHandle } from "./UpstreamTopicList";
+import {
+  UpstreamTopicList,
+  UpstreamTopicListSkeleton,
+  type RowPointerModifiers,
+  type UpstreamRowQuickAction,
+  type UpstreamTopicListHandle,
+} from "./UpstreamTopicList";
+import { UpstreamToolbar } from "./UpstreamToolbar";
 import {
   actionTargets,
+  adjacentList,
+  adjustCounts,
   canMoveFocusAfterDecision,
   decisionBatches,
+  extendSelection,
   focusAfterRemoval,
   isDialogTarget,
   isEditableTarget,
   moveFocus,
   portableTopicIds,
+  predictedState,
   preselectedSkipReason,
   promptLimitError,
   reconcileFocus,
-  UPSTREAM_LISTS,
+  runDisabledReason,
+  selectRange,
+  startAllReady,
+  toggleId,
   upstreamPrUrl,
+  withoutTopics,
+  type UpstreamBulkAction,
   type UpstreamView,
 } from "./upstreamPage.logic";
 import type { UpstreamSearch } from "./upstreamSearch";
@@ -61,11 +84,12 @@ import type { UpstreamSearch } from "./upstreamSearch";
 export type { UpstreamSearch };
 
 const EMPTY_ROWS: ReadonlyArray<UpstreamTopicRow> = [];
+const EMPTY_SET: ReadonlySet<string> = new Set();
 
 function describeRun(run: UpstreamOverview["lastRun"]): string | null {
   if (!run) return null;
   const parts = [
-    `${run.kind === "legacy" ? "Legacy run" : "Run"} ${run.status}`,
+    `${run.kind === "legacy" ? "Legacy run" : "Last run"} ${run.status}`,
     formatRelativeTimeLabel(run.finishedAt ?? run.startedAt),
     `${run.commitCount} commits`,
     `${run.inboxCount} to review`,
@@ -75,25 +99,46 @@ function describeRun(run: UpstreamOverview["lastRun"]): string | null {
   return parts.join(" · ");
 }
 
+function PageSkeleton() {
+  return (
+    <main aria-busy="true" aria-label="Loading upstream tracking" className="flex h-full min-h-0 flex-col">
+      <div className="space-y-3 border-b px-4 py-3">
+        <div className="flex items-center gap-2">
+          <Skeleton className="h-6 w-28" />
+          <Skeleton className="ml-auto h-7 w-48" />
+        </div>
+        <Skeleton className="h-7 w-96" />
+      </div>
+      <div className="flex min-h-0 flex-1">
+        <section className="w-1/2 min-w-80 border-r">
+          <UpstreamTopicListSkeleton />
+        </section>
+      </div>
+    </main>
+  );
+}
+
 export function UpstreamPage(props: {
   readonly search: UpstreamSearch;
   readonly onSearchChange: (search: UpstreamSearch) => void;
 }) {
   const queryClient = useQueryClient();
   const keybindings = useServerKeybindings();
+  const shortcutsLabel = useUpstreamShortcut("help.shortcuts");
   const projectsQuery = useQuery(upstreamProjectsQueryOptions());
   const projects = projectsQuery.data?.projects ?? [];
   const projectId = props.search.project ?? projects[0]?.projectId ?? null;
   const list = props.search.list ?? "inbox";
-  const [hasQuestion, setHasQuestion] = useState(false);
-  const [automaticOnly, setAutomaticOnly] = useState(false);
+  const hasQuestion = list === "inbox" && props.search.question === true;
+  const automaticOnly = list === "skipped" && props.search.auto === true;
   const filter: UpstreamTopicFilter = useMemo(
     () => ({
-      ...(list === "inbox" && hasQuestion ? { hasQuestion: true } : {}),
-      ...(list === "skipped" && automaticOnly ? { decidedBy: "llm" as const } : {}),
+      ...(hasQuestion ? { hasQuestion: true } : {}),
+      ...(automaticOnly ? { decidedBy: "llm" as const } : {}),
     }),
-    [list, hasQuestion, automaticOnly],
+    [hasQuestion, automaticOnly],
   );
+  const filtered = hasQuestion || automaticOnly;
 
   const overviewQuery = useQuery({
     ...upstreamOverviewQueryOptions(projectId ?? ("" as ProjectId)),
@@ -122,14 +167,21 @@ export function UpstreamPage(props: {
       void queryClient.resetQueries({ queryKey: upstreamPortsQueryKeys.topics(projectId, list, filter) });
   }, [topicsQuery.data, projectId, list, filter, queryClient]);
 
-  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [selected, setSelected] = useState<ReadonlySet<string>>(EMPTY_SET);
+  /** Topics with a decision in flight: dimmed, and skipped by further actions. */
+  const [pending, setPending] = useState<ReadonlySet<string>>(EMPTY_SET);
+  const pendingRef = useRef(pending);
+  pendingRef.current = pending;
+  /** Runs, publication, Start port and the other non-decision actions. */
   const [busy, setBusy] = useState(false);
   const [skipDialog, setSkipDialog] = useState<{ ids: string[]; preselected: string | null; reason?: string } | null>(null);
   const [declineIds, setDeclineIds] = useState<string[] | null>(null);
-  const [portIds, setPortIds] = useState<string[] | null>(null);
+  const [portRequest, setPortRequest] = useState<{ ids: string[]; note: string | null } | null>(null);
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const listRef = useRef<UpstreamTopicListHandle | null>(null);
   const lastIndex = useRef(0);
+  /** The range anchor for Shift-click: the last row toggled or clicked. */
+  const anchorRef = useRef<string | null>(null);
 
   const focused = props.search.topic ?? null;
   const { onSearchChange, search } = props;
@@ -156,11 +208,18 @@ export function UpstreamPage(props: {
   }, [ids, focused, setFocused, topicsQuery.isPending]);
 
   // A filter can hide selected topics, so a filter change clears the selection too.
-  useEffect(() => setSelected(new Set()), [projectId, list, hasQuestion, automaticOnly]);
+  useEffect(() => {
+    setSelected(EMPTY_SET);
+    anchorRef.current = null;
+  }, [projectId, list, hasQuestion, automaticOnly]);
 
   const readOnly = overview ? !overview.writer.managedByThisProfile && overview.writer.claimed : false;
-  const targets = useCallback(() => actionTargets(ids, selected, focused), [selected, ids, focused]);
-  const selectedVisible = useMemo(() => ids.filter((id) => selected.has(id)).length, [ids, selected]);
+  /** Selected visible topics in list order, else the focused row; topics with a decision in flight are left out. */
+  const targets = useCallback(
+    () => actionTargets(ids, selected, focused).filter((id) => !pendingRef.current.has(id)),
+    [selected, ids, focused],
+  );
+  const selectedVisible = useMemo(() => new Set(ids.filter((id) => selected.has(id))), [ids, selected]);
 
   const withBusy = async <T,>(title: string, action: () => Promise<T>): Promise<T | undefined> => {
     setBusy(true);
@@ -174,45 +233,85 @@ export function UpstreamPage(props: {
     }
   };
 
-  const applyDecision = async (topicIds: string[], decision: UpstreamDecision | "accept") => {
-    if (!projectId || topicIds.length === 0) return;
+  const setPendingIds = (topicIds: ReadonlyArray<string>, on: boolean) =>
+    setPending((current) => {
+      const next = new Set(current);
+      for (const id of topicIds) {
+        if (on) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+
+  /**
+   * Records a decision. Rows that leave the list disappear at once and the
+   * counts move with them; the refetch afterwards has the final word, and a
+   * failure brings the rows back.
+   */
+  const applyDecision = async (topicIds: ReadonlyArray<string>, decision: UpstreamDecision | "accept") => {
+    if (!projectId) return;
+    const decided = topicIds.filter((id) => !pendingRef.current.has(id));
+    if (decided.length === 0) return;
     const order = ids;
     const started = viewRef.current;
-    const moved = new Set<string>();
+    const rowsById = new Map(rows.map((row) => [row.topic.id, row]));
+    const moves = decided.flatMap((id) => {
+      const row = rowsById.get(id);
+      const to = row ? predictedState(row, decision) : null;
+      return row && to ? [{ id, from: row.state, to }] : [];
+    });
+    const leaving = new Set(moves.map((move) => move.id));
+
+    setPendingIds(decided, true);
+    if (leaving.size > 0) {
+      await queryClient.cancelQueries({ queryKey: ["upstreamPorts", "topics", projectId, list] });
+      queryClient.setQueriesData<Parameters<typeof withoutTopics>[0]>(
+        { queryKey: ["upstreamPorts", "topics", projectId, list] },
+        (data) => withoutTopics(data, leaving),
+      );
+      queryClient.setQueryData<UpstreamOverview>(upstreamPortsQueryKeys.overview(projectId), (current) =>
+        current ? { ...current, counts: adjustCounts(current.counts, moves) } : current,
+      );
+      setSelected((current) => new Set([...current].filter((id) => !leaving.has(id))));
+      if (canMoveFocusAfterDecision(started, viewRef.current) && started.focused && leaving.has(started.focused))
+        setFocused(focusAfterRemoval(order, leaving, started.focused));
+    }
+
+    const recorded = new Set<string>();
     let unchanged = 0;
     let failure: unknown = null;
-    setBusy(true);
     try {
       // The server takes a bounded number of topics per call; earlier batches stay recorded if a later one fails.
-      for (const batch of decisionBatches(topicIds)) {
+      for (const batch of decisionBatches(decided)) {
         const result = await (decision === "accept"
           ? ensureNativeApi().upstreamPorts.acceptSuggestions({ projectId, topicIds: batch as never })
           : ensureNativeApi().upstreamPorts.decide({ projectId, topicIds: batch as never, decision }));
-        for (const id of result.updated) moved.add(id);
+        for (const id of result.updated) recorded.add(id);
         unchanged += result.unchanged.length;
       }
     } catch (error) {
       failure = error;
     } finally {
-      setBusy(false);
+      setPendingIds(decided, false);
     }
+    const stillHere = viewRef.current.projectId === started.projectId && viewRef.current.list === started.list;
     if (failure !== null) {
       const detail = failure instanceof Error ? failure.message : String(failure);
       toastManager.add({
         type: "error",
         title: "Decision failed",
-        description: moved.size > 0 ? `${moved.size} of ${topicIds.length} topics were recorded. ${detail}` : detail,
+        description: recorded.size > 0 ? `${recorded.size} of ${decided.length} topics were recorded. ${detail}` : detail,
       });
+      // Keep the topics that were not recorded selected for a retry.
+      if (stillHere && decided.length > 1)
+        setSelected((current) => new Set([...current, ...decided.filter((id) => !recorded.has(id))]));
     }
-    // Keep failed topics selected for a retry; drop the ones that were recorded.
-    setSelected((current) => new Set([...current].filter((id) => !moved.has(id))));
-    // The user may have switched list or project, or moved on, while the call ran.
-    const stillHere = canMoveFocusAfterDecision(started, viewRef.current);
-    if (stillHere) setFocused(focusAfterRemoval(order, moved, started.focused));
     if (unchanged > 0 && decision === "accept")
       toastManager.add({ type: "info", title: `${unchanged} topic(s) had no suggestion to accept` });
     await invalidateUpstreamPorts(queryClient);
-    if (stillHere) listRef.current?.focus();
+    // Return to the list for the next decision, unless the user moved on or is typing.
+    if (stillHere && !isEditableTarget(document.activeElement) && !isDialogTarget(document.activeElement))
+      listRef.current?.focus();
   };
 
   const openSkip = (topicIds: string[], reason?: string) => {
@@ -221,7 +320,7 @@ export function UpstreamPage(props: {
     setSkipDialog({ ids: topicIds, preselected: first ? preselectedSkipReason(first.topic) : null, ...(reason ? { reason } : {}) });
   };
 
-  const runNow = (kind: "upstream" | "legacy", triage: "llm" | "rules-only") => {
+  const runNow = (kind: UpstreamRunKind, triage: UpstreamRunTriage) => {
     if (!projectId) return;
     void withBusy("Could not start the run", async () => {
       await ensureNativeApi().upstreamPorts.run({ projectId, kind, triage });
@@ -229,26 +328,47 @@ export function UpstreamPage(props: {
     });
   };
 
-  const resolvePublication = (action: UpstreamResolvePublicationInput["action"]) => {
-    if (!projectId) return;
-    if (action === "discard") {
-      const count = overview?.publication.unpublishedOps ?? 0;
-      setConfirm({
-        title: `Discard ${count} unpublished change${count === 1 ? "" : "s"}?`,
-        description:
-          "These triage decisions were never published to the ledger and cannot be recovered. An open ledger pull request is closed.",
-        confirmLabel: "Discard",
-        onConfirm: () => resolvePublicationNow(action),
-      });
-      return;
-    }
-    resolvePublicationNow(action);
-  };
-
   const resolvePublicationNow = (action: UpstreamResolvePublicationInput["action"]) => {
     if (!projectId) return;
     void withBusy("Publication action failed", async () => {
       await ensureNativeApi().upstreamPorts.resolvePublication({ projectId, action });
+      await invalidateUpstreamPorts(queryClient);
+    });
+  };
+
+  const resolvePublication = (action: UpstreamResolvePublicationInput["action"]) => {
+    if (action !== "discard") {
+      resolvePublicationNow(action);
+      return;
+    }
+    const count = overview?.publication.unpublishedOps ?? 0;
+    setConfirm({
+      title: `Discard ${count} unpublished change${count === 1 ? "" : "s"}?`,
+      description:
+        "These triage decisions were never published to the ledger and cannot be recovered. An open ledger pull request is closed.",
+      confirmLabel: "Discard",
+      onConfirm: () => resolvePublicationNow(action),
+    });
+  };
+
+  const takeOver = () => {
+    if (!projectId || !overview) return;
+    setConfirm({
+      title: "Take over this repository?",
+      description: `Profile ${overview.writer.profileId ?? "unknown"} stops managing upstream tracking here. Changes it recorded but has not published will not be published.`,
+      confirmLabel: "Take over",
+      onConfirm: () =>
+        void withBusy("Could not take over", async () => {
+          await ensureNativeApi().upstreamPorts.takeOverWriter({ projectId });
+          await invalidateUpstreamPorts(queryClient);
+        }),
+    });
+  };
+
+  const addRemote = () => {
+    if (!projectId) return;
+    void withBusy("Could not add the remote", async () => {
+      await ensureNativeApi().upstreamPorts.addRemote({ projectId });
       await invalidateUpstreamPorts(queryClient);
     });
   };
@@ -268,7 +388,7 @@ export function UpstreamPage(props: {
   };
 
   /** Opens Start port for the Ready and In progress targets; the dialog enforces the count limits. */
-  const openStartPort = (topicIds: string[]) => {
+  const openStartPort = (topicIds: string[], note: string | null = null) => {
     const portable = portableTopicIds(rows, topicIds);
     if (portable.length === 0) {
       toastManager.add({ type: "warning", title: "Only Ready or In progress topics can be ported." });
@@ -279,15 +399,51 @@ export function UpstreamPage(props: {
         type: "info",
         title: `${topicIds.length - portable.length} selected topic(s) are not Ready or In progress and were left out.`,
       });
-    setPortIds(portable);
+    setPortRequest({ ids: portable, note });
   };
 
   const unlink = (link: UpstreamPortLinkSummary) => {
     if (!projectId || !focused) return;
-    void withBusy("Could not unlink", async () => {
-      await ensureNativeApi().upstreamPorts.unlinkPort({ projectId, topicId: focused as never, threadId: link.threadId });
-      await invalidateUpstreamPorts(queryClient);
+    const topicId = focused;
+    setConfirm({
+      title: "Unlink this port thread?",
+      description:
+        "The thread keeps running, but it no longer counts as this topic's port, so the topic moves back to Ready.",
+      confirmLabel: "Unlink",
+      onConfirm: () =>
+        void withBusy("Could not unlink", async () => {
+          await ensureNativeApi().upstreamPorts.unlinkPort({ projectId, topicId: topicId as never, threadId: link.threadId });
+          await invalidateUpstreamPorts(queryClient);
+        }),
     });
+  };
+
+  const changeList = (next: UpstreamTopicState) => {
+    if (projectId) onSearchChange({ project: projectId, list: next });
+  };
+
+  const runBulkAction = (action: UpstreamBulkAction, topicIds: string[]) => {
+    if (topicIds.length === 0) return;
+    switch (action) {
+      case "accept":
+        return void applyDecision(topicIds, "accept");
+      case "port":
+        return void applyDecision(topicIds, { kind: "port" });
+      case "skip":
+        return openSkip(topicIds);
+      case "watch":
+        return void applyDecision(topicIds, { kind: "watch" });
+      case "decline":
+        return setDeclineIds(topicIds);
+      case "equivalent":
+        return void applyDecision(topicIds, { kind: "equivalent" });
+      case "reopen":
+        return void applyDecision(topicIds, { kind: "inbox" });
+      case "startPort":
+        return openStartPort(topicIds);
+      case "copyPrompt":
+        return copyPrompt(topicIds);
+    }
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -302,7 +458,7 @@ export function UpstreamPage(props: {
     if (!command?.startsWith("upstream.")) return;
     event.preventDefault();
     const focusedRow = rows.find((row) => row.topic.id === focused);
-    const canDecide = !readOnly && !busy;
+    const canDecide = !readOnly;
     switch (command) {
       case "upstream.next":
       case "upstream.previous": {
@@ -315,35 +471,52 @@ export function UpstreamPage(props: {
           void topicsQuery.fetchNextPage();
         return;
       }
+      case "upstream.extendNext":
+      case "upstream.extendPrevious": {
+        const result = extendSelection(ids, selected, focused, command === "upstream.extendNext" ? 1 : -1);
+        setSelected(result.selected);
+        anchorRef.current = focused;
+        if (result.focused) {
+          lastIndex.current = ids.indexOf(result.focused);
+          setFocused(result.focused);
+        }
+        return;
+      }
       case "upstream.toggleSelect":
         if (!focused) return;
-        setSelected((current) => {
-          const next = new Set(current);
-          if (next.has(focused)) next.delete(focused);
-          else next.add(focused);
-          return next;
-        });
+        anchorRef.current = focused;
+        setSelected((current) => toggleId(current, focused));
         return;
       case "upstream.selectAll":
-        setSelected((current) => (current.size === ids.length ? new Set() : new Set(ids)));
+        setSelected((current) => (ids.every((id) => current.has(id)) ? EMPTY_SET : new Set(ids)));
+        return;
+      case "upstream.clearSelection":
+        setSelected(EMPTY_SET);
+        return;
+      case "upstream.nextList":
+      case "upstream.previousList":
+        changeList(adjacentList(list, command === "upstream.nextList" ? 1 : -1));
         return;
       case "upstream.acceptSuggestion":
-        if (canDecide) void applyDecision(targets(), "accept");
+        if (canDecide) runBulkAction("accept", targets());
         return;
       case "upstream.port":
-        if (canDecide) void applyDecision(targets(), { kind: "port" });
+        if (canDecide) runBulkAction("port", targets());
         return;
       case "upstream.skip":
-        if (canDecide) openSkip(targets());
+        if (canDecide) runBulkAction("skip", targets());
         return;
       case "upstream.watch":
-        if (canDecide) void applyDecision(targets(), { kind: "watch" });
+        if (canDecide) runBulkAction("watch", targets());
         return;
       case "upstream.decline":
-        if (canDecide && targets().length) setDeclineIds(targets());
+        if (canDecide) runBulkAction("decline", targets());
+        return;
+      case "upstream.equivalent":
+        if (canDecide) runBulkAction("equivalent", targets());
         return;
       case "upstream.reopen":
-        if (canDecide) void applyDecision(targets(), { kind: "inbox" });
+        if (canDecide) runBulkAction("reopen", targets());
         return;
       case "upstream.openDetail":
         if (focused) document.getElementById("upstream-topic-detail")?.focus();
@@ -354,10 +527,50 @@ export function UpstreamPage(props: {
         return;
       }
       case "upstream.startPort":
-        if (canDecide) openStartPort(targets());
+        if (canDecide && !busy) runBulkAction("startPort", targets());
         return;
     }
   };
+
+  const onClickRow = useCallback(
+    (id: string, modifiers: RowPointerModifiers) => {
+      if (modifiers.shift) setSelected((current) => selectRange(ids, current, anchorRef.current ?? focused, id));
+      else if (modifiers.mod) {
+        setSelected((current) => toggleId(current, id));
+        anchorRef.current = id;
+      } else anchorRef.current = id;
+      lastIndex.current = ids.indexOf(id);
+      setFocused(id);
+    },
+    [ids, focused, setFocused],
+  );
+  const onToggleRow = useCallback(
+    (id: string, modifiers: RowPointerModifiers) => {
+      if (modifiers.shift) setSelected((current) => selectRange(ids, current, anchorRef.current ?? focused, id));
+      else setSelected((current) => toggleId(current, id));
+      anchorRef.current = id;
+    },
+    [ids, focused],
+  );
+  const onOpenRow = useCallback(
+    (id: string) => {
+      setFocused(id);
+      document.getElementById("upstream-topic-detail")?.focus();
+    },
+    [setFocused],
+  );
+  // Quick actions read the latest handlers through a ref so the list's row renderer stays stable.
+  const quickActionRef = useRef<(id: string, action: UpstreamRowQuickAction) => void>(() => {});
+  quickActionRef.current = (id, action) => {
+    if (readOnly) return;
+    if (action === "accept") void applyDecision([id], "accept");
+    else if (action === "skip") openSkip([id]);
+    else void applyDecision([id], { kind: "watch" });
+  };
+  const onQuickAction = useCallback(
+    (id: string, action: UpstreamRowQuickAction) => quickActionRef.current(id, action),
+    [],
+  );
 
   const loadError = (error: unknown, retry: () => void) => (
     <div role="alert" className="space-y-2 p-6 text-sm">
@@ -370,339 +583,240 @@ export function UpstreamPage(props: {
     </div>
   );
   // Cached data stays on screen through background refetch errors; only a first load fails here.
-  if (projectsQuery.isPending) return <p className="p-6 text-sm text-muted-foreground">Loading…</p>;
+  if (projectsQuery.isPending) return <PageSkeleton />;
   if (projectsQuery.isError && !projectsQuery.data)
     return loadError(projectsQuery.error, () => void projectsQuery.refetch());
   if (projects.length === 0 || !projectId) return <UpstreamConfigEmptyState />;
   if (!overview) {
     if (overviewQuery.isError) return loadError(overviewQuery.error, () => void overviewQuery.refetch());
-    return <p className="p-6 text-sm text-muted-foreground">Loading…</p>;
+    return <PageSkeleton />;
   }
   if (!overview.config) return <UpstreamConfigEmptyState diagnostics={overview.diagnostics} />;
 
   const defaultRuntimeMode = projectSettings.data?.settings.defaultRuntimeMode ?? "full-access";
-  const runSummary = describeRun(overview?.activeRun ?? overview?.lastRun ?? null);
+  const runTriage: UpstreamRunTriage = overview.triageModelAvailable ? "llm" : "rules-only";
+  const runBlocked = runDisabledReason({ readOnly, busy, overview }) !== null;
+  const readyIds = list === "ready" ? portableTopicIds(rows, ids) : [];
 
   return (
     <main className="flex h-full min-h-0 flex-col">
       <header className="space-y-2 border-b px-4 py-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-lg font-semibold">Upstream</h1>
-          {projects.length > 1 && (
-            <select
-              aria-label="Project"
-              className="rounded border bg-background p-1.5 text-sm"
-              value={projectId}
-              onChange={(event) =>
-                props.onSearchChange({ project: event.target.value as ProjectId, list: props.search.list ?? "inbox" })
-              }
-            >
-              {projects.map((project) => (
-                <option key={project.projectId} value={project.projectId}>
-                  {project.title}
-                </option>
-              ))}
-            </select>
-          )}
-          {overview?.config && <span className="text-xs text-muted-foreground">{overview.config.repository}</span>}
-          <div className="ml-auto flex flex-wrap items-center gap-2">
-            {runSummary && <span className="text-xs text-muted-foreground">{runSummary}</span>}
-            <Button
-              size="sm"
-              disabled={busy || readOnly || overview?.activeRun != null || overview?.remoteStatus !== "ok"}
-              onClick={() => runNow("upstream", overview?.triageModelAvailable ? "llm" : "rules-only")}
-            >
-              <PlayIcon className="size-4" />
-              {overview?.lastRun ? "Run again" : "Run now"}
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={busy || readOnly || overview?.activeRun != null || overview?.remoteStatus !== "ok"}
-              onClick={() => runNow("upstream", "rules-only")}
-            >
-              Rules only
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              aria-label="Refresh"
-              disabled={overviewQuery.isFetching}
-              onClick={() => void invalidateUpstreamPorts(queryClient)}
-            >
-              <RefreshCwIcon className="size-4" />
-            </Button>
-            {overview && (
-              <UpstreamSettingsPopover projectId={projectId} overview={overview} providers={providers} readOnly={readOnly} />
-            )}
-          </div>
-        </div>
-        {overview && (
-          <div className="space-y-2 text-sm">
-            {overview.writer.claimed && !overview.writer.managedByThisProfile && (
-              <div role="status" className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2">
-                <span>
-                  Managed by profile {overview.writer.profileId}
-                  {overview.writer.hostname ? ` on ${overview.writer.hostname}` : ""}. This page is read-only here.
-                </span>
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() =>
-                    setConfirm({
-                      title: "Take over this repository?",
-                      description: `Profile ${overview.writer.profileId ?? "unknown"} stops managing upstream tracking here. Changes it recorded but has not published will not be published.`,
-                      confirmLabel: "Take over",
-                      onConfirm: () =>
-                        void withBusy("Could not take over", async () => {
-                          await ensureNativeApi().upstreamPorts.takeOverWriter({ projectId });
-                          await invalidateUpstreamPorts(queryClient);
-                        }),
-                    })
-                  }
-                >
-                  Take over
-                </Button>
-                <span className="text-xs text-muted-foreground">
-                  The other profile's unpublished changes will not be published.
-                </span>
-              </div>
-            )}
-            {overview.remoteStatus !== "ok" && overview.config && (
-              <div role="alert" className="flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/8 px-3 py-2">
-                {overview.remoteStatus === "missing" ? (
-                  <>
-                    <span>The {overview.config.remote} remote is missing.</span>
-                    <Button
-                      size="xs"
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() =>
-                        void withBusy("Could not add the remote", async () => {
-                          await ensureNativeApi().upstreamPorts.addRemote({ projectId });
-                          await invalidateUpstreamPorts(queryClient);
-                        })
-                      }
-                    >
-                      Add upstream remote
-                    </Button>
-                  </>
-                ) : (
-                  <span>
-                    The {overview.config.remote} remote points at {overview.remoteUrl}, but f5.json expects{" "}
-                    {overview.config.repository}.
-                  </span>
-                )}
-              </div>
-            )}
-            {overview.occurrence?.status === "failed" && (
-              <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/8 px-3 py-2">
-                The scheduled run failed after {overview.occurrence.attempts} attempts: {overview.occurrence.lastError}
-              </div>
-            )}
-            {overview.lastRun?.status === "failed" && overview.lastRun.errorMessage && (
-              <p className="text-xs text-destructive-foreground">
-                Last run failed ({overview.lastRun.failureKind}): {overview.lastRun.errorMessage}
-              </p>
-            )}
-            {overview.nextRunAt && (
-              <p className="text-xs text-muted-foreground">Next run {new Date(overview.nextRunAt).toLocaleString()}</p>
-            )}
-            {overview.diagnostics.length > 0 && (
-              <ul className="list-disc pl-5 text-xs text-destructive-foreground">
-                {overview.diagnostics.slice(0, 5).map((message) => (
-                  <li key={message}>{message}</li>
-                ))}
-              </ul>
-            )}
-            {overview.policyTruncated && (
-              <p className="text-xs text-warning-foreground">upstream/policy.md is over 16 KiB; triage sees a truncated copy.</p>
-            )}
-            {!overview.ghAvailable && (
-              <p className="text-xs text-muted-foreground">
-                GitHub CLI is unavailable: runs skip PR descriptions and publishing waits for sign-in.
-              </p>
-            )}
-            <PublicationBanner publication={overview.publication} busy={busy || readOnly} onResolve={resolvePublication} />
-            {overview.legacyRemaining > 0 && (
-              <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2">
-                <span>{overview.legacyRemaining} commits from the earlier catch-up are still untriaged.</span>
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={busy || readOnly || overview.activeRun != null}
-                  onClick={() => runNow("legacy", overview.triageModelAvailable ? "llm" : "rules-only")}
-                >
-                  Triage legacy backlog
-                </Button>
-              </div>
-            )}
-          </div>
-        )}
-        <nav aria-label="Topic lists" className="flex flex-wrap items-center gap-1">
-          {UPSTREAM_LISTS.map((entry) => (
-            <Button
-              key={entry.id}
-              size="xs"
-              variant={entry.id === list ? "secondary" : "ghost"}
-              aria-current={entry.id === list ? "page" : undefined}
-              onClick={() => props.onSearchChange({ project: projectId, list: entry.id })}
-            >
-              {entry.label}
-              <Badge variant="outline" size="sm" className="tabular-nums">
-                {overview?.counts[entry.id] ?? 0}
-              </Badge>
-            </Button>
-          ))}
-          {list === "inbox" && (
-            <label className="ml-2 flex items-center gap-1 text-xs">
-              <input type="checkbox" checked={hasQuestion} onChange={(e) => setHasQuestion(e.target.checked)} />
-              Has question
-            </label>
-          )}
-          {list === "skipped" && (
-            <label className="ml-2 flex items-center gap-1 text-xs">
-              <input type="checkbox" checked={automaticOnly} onChange={(e) => setAutomaticOnly(e.target.checked)} />
-              Automatic only
-            </label>
-          )}
-          {selectedVisible > 0 && <span className="ml-auto text-xs text-muted-foreground">{selectedVisible} selected</span>}
-        </nav>
+        <UpstreamHeader
+          projects={projects}
+          projectId={projectId}
+          onProjectChange={(project) => onSearchChange({ project, list: "inbox" })}
+          overview={overview}
+          providers={providers}
+          readOnly={readOnly}
+          busy={busy}
+          refreshing={overviewQuery.isFetching}
+          onRun={runNow}
+          onRefresh={() => void invalidateUpstreamPorts(queryClient)}
+          onResolvePublication={resolvePublication}
+        />
+        <UpstreamAttention
+          overview={overview}
+          readOnly={readOnly}
+          busy={busy}
+          onTakeOver={takeOver}
+          onAddRemote={addRemote}
+          onResolvePublication={resolvePublication}
+        />
+        <UpstreamToolbar
+          list={list}
+          counts={overview.counts}
+          onListChange={changeList}
+          question={hasQuestion}
+          onQuestionChange={(value) => onSearchChange({ project: projectId, list, ...(value ? { question: true } : {}) })}
+          auto={automaticOnly}
+          onAutoChange={(value) => onSearchChange({ project: projectId, list, ...(value ? { auto: true } : {}) })}
+          startAll={
+            list === "ready"
+              ? {
+                  count: overview.counts.ready,
+                  disabled: busy || readOnly || readyIds.length === 0,
+                  onStart: () => {
+                    const all = startAllReady(readyIds);
+                    openStartPort(
+                      all.ids,
+                      all.capped ? `Only the first ${UPSTREAM_MAX_PORT_TOPICS} Ready topics are used.` : null,
+                    );
+                  },
+                }
+              : null
+          }
+        />
       </header>
       <div className="flex min-h-0 flex-1">
         <section className="flex min-h-0 w-1/2 min-w-80 flex-col border-r">
           {topicsQuery.error ? (
-            <p role="alert" className="p-4 text-sm text-destructive-foreground">
-              {String(topicsQuery.error)}
-            </p>
+            <div role="alert" className="space-y-2 p-4 text-sm">
+              <p className="text-destructive-foreground">{String(topicsQuery.error)}</p>
+              <Button size="sm" variant="outline" onClick={() => void topicsQuery.refetch()}>
+                Retry
+              </Button>
+            </div>
+          ) : topicsQuery.isPending ? (
+            <UpstreamTopicListSkeleton />
           ) : (
             <UpstreamTopicList
               ref={listRef}
               rows={rows}
-              repository={overview?.config?.repository ?? ""}
+              repository={overview.config.repository}
+              reasonLabels={overview.reasonLabels}
               focusedId={focused}
               selected={selected}
+              pending={pending}
+              quickActions={list === "inbox" && !readOnly}
               hasMore={Boolean(topicsQuery.hasNextPage)}
               loadingMore={topicsQuery.isFetchingNextPage}
-              onLoadMore={() => void topicsQuery.fetchNextPage()}
-              onFocusRow={(id) => {
-                lastIndex.current = ids.indexOf(id);
-                setFocused(id);
-              }}
-              onToggleRow={(id) =>
-                setSelected((current) => {
-                  const next = new Set(current);
-                  if (next.has(id)) next.delete(id);
-                  else next.add(id);
-                  return next;
-                })
+              header={
+                <UpstreamBulkBar
+                  list={list}
+                  ids={ids}
+                  selected={selectedVisible}
+                  total={filtered ? rows.length : overview.counts[list]}
+                  readOnly={readOnly}
+                  busy={busy}
+                  onSelectAll={(select) => setSelected(select ? new Set(ids) : EMPTY_SET)}
+                  onClear={() => setSelected(EMPTY_SET)}
+                  onAction={(action) => runBulkAction(action, targets())}
+                />
               }
-              onOpenRow={(id) => {
-                setFocused(id);
-                document.getElementById("upstream-topic-detail")?.focus();
-              }}
+              empty={
+                <UpstreamListEmpty
+                  list={list}
+                  filtered={filtered}
+                  lastRun={describeRun(overview.lastRun)}
+                  runDisabled={runBlocked}
+                  onRun={() => runNow("upstream", runTriage)}
+                  onClearFilters={() => onSearchChange({ project: projectId, list })}
+                />
+              }
+              onLoadMore={() => void topicsQuery.fetchNextPage()}
+              onClickRow={onClickRow}
+              onToggleRow={onToggleRow}
+              onOpenRow={onOpenRow}
+              onQuickAction={onQuickAction}
               onKeyDown={handleKeyDown}
             />
           )}
         </section>
-        <section id="upstream-topic-detail" tabIndex={-1} className="min-h-0 flex-1 overflow-y-auto outline-none">
-          {focused && overview ? (
+        <section
+          id="upstream-topic-detail"
+          tabIndex={-1}
+          className="min-h-0 flex-1 overflow-y-auto outline-none"
+          onKeyDown={(event) => {
+            if (event.key !== "Escape" || event.defaultPrevented) return;
+            if (isEditableTarget(event.target) || isDialogTarget(event.target)) return;
+            event.preventDefault();
+            listRef.current?.focus();
+          }}
+        >
+          {focused ? (
             <UpstreamTopicDetail
               projectId={projectId}
               topicId={focused}
               overview={overview}
               readOnly={readOnly}
               busy={busy}
+              pending={pending.has(focused)}
+              onAccept={() => void applyDecision([focused], "accept")}
               onDecide={(decision) => void applyDecision([focused], decision)}
               onSkip={(options) => openSkip([focused], options?.reason)}
               onDecline={() => setDeclineIds([focused])}
               onStartPort={() => openStartPort([focused])}
               onCopyPrompt={() => copyPrompt([focused])}
               onUnlink={unlink}
+              onOpenTopic={(topicId, state) => onSearchChange({ project: projectId, list: state ?? list, topic: topicId })}
             />
           ) : (
-            <p className="p-6 text-sm text-muted-foreground">Select a topic. Use j and k to move, ? for shortcuts.</p>
+            <p className="p-6 text-sm text-muted-foreground">
+              Select a topic. Use <Kbd>j</Kbd> and <Kbd>k</Kbd> to move
+              {shortcutsLabel ? (
+                <>
+                  , <Kbd>{shortcutsLabel}</Kbd> for every shortcut
+                </>
+              ) : null}
+              .
+            </p>
           )}
         </section>
       </div>
-      {overview && (
-        <>
-          <SkipReasonDialog
-            open={skipDialog !== null}
-            count={skipDialog?.ids.length ?? 0}
-            reasonKeys={overview.reasonKeys}
-            reasonLabels={overview.reasonLabels}
-            upstreamOnlySubsystems={overview.upstreamOnlySubsystems}
-            preselected={skipDialog?.preselected ?? null}
-            {...(skipDialog?.reason ? { defaultReason: skipDialog.reason } : {})}
-            onClose={() => {
-              setSkipDialog(null);
-              listRef.current?.focus();
-            }}
-            onConfirm={(input) => {
-              const topicIds = skipDialog?.ids ?? [];
-              setSkipDialog(null);
-              void applyDecision(topicIds, { kind: "skip", ...input });
-            }}
-          />
-          <DeclineDialog
-            open={declineIds !== null}
-            count={declineIds?.length ?? 0}
-            onClose={() => {
-              setDeclineIds(null);
-              listRef.current?.focus();
-            }}
-            onConfirm={(reason) => {
-              const topicIds = declineIds ?? [];
-              setDeclineIds(null);
-              void applyDecision(topicIds, { kind: "declined", reason });
-            }}
-          />
-          <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
-          <StartPortDialog
-            open={portIds !== null}
-            projectId={projectId}
-            topicIds={portIds ?? []}
-            providers={providers}
-            savedModel={projectSettings.data?.settings.upstreamPorts?.portModelSelection ?? null}
-            defaultRuntimeMode={defaultRuntimeMode}
-            overview={overview}
-            busy={busy}
-            onClose={() => setPortIds(null)}
-            onRunFirst={() => {
-              setPortIds(null);
-              runNow("upstream", overview.triageModelAvailable ? "llm" : "rules-only");
-            }}
-            onStart={(input) => {
-              const topicIds = portIds ?? [];
-              void withBusy("Could not start the port", async () => {
-                const result = await ensureNativeApi().upstreamPorts.startPort({
-                  projectId,
-                  topicIds: topicIds as never,
-                  ...input,
-                });
-                setPortIds(null);
-                const rejected = result.groups.filter((group) => group.status === "rejected");
-                const pending = result.groups.filter((group) => group.status === "pending");
-                toastManager.add({
-                  type: rejected.length ? "warning" : "success",
-                  title: `Started ${result.groups.length - rejected.length} port thread(s)`,
-                  ...(rejected.length || pending.length
-                    ? {
-                        description: [
-                          ...rejected.map((group) => `Rejected: ${group.reason ?? group.topicIds.join(", ")}`),
-                          ...(pending.length ? [`${pending.length} will be retried automatically.`] : []),
-                        ].join("\n"),
-                      }
-                    : {}),
-                });
-                await invalidateUpstreamPorts(queryClient);
-              });
-            }}
-          />
-        </>
-      )}
+      <SkipReasonDialog
+        open={skipDialog !== null}
+        count={skipDialog?.ids.length ?? 0}
+        reasonKeys={overview.reasonKeys}
+        reasonLabels={overview.reasonLabels}
+        upstreamOnlySubsystems={overview.upstreamOnlySubsystems}
+        preselected={skipDialog?.preselected ?? null}
+        {...(skipDialog?.reason ? { defaultReason: skipDialog.reason } : {})}
+        onClose={() => {
+          setSkipDialog(null);
+          listRef.current?.focus();
+        }}
+        onConfirm={(input) => {
+          const topicIds = skipDialog?.ids ?? [];
+          setSkipDialog(null);
+          void applyDecision(topicIds, { kind: "skip", ...input });
+        }}
+      />
+      <DeclineDialog
+        open={declineIds !== null}
+        count={declineIds?.length ?? 0}
+        onClose={() => {
+          setDeclineIds(null);
+          listRef.current?.focus();
+        }}
+        onConfirm={(reason) => {
+          const topicIds = declineIds ?? [];
+          setDeclineIds(null);
+          void applyDecision(topicIds, { kind: "declined", reason });
+        }}
+      />
+      <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
+      <StartPortDialog
+        open={portRequest !== null}
+        projectId={projectId}
+        topicIds={portRequest?.ids ?? []}
+        note={portRequest?.note ?? null}
+        providers={providers}
+        savedModel={projectSettings.data?.settings.upstreamPorts?.portModelSelection ?? null}
+        defaultRuntimeMode={defaultRuntimeMode}
+        overview={overview}
+        busy={busy}
+        onClose={() => setPortRequest(null)}
+        onRunFirst={() => {
+          setPortRequest(null);
+          runNow("upstream", runTriage);
+        }}
+        onStart={(input) => {
+          const topicIds = portRequest?.ids ?? [];
+          void withBusy("Could not start the port", async () => {
+            const result = await ensureNativeApi().upstreamPorts.startPort({
+              projectId,
+              topicIds: topicIds as never,
+              ...input,
+            });
+            setPortRequest(null);
+            const rejected = result.groups.filter((group) => group.status === "rejected");
+            const pendingGroups = result.groups.filter((group) => group.status === "pending");
+            toastManager.add({
+              type: rejected.length ? "warning" : "success",
+              title: `Started ${result.groups.length - rejected.length} port thread(s)`,
+              ...(rejected.length || pendingGroups.length
+                ? {
+                    description: [
+                      ...rejected.map((group) => `Rejected: ${group.reason ?? group.topicIds.join(", ")}`),
+                      ...(pendingGroups.length ? [`${pendingGroups.length} will be retried automatically.`] : []),
+                    ].join("\n"),
+                  }
+                : {}),
+            });
+            await invalidateUpstreamPorts(queryClient);
+          });
+        }}
+      />
     </main>
   );
 }

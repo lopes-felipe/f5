@@ -35,6 +35,12 @@ const UPSTREAM_DEFAULT_KEYS = [
   "enter",
   "o",
   "shift+p",
+  "e",
+  "shift+j",
+  "shift+k",
+  "escape",
+  "]",
+  "[",
 ] as const satisfies { readonly length: (typeof UPSTREAM_KEYBINDING_COMMANDS)["length"] };
 
 export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [

@@ -213,6 +213,36 @@ See the full schema for more details: [`packages/contracts/src/keybindings.ts`](
     "key": "shift+p",
     "command": "upstream.startPort",
     "when": "upstreamListFocus && !editableFocus && !dialogFocus"
+  },
+  {
+    "key": "e",
+    "command": "upstream.equivalent",
+    "when": "upstreamListFocus && !editableFocus && !dialogFocus"
+  },
+  {
+    "key": "shift+j",
+    "command": "upstream.extendNext",
+    "when": "upstreamListFocus && !editableFocus && !dialogFocus"
+  },
+  {
+    "key": "shift+k",
+    "command": "upstream.extendPrevious",
+    "when": "upstreamListFocus && !editableFocus && !dialogFocus"
+  },
+  {
+    "key": "escape",
+    "command": "upstream.clearSelection",
+    "when": "upstreamListFocus && !editableFocus && !dialogFocus"
+  },
+  {
+    "key": "]",
+    "command": "upstream.nextList",
+    "when": "upstreamListFocus && !editableFocus && !dialogFocus"
+  },
+  {
+    "key": "[",
+    "command": "upstream.previousList",
+    "when": "upstreamListFocus && !editableFocus && !dialogFocus"
   }
 ]
 ```
@@ -318,11 +348,20 @@ selected, and focus moves to the next row.
 | `x`       | `upstream.toggleSelect`     | Select or unselect the focused topic                       |
 | `Shift+a` | `upstream.selectAll`        | Select or clear all loaded topics                          |
 | `a`       | `upstream.acceptSuggestion` | Accept each selected topic's triage suggestion             |
-| `p`       | `upstream.port`             | Mark for porting                                           |
+| `p`       | `upstream.port`             | Mark ready to port                                         |
 | `s`       | `upstream.skip`             | Skip, with the reason menu preselected from the suggestion |
 | `w`       | `upstream.watch`            | Watch for 30 days                                          |
 | `d`       | `upstream.decline`          | Decline with a reason                                      |
+| `e`       | `upstream.equivalent`       | Record that f5 already has the change                      |
 | `u`       | `upstream.reopen`           | Move back to Inbox                                         |
-| `Enter`   | `upstream.openDetail`       | Move focus to the detail pane                              |
+| `Enter`   | `upstream.openDetail`       | Move focus to the detail pane (`Esc` returns to the list)  |
 | `o`       | `upstream.openUpstreamPr`   | Open the first upstream PR                                 |
 | `Shift+p` | `upstream.startPort`        | Open Start port for Ready topics                           |
+| `Shift+j` | `upstream.extendNext`       | Extend the selection down                                  |
+| `Shift+k` | `upstream.extendPrevious`   | Extend the selection up                                    |
+| `Esc`     | `upstream.clearSelection`   | Clear the selection                                        |
+| `]`       | `upstream.nextList`         | Next list (Inbox, Ready, …)                                |
+| `[`       | `upstream.previousList`     | Previous list                                              |
+
+With the mouse, Shift-click a row or its checkbox to select a range, and Cmd-click (Ctrl-click
+elsewhere) to add or remove one row. The bar above the list shows the actions for the selection.

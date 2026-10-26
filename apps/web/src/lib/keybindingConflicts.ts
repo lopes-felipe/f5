@@ -219,7 +219,7 @@ export function formatKeybindingCommandLabel(
     case "upstream.acceptSuggestion":
       return "Accept triage suggestion";
     case "upstream.port":
-      return "Mark topic to port";
+      return "Mark ready to port";
     case "upstream.skip":
       return "Skip topic";
     case "upstream.watch":
@@ -234,6 +234,18 @@ export function formatKeybindingCommandLabel(
       return "Open upstream PR";
     case "upstream.startPort":
       return "Start port";
+    case "upstream.equivalent":
+      return "Record topic as already in f5";
+    case "upstream.extendNext":
+      return "Extend selection down";
+    case "upstream.extendPrevious":
+      return "Extend selection up";
+    case "upstream.clearSelection":
+      return "Clear upstream selection";
+    case "upstream.nextList":
+      return "Next upstream list";
+    case "upstream.previousList":
+      return "Previous upstream list";
 
     case "sidebar.toggle":
       return "Toggle main sidebar";

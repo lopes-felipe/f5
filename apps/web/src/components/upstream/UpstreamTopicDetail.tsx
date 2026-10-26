@@ -1,19 +1,51 @@
-import type { ProjectId, UpstreamDecision, UpstreamOverview, UpstreamPortLinkSummary } from "@t3tools/contracts";
+import type {
+  ProjectId,
+  UpstreamDecision,
+  UpstreamOverview,
+  UpstreamPortLinkSummary,
+  UpstreamTopicState,
+} from "@t3tools/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import { CheckIcon, CopyIcon, HelpCircleIcon, SplitIcon, TriangleAlertIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { formatRelativeTimeLabel } from "../../lib/relativeTime";
 import { upstreamTopicQueryOptions } from "../../lib/upstreamPortsReactQuery";
+import { Alert, AlertDescription } from "../ui/alert";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Input } from "../ui/input";
+import { Skeleton } from "../ui/skeleton";
+import { Textarea } from "../ui/textarea";
+import { UpstreamActionButton } from "./UpstreamActionButton";
 import {
   equivalentFromLink,
+  formatConfidence,
+  suggestionBadgeVariant,
   suggestionChipLabel,
+  suggestionVerb,
+  UPSTREAM_STATE_LABELS,
   upstreamCommitUrl,
   upstreamPrUrl,
   watchFromBlocked,
 } from "./upstreamPage.logic";
+
+export function UpstreamTopicDetailSkeleton() {
+  return (
+    <div aria-busy="true" aria-label="Loading topic" className="space-y-4 p-4">
+      <Skeleton className="h-5 w-2/3" />
+      <Skeleton className="h-3 w-24" />
+      <Skeleton className="h-16 w-full" />
+      <Skeleton className="h-24 w-full" />
+      <div className="flex gap-2">
+        <Skeleton className="h-7 w-20" />
+        <Skeleton className="h-7 w-16" />
+        <Skeleton className="h-7 w-16" />
+      </div>
+    </div>
+  );
+}
 
 export function UpstreamTopicDetail(props: {
   readonly projectId: ProjectId;
@@ -21,19 +53,27 @@ export function UpstreamTopicDetail(props: {
   readonly overview: UpstreamOverview;
   readonly readOnly: boolean;
   readonly busy: boolean;
+  readonly pending: boolean;
+  readonly onAccept: () => void;
   readonly onDecide: (decision: UpstreamDecision) => void;
   readonly onSkip: (options?: { readonly reason?: string }) => void;
   readonly onDecline: () => void;
   readonly onStartPort: () => void;
   readonly onCopyPrompt: () => void;
   readonly onUnlink: (link: UpstreamPortLinkSummary) => void;
+  readonly onOpenTopic: (topicId: string, state: UpstreamTopicState | null) => void;
 }) {
   const navigate = useNavigate();
   const query = useQuery(upstreamTopicQueryOptions(props.projectId, props.topicId));
+  const { copyToClipboard, isCopied } = useCopyToClipboard();
   const [scope, setScope] = useState("");
+  const [scopeOpen, setScopeOpen] = useState(false);
   const detail = query.data;
-  useEffect(() => setScope(detail?.row.topic.scope ?? ""), [detail?.row.topic.id, detail?.row.topic.scope]);
-  if (query.isPending) return <p className="p-4 text-sm text-muted-foreground">Loading topic…</p>;
+  useEffect(() => {
+    setScope(detail?.row.topic.scope ?? "");
+    setScopeOpen(Boolean(detail?.row.topic.scope));
+  }, [detail?.row.topic.id, detail?.row.topic.scope]);
+  if (query.isPending) return <UpstreamTopicDetailSkeleton />;
   if (!detail)
     return (
       <p role="alert" className="p-4 text-sm text-destructive-foreground">
@@ -42,16 +82,44 @@ export function UpstreamTopicDetail(props: {
     );
   const { topic, state } = detail.row;
   const suggestion = topic.suggestion;
-  const disabled = props.readOnly || props.busy;
+  const disabled = props.readOnly || props.busy || props.pending;
+  const trimmedScope = scope.trim();
+  const portDecision: UpstreamDecision = { kind: "port", ...(trimmedScope ? { scope: trimmedScope } : {}) };
+  const portable = state === "ready" || state === "in-progress";
+  const acceptable = suggestion && !suggestion.triageError && !(suggestion.status === "skip" && !suggestion.reasonKey);
   return (
     <article className="space-y-4 p-4 text-sm" aria-label={topic.title}>
-      <header className="space-y-1">
+      <header className="space-y-1.5">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-base font-semibold">{topic.title}</h2>
-          <Badge variant="outline">{state}</Badge>
+          <Badge variant="outline">{UPSTREAM_STATE_LABELS[state]}</Badge>
           {topic.epoch > 1 && <Badge variant="outline">epoch {topic.epoch}</Badge>}
         </div>
-        <p className="font-mono text-xs text-muted-foreground">{topic.id}</p>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 font-mono hover:text-foreground"
+            aria-label={`Copy topic id ${topic.id}`}
+            onClick={() => copyToClipboard(topic.id)}
+          >
+            {topic.id}
+            {isCopied ? <CheckIcon className="size-3" /> : <CopyIcon className="size-3" />}
+          </button>
+          {topic.upstreamPrs.map((pr) => (
+            <a
+              key={pr}
+              className="hover:text-foreground hover:underline"
+              href={upstreamPrUrl(detail.repository, pr)}
+              target="_blank"
+              rel="noreferrer"
+            >
+              #{pr}
+            </a>
+          ))}
+          <span title={new Date(topic.createdAt).toLocaleString()}>
+            Triaged {formatRelativeTimeLabel(topic.createdAt)}
+          </span>
+        </div>
         {topic.summary && <p>{topic.summary}</p>}
         {topic.reason && state !== "inbox" && (
           <p className="text-muted-foreground">
@@ -59,66 +127,149 @@ export function UpstreamTopicDetail(props: {
             {topic.decidedBy ? ` (${topic.decidedBy})` : ""}
           </p>
         )}
-        {topic.scope && <p>Scope: {topic.scope}</p>}
         {topic.revisitAfter && <p className="text-muted-foreground">Revisit after {topic.revisitAfter}</p>}
       </header>
 
       {suggestion && (
-        <section className="space-y-1 rounded-md border p-3">
+        <section aria-label="Triage suggestion" className="space-y-2 rounded-lg border p-3">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline">{suggestionChipLabel(suggestion)}</Badge>
+            <Badge variant={suggestionBadgeVariant(suggestion.status)}>{suggestionChipLabel(suggestion)}</Badge>
             <span className="text-xs text-muted-foreground">
               impact {suggestion.userImpact} · {suggestion.model}
             </span>
-            {suggestion.conflict && <Badge variant="warning">conflict</Badge>}
+            {state === "inbox" && acceptable && (
+              <UpstreamActionButton
+                size="xs"
+                className="ml-auto"
+                label={`Accept: ${suggestionVerb(suggestion)}`}
+                command="upstream.acceptSuggestion"
+                tooltip={`Accept the suggestion (${formatConfidence(suggestion.confidence)} confident)`}
+                disabled={disabled}
+                onClick={props.onAccept}
+              >
+                <CheckIcon />
+                Accept: {suggestionVerb(suggestion)}
+              </UpstreamActionButton>
+            )}
           </div>
           {suggestion.reason && <p>{suggestion.reason}</p>}
-          {suggestion.question && <p className="font-medium text-warning-foreground">Question: {suggestion.question}</p>}
           {suggestion.areas.length > 0 && (
-            <p className="text-xs text-muted-foreground">Areas: {suggestion.areas.join(", ")}</p>
+            <div className="flex flex-wrap gap-1">
+              {suggestion.areas.map((area) => (
+                <Badge key={area} variant="outline" size="sm">
+                  {area}
+                </Badge>
+              ))}
+            </div>
+          )}
+          {suggestion.question && (
+            <Alert variant="warning" className="py-2">
+              <HelpCircleIcon />
+              <AlertDescription className="text-foreground">
+                <span>
+                  <span className="font-medium">Question:</span> {suggestion.question}
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  Answer it in upstream/policy.md so later runs stop asking.
+                </span>
+              </AlertDescription>
+            </Alert>
+          )}
+          {suggestion.conflict && (
+            <Alert variant="warning" className="py-2">
+              <SplitIcon />
+              <AlertDescription className="text-foreground">
+                Triage passes disagreed on this topic; the more conservative suggestion is shown.
+              </AlertDescription>
+            </Alert>
           )}
           {suggestion.f5Refs && <p className="text-xs">f5: {suggestion.f5Refs.join(", ")}</p>}
           {suggestion.triageError && (
-            <p className="text-xs text-destructive-foreground">Triage: {suggestion.triageError}</p>
+            <Alert variant="error" className="py-2">
+              <TriangleAlertIcon />
+              <AlertDescription className="text-foreground">Triage failed: {suggestion.triageError}</AlertDescription>
+            </Alert>
           )}
         </section>
       )}
 
-      <section className="space-y-2">
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" disabled={disabled} onClick={() => props.onDecide({ kind: "port", ...(scope.trim() ? { scope: scope.trim() } : {}) })}>
-            Port
-          </Button>
-          <Button size="sm" variant="outline" disabled={disabled} onClick={() => props.onSkip()}>
-            Skip…
-          </Button>
-          <Button size="sm" variant="outline" disabled={disabled} onClick={() => props.onDecide({ kind: "watch" })}>
-            Watch
-          </Button>
-          <Button size="sm" variant="outline" disabled={disabled} onClick={props.onDecline}>
-            Decline…
-          </Button>
-          <Button size="sm" variant="outline" disabled={disabled} onClick={() => props.onDecide({ kind: "equivalent" })}>
-            Already in f5
-          </Button>
+      <section aria-label="Decision" className="space-y-2">
+        <div className="flex flex-wrap gap-1.5">
+          {state !== "ready" && state !== "in-progress" && (
+            <UpstreamActionButton
+              size="sm"
+              variant={acceptable && state === "inbox" ? "outline" : "default"}
+              label="Mark ready"
+              command="upstream.port"
+              tooltip="Mark ready to port"
+              disabled={disabled}
+              onClick={() => props.onDecide(portDecision)}
+            />
+          )}
+          <UpstreamActionButton size="sm" variant="outline" label="Skip…" command="upstream.skip" disabled={disabled} onClick={() => props.onSkip()} />
+          {state !== "watch" && (
+            <UpstreamActionButton
+              size="sm"
+              variant="outline"
+              label="Watch"
+              command="upstream.watch"
+              tooltip="Watch for 30 days"
+              disabled={disabled}
+              onClick={() => props.onDecide({ kind: "watch" })}
+            />
+          )}
+          <UpstreamActionButton size="sm" variant="outline" label="Decline…" command="upstream.decline" disabled={disabled} onClick={props.onDecline} />
+          {state !== "done" && (
+            <UpstreamActionButton
+              size="sm"
+              variant="outline"
+              label="Already in f5"
+              command="upstream.equivalent"
+              tooltip="Record that f5 already has this change"
+              disabled={disabled}
+              onClick={() => props.onDecide({ kind: "equivalent" })}
+            />
+          )}
           {state !== "inbox" && (
-            <Button size="sm" variant="ghost" disabled={disabled} onClick={() => props.onDecide({ kind: "inbox" })}>
-              Reopen
-            </Button>
+            <UpstreamActionButton
+              size="sm"
+              variant="ghost"
+              label="Reopen"
+              command="upstream.reopen"
+              tooltip="Move back to Inbox"
+              disabled={disabled}
+              onClick={() => props.onDecide({ kind: "inbox" })}
+            />
           )}
         </div>
-        <Input
-          aria-label="Scope note"
-          placeholder="Scope note for Port (optional)"
-          value={scope}
-          disabled={disabled}
-          onChange={(event) => setScope(event.target.value)}
-        />
-        {(state === "ready" || state === "in-progress") && (
-          <div className="flex flex-wrap gap-2">
-            <Button size="sm" disabled={disabled} onClick={props.onStartPort}>
-              Start port…
-            </Button>
+        {scopeOpen ? (
+          <div className="space-y-1.5">
+            <Textarea
+              aria-label="Scope note"
+              placeholder="Limit the port to part of this change (optional)"
+              value={scope}
+              disabled={disabled}
+              onChange={(event) => setScope(event.target.value)}
+            />
+            {portable && (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={disabled || trimmedScope === (topic.scope ?? "")}
+                onClick={() => props.onDecide(portDecision)}
+              >
+                Save scope
+              </Button>
+            )}
+          </div>
+        ) : (
+          <Button size="xs" variant="link" className="px-0" disabled={disabled} onClick={() => setScopeOpen(true)}>
+            Add scope note
+          </Button>
+        )}
+        {portable && (
+          <div className="flex flex-wrap gap-1.5">
+            <UpstreamActionButton size="sm" label="Start port…" command="upstream.startPort" disabled={disabled} onClick={props.onStartPort} />
             <Button size="sm" variant="outline" disabled={props.busy} onClick={props.onCopyPrompt}>
               Copy port prompt
             </Button>
@@ -147,6 +298,7 @@ export function UpstreamTopicDetail(props: {
                       PR #{link.prNumber}
                     </a>
                   )}
+                  {link.prState && <Badge variant="outline">{link.prState}</Badge>}
                   {link.branch && <span className="font-mono text-xs text-muted-foreground">{link.branch}</span>}
                 </div>
                 {link.outcome && (
@@ -174,7 +326,7 @@ export function UpstreamTopicDetail(props: {
                     </Button>
                   )}
                   <Button size="xs" variant="ghost" disabled={disabled} onClick={() => props.onUnlink(link)}>
-                    Unlink
+                    Unlink…
                   </Button>
                 </div>
               </div>
@@ -201,16 +353,6 @@ export function UpstreamTopicDetail(props: {
             </li>
           ))}
         </ul>
-        {topic.upstreamPrs.length > 0 && (
-          <p className="text-xs">
-            Upstream PRs:{" "}
-            {topic.upstreamPrs.map((pr) => (
-              <a key={pr} className="mr-2 hover:underline" href={upstreamPrUrl(detail.repository, pr)} target="_blank" rel="noreferrer">
-                #{pr}
-              </a>
-            ))}
-          </p>
-        )}
       </section>
 
       {detail.related.length > 0 && (
@@ -219,8 +361,16 @@ export function UpstreamTopicDetail(props: {
           <ul className="space-y-0.5 text-xs">
             {detail.related.map((related) => (
               <li key={related.id}>
-                <span className="font-mono">{related.id}</span> {related.title}{" "}
-                <span className="text-muted-foreground">({related.state ?? "unknown"})</span>
+                <button
+                  type="button"
+                  className="text-left hover:underline"
+                  onClick={() => props.onOpenTopic(related.id, related.state)}
+                >
+                  <span className="font-mono">{related.id}</span> {related.title}
+                </button>{" "}
+                <span className="text-muted-foreground">
+                  ({related.state ? UPSTREAM_STATE_LABELS[related.state] : "unknown"})
+                </span>
               </li>
             ))}
           </ul>

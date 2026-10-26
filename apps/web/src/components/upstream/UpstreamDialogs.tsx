@@ -43,10 +43,17 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { randomUUID } from "../../lib/utils";
+import {
+  Select,
+  SelectGroup,
+  SelectGroupLabel,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "../ui/select";
 import { Textarea } from "../ui/textarea";
 import { portLimitError } from "./upstreamPage.logic";
-
-const selectClassName = "w-full rounded border bg-background p-2 text-sm";
 
 export function DeclineDialog(props: {
   readonly open: boolean;
@@ -105,7 +112,9 @@ export function SkipReasonDialog(props: {
     setReasonKey(props.preselected ?? "");
     setReason(props.defaultReason ?? "");
   }, [props.open, props.preselected, props.defaultReason]);
-  const keys = [...props.reasonKeys, ...props.upstreamOnlySubsystems.map((slug) => `upstream-only:${slug}`)];
+  const upstreamOnly = props.upstreamOnlySubsystems.map((slug) => `upstream-only:${slug}`);
+  const labelOf = (key: string) =>
+    props.reasonLabels[key] ?? (key.startsWith("upstream-only:") ? `Upstream-only: ${key.slice(14)}` : key);
   return (
     <Dialog open={props.open} onOpenChange={(open) => !open && props.onClose()}>
       <DialogPopup>
@@ -114,20 +123,28 @@ export function SkipReasonDialog(props: {
           <DialogDescription>Choose the reason recorded in the ledger.</DialogDescription>
         </DialogHeader>
         <div className="space-y-3 px-6">
-          <select
-            aria-label="Skip reason"
-            autoFocus
-            className={selectClassName}
-            value={reasonKey}
-            onChange={(event) => setReasonKey(event.target.value)}
-          >
-            <option value="">Choose a reason…</option>
-            {keys.map((key) => (
-              <option key={key} value={key}>
-                {props.reasonLabels[key] ?? (key.startsWith("upstream-only:") ? `Upstream-only: ${key.slice(14)}` : key)}
-              </option>
-            ))}
-          </select>
+          <Select value={reasonKey || null} onValueChange={(value) => setReasonKey(value ?? "")}>
+            <SelectTrigger aria-label="Skip reason" autoFocus>
+              <SelectValue>{reasonKey ? labelOf(reasonKey) : "Choose a reason…"}</SelectValue>
+            </SelectTrigger>
+            <SelectPopup>
+              {props.reasonKeys.map((key) => (
+                <SelectItem key={key} value={key}>
+                  {labelOf(key)}
+                </SelectItem>
+              ))}
+              {upstreamOnly.length > 0 && (
+                <SelectGroup>
+                  <SelectGroupLabel>Upstream-only subsystems</SelectGroupLabel>
+                  {upstreamOnly.map((key) => (
+                    <SelectItem key={key} value={key}>
+                      {labelOf(key)}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              )}
+            </SelectPopup>
+          </Select>
           <Textarea
             aria-label="Skip note"
             value={reason}
@@ -221,6 +238,8 @@ export function StartPortDialog(props: {
   readonly busy: boolean;
   readonly onClose: () => void;
   readonly onRunFirst: () => void;
+  /** Shown above the choices, e.g. when Start port for all was capped. */
+  readonly note?: string | null;
   readonly onStart: (input: {
     grouping: "together" | "separately";
     modelSelection: ModelSelection;
@@ -283,6 +302,11 @@ export function StartPortDialog(props: {
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3 px-6 text-sm">
+          {props.note && (
+            <p role="status" className="text-muted-foreground">
+              {props.note}
+            </p>
+          )}
           {untriaged > 0 && (
             <div role="status" className="flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/8 p-2">
               <span>

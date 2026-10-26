@@ -2,19 +2,34 @@ import { describe, expect, it } from "vitest";
 
 import {
   actionTargets,
+  adjacentList,
+  adjustCounts,
+  bulkActionsForList,
   canMoveFocusAfterDecision,
   decisionBatches,
+  decisionToastTitle,
   equivalentFromLink,
+  extendSelection,
   focusAfterRemoval,
+  headerCheckState,
+  ledgerChipLabel,
   moveFocus,
   portableTopicIds,
   portLimitError,
+  predictedState,
   preselectedSkipReason,
   promptLimitError,
   reconcileFocus,
+  runDisabledReason,
+  runStatus,
+  selectRange,
+  shortRepository,
+  startAllReady,
   suggestionChipLabel,
+  toggleId,
   upstreamSettingsOverrides,
   watchFromBlocked,
+  withoutTopics,
 } from "./upstreamPage.logic";
 
 const link = (outcome: { kind: "pr" | "equivalent" | "not-applicable" | "blocked"; detail: string } | null, prNumber: number | null = null) =>
@@ -31,11 +46,119 @@ const link = (outcome: { kind: "pr" | "equivalent" | "not-applicable" | "blocked
   }) as never;
 
 describe("upstream page logic", () => {
-  it("formats suggestion chips", () => {
+  it("formats suggestion chips with a confidence percentage", () => {
     const base = { reason: "", userImpact: "medium", areas: [], model: "m" } as const;
-    expect(suggestionChipLabel({ ...base, status: "port", confidence: 0.92 })).toBe("Port 0.92");
-    expect(suggestionChipLabel({ ...base, status: "skip", reasonKey: "mobile", confidence: 0.97 })).toBe("Skip: mobile 0.97");
-    expect(suggestionChipLabel({ ...base, status: "equivalent", confidence: 0.7 })).toBe("Equivalent 0.70");
+    expect(suggestionChipLabel({ ...base, status: "port", confidence: 0.92 })).toBe("Port 92%");
+    expect(suggestionChipLabel({ ...base, status: "skip", reasonKey: "mobile", confidence: 0.97 })).toBe("Skip: mobile 97%");
+    expect(suggestionChipLabel({ ...base, status: "skip", confidence: 0.5 })).toBe("Skip 50%");
+    expect(suggestionChipLabel({ ...base, status: "equivalent", confidence: 0.7 })).toBe("Equivalent 70%");
+  });
+
+  it("selects ranges from the anchor in list order", () => {
+    const ids = ["a", "b", "c", "d", "e"];
+    expect([...selectRange(ids, new Set(), "b", "d")]).toEqual(["b", "c", "d"]);
+    expect([...selectRange(ids, new Set(["a"]), "d", "b")].toSorted()).toEqual(["a", "b", "c", "d"]);
+    expect([...selectRange(ids, new Set(), null, "c")]).toEqual(["c"]);
+    expect([...selectRange(ids, new Set(), "gone", "c")]).toEqual(["c"]);
+    expect([...selectRange(ids, new Set(["a"]), "b", "gone")]).toEqual(["a"]);
+    expect([...toggleId(new Set(["a"]), "a")]).toEqual([]);
+    expect([...toggleId(new Set(["a"]), "b")]).toEqual(["a", "b"]);
+  });
+
+  it("extends the selection while moving focus", () => {
+    const ids = ["a", "b", "c"];
+    const down = extendSelection(ids, new Set(), "a", 1);
+    expect(down.focused).toBe("b");
+    expect([...down.selected]).toEqual(["a", "b"]);
+    const up = extendSelection(ids, down.selected, "b", -1);
+    expect(up.focused).toBe("a");
+    expect([...up.selected]).toEqual(["a", "b"]);
+    expect(extendSelection(ids, new Set(), null, 1)).toEqual({ focused: "a", selected: new Set(["a"]) });
+    expect(headerCheckState(ids, new Set())).toBe("none");
+    expect(headerCheckState(ids, new Set(["a"]))).toBe("some");
+    expect(headerCheckState(ids, new Set(ids))).toBe("all");
+    expect(headerCheckState([], new Set())).toBe("none");
+  });
+
+  it("offers bulk actions that apply to each list", () => {
+    expect(bulkActionsForList("inbox")).toEqual(["accept", "port", "skip", "watch", "decline", "equivalent"]);
+    expect(bulkActionsForList("ready")).toContain("startPort");
+    expect(bulkActionsForList("in-progress")).toContain("copyPrompt");
+    expect(bulkActionsForList("watch")).not.toContain("watch");
+    expect(bulkActionsForList("skipped")).toContain("reopen");
+    expect(adjacentList("inbox", -1)).toBe("skipped");
+    expect(adjacentList("skipped", 1)).toBe("inbox");
+    expect(adjacentList("ready", 1)).toBe("in-progress");
+  });
+
+  it("predicts where a decision moves a topic, for optimistic updates", () => {
+    const suggestion = (status: "port" | "skip" | "watch" | "equivalent", extra: object = {}) => ({
+      topic: { suggestion: { status, reason: "", userImpact: "low" as const, confidence: 1, areas: [], model: "m", ...extra } },
+    });
+    const inbox = { state: "inbox" as const, topic: {} };
+    expect(predictedState(inbox, { kind: "port" })).toBe("ready");
+    expect(predictedState(inbox, { kind: "skip", reasonKey: "docs" })).toBe("skipped");
+    expect(predictedState(inbox, { kind: "declined", reason: "no" })).toBe("skipped");
+    expect(predictedState(inbox, { kind: "watch" })).toBe("watch");
+    expect(predictedState(inbox, { kind: "equivalent" })).toBe("done");
+    expect(predictedState(inbox, { kind: "inbox" })).toBeNull();
+    expect(predictedState({ state: "in-progress", topic: {} }, { kind: "port", scope: "x" })).toBeNull();
+    expect(predictedState({ state: "inbox", ...suggestion("port") }, "accept")).toBe("ready");
+    expect(predictedState({ state: "inbox", ...suggestion("skip", { reasonKey: "docs" }) }, "accept")).toBe("skipped");
+    expect(predictedState({ state: "inbox", ...suggestion("skip") }, "accept")).toBeNull();
+    expect(predictedState({ state: "inbox", ...suggestion("port", { triageError: "x" }) }, "accept")).toBeNull();
+    expect(predictedState(inbox, "accept")).toBeNull();
+  });
+
+  it("moves counts and drops removed rows from loaded pages", () => {
+    const counts = { inbox: 3, ready: 0, "in-progress": 0, watch: 0, done: 0, skipped: 1 };
+    expect(
+      adjustCounts(counts, [
+        { from: "inbox", to: "ready" },
+        { from: "inbox", to: "skipped" },
+      ]),
+    ).toEqual({ ...counts, inbox: 1, ready: 1, skipped: 2 });
+    const row = (id: string) => ({ topic: { id } }) as never;
+    const data = {
+      pageParams: [null, "c1"],
+      pages: [
+        { revision: "r", status: "ok" as const, nextCursor: "c1", topics: [row("a"), row("b")] },
+        { revision: "r", status: "ok" as const, nextCursor: null, topics: [row("c")] },
+      ],
+    };
+    const next = withoutTopics(data, new Set(["b", "c"]));
+    expect(next?.pages.map((page) => page.topics.length)).toEqual([1, 0]);
+    expect(next?.pageParams).toEqual(data.pageParams);
+    expect(withoutTopics(undefined, new Set(["a"]))).toBeUndefined();
+  });
+
+  it("summarizes the header state", () => {
+    const relative = () => "5m ago";
+    const next = () => "Tue 09:00";
+    const run = { status: "succeeded", finishedAt: "2026-10-26T10:00:00Z", startedAt: "2026-10-26T09:59:00Z", remainingCount: 0 } as never;
+    expect(runStatus({ activeRun: null, lastRun: run, nextRunAt: "x", occurrence: null }, relative, next)).toEqual({
+      tone: "idle",
+      label: "Synced 5m ago · next Tue 09:00",
+    });
+    expect(
+      runStatus({ activeRun: { remainingCount: 40 } as never, lastRun: run, nextRunAt: null, occurrence: null }, relative, next),
+    ).toEqual({ tone: "running", label: "Triaging… 40 left" });
+    expect(runStatus({ activeRun: null, lastRun: null, nextRunAt: null, occurrence: null }, relative, next).tone).toBe("never");
+    expect(
+      runStatus({ activeRun: null, lastRun: run, nextRunAt: null, occurrence: { status: "failed" } as never }, relative, next).tone,
+    ).toBe("failed");
+    expect(shortRepository("https://github.com/pingdotgg/t3code.git")).toBe("pingdotgg/t3code");
+    const publication = { prNumber: 228, unpublishedOps: 11, pausedReason: null } as never;
+    expect(ledgerChipLabel(publication)).toBe("#228 · 11 unpublished");
+    expect(ledgerChipLabel({ prNumber: null, unpublishedOps: 0, pausedReason: null } as never)).toBeNull();
+    expect(runDisabledReason({ readOnly: false, busy: false, overview: { activeRun: null, remoteStatus: "ok" } })).toBeNull();
+    expect(runDisabledReason({ readOnly: false, busy: false, overview: { activeRun: null, remoteStatus: "missing" } })).toMatch(
+      /missing/u,
+    );
+    expect(startAllReady(Array.from({ length: 25 }, (_, index) => `t${index}`))).toMatchObject({ capped: true });
+    expect(startAllReady(["a"]).ids).toEqual(["a"]);
+    expect(decisionToastTitle({ kind: "skip", reasonKey: "docs" }, 12)).toBe("Skipped 12 topics");
+    expect(decisionToastTitle("accept", 1)).toBe("Accepted suggestions for 1 topic");
   });
 
   it("moves focus to the next surviving row, or the previous one at the end", () => {
