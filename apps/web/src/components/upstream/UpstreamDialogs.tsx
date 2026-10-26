@@ -26,6 +26,7 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../ui/dialog";
+import { randomUUID } from "../../lib/utils";
 import { Textarea } from "../ui/textarea";
 import { portLimitError } from "./upstreamPage.logic";
 
@@ -214,7 +215,7 @@ export function StartPortDialog(props: {
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>(props.defaultRuntimeMode);
   // One id per dialog open, reused on retry so the server deduplicates. After the
   // first submit the choices are locked, so a retry repeats the same request.
-  const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
+  const [clientRequestId, setClientRequestId] = useState(() => randomUUID());
   const [submitted, setSubmitted] = useState(false);
   const savedModelKey = selectionKey(props.defaultModel);
   const defaultModelKey = props.models.some((option) => option.key === savedModelKey)
@@ -228,7 +229,7 @@ export function StartPortDialog(props: {
       setGrouping("together");
       setModel(defaultModelKey);
       setRuntimeMode(props.defaultRuntimeMode);
-      setClientRequestId(crypto.randomUUID());
+      setClientRequestId(randomUUID());
       setSubmitted(false);
     }
   }

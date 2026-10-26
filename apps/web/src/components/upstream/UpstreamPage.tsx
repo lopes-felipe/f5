@@ -360,9 +360,26 @@ export function UpstreamPage(props: {
     }
   };
 
+  const loadError = (error: unknown, retry: () => void) => (
+    <div role="alert" className="space-y-2 p-6 text-sm">
+      <p className="text-destructive-foreground">
+        Could not load upstream tracking: {error instanceof Error ? error.message : String(error)}
+      </p>
+      <Button size="sm" variant="outline" onClick={retry}>
+        Retry
+      </Button>
+    </div>
+  );
+  // Cached data stays on screen through background refetch errors; only a first load fails here.
   if (projectsQuery.isPending) return <p className="p-6 text-sm text-muted-foreground">Loading…</p>;
+  if (projectsQuery.isError && !projectsQuery.data)
+    return loadError(projectsQuery.error, () => void projectsQuery.refetch());
   if (projects.length === 0 || !projectId) return <UpstreamConfigEmptyState />;
-  if (overview && !overview.config) return <UpstreamConfigEmptyState diagnostics={overview.diagnostics} />;
+  if (!overview) {
+    if (overviewQuery.isError) return loadError(overviewQuery.error, () => void overviewQuery.refetch());
+    return <p className="p-6 text-sm text-muted-foreground">Loading…</p>;
+  }
+  if (!overview.config) return <UpstreamConfigEmptyState diagnostics={overview.diagnostics} />;
 
   const defaultRuntimeMode = projectSettings.data?.settings.defaultRuntimeMode ?? "full-access";
   const portModels = modelOptions(providers);
@@ -602,8 +619,8 @@ export function UpstreamPage(props: {
               onDecide={(decision) => void applyDecision([focused], decision)}
               onSkip={(options) => openSkip([focused], options?.reason)}
               onDecline={() => setDeclineIds([focused])}
-              onStartPort={() => openStartPort(targets())}
-              onCopyPrompt={() => copyPrompt(targets())}
+              onStartPort={() => openStartPort([focused])}
+              onCopyPrompt={() => copyPrompt([focused])}
               onUnlink={unlink}
             />
           ) : (

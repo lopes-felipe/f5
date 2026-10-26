@@ -74,6 +74,9 @@ Before you start a port, the dialog warns when newer upstream commits are not tr
 
 ## Policy, rules and the legacy backlog
 
+The ledger lives in `upstream/` by default; `ledgerDir` in the `f5.json` `upstream` block
+moves it, and the paths below are then relative to that directory.
+
 - `upstream/policy.md` is free text that both triage and port prompts include. Edit it like any
   other file; it may change together with code. Prompts include up to 16 KiB of it.
 - `upstream/rules.json` holds reason keys, path rules that skip commits without the LLM (mobile,

@@ -199,8 +199,14 @@ export function preselectedSkipReason(topic: Pick<UpstreamTopic, "suggestion">):
   return topic.suggestion?.status === "skip" ? (topic.suggestion.reasonKey ?? null) : null;
 }
 
+/** Inputs that take no typing, such as row checkboxes, keep list shortcuts active. */
+const NON_TEXT_INPUTS = ["checkbox", "radio", "button", "submit", "reset", "range", "color", "file", "image"]
+  .map((type) => `:not([type=${type}])`)
+  .join("");
+
 export const isEditableTarget = (target: EventTarget | null) =>
-  target instanceof Element && Boolean(target.closest("input, textarea, select, [contenteditable=true]"));
+  target instanceof Element &&
+  Boolean(target.closest(`input${NON_TEXT_INPUTS}, textarea, select, [contenteditable=true]`));
 
 export const isDialogTarget = (target: EventTarget | null) =>
   target instanceof Element && Boolean(target.closest("[role=dialog], [role=alertdialog], [role=menu]"));
