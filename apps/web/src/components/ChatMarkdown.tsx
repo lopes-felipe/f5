@@ -208,13 +208,26 @@ function MarkdownCodeBlock({
     [],
   );
 
+  const runnable = Boolean(runCommand && command);
+  const copyButton = (
+    <button
+      type="button"
+      className={`chat-markdown-copy-button${runnable ? " chat-markdown-copy-button-inline" : ""}`}
+      onClick={handleCopy}
+      title={copied ? "Copied" : "Copy code"}
+      aria-label={copied ? "Copied" : "Copy code"}
+    >
+      {copied ? <CheckIcon className="size-3" /> : <CopyIcon className="size-3" />}
+    </button>
+  );
+
   return (
     <div
-      className={`chat-markdown-codeblock${wordWrap ? " chat-markdown-codeblock-wrap" : ""}`}
+      className={`chat-markdown-codeblock${wordWrap ? " chat-markdown-codeblock-wrap" : ""}${runnable ? " chat-markdown-codeblock-runnable" : ""}`}
       data-word-wrap={wordWrap ? "true" : "false"}
     >
       {runCommand && command ? (
-        <div className="flex items-center gap-2 px-3 pt-2 pr-12 text-xs text-muted-foreground">
+        <div className="chat-markdown-codeblock-header">
           <button
             type="button"
             disabled={running}
@@ -235,17 +248,11 @@ function MarkdownCodeBlock({
             Run in terminal
           </button>
           {runError ? <span role="status">Could not run command. Try again.</span> : null}
+          {copyButton}
         </div>
-      ) : null}
-      <button
-        type="button"
-        className="chat-markdown-copy-button"
-        onClick={handleCopy}
-        title={copied ? "Copied" : "Copy code"}
-        aria-label={copied ? "Copied" : "Copy code"}
-      >
-        {copied ? <CheckIcon className="size-3" /> : <CopyIcon className="size-3" />}
-      </button>
+      ) : (
+        copyButton
+      )}
       {children}
     </div>
   );

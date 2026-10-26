@@ -687,6 +687,29 @@ label:has(> select#reasoning-effort) select {
   padding-right: calc(0.9rem + var(--chat-markdown-codeblock-copy-button-space));
 }
 
+.chat-markdown .chat-markdown-codeblock-runnable {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--muted);
+}
+
+.chat-markdown .chat-markdown-codeblock-runnable pre {
+  border: 0;
+  border-radius: 0;
+  padding-right: 0.9rem;
+}
+
+.chat-markdown .chat-markdown-codeblock-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.5rem 0.375rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+}
+
 .chat-markdown .chat-markdown-codeblock-wrap pre,
 .chat-markdown .chat-markdown-codeblock-wrap code {
   white-space: pre-wrap;
@@ -723,6 +746,14 @@ label:has(> select#reasoning-effort) select {
   pointer-events: auto;
 }
 
+.chat-markdown .chat-markdown-copy-button-inline {
+  position: static;
+  flex-shrink: 0;
+  margin-left: auto;
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .chat-markdown .chat-markdown-copy-button:hover {
   color: var(--foreground);
   border-color: color-mix(in srgb, var(--border) 70%, var(--foreground));
@@ -735,6 +766,18 @@ label:has(> select#reasoning-effort) select {
 .chat-markdown .chat-markdown-table-container {
   max-width: 100%;
   overflow-x: auto;
+}
+
+/* The global scrollbar rule only sizes vertical bars; keep horizontal ones thin
+   and inset from the rounded corners. */
+.chat-markdown pre::-webkit-scrollbar,
+.chat-markdown .chat-markdown-table-container::-webkit-scrollbar {
+  height: 6px;
+}
+
+.chat-markdown pre::-webkit-scrollbar-track,
+.chat-markdown .chat-markdown-table-container::-webkit-scrollbar-track {
+  margin-inline: 0.75rem;
 }
 
 .chat-markdown .chat-markdown-table-container:not(.chat-markdown-table-wrap) table {

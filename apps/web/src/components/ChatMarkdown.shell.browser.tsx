@@ -36,6 +36,13 @@ describe("executable shell fences", () => {
     );
     const button = view.getByRole("button", { name: "Run in terminal" });
     await expect.element(button).toBeVisible();
+    const header = button.element().parentElement!;
+    const copy = header.querySelector<HTMLElement>('button[aria-label="Copy code"]');
+    expect(copy).not.toBeNull();
+    const pre = header.parentElement!.querySelector("pre")!;
+    expect(copy!.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      pre.getBoundingClientRect().top,
+    );
     expect(execute).not.toHaveBeenCalled();
     await button.click();
     await expect.element(button).toBeDisabled();
@@ -68,6 +75,7 @@ describe("executable shell fences", () => {
         (button) => button.textContent === "Run in terminal",
       ),
     ).toBe(false);
+    expect(host.querySelector(".chat-markdown-codeblock-runnable")).toBeNull();
     expect(execute).not.toHaveBeenCalled();
   });
 });
