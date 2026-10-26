@@ -8,6 +8,15 @@ import {
 import { RUNTIME_MODE_VALUES } from "@t3tools/contracts";
 import { useEffect, useState } from "react";
 
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "../ui/alert-dialog";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -125,6 +134,40 @@ export function SkipReasonDialog(props: {
   );
 }
 
+export interface ConfirmRequest {
+  readonly title: string;
+  readonly description: string;
+  readonly confirmLabel: string;
+  readonly onConfirm: () => void;
+}
+
+/** A confirm step for actions that cannot be undone. */
+export function ConfirmDialog(props: { readonly request: ConfirmRequest | null; readonly onClose: () => void }) {
+  return (
+    <AlertDialog open={props.request !== null} onOpenChange={(open) => !open && props.onClose()}>
+      <AlertDialogPopup>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{props.request?.title}</AlertDialogTitle>
+          <AlertDialogDescription>{props.request?.description}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+          <Button
+            variant="destructive"
+            onClick={() => {
+              const request = props.request;
+              props.onClose();
+              request?.onConfirm();
+            }}
+          >
+            {props.request?.confirmLabel}
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogPopup>
+    </AlertDialog>
+  );
+}
+
 export interface ModelOption {
   readonly key: string;
   readonly label: string;
@@ -169,17 +212,32 @@ export function StartPortDialog(props: {
   const [grouping, setGrouping] = useState<"together" | "separately">("together");
   const [model, setModel] = useState("");
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>(props.defaultRuntimeMode);
-  // One id per dialog open, reused on retry so the server deduplicates.
+  // One id per dialog open, reused on retry so the server deduplicates. After the
+  // first submit the choices are locked, so a retry repeats the same request.
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
-  useEffect(() => {
-    if (!props.open) return;
-    setGrouping("together");
-    setModel(selectionKey(props.defaultModel) || props.models[0]?.key || "");
-    setRuntimeMode(props.defaultRuntimeMode);
-    setClientRequestId(crypto.randomUUID());
-  }, [props.open, props.defaultModel, props.defaultRuntimeMode, props.models]);
+  const [submitted, setSubmitted] = useState(false);
+  const savedModelKey = selectionKey(props.defaultModel);
+  const defaultModelKey = props.models.some((option) => option.key === savedModelKey)
+    ? savedModelKey
+    : (props.models[0]?.key ?? "");
+  // Reset only when the dialog opens: parent re-renders pass new `models` arrays.
+  const [wasOpen, setWasOpen] = useState(false);
+  if (props.open !== wasOpen) {
+    setWasOpen(props.open);
+    if (props.open) {
+      setGrouping("together");
+      setModel(defaultModelKey);
+      setRuntimeMode(props.defaultRuntimeMode);
+      setClientRequestId(crypto.randomUUID());
+      setSubmitted(false);
+    }
+  }
+  // Models can arrive after opening; fill an empty or vanished choice without overriding the user's.
+  if (props.open && !submitted && defaultModelKey && !props.models.some((option) => option.key === model))
+    setModel(defaultModelKey);
   const limitError = portLimitError(props.topicIds.length, grouping);
   const selected = props.models.find((option) => option.key === model);
+  const locked = props.busy || submitted;
   const untriaged = props.overview.untriagedUpstreamCount;
   return (
     <Dialog open={props.open} onOpenChange={(open) => !open && !props.busy && props.onClose()}>
@@ -209,18 +267,34 @@ export function StartPortDialog(props: {
             <fieldset className="space-y-1">
               <legend className="font-medium">Grouping</legend>
               <label className="flex items-center gap-2">
-                <input type="radio" checked={grouping === "together"} onChange={() => setGrouping("together")} />
+                <input
+                  type="radio"
+                  disabled={locked}
+                  checked={grouping === "together"}
+                  onChange={() => setGrouping("together")}
+                />
                 One thread for all topics
               </label>
               <label className="flex items-center gap-2">
-                <input type="radio" checked={grouping === "separately"} onChange={() => setGrouping("separately")} />
+                <input
+                  type="radio"
+                  disabled={locked}
+                  checked={grouping === "separately"}
+                  onChange={() => setGrouping("separately")}
+                />
                 One thread per topic
               </label>
             </fieldset>
           )}
           <label className="block space-y-1">
             <span className="font-medium">Model</span>
-            <select aria-label="Port model" className={selectClassName} value={model} onChange={(e) => setModel(e.target.value)}>
+            <select
+              aria-label="Port model"
+              className={selectClassName}
+              disabled={locked}
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+            >
               {props.models.map((option) => (
                 <option key={option.key} value={option.key}>
                   {option.label}
@@ -233,6 +307,7 @@ export function StartPortDialog(props: {
             <select
               aria-label="Runtime mode"
               className={selectClassName}
+              disabled={locked}
               value={runtimeMode}
               onChange={(e) => setRuntimeMode(e.target.value as RuntimeMode)}
             >
@@ -248,6 +323,11 @@ export function StartPortDialog(props: {
               {limitError}
             </p>
           )}
+          {submitted && !props.busy && (
+            <p role="status" className="text-muted-foreground">
+              Retry repeats the same request, so threads that already started are not created twice. Close and reopen to change the choices.
+            </p>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" disabled={props.busy} onClick={props.onClose}>
@@ -255,11 +335,13 @@ export function StartPortDialog(props: {
           </Button>
           <Button
             disabled={props.busy || limitError !== null || !selected}
-            onClick={() =>
-              selected && props.onStart({ grouping, modelSelection: selected.selection, runtimeMode, clientRequestId })
-            }
+            onClick={() => {
+              if (!selected) return;
+              setSubmitted(true);
+              props.onStart({ grouping, modelSelection: selected.selection, runtimeMode, clientRequestId });
+            }}
           >
-            Start port
+            {submitted ? "Retry" : "Start port"}
           </Button>
         </DialogFooter>
       </DialogPopup>

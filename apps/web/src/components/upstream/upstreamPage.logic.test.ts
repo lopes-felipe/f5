@@ -1,13 +1,19 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  actionTargets,
+  canMoveFocusAfterDecision,
+  decisionBatches,
   equivalentFromLink,
   focusAfterRemoval,
   moveFocus,
+  portableTopicIds,
   portLimitError,
   preselectedSkipReason,
+  promptLimitError,
   reconcileFocus,
   suggestionChipLabel,
+  upstreamSettingsOverrides,
   watchFromBlocked,
 } from "./upstreamPage.logic";
 
@@ -69,6 +75,61 @@ describe("upstream page logic", () => {
       reason: "Blocked: needs the new API",
     });
     expect(watchFromBlocked(link({ kind: "pr", detail: "https://x" }))).toBeNull();
+  });
+
+  it("keeps the project's other overrides when saving upstream settings", () => {
+    const triage = { instanceId: "claude", model: "claude-opus-5-5" } as never;
+    const current = {
+      schedule: { mode: "daily" as const, hour: 7, weekday: 1 },
+      triageModelSelection: triage,
+      portModelSelection: null,
+    };
+    const overrides = {
+      defaultRuntimeMode: "approval-required" as const,
+      enableAgentBrowserAccess: false,
+      upstreamPorts: current,
+    };
+    expect(
+      upstreamSettingsOverrides(overrides, current, { schedule: { ...current.schedule, hour: 9 } }),
+    ).toEqual({
+      defaultRuntimeMode: "approval-required",
+      enableAgentBrowserAccess: false,
+      upstreamPorts: { ...current, schedule: { mode: "daily", hour: 9, weekday: 1 } },
+    });
+  });
+
+  it("batches bulk decisions at the server limit", () => {
+    const ids = Array.from({ length: 450 }, (_, index) => `t${index}`);
+    expect(decisionBatches(ids).map((batch) => batch.length)).toEqual([200, 200, 50]);
+    expect(decisionBatches(ids).flat()).toEqual(ids);
+    expect(decisionBatches([])).toEqual([]);
+  });
+
+  it("acts on visible selected topics, or the focused row when a filter hides them all", () => {
+    const ids = ["a", "b", "c"];
+    expect(actionTargets(ids, new Set(["c", "a"]), "b")).toEqual(["a", "c"]);
+    expect(actionTargets(ids, new Set(["hidden"]), "b")).toEqual(["b"]);
+    expect(actionTargets(ids, new Set(), "gone")).toEqual([]);
+  });
+
+  it("limits port prompts and ports to portable topics", () => {
+    const rows = [
+      { topic: { id: "a" }, state: "ready" },
+      { topic: { id: "b" }, state: "inbox" },
+      { topic: { id: "c" }, state: "in-progress" },
+    ];
+    expect(portableTopicIds(rows, ["a", "b", "c"])).toEqual(["a", "c"]);
+    expect(promptLimitError(0)).toMatch(/at least one/u);
+    expect(promptLimitError(20)).toBeNull();
+    expect(promptLimitError(21)).toMatch(/20/u);
+  });
+
+  it("moves focus after a decision only if the user stayed on the same view", () => {
+    const started = { projectId: "p", list: "inbox" as const, focused: "a" };
+    expect(canMoveFocusAfterDecision(started, started)).toBe(true);
+    expect(canMoveFocusAfterDecision(started, { ...started, list: "ready" })).toBe(false);
+    expect(canMoveFocusAfterDecision(started, { ...started, projectId: "q" })).toBe(false);
+    expect(canMoveFocusAfterDecision(started, { ...started, focused: "b" })).toBe(false);
   });
 
   it("preselects the suggested skip reason", () => {

@@ -31,6 +31,7 @@ const WHEN_CONTEXT_LABELS: Readonly<Record<string, string>> = {
   composerFocus: "In composer",
   modelPickerOpen: "In model picker",
   usagePageOpen: "On Usage",
+  upstreamListFocus: "In Upstream list",
 };
 
 /** Context keys the clause requires to be true (ignores negated and `or` branches). */

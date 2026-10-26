@@ -37,6 +37,7 @@ describe("buildShortcutSections", () => {
       context: "In terminal",
     });
     expect(byCommand.get("dialog.primaryAction")?.context).toBe("In dialogs");
+    expect(byCommand.get("upstream.next")).toMatchObject({ shortcut: "J", context: "In Upstream list" });
     expect(byCommand.get("chat.pageUp")?.shortcut).toBe("PgUp");
     expect(
       buildShortcutSections(DEFAULT_RESOLVED_KEYBINDINGS, {

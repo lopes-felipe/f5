@@ -8,7 +8,7 @@ import type {
 } from "@t3tools/contracts";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PlayIcon, RefreshCwIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { writeTextToClipboard } from "../../hooks/useCopyToClipboard";
 import { resolveShortcutCommand, useServerKeybindings } from "../../keybindings";
@@ -29,20 +29,33 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 import { PublicationBanner } from "./PublicationBanner";
-import { DeclineDialog, modelOptions, SkipReasonDialog, StartPortDialog } from "./UpstreamDialogs";
+import {
+  ConfirmDialog,
+  DeclineDialog,
+  modelOptions,
+  SkipReasonDialog,
+  StartPortDialog,
+  type ConfirmRequest,
+} from "./UpstreamDialogs";
 import { UpstreamConfigEmptyState } from "./UpstreamConfigEmptyState";
 import { UpstreamSettingsPopover } from "./UpstreamSettingsPopover";
 import { UpstreamTopicDetail } from "./UpstreamTopicDetail";
 import { UpstreamTopicList, type UpstreamTopicListHandle } from "./UpstreamTopicList";
 import {
+  actionTargets,
+  canMoveFocusAfterDecision,
+  decisionBatches,
   focusAfterRemoval,
   isDialogTarget,
   isEditableTarget,
   moveFocus,
+  portableTopicIds,
   preselectedSkipReason,
+  promptLimitError,
   reconcileFocus,
   UPSTREAM_LISTS,
   upstreamPrUrl,
+  type UpstreamView,
 } from "./upstreamPage.logic";
 import type { UpstreamSearch } from "./upstreamSearch";
 
@@ -115,17 +128,25 @@ export function UpstreamPage(props: {
   const [skipDialog, setSkipDialog] = useState<{ ids: string[]; preselected: string | null; reason?: string } | null>(null);
   const [declineIds, setDeclineIds] = useState<string[] | null>(null);
   const [portIds, setPortIds] = useState<string[] | null>(null);
+  const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const listRef = useRef<UpstreamTopicListHandle | null>(null);
   const lastIndex = useRef(0);
 
   const focused = props.search.topic ?? null;
   const { onSearchChange, search } = props;
+  // The latest view, for async actions that finish after the user has moved on.
+  const searchRef = useRef(search);
+  const viewRef = useRef<UpstreamView>({ projectId, list, focused });
+  useLayoutEffect(() => {
+    searchRef.current = search;
+    viewRef.current = { projectId, list, focused };
+  });
   const setFocused = useCallback(
     (topic: string | null) => {
-      const { topic: _previous, ...rest } = search;
+      const { topic: _previous, ...rest } = searchRef.current;
       onSearchChange(topic ? { ...rest, topic } : rest);
     },
-    [onSearchChange, search],
+    [onSearchChange],
   );
 
   useEffect(() => {
@@ -135,13 +156,12 @@ export function UpstreamPage(props: {
     if (next) lastIndex.current = ids.indexOf(next);
   }, [ids, focused, setFocused, topicsQuery.isPending]);
 
-  useEffect(() => setSelected(new Set()), [projectId, list]);
+  // A filter can hide selected topics, so a filter change clears the selection too.
+  useEffect(() => setSelected(new Set()), [projectId, list, hasQuestion, automaticOnly]);
 
   const readOnly = overview ? !overview.writer.managedByThisProfile && overview.writer.claimed : false;
-  const targets = useCallback(
-    () => (selected.size > 0 ? ids.filter((id) => selected.has(id)) : focused ? [focused] : []),
-    [selected, ids, focused],
-  );
+  const targets = useCallback(() => actionTargets(ids, selected, focused), [selected, ids, focused]);
+  const selectedVisible = useMemo(() => ids.filter((id) => selected.has(id)).length, [ids, selected]);
 
   const withBusy = async <T,>(title: string, action: () => Promise<T>): Promise<T | undefined> => {
     setBusy(true);
@@ -158,19 +178,42 @@ export function UpstreamPage(props: {
   const applyDecision = async (topicIds: string[], decision: UpstreamDecision | "accept") => {
     if (!projectId || topicIds.length === 0) return;
     const order = ids;
-    const result = await withBusy("Decision failed", () =>
-      decision === "accept"
-        ? ensureNativeApi().upstreamPorts.acceptSuggestions({ projectId, topicIds: topicIds as never })
-        : ensureNativeApi().upstreamPorts.decide({ projectId, topicIds: topicIds as never, decision }),
-    );
-    if (!result) return;
-    const moved = new Set(result.updated);
-    setSelected(new Set());
-    setFocused(focusAfterRemoval(order, moved, focused));
-    if (result.unchanged.length > 0 && decision === "accept")
-      toastManager.add({ type: "info", title: `${result.unchanged.length} topic(s) had no suggestion to accept` });
+    const started = viewRef.current;
+    const moved = new Set<string>();
+    let unchanged = 0;
+    let failure: unknown = null;
+    setBusy(true);
+    try {
+      // The server takes a bounded number of topics per call; earlier batches stay recorded if a later one fails.
+      for (const batch of decisionBatches(topicIds)) {
+        const result = await (decision === "accept"
+          ? ensureNativeApi().upstreamPorts.acceptSuggestions({ projectId, topicIds: batch as never })
+          : ensureNativeApi().upstreamPorts.decide({ projectId, topicIds: batch as never, decision }));
+        for (const id of result.updated) moved.add(id);
+        unchanged += result.unchanged.length;
+      }
+    } catch (error) {
+      failure = error;
+    } finally {
+      setBusy(false);
+    }
+    if (failure !== null) {
+      const detail = failure instanceof Error ? failure.message : String(failure);
+      toastManager.add({
+        type: "error",
+        title: "Decision failed",
+        description: moved.size > 0 ? `${moved.size} of ${topicIds.length} topics were recorded. ${detail}` : detail,
+      });
+    }
+    // Keep failed topics selected for a retry; drop the ones that were recorded.
+    setSelected((current) => new Set([...current].filter((id) => !moved.has(id))));
+    // The user may have switched list or project, or moved on, while the call ran.
+    const stillHere = canMoveFocusAfterDecision(started, viewRef.current);
+    if (stillHere) setFocused(focusAfterRemoval(order, moved, started.focused));
+    if (unchanged > 0 && decision === "accept")
+      toastManager.add({ type: "info", title: `${unchanged} topic(s) had no suggestion to accept` });
     await invalidateUpstreamPorts(queryClient);
-    listRef.current?.focus();
+    if (stillHere) listRef.current?.focus();
   };
 
   const openSkip = (topicIds: string[], reason?: string) => {
@@ -189,6 +232,22 @@ export function UpstreamPage(props: {
 
   const resolvePublication = (action: UpstreamResolvePublicationInput["action"]) => {
     if (!projectId) return;
+    if (action === "discard") {
+      const count = overview?.publication.unpublishedOps ?? 0;
+      setConfirm({
+        title: `Discard ${count} unpublished change${count === 1 ? "" : "s"}?`,
+        description:
+          "These triage decisions were never published to the ledger and cannot be recovered. An open ledger pull request is closed.",
+        confirmLabel: "Discard",
+        onConfirm: () => resolvePublicationNow(action),
+      });
+      return;
+    }
+    resolvePublicationNow(action);
+  };
+
+  const resolvePublicationNow = (action: UpstreamResolvePublicationInput["action"]) => {
+    if (!projectId) return;
     void withBusy("Publication action failed", async () => {
       await ensureNativeApi().upstreamPorts.resolvePublication({ projectId, action });
       await invalidateUpstreamPorts(queryClient);
@@ -196,12 +255,32 @@ export function UpstreamPage(props: {
   };
 
   const copyPrompt = (topicIds: string[]) => {
-    if (!projectId || topicIds.length === 0) return;
+    if (!projectId) return;
+    const limit = promptLimitError(topicIds.length);
+    if (limit) {
+      toastManager.add({ type: "warning", title: limit });
+      return;
+    }
     void withBusy("Could not copy the port prompt", async () => {
       const { prompt } = await ensureNativeApi().upstreamPorts.getPortPrompt({ projectId, topicIds: topicIds as never });
       await writeTextToClipboard(prompt);
       toastManager.add({ type: "success", title: "Port prompt copied" });
     });
+  };
+
+  /** Opens Start port for the Ready and In progress targets; the dialog enforces the count limits. */
+  const openStartPort = (topicIds: string[]) => {
+    const portable = portableTopicIds(rows, topicIds);
+    if (portable.length === 0) {
+      toastManager.add({ type: "warning", title: "Only Ready or In progress topics can be ported." });
+      return;
+    }
+    if (portable.length < topicIds.length)
+      toastManager.add({
+        type: "info",
+        title: `${topicIds.length - portable.length} selected topic(s) are not Ready or In progress and were left out.`,
+      });
+    setPortIds(portable);
   };
 
   const unlink = (link: UpstreamPortLinkSummary) => {
@@ -275,14 +354,9 @@ export function UpstreamPage(props: {
         if (pr && overview?.config) window.open(upstreamPrUrl(overview.config.repository, pr), "_blank", "noopener");
         return;
       }
-      case "upstream.startPort": {
-        const portable = targets().filter((id) => {
-          const row = rows.find((entry) => entry.topic.id === id);
-          return row?.state === "ready" || row?.state === "in-progress";
-        });
-        if (canDecide && portable.length) setPortIds(portable);
+      case "upstream.startPort":
+        if (canDecide) openStartPort(targets());
         return;
-      }
     }
   };
 
@@ -361,9 +435,15 @@ export function UpstreamPage(props: {
                   variant="outline"
                   disabled={busy}
                   onClick={() =>
-                    void withBusy("Could not take over", async () => {
-                      await ensureNativeApi().upstreamPorts.takeOverWriter({ projectId });
-                      await invalidateUpstreamPorts(queryClient);
+                    setConfirm({
+                      title: "Take over this repository?",
+                      description: `Profile ${overview.writer.profileId ?? "unknown"} stops managing upstream tracking here. Changes it recorded but has not published will not be published.`,
+                      confirmLabel: "Take over",
+                      onConfirm: () =>
+                        void withBusy("Could not take over", async () => {
+                          await ensureNativeApi().upstreamPorts.takeOverWriter({ projectId });
+                          await invalidateUpstreamPorts(queryClient);
+                        }),
                     })
                   }
                 >
@@ -472,7 +552,7 @@ export function UpstreamPage(props: {
               Automatic only
             </label>
           )}
-          {selected.size > 0 && <span className="ml-auto text-xs text-muted-foreground">{selected.size} selected</span>}
+          {selectedVisible > 0 && <span className="ml-auto text-xs text-muted-foreground">{selectedVisible} selected</span>}
         </nav>
       </header>
       <div className="flex min-h-0 flex-1">
@@ -522,8 +602,8 @@ export function UpstreamPage(props: {
               onDecide={(decision) => void applyDecision([focused], decision)}
               onSkip={(options) => openSkip([focused], options?.reason)}
               onDecline={() => setDeclineIds([focused])}
-              onStartPort={() => setPortIds(selected.size > 0 ? targets() : [focused])}
-              onCopyPrompt={() => copyPrompt(selected.size > 0 ? targets() : [focused])}
+              onStartPort={() => openStartPort(targets())}
+              onCopyPrompt={() => copyPrompt(targets())}
               onUnlink={unlink}
             />
           ) : (
@@ -564,6 +644,7 @@ export function UpstreamPage(props: {
               void applyDecision(topicIds, { kind: "declined", reason });
             }}
           />
+          <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
           <StartPortDialog
             open={portIds !== null}
             topicIds={portIds ?? []}

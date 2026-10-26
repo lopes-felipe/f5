@@ -1,7 +1,10 @@
 import {
+  UPSTREAM_MAX_DECIDE_TOPICS,
   UPSTREAM_MAX_PORT_GROUPS,
   UPSTREAM_MAX_PORT_TOPICS,
+  type ProjectSettingsOverrides,
   type UpstreamDecision,
+  type UpstreamPortsSettings,
   type UpstreamPortLinkSummary,
   type UpstreamTopic,
   type UpstreamTopicList,
@@ -85,6 +88,62 @@ export function moveFocus(ids: ReadonlyArray<string>, focused: string | null, de
   return ids[Math.min(Math.max(index + delta, 0), ids.length - 1)]!;
 }
 
+/** Splits a selection into requests the server accepts (`UPSTREAM_MAX_DECIDE_TOPICS` each). */
+export function decisionBatches(topicIds: ReadonlyArray<string>): string[][] {
+  const batches: string[][] = [];
+  for (let start = 0; start < topicIds.length; start += UPSTREAM_MAX_DECIDE_TOPICS)
+    batches.push(topicIds.slice(start, start + UPSTREAM_MAX_DECIDE_TOPICS));
+  return batches;
+}
+
+/**
+ * What a bulk action applies to: the selected topics that are visible, in list
+ * order, or the focused row when no selected topic is visible (a filter can hide them).
+ */
+export function actionTargets(
+  ids: ReadonlyArray<string>,
+  selected: ReadonlySet<string>,
+  focused: string | null,
+): string[] {
+  const visible = ids.filter((id) => selected.has(id));
+  if (visible.length > 0) return visible;
+  return focused !== null && ids.includes(focused) ? [focused] : [];
+}
+
+/** Topics that can be ported: Ready or In progress. */
+export function portableTopicIds(
+  rows: ReadonlyArray<{ readonly topic: { readonly id: string }; readonly state: string }>,
+  topicIds: ReadonlyArray<string>,
+): string[] {
+  const states = new Map(rows.map((row) => [row.topic.id, row.state]));
+  return topicIds.filter((id) => states.get(id) === "ready" || states.get(id) === "in-progress");
+}
+
+export function promptLimitError(topicCount: number): string | null {
+  if (topicCount === 0) return "Select at least one topic.";
+  if (topicCount > UPSTREAM_MAX_PORT_TOPICS)
+    return `Copy a prompt for at most ${UPSTREAM_MAX_PORT_TOPICS} topics at once.`;
+  return null;
+}
+
+export interface UpstreamView {
+  readonly projectId: string | null;
+  readonly list: UpstreamTopicList;
+  readonly focused: string | null;
+}
+
+/**
+ * Whether a decision that started in `started` may still move focus: only if
+ * the user stayed on the same project and list and did not move focus meanwhile.
+ */
+export function canMoveFocusAfterDecision(started: UpstreamView, current: UpstreamView): boolean {
+  return (
+    started.projectId === current.projectId &&
+    started.list === current.list &&
+    started.focused === current.focused
+  );
+}
+
 export function portLimitError(topicCount: number, grouping: "together" | "separately"): string | null {
   if (topicCount === 0) return "Select at least one topic.";
   if (topicCount > UPSTREAM_MAX_PORT_TOPICS) return `Start at most ${UPSTREAM_MAX_PORT_TOPICS} topics at once.`;
@@ -107,6 +166,18 @@ export function equivalentFromLink(link: UpstreamPortLinkSummary): UpstreamDecis
     ...(link.prNumber !== null ? { f5Refs: [`#${link.prNumber}`] } : {}),
     ...(evidence.length ? { evidence } : {}),
   };
+}
+
+/**
+ * The project's full override set with `patch` applied to its upstream settings.
+ * The server replaces a project's overrides wholesale, so every other key must be sent back.
+ */
+export function upstreamSettingsOverrides(
+  overrides: ProjectSettingsOverrides,
+  current: UpstreamPortsSettings,
+  patch: Partial<UpstreamPortsSettings>,
+): ProjectSettingsOverrides {
+  return { ...overrides, upstreamPorts: { ...current, ...patch } };
 }
 
 /** Move to Watch from a `blocked` outcome. */

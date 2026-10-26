@@ -231,10 +231,10 @@ The single rolling pull request through which F5 publishes recorded decisions an
 [25]: ../packages/contracts/src/nextTurnQueue.ts
 [26]: ../apps/server/src/nextTurnQueue/Layers/NextTurnQueueStore.ts
 [27]: ../apps/server/src/orchestration/Layers/ProviderTurnDeliveryWorker.ts
+[28]: ../apps/server/src/upstreamPorts/
+[29]: ../packages/shared/src/upstreamPorts.ts
+[30]: ./user/upstream-ports.md
 
 ## Profile
 
 A top-level isolated F5 environment with its own server, state and signed-in accounts. It differs from a project `workspaceRoot` (source directory), a Display profile (appearance density), and a Chromium partition (browser storage). See [Profiles](profiles.md).
-[28]: ../apps/server/src/upstreamPorts/service.ts
-[29]: ../packages/shared/src/upstreamPorts.ts
-[30]: ./user/upstream-ports.md

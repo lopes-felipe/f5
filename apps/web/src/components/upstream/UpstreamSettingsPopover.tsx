@@ -10,6 +10,7 @@ import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { toastManager } from "../ui/toast";
 import { modelOptions, selectionKey } from "./UpstreamDialogs";
+import { upstreamSettingsOverrides } from "./upstreamPage.logic";
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const selectClassName = "w-full rounded border bg-background p-1.5 text-sm";
@@ -26,7 +27,9 @@ export function UpstreamSettingsPopover(props: {
   const queryClient = useQueryClient();
   const projectSettings = useQuery(projectSettingsQueryOptions(props.projectId));
   const [saving, setSaving] = useState(false);
-  const current: UpstreamPortsSettings = projectSettings.data?.settings.upstreamPorts ?? {
+  const loaded = projectSettings.data;
+  // Shown while loading only; saving waits for the real settings so it never writes these defaults.
+  const current: UpstreamPortsSettings = loaded?.settings.upstreamPorts ?? {
     schedule: props.overview.schedule,
     triageModelSelection: null,
     portModelSelection: null,
@@ -34,10 +37,13 @@ export function UpstreamSettingsPopover(props: {
   const triageModels = modelOptions(props.providers, isTriageCapable);
   const portModels = modelOptions(props.providers);
   const save = async (patch: Partial<UpstreamPortsSettings>) => {
+    if (!loaded) return;
     setSaving(true);
     try {
       await ensureNativeApi().server.updateSettings({
-        projectSettingsOverrides: { [props.projectId]: { upstreamPorts: { ...current, ...patch } } },
+        projectSettingsOverrides: {
+          [props.projectId]: upstreamSettingsOverrides(loaded.overrides, current, patch),
+        },
       });
       await queryClient.invalidateQueries({ queryKey: PROJECT_SETTINGS_QUERY_KEY });
       await invalidateUpstreamPorts(queryClient);
@@ -47,13 +53,21 @@ export function UpstreamSettingsPopover(props: {
       setSaving(false);
     }
   };
-  const disabled = saving || props.readOnly;
+  const disabled = saving || props.readOnly || !loaded;
   return (
     <Popover>
       <PopoverTrigger render={<Button size="sm" variant="ghost" aria-label="Upstream settings" />}>
         <SettingsIcon className="size-4" />
       </PopoverTrigger>
       <PopoverPopup className="w-80 space-y-3 text-sm">
+        {projectSettings.isError && (
+          <p className="text-xs text-destructive">
+            Could not load this project's settings.{" "}
+            <button type="button" className="underline" onClick={() => void projectSettings.refetch()}>
+              Retry
+            </button>
+          </p>
+        )}
         <label className="block space-y-1">
           <span className="font-medium">Schedule</span>
           <select
