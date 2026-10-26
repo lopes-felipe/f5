@@ -256,6 +256,14 @@ export const isEditableTarget = (target: EventTarget | null) =>
 export const isDialogTarget = (target: EventTarget | null) =>
   target instanceof Element && Boolean(target.closest("[role=dialog], [role=alertdialog], [role=menu]"));
 
+/** Buttons, links and checkboxes, which Enter and Space must activate rather than run a list shortcut. */
+export const isControlTarget = (target: EventTarget | null) =>
+  target instanceof Element &&
+  Boolean(target.closest("button, a[href], input, [role=button], [role=checkbox], [role=link]"));
+
+/** Keys a focused control handles itself. */
+export const isActivationKey = (key: string) => key === "Enter" || key === " ";
+
 // ── Selection ──────────────────────────────────────────────────────────
 
 /** Adds every id between `anchor` and `target` (inclusive, list order) to the selection. */
@@ -351,16 +359,22 @@ export function adjacentList(list: UpstreamTopicList, delta: 1 | -1): UpstreamTo
  * updates; `null` when it stays put or cannot be predicted. The refetch that
  * follows every decision has the final word.
  */
+/**
+ * Whether accepting the suggestion records a decision. The server refuses a
+ * failed triage and a skip without a reason key (`suggestionDecision`).
+ */
+export function canAcceptSuggestion(suggestion: UpstreamTopicSuggestion | undefined): suggestion is UpstreamTopicSuggestion {
+  return Boolean(suggestion && !suggestion.triageError && !(suggestion.status === "skip" && !suggestion.reasonKey));
+}
+
 export function predictedState(
   row: { readonly state: UpstreamTopicList; readonly topic: Pick<UpstreamTopic, "suggestion"> },
   decision: UpstreamDecision | "accept",
 ): UpstreamTopicList | null {
   const kind =
     decision === "accept"
-      ? row.topic.suggestion && !row.topic.suggestion.triageError
-        ? row.topic.suggestion.status === "skip" && !row.topic.suggestion.reasonKey
-          ? null
-          : row.topic.suggestion.status
+      ? canAcceptSuggestion(row.topic.suggestion)
+        ? row.topic.suggestion.status
         : null
       : decision.kind;
   const target = (() => {

@@ -21,6 +21,7 @@ const api = vi.hoisted(() => ({
   getTopic: vi.fn(),
   decide: vi.fn(),
   acceptSuggestions: vi.fn(),
+  run: vi.fn(),
 }));
 vi.mock("../../nativeApi", () => ({
   ensureNativeApi: () => ({ upstreamPorts: api, server: { updateSettings: vi.fn() } }),
@@ -65,6 +66,13 @@ const row = (id: string, title: string, status: "port" | "skip" = "port"): Upstr
   }) as never;
 
 const ROWS = [row("pr-1", "Topic A"), row("pr-2", "Topic B", "skip"), row("pr-3", "Topic C")];
+
+const inState = (base: UpstreamTopicRow, state: UpstreamTopicRow["state"], scope?: string): UpstreamTopicRow =>
+  ({
+    ...base,
+    state,
+    topic: { ...base.topic, status: "port", ...(scope ? { scope } : {}) },
+  }) as never;
 
 const overview = {
   projectId,
@@ -175,7 +183,7 @@ beforeEach(() => {
   }));
 });
 
-async function setup(initial: UpstreamSearch = {}) {
+async function setup(initial: UpstreamSearch = {}, firstTitle = "Topic A") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData<unknown>(serverConfigQueryOptions().queryKey, {
     providers: [],
@@ -193,8 +201,12 @@ async function setup(initial: UpstreamSearch = {}) {
       </TooltipProvider>
     </QueryClientProvider>,
   );
-  await expect.element(page.getByRole("checkbox", { name: "Select Topic A" })).toBeVisible();
+  await expect.element(page.getByRole("checkbox", { name: `Select ${firstTitle}` })).toBeVisible();
 }
+
+const focusList = () => (page.getByRole("listbox", { name: "Upstream topics" }).element() as HTMLElement).focus();
+const bulkButton = (name: string) =>
+  page.getByRole("toolbar", { name: "Bulk actions" }).getByRole("button", { name, exact: true });
 
 it("shows the bulk bar for a selection and applies its action to the selected rows", async () => {
   await setup();
@@ -252,6 +264,143 @@ it("shows Inbox zero when nothing is left to triage", async () => {
   );
   await expect.element(page.getByText("Inbox zero")).toBeVisible();
   await expect.element(page.getByRole("button", { name: "Run now" }).first()).toBeVisible();
+  // Enter activates the empty state's button instead of running a list shortcut.
+  api.run.mockResolvedValue({ runId: "run" });
+  (page.getByRole("button", { name: "Run now" }).last().element() as HTMLElement).focus();
+  await userEvent.keyboard("{Enter}");
+  await vi.waitFor(() => expect(api.run).toHaveBeenCalledWith({ projectId, kind: "upstream", triage: "llm" }));
+});
+
+it("brings rows and counts back when the decision and the refetch both fail", async () => {
+  await setup();
+  // The connection is gone: the decision fails, and so does the refetch after it.
+  api.decide.mockRejectedValue(new Error("offline"));
+  api.listTopics.mockRejectedValue(new Error("offline"));
+  api.getOverview.mockRejectedValue(new Error("offline"));
+  await page.getByRole("checkbox", { name: "Select Topic A" }).click();
+  await bulkButton("Watch").click();
+  await vi.waitFor(() => expect(api.decide).toHaveBeenCalled());
+  await expect.element(page.getByRole("checkbox", { name: "Select Topic A" })).toBeVisible();
+  await expect.element(page.getByText("3 topics")).toBeVisible();
+});
+
+it("keeps the topics a failed batch did not record, and drops the ones it did", async () => {
+  const many = Array.from({ length: 201 }, (_, index) => row(`pr-${index + 100}`, `Many ${index}`));
+  api.listTopics.mockResolvedValue(topicsPage(many));
+  api.getOverview.mockResolvedValue({ ...overview, counts: { ...overview.counts, inbox: 201 } });
+  api.getTopic.mockImplementation(async ({ topicId }: { topicId: string }) => ({
+    revision: "r1",
+    repository: "https://github.com/pingdotgg/t3code.git",
+    row: many.find((entry) => entry.topic.id === topicId),
+    members: [],
+    related: [],
+  }));
+  const recordAll = api.decide.getMockImplementation()!;
+  api.decide.mockImplementationOnce(recordAll).mockImplementationOnce(() => Promise.reject(new Error("offline")));
+  await setup({}, "Many 0");
+  api.listTopics.mockRejectedValue(new Error("offline"));
+  api.getOverview.mockRejectedValue(new Error("offline"));
+  await page.getByRole("checkbox", { name: "Select all loaded topics" }).click();
+  await bulkButton("Watch").click();
+  await vi.waitFor(() => expect(api.decide).toHaveBeenCalledTimes(2));
+  // The 200 recorded topics are gone; the one that failed is back and still selected for a retry.
+  await expect.element(page.getByRole("checkbox", { name: "Select Many 200" })).toBeVisible();
+  await expect.element(page.getByRole("checkbox", { name: "Select Many 0" })).not.toBeInTheDocument();
+  await expect.element(page.getByText("1 selected")).toBeVisible();
+});
+
+it("opens a related topic that is not among the loaded rows", async () => {
+  const far = row("pr-900", "Far away topic");
+  api.getTopic.mockImplementation(async ({ topicId }: { topicId: string }) => ({
+    revision: "r1",
+    repository: "https://github.com/pingdotgg/t3code.git",
+    row: topicId === far.topic.id ? far : ROWS.find((entry) => entry.topic.id === topicId),
+    members: [],
+    related: topicId === "pr-1" ? [{ id: far.topic.id, title: far.topic.title, state: "inbox" }] : [],
+  }));
+  await setup({ project: projectId, topic: "pr-1" });
+  await page.getByRole("button", { name: /Far away topic/u }).click();
+  await expect.element(page.getByRole("heading", { name: "Far away topic" })).toBeVisible();
+  await expect.element(page.getByTestId("search")).toHaveTextContent('"topic":"pr-900"');
+});
+
+it("keeps list shortcuts working after clicking the select-all checkbox", async () => {
+  await setup();
+  await page.getByRole("checkbox", { name: "Select all loaded topics" }).click();
+  await expect.element(page.getByText("3 selected")).toBeVisible();
+  await userEvent.keyboard("{Escape}");
+  await expect.element(page.getByText("3 topics")).toBeVisible();
+  await page.getByRole("checkbox", { name: "Select all loaded topics" }).click();
+  await userEvent.keyboard("w");
+  await vi.waitFor(() =>
+    expect(api.decide).toHaveBeenCalledWith({ projectId, topicIds: ["pr-1", "pr-2", "pr-3"], decision: { kind: "watch" } }),
+  );
+});
+
+it("extends the selection, records already-in-f5 and switches lists from the keyboard", async () => {
+  await setup({ project: projectId, topic: "pr-1" });
+  focusList();
+  await userEvent.keyboard("{Shift>}J{/Shift}");
+  await expect.element(page.getByText("2 selected")).toBeVisible();
+  await userEvent.keyboard("{Escape}");
+  await expect.element(page.getByText("3 topics")).toBeVisible();
+  await userEvent.keyboard("e");
+  await vi.waitFor(() =>
+    expect(api.decide).toHaveBeenCalledWith({ projectId, topicIds: ["pr-2"], decision: { kind: "equivalent" } }),
+  );
+  focusList();
+  await userEvent.keyboard("]");
+  await expect.element(page.getByTestId("search")).toHaveTextContent('"list":"ready"');
+  // `[[` is user-event's escape for one `[` key press.
+  focusList();
+  await userEvent.keyboard("[[");
+  await expect.element(page.getByTestId("search")).toHaveTextContent('"list":"inbox"');
+  // Inbox is the first list, so `[` wraps to the last one.
+  focusList();
+  await userEvent.keyboard("[[");
+  await expect.element(page.getByTestId("search")).toHaveTextContent('"list":"skipped"');
+});
+
+it("saves and clears the scope of a Ready topic without leaving the list", async () => {
+  const ready = inState(ROWS[0]!, "ready", "Only the panel");
+  api.listTopics.mockResolvedValue(topicsPage([ready]));
+  api.getTopic.mockResolvedValue({
+    revision: "r1",
+    repository: "https://github.com/pingdotgg/t3code.git",
+    row: ready,
+    members: [],
+    related: [],
+  });
+  await setup({ project: projectId, list: "ready", topic: "pr-1" });
+  const scope = page.getByRole("textbox", { name: "Scope note" });
+  await scope.fill("Only the API");
+  await page.getByRole("button", { name: "Save scope" }).click();
+  await vi.waitFor(() =>
+    expect(api.decide).toHaveBeenLastCalledWith({
+      projectId,
+      topicIds: ["pr-1"],
+      decision: { kind: "port", scope: "Only the API" },
+    }),
+  );
+  await expect.element(page.getByRole("checkbox", { name: "Select Topic A" })).toBeVisible();
+  await scope.fill("");
+  await page.getByRole("button", { name: "Save scope" }).click();
+  await vi.waitFor(() =>
+    expect(api.decide).toHaveBeenLastCalledWith({ projectId, topicIds: ["pr-1"], decision: { kind: "port" } }),
+  );
+});
+
+it("asks before reopening topics whose port is in progress", async () => {
+  api.listTopics.mockResolvedValue(topicsPage([inState(ROWS[0]!, "in-progress"), inState(ROWS[2]!, "in-progress")]));
+  await setup({ project: projectId, list: "in-progress" });
+  await page.getByRole("checkbox", { name: "Select all loaded topics" }).click();
+  await bulkButton("Reopen").click();
+  await expect.element(page.getByText("Reopen 2 topics?")).toBeVisible();
+  expect(api.decide).not.toHaveBeenCalled();
+  await page.getByRole("button", { name: "Reopen", exact: true }).last().click();
+  await vi.waitFor(() =>
+    expect(api.decide).toHaveBeenCalledWith({ projectId, topicIds: ["pr-1", "pr-3"], decision: { kind: "inbox" } }),
+  );
 });
 
 it("round-trips filters through the search params and shows them as removable chips", async () => {
