@@ -226,7 +226,7 @@ describe("listing", () => {
       const paged: string[] = [];
       let cursor: string | null = null;
       do {
-        const page = pageRows(
+        const page: ReturnType<typeof pageRows> = pageRows(
           inbox,
           { projectId, ...input, limit: 1, ...(cursor ? { cursor } : {}) },
           "rev",
