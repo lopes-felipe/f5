@@ -1,3 +1,4 @@
+import { ScheduledOrigin } from "@t3tools/contracts";
 import { ReadSqlClient } from "../../persistence/ReadSqlClient.ts";
 import { makeThreadFind } from "../threadFind.ts";
 import { SnapshotReadClients, withSnapshotRead } from "../../persistence/snapshotReadExecutor.ts";
@@ -136,10 +137,12 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     modelSelection: Schema.NullOr(Schema.fromJsonString(ProjectionThread.fields.modelSelection)),
     compaction: Schema.NullOr(Schema.fromJsonString(ThreadCompaction)),
     sessionNotes: Schema.NullOr(Schema.fromJsonString(ThreadSessionNotes)),
+    scheduledOrigin: Schema.optional(Schema.NullOr(Schema.fromJsonString(ScheduledOrigin))),
     threadReferences: Schema.fromJsonString(Schema.Array(ThreadReference)),
   }),
 );
 const ProjectionThreadSummaryDbRowSchema = Schema.Struct({
+  scheduledOrigin: Schema.optional(Schema.NullOr(Schema.fromJsonString(ScheduledOrigin))),
   threadId: ProjectionThread.fields.threadId,
   projectId: ProjectionThread.fields.projectId,
   title: ProjectionThread.fields.title,
@@ -504,6 +507,7 @@ function buildThreadSnapshot(params: {
     checkpoints: params.checkpointsByThread.get(row.threadId) ?? [],
     compaction: detailRow?.compaction ?? null,
     sessionNotes: detailRow?.sessionNotes ?? null,
+    ...(row.scheduledOrigin ? { scheduledOrigin: row.scheduledOrigin } : {}),
     threadReferences: detailRow?.threadReferences ?? [],
     session: params.sessionsByThread.get(row.threadId) ?? null,
   };
@@ -526,6 +530,7 @@ function buildThreadDetailsResult(params: {
     tasksUpdatedAt: params.thread?.tasksUpdatedAt ?? null,
     tasksTracking: params.thread?.tasksTracking ?? null,
     sessionNotes: params.thread?.sessionNotes ?? null,
+    ...(params.thread?.scheduledOrigin ? { scheduledOrigin: params.thread.scheduledOrigin } : {}),
     threadReferences: params.thread?.threadReferences ?? [],
     detailSequence: params.detailSequence,
   }).pipe(
@@ -742,6 +747,7 @@ function buildThreadTailDetailsResult(params: {
     tasksUpdatedAt: params.thread?.tasksUpdatedAt ?? null,
     tasksTracking: params.thread?.tasksTracking ?? null,
     sessionNotes: params.thread?.sessionNotes ?? null,
+    ...(params.thread?.scheduledOrigin ? { scheduledOrigin: params.thread.scheduledOrigin } : {}),
     threadReferences: params.thread?.threadReferences ?? [],
     hasOlderMessages: params.hasOlderMessages,
     hasOlderCheckpoints: params.hasOlderCheckpoints,
@@ -906,6 +912,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           project_id AS "projectId",
           title,
           model,
+          scheduled_origin_json AS "scheduledOrigin",
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
           interaction_mode AS "interactionMode",
@@ -952,6 +959,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           project_id AS "projectId",
           title,
           model,
+          scheduled_origin_json AS "scheduledOrigin",
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
           interaction_mode AS "interactionMode",

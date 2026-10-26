@@ -3,7 +3,9 @@ import {
   ProviderDriverKind,
   ProjectId,
   ProviderInstanceId,
+  ServerSettingsPatch,
 } from "@t3tools/contracts";
+import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { createModelSelection } from "./model";
 import {
@@ -192,6 +194,31 @@ describe("serverSettings helpers", () => {
         { id: "agent", value: "build" },
       ],
     });
+  });
+
+  it("merges partial upstream ports patches without resetting sibling fields", () => {
+    const triage = createModelSelection(ProviderInstanceId.make("claude"), "claude-opus-5-5");
+    const port = createModelSelection(ProviderInstanceId.make("claude"), "claude-sonnet-5-5");
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      upstreamPorts: {
+        schedule: { mode: "daily" as const, hour: 9, weekday: 1 },
+        triageModelSelection: triage,
+        portModelSelection: port,
+      },
+    };
+    const patch = Schema.decodeUnknownSync(ServerSettingsPatch)({
+      upstreamPorts: { schedule: { mode: "weekly" } },
+    });
+    expect(applyServerSettingsPatch(current, patch).upstreamPorts).toEqual({
+      schedule: { mode: "weekly", hour: 9, weekday: 1 },
+      triageModelSelection: triage,
+      portModelSelection: port,
+    });
+    expect(
+      applyServerSettingsPatch(current, { upstreamPorts: { triageModelSelection: null } })
+        .upstreamPorts,
+    ).toEqual({ ...current.upstreamPorts, triageModelSelection: null });
   });
 
   it("replaces providerInstances maps so omitted instance fields are cleared", () => {

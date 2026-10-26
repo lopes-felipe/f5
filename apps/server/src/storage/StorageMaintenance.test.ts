@@ -2888,6 +2888,52 @@ it.layer(makeStorageTestLayer())("StorageMaintenance scan and operation safety",
       }),
     ),
   );
+  for (const archived of [false, true])
+    it.effect(
+      `retains files before purging a ${archived ? "archived" : "deleted"} thread owned by a scheduled run`,
+      () =>
+        withHomeSandbox(
+          Effect.gen(function* () {
+            const storage = yield* StorageMaintenance;
+            const sql = yield* SqlClient.SqlClient;
+            const config = yield* ServerConfig;
+            const threadId = ThreadId.makeUnsafe(`scheduled-purge-${archived}`);
+            const file = NodePath.join(
+              config.attachmentsDir,
+              `${threadId}-11111111-1111-4111-8111-111111111111.txt`,
+            );
+            yield* seedThread({
+              sql,
+              threadId,
+              archivedAt: archived ? daysAgo(90) : null,
+              deletedAt: archived ? null : daysAgo(40),
+            });
+            yield* Effect.promise(() => writeFile(file, "execution evidence"));
+            yield* sql`INSERT INTO scheduled_tasks(id,project_id,definition_json,request_hash,requested_at,version,enabled,updated_at)
+          VALUES(${`owned-task:${archived}`},'project','{}','hash','2026-01-01',1,0,'2026-01-01')`;
+            yield* sql`INSERT INTO scheduled_task_runs(id,task_id,scheduled_for,trigger,status,state_json,snapshot_json,thread_id,owns_execution,canceled,capacity,created_at)
+          VALUES(${`owned-run:${archived}`},${`owned-task:${archived}`},'2026-01-01','manual','needs_attention','{}','{}',${threadId},1,1,1,'2026-01-01')`;
+            const report = yield* storage.inspect({ force: true });
+            const result = yield* storage.cleanup({
+              operationId: `scheduled-purge:${archived}`,
+              scanId: report.scanId,
+              nonce: report.confirmationNonce,
+              categoryIds: [archived ? "purgeArchivedThreads" : "purgeDeletedThreads"],
+              ...(archived ? { confirmationText: "DELETE" } : {}),
+              options: { vacuumAfterDeletes: false },
+            });
+            assert.equal(
+              yield* Effect.promise(() => NodeFS.readFile(file, "utf8")),
+              "execution evidence",
+            );
+            assert.equal(yield* countRows(sql, "projection_threads", threadId), 1);
+            assert.isTrue(
+              result.warnings.some((warning) => warning.reason.includes("scheduled run")),
+            );
+            assert.equal(result.reclaimedBytes, 0);
+          }),
+        ),
+    );
   it.effect("preserves settlement process claims across attempted permanent thread purge", () =>
     withHomeSandbox(
       Effect.gen(function* () {

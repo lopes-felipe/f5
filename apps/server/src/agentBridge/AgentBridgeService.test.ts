@@ -17,8 +17,8 @@ import { FakeAgentBridgeHost } from "./testing/fakeHost.ts";
 
 const layer = it.layer(SqlitePersistenceMemory.pipe(Layer.provideMerge(NodeServices.layer)));
 
-layer("shelved Agent Bridge lifecycle", (it) => {
-  it.effect("never starts a listener for saved enablement or later settings changes", () =>
+layer("local Agent Bridge activation", (it) => {
+  it.effect("requires fresh activation for previously saved enablement", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "f5-shelved-bridge-"));
@@ -63,14 +63,14 @@ layer("shelved Agent Bridge lifecycle", (it) => {
         });
 
         const initial = yield* service.getState;
-        assert.strictEqual(initial.enabled, true);
+        assert.strictEqual(initial.enabled, false);
         assert.deepStrictEqual(initial.local, { status: "stopped", port: null, detail: null });
         assert.strictEqual(fs.existsSync(agentBridgeLocalCredentialsPath(stateDir)), false);
 
         yield* Deferred.succeed(changeGate, undefined);
         yield* Deferred.await(applied);
         const updated = yield* service.getState;
-        assert.strictEqual(updated.enabled, true);
+        assert.strictEqual(updated.enabled, false);
         assert.deepStrictEqual(updated.local, { status: "stopped", port: null, detail: null });
         assert.strictEqual(fs.existsSync(agentBridgeLocalCredentialsPath(stateDir)), false);
         assert.deepStrictEqual(host.settings, savedSettings);

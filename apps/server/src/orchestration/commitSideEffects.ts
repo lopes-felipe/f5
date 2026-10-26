@@ -1,7 +1,8 @@
 import type { OrchestrationCommand, OrchestrationReadModel } from "@t3tools/contracts";
 import { OrchestrationEvent } from "@t3tools/contracts";
 import { Effect, Option, Schema } from "effect";
-import type * as SqlClient from "effect/unstable/sql/SqlClient";
+import { scheduledContinuationFor } from "../scheduledTasks/continuations.ts";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { requireAttachmentOwner } from "../attachmentOwnership.ts";
 import { canonicalRequestHash } from "../nextTurnQueue/canonicalRequestHash.ts";
 import type { NextTurnQueueStoreShape } from "../nextTurnQueue/Services/NextTurnQueueStore.ts";
@@ -177,8 +178,23 @@ export function makeCommitSideEffects({
               commandType,
               detail: "The durable answer queue is unavailable.",
             });
+          const sourceInput = yield* sql<{
+            turn_id: string | null;
+          }>`SELECT json_extract(payload_json,'$.turnId') AS turn_id FROM projection_pending_user_inputs WHERE thread_id=${savedEvent.payload.threadId} AND request_id=${savedEvent.payload.requestId}`;
+          const scheduledRun = yield* scheduledContinuationFor(
+            savedEvent.payload.threadId,
+            sourceInput[0]?.turn_id,
+            "user_input",
+          ).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.mapError(
+              (error) =>
+                new OrchestrationCommandInvariantError({ commandType, detail: error.message }),
+            ),
+          );
           yield* queueStore.value
             .insertSubmission({
+              scheduledRun,
               submissionId: command.commandId,
               itemId: command.commandId,
               requestHash: canonicalRequestHash(command),

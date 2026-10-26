@@ -29,6 +29,7 @@ import { AGENT_BRIDGE_WS_CHANNELS, AgentBridgeStateChanged } from "./agentBridge
 import { AGENTS_WS_CHANNELS, AgentsSnapshot } from "./backgroundWork";
 import { GitActionProgressEvent, GitCheckoutConflict, GitStatusInvalidatedPayload } from "./git";
 import { McpStatusUpdatedPayload } from "./mcp";
+import { ScheduledTasksChanged } from "./scheduledTasks";
 import { NextTurnQueueSnapshot, NextTurnQueueSummary } from "./nextTurnQueue";
 import { ORCHESTRATION_WS_CHANNELS, OrchestrationEvent } from "./orchestration";
 import { DiscoveredLocalServerList, PreviewEvent } from "./preview";
@@ -39,6 +40,7 @@ import {
   PreviewAutomationRequest,
 } from "./previewAutomation";
 import { PR_HUB_WS_CHANNELS, PrHubAdvisoriesChanged, PrHubChanged } from "./prHub";
+import { UPSTREAM_PORTS_WS_CHANNELS, UpstreamPortsChanged } from "./upstreamPortsWire";
 import { ProjectWatchedPathsChangedPayload } from "./project";
 import { ServerConfigUpdatedPayload, ServerProviderAdvisoriesUpdatedPayload } from "./server";
 import { DiskSpaceStatus, StorageStatus, StorageInvalidatedPayload } from "./storage";
@@ -51,6 +53,7 @@ export { WS_METHODS } from "./wsMethods";
 export { WebSocketRequest } from "./wsRequests";
 
 export const WS_CHANNELS = {
+  scheduledTasksChanged: "scheduledTasks.changed",
   profilesUpdated: "profiles.updated",
   providerAccountEvent: "providerAccount.event",
   gitActionProgress: "git.actionProgress",
@@ -145,12 +148,14 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.storageInvalidated]: StorageInvalidatedPayload;
   readonly [WS_CHANNELS.storageStatusUpdated]: StorageStatus;
   readonly [WS_CHANNELS.storageDiskSpaceUpdated]: typeof DiskSpaceStatus.Type;
+  readonly [WS_CHANNELS.scheduledTasksChanged]: typeof ScheduledTasksChanged.Type;
   readonly [WS_CHANNELS.nextTurnQueueUpdated]: typeof NextTurnQueueSnapshot.Type;
   readonly [WS_CHANNELS.nextTurnQueueSummaryUpdated]: typeof NextTurnQueueSummary.Type;
   readonly [WS_CHANNELS.worktreeSetupUpdated]: WorktreeSetupUpdatedPayload;
   readonly [ORCHESTRATION_WS_CHANNELS.domainEvent]: OrchestrationEvent;
   readonly [PR_HUB_WS_CHANNELS.changed]: typeof PrHubChanged.Type;
   readonly [PR_HUB_WS_CHANNELS.advisoriesUpdated]: typeof PrHubAdvisoriesChanged.Type;
+  readonly [UPSTREAM_PORTS_WS_CHANNELS.changed]: typeof UpstreamPortsChanged.Type;
 }
 
 export type WsPushChannel = keyof WsPushPayloadByChannel;
@@ -318,6 +323,10 @@ export const WsPushStorageDiskSpaceUpdated = makeWsPushSchema(
   WS_CHANNELS.storageDiskSpaceUpdated,
   DiskSpaceStatus,
 );
+export const WsPushScheduledTasksChanged = makeWsPushSchema(
+  WS_CHANNELS.scheduledTasksChanged,
+  ScheduledTasksChanged,
+);
 export const WsPushNextTurnQueueUpdated = makeWsPushSchema(
   WS_CHANNELS.nextTurnQueueUpdated,
   NextTurnQueueSnapshot,
@@ -338,6 +347,10 @@ export const WsPushPrHubChanged = makeWsPushSchema(PR_HUB_WS_CHANNELS.changed, P
 export const WsPushPrHubAdvisoriesUpdated = makeWsPushSchema(
   PR_HUB_WS_CHANNELS.advisoriesUpdated,
   PrHubAdvisoriesChanged,
+);
+export const WsPushUpstreamPortsChanged = makeWsPushSchema(
+  UPSTREAM_PORTS_WS_CHANNELS.changed,
+  UpstreamPortsChanged,
 );
 
 export const WsPushChannelSchema = Schema.Literals([
@@ -370,12 +383,14 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.storageInvalidated,
   WS_CHANNELS.storageStatusUpdated,
   WS_CHANNELS.storageDiskSpaceUpdated,
+  WS_CHANNELS.scheduledTasksChanged,
   WS_CHANNELS.nextTurnQueueUpdated,
   WS_CHANNELS.nextTurnQueueSummaryUpdated,
   WS_CHANNELS.worktreeSetupUpdated,
   ORCHESTRATION_WS_CHANNELS.domainEvent,
   PR_HUB_WS_CHANNELS.changed,
   PR_HUB_WS_CHANNELS.advisoriesUpdated,
+  UPSTREAM_PORTS_WS_CHANNELS.changed,
 ]);
 export type WsPushChannelSchema = typeof WsPushChannelSchema.Type;
 
@@ -409,12 +424,14 @@ export const WsPush = Schema.Union([
   WsPushStorageInvalidated,
   WsPushStorageStatusUpdated,
   WsPushStorageDiskSpaceUpdated,
+  WsPushScheduledTasksChanged,
   WsPushNextTurnQueueUpdated,
   WsPushNextTurnQueueSummaryUpdated,
   WsPushWorktreeSetupUpdated,
   WsPushOrchestrationDomainEvent,
   WsPushPrHubChanged,
   WsPushPrHubAdvisoriesUpdated,
+  WsPushUpstreamPortsChanged,
 ]);
 export type WsPush = typeof WsPush.Type;
 

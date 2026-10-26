@@ -1,7 +1,7 @@
 # F5 Agent Bridge
 
-Internal reference for a hidden feature. Bots and Agent Bridge are no longer exposed in the
-user interface. Their implementation, existing configuration, APIs, and stored data are retained.
+The local Agent Bridge is available under Settings → Tools → Agent Bridge. It is off by default.
+The unrelated bot task-board UI remains shelved. Remote listeners are not enabled by this change.
 
 The Agent Bridge is a vendor-neutral MCP server inside F5. A ChatGPT Dot, the ChatGPT desktop
 app, or any MCP client can connect to it to read the projects you share and start supervised
@@ -27,16 +27,17 @@ the thread's mode. Providers that cannot run supervised turns (such as Muse Code
 offered. `send_message` is refused for threads that are not supervised.
 
 Agents can never answer approvals or questions, interrupt or stop work, change modes or
-settings, delete anything, or reach files, terminals, the browser, computer control, or secrets.
+settings, delete conversations or files, or reach files, terminals, the browser, computer control, or secrets.
 
 A connection is whoever holds its credential, not a verified bot. In particular, other ChatGPT
 conversations that use the same connected plugin can use a ChatGPT / Dots connection.
 
 ## Retained configuration and listener
 
-The listener is suspended while the feature is shelved, including for profiles with
-`agentBridge.enabled: true` already saved. Startup and settings changes cannot open it.
-Enablement, shared-project settings, and task data remain persisted for future work.
+Enable the local connection explicitly in Settings → Tools. Profiles with previously saved
+`agentBridge.enabled: true` require fresh activation: a server-managed activation version is
+recorded by the authenticated enable action. An old saved value alone cannot open a listener.
+Choose the projects to share; none are exposed by default.
 
 The retained listener implementation uses `127.0.0.1` with a random port, separate from the
 app port. When active, its port and a 32-byte token, rotated on every start, are written to
@@ -45,7 +46,7 @@ app port. When active, its port and a 32-byte token, rotated on every start, are
 ## Internal STDIO connection reference
 
 Local clients connect through a STDIO shim that reads `local.json` for every request, so a
-restart needs no reconfiguration. These formats document the retained implementation for
+restart needs no reconfiguration. Use the connection instructions shown in Settings for
 maintainers; they are not user setup instructions and cannot connect while the listener is
 suspended. Placeholder paths and profile values previously came from the hidden settings card:
 
@@ -153,3 +154,35 @@ the server's master token are never accepted.
 
 Each bridge-created thread shows a "Sent by … via F5 Agent Bridge" row, and the turn is recorded
 as automation (not human) provenance.
+
+## Scheduled task permission
+
+Read-only scheduling tools use `f5.read`. The four scheduling mutations require a separate
+`f5.schedules` grant, enabled per client in the authenticated F5 settings UI. Existing credentials
+and newly created clients never receive this scope implicitly. Grant changes increment the
+client generation. Disabling the Bridge, revoking a client or scope, or unsharing its project
+fences unsent runs and continuations and disables owned schedules. Existing provider work may
+settle under supervision. Restoring access does not resume schedules; a user must re-enable or
+adopt them. Adoption preserves `createdBy: agent` provenance.
+
+Tools: `list_scheduled_tasks`, `create_scheduled_task`, `update_scheduled_task`,
+`delete_scheduled_task`, `run_scheduled_task`, `list_scheduled_task_runs`. Agents provide cron
+plus an IANA timezone, and receive the normalized schedule, human summary and future fires.
+Create/update execution is always `approval-required`; explicitly requesting another mode is
+rejected. Only tasks owned by the calling agent client can be mutated. User-owned schedules, other clients' tasks, and nonsupervised tasks are read-only through MCP. Agents cannot adopt user-owned schedules; revoking an agent grant therefore cannot disable a user's schedule. A user can still explicitly adopt an agent-owned schedule in F5. Run resolution and
+approval/input responses are never exposed through these tools.
+
+Create accepts `projectId`, `name`, `prompt`, `cron`, `timezone`, and a `clientRequestId` for
+retry safety. Optional fields include `providerInstanceId`, `model`, `modelOptions`, `workspace`
+(`{kind:"worktree",baseBranch:"main"}` or explicit `{kind:"projectRoot"}`), `notify`, `enabled`
+and `maxRuns`. A seven-field year-qualified one-shot automatically gets `maxRuns: 1`.
+Update accepts `taskId`, `expectedVersion`, `clientRequestId` and `configuration` with name,
+prompt, cron and timezone; omitted execution options preserve the existing values. Delete
+requires the expected version. Run-now also requires a unique `clientRequestId`. Identical
+retries replay namespaced durable receipts; conflicting reuse fails. Mutation limits are one
+request per second with burst ten; manual runs also consume thread admission limits. Each
+client may own at most twenty enabled tasks or tasks with unfinished execution.
+
+All execution remains on the local F5 server while it is running. Deleting a schedule preserves
+its conversations and worktrees. Tool responses omit workspace paths and private execution
+errors; open a run in F5 for detailed failures.

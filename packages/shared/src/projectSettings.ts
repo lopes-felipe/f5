@@ -32,6 +32,8 @@ const USER_ONLY_PROJECT_SETTING_KEYS: ReadonlySet<string> = new Set([
   "enableClaudeInChrome",
   "enableCodexChrome",
   "enableAgentComputerUse",
+  // A checked-in file must never enable scheduled upstream runs.
+  "upstreamPorts",
 ]);
 
 /** Resolve only the approved project-scoped keys. Explicit false and null are values. */

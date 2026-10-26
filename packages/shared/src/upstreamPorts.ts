@@ -106,6 +106,8 @@ export const EMPTY_LEDGER: UpstreamLedger = { intervals: [], legacy: [], topics:
 export interface ParsedLedger {
   readonly ledger: UpstreamLedger;
   readonly errors: ReadonlyArray<string>;
+  /** Paths that failed to decode; their content is missing from `ledger`. */
+  readonly unparsed: ReadonlyArray<string>;
 }
 
 function formatDecodeError(error: unknown): string {
@@ -142,6 +144,7 @@ function decodeFile<S extends Schema.Top & { readonly DecodingServices: never }>
  */
 export function parseLedgerFiles(files: ReadonlyMap<string, string>): ParsedLedger {
   const errors: string[] = [];
+  const unparsed: string[] = [];
   const intervals: IntervalFile[] = [];
   const legacy: LegacyBatchFile[] = [];
   const topics: UpstreamTopic[] = [];
@@ -150,19 +153,28 @@ export function parseLedgerFiles(files: ReadonlyMap<string, string>): ParsedLedg
   )) {
     if (relativePath.startsWith("intervals/")) {
       const file = decodeFile(UpstreamIntervalFile, relativePath, text, errors);
-      if (!file) continue;
+      if (!file) {
+        unparsed.push(relativePath);
+        continue;
+      }
       if (intervalPath(file) !== relativePath)
         errors.push(`${relativePath}: file name must be ${intervalPath(file)}`);
       intervals.push(file);
     } else if (relativePath.startsWith("legacy/")) {
       const file = decodeFile(UpstreamLegacyBatchFile, relativePath, text, errors);
-      if (!file) continue;
+      if (!file) {
+        unparsed.push(relativePath);
+        continue;
+      }
       if (legacyPath(file) !== relativePath)
         errors.push(`${relativePath}: file name must be ${legacyPath(file)}`);
       legacy.push(file);
     } else if (relativePath.startsWith("topics/")) {
       const file = decodeFile(UpstreamTopicFile, relativePath, text, errors);
-      if (!file) continue;
+      if (!file) {
+        unparsed.push(relativePath);
+        continue;
+      }
       if (topicMonthPath(file.month) !== relativePath)
         errors.push(`${relativePath}: file name must be ${topicMonthPath(file.month)}`);
       const ids = file.topics.map((topic) => topic.id);
@@ -182,6 +194,7 @@ export function parseLedgerFiles(files: ReadonlyMap<string, string>): ParsedLedg
       topics: topics.toSorted((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
     },
     errors,
+    unparsed,
   };
 }
 
@@ -888,6 +901,11 @@ export interface TopicMembership {
   readonly source: string;
 }
 
+/**
+ * Each topic's commits, oldest first. Legacy batches hold archive deferred
+ * commits, which predate interval 1, so they come first (in SHA order, as
+ * stored); interval commits follow by interval, reversed from newest first.
+ */
 export function membersByTopic(ledger: UpstreamLedger): Map<string, TopicMembership[]> {
   const out = new Map<string, TopicMembership[]>();
   const add = (commit: UpstreamMembershipCommit, source: string) =>
@@ -895,10 +913,10 @@ export function membersByTopic(ledger: UpstreamLedger): Map<string, TopicMembers
       ...(out.get(commit.topic) ?? []),
       { sha: commit.sha, subject: commit.subject, pr: commit.pr ?? null, source },
     ]);
-  for (const file of ledger.intervals)
-    for (const commit of file.commits) add(commit, `interval ${file.interval}`);
   for (const file of ledger.legacy)
     for (const commit of file.commits) add(commit, `legacy batch ${file.batch}`);
+  for (const file of ledger.intervals)
+    for (const commit of file.commits.toReversed()) add(commit, `interval ${file.interval}`);
   return out;
 }
 

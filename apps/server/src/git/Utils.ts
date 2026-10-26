@@ -133,6 +133,19 @@ function cliLabel(cliName: string): string {
  * typed `TextGenerationError`. Parameterized by CLI name so both Codex
  * and Claude (and future providers) can share the same logic.
  */
+/** Classify a failed CLI run from its output so callers can tell auth and limits apart. */
+export function classifyCliFailureKind(detail: string): "auth" | "limit" | "generic" {
+  if (
+    /\b(401|403|unauthori[sz]ed|not logged in|log ?in required|authenticat|invalid api key)/iu.test(
+      detail,
+    )
+  )
+    return "auth";
+  if (/\b(429|rate[- ]limit|usage limit|quota|too many requests|overloaded)/iu.test(detail))
+    return "limit";
+  return "generic";
+}
+
 export function normalizeCliError(
   cliName: string,
   operation: string,
@@ -153,6 +166,7 @@ export function normalizeCliError(
       return new TextGenerationError({
         operation,
         detail: `${cliLabel(cliName)} is required but not available on PATH.`,
+        kind: "unavailable",
         cause: error,
       });
     }

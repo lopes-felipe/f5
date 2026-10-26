@@ -1,6 +1,21 @@
 import type { ThreadId, CommandId } from "@t3tools/contracts";
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 import type * as SqlClient from "effect/unstable/sql/SqlClient";
+export class ScheduledThreadPurgeBlocked extends Data.TaggedError("ScheduledThreadPurgeBlocked")<{
+  readonly threadId: ThreadId;
+  readonly message: string;
+}> {}
+export const assertScheduledThreadPurgeable = (sql: SqlClient.SqlClient, threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const owners =
+      yield* sql`SELECT id FROM scheduled_task_runs WHERE thread_id=${threadId} AND owns_execution=1 LIMIT 1`;
+    if (owners.length)
+      return yield* new ScheduledThreadPurgeBlocked({
+        threadId,
+        message: "Resolve the scheduled run before purging its execution evidence.",
+      });
+  });
+
 /** Every durable thread reference must have an explicit retention decision. */
 export const threadPurgePolicy: Readonly<
   Record<
@@ -8,6 +23,22 @@ export const threadPurgePolicy: Readonly<
     { readonly kind: "root" | "cascade" | "explicit" | "retain"; readonly reason?: string }
   >
 > = {
+  scheduled_task_quarantine: {
+    kind: "retain",
+    reason: "Malformed scheduled execution evidence requires explicit recovery.",
+  },
+  scheduled_task_runs: {
+    kind: "retain",
+    reason: "Scheduled execution ownership and bounded history survive thread purge.",
+  },
+  scheduled_run_submissions: {
+    kind: "retain",
+    reason: "Delivery associations must remain fenced after thread purge.",
+  },
+  scheduled_notifications: {
+    kind: "retain",
+    reason: "Durable notification intent has independent retention.",
+  },
   thread_pull_request_watches: { kind: "cascade" },
   thread_pull_request_watch_stops: { kind: "cascade" },
   thread_message_authorship: { kind: "cascade" },
@@ -65,6 +96,11 @@ export const threadPurgePolicy: Readonly<
     kind: "retain",
     reason: "Bridge idempotency receipts must survive thread deletion.",
   },
+  upstream_port_groups: {
+    kind: "retain",
+    reason: "Start-port idempotency receipts must survive thread deletion.",
+  },
+  upstream_port_links: { kind: "explicit" },
 };
 
 /** Static SQL handlers; schema introspection must never determine what gets deleted. */
@@ -115,6 +151,13 @@ export const threadPurgeHandlers = {
     sql`DELETE FROM native_operations WHERE rowid IN (SELECT rowid FROM native_operations WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
   workspace_transitions: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
     sql`DELETE FROM workspace_transitions WHERE rowid IN (SELECT rowid FROM workspace_transitions WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
+  // A deleted port thread no longer holds its topics in progress; the version bump invalidates cursors.
+  upstream_port_links: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
+    sql`UPDATE upstream_ledger_publication SET links_version = links_version + 1 WHERE project_id IN (SELECT project_id FROM upstream_port_links WHERE thread_id = ${threadId})`.pipe(
+      Effect.andThen(
+        sql`DELETE FROM upstream_port_links WHERE rowid IN (SELECT rowid FROM upstream_port_links WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
+      ),
+    ),
 };
 export const purgeThreadRows = (
   sql: SqlClient.SqlClient,
@@ -131,6 +174,7 @@ export const purgeThreadRows = (
           yield* Effect.yieldNow;
         }
       });
+    yield* assertScheduledThreadPurgeable(sql, threadId);
     for (const handler of Object.values(threadPurgeHandlers)) yield* drain(handler(sql, threadId));
     yield* sql`DELETE FROM attachment_owners WHERE owner_kind = 'activity' AND attachment_id IN (SELECT attachment_id FROM attachments WHERE thread_id = ${threadId})`;
     yield* sql`UPDATE projection_usage_metadata SET coverage_started_at = CASE WHEN coverage_started_at < ${coverageResumesAt} THEN ${coverageResumesAt} ELSE coverage_started_at END WHERE singleton_id = 1`;

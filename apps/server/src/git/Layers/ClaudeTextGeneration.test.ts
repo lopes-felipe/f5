@@ -1,6 +1,7 @@
+import { readFileSync } from "node:fs";
 import { delimiter } from "node:path";
 import { writeCliScript } from "../../testUtils/cli.ts";
-import { ClaudeSettings, ProviderInstanceId } from "@t3tools/contracts";
+import { ClaudeSettings, ProviderInstanceId, UpstreamTriageBatchResult } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { Effect, FileSystem, Layer, Path, Schema } from "effect";
@@ -235,6 +236,31 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
             "claude-haiku-4-5",
             [{ id: "effort", value: "ultrathink" }],
           ),
+        }),
+    ),
+  );
+  it.effect("runs no-workspace triage with no tools, no MCP and a scoped temp cwd", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({ structured_output: { groups: [] } }),
+        // The fake CLI also rejects any call without empty tools, strict MCP and dontAsk.
+        argsMustContain: "--tools  --disable-slash-commands --permission-mode dontAsk",
+      },
+      (generation, lastCwdPath) =>
+        Effect.gen(function* () {
+          const result = yield* generation.generateStructuredJson({
+            cwd: process.cwd(),
+            operation: "upstreamTriage",
+            prompt: "Classify",
+            outputSchema: UpstreamTriageBatchResult,
+            modelSelection: createModelSelection(
+              ProviderInstanceId.make("claudeAgent"),
+              "claude-haiku-4-5",
+            ),
+            isolation: "no-workspace",
+          });
+          expect(result).toEqual({ groups: [] });
+          expect(readFileSync(lastCwdPath, "utf8")).not.toBe(process.cwd());
         }),
     ),
   );

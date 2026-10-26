@@ -77,6 +77,28 @@ import type {
   BotTask,
 } from "./agentBridge";
 import type { DesktopComputerAutomationBridge } from "./computerAutomation";
+import type {
+  UpstreamAcceptSuggestionsInput,
+  UpstreamDecideInput,
+  UpstreamDecideResult,
+  UpstreamGetPortPromptInput,
+  UpstreamGetPortPromptResult,
+  UpstreamGetTopicInput,
+  UpstreamListTopicsInput,
+  UpstreamListTopicsResult,
+  UpstreamOverview,
+  UpstreamPortsChanged,
+  UpstreamPortsListProjectsResult,
+  UpstreamPortsProjectInput,
+  UpstreamResolvePublicationInput,
+  UpstreamRevisionResult,
+  UpstreamRunInput,
+  UpstreamRunResult,
+  UpstreamStartPortInput,
+  UpstreamStartPortResult,
+  UpstreamTopicDetail,
+  UpstreamUnlinkPortInput,
+} from "./upstreamPorts";
 import type { PullRequestKey } from "./prHub";
 import type {
   ForgeAccount,
@@ -477,6 +499,8 @@ export interface ContextMenuItem<T extends string = string> {
   id: T;
   label: string;
   destructive?: boolean;
+  disabled?: boolean;
+  separatorBefore?: boolean;
 }
 
 export type DesktopUpdateChannel = "stable" | "beta";
@@ -742,7 +766,46 @@ export interface DesktopPreviewBridge {
   onStateChange: (listener: (tabId: string, state: DesktopPreviewTabState) => void) => () => void;
 }
 
+import type * as Scheduled from "./scheduledTasks";
+
 export interface NativeApi {
+  scheduledTasks: {
+    list: (
+      input: (typeof Scheduled.ScheduledTaskListInput)["Type"],
+    ) => Promise<(typeof Scheduled.ScheduledTaskListResult)["Type"]>;
+    get: (
+      input: (typeof Scheduled.ScheduledTaskGetInput)["Type"],
+    ) => Promise<(typeof Scheduled.ScheduledTaskListResult)["Type"]["tasks"][number]>;
+    create: (
+      input: (typeof Scheduled.ScheduledTaskCreateInput)["Type"],
+    ) => Promise<(typeof Scheduled.ScheduledTaskSaveResult)["Type"]>;
+    update: (
+      input: (typeof Scheduled.ScheduledTaskUpdateInput)["Type"],
+    ) => Promise<(typeof Scheduled.ScheduledTaskSaveResult)["Type"]>;
+    delete: (input: (typeof Scheduled.ScheduledTaskVersionInput)["Type"]) => Promise<void>;
+    setEnabled: (
+      input: (typeof Scheduled.ScheduledTaskEnabledInput)["Type"],
+    ) => Promise<Scheduled.ScheduledTask>;
+    runNow: (
+      input: (typeof Scheduled.ScheduledTaskRunNowInput)["Type"],
+    ) => Promise<Scheduled.ScheduledTaskRun>;
+    listRuns: (
+      input: (typeof Scheduled.ScheduledTaskRunsInput)["Type"],
+    ) => Promise<(typeof Scheduled.ScheduledTaskRunsResult)["Type"]>;
+    previewSchedule: (
+      input: (typeof Scheduled.SchedulePreviewInput)["Type"],
+    ) => Promise<Scheduled.SchedulePreview>;
+    resolveRun: (
+      input: (typeof Scheduled.ScheduledResolveInput)["Type"],
+    ) => Promise<Scheduled.ScheduledTaskRun>;
+    claimNotifications: (
+      input: (typeof Scheduled.ScheduledClaimInput)["Type"],
+    ) => Promise<(typeof Scheduled.ScheduledNotificationBatch)["Type"]>;
+    acknowledgeNotifications: (
+      input: (typeof Scheduled.ScheduledAckInput)["Type"],
+    ) => Promise<void>;
+    onChanged: (callback: (payload: Scheduled.ScheduledTasksChanged) => void) => () => void;
+  };
   mcpApps: {
     toolInfo: (input: McpAppToolInfoInput) => Promise<McpAppToolInfo>;
     callTool: (input: McpAppCallToolInput) => Promise<McpAppToolResult>;
@@ -1085,6 +1148,9 @@ export interface NativeApi {
   };
   agentBridge: {
     getState: () => Promise<AgentBridgeState>;
+    setSchedulingGrant: (
+      input: import("./agentBridge").AgentBridgeSchedulingGrantInput,
+    ) => Promise<void>;
     /** Invalidation only: refetch state when it fires. */
     onStateChanged: (callback: (payload: AgentBridgeStateChanged) => void) => () => void;
     getTasks: (input: AgentBridgeGetTasksInput) => Promise<AgentBridgeGetTasksResult>;
@@ -1129,6 +1195,23 @@ export interface NativeApi {
     inspectRun: (
       input: WorkflowPlatformInspectRunInput,
     ) => Promise<WorkflowPlatformInspectRunResult>;
+  };
+  upstreamPorts: {
+    listProjects: () => Promise<UpstreamPortsListProjectsResult>;
+    getOverview: (input: UpstreamPortsProjectInput) => Promise<UpstreamOverview>;
+    listTopics: (input: UpstreamListTopicsInput) => Promise<UpstreamListTopicsResult>;
+    getTopic: (input: UpstreamGetTopicInput) => Promise<UpstreamTopicDetail>;
+    decide: (input: UpstreamDecideInput) => Promise<UpstreamDecideResult>;
+    acceptSuggestions: (input: UpstreamAcceptSuggestionsInput) => Promise<UpstreamDecideResult>;
+    run: (input: UpstreamRunInput) => Promise<UpstreamRunResult>;
+    startPort: (input: UpstreamStartPortInput) => Promise<UpstreamStartPortResult>;
+    unlinkPort: (input: UpstreamUnlinkPortInput) => Promise<UpstreamRevisionResult>;
+    getPortPrompt: (input: UpstreamGetPortPromptInput) => Promise<UpstreamGetPortPromptResult>;
+    resolvePublication: (input: UpstreamResolvePublicationInput) => Promise<UpstreamRevisionResult>;
+    addRemote: (input: UpstreamPortsProjectInput) => Promise<UpstreamRevisionResult>;
+    takeOverWriter: (input: UpstreamPortsProjectInput) => Promise<UpstreamRevisionResult>;
+    /** Invalidation only: refetch when it fires. */
+    onChanged: (callback: (payload: UpstreamPortsChanged) => void) => () => void;
   };
   prHub: {
     listAccounts: () => Promise<ReadonlyArray<ForgeAccount>>;

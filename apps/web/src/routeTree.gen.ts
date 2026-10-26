@@ -14,6 +14,7 @@ import { Route as ChatIndexRouteImport } from './routes/_chat.index'
 import { Route as ChatWorktreesRouteImport } from './routes/_chat.worktrees'
 import { Route as ChatUsageRouteImport } from './routes/_chat.usage'
 import { Route as ChatSettingsRouteImport } from './routes/_chat.settings'
+import { Route as ChatScheduledRouteImport } from './routes/_chat.scheduled'
 import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-requests'
 import { Route as ChatNewRouteImport } from './routes/_chat.new'
 import { Route as ChatBotsRouteImport } from './routes/_chat.bots'
@@ -45,6 +46,11 @@ const ChatUsageRoute = ChatUsageRouteImport.update({
 const ChatSettingsRoute = ChatSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => ChatRoute,
+} as any)
+const ChatScheduledRoute = ChatScheduledRouteImport.update({
+  id: '/scheduled',
+  path: '/scheduled',
   getParentRoute: () => ChatRoute,
 } as any)
 const ChatPullRequestsRoute = ChatPullRequestsRouteImport.update({
@@ -96,6 +102,7 @@ export interface FileRoutesByFullPath {
   '/bots': typeof ChatBotsRoute
   '/new': typeof ChatNewRoute
   '/pull-requests': typeof ChatPullRequestsRoute
+  '/scheduled': typeof ChatScheduledRoute
   '/settings': typeof ChatSettingsRoute
   '/usage': typeof ChatUsageRoute
   '/worktrees': typeof ChatWorktreesRoute
@@ -109,6 +116,7 @@ export interface FileRoutesByTo {
   '/bots': typeof ChatBotsRoute
   '/new': typeof ChatNewRoute
   '/pull-requests': typeof ChatPullRequestsRoute
+  '/scheduled': typeof ChatScheduledRoute
   '/settings': typeof ChatSettingsRoute
   '/usage': typeof ChatUsageRoute
   '/worktrees': typeof ChatWorktreesRoute
@@ -125,6 +133,7 @@ export interface FileRoutesById {
   '/_chat/bots': typeof ChatBotsRoute
   '/_chat/new': typeof ChatNewRoute
   '/_chat/pull-requests': typeof ChatPullRequestsRoute
+  '/_chat/scheduled': typeof ChatScheduledRoute
   '/_chat/settings': typeof ChatSettingsRoute
   '/_chat/usage': typeof ChatUsageRoute
   '/_chat/worktrees': typeof ChatWorktreesRoute
@@ -142,6 +151,7 @@ export interface FileRouteTypes {
     | '/bots'
     | '/new'
     | '/pull-requests'
+    | '/scheduled'
     | '/settings'
     | '/usage'
     | '/worktrees'
@@ -155,6 +165,7 @@ export interface FileRouteTypes {
     | '/bots'
     | '/new'
     | '/pull-requests'
+    | '/scheduled'
     | '/settings'
     | '/usage'
     | '/worktrees'
@@ -170,6 +181,7 @@ export interface FileRouteTypes {
     | '/_chat/bots'
     | '/_chat/new'
     | '/_chat/pull-requests'
+    | '/_chat/scheduled'
     | '/_chat/settings'
     | '/_chat/usage'
     | '/_chat/worktrees'
@@ -219,6 +231,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof ChatSettingsRouteImport
+      parentRoute: typeof ChatRoute
+    }
+    '/_chat/scheduled': {
+      id: '/_chat/scheduled'
+      path: '/scheduled'
+      fullPath: '/scheduled'
+      preLoaderRoute: typeof ChatScheduledRouteImport
       parentRoute: typeof ChatRoute
     }
     '/_chat/pull-requests': {
@@ -285,6 +304,7 @@ interface ChatRouteChildren {
   ChatBotsRoute: typeof ChatBotsRoute
   ChatNewRoute: typeof ChatNewRoute
   ChatPullRequestsRoute: typeof ChatPullRequestsRoute
+  ChatScheduledRoute: typeof ChatScheduledRoute
   ChatSettingsRoute: typeof ChatSettingsRoute
   ChatUsageRoute: typeof ChatUsageRoute
   ChatWorktreesRoute: typeof ChatWorktreesRoute
@@ -300,6 +320,7 @@ const ChatRouteChildren: ChatRouteChildren = {
   ChatBotsRoute: ChatBotsRoute,
   ChatNewRoute: ChatNewRoute,
   ChatPullRequestsRoute: ChatPullRequestsRoute,
+  ChatScheduledRoute: ChatScheduledRoute,
   ChatSettingsRoute: ChatSettingsRoute,
   ChatUsageRoute: ChatUsageRoute,
   ChatWorktreesRoute: ChatWorktreesRoute,

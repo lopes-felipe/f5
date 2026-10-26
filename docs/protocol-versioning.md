@@ -109,3 +109,9 @@ The October catch-up integrated with worktree move Release 5 uses version 30.
 It retains version 29's move methods alongside the October provider/settings
 contracts. Clients from either earlier branch must reload against this combined
 server before issuing mutations.
+
+Upstream Ports uses version 40. It adds the `upstreamPorts.*` methods (`listProjects`,
+`getOverview`, `listTopics`, `getTopic`, `decide`, `acceptSuggestions`, `run`, `startPort`,
+`unlinkPort`, `getPortPrompt`, `resolvePublication`, `addRemote`, `takeOverWriter`) and the
+`upstreamPorts.changed` push channel, which carries invalidation only. Older clients have no
+Upstream page, so the bump only forces them to reload before calling the new methods.

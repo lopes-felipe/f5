@@ -13,6 +13,7 @@ import { ModelSelection, ProjectSkillScope, RuntimeMode } from "./orchestration"
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance";
 import { ThreadEnvMode, type ThreadEnvMode as ThreadEnvModeType } from "./threadEnvMode";
 import { ComputerPasswordMasking } from "./computerAutomation";
+import { UpstreamPortsSettings, UpstreamPortsSettingsPatch } from "./upstreamPortsWire";
 export { ThreadEnvMode };
 
 // ── Client Settings (local-only) ───────────────────────────────
@@ -446,6 +447,7 @@ export const ProjectSettingsOverrides = Schema.Struct({
   enableCodexChrome: Schema.optionalKey(Schema.Boolean),
   enableAgentComputerUse: Schema.optionalKey(Schema.Boolean),
   autoPullDefaultBranch: Schema.optionalKey(Schema.Boolean),
+  upstreamPorts: Schema.optionalKey(UpstreamPortsSettings),
 });
 export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
 
@@ -532,6 +534,8 @@ export const ServerSettings = Schema.Struct({
   /** Allow agents to control approved apps. Off by default. */
   enableAgentComputerUse: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   autoPullDefaultBranch: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /** Upstream tracking schedule and models. Local only; a checked-in file never sets it. */
+  upstreamPorts: UpstreamPortsSettings.pipe(Schema.withDecodingDefault(() => ({}))),
   /**
    * How GitHub API requests travel: f5's HTTP client, or `gh api` as before
    * the HTTP move. "gh" is a fallback kept for one release.
@@ -563,6 +567,14 @@ export const ServerSettings = Schema.Struct({
   ),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(() => ({}))),
   prHub: PrHubSettings.pipe(Schema.withDecodingDefault(() => ({}))),
+  scheduledTasks: Schema.Struct({
+    epoch: Schema.Int.pipe(Schema.withDecodingDefault(() => 0)),
+    cutoverAt: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(() => null)),
+    enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
+    maxConcurrentRuns: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 })).pipe(
+      Schema.withDecodingDefault(() => 2),
+    ),
+  }).pipe(Schema.withDecodingDefault(() => ({}))),
   agentBridge: AgentBridgeSettings.pipe(Schema.withDecodingDefault(() => ({}))),
 });
 export type ServerSettings = typeof ServerSettings.Type;
@@ -697,6 +709,7 @@ export const ServerSettingsPatch = Schema.Struct({
   computerUseExecutionMode: Schema.optionalKey(ComputerUseExecutionMode),
   computerUsePasswordMasking: Schema.optionalKey(ComputerPasswordMasking),
   autoPullDefaultBranch: Schema.optionalKey(Schema.Boolean),
+  upstreamPorts: Schema.optionalKey(UpstreamPortsSettingsPatch),
   githubTransport: Schema.optionalKey(GitHubTransport),
   observability: Schema.optionalKey(
     Schema.Struct({
@@ -706,6 +719,14 @@ export const ServerSettingsPatch = Schema.Struct({
     }),
   ),
   prHub: Schema.optionalKey(PrHubSettingsPatch),
+  scheduledTasks: Schema.optionalKey(
+    Schema.Struct({
+      enabled: Schema.optionalKey(Schema.Boolean),
+      maxConcurrentRuns: Schema.optionalKey(
+        Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 })),
+      ),
+    }),
+  ),
   agentBridge: Schema.optionalKey(AgentBridgeSettingsPatch),
   providers: Schema.optionalKey(
     Schema.Struct({
@@ -755,6 +776,7 @@ export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "enableCodexChrome",
   "enableAgentComputerUse",
   "autoPullDefaultBranch",
+  "upstreamPorts",
 ] as const satisfies ReadonlyArray<keyof ServerSettings>;
 export type ProjectScopedServerSettingKey = (typeof PROJECT_SCOPED_SERVER_SETTING_KEYS)[number];
 export const ProjectSettingSource = Schema.Literals([

@@ -15,6 +15,16 @@ it("declares every event handled by each projector, including helper guards", ()
       declarations.set(node.name.text, node.initializer);
     ts.forEachChild(node, index);
   };
+  // The operational scheduler projector lives in a separate module. Follow its
+  // factory too, so its filter gets the same completeness check as local ones.
+  index(
+    ts.createSourceFile(
+      "scheduledTasks/projector.ts",
+      readFileSync(new URL("../../scheduledTasks/projector.ts", import.meta.url), "utf8"),
+      ts.ScriptTarget.Latest,
+      true,
+    ),
+  );
   index(source);
   const unwrap = (node: ts.Expression): ts.Expression =>
     ts.isAsExpression(node) || ts.isSatisfiesExpression(node) || ts.isParenthesizedExpression(node)
@@ -61,7 +71,7 @@ it("declares every event handled by each projector, including helper guards", ()
       if (ts.isCallExpression(node)) {
         if (ts.isIdentifier(node.expression)) {
           const helper = declarations.get(node.expression.text);
-          if (helper && ts.isArrowFunction(unwrap(helper))) visit(helper);
+          if (helper) visit(helper);
         } else if (
           ts.isPropertyAccessExpression(node.expression) &&
           node.expression.name.text === "includes" &&

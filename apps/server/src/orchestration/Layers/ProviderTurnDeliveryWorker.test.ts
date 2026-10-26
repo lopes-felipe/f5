@@ -6,6 +6,7 @@ import {
   ThreadId,
   TurnId,
   ProviderInstanceId,
+  ScheduledTaskRunId,
   type RuntimeUsageLimit,
   type OrchestrationUsageLimit,
 } from "@t3tools/contracts";
@@ -30,6 +31,11 @@ import {
 } from "../Services/ProviderTurnDeliveryRepository.ts";
 import { ProviderTurnDeliveryWorker } from "../Services/ProviderTurnDeliveryWorker.ts";
 import { ProviderTurnDeliveryWorkerLive } from "./ProviderTurnDeliveryWorker.ts";
+import {
+  setup as scheduledSetup,
+  testLayer as scheduledTestLayer,
+} from "../../scheduledTasks/testing.ts";
+import { userScheduleActor } from "../../scheduledTasks/Service.ts";
 
 const deliveryId = CommandId.makeUnsafe("delivery-unknown-outcome");
 const commandId = CommandId.makeUnsafe("command-unknown-outcome");
@@ -309,6 +315,95 @@ const testLayer = ProviderTurnDeliveryWorkerLive.pipe(
         }),
     } as never),
   ),
+);
+
+const setupScheduledDelivery = Effect.gen(function* () {
+  resetDelivery();
+  const { create, service, store } = yield* scheduledSetup;
+  const { task } = yield* create();
+  const run = yield* service.runNow(
+    {
+      taskId: task.id,
+      runId: ScheduledTaskRunId.makeUnsafe(crypto.randomUUID()),
+      requestedAt: new Date(0).toISOString(),
+    },
+    userScheduleActor,
+  );
+  yield* service.reserve((yield* store.run(run.id))!);
+  const current = (yield* store.run(run.id))!;
+  state = {
+    ...state,
+    commandId: current.command!.commandId,
+    threadId: current.command!.threadId,
+    messageId: current.command!.message.messageId,
+    event: { ...state.event, commandId: current.command!.commandId },
+  };
+  const { sql } = store;
+  yield* sql`INSERT INTO projection_projects(project_id,title,workspace_root,scripts_json,created_at,updated_at) VALUES(${task.projectId},'Project','/repo','[]',${createdAt},${createdAt})`;
+  yield* sql`INSERT INTO projection_threads(thread_id,project_id,title,model,created_at,last_interaction_at,updated_at) VALUES(${state.threadId},${task.projectId},'Scheduled','model-a',${createdAt},${createdAt},${createdAt})`;
+  yield* sql`INSERT INTO provider_turn_deliveries(delivery_id,thread_id,command_id,message_id,state,event_json,created_at,updated_at) VALUES(${state.deliveryId},${state.threadId},${state.commandId},${state.messageId},'pending','{}',${createdAt},${createdAt})`;
+  return { service, store, run };
+});
+
+it.effect(
+  "fences canceled scheduled deliveries before claiming, even with a distinct delivery ID",
+  () =>
+    Effect.gen(function* () {
+      const { store, service, run } = yield* setupScheduledDelivery;
+      yield* store.sql`UPDATE scheduled_task_runs SET canceled=1 WHERE id=${run.id}`;
+      const worker = yield* ProviderTurnDeliveryWorker;
+      yield* worker.start;
+      yield* worker.drain;
+      const rows = yield* store.sql<{
+        state: string;
+        certainty: string;
+      }>`SELECT state,certainty FROM provider_turn_deliveries WHERE command_id=${state.commandId}`;
+      assert.equal(rows[0]!.state, "abandoned");
+      assert.equal(rows[0]!.certainty, "not_sent");
+      assert.equal(state.attempt, 0);
+      yield* service.reconcile;
+      assert.equal((yield* store.run(run.id))!.capacity, false);
+      assert.equal((yield* store.run(run.id))!.owner, false);
+    }).pipe(Effect.provide(testLayer.pipe(Layer.provideMerge(scheduledTestLayer)))),
+);
+
+it.effect("wakes a scheduled delivery after its capacity gate opens", () =>
+  Effect.gen(function* () {
+    const { store } = yield* setupScheduledDelivery;
+    acceptSend = true;
+    const worker = yield* ProviderTurnDeliveryWorker;
+    yield* worker.start;
+    yield* worker.drain;
+    assert.equal(state.attempt, 0);
+    yield* store.sql`UPDATE scheduled_control SET ready=1 WHERE id=1`;
+    yield* worker.wakeScheduled!(state.threadId);
+    yield* worker.drain;
+    assert.equal(state.state, "accepted");
+    assert.equal(state.attempt, 1);
+  }).pipe(Effect.provide(testLayer.pipe(Layer.provideMerge(scheduledTestLayer)))),
+);
+
+it.effect(
+  "rechecks scheduled cancellation after asynchronous preparation before provider handoff",
+  () =>
+    Effect.gen(function* () {
+      const { store, run } = yield* setupScheduledDelivery;
+      yield* store.sql`UPDATE scheduled_control SET ready=1 WHERE id=1`;
+      acceptSend = true;
+      unavailableDispatchSnapshot = true;
+      beforePrepared = store.sql`UPDATE scheduled_task_runs SET canceled=1 WHERE id=${run.id}`.pipe(
+        Effect.asVoid,
+        Effect.orDie,
+      );
+      const worker = yield* ProviderTurnDeliveryWorker;
+      yield* worker.start;
+      yield* worker.drain;
+      assert.equal(state.attempt, 1);
+      assert.equal(state.state, "rejected");
+      assert.equal(state.certainty, "not_sent");
+      assert.equal(state.providerTurnId, null);
+      assert.deepStrictEqual(acceptedTurnIds, []);
+    }).pipe(Effect.provide(testLayer.pipe(Layer.provideMerge(scheduledTestLayer)))),
 );
 
 it.effect(

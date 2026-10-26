@@ -49,11 +49,24 @@ export class GitHubCliError extends Schema.TaggedErrorClass<GitHubCliError>()("G
 /**
  * TextGenerationError - Commit or PR text generation failed.
  */
+/** Coarse failure class so callers can retry, split, or open a circuit. */
+export const TextGenerationErrorKind = Schema.Literals([
+  "timeout",
+  "invalid-output",
+  "unavailable",
+  "auth",
+  "limit",
+  "unsupported",
+  "generic",
+]);
+export type TextGenerationErrorKind = typeof TextGenerationErrorKind.Type;
+
 export class TextGenerationError extends Schema.TaggedErrorClass<TextGenerationError>()(
   "TextGenerationError",
   {
     operation: Schema.String,
     detail: Schema.String,
+    kind: Schema.optional(TextGenerationErrorKind),
     cause: Schema.optional(Schema.Defect),
   },
 ) {

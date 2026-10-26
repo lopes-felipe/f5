@@ -1,3 +1,4 @@
+import * as Scheduled from "./scheduledTasks";
 import { ThreadSearchInput } from "./threadSearch";
 import {
   MCP_APPS_WS_METHODS,
@@ -86,12 +87,27 @@ import {
   AGENT_BRIDGE_WS_METHODS,
   AgentBridgeCreateTaskInput,
   AgentBridgeGetStateInput,
+  AgentBridgeSchedulingGrantInput,
   AgentBridgeGetTaskActivitiesInput,
   AgentBridgeGetTasksInput,
   AgentBridgeReplyToTaskInput,
   AgentBridgeTaskControlInput,
   AgentBridgeTaskInput,
 } from "./agentBridge";
+import {
+  UPSTREAM_PORTS_WS_METHODS,
+  UpstreamAcceptSuggestionsInput,
+  UpstreamDecideInput,
+  UpstreamGetPortPromptInput,
+  UpstreamGetTopicInput,
+  UpstreamListTopicsInput,
+  UpstreamPortsListProjectsInput,
+  UpstreamPortsProjectInput,
+  UpstreamResolvePublicationInput,
+  UpstreamRunInput,
+  UpstreamStartPortInput,
+  UpstreamUnlinkPortInput,
+} from "./upstreamPorts";
 import { AGENTS_WS_METHODS, AgentsDismissInput, AgentsGetSnapshotInput } from "./backgroundWork";
 import { ProjectGetCheckedInConfigInput } from "./checkedInProjectFile";
 import { OpenInEditorInput, RevealInFileManagerInput } from "./editor";
@@ -363,6 +379,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(AGENTS_WS_METHODS.getSnapshot, AgentsGetSnapshotInput),
   tagRequestBody(AGENTS_WS_METHODS.dismiss, AgentsDismissInput),
   tagRequestBody(AGENT_BRIDGE_WS_METHODS.getState, AgentBridgeGetStateInput),
+  tagRequestBody(AGENT_BRIDGE_WS_METHODS.setSchedulingGrant, AgentBridgeSchedulingGrantInput),
   tagRequestBody(AGENT_BRIDGE_WS_METHODS.getTasks, AgentBridgeGetTasksInput),
   tagRequestBody(AGENT_BRIDGE_WS_METHODS.getTask, AgentBridgeTaskInput),
   tagRequestBody(AGENT_BRIDGE_WS_METHODS.getTaskActivities, AgentBridgeGetTaskActivitiesInput),
@@ -596,6 +613,30 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.storageAutomationDryRun, StorageAutomationDryRunInput),
   tagRequestBody(WS_METHODS.storageAutomationAudit, StorageAutomationAuditInput),
   tagRequestBody(WS_METHODS.storageGetDiskSpace, StorageGetDiskSpaceRequest),
+  tagRequestBody(Scheduled.SCHEDULED_TASK_WS_METHODS.list, Scheduled.ScheduledTaskListInput),
+  tagRequestBody(Scheduled.SCHEDULED_TASK_WS_METHODS.get, Scheduled.ScheduledTaskGetInput),
+  tagRequestBody(Scheduled.SCHEDULED_TASK_WS_METHODS.create, Scheduled.ScheduledTaskCreateInput),
+  tagRequestBody(Scheduled.SCHEDULED_TASK_WS_METHODS.update, Scheduled.ScheduledTaskUpdateInput),
+  tagRequestBody(Scheduled.SCHEDULED_TASK_WS_METHODS.delete, Scheduled.ScheduledTaskVersionInput),
+  tagRequestBody(
+    Scheduled.SCHEDULED_TASK_WS_METHODS.setEnabled,
+    Scheduled.ScheduledTaskEnabledInput,
+  ),
+  tagRequestBody(Scheduled.SCHEDULED_TASK_WS_METHODS.runNow, Scheduled.ScheduledTaskRunNowInput),
+  tagRequestBody(Scheduled.SCHEDULED_TASK_WS_METHODS.listRuns, Scheduled.ScheduledTaskRunsInput),
+  tagRequestBody(
+    Scheduled.SCHEDULED_TASK_WS_METHODS.previewSchedule,
+    Scheduled.SchedulePreviewInput,
+  ),
+  tagRequestBody(Scheduled.SCHEDULED_TASK_WS_METHODS.resolveRun, Scheduled.ScheduledResolveInput),
+  tagRequestBody(
+    Scheduled.SCHEDULED_TASK_WS_METHODS.claimNotifications,
+    Scheduled.ScheduledClaimInput,
+  ),
+  tagRequestBody(
+    Scheduled.SCHEDULED_TASK_WS_METHODS.acknowledgeNotifications,
+    Scheduled.ScheduledAckInput,
+  ),
   tagRequestBody(WS_METHODS.nextTurnQueueList, NextTurnQueueListInput),
   tagRequestBody(WS_METHODS.nextTurnQueueSubmit, NextTurnQueueSubmitInput),
   tagRequestBody(WS_METHODS.nextTurnQueueSummary, NextTurnQueueSummaryInput),
@@ -760,6 +801,19 @@ const WebSocketRequestBody = Schema.Union([
   tagPrHubRequestBody(PR_HUB_WS_METHODS.changeReviewers, PrHubChangeReviewersInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.updateBranch, PrHubUpdateBranchInput),
   tagRequestBody(PR_HUB_WS_METHODS.clearData, PrHubClearDataInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.listProjects, UpstreamPortsListProjectsInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.getOverview, UpstreamPortsProjectInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.listTopics, UpstreamListTopicsInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.getTopic, UpstreamGetTopicInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.decide, UpstreamDecideInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.acceptSuggestions, UpstreamAcceptSuggestionsInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.run, UpstreamRunInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.startPort, UpstreamStartPortInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.unlinkPort, UpstreamUnlinkPortInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.getPortPrompt, UpstreamGetPortPromptInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.resolvePublication, UpstreamResolvePublicationInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.addRemote, UpstreamPortsProjectInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.takeOverWriter, UpstreamPortsProjectInput),
 ]);
 
 export const WebSocketRequest = Schema.Struct({

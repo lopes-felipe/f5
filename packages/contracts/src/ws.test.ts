@@ -6,6 +6,7 @@ import { ORCHESTRATION_WS_CHANNELS, ORCHESTRATION_WS_METHODS } from "./orchestra
 import { AGENTS_WS_CHANNELS, AGENTS_WS_METHODS } from "./backgroundWork";
 import { AGENT_BRIDGE_WS_CHANNELS } from "./agentBridge";
 import { PR_HUB_WS_CHANNELS, PR_HUB_WS_METHODS } from "./prHub";
+import { UPSTREAM_PORTS_WS_CHANNELS } from "./upstreamPorts";
 import {
   ServerProviderVersionAdvisory,
   ServerRunProviderUpdateResult,
@@ -614,13 +615,15 @@ it.effect("accepts global git status invalidation push envelopes", () =>
 );
 
 it("registers every declared push channel in both transport schemas", () => {
-  const channels = Object.values({
-    ...WS_CHANNELS,
-    ...AGENTS_WS_CHANNELS,
-    ...AGENT_BRIDGE_WS_CHANNELS,
-    ...ORCHESTRATION_WS_CHANNELS,
-    ...PR_HUB_WS_CHANNELS,
-  });
+  // Concatenate values: channel maps share key names such as `changed`.
+  const channels = [
+    WS_CHANNELS,
+    AGENTS_WS_CHANNELS,
+    AGENT_BRIDGE_WS_CHANNELS,
+    ORCHESTRATION_WS_CHANNELS,
+    PR_HUB_WS_CHANNELS,
+    UPSTREAM_PORTS_WS_CHANNELS,
+  ].flatMap((group) => Object.values(group) as string[]);
   // Do not derive expectations from WsPush: an omitted union member must fail this test.
   const registered = WsPush.members.map((member) => member.fields.channel.literal);
   assert.deepEqual([...registered].sort(), [...channels].sort());

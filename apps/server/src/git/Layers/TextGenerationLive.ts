@@ -199,12 +199,29 @@ export const makeTextGenerationFromRegistry = (
           getProviders,
         ).pipe(
           Effect.flatMap(({ instance: tg, modelSelection }) =>
-            tg.textGeneration.generateStructuredJson({ ...input, modelSelection }),
+            input.isolation === "no-workspace" && !supportsNoWorkspaceIsolation(tg.driverKind)
+              ? Effect.fail(
+                  new TextGenerationError({
+                    operation: input.operation,
+                    detail: `${tg.driverKind} cannot run without workspace access; choose a Claude instance.`,
+                    kind: "unsupported",
+                  }),
+                )
+              : tg.textGeneration.generateStructuredJson({ ...input, modelSelection }),
           ),
         ),
       ),
     ),
 });
+
+/**
+ * Drivers whose structured generation runs with no tools, strict empty MCP
+ * config, slash commands disabled, and a scoped temp cwd. Codex `exec -s
+ * read-only` can still read the filesystem, so it does not qualify.
+ */
+export function supportsNoWorkspaceIsolation(driverKind: string): boolean {
+  return driverKind === "claudeAgent";
+}
 
 const defaultCodexModelSelection = (model?: string): ModelSelection =>
   createModelSelection(

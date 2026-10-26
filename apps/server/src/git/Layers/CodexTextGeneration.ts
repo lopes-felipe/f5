@@ -46,6 +46,7 @@ import {
   type TextGenerationShape,
   TextGeneration,
 } from "../Services/TextGeneration.ts";
+import { classifyCliFailureKind } from "../Utils.ts";
 
 const DEFAULT_CODEX_REASONING_EFFORT = "low";
 const CODEX_TIMEOUT_MS = 180_000;
@@ -149,6 +150,7 @@ function normalizeCodexError(
       return new TextGenerationError({
         operation,
         detail: "Codex CLI (`codex`) is required but not available on PATH.",
+        kind: "unavailable",
         cause: error,
       });
     }
@@ -489,6 +491,7 @@ export const makeCodexTextGeneration = (
                 detail.length > 0
                   ? `Codex CLI command failed: ${detail}`
                   : `Codex CLI command failed with code ${exitCode}.`,
+              kind: classifyCliFailureKind(detail),
             });
           }
         });
@@ -508,7 +511,11 @@ export const makeCodexTextGeneration = (
               Option.match({
                 onNone: () =>
                   Effect.fail(
-                    new TextGenerationError({ operation, detail: "Codex CLI request timed out." }),
+                    new TextGenerationError({
+                      operation,
+                      detail: "Codex CLI request timed out.",
+                      kind: "timeout",
+                    }),
                   ),
                 onSome: () => Effect.void,
               }),
@@ -530,6 +537,7 @@ export const makeCodexTextGeneration = (
                 new TextGenerationError({
                   operation,
                   detail: "Codex returned invalid structured output.",
+                  kind: "invalid-output",
                   cause,
                 }),
               ),
@@ -699,14 +707,23 @@ export const makeCodexTextGeneration = (
       });
 
     const generateStructuredJson: TextGenerationShape["generateStructuredJson"] = (input) =>
-      runCodexJson({
-        operation: input.operation,
-        cwd: input.cwd,
-        prompt: input.prompt,
-        outputSchemaJson: input.outputSchema,
-        ...(input.model ? { model: input.model } : {}),
-        ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
-      });
+      // `exec -s read-only` can still read the filesystem.
+      input.isolation === "no-workspace"
+        ? Effect.fail(
+            new TextGenerationError({
+              operation: input.operation,
+              detail: "Codex cannot run without workspace access.",
+              kind: "unsupported",
+            }),
+          )
+        : runCodexJson({
+            operation: input.operation,
+            cwd: input.cwd,
+            prompt: input.prompt,
+            outputSchemaJson: input.outputSchema,
+            ...(input.model ? { model: input.model } : {}),
+            ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
+          });
 
     return {
       generateCommitMessage,

@@ -100,6 +100,7 @@ export interface ProjectSidebarLists<T extends ThreadListItem = ThreadListItem> 
   workflowThreadsByKey: Map<string, T[]>;
   workflowMetaByKey: Map<string, SidebarWorkflowMeta>;
   activeThreads: Array<T | Thread>;
+  scheduledThreads: T[];
   snoozedThreads: T[];
   settledThreads: T[];
   archivedSidebarItems: ArchivedSidebarItem[];
@@ -110,6 +111,7 @@ export interface SidebarHoverFreezeSnapshot {
   workflowKeysByProjectId: Readonly<Record<string, readonly string[]>>;
   workflowThreadIdsByWorkflowKey: Readonly<Record<string, readonly ThreadId[]>>;
   activeThreadIdsByProjectId: Readonly<Record<string, readonly ThreadId[]>>;
+  scheduledThreadIdsByProjectId: Readonly<Record<string, readonly ThreadId[]>>;
   archivedItemKeysByProjectId: Readonly<Record<string, readonly string[]>>;
   attentionThreadIds: readonly ThreadId[];
 }
@@ -226,8 +228,29 @@ export function buildProjectSidebarLists<T extends ThreadListItem>(input: {
   );
 
   const persistedProjectThreads = threads.filter(
-    (thread) => thread.projectId === project.id && !workflowThreadIds.has(thread.id),
+    (thread) =>
+      thread.projectId === project.id &&
+      !workflowThreadIds.has(thread.id) &&
+      !thread.scheduledOrigin,
   );
+  const scheduledByActivity = sortThreadsByActivity(
+    threads.filter(
+      (thread) =>
+        thread.projectId === project.id &&
+        !workflowThreadIds.has(thread.id) &&
+        thread.scheduledOrigin,
+    ),
+  );
+  const scheduledThreads = [
+    ...orderActiveSidebarThreads({
+      threads: scheduledByActivity.filter((thread) => thread.archivedAt === null),
+      draftThreadId: null,
+    }),
+    ...scheduledByActivity.filter(
+      (thread) => thread.archivedAt === null && isSnoozedThread(thread),
+    ),
+    ...scheduledByActivity.filter((thread) => thread.archivedAt !== null),
+  ];
   const projectThreads = getProjectThreadsWithDraft({
     projectId: project.id,
     projectThreads: persistedProjectThreads,
@@ -268,11 +291,17 @@ export function buildProjectSidebarLists<T extends ThreadListItem>(input: {
     draftThreadId: projectDraftThreadId,
   });
   const snoozedThreads = projectSnoozedThreads(
-    threads.filter((thread) => !thread.settledAt),
+    threads.filter((thread) => !thread.settledAt && !thread.scheduledOrigin),
     project.id,
   );
   const settledThreads = sortThreadsByActivity(
-    persistedProjectThreads.filter((thread) => thread.archivedAt === null && !!thread.settledAt),
+    persistedProjectThreads.filter(
+      (thread) =>
+        thread.archivedAt === null &&
+        !!thread.settledAt &&
+        !thread.scheduledOrigin &&
+        !thread.scheduledOrigin,
+    ),
   );
 
   return {
@@ -280,6 +309,7 @@ export function buildProjectSidebarLists<T extends ThreadListItem>(input: {
     workflowThreadsByKey,
     workflowMetaByKey,
     activeThreads: orderedActiveThreads,
+    scheduledThreads,
     snoozedThreads,
     settledThreads,
     archivedSidebarItems,

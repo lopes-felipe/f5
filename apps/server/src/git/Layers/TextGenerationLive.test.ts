@@ -6,7 +6,7 @@ import {
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { it } from "@effect/vitest";
-import { Effect, Layer, PubSub, Result, Stream } from "effect";
+import { Effect, Layer, PubSub, Result, Schema, Stream } from "effect";
 import { describe, expect } from "vitest";
 
 import { DEFAULT_SERVER_SETTINGS, ProjectId, ProviderInstanceId } from "@t3tools/contracts";
@@ -23,6 +23,7 @@ import {
   TextGenerationLive,
   resolveAuxiliaryTextModel,
   makeTextGenerationFromRegistry,
+  supportsNoWorkspaceIsolation,
 } from "./TextGenerationLive.ts";
 
 const makeStubTextGeneration = (overrides: Partial<TextGenerationShape>): TextGenerationShape => ({
@@ -130,6 +131,36 @@ describe("makeTextGenerationFromRegistry", () => {
         expect(result.failure.operation).toBe("generateBranchName");
         expect(result.failure.detail).toContain("missing_instance");
       }
+    }),
+  );
+});
+
+describe("no-workspace isolation", () => {
+  const schema = { groups: [] } as never;
+  const succeed = makeStubTextGeneration({ generateStructuredJson: () => Effect.succeed(schema) });
+
+  it.effect("routes isolated requests only to Claude instances", () =>
+    Effect.gen(function* () {
+      const tg = makeTextGenerationFromRegistry(
+        makeStubRegistry([
+          makeStubInstance(ProviderInstanceId.make("claudeAgent"), succeed),
+          makeStubInstance(ProviderInstanceId.make("codex"), succeed),
+        ]),
+      );
+      const input = (instance: string) => ({
+        cwd: process.cwd(),
+        operation: "upstreamTriage",
+        prompt: "x",
+        outputSchema: Schema.Struct({ groups: Schema.Array(Schema.String) }),
+        modelSelection: createModelSelection(ProviderInstanceId.make(instance), "m"),
+        isolation: "no-workspace" as const,
+      });
+      expect(yield* tg.generateStructuredJson(input("claudeAgent"))).toBe(schema);
+      const codex = yield* tg.generateStructuredJson(input("codex")).pipe(Effect.flip);
+      expect(codex.kind).toBe("unsupported");
+      expect(supportsNoWorkspaceIsolation("claudeAgent")).toBe(true);
+      expect(supportsNoWorkspaceIsolation("codex")).toBe(false);
+      expect(supportsNoWorkspaceIsolation("cursor")).toBe(false);
     }),
   );
 });

@@ -1,5 +1,12 @@
 import { useLocation, useNavigate } from "@tanstack/react-router";
-import { GaugeIcon, GitPullRequestIcon, HomeIcon, type LucideIcon } from "lucide-react";
+import {
+  CalendarClockIcon,
+  GaugeIcon,
+  GitPullRequestIcon,
+  HomeIcon,
+  type LucideIcon,
+} from "lucide-react";
+
 import { useEffect, useState, type ReactNode } from "react";
 
 import { readNativeApi } from "../../nativeApi";
@@ -73,6 +80,7 @@ export function SidebarNav(props: {
   pullRequestsShortcutLabel: string | null;
 }) {
   const navigate = useNavigate();
+  const isOnScheduled = useLocation({ select: (loc) => loc.pathname === "/scheduled" });
   const isOnHome = useLocation({ select: (loc) => loc.pathname === "/" });
   const isOnPullRequests = useLocation({ select: (loc) => loc.pathname === "/pull-requests" });
   const isOnUsage = useLocation({ select: (loc) => loc.pathname === "/usage" });
@@ -118,6 +126,14 @@ export function SidebarNav(props: {
                 </>
               ) : undefined
             }
+          />
+        </SidebarMenuItem>
+        <SidebarMenuItem>
+          <NavRow
+            icon={CalendarClockIcon}
+            label="Scheduled"
+            isActive={isOnScheduled}
+            onSelect={() => void navigate({ to: "/scheduled" })}
           />
         </SidebarMenuItem>
         <SidebarMenuItem>

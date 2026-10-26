@@ -1,3 +1,4 @@
+import { scheduledSendGate } from "../../scheduledTasks/sendGate.ts";
 import { registerShutdown } from "../../shutdown.ts";
 import { makeQueueRetryScheduler } from "../retryScheduler.ts";
 import {
@@ -306,6 +307,17 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         !!resumeContext?.fingerprint &&
         !!settings &&
         (!config || (yield* protectedFingerprint(config)) !== resumeContext.fingerprint);
+      if (Option.isSome(sqlOption) && settings) {
+        const scheduled = yield* scheduledSendGate(
+          sqlOption.value,
+          settings,
+          item.command.commandId,
+        ).pipe(Effect.mapError(storageError));
+        if (scheduled === "cancel")
+          return { kind: "drop" as const, reasonCode: "dispatch_rejected" as const };
+        if (scheduled === "wait")
+          return { kind: "wait" as const, reasonCode: "scheduled_task_wait" as const };
+      }
       const gate = resolveNextTurnQueueGate({
         scheduleLimitKey: resumeContext?.limitKey,
         scheduleState: resumeContext?.state,

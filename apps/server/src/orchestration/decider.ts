@@ -731,6 +731,7 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
           worktreePath: command.worktreePath,
           scratchPath,
           threadReferences: command.threadReferences ?? [],
+          ...(command.scheduledOrigin ? { scheduledOrigin: command.scheduledOrigin } : {}),
           ...(command.pullRequest ? { pullRequest: command.pullRequest } : {}),
           createdAt: command.createdAt,
           updatedAt: command.createdAt,

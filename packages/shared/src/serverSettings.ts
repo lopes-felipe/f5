@@ -234,7 +234,20 @@ export function applyServerSettingsPatch(
     patch.worktreeCleanup !== undefined
       ? { ...nextWithInstances, worktreeCleanup: patch.worktreeCleanup }
       : nextWithInstances;
-  const nextWithSecrets = preserveRedactedProviderSecrets(current, nextWithReplacements, patch);
+  // Upstream schedule fields merge; nullable model selections replace, not merge.
+  const upstreamPatch = patch.upstreamPorts;
+  const nextWithUpstream =
+    upstreamPatch !== undefined
+      ? {
+          ...nextWithReplacements,
+          upstreamPorts: {
+            ...current.upstreamPorts,
+            ...upstreamPatch,
+            schedule: { ...current.upstreamPorts.schedule, ...upstreamPatch.schedule },
+          },
+        }
+      : nextWithReplacements;
+  const nextWithSecrets = preserveRedactedProviderSecrets(current, nextWithUpstream, patch);
   let result = nextWithSecrets;
   for (const key of ["textGenerationModelSelection", "sessionNotesModelSelection"] as const) {
     const selectionPatch = patch[key];

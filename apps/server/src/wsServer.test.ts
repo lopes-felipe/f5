@@ -4359,6 +4359,112 @@ describe("WebSocket Server", () => {
       return { outcome, result: response.result, setup };
     }
 
+    it.each([false, true])(
+      "scheduled first sends persist identities across restart (worktree=%s)",
+      async (worktree) => {
+        const stateDir = makeTempDir("f5-scheduled-submission-");
+        const repo = makeGitRepo("f5-scheduled-submission-repo-");
+        const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
+        const accepted = Promise.withResolvers<void>();
+        const capture = makeTurnCapturingProviderService(sentTurns);
+        const start = async () => {
+          server = await createTestServer({
+            cwd: repo,
+            stateDir,
+            persistenceLayer: makeSqlitePersistenceLive(path.join(stateDir, "state.sqlite")).pipe(
+              Layer.provide(NodeServices.layer),
+            ),
+            providerLayer: Layer.succeed(ProviderService, {
+              ...capture,
+              sendTurn: (input) =>
+                capture
+                  .sendTurn(input)
+                  .pipe(Effect.tap(() => Effect.sync(() => accepted.resolve()))),
+            }),
+          });
+          const address = server.address();
+          const [ws] = await connectAndAwaitWelcome(
+            typeof address === "object" && address ? address.port : 0,
+          );
+          connections.push(ws);
+          return ws;
+        };
+        let ws = await start();
+        const requestedAt = new Date().toISOString();
+        expect(
+          (
+            await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+              type: "project.create",
+              commandId: crypto.randomUUID(),
+              projectId: "scheduled-project",
+              title: "Scheduled",
+              workspaceRoot: repo,
+              defaultModel: "gpt-5-codex",
+              createdAt: requestedAt,
+            })
+          ).error,
+        ).toBeUndefined();
+        const definition = {
+          id: crypto.randomUUID(),
+          projectId: "scheduled-project",
+          requestedAt,
+          configuration: {
+            name: "Scheduled integration",
+            prompt: "One durable scheduled send.",
+            modelSelection: { instanceId: "codex", model: "gpt-5-codex" },
+            runtimeMode: "approval-required",
+            workspace: worktree
+              ? { kind: "worktree", baseBranch: "main" }
+              : { kind: "projectRoot" },
+            cron: "* * * * *",
+            timezone: "UTC",
+            scheduleSource: "cron",
+            maxRuns: 1,
+            oneShotAt: null,
+            notify: "none",
+            enabled: true,
+          },
+        };
+        expect(
+          (await sendRequest(ws, WS_METHODS.scheduledTasksCreate, definition)).error,
+        ).toBeUndefined();
+        const fire = { taskId: definition.id, runId: crypto.randomUUID(), requestedAt };
+        expect(
+          (await sendRequest(ws, WS_METHODS.scheduledTasksRunNow, fire)).error,
+        ).toBeUndefined();
+        await accepted.promise;
+        expect(sentTurns).toHaveLength(1);
+        const threadId = sentTurns[0]!.threadId;
+        const snapshot = (await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot))
+          .result as OrchestrationReadModel;
+        const thread = snapshot.threads.find((thread) => thread.id === threadId)!;
+        expect(thread.scheduledOrigin).toEqual({ taskId: definition.id, runId: fire.runId });
+        expect(Boolean(thread.worktreePath)).toBe(worktree);
+        if (thread.worktreePath) expect(fs.existsSync(thread.worktreePath)).toBe(true);
+        for (const connection of connections.splice(0)) connection.close();
+        await closeTestServer();
+        server = null;
+        ws = await start();
+        const replay = await sendRequest(ws, WS_METHODS.scheduledTasksRunNow, fire);
+        expect(replay.error).toBeUndefined();
+        expect(replay.result).toEqual(expect.objectContaining({ id: fire.runId, threadId }));
+        const reopened = (await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot))
+          .result as OrchestrationReadModel;
+        expect(
+          reopened.threads.filter((thread) => thread.scheduledOrigin?.runId === fire.runId),
+        ).toHaveLength(1);
+        expect(sentTurns).toHaveLength(1);
+        expect(
+          (await sendRequest(ws, WS_METHODS.scheduledTasksCreate, definition)).error,
+        ).toBeUndefined();
+        const tasks = (await sendRequest(ws, WS_METHODS.scheduledTasksList, {})).result as {
+          tasks: Array<{ task: { runsConsumed: number; enabled: boolean } }>;
+        };
+        expect(tasks.tasks[0]!.task.runsConsumed).toBe(1);
+        expect(tasks.tasks[0]!.task.enabled).toBe(false);
+      },
+    );
+
     it.each(variants)("matches the direct dispatch route for $name", async (variant) => {
       const direct = await runFirstSend("dispatch", variant);
       const queued = await runFirstSend("submit", variant);

@@ -1,6 +1,8 @@
+import { ProjectId } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
 import { parseCheckedInProjectFile } from "./checkedInProjectFile";
+import { resolveProjectSettings } from "./projectSettings";
 
 describe("parseCheckedInProjectFile", () => {
   it("keeps valid non-executable fields when another field is malformed", () => {
@@ -100,6 +102,17 @@ describe("parseCheckedInProjectFile", () => {
         }),
       ).upstream,
     ).toMatchObject({ branch: "release/v1.2", ledgerDir: "tracking/up-stream" });
+  });
+
+  it("never lets a checked-in file set the upstream schedule", () => {
+    const result = parseCheckedInProjectFile(
+      JSON.stringify({ upstreamPorts: { schedule: { mode: "daily" } } }),
+    );
+    const resolved = resolveProjectSettings({
+      projectId: ProjectId.make("p1"),
+      ...(result.settings ? { checkedIn: result.settings } : {}),
+    });
+    expect(resolved.settings.upstreamPorts.schedule.mode).toBe("off");
   });
 
   it("treats schema metadata as inert and bounds it without fetching", () => {

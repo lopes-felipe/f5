@@ -1,5 +1,7 @@
-/** Shelved UI, not mounted; retained for future work. See PR #148 and docs/agent-bridge.md. */
+import { toastManager } from "../ui/toast";
+/** Opt-in local MCP connection and explicit per-client scheduling grants. */
 import {
+  AGENT_BRIDGE_ACTIVATION_VERSION,
   AGENT_BRIDGE_LOCAL_CLIENT_ID,
   type AgentBridgeClient,
   type AgentBridgeSettingsPatch,
@@ -91,7 +93,7 @@ export function AgentBridgeSettings() {
   const agentBridge = useSettings((settings) => settings.agentBridge);
   const { updateSettings } = useUpdateSettings();
   const { projects } = useSettingsRouteContext();
-  const { state, error } = useAgentBridgeState();
+  const { state, error, setState } = useAgentBridgeState();
   const exposed = new Set<string>(agentBridge.exposedProjectIds);
   // Send only the changed fields; the server deep-merges `agentBridge`.
   const patchAgentBridge = useCallback(
@@ -133,10 +135,13 @@ export function AgentBridgeSettings() {
     >
       <SettingsRow
         title="Enable Agent Bridge"
-        description="Starts a local MCP listener on 127.0.0.1. Off by default."
+        description="Starts a local MCP listener on 127.0.0.1. Off by default. Previously saved connections require fresh activation. Scheduling permission is granted separately below."
         control={
           <Switch
-            checked={agentBridge.enabled}
+            checked={
+              agentBridge.enabled &&
+              agentBridge.activationVersion === AGENT_BRIDGE_ACTIVATION_VERSION
+            }
             aria-label="Enable Agent Bridge"
             onCheckedChange={(checked) => void patchAgentBridge({ enabled: checked })}
           />
@@ -196,6 +201,34 @@ export function AgentBridgeSettings() {
                   <p className="flex items-center gap-1.5 font-medium text-foreground">
                     {clientDisplayName(client)}
                   </p>
+                  <label className="flex items-center gap-2 py-2">
+                    <Checkbox
+                      checked={client.scopes.includes("f5.schedules")}
+                      disabled={!!client.revokedAt}
+                      aria-label={`Allow scheduling for ${clientDisplayName(client)}`}
+                      onCheckedChange={(enabled) => {
+                        void ensureNativeApi()
+                          .agentBridge.setSchedulingGrant({
+                            clientId: client.id,
+                            expectedGrantGeneration: client.grantGeneration,
+                            enabled: enabled === true,
+                          })
+                          .then(() => ensureNativeApi().agentBridge.getState())
+                          .then(setState)
+                          .catch((error) => {
+                            toastManager.add({
+                              type: "error",
+                              title: "Scheduling grant failed",
+                              description:
+                                error instanceof Error
+                                  ? error.message
+                                  : "Reload the connection and try again.",
+                            });
+                          });
+                      }}
+                    />
+                    Allow creating and managing supervised scheduled tasks
+                  </label>
                   <p className="text-muted-foreground">
                     {client.scopes.join(", ") || "no permissions"} · {client.projectIds.length}{" "}
                     project

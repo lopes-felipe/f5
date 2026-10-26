@@ -379,6 +379,7 @@ export default function Sidebar() {
     const workflowKeysByProjectId: Record<string, readonly string[]> = {};
     const workflowThreadIdsByWorkflowKey: Record<string, readonly ThreadId[]> = {};
     const activeThreadIdsByProjectId: Record<string, readonly ThreadId[]> = {};
+    const scheduledThreadIdsByProjectId: Record<string, readonly ThreadId[]> = {};
     const archivedItemKeysByProjectId: Record<string, readonly string[]> = {};
 
     for (const project of projects) {
@@ -387,6 +388,7 @@ export default function Sidebar() {
 
       workflowKeysByProjectId[project.id] = lists.projectWorkflows.map(workflowEntryKey);
       activeThreadIdsByProjectId[project.id] = lists.activeThreads.map((thread) => thread.id);
+      scheduledThreadIdsByProjectId[project.id] = lists.scheduledThreads.map((thread) => thread.id);
       archivedItemKeysByProjectId[project.id] = lists.archivedSidebarItems.map((item) => item.key);
 
       for (const [workflowKey, workflowThreads] of lists.workflowThreadsByKey) {
@@ -398,6 +400,7 @@ export default function Sidebar() {
       workflowKeysByProjectId,
       workflowThreadIdsByWorkflowKey,
       activeThreadIdsByProjectId,
+      scheduledThreadIdsByProjectId,
       archivedItemKeysByProjectId,
       attentionThreadIds: liveAttentionThreads.map((thread) => thread.id),
     };

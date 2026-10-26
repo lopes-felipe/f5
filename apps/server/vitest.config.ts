@@ -30,8 +30,9 @@ export default mergeConfig(
         GH_ENTERPRISE_TOKEN: "",
         GITHUB_ENTERPRISE_TOKEN: "",
       },
-      testTimeout: 15_000,
-      hookTimeout: 15_000,
+      // Real Git fixtures and SQLite cleanup take longer on Windows/NTFS.
+      testTimeout: process.platform === "win32" ? 30_000 : 15_000,
+      hookTimeout: process.platform === "win32" ? 30_000 : 15_000,
       maxWorkers: Number.parseInt(
         process.env.F5_TEST_MAX_WORKERS ?? process.env.VITEST_MAX_WORKERS ?? "8",
         10,

@@ -157,6 +157,7 @@ export const LEGACY_SETTINGS_ITEM_ALIASES: Readonly<Record<string, string>> = {
   "integrations.keybindings": "keyboard.keybindings",
   "integrations.search-keybindings": "keyboard.search",
   "integrations.mcp": "tools.mcp",
+  "integrations.agent-bridge": "tools.agent-bridge",
   // Projects
   "projects.active-project": "projects.list",
   "projects.default-env-mode": "threads.default-workspace",
@@ -555,6 +556,10 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "threads.claude-subagent-model": {
     category: "threads",
     scope: "both",
+  },
+  "tools.agent-bridge": {
+    category: "tools",
+    scope: "global",
   },
   "tools.mcp": {
     category: "tools",
