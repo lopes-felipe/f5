@@ -61,6 +61,7 @@ import {
   canMoveFocusAfterDecision,
   decisionBatches,
   extendSelection,
+  filterFromSearch,
   focusAfterRemoval,
   isDialogTarget,
   isEditableTarget,
@@ -75,6 +76,7 @@ import {
   startAllReady,
   toggleId,
   upstreamPrUrl,
+  withoutFilters,
   withoutTopics,
   type UpstreamBulkAction,
   type UpstreamView,
@@ -129,16 +131,11 @@ export function UpstreamPage(props: {
   const projects = projectsQuery.data?.projects ?? [];
   const projectId = props.search.project ?? projects[0]?.projectId ?? null;
   const list = props.search.list ?? "inbox";
-  const hasQuestion = list === "inbox" && props.search.question === true;
-  const automaticOnly = list === "skipped" && props.search.auto === true;
-  const filter: UpstreamTopicFilter = useMemo(
-    () => ({
-      ...(hasQuestion ? { hasQuestion: true } : {}),
-      ...(automaticOnly ? { decidedBy: "llm" as const } : {}),
-    }),
-    [hasQuestion, automaticOnly],
-  );
-  const filtered = hasQuestion || automaticOnly;
+  const sort = props.search.sort ?? null;
+  // Keyed by value: the router hands back new arrays for unchanged filters.
+  const filterKey = JSON.stringify(filterFromSearch(props.search));
+  const filter: UpstreamTopicFilter = useMemo(() => JSON.parse(filterKey) as UpstreamTopicFilter, [filterKey]);
+  const filtered = filterKey !== "{}";
 
   const overviewQuery = useQuery({
     ...upstreamOverviewQueryOptions(projectId ?? ("" as ProjectId)),
@@ -146,9 +143,10 @@ export function UpstreamPage(props: {
   });
   const overview = overviewQuery.data;
   const topicsQuery = useInfiniteQuery({
-    ...upstreamTopicsQueryOptions(projectId ?? ("" as ProjectId), list, filter),
+    ...upstreamTopicsQueryOptions(projectId ?? ("" as ProjectId), list, filter, sort),
     enabled: projectId !== null && Boolean(overview?.config),
   });
+  const firstPage = topicsQuery.data?.pages[0];
   const serverConfig = useQuery(serverConfigQueryOptions());
   const providers = serverConfig.data?.providers ?? [];
   const projectSettings = useQuery({
@@ -164,10 +162,17 @@ export function UpstreamPage(props: {
 
   useEffect(() => {
     if (projectId && hasStaleTopicPages(topicsQuery.data))
-      void queryClient.resetQueries({ queryKey: upstreamPortsQueryKeys.topics(projectId, list, filter) });
-  }, [topicsQuery.data, projectId, list, filter, queryClient]);
+      void queryClient.resetQueries({ queryKey: upstreamPortsQueryKeys.topics(projectId, list, filter, sort) });
+  }, [topicsQuery.data, projectId, list, filter, sort, queryClient]);
 
   const [selected, setSelected] = useState<ReadonlySet<string>>(EMPTY_SET);
+  /**
+   * Set after "Select all matching": the selection then reaches past the loaded
+   * rows, so actions use it whole. It is only valid for the revision it was read at.
+   */
+  const [matching, setMatching] = useState<{ readonly revision: string } | null>(null);
+  const [selectingAll, setSelectingAll] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   /** Topics with a decision in flight: dimmed, and skipped by further actions. */
   const [pending, setPending] = useState<ReadonlySet<string>>(EMPTY_SET);
   const pendingRef = useRef(pending);
@@ -207,19 +212,58 @@ export function UpstreamPage(props: {
     if (next) lastIndex.current = ids.indexOf(next);
   }, [ids, focused, setFocused, topicsQuery.isPending]);
 
-  // A filter can hide selected topics, so a filter change clears the selection too.
-  useEffect(() => {
+  const clearSelection = useCallback(() => {
     setSelected(EMPTY_SET);
+    setMatching(null);
     anchorRef.current = null;
-  }, [projectId, list, hasQuestion, automaticOnly]);
+  }, []);
+  // A filter or sort change can hide selected topics, so it clears the selection too.
+  useEffect(clearSelection, [projectId, list, filterKey, sort, clearSelection]);
+  // "All matching" was read at one revision; once the list changes it may no longer match.
+  const revision = firstPage?.revision ?? null;
+  useEffect(() => {
+    if (matching && revision !== null && revision !== matching.revision) clearSelection();
+  }, [matching, revision, clearSelection]);
 
   const readOnly = overview ? !overview.writer.managedByThisProfile && overview.writer.claimed : false;
-  /** Selected visible topics in list order, else the focused row; topics with a decision in flight are left out. */
+  /**
+   * Selected visible topics in list order (every selected topic after "Select all
+   * matching"), else the focused row; topics with a decision in flight are left out.
+   */
   const targets = useCallback(
-    () => actionTargets(ids, selected, focused).filter((id) => !pendingRef.current.has(id)),
-    [selected, ids, focused],
+    () =>
+      (matching ? [...selected] : actionTargets(ids, selected, focused)).filter(
+        (id) => !pendingRef.current.has(id),
+      ),
+    [matching, selected, ids, focused],
   );
   const selectedVisible = useMemo(() => new Set(ids.filter((id) => selected.has(id))), [ids, selected]);
+  const total = firstPage?.total ?? (overview ? overview.counts[list] : 0);
+
+  const selectAllMatching = async () => {
+    if (!projectId) return;
+    setSelectingAll(true);
+    try {
+      const result = await ensureNativeApi().upstreamPorts.listTopicIds({
+        projectId,
+        list,
+        ...(filtered ? { filter } : {}),
+        ...(sort ? { sort } : {}),
+      });
+      setSelected(new Set(result.topicIds));
+      setMatching({ revision: result.revision });
+      if (result.truncated)
+        toastManager.add({ type: "warning", title: `Only the first ${result.topicIds.length.toLocaleString()} topics were selected.` });
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: "Could not select every matching topic",
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setSelectingAll(false);
+    }
+  };
 
   const withBusy = async <T,>(title: string, action: () => Promise<T>): Promise<T | undefined> => {
     setBusy(true);
@@ -264,10 +308,10 @@ export function UpstreamPage(props: {
 
     setPendingIds(decided, true);
     if (leaving.size > 0) {
-      await queryClient.cancelQueries({ queryKey: ["upstreamPorts", "topics", projectId, list] });
-      queryClient.setQueriesData<Parameters<typeof withoutTopics>[0]>(
-        { queryKey: ["upstreamPorts", "topics", projectId, list] },
-        (data) => withoutTopics(data, leaving),
+      const listKey = upstreamPortsQueryKeys.list(projectId, list);
+      await queryClient.cancelQueries({ queryKey: listKey });
+      queryClient.setQueriesData<Parameters<typeof withoutTopics>[0]>({ queryKey: listKey }, (data) =>
+        withoutTopics(data, leaving),
       );
       queryClient.setQueryData<UpstreamOverview>(upstreamPortsQueryKeys.overview(projectId), (current) =>
         current ? { ...current, counts: adjustCounts(current.counts, moves) } : current,
@@ -488,10 +532,15 @@ export function UpstreamPage(props: {
         setSelected((current) => toggleId(current, focused));
         return;
       case "upstream.selectAll":
+        setMatching(null);
         setSelected((current) => (ids.every((id) => current.has(id)) ? EMPTY_SET : new Set(ids)));
         return;
       case "upstream.clearSelection":
-        setSelected(EMPTY_SET);
+        clearSelection();
+        return;
+      case "upstream.focusSearch":
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
         return;
       case "upstream.nextList":
       case "upstream.previousList":
@@ -623,13 +672,14 @@ export function UpstreamPage(props: {
           onResolvePublication={resolvePublication}
         />
         <UpstreamToolbar
+          ref={searchInputRef}
           list={list}
           counts={overview.counts}
           onListChange={changeList}
-          question={hasQuestion}
-          onQuestionChange={(value) => onSearchChange({ project: projectId, list, ...(value ? { question: true } : {}) })}
-          auto={automaticOnly}
-          onAutoChange={(value) => onSearchChange({ project: projectId, list, ...(value ? { auto: true } : {}) })}
+          search={search}
+          onSearchChange={(next) => onSearchChange({ ...next, project: projectId, list })}
+          facets={firstPage?.facets ?? null}
+          onSearchEscape={() => listRef.current?.focus()}
           startAll={
             list === "ready"
               ? {
@@ -675,12 +725,25 @@ export function UpstreamPage(props: {
                   list={list}
                   ids={ids}
                   selected={selectedVisible}
-                  total={filtered ? rows.length : overview.counts[list]}
+                  selectedCount={matching ? selected.size : selectedVisible.size}
+                  total={total}
                   readOnly={readOnly}
                   busy={busy}
-                  onSelectAll={(select) => setSelected(select ? new Set(ids) : EMPTY_SET)}
-                  onClear={() => setSelected(EMPTY_SET)}
+                  onSelectAll={(select) => {
+                    setMatching(null);
+                    setSelected(select ? new Set(ids) : EMPTY_SET);
+                  }}
+                  onClear={clearSelection}
                   onAction={(action) => runBulkAction(action, targets())}
+                  selectionNote={
+                    matching ? (
+                      <span className="text-muted-foreground">All matching topics selected</span>
+                    ) : selectedVisible.size === ids.length && total > ids.length ? (
+                      <Button size="xs" variant="link" disabled={selectingAll} onClick={() => void selectAllMatching()}>
+                        Select all {total.toLocaleString()} matching
+                      </Button>
+                    ) : null
+                  }
                 />
               }
               empty={
@@ -690,7 +753,7 @@ export function UpstreamPage(props: {
                   lastRun={describeRun(overview.lastRun)}
                   runDisabled={runBlocked}
                   onRun={() => runNow("upstream", runTriage)}
-                  onClearFilters={() => onSearchChange({ project: projectId, list })}
+                  onClearFilters={() => onSearchChange({ ...withoutFilters(search), project: projectId, list })}
                 />
               }
               onLoadMore={() => void topicsQuery.fetchNextPage()}

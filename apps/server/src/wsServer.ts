@@ -3952,6 +3952,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* upstreamRoute(
           (yield* requireUpstreamPorts).listTopics(stripRequestTag(request.body)),
         );
+      case UPSTREAM_PORTS_WS_METHODS.listTopicIds:
+        return yield* upstreamRoute(
+          (yield* requireUpstreamPorts).listTopicIds(stripRequestTag(request.body)),
+        );
       case UPSTREAM_PORTS_WS_METHODS.getTopic:
         return yield* upstreamRoute(
           (yield* requireUpstreamPorts).getTopic(stripRequestTag(request.body)),

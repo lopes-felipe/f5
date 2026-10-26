@@ -4,7 +4,7 @@ import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { page } from "vitest/browser";
+import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
 import { projectSettingsQueryOptions } from "../../lib/projectSettingsQuery";
@@ -17,6 +17,7 @@ const api = vi.hoisted(() => ({
   listProjects: vi.fn(),
   getOverview: vi.fn(),
   listTopics: vi.fn(),
+  listTopicIds: vi.fn(),
   getTopic: vi.fn(),
   decide: vi.fn(),
   acceptSuggestions: vi.fn(),
@@ -117,9 +118,29 @@ const overview = {
   upstreamOnlySubsystems: [],
 } as unknown as UpstreamOverview;
 
+const FACETS = {
+  suggestion: { port: 2, skip: 1, watch: 0, equivalent: 0, none: 0 },
+  impact: { high: 3, medium: 0, low: 0, none: 0 },
+  areas: [{ area: "server", count: 3 }],
+};
+const topicsPage = (topics: ReadonlyArray<UpstreamTopicRow>, total = topics.length) => ({
+  revision: "r1",
+  status: "ok",
+  topics,
+  nextCursor: null,
+  total,
+  facets: FACETS,
+});
+
+/** Stands in for the router: the search params live in state and are shown for assertions. */
 function Harness(props: { readonly initial: UpstreamSearch }) {
   const [search, setSearch] = useState<UpstreamSearch>(props.initial);
-  return <UpstreamPage search={search} onSearchChange={setSearch} />;
+  return (
+    <>
+      <output data-testid="search">{JSON.stringify(search)}</output>
+      <UpstreamPage search={search} onSearchChange={setSearch} />
+    </>
+  );
 }
 
 let active: Awaited<ReturnType<typeof render>> | undefined;
@@ -134,7 +155,7 @@ beforeEach(() => {
     projects: [{ projectId, title: "f5", repository: "x", inboxCount: 3, managedByThisProfile: true }],
   });
   api.getOverview.mockResolvedValue(overview);
-  api.listTopics.mockResolvedValue({ revision: "r1", status: "ok", topics: ROWS, nextCursor: null });
+  api.listTopics.mockResolvedValue(topicsPage(ROWS));
   api.getTopic.mockImplementation(async ({ topicId }: { topicId: string }) => ({
     revision: "r1",
     repository: "https://github.com/pingdotgg/t3code.git",
@@ -215,7 +236,7 @@ it("renders the run and ledger state in header popovers", async () => {
 });
 
 it("shows Inbox zero when nothing is left to triage", async () => {
-  api.listTopics.mockResolvedValue({ revision: "r1", status: "ok", topics: [], nextCursor: null });
+  api.listTopics.mockResolvedValue(topicsPage([]));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData<unknown>(serverConfigQueryOptions().queryKey, {
     providers: [],
@@ -231,4 +252,51 @@ it("shows Inbox zero when nothing is left to triage", async () => {
   );
   await expect.element(page.getByText("Inbox zero")).toBeVisible();
   await expect.element(page.getByRole("button", { name: "Run now" }).first()).toBeVisible();
+});
+
+it("round-trips filters through the search params and shows them as removable chips", async () => {
+  await setup();
+  await page.getByRole("button", { name: /^Filter/u }).click();
+  await page.getByRole("menuitemcheckbox", { name: /^Skip/u }).click();
+  await vi.waitFor(() =>
+    expect(api.listTopics).toHaveBeenLastCalledWith(
+      expect.objectContaining({ list: "inbox", filter: { suggestion: ["skip"] } }),
+    ),
+  );
+  await expect.element(page.getByTestId("search")).toHaveTextContent('"suggestion":["skip"]');
+  await userEvent.keyboard("{Escape}");
+  await page.getByRole("button", { name: "Remove filter Skip" }).click();
+  await expect.element(page.getByTestId("search")).not.toHaveTextContent("suggestion");
+  await expect.element(page.getByRole("button", { name: "Remove filter Skip" })).not.toBeInTheDocument();
+});
+
+it("filters from the suggestion strip and searches with a debounce", async () => {
+  await setup();
+  await page.getByRole("group", { name: "Suggestions" }).getByRole("button", { name: /^Port/u }).click();
+  await expect.element(page.getByTestId("search")).toHaveTextContent('"suggestion":["port"]');
+  await page.getByRole("searchbox", { name: "Search topics" }).fill("terminal");
+  await vi.waitFor(() =>
+    expect(api.listTopics).toHaveBeenLastCalledWith(
+      expect.objectContaining({ filter: { query: "terminal", suggestion: ["port"] } }),
+    ),
+  );
+  await page.getByRole("button", { name: "Clear", exact: true }).click();
+  await expect.element(page.getByTestId("search")).not.toHaveTextContent("suggestion");
+  await expect.element(page.getByTestId("search")).not.toHaveTextContent('"q"');
+  await expect.element(page.getByRole("searchbox", { name: "Search topics" })).toHaveValue("");
+});
+
+it("selects every matching topic and applies a bulk action to all of them", async () => {
+  const many = Array.from({ length: 250 }, (_, index) => `pr-${index + 100}`);
+  api.listTopics.mockResolvedValue(topicsPage(ROWS, 250));
+  api.listTopicIds.mockResolvedValue({ revision: "r1", topicIds: many, truncated: false });
+  await setup();
+  await expect.element(page.getByText("250 topics")).toBeVisible();
+  await page.getByRole("checkbox", { name: "Select all loaded topics" }).click();
+  await page.getByRole("button", { name: "Select all 250 matching" }).click();
+  await expect.element(page.getByText("250 selected")).toBeVisible();
+  expect(api.listTopicIds).toHaveBeenCalledWith({ projectId, list: "inbox" });
+  await page.getByRole("toolbar", { name: "Bulk actions" }).getByRole("button", { name: "Watch", exact: true }).click();
+  await vi.waitFor(() => expect(api.decide).toHaveBeenCalledTimes(2));
+  expect(api.decide.mock.calls.map(([input]) => input.topicIds.length)).toEqual([200, 50]);
 });

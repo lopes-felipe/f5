@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
+import { compactUpstreamSearch, validateUpstreamSearch } from "./upstreamSearch";
 import {
   actionTargets,
+  activeFilterChips,
   adjacentList,
   adjustCounts,
   bulkActionsForList,
@@ -10,7 +12,9 @@ import {
   decisionToastTitle,
   equivalentFromLink,
   extendSelection,
+  filterFromSearch,
   focusAfterRemoval,
+  hasActiveFilters,
   headerCheckState,
   ledgerChipLabel,
   moveFocus,
@@ -27,8 +31,10 @@ import {
   startAllReady,
   suggestionChipLabel,
   toggleId,
+  toggleValue,
   upstreamSettingsOverrides,
   watchFromBlocked,
+  withoutFilters,
   withoutTopics,
 } from "./upstreamPage.logic";
 
@@ -126,10 +132,65 @@ describe("upstream page logic", () => {
         { revision: "r", status: "ok" as const, nextCursor: null, topics: [row("c")] },
       ],
     };
-    const next = withoutTopics(data, new Set(["b", "c"]));
+    const next = withoutTopics(data as never, new Set(["b", "c"]));
     expect(next?.pages.map((page) => page.topics.length)).toEqual([1, 0]);
     expect(next?.pageParams).toEqual(data.pageParams);
     expect(withoutTopics(undefined, new Set(["a"]))).toBeUndefined();
+  });
+
+  it("turns search params into the server filter and removable chips", () => {
+    const search = {
+      q: "  terminal ",
+      suggestion: ["skip", "none"] as const,
+      impact: ["high"] as const,
+      area: "server",
+      question: true as const,
+      by: "llm" as const,
+    };
+    expect(filterFromSearch(search)).toEqual({
+      query: "terminal",
+      suggestion: ["skip", "none"],
+      impact: ["high"],
+      area: "server",
+      hasQuestion: true,
+      decidedBy: "llm",
+    });
+    expect(filterFromSearch({ q: "   " })).toEqual({});
+    expect(hasActiveFilters({})).toBe(false);
+    const chips = activeFilterChips(search);
+    expect(chips.map((chip) => chip.label)).toEqual([
+      "“terminal”",
+      "Skip",
+      "No suggestion",
+      "High impact",
+      "Area: server",
+      "Has question",
+      "Automatic (LLM)",
+    ]);
+    const withList = { ...search, list: "inbox" as const, sort: "oldest" as const };
+    expect(chips[1]!.remove(withList).suggestion).toEqual(["none"]);
+    expect(chips[3]!.remove(withList)).not.toHaveProperty("impact");
+    expect(withoutFilters(withList)).toEqual({ list: "inbox", sort: "oldest" });
+    expect(toggleValue(["port"], "skip")).toEqual(["port", "skip"]);
+    expect(toggleValue(["port", "skip"], "port")).toEqual(["skip"]);
+    expect(toggleValue(undefined, "port")).toEqual(["port"]);
+  });
+
+  it("validates and compacts the URL search params", () => {
+    expect(
+      validateUpstreamSearch({
+        list: "skipped",
+        q: "x",
+        suggestion: ["skip", "bogus", "skip"],
+        impact: "high,low",
+        sort: "confidence",
+        auto: "true",
+        conflict: true,
+        topic: "not a topic",
+      }),
+    ).toEqual({ list: "skipped", q: "x", suggestion: ["skip"], impact: ["high", "low"], sort: "confidence", by: "llm", conflict: true });
+    expect(validateUpstreamSearch({ sort: "random", by: "nobody" })).toEqual({});
+    expect(compactUpstreamSearch({ list: "inbox", q: " ", suggestion: [], sort: "newest" })).toEqual({ sort: "newest" });
   });
 
   it("summarizes the header state", () => {

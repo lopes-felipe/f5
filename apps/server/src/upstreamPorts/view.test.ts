@@ -10,7 +10,14 @@ import {
   portThreadTitle,
 } from "./admission.ts";
 import { SEED_RULES, topic } from "./testFixtures.ts";
-import { indexTrailers, pageRows, revisionOf, type DerivedRow } from "./view.ts";
+import {
+  indexTrailers,
+  listTopicIds,
+  pageRows,
+  resolveSort,
+  revisionOf,
+  type DerivedRow,
+} from "./view.ts";
 
 const row = (
   overrides: Parameters<typeof topic>[0],
@@ -93,6 +100,143 @@ describe("listing", () => {
       pageRows(rows, { projectId, list: "inbox", limit: 3, cursor: first.nextCursor! }, "rev")
         .status,
     ).toBe("cursor_stale");
+  });
+
+  describe("search, filters, facets and sort", () => {
+    const suggestion = (
+      status: "port" | "skip" | "watch" | "equivalent",
+      userImpact: "high" | "medium" | "low" | "none",
+      confidence: number,
+      areas: string[],
+      extra: object = {},
+    ) => ({
+      status,
+      reason: `${status} because`,
+      userImpact,
+      confidence,
+      areas,
+      model: "m",
+      ...extra,
+    });
+    const inbox = [
+      row({
+        id: "pr-10",
+        title: "Fix terminal resize",
+        createdAt: "2026-10-01T00:00:00.000Z",
+        upstreamPrs: [10],
+        suggestion: suggestion("port", "high", 0.6, ["terminal"]),
+      }),
+      row({
+        id: "pr-11",
+        title: "Mobile layout",
+        createdAt: "2026-10-02T00:00:00.000Z",
+        upstreamPrs: [11],
+        suggestion: suggestion("skip", "none", 0.95, ["mobile"], { reasonKey: "mobile" }),
+      }),
+      row({
+        id: "pr-12",
+        title: "Server cache",
+        createdAt: "2026-10-03T00:00:00.000Z",
+        upstreamPrs: [12],
+        suggestion: suggestion("port", "medium", 0.9, ["server", "terminal"], { conflict: true }),
+      }),
+      row({
+        id: "pr-13",
+        title: "Untriaged",
+        createdAt: "2026-10-04T00:00:00.000Z",
+        upstreamPrs: [13],
+      }),
+    ];
+    const ids = (result: { readonly rows: ReadonlyArray<DerivedRow> }) =>
+      result.rows.map((entry) => entry.topic.id);
+    const list = (filter: object = {}, sort?: "priority" | "newest" | "oldest" | "confidence") =>
+      pageRows(
+        inbox,
+        { projectId, list: "inbox", filter, ...(sort ? { sort } : {}) },
+        "rev",
+        (id) => (id === "pr-13" ? ["chore: bump electron"] : []),
+      );
+
+    it("matches the query on title, id, PR number, reason, areas and commit subjects", () => {
+      expect(ids(list({ query: "TERMINAL" }))).toEqual(["pr-10", "pr-12"]);
+      expect(ids(list({ query: "pr-11" }))).toEqual(["pr-11"]);
+      expect(ids(list({ query: "#12" }))).toEqual(["pr-12"]);
+      expect(ids(list({ query: "skip because" }))).toEqual(["pr-11"]);
+      expect(ids(list({ query: "electron" }))).toEqual(["pr-13"]);
+      expect(ids(list({ query: "  " }))).toHaveLength(4);
+    });
+
+    it("filters by suggestion, impact, area and conflict, and reports the total", () => {
+      expect(ids(list({ suggestion: ["port"] }))).toEqual(["pr-10", "pr-12"]);
+      expect(ids(list({ suggestion: ["none"] }))).toEqual(["pr-13"]);
+      expect(ids(list({ impact: ["high", "none"] }))).toEqual(["pr-10", "pr-11"]);
+      expect(ids(list({ area: "terminal", suggestion: ["port"] }))).toEqual(["pr-10", "pr-12"]);
+      expect(ids(list({ hasConflict: true }))).toEqual(["pr-12"]);
+      expect(list({ suggestion: ["port"] }).total).toBe(2);
+      expect(list({}, undefined).total).toBe(4);
+    });
+
+    it("counts each facet over the other filters only", () => {
+      const facets = list({ suggestion: ["port"], impact: ["high"] }).facets;
+      // Suggestion counts ignore the suggestion filter but apply the impact one.
+      expect(facets.suggestion).toEqual({ port: 1, skip: 0, watch: 0, equivalent: 0, none: 0 });
+      // Impact counts ignore the impact filter but apply the suggestion one.
+      expect(facets.impact).toEqual({ high: 1, medium: 1, low: 0, none: 0 });
+      expect(facets.areas).toEqual([{ area: "terminal", count: 1 }]);
+      expect(list().facets.areas).toEqual([
+        { area: "terminal", count: 2 },
+        { area: "mobile", count: 1 },
+        { area: "server", count: 1 },
+      ]);
+    });
+
+    it("sorts by priority, newest, oldest or confidence", () => {
+      expect(ids(list({}, "priority"))).toEqual(["pr-10", "pr-12", "pr-13", "pr-11"]);
+      expect(ids(list({}, "newest"))).toEqual(["pr-13", "pr-12", "pr-11", "pr-10"]);
+      expect(ids(list({}, "oldest"))).toEqual(["pr-10", "pr-11", "pr-12", "pr-13"]);
+      expect(ids(list({}, "confidence"))).toEqual(["pr-11", "pr-12", "pr-10", "pr-13"]);
+      expect(resolveSort("inbox", undefined)).toBe("priority");
+      expect(resolveSort("done", undefined)).toBe("newest");
+    });
+
+    it("treats a cursor as stale when the sort changes", () => {
+      const first = pageRows(inbox, { projectId, list: "inbox", sort: "newest", limit: 2 }, "rev");
+      expect(
+        pageRows(
+          inbox,
+          { projectId, list: "inbox", sort: "newest", limit: 2, cursor: first.nextCursor! },
+          "rev",
+        ).status,
+      ).toBe("ok");
+      expect(
+        pageRows(
+          inbox,
+          { projectId, list: "inbox", sort: "oldest", limit: 2, cursor: first.nextCursor! },
+          "rev",
+        ).status,
+      ).toBe("cursor_stale");
+    });
+
+    it("lists every matching id in the order paging returns them", () => {
+      const input = {
+        list: "inbox" as const,
+        filter: { suggestion: ["port" as const, "none" as const] },
+        sort: "oldest" as const,
+      };
+      const paged: string[] = [];
+      let cursor: string | null = null;
+      do {
+        const page = pageRows(
+          inbox,
+          { projectId, ...input, limit: 1, ...(cursor ? { cursor } : {}) },
+          "rev",
+        );
+        paged.push(...ids(page));
+        cursor = page.nextCursor;
+      } while (cursor);
+      expect(listTopicIds(inbox, input)).toEqual({ topicIds: paged, truncated: false });
+      expect(paged).toEqual(["pr-10", "pr-12", "pr-13"]);
+    });
   });
 
   it("changes the revision with the base SHA, op seq, links version and date", () => {

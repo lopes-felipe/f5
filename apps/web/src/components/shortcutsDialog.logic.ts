@@ -189,6 +189,7 @@ const SHORTCUT_SECTION_DEFINITIONS: ReadonlyArray<{
       "upstream.clearSelection",
       "upstream.nextList",
       "upstream.previousList",
+      "upstream.focusSearch",
     ],
   },
 ];

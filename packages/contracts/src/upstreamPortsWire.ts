@@ -56,6 +56,7 @@ export const UPSTREAM_PORTS_WS_METHODS = {
   listProjects: "upstreamPorts.listProjects",
   getOverview: "upstreamPorts.getOverview",
   listTopics: "upstreamPorts.listTopics",
+  listTopicIds: "upstreamPorts.listTopicIds",
   getTopic: "upstreamPorts.getTopic",
   decide: "upstreamPorts.decide",
   acceptSuggestions: "upstreamPorts.acceptSuggestions",

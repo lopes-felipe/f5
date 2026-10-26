@@ -4,6 +4,7 @@ import {
   type UpstreamListTopicsInput,
   type UpstreamListTopicsResult,
   type UpstreamTopicList,
+  type UpstreamTopicSort,
 } from "@t3tools/contracts";
 import {
   infiniteQueryOptions,
@@ -23,8 +24,15 @@ export const upstreamPortsQueryKeys = {
   all: ["upstreamPorts"] as const,
   projects: () => ["upstreamPorts", "projects"] as const,
   overview: (projectId: ProjectId) => ["upstreamPorts", "overview", projectId] as const,
-  topics: (projectId: ProjectId, list: UpstreamTopicList, filter: UpstreamTopicFilter) =>
-    ["upstreamPorts", "topics", projectId, list, filter] as const,
+  /** Every filter and sort of one list; optimistic updates edit them together. */
+  list: (projectId: ProjectId, list: UpstreamTopicList) =>
+    ["upstreamPorts", "topics", projectId, list] as const,
+  topics: (
+    projectId: ProjectId,
+    list: UpstreamTopicList,
+    filter: UpstreamTopicFilter,
+    sort: UpstreamTopicSort | null = null,
+  ) => ["upstreamPorts", "topics", projectId, list, filter, sort] as const,
   topic: (projectId: ProjectId, topicId: string) =>
     ["upstreamPorts", "topic", projectId, topicId] as const,
 };
@@ -53,14 +61,16 @@ export function upstreamTopicsQueryOptions(
   projectId: ProjectId,
   list: UpstreamTopicList,
   filter: UpstreamTopicFilter = {},
+  sort: UpstreamTopicSort | null = null,
 ) {
   return infiniteQueryOptions({
-    queryKey: upstreamPortsQueryKeys.topics(projectId, list, filter),
+    queryKey: upstreamPortsQueryKeys.topics(projectId, list, filter, sort),
     queryFn: ({ pageParam }) =>
       ensureNativeApi().upstreamPorts.listTopics({
         projectId,
         list,
         ...(Object.keys(filter).length ? { filter } : {}),
+        ...(sort ? { sort } : {}),
         limit: UPSTREAM_LIST_DEFAULT_LIMIT,
         ...(pageParam ? { cursor: pageParam } : {}),
       }),

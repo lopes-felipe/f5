@@ -30,6 +30,8 @@ import {
   type UpstreamGetPortPromptInput,
   type UpstreamGetPortPromptResult,
   type UpstreamGetTopicInput,
+  type UpstreamListTopicIdsInput,
+  type UpstreamListTopicIdsResult,
   type UpstreamListTopicsInput,
   type UpstreamListTopicsResult,
   type UpstreamOverview,
@@ -122,10 +124,12 @@ import {
   deriveRows,
   EMPTY_TRAILERS,
   indexTrailers,
+  listTopicIds as selectTopicIds,
   pageRows,
   revisionOf,
   type DerivedRow,
   type LedgerView,
+  type SubjectsOf,
   type TrailerIndex,
 } from "./view.ts";
 import {
@@ -253,6 +257,9 @@ export interface UpstreamPortsService {
   readonly listTopics: (
     input: UpstreamListTopicsInput,
   ) => Effect.Effect<UpstreamListTopicsResult, UpstreamPortsError>;
+  readonly listTopicIds: (
+    input: UpstreamListTopicIdsInput,
+  ) => Effect.Effect<UpstreamListTopicIdsResult, UpstreamPortsError>;
   readonly getTopic: (
     input: UpstreamGetTopicInput,
   ) => Effect.Effect<UpstreamTopicDetail, UpstreamPortsError>;
@@ -528,6 +535,12 @@ export function makeUpstreamPortsService(
         viewCache.delete(context.projectId);
         return next;
       });
+
+    /** Commit subjects per topic, so list search also finds a topic by its commits. */
+    const subjectsOf =
+      (snapshot: { readonly view: LedgerView }): SubjectsOf =>
+      (topicId) =>
+        (snapshot.view.members.get(topicId) ?? []).map((member) => member.subject);
 
     const currentView = (
       context: ProjectContext,
@@ -1368,14 +1381,25 @@ export function makeUpstreamPortsService(
         const context = yield* resolveContext(input.projectId);
         yield* requireConfig(context);
         const snapshot = yield* currentView(context);
-        const page = pageRows(snapshot.rows, input, snapshot.revision);
+        const page = pageRows(snapshot.rows, input, snapshot.revision, subjectsOf(snapshot));
         const topics = yield* toRows(page.rows, snapshot.links);
         return {
           revision: page.revision,
           status: page.status,
           nextCursor: page.nextCursor,
+          total: page.total,
+          facets: page.facets,
           topics,
         };
+      }).pipe(Effect.mapError(internal));
+
+    const listTopicIds: UpstreamPortsService["listTopicIds"] = (input) =>
+      Effect.gen(function* () {
+        const context = yield* resolveContext(input.projectId);
+        yield* requireConfig(context);
+        const snapshot = yield* currentView(context);
+        const result = selectTopicIds(snapshot.rows, input, subjectsOf(snapshot));
+        return { revision: snapshot.revision, ...result } as UpstreamListTopicIdsResult;
       }).pipe(Effect.mapError(internal));
 
     const getTopic: UpstreamPortsService["getTopic"] = (input) =>
@@ -1702,6 +1726,7 @@ export function makeUpstreamPortsService(
       listProjects,
       getOverview,
       listTopics,
+      listTopicIds,
       getTopic,
       decide,
       acceptSuggestions,

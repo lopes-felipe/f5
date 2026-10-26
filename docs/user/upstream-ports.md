@@ -48,6 +48,13 @@ with a prompt that carries the topic's commits and the trailer that completes it
   **Automatic only** lists them for spot checks.
 - `?` marks an open question: the choice depends on a product preference that
   `upstream/policy.md` does not cover. Answer it in the policy so later runs stop asking.
+- Press `/` to search titles, summaries, PR numbers, areas and commit subjects. **Filter**
+  narrows by suggestion, impact, area, open question, conflict or who decided; each option
+  shows how many topics it would leave. **Sort** switches between priority, newest, oldest and
+  confidence. Filters live in the URL and show as chips you can remove one at a time.
+- The strip under the Inbox tabs counts the suggestions (`Port 6 · Skip 1,204 …`). Click one,
+  tick the header checkbox, click **Select all N matching**, then **Accept suggestions** to
+  confirm hundreds of skips in three clicks.
 - Click **Add scope note** before **Mark ready** to limit a mixed commit to the parts you want.
   On a Ready topic, edit the note and click **Save scope**.
 - **Copy port prompt** puts the same prompt on the clipboard without creating a link, for a

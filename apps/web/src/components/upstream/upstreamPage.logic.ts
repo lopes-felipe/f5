@@ -3,17 +3,24 @@ import {
   UPSTREAM_MAX_PORT_GROUPS,
   UPSTREAM_MAX_PORT_TOPICS,
   type ProjectSettingsOverrides,
+  type UpstreamDecidedBy,
   type UpstreamDecision,
   type UpstreamListTopicsResult,
   type UpstreamOverview,
   type UpstreamPortsSettings,
   type UpstreamPortLinkSummary,
   type UpstreamStateCounts,
+  type UpstreamSuggestionFilter,
   type UpstreamTopic,
+  type UpstreamTopicFilter,
   type UpstreamTopicList,
+  type UpstreamTopicSort,
   type UpstreamTopicSuggestion,
+  type UpstreamUserImpact,
 } from "@t3tools/contracts";
 import type { InfiniteData } from "@tanstack/react-query";
+
+import type { UpstreamSearch } from "./upstreamSearch";
 
 export const UPSTREAM_LISTS: ReadonlyArray<{ readonly id: UpstreamTopicList; readonly label: string }> = [
   { id: "inbox", label: "Inbox" },
@@ -482,6 +489,111 @@ export function ledgerChipLabel(publication: UpstreamOverview["publication"]): s
   if (publication.unpublishedOps > 0) parts.push(`${publication.unpublishedOps} unpublished`);
   if (parts.length === 0 && publication.pausedReason) parts.push("Publishing paused");
   return parts.length ? parts.join(" · ") : null;
+}
+
+// ── Search and filters ─────────────────────────────────────────────────
+
+export const SUGGESTION_FILTER_LABELS: Readonly<Record<UpstreamSuggestionFilter, string>> = {
+  port: "Port",
+  skip: "Skip",
+  watch: "Watch",
+  equivalent: "Equivalent",
+  none: "No suggestion",
+};
+
+export const IMPACT_LABELS: Readonly<Record<UpstreamUserImpact, string>> = {
+  high: "High impact",
+  medium: "Medium impact",
+  low: "Low impact",
+  none: "No impact",
+};
+
+export const DECIDED_BY_LABELS: Readonly<Record<UpstreamDecidedBy, string>> = {
+  user: "Decided by you",
+  llm: "Automatic (LLM)",
+  rule: "Automatic (rule)",
+};
+
+export const SORT_LABELS: Readonly<Record<UpstreamTopicSort, string>> = {
+  priority: "Priority",
+  newest: "Newest",
+  oldest: "Oldest",
+  confidence: "Confidence",
+};
+
+/** The fields of the page's search params that filter the list. */
+type FilterSearch = Pick<
+  UpstreamSearch,
+  "q" | "suggestion" | "impact" | "area" | "question" | "conflict" | "by"
+>;
+
+/** The server filter for the page's search params. */
+export function filterFromSearch(search: FilterSearch): UpstreamTopicFilter {
+  const query = search.q?.trim();
+  return {
+    ...(query ? { query } : {}),
+    ...(search.suggestion?.length ? { suggestion: [...search.suggestion] } : {}),
+    ...(search.impact?.length ? { impact: [...search.impact] } : {}),
+    ...(search.area ? { area: search.area } : {}),
+    ...(search.question ? { hasQuestion: true } : {}),
+    ...(search.conflict ? { hasConflict: true } : {}),
+    ...(search.by ? { decidedBy: search.by } : {}),
+  };
+}
+
+export const hasActiveFilters = (search: FilterSearch) => Object.keys(filterFromSearch(search)).length > 0;
+
+/** `search` with every filter removed; the list, project, sort and focus stay. */
+export function withoutFilters(search: UpstreamSearch): UpstreamSearch {
+  const { q: _q, suggestion: _s, impact: _i, area: _a, question: _qu, conflict: _c, by: _b, ...rest } = search;
+  return rest;
+}
+
+export interface FilterChip {
+  readonly key: string;
+  readonly label: string;
+  /** The search params without this chip's filter. */
+  readonly remove: (search: UpstreamSearch) => UpstreamSearch;
+}
+
+/** One removable chip per active filter value. */
+export function activeFilterChips(search: FilterSearch): FilterChip[] {
+  const chips: FilterChip[] = [];
+  const query = search.q?.trim();
+  if (query) chips.push({ key: "q", label: `“${query}”`, remove: ({ q: _q, ...rest }) => rest });
+  for (const value of search.suggestion ?? [])
+    chips.push({
+      key: `suggestion:${value}`,
+      label: SUGGESTION_FILTER_LABELS[value],
+      remove: (current) => {
+        const { suggestion, ...rest } = current;
+        const next = (suggestion ?? []).filter((entry) => entry !== value);
+        return next.length ? { ...rest, suggestion: next } : rest;
+      },
+    });
+  for (const value of search.impact ?? [])
+    chips.push({
+      key: `impact:${value}`,
+      label: IMPACT_LABELS[value],
+      remove: (current) => {
+        const { impact, ...rest } = current;
+        const next = (impact ?? []).filter((entry) => entry !== value);
+        return next.length ? { ...rest, impact: next } : rest;
+      },
+    });
+  if (search.area) chips.push({ key: "area", label: `Area: ${search.area}`, remove: ({ area: _a, ...rest }) => rest });
+  if (search.question)
+    chips.push({ key: "question", label: "Has question", remove: ({ question: _q, ...rest }) => rest });
+  if (search.conflict)
+    chips.push({ key: "conflict", label: "Has conflict", remove: ({ conflict: _c, ...rest }) => rest });
+  if (search.by) chips.push({ key: "by", label: DECIDED_BY_LABELS[search.by], remove: ({ by: _b, ...rest }) => rest });
+  return chips;
+}
+
+/** Adds or removes `value` from a multi-value filter. */
+export function toggleValue<T extends string>(values: ReadonlyArray<T> | undefined, value: T): T[] {
+  const current = values ?? [];
+  return current.includes(value) ? current.filter((entry) => entry !== value) : [...current, value];
 }
 
 /** Start port for every Ready topic, capped at the per-start limit. */

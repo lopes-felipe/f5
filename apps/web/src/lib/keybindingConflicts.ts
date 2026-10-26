@@ -246,6 +246,8 @@ export function formatKeybindingCommandLabel(
       return "Next upstream list";
     case "upstream.previousList":
       return "Previous upstream list";
+    case "upstream.focusSearch":
+      return "Search upstream topics";
 
     case "sidebar.toggle":
       return "Toggle main sidebar";

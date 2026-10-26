@@ -41,6 +41,8 @@ export function UpstreamBulkBar(props: {
   readonly list: UpstreamTopicList;
   readonly ids: ReadonlyArray<string>;
   readonly selected: ReadonlySet<string>;
+  /** Selected topics, including ones not loaded yet after "Select all matching". */
+  readonly selectedCount: number;
   readonly total: number;
   readonly readOnly: boolean;
   readonly busy: boolean;
@@ -51,7 +53,7 @@ export function UpstreamBulkBar(props: {
   readonly selectionNote?: ReactNode;
 }) {
   const check = headerCheckState(props.ids, props.selected);
-  const selectedCount = props.selected.size;
+  const selectedCount = props.selectedCount;
   return (
     <div className="flex min-h-10 shrink-0 flex-wrap items-center gap-2 border-b bg-muted/30 px-3 py-1.5 text-sm">
       <Checkbox
@@ -63,11 +65,11 @@ export function UpstreamBulkBar(props: {
       />
       {selectedCount === 0 ? (
         <span className="text-muted-foreground tabular-nums">
-          {props.total} topic{props.total === 1 ? "" : "s"}
+          {props.total.toLocaleString()} topic{props.total === 1 ? "" : "s"}
         </span>
       ) : (
         <>
-          <span className="font-medium tabular-nums">{selectedCount} selected</span>
+          <span className="font-medium tabular-nums">{selectedCount.toLocaleString()} selected</span>
           <Button size="icon-xs" variant="ghost" aria-label="Clear selection" onClick={props.onClear}>
             <XIcon />
           </Button>

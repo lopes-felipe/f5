@@ -84,6 +84,8 @@ import type {
   UpstreamGetPortPromptInput,
   UpstreamGetPortPromptResult,
   UpstreamGetTopicInput,
+  UpstreamListTopicIdsInput,
+  UpstreamListTopicIdsResult,
   UpstreamListTopicsInput,
   UpstreamListTopicsResult,
   UpstreamOverview,
@@ -1207,6 +1209,7 @@ export interface NativeApi {
     listProjects: () => Promise<UpstreamPortsListProjectsResult>;
     getOverview: (input: UpstreamPortsProjectInput) => Promise<UpstreamOverview>;
     listTopics: (input: UpstreamListTopicsInput) => Promise<UpstreamListTopicsResult>;
+    listTopicIds: (input: UpstreamListTopicIdsInput) => Promise<UpstreamListTopicIdsResult>;
     getTopic: (input: UpstreamGetTopicInput) => Promise<UpstreamTopicDetail>;
     decide: (input: UpstreamDecideInput) => Promise<UpstreamDecideResult>;
     acceptSuggestions: (input: UpstreamAcceptSuggestionsInput) => Promise<UpstreamDecideResult>;
