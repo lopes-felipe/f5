@@ -499,6 +499,21 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
     }),
   );
 
+  it.effect("preserves scheduled origin in startup summaries before thread details load", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      yield* seedProjectionFixture(sql);
+      const origin = { taskId: "scheduled-task", runId: "scheduled-run" };
+      yield* sql`UPDATE projection_threads SET scheduled_origin_json = ${JSON.stringify(origin)} WHERE thread_id = 'thread-1'`;
+      const startup = yield* snapshotQuery.getStartupSnapshot();
+      assert.deepStrictEqual(startup.snapshot.threads[0]?.scheduledOrigin, origin);
+      assert.deepStrictEqual(startup.snapshot.threads[0]?.messages, []);
+      const full = yield* snapshotQuery.getSnapshot();
+      assert.deepStrictEqual(full.threads[0]?.scheduledOrigin, origin);
+    }),
+  );
+
   it.effect("getStartupSnapshot skips decoding thread detail JSON columns", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;

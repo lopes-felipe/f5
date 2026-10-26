@@ -1315,6 +1315,7 @@ export const makeWorktreeSetup = Effect.gen(function* () {
           type: "thread.create",
           commandId: serverCommandId("thread-create"),
           threadId,
+          scheduledOrigin: createThread.scheduledOrigin,
           projectId: createThread.projectId,
           title: createThread.title,
           model: createThread.model,

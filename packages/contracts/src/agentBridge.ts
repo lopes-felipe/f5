@@ -16,6 +16,7 @@ import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS } from "./orchestration";
 
 export const AGENT_BRIDGE_WS_METHODS = {
   getState: "agentBridge.getState",
+  setSchedulingGrant: "agentBridge.setSchedulingGrant",
   getTasks: "agentBridge.getTasks",
   getTask: "agentBridge.getTask",
   getTaskActivities: "agentBridge.getTaskActivities",
@@ -30,7 +31,14 @@ export const AGENT_BRIDGE_WS_CHANNELS = {
   stateChanged: "agentBridge.stateChanged",
 } as const;
 
-export const AGENT_BRIDGE_SCOPES = ["f5.read", "f5.turns", "f5.tasks", "f5.events"] as const;
+export const AGENT_BRIDGE_DEFAULT_SCOPES = [
+  "f5.read",
+  "f5.turns",
+  "f5.tasks",
+  "f5.events",
+] as const;
+export const AGENT_BRIDGE_SCOPES = [...AGENT_BRIDGE_DEFAULT_SCOPES, "f5.schedules"] as const;
+export const AGENT_BRIDGE_ACTIVATION_VERSION = 1;
 export const AgentBridgeScope = Schema.Literals(AGENT_BRIDGE_SCOPES);
 export type AgentBridgeScope = typeof AgentBridgeScope.Type;
 
@@ -61,6 +69,7 @@ export const AgentBridgeRemoteSettings = Schema.Struct({
 export type AgentBridgeRemoteSettings = typeof AgentBridgeRemoteSettings.Type;
 
 export const AgentBridgeSettings = Schema.Struct({
+  activationVersion: Schema.Int.pipe(Schema.withDecodingDefault(() => 0)),
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   /** No project is visible to any agent until it is listed here. */
   exposedProjectIds: Schema.Array(ProjectId)
@@ -144,6 +153,12 @@ export const AgentBridgeStateChanged = Schema.Struct({
 });
 export type AgentBridgeStateChanged = typeof AgentBridgeStateChanged.Type;
 
+export const AgentBridgeSchedulingGrantInput = Schema.Struct({
+  clientId: TrimmedNonEmptyString,
+  expectedGrantGeneration: NonNegativeInt,
+  enabled: Schema.Boolean,
+});
+export type AgentBridgeSchedulingGrantInput = typeof AgentBridgeSchedulingGrantInput.Type;
 export const AgentBridgeGetStateInput = Schema.Struct({});
 export type AgentBridgeGetStateInput = typeof AgentBridgeGetStateInput.Type;
 

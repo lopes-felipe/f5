@@ -29,6 +29,7 @@ import {
   invalidateThreadDetails,
   markThreadUnread,
   markThreadVisited,
+  markThreadsVisited,
   persistState,
   prependOlderThreadActivitiesPage,
   pruneChangedFilesExpandedForThreads,
@@ -43,6 +44,7 @@ import {
   useStore,
   type AppState,
 } from "./store";
+import { hasUnseenCompletion } from "./threadStatus";
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Thread } from "./types";
 import { createEmptyThreadHistoryState, ensureThreadHistoryState } from "./lib/threadHistory";
 
@@ -2319,6 +2321,113 @@ describe("useStore.applyDomainEventBatch", () => {
     useStore.getState().applyDomainEventBatch([]);
     const after = useStore.getState();
     expect(after).toBe(before);
+  });
+});
+
+describe("persistent thread read acknowledgements", () => {
+  const completion = {
+    turnId: TurnId.makeUnsafe("completed-turn"),
+    state: "completed" as const,
+    requestedAt: "2026-03-01T09:00:00.000Z",
+    startedAt: "2026-03-01T09:00:01.000Z",
+    completedAt: "2026-03-01T09:01:00.000Z",
+    assistantMessageId: null,
+  };
+  async function reload(localStorage: Storage) {
+    vi.stubGlobal("window", { localStorage, addEventListener: () => {} });
+    vi.resetModules();
+    const reloaded = await import("./store");
+    // StoreProvider writes before the initial server snapshot has arrived.
+    reloaded.persistState(reloaded.useStore.getState());
+    return reloaded;
+  }
+  it("keeps an unflushed acknowledgement through a backend-incarnation reset", () => {
+    const id = ThreadId.makeUnsafe("incarnation-read-receipt");
+    const localStorage = createLocalStorageStub();
+    vi.stubGlobal("window", { localStorage });
+    useStore.setState(
+      makeState(
+        makeThread({ id, latestTurn: completion, lastVisitedAt: "2026-03-01T09:00:00.000Z" }),
+      ),
+    );
+    useStore.getState().markThreadsVisited([id], "2026-03-01T09:02:00.000Z");
+    useStore.getState().resetBackendState("replacement-read-receipt");
+    expect(useStore.getState().threads).toHaveLength(0);
+    useStore.getState().syncServerReadModel(
+      makeReadModel(
+        makeReadModelThread({
+          id,
+          latestTurn: completion,
+          lastInteractionAt: "2026-03-01T09:00:00.000Z",
+        }),
+      ),
+    );
+    expect(useStore.getState().threads[0]?.lastVisitedAt).toBe("2026-03-01T09:02:00.000Z");
+    expect(hasUnseenCompletion(useStore.getState().threads[0]!)).toBe(false);
+  });
+  it("restores read state after a fresh renderer load and still notices later completions", async () => {
+    const localStorage = createLocalStorageStub();
+    vi.stubGlobal("window", { localStorage });
+    const state = makeState(
+      makeThread({ latestTurn: completion, lastVisitedAt: "2026-03-01T09:00:00.000Z" }),
+    );
+    persistState(markThreadVisited(state, state.threads[0]!.id, "2026-03-01T09:02:00.000Z"));
+    const reloaded = await reload(localStorage);
+    const snapshot = makeReadModel(
+      makeReadModelThread({
+        latestTurn: completion,
+        lastInteractionAt: "2026-03-01T09:00:00.000Z",
+      }),
+    );
+    const hydrated = reloaded.syncServerReadModel(reloaded.useStore.getState(), snapshot);
+    expect(hydrated.threads[0]!.lastVisitedAt).toBe("2026-03-01T09:02:00.000Z");
+    expect(hasUnseenCompletion(hydrated.threads[0]!)).toBe(false);
+    const later = reloaded.syncServerReadModel(
+      hydrated,
+      makeReadModel(
+        makeReadModelThread({
+          latestTurn: {
+            ...completion,
+            turnId: TurnId.makeUnsafe("later-turn"),
+            completedAt: "2026-03-01T10:00:00.000Z",
+          },
+        }),
+      ),
+    );
+    expect(hasUnseenCompletion(later.threads[0]!)).toBe(true);
+  });
+  it("preserves an explicit mark-unread across reload", async () => {
+    const localStorage = createLocalStorageStub();
+    vi.stubGlobal("window", { localStorage });
+    const state = makeState(
+      makeThread({ latestTurn: completion, lastVisitedAt: "2026-03-01T09:02:00.000Z" }),
+    );
+    persistState(markThreadUnread(state, state.threads[0]!.id));
+    const reloaded = await reload(localStorage);
+    const hydrated = reloaded.syncServerReadModel(
+      reloaded.useStore.getState(),
+      makeReadModel(
+        makeReadModelThread({
+          latestTurn: completion,
+          lastInteractionAt: "2026-03-01T10:00:00.000Z",
+        }),
+      ),
+    );
+    expect(hasUnseenCompletion(hydrated.threads[0]!)).toBe(true);
+  });
+  it("acknowledges a batch in one state update without touching other threads", () => {
+    const first = makeThread({ latestTurn: completion, lastVisitedAt: "2026-03-01T09:00:00.000Z" });
+    const second = makeThread({ id: ThreadId.makeUnsafe("second"), latestTurn: completion });
+    const untouched = makeThread({
+      id: ThreadId.makeUnsafe("other-project"),
+      latestTurn: completion,
+    });
+    const state = { ...makeState(first), threads: [first, second, untouched] };
+    const updated = markThreadsVisited(state, [first.id, second.id], "2026-03-01T09:02:00.000Z");
+    expect(updated.threads.slice(0, 2).every((thread) => !hasUnseenCompletion(thread))).toBe(true);
+    expect(updated.threads[2]).toBe(untouched);
+    expect(hasUnseenCompletion(updated.threads[2]!)).toBe(true);
+    expect(markThreadsVisited(updated, [], "2026-03-01T09:02:00.000Z")).toBe(updated);
   });
 });
 

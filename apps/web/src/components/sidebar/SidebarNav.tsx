@@ -1,5 +1,6 @@
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
+  CalendarClockIcon,
   GitMergeIcon,
   GaugeIcon,
   GitPullRequestIcon,
@@ -89,7 +90,7 @@ function NavRow(props: {
   );
 }
 
-/** Home, thread search, Pull requests, Upstream, Worktrees and Usage. */
+/** Home, thread search, Pull requests, Upstream, Scheduled and Usage. */
 export function SidebarNav(props: {
   searchQuery: string;
   onSearchQueryChange: (query: string) => void;
@@ -98,6 +99,7 @@ export function SidebarNav(props: {
   pullRequestsShortcutLabel: string | null;
 }) {
   const navigate = useNavigate();
+  const isOnScheduled = useLocation({ select: (loc) => loc.pathname === "/scheduled" });
   const isOnHome = useLocation({ select: (loc) => loc.pathname === "/" });
   const isOnPullRequests = useLocation({ select: (loc) => loc.pathname === "/pull-requests" });
   const isOnUsage = useLocation({ select: (loc) => loc.pathname === "/usage" });
@@ -165,6 +167,14 @@ export function SidebarNav(props: {
             />
           </SidebarMenuItem>
         )}
+        <SidebarMenuItem>
+          <NavRow
+            icon={CalendarClockIcon}
+            label="Scheduled"
+            isActive={isOnScheduled}
+            onSelect={() => void navigate({ to: "/scheduled" })}
+          />
+        </SidebarMenuItem>
         <SidebarMenuItem>
           <NavRow
             icon={GaugeIcon}

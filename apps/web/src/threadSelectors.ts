@@ -35,6 +35,7 @@ const LIST_ITEM_KEYS = [
   "id",
   "projectId",
   "title",
+  "scheduledOrigin",
   "titleState",
   "titleSource",
   "titleRevision",

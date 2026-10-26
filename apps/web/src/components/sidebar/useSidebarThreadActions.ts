@@ -193,7 +193,7 @@ export function useSidebarThreadActions(input: {
     archiveThread,
     deleteThreads,
     executeAction: executeThreadAction,
-    menuItemsForThread: threadActionMenuItems,
+    loadMenuItemsForThread: threadActionMenuItems,
     renameThread,
   } = useThreadActionController({
     activeThreadId: routeThreadId,
@@ -215,7 +215,7 @@ export function useSidebarThreadActions(input: {
       const thread = threads.find((entry) => entry.id === threadId);
       if (!thread) return;
       const clicked = await api.contextMenu.show(
-        nativeThreadActionMenuItems(threadActionMenuItems(thread)),
+        nativeThreadActionMenuItems(await threadActionMenuItems(thread)),
         position,
       );
       if (clicked) await executeThreadAction(threadId, clicked);

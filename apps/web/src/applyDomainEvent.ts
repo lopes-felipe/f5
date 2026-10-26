@@ -892,6 +892,7 @@ function reduceDomainEvent(
         codexThreadId: null,
         projectId: event.payload.projectId,
         title: event.payload.title,
+        scheduledOrigin: event.payload.scheduledOrigin ?? null,
         model: resolveThreadModel({
           model: event.payload.model,
           sessionProviderName: null,

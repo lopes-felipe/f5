@@ -1,3 +1,5 @@
+import { makeScheduleTools } from "./scheduleTools.ts";
+import type { ScheduledTaskServiceShape } from "../scheduledTasks/Service.ts";
 /**
  * Owns the Agent Bridge lifecycle: starts and stops the local listener as
  * settings change, answers `agentBridge.getState`, and publishes coalesced
@@ -6,6 +8,7 @@
  * @module agentBridge/AgentBridgeService
  */
 import {
+  AGENT_BRIDGE_ACTIVATION_VERSION,
   AGENT_BRIDGE_LOCAL_CLIENT_ID,
   AgentBridgeSettings as AgentBridgeSettingsSchema,
   ProjectId,
@@ -37,8 +40,8 @@ import { makeThreadTools, type AgentBridgeCaller } from "./threadTools.ts";
 export const AGENT_BRIDGE_STATE_COALESCE_MS = 400;
 const TOUCH_INTERVAL_MS = 60_000;
 const PRUNE_INTERVAL = Duration.hours(6);
-// Shelved with its UI in PR #148. Preserve saved settings without opening an unmanaged listener.
-export const AGENT_BRIDGE_LISTENER_AVAILABLE = false;
+// Local connections require a fresh authenticated activation; remote listeners remain disabled.
+export const AGENT_BRIDGE_LISTENER_AVAILABLE = true;
 
 /**
  * Deletes task progress and completed retry receipts past the 30-day
@@ -57,6 +60,9 @@ export const pruneAgentBridgeHistory = (input: {
 
 export interface AgentBridgeServiceShape {
   readonly getState: Effect.Effect<AgentBridgeState>;
+  readonly setSchedulingGrant: (
+    input: import("@t3tools/contracts").AgentBridgeSchedulingGrantInput,
+  ) => Effect.Effect<void, { readonly message: string }>;
   readonly tasks: TaskOperatorShape;
 }
 
@@ -113,6 +119,7 @@ export function visibleProjectIdsFor(
 
 export const makeAgentBridgeService = (input: {
   readonly host: AgentBridgeHostShape;
+  readonly schedules?: ScheduledTaskServiceShape;
   readonly store: AgentBridgeStore;
   readonly tasks: BotTaskStore;
   readonly settingsChanges: Stream.Stream<ServerSettings>;
@@ -177,7 +184,8 @@ export const makeAgentBridgeService = (input: {
       );
     };
     const resolveLocalCaller = async (): Promise<AgentBridgeCaller | null> => {
-      if (!settings.enabled) return null;
+      if (!settings.enabled || settings.activationVersion !== AGENT_BRIDGE_ACTIVATION_VERSION)
+        return null;
       const client = await Effect.runPromise(
         store.getClient(AGENT_BRIDGE_LOCAL_CLIENT_ID).pipe(Effect.orElseSucceed(() => null)),
       );
@@ -191,6 +199,9 @@ export const makeAgentBridgeService = (input: {
       invalidate(affectedIds);
     const tools = [
       ...makeThreadTools({ host, store, limiters, onWorkspaceChanged }),
+      ...(input.schedules
+        ? makeScheduleTools({ host, store, limiters, service: input.schedules })
+        : []),
       ...makeTaskTools({ host, tasks: input.tasks, limiters, onWorkspaceChanged }),
     ];
     const taskOperator = makeTaskOperator({
@@ -273,7 +284,14 @@ export const makeAgentBridgeService = (input: {
         Effect.gen(function* () {
           const previous = settings;
           settings = next;
-          const shouldRun = AGENT_BRIDGE_LISTENER_AVAILABLE && next.enabled;
+          const shouldRun =
+            AGENT_BRIDGE_LISTENER_AVAILABLE &&
+            next.enabled &&
+            next.activationVersion === AGENT_BRIDGE_ACTIVATION_VERSION;
+          if (input.schedules)
+            yield* input.schedules.revalidateAuthorities.pipe(
+              Effect.catchCause((cause) => Effect.logError("agentBridge.schedules.fence", cause)),
+            );
           if (shouldRun && !listener) yield* startLocal;
           if (!shouldRun && listener) yield* stopLocal;
           if (localState.status === "failed")
@@ -317,12 +335,18 @@ export const makeAgentBridgeService = (input: {
         ]);
         return {
           revision,
-          enabled: settings.enabled,
+          enabled:
+            settings.enabled && settings.activationVersion === AGENT_BRIDGE_ACTIVATION_VERSION,
           local: localState,
           stdio: input.stdio,
           clients: clients.map(toClient),
         } satisfies AgentBridgeState;
       }),
+      setSchedulingGrant: (grant) =>
+        store.setSchedulingGrant(grant).pipe(
+          Effect.andThen(input.schedules?.revalidateAuthorities ?? Effect.void),
+          Effect.tap(() => Effect.sync(() => invalidate([grant.clientId]))),
+        ),
       tasks: taskOperator,
     };
   });

@@ -29,6 +29,7 @@ import { AGENT_BRIDGE_WS_CHANNELS, AgentBridgeStateChanged } from "./agentBridge
 import { AGENTS_WS_CHANNELS, AgentsSnapshot } from "./backgroundWork";
 import { GitActionProgressEvent, GitCheckoutConflict, GitStatusInvalidatedPayload } from "./git";
 import { McpStatusUpdatedPayload } from "./mcp";
+import { ScheduledTasksChanged } from "./scheduledTasks";
 import { NextTurnQueueSnapshot, NextTurnQueueSummary } from "./nextTurnQueue";
 import { ORCHESTRATION_WS_CHANNELS, OrchestrationEvent } from "./orchestration";
 import { DiscoveredLocalServerList, PreviewEvent } from "./preview";
@@ -52,6 +53,7 @@ export { WS_METHODS } from "./wsMethods";
 export { WebSocketRequest } from "./wsRequests";
 
 export const WS_CHANNELS = {
+  scheduledTasksChanged: "scheduledTasks.changed",
   profilesUpdated: "profiles.updated",
   providerAccountEvent: "providerAccount.event",
   gitActionProgress: "git.actionProgress",
@@ -146,6 +148,7 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.storageInvalidated]: StorageInvalidatedPayload;
   readonly [WS_CHANNELS.storageStatusUpdated]: StorageStatus;
   readonly [WS_CHANNELS.storageDiskSpaceUpdated]: typeof DiskSpaceStatus.Type;
+  readonly [WS_CHANNELS.scheduledTasksChanged]: typeof ScheduledTasksChanged.Type;
   readonly [WS_CHANNELS.nextTurnQueueUpdated]: typeof NextTurnQueueSnapshot.Type;
   readonly [WS_CHANNELS.nextTurnQueueSummaryUpdated]: typeof NextTurnQueueSummary.Type;
   readonly [WS_CHANNELS.worktreeSetupUpdated]: WorktreeSetupUpdatedPayload;
@@ -320,6 +323,10 @@ export const WsPushStorageDiskSpaceUpdated = makeWsPushSchema(
   WS_CHANNELS.storageDiskSpaceUpdated,
   DiskSpaceStatus,
 );
+export const WsPushScheduledTasksChanged = makeWsPushSchema(
+  WS_CHANNELS.scheduledTasksChanged,
+  ScheduledTasksChanged,
+);
 export const WsPushNextTurnQueueUpdated = makeWsPushSchema(
   WS_CHANNELS.nextTurnQueueUpdated,
   NextTurnQueueSnapshot,
@@ -376,6 +383,7 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.storageInvalidated,
   WS_CHANNELS.storageStatusUpdated,
   WS_CHANNELS.storageDiskSpaceUpdated,
+  WS_CHANNELS.scheduledTasksChanged,
   WS_CHANNELS.nextTurnQueueUpdated,
   WS_CHANNELS.nextTurnQueueSummaryUpdated,
   WS_CHANNELS.worktreeSetupUpdated,
@@ -416,6 +424,7 @@ export const WsPush = Schema.Union([
   WsPushStorageInvalidated,
   WsPushStorageStatusUpdated,
   WsPushStorageDiskSpaceUpdated,
+  WsPushScheduledTasksChanged,
   WsPushNextTurnQueueUpdated,
   WsPushNextTurnQueueSummaryUpdated,
   WsPushWorktreeSetupUpdated,

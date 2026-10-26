@@ -11,7 +11,7 @@ import { restrictToFirstScrollableAncestor, restrictToVerticalAxis } from "@dnd-
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronRightIcon, EllipsisIcon, SquarePenIcon, WorkflowIcon } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 
 import type { DraftThreadState } from "../../composerDraftStore";
 import { getVisibleThreadsWithPinnedDraft, isDraftThreadId } from "../../lib/draftThreads";
@@ -30,7 +30,6 @@ import {
   SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuSub,
-  SidebarMenuSubButton,
   SidebarMenuSubItem,
 } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -44,6 +43,8 @@ import {
   workflowEntryKey,
 } from "./sidebarLists";
 import { SidebarThreadRow } from "./SidebarThreadRow";
+import { SidebarScheduledFolder } from "./SidebarScheduledFolder";
+import { ListToggleRow, SectionToggleRow } from "./SidebarSectionRows";
 import {
   SidebarArchivedWorkflowRow,
   SidebarWorkflowItem,
@@ -142,23 +143,6 @@ const ACTIVE_STATUS_LABELS = new Set([
 const PROJECT_ACTION_CLASS_NAME =
   "top-1 size-6 rounded-md p-0 text-muted-foreground hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
-/** "Show more" / "Show less" under a list. */
-function ListToggleRow(props: { label: string; onSelect: () => void }) {
-  return (
-    <SidebarMenuSubItem className="w-full">
-      <SidebarMenuSubButton
-        render={<button type="button" />}
-        data-thread-selection-safe
-        size="sm"
-        className="h-6 w-full translate-x-0 justify-start rounded-md pl-8 text-left text-2xs text-muted-foreground hover:bg-transparent hover:text-foreground"
-        onClick={props.onSelect}
-      >
-        <span>{props.label}</span>
-      </SidebarMenuSubButton>
-    </SidebarMenuSubItem>
-  );
-}
-
 /**
  * Static group heading ("Workflows" / "Threads") that separates workflow
  * entries from standalone threads inside a project. Matches the type scale of
@@ -175,31 +159,6 @@ function GroupLabelRow(props: { label: string; spaced?: boolean }) {
       >
         {props.label}
       </div>
-    </SidebarMenuSubItem>
-  );
-}
-
-/** Collapsible "Snoozed (n)" / "Archived" section label. */
-function SectionToggleRow(props: { label: ReactNode; expanded: boolean; onToggle: () => void }) {
-  return (
-    <SidebarMenuSubItem className="w-full">
-      <SidebarMenuSubButton
-        render={<button type="button" />}
-        data-thread-selection-safe
-        aria-expanded={props.expanded}
-        size="sm"
-        className="mt-1 h-6 w-full translate-x-0 justify-start gap-1 rounded-md px-2 text-left text-2xs font-medium text-muted-foreground hover:bg-transparent hover:text-foreground"
-        onClick={props.onToggle}
-      >
-        <span>{props.label}</span>
-        <ChevronRightIcon
-          aria-hidden="true"
-          className={cn(
-            "size-3.5 shrink-0 text-faint-foreground transition-transform duration-(--duration-fast)",
-            props.expanded && "rotate-90",
-          )}
-        />
-      </SidebarMenuSubButton>
     </SidebarMenuSubItem>
   );
 }
@@ -247,9 +206,47 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
     prependUnseenKeys: sidebarLists.projectDraftThreadId ? [sidebarLists.projectDraftThreadId] : [],
   });
   const snoozedThreads = sidebarLists.snoozedThreads;
+  const scheduledThreads = reconcileFrozenOrder({
+    items: sidebarLists.scheduledThreads,
+    getKey: (thread) => thread.id,
+    frozenOrder: freezeSnapshot?.scheduledThreadIdsByProjectId[project.id],
+  });
+  const selectedScheduledThread = scheduledThreads.some((thread) => thread.id === routeThreadId);
+  const currentScheduledThreads = scheduledThreads.filter((thread) => thread.archivedAt === null);
+  const archivedScheduledThreads = scheduledThreads.filter((thread) => thread.archivedAt !== null);
+  const selectedArchivedScheduledThread = archivedScheduledThreads.some(
+    (thread) => thread.id === routeThreadId,
+  );
+  const [scheduledExpanded, setScheduledExpanded] = useState(selectedScheduledThread);
+  const [scheduledShowingAll, setScheduledShowingAll] = useState(false);
+  const [scheduledArchivedExpanded, setScheduledArchivedExpanded] = useState(
+    selectedArchivedScheduledThread,
+  );
+  const [scheduledArchivedShowingAll, setScheduledArchivedShowingAll] = useState(false);
+  useEffect(() => {
+    if (selectedScheduledThread) setScheduledExpanded(true);
+  }, [routeThreadId, selectedScheduledThread]);
+  useEffect(() => {
+    if (selectedArchivedScheduledThread) setScheduledArchivedExpanded(true);
+  }, [routeThreadId, selectedArchivedScheduledThread]);
+  const visibleScheduledThreads = scheduledExpanded
+    ? currentScheduledThreads.filter(
+        (thread, index) =>
+          scheduledShowingAll || index < threadPreviewLimit || thread.id === routeThreadId,
+      )
+    : [];
+  const visibleArchivedScheduledThreads =
+    scheduledExpanded && scheduledArchivedExpanded
+      ? archivedScheduledThreads.filter(
+          (thread, index) =>
+            scheduledArchivedShowingAll ||
+            index < threadPreviewLimit ||
+            thread.id === routeThreadId,
+        )
+      : [];
   const [settledExpanded, setSettledExpanded] = useState(false);
   const settledThreads = sidebarLists.settledThreads;
-  const projectPinnedSortableIds = activeThreads
+  const projectPinnedSortableIds = [...activeThreads, ...visibleScheduledThreads]
     .filter((thread) => thread.pinnedAt != null)
     .map((thread) => pinnedThreadSortableId(thread.id));
   const archivedSidebarItems = reconcileFrozenOrder({
@@ -276,6 +273,8 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
     ...visibleActiveThreads
       .filter((thread) => !isDraftThreadId(thread.id, draftThreadsByThreadId, persistedThreadIds))
       .map((thread) => thread.id),
+    ...visibleScheduledThreads.map((thread) => thread.id),
+    ...visibleArchivedScheduledThreads.map((thread) => thread.id),
     ...(!snoozedSectionCollapsed ? snoozedThreads.map((thread) => thread.id) : []),
     ...(!archivedSectionCollapsed
       ? visibleArchivedItems.flatMap((item) => (item.kind === "thread" ? [item.thread.id] : []))
@@ -283,12 +282,14 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
   ];
   const activeCount = project.expanded
     ? 0
-    : [...activeThreads, ...[...sidebarLists.workflowThreadsByKey.values()].flat()].filter(
-        (thread) => {
-          const label = indicatorsForThread(thread).threadStatus?.label;
-          return label !== undefined && ACTIVE_STATUS_LABELS.has(label);
-        },
-      ).length;
+    : [
+        ...activeThreads,
+        ...currentScheduledThreads,
+        ...[...sidebarLists.workflowThreadsByKey.values()].flat(),
+      ].filter((thread) => {
+        const label = indicatorsForThread(thread).threadStatus?.label;
+        return label !== undefined && ACTIVE_STATUS_LABELS.has(label);
+      }).length;
 
   return (
     <SortableProjectItem projectId={project.id}>
@@ -518,6 +519,31 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
                       }}
                     />
                   ) : null}
+
+                  {scheduledThreads.length > 0 && (
+                    <SidebarScheduledFolder
+                      threads={scheduledThreads}
+                      visibleThreads={visibleScheduledThreads}
+                      currentThreadCount={currentScheduledThreads.length}
+                      archivedThreads={archivedScheduledThreads}
+                      visibleArchivedThreads={visibleArchivedScheduledThreads}
+                      archivedExpanded={scheduledArchivedExpanded}
+                      archivedShowingAll={scheduledArchivedShowingAll}
+                      expanded={scheduledExpanded}
+                      showingAll={scheduledShowingAll}
+                      previewLimit={threadPreviewLimit}
+                      onToggle={() => setScheduledExpanded((expanded) => !expanded)}
+                      onToggleShowAll={() => setScheduledShowingAll((showing) => !showing)}
+                      onToggleArchived={() => setScheduledArchivedExpanded((expanded) => !expanded)}
+                      onToggleArchivedShowAll={() =>
+                        setScheduledArchivedShowingAll((showing) => !showing)
+                      }
+                      routeThreadId={routeThreadId}
+                      orderedIds={orderedProjectThreadIds}
+                      indicatorsForThread={indicatorsForThread}
+                      actions={threadActions}
+                    />
+                  )}
 
                   {snoozedThreads.length > 0 ? (
                     <SectionToggleRow

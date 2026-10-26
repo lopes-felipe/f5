@@ -47,7 +47,8 @@ function runStatus(env: Record<string, string>) {
   return result.stdout;
 }
 
-describe("main status reconciliation", () => {
+// This tests the Ubuntu workflow's Bash/jq script, not the Windows application.
+describe.skipIf(process.platform === "win32")("main status reconciliation", () => {
   it("ignores stale SHAs", () =>
     expect(runStatus({ MAIN_HEAD: "newer" })).not.toContain("mutation:"));
   it("closes an open issue after success", () =>

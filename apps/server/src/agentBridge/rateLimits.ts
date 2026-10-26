@@ -113,12 +113,14 @@ export interface AgentBridgeLimiters {
   readonly sendMessage: SlidingWindowLimiter;
   readonly waiters: ConcurrencySlots;
   readonly taskWrites: TokenBucketLimiter;
+  readonly schedulingWrites: TokenBucketLimiter;
 }
 
 export const makeAgentBridgeLimiters = (now: () => number = Date.now): AgentBridgeLimiters => ({
   createThread: new SlidingWindowLimiter(AGENT_BRIDGE_LIMITS.createThreadPerHour, HOUR_MS, now),
   sendMessage: new SlidingWindowLimiter(AGENT_BRIDGE_LIMITS.sendMessagePerHour, HOUR_MS, now),
   waiters: new ConcurrencySlots(AGENT_BRIDGE_LIMITS.concurrentWaitersPerClient),
+  schedulingWrites: new TokenBucketLimiter(1, 10, now),
   taskWrites: new TokenBucketLimiter(
     AGENT_BRIDGE_LIMITS.taskWritesPerSecond,
     AGENT_BRIDGE_LIMITS.taskWriteBurst,

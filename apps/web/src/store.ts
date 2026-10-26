@@ -122,6 +122,7 @@ const persistedExpandedProjectCwds = new Set<string>();
 const persistedCollapsedProjectCwds = new Set<string>();
 const persistedProjectOrderCwds: string[] = [];
 const persistedChangedFilesExpandedByThreadId: Record<string, boolean> = {};
+const persistedLastVisitedAtByThreadId = new Map<string, string>();
 let persistedProjectStateUsesLegacyShape = false;
 
 interface ThreadDetailEventBuffer {
@@ -143,7 +144,16 @@ function readPersistedState(): AppState {
       expandedProjectCwds?: string[];
       projectOrderCwds?: string[];
       changedFilesExpandedByThreadId?: Record<string, boolean>;
+      lastVisitedAtByThreadId?: Record<string, unknown>;
     };
+    persistedLastVisitedAtByThreadId.clear();
+    if (parsed.lastVisitedAtByThreadId && typeof parsed.lastVisitedAtByThreadId === "object") {
+      for (const [threadId, at] of Object.entries(parsed.lastVisitedAtByThreadId)) {
+        if (threadId && typeof at === "string" && Number.isFinite(Date.parse(at))) {
+          persistedLastVisitedAtByThreadId.set(threadId, at);
+        }
+      }
+    }
     persistedCollapsedProjectCwds.clear();
     persistedExpandedProjectCwds.clear();
     persistedProjectOrderCwds.length = 0;
@@ -192,6 +202,16 @@ export function persistState(state: AppState): void {
         changedFilesExpandedByThreadId[threadId] = false;
       }
     }
+    // Startup renders before the authoritative snapshot arrives. Preserve loaded
+    // receipts until then; once hydrated, deleted threads are naturally pruned.
+    const lastVisitedAtByThreadId = state.threadsHydrated
+      ? new Map<string, string>()
+      : new Map(persistedLastVisitedAtByThreadId);
+    for (const thread of state.threads) {
+      if (thread.lastVisitedAt && Number.isFinite(Date.parse(thread.lastVisitedAt))) {
+        lastVisitedAtByThreadId.set(thread.id, thread.lastVisitedAt);
+      }
+    }
     window.localStorage.setItem(
       PERSISTED_STATE_KEY,
       JSON.stringify({
@@ -203,8 +223,12 @@ export function persistState(state: AppState): void {
           .map((project) => project.cwd),
         projectOrderCwds: state.projects.map((project) => project.cwd),
         changedFilesExpandedByThreadId,
+        lastVisitedAtByThreadId: Object.fromEntries(lastVisitedAtByThreadId),
       }),
     );
+    persistedLastVisitedAtByThreadId.clear();
+    for (const [threadId, at] of lastVisitedAtByThreadId)
+      persistedLastVisitedAtByThreadId.set(threadId, at);
     if (!legacyKeysCleanedUp) {
       legacyKeysCleanedUp = true;
       for (const legacyKey of LEGACY_PERSISTED_STATE_KEYS) {
@@ -216,6 +240,20 @@ export function persistState(state: AppState): void {
   }
 }
 const debouncedPersistState = new Debouncer(persistState, { wait: 500 });
+
+/** Explicit read actions persist independently of the streaming-state subscription. */
+function persistReadStateChange(previous: AppState, next: AppState): AppState {
+  if (next !== previous) {
+    // Backend-incarnation resets discard thread data. Keep local read receipts
+    // available for rehydration even before the debounced write reaches storage.
+    for (const thread of next.threads) {
+      if (thread.lastVisitedAt)
+        persistedLastVisitedAtByThreadId.set(thread.id, thread.lastVisitedAt);
+    }
+    debouncedPersistState.maybeExecute(next);
+  }
+  return next;
+}
 
 // ── Pure helpers ──────────────────────────────────────────────────────
 
@@ -1116,7 +1154,10 @@ function buildThreadFromReadModel(
       ? existing.activities
       : mapActivitiesFromReadModel(thread.activities, existing?.activities ?? []);
   const error = visibleThreadSessionError(thread.id, thread.session);
-  const lastVisitedAt = existing?.lastVisitedAt ?? thread.lastInteractionAt;
+  const lastVisitedAt =
+    existing?.lastVisitedAt ??
+    persistedLastVisitedAtByThreadId.get(thread.id) ??
+    thread.lastInteractionAt;
   const estimatedContextTokens = thread.estimatedContextTokens ?? null;
   const estimatedThinkingTokens = thread.estimatedThinkingTokens ?? null;
   const modelContextWindowTokens = thread.modelContextWindowTokens ?? null;
@@ -1147,6 +1188,7 @@ function buildThreadFromReadModel(
     existing.proposedPlans === proposedPlans &&
     existing.error === error &&
     existing.createdAt === thread.createdAt &&
+    areUnknownEqual(existing.scheduledOrigin ?? null, thread.scheduledOrigin ?? null) &&
     existing.archivedAt === thread.archivedAt &&
     (existing.settledAt ?? null) === (thread.settledAt ?? null) &&
     (existing.settledBy ?? null) === (thread.settledBy ?? null) &&
@@ -1192,6 +1234,7 @@ function buildThreadFromReadModel(
     codexThreadId: null,
     projectId: thread.projectId,
     title: thread.title,
+    scheduledOrigin: thread.scheduledOrigin ?? null,
     model,
     ...(thread.modelSelection !== undefined ? { modelSelection: thread.modelSelection } : {}),
     runtimeMode: thread.runtimeMode,
@@ -2016,9 +2059,21 @@ export function markThreadVisited(
   threadId: ThreadId,
   visitedAt?: string,
 ): AppState {
-  const threads = updateThread(state.threads, threadId, (thread) => {
-    const requestedAt = visitedAt ?? new Date().toISOString();
-    const requestedVisitedAtMs = Date.parse(requestedAt);
+  return markThreadsVisited(state, [threadId], visitedAt);
+}
+
+/** Batch read acknowledgement; retains individual completion-clock skew rules. */
+export function markThreadsVisited(
+  state: AppState,
+  threadIds: readonly ThreadId[],
+  visitedAt = new Date().toISOString(),
+): AppState {
+  if (!threadIds.length) return state;
+  const selected = new Set(threadIds);
+  let changed = false;
+  const threads = state.threads.map((thread) => {
+    if (!selected.has(thread.id)) return thread;
+    const requestedVisitedAtMs = Date.parse(visitedAt);
     const completedAt = thread.latestTurn?.completedAt;
     const completedAtMs = completedAt ? Date.parse(completedAt) : NaN;
     const at =
@@ -2028,19 +2083,19 @@ export function markThreadVisited(
       completedAtMs > requestedVisitedAtMs &&
       completedAtMs - requestedVisitedAtMs <= MAX_VISITED_COMPLETION_CLOCK_SKEW_MS
         ? completedAt
-        : requestedAt;
+        : visitedAt;
     const visitedAtMs = Date.parse(at);
     const previousVisitedAtMs = thread.lastVisitedAt ? Date.parse(thread.lastVisitedAt) : NaN;
     if (
       Number.isFinite(previousVisitedAtMs) &&
       Number.isFinite(visitedAtMs) &&
       previousVisitedAtMs >= visitedAtMs
-    ) {
+    )
       return thread;
-    }
+    changed = true;
     return { ...thread, lastVisitedAt: at };
   });
-  return threads === state.threads ? state : { ...state, threads };
+  return changed ? { ...state, threads } : state;
 }
 
 export function markThreadUnread(state: AppState, threadId: ThreadId): AppState {
@@ -2205,6 +2260,7 @@ interface AppStore extends AppState {
   applyDomainEvent: (event: OrchestrationEvent) => void;
   applyDomainEventBatch: (events: ReadonlyArray<OrchestrationEvent>) => void;
   markThreadVisited: (threadId: ThreadId, visitedAt?: string) => void;
+  markThreadsVisited: (threadIds: readonly ThreadId[], visitedAt?: string) => void;
   markThreadUnread: (threadId: ThreadId) => void;
   toggleProject: (projectId: Project["id"]) => void;
   setProjectExpanded: (projectId: Project["id"], expanded: boolean) => void;
@@ -2311,8 +2367,11 @@ export const useStore = create<AppStore>((set) => ({
         : { ...nextState, lastAppliedSequence: nextLastAppliedSequence };
     }),
   markThreadVisited: (threadId, visitedAt) =>
-    set((state) => markThreadVisited(state, threadId, visitedAt)),
-  markThreadUnread: (threadId) => set((state) => markThreadUnread(state, threadId)),
+    set((state) => persistReadStateChange(state, markThreadVisited(state, threadId, visitedAt))),
+  markThreadsVisited: (threadIds, visitedAt) =>
+    set((state) => persistReadStateChange(state, markThreadsVisited(state, threadIds, visitedAt))),
+  markThreadUnread: (threadId) =>
+    set((state) => persistReadStateChange(state, markThreadUnread(state, threadId))),
   toggleProject: (projectId) => set((state) => toggleProject(state, projectId)),
   setProjectExpanded: (projectId, expanded) =>
     set((state) => setProjectExpanded(state, projectId, expanded)),

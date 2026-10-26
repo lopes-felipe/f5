@@ -27,6 +27,7 @@ import type { ProjectionTurnState } from "../persistence/Services/ProjectionTurn
 export class AgentBridgeHostError extends Data.TaggedError("AgentBridgeHostError")<{
   readonly message: string;
   readonly code?: string;
+  readonly submissionFailure?: import("../TurnSubmissionError.ts").TurnSubmissionFailure;
 }> {}
 
 export type ThreadActivityAppendCommand = Extract<

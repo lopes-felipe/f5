@@ -6,16 +6,20 @@ import "../index.css";
 
 import {
   AGENTS_WS_METHODS,
+  SCHEDULED_TASK_WS_METHODS,
   CommandId,
   type DesktopBridge,
   ORCHESTRATION_WS_METHODS,
   PR_HUB_WS_METHODS,
   ProfileId,
   type MessageId,
+  TurnId,
   type OrchestrationReadModel,
   type ProjectId,
   type ServerConfig,
   ThreadId,
+  ScheduledTaskId,
+  ScheduledTaskRunId,
   type WsWelcomePayload,
   WS_CHANNELS,
   WS_METHODS,
@@ -35,6 +39,7 @@ import { COMPOSER_DRAFT_STORAGE_KEY, useComposerDraftStore } from "../composerDr
 import { getRouter } from "../router";
 import { useRecoveryStateStore } from "../recoveryStateStore";
 import { useStore } from "../store";
+import { hasUnseenCompletion } from "../threadStatus";
 import { useProfileState } from "../profileState";
 import { createTestServerProvider } from "../testServerProvider";
 import {
@@ -330,6 +335,9 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
   const emptyReply = resolveEmptyAppRpc(body);
   if (emptyReply !== undefined) return emptyReply;
   const tag = body._tag;
+  if (tag === SCHEDULED_TASK_WS_METHODS.list) return { revision: 0, tasks: [] };
+  if (tag === SCHEDULED_TASK_WS_METHODS.listRuns) return { runs: [], nextCursor: null };
+
   if (tag === AGENTS_WS_METHODS.getSnapshot) {
     return { entries: [], generatedAt: NOW_ISO };
   }
@@ -1102,6 +1110,424 @@ describe("Thread sidebar", () => {
         .element(page.getByRole("button", { name: "Settled (1)", exact: true }))
         .not.toBeInTheDocument();
       expect(querySidebarThreadRowsByTitle("Settled conversation")).toHaveLength(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("groups existing Scheduled threads in a collapsed project folder with status indicators", async () => {
+    const scheduled = (id: string, extra: Partial<SnapshotThread> = {}) =>
+      createSnapshotThread({
+        id: id as ThreadId,
+        title: id,
+        scheduledOrigin: {
+          taskId: ScheduledTaskId.makeUnsafe("task"),
+          runId: ScheduledTaskRunId.makeUnsafe(id),
+        },
+        ...extra,
+      });
+    const working = scheduled("Scheduled working", {
+      session: {
+        ...createSnapshotThread({ id: "Scheduled working" as ThreadId }).session!,
+        status: "running",
+        activeTurnId: "scheduled-turn" as never,
+      },
+    });
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = createSnapshot([
+          createSnapshotThread({ id: THREAD_ID, title: "Normal conversation" }),
+          working,
+          scheduled("Scheduled attention", createPlanReadyOverrides("scheduled")),
+          scheduled("Scheduled archived", { archivedAt: NOW_ISO }),
+          scheduled("Scheduled snoozed", { snoozedUntil: "2099-01-01T00:00:00.000Z" }),
+        ]);
+      },
+    });
+    try {
+      await waitForSidebarThreadRow("Normal conversation");
+      const folder = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="scheduled-thread-folder"]'),
+        "Scheduled folder should render",
+      );
+      const toggle = folder.querySelector<HTMLButtonElement>("button[aria-expanded]")!;
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+      expect(folder.textContent).toContain("Needs attention: 1");
+      expect(folder.textContent).toContain("Running: 1");
+      expect(querySidebarThreadRowByTitle("Scheduled working")).toBeNull();
+      expect(querySidebarButtonByText("Archived")).toBeNull();
+      expect(querySidebarButtonByText("Snoozed (1)")).toBeNull();
+      toggle.click();
+      for (const title of ["Scheduled working", "Scheduled attention", "Scheduled snoozed"]) {
+        const row = await waitForElement(
+          () =>
+            [...folder.querySelectorAll<HTMLElement>('[data-slot="sidebar-menu-sub-button"]')].find(
+              (row) => row.textContent?.includes(title),
+            ) ?? null,
+          "Canonical scheduled row should render",
+        );
+        expect(folder.contains(row)).toBe(true);
+        if (title !== "Scheduled snoozed")
+          expect(document.querySelectorAll(`[data-testid="thread-row-${title}"]`)).toHaveLength(1);
+      }
+      expect(querySidebarThreadRowByTitle("Scheduled archived")).toBeNull();
+      const archivedToggle = [...folder.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) => button.textContent?.trim() === "Archived",
+      )!;
+      expect(archivedToggle.getAttribute("aria-expanded")).toBe("false");
+      archivedToggle.click();
+      await waitForSidebarThreadRow("Scheduled archived");
+      expect(folder.querySelector('[aria-label="Unarchive Scheduled archived"]')).not.toBeNull();
+      archivedToggle.click();
+      await vi.waitFor(() => expect(querySidebarThreadRowByTitle("Scheduled archived")).toBeNull());
+      expect(querySidebarThreadRowByTitle("Scheduled working")).not.toBeNull();
+      toggle.click();
+      await vi.waitFor(() => expect(querySidebarThreadRowByTitle("Scheduled working")).toBeNull());
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens the Scheduled folder for a selected run beyond the preview and keeps show-more local", async () => {
+    seedAppSettings({ sidebarThreadPreviewCount: 5 });
+    const selectedId = "scheduled-run-0" as ThreadId;
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${selectedId}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = createSnapshot([
+          createSnapshotThread({ id: THREAD_ID, title: "Normal conversation" }),
+          ...Array.from({ length: 8 }, (_, index) =>
+            createSnapshotThread({
+              id: `scheduled-run-${index}` as ThreadId,
+              title: `Scheduled run ${index}`,
+              scheduledOrigin: {
+                taskId: ScheduledTaskId.makeUnsafe("task"),
+                runId: ScheduledTaskRunId.makeUnsafe(`run-${index}`),
+              },
+            }),
+          ),
+        ]);
+      },
+    });
+    try {
+      const selected = await waitForSidebarThreadRow("Scheduled run 0");
+      const folder = selected.closest<HTMLElement>('[data-testid="scheduled-thread-folder"]')!;
+      expect(folder).not.toBeNull();
+      expect(folder.querySelector("button[aria-expanded]")?.getAttribute("aria-expanded")).toBe(
+        "true",
+      );
+      expect(folder.querySelectorAll("[data-thread-item]")).toHaveLength(6);
+      const more = [...folder.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+        button.textContent?.includes("Show more"),
+      )!;
+      more.click();
+      await vi.waitFor(() => expect(folder.querySelectorAll("[data-thread-item]")).toHaveLength(8));
+      const less = [...folder.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+        button.textContent?.includes("Show less"),
+      )!;
+      less.click();
+      await vi.waitFor(() => expect(folder.querySelectorAll("[data-thread-item]")).toHaveLength(6));
+      folder.querySelector<HTMLButtonElement>("button[aria-expanded]")!.click();
+      await vi.waitFor(() => expect(querySidebarThreadRowByTitle("Scheduled run 0")).toBeNull());
+      expect(querySidebarThreadRowByTitle("Normal conversation")).not.toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it.each([false, true])(
+    "keeps Scheduled archive previews independent and reveals selected archives (%s)",
+    async (selectArchive) => {
+      seedAppSettings({ sidebarThreadPreviewCount: 5 });
+      const selectedId = "archived-scheduled-0" as ThreadId;
+      const scheduled = (archived: boolean, index: number) =>
+        createSnapshotThread({
+          id: `${archived ? "archived" : "active"}-scheduled-${index}` as ThreadId,
+          title: `${archived ? "Archived" : "Active"} scheduled ${index}`,
+          lastInteractionAt: `2026-03-11T11:${String(index).padStart(2, "0")}:00.000Z`,
+          archivedAt: archived ? NOW_ISO : null,
+          scheduledOrigin: {
+            taskId: ScheduledTaskId.makeUnsafe("task"),
+            runId: ScheduledTaskRunId.makeUnsafe(`${archived}-${index}`),
+          },
+        });
+      const mounted = await mountApp({
+        width: 1_400,
+        initialEntries: [`/${selectArchive ? selectedId : THREAD_ID}`],
+        configureFixture: (nextFixture) => {
+          nextFixture.snapshot = createSnapshot([
+            createSnapshotThread({ id: THREAD_ID, title: "Normal conversation" }),
+            createSnapshotThread({
+              id: "normal-archive" as ThreadId,
+              title: "Normal archive",
+              archivedAt: NOW_ISO,
+            }),
+            ...Array.from({ length: 8 }, (_, index) => scheduled(false, index)),
+            ...Array.from({ length: 8 }, (_, index) => scheduled(true, index)),
+          ]);
+        },
+      });
+      try {
+        await waitForSidebarThreadRow(
+          selectArchive ? "Archived scheduled 0" : "Normal conversation",
+        );
+        const folder = document.querySelector<HTMLElement>(
+          '[data-testid="scheduled-thread-folder"]',
+        )!;
+        const toggle = folder.querySelector<HTMLButtonElement>("button[aria-expanded]")!;
+        if (!selectArchive) toggle.click();
+        const currentRows = () =>
+          folder.querySelectorAll('[data-testid^="thread-row-active-scheduled-"]');
+        const archivedRows = () =>
+          folder.querySelectorAll('[data-testid^="thread-row-archived-scheduled-"]');
+        await vi.waitFor(() => expect(currentRows()).toHaveLength(5));
+        const archivedToggle = [...folder.querySelectorAll<HTMLButtonElement>("button")].find(
+          (button) => button.textContent?.trim() === "Archived",
+        )!;
+        expect(archivedToggle.getAttribute("aria-expanded")).toBe(String(selectArchive));
+        expect(archivedRows()).toHaveLength(selectArchive ? 6 : 0);
+        if (!selectArchive) archivedToggle.click();
+        await vi.waitFor(() => expect(archivedRows()).toHaveLength(selectArchive ? 6 : 5));
+        const moreButtons = () =>
+          [...folder.querySelectorAll<HTMLButtonElement>("button")].filter(
+            (button) => button.textContent?.trim() === "Show more",
+          );
+        expect(moreButtons()).toHaveLength(2);
+        moreButtons()[0]!.click();
+        await vi.waitFor(() => expect(currentRows()).toHaveLength(8));
+        expect(archivedRows()).toHaveLength(selectArchive ? 6 : 5);
+        moreButtons()[0]!.click();
+        await vi.waitFor(() => expect(archivedRows()).toHaveLength(8));
+        archivedToggle.click();
+        await vi.waitFor(() => expect(archivedRows()).toHaveLength(0));
+        expect(currentRows()).toHaveLength(8);
+        expect(querySidebarThreadRowByTitle("Normal archive")).toBeNull();
+        const otherArchiveToggle = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+          (button) => button.textContent?.trim() === "Archived" && !folder.contains(button),
+        )!;
+        expect(otherArchiveToggle.getAttribute("aria-expanded")).toBe("false");
+        otherArchiveToggle.click();
+        await waitForSidebarThreadRow("Normal archive");
+        expect(archivedRows()).toHaveLength(0);
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it.each(["sidebar", "header"] as const)(
+    "opens the source scheduler editor from the %s thread menu",
+    async (surface) => {
+      const taskId = ScheduledTaskId.makeUnsafe("source-task");
+      const task = {
+        id: taskId,
+        projectId: PROJECT_ID,
+        name: "Daily source task",
+        prompt: "Check project",
+        modelSelection: { instanceId: "codex", model: "gpt-5" },
+        runtimeMode: "approval-required",
+        workspace: { kind: "projectRoot" },
+        cron: "0 9 * * *",
+        timezone: "UTC",
+        scheduleSource: "daily",
+        maxRuns: null,
+        oneShotAt: null,
+        notify: "all",
+        enabled: false,
+        version: 1,
+        createdBy: "user",
+        authority: { kind: "user" },
+        createdAt: NOW_ISO,
+        updatedAt: NOW_ISO,
+        nextRunAt: null,
+        lastRunAt: null,
+        runsConsumed: 0,
+      };
+      const nativeMenu = vi.fn(
+        async (
+          _items: ReadonlyArray<{ id: string; label: string }>,
+          _position?: { x: number; y: number },
+        ) => "edit-schedule",
+      );
+      if (surface === "sidebar")
+        installDesktopBridgeMock({
+          showContextMenu: nativeMenu as DesktopBridge["showContextMenu"],
+        });
+      const mounted = await mountApp({
+        width: 1_400,
+        initialEntries: [`/${THREAD_ID}`],
+        configureFixture: (nextFixture) => {
+          nextFixture.snapshot = createSnapshot([
+            createSnapshotThread({
+              id: THREAD_ID,
+              title: "Renamed execution",
+              scheduledOrigin: { taskId, runId: ScheduledTaskRunId.makeUnsafe("run") },
+            }),
+          ]);
+          nextFixture.resolveWsRequest = (body) =>
+            body._tag === SCHEDULED_TASK_WS_METHODS.list
+              ? {
+                  type: "result",
+                  result: { revision: 0, tasks: [{ task, latestRun: null, activeRun: null }] },
+                }
+              : null;
+        },
+      });
+      try {
+        await waitForSidebarThreadRow("Renamed execution");
+        if (surface === "sidebar") {
+          await page.getByTestId(`thread-row-${THREAD_ID}`).click({ button: "right" });
+          await vi.waitFor(() => expect(nativeMenu).toHaveBeenCalled());
+          expect(nativeMenu.mock.calls[0]![0]).toEqual(
+            expect.arrayContaining([
+              {
+                id: "scheduled-origin",
+                label: "Scheduled task: Daily source task",
+                disabled: true,
+              },
+              { id: "edit-schedule", label: "Edit scheduled task…" },
+              { id: "rename", label: "Rename thread", separatorBefore: true },
+            ]),
+          );
+        } else {
+          await page.getByRole("button", { name: "Thread actions", exact: true }).click();
+          await expect
+            .element(
+              page.getByRole("menuitem", {
+                name: "Scheduled task: Daily source task",
+                exact: true,
+              }),
+            )
+            .toBeDisabled();
+          await page.getByRole("menuitem", { name: "Edit scheduled task…", exact: true }).click();
+        }
+        await expect
+          .element(page.getByRole("dialog", { name: "Edit scheduled task" }))
+          .toBeVisible();
+        await expect
+          .element(page.getByRole("textbox", { name: "Task name" }))
+          .toHaveValue("Daily source task");
+        expect(mounted.router.state.location.pathname).toBe("/scheduled");
+        await vi.waitFor(() => expect(mounted.router.state.location.search).toEqual({ taskId }));
+        await page.getByRole("button", { name: "Close", exact: true }).click();
+        await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it("keeps removed source scheduling attribution without offering editing", async () => {
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = createSnapshot([
+          createSnapshotThread({
+            id: THREAD_ID,
+            title: "Retained run",
+            scheduledOrigin: {
+              taskId: ScheduledTaskId.makeUnsafe("removed"),
+              runId: ScheduledTaskRunId.makeUnsafe("run"),
+            },
+          }),
+        ]);
+      },
+    });
+    try {
+      await waitForSidebarThreadRow("Retained run");
+      await page.getByRole("button", { name: "Thread actions", exact: true }).click();
+      await expect
+        .element(page.getByRole("menuitem", { name: "Scheduled task removed", exact: true }))
+        .toBeDisabled();
+      await expect
+        .element(page.getByRole("menuitem", { name: "Edit scheduled task…", exact: true }))
+        .not.toBeInTheDocument();
+      await expect
+        .element(page.getByRole("menuitem", { name: "Rename thread", exact: true }))
+        .toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("marks every Scheduled execution read from the folder menu, including hidden runs", async () => {
+    seedAppSettings({ sidebarThreadPreviewCount: 5 });
+    const completed = {
+      turnId: TurnId.makeUnsafe("completed"),
+      state: "completed" as const,
+      requestedAt: NOW_ISO,
+      startedAt: NOW_ISO,
+      completedAt: "2026-03-11T12:05:00.000Z",
+      assistantMessageId: null,
+    };
+    const run = (index: number) =>
+      createSnapshotThread({
+        id: `bulk-read-run-${index}` as ThreadId,
+        title: `Bulk read run ${index}`,
+        latestTurn: completed,
+        scheduledOrigin: {
+          taskId: ScheduledTaskId.makeUnsafe("bulk-read-task"),
+          runId: ScheduledTaskRunId.makeUnsafe(`run-${index}`),
+        },
+      });
+    const initialThreads = [
+      createSnapshotThread({ id: THREAD_ID, title: "Open conversation" }),
+      createSnapshotThread({
+        id: "other-unread" as ThreadId,
+        title: "Other unread",
+        latestTurn: completed,
+      }),
+      ...Array.from({ length: 8 }, (_, index) => run(index)),
+    ];
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = createSnapshot(initialThreads);
+      },
+    });
+    try {
+      const folder = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="scheduled-thread-folder"]'),
+        "Scheduled folder should appear",
+      );
+      const toggle = folder.querySelector<HTMLButtonElement>("button[aria-expanded]")!;
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+      expect(folder.textContent).toContain("Unread: 8");
+      toggle.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          button: 2,
+          clientX: 200,
+          clientY: 200,
+        }),
+      );
+      await page.getByRole("menuitem", { name: "Mark all as read", exact: true }).click();
+      await vi.waitFor(() => {
+        const runs = useStore.getState().threads.filter((thread) => thread.scheduledOrigin);
+        expect(runs).toHaveLength(8);
+        expect(runs.every((thread) => !hasUnseenCompletion(thread))).toBe(true);
+        expect(folder.textContent).not.toContain("Unread:");
+      });
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+      expect(
+        hasUnseenCompletion(
+          useStore.getState().threads.find((thread) => thread.id === "other-unread")!,
+        ),
+      ).toBe(true);
+      window.dispatchEvent(new Event("beforeunload"));
+      const persisted = JSON.parse(localStorage.getItem("t3code:renderer-state:v8")!);
+      for (let index = 0; index < 8; index++)
+        expect(
+          Date.parse(persisted.lastVisitedAtByThreadId[`bulk-read-run-${index}`]),
+        ).toBeGreaterThanOrEqual(Date.parse(completed.completedAt));
+      useStore.getState().syncServerReadModel(createSnapshot([...initialThreads, run(8)]));
+      await vi.waitFor(() => expect(folder.textContent).toContain("Unread: 1"));
     } finally {
       await mounted.cleanup();
     }

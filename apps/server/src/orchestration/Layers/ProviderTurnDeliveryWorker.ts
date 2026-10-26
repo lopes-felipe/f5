@@ -1,8 +1,14 @@
+import { assertScheduledDeliveryAllowed } from "../../scheduledTasks/deliveryGate.ts";
+import { fenceScheduledRun } from "../../scheduledTasks/cancellation.ts";
+import { scheduledSendGate } from "../../scheduledTasks/sendGate.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { registerShutdown } from "../../shutdown.ts";
 import { DeliveryAttemptContext } from "../../provider/deliveryAttemptContext";
 import { CommandId, TurnId, type OrchestrationUsageLimit, type ThreadId } from "@t3tools/contracts";
 import {
   Cause,
+  Clock,
   Deferred,
   Duration,
   Effect,
@@ -43,6 +49,8 @@ import {
 
 const make = Effect.gen(function* () {
   const repository = yield* ProviderTurnDeliveryRepository;
+  const scheduledSql = yield* Effect.serviceOption(SqlClient.SqlClient);
+  const scheduledSettings = yield* Effect.serviceOption(ServerSettingsService);
   const provider = yield* ProviderService;
   const reactor = yield* ProviderCommandReactor;
   const turns = yield* ProjectionTurnRepository;
@@ -61,6 +69,13 @@ const make = Effect.gen(function* () {
       retryable: true,
       detail: "Server shutdown stopped this turn before dispatch.",
     });
+  const scheduledHandoff = (commandId: string) =>
+    Option.isSome(scheduledSql) && Option.isSome(scheduledSettings)
+      ? assertScheduledDeliveryAllowed(commandId).pipe(
+          Effect.provideService(SqlClient.SqlClient, scheduledSql.value),
+          Effect.provideService(ServerSettingsService, scheduledSettings.value),
+        )
+      : Effect.void;
   const preparationSlots = yield* Semaphore.make(8);
   const controlPreparationSlots = yield* Semaphore.make(2);
   const delayed = yield* PubSub.unbounded<readonly [CommandId, number]>();
@@ -248,7 +263,17 @@ const make = Effect.gen(function* () {
                                     Effect.flatMap((recorded) =>
                                       recorded
                                         ? Effect.suspend(() =>
-                                            stopping ? Effect.fail(shutdownBeforeSend()) : handoff,
+                                            stopping
+                                              ? Effect.fail(shutdownBeforeSend())
+                                              : scheduledHandoff(claimed.commandId).pipe(
+                                                  Effect.andThen(
+                                                    Effect.suspend(() =>
+                                                      stopping
+                                                        ? Effect.fail(shutdownBeforeSend())
+                                                        : handoff,
+                                                    ),
+                                                  ),
+                                                ),
                                           )
                                         : Effect.fail(
                                             new ProviderTurnDeliveryError({
@@ -410,6 +435,28 @@ const make = Effect.gen(function* () {
         (candidate.notBefore !== null && Date.parse(candidate.notBefore) > Date.now())
       )
         return;
+      if (Option.isSome(scheduledSql) && Option.isSome(scheduledSettings)) {
+        const gate = yield* scheduledSendGate(
+          scheduledSql.value,
+          yield* scheduledSettings.value.getSettings,
+          candidate.commandId,
+        );
+        if (gate === "cancel") {
+          const sql = scheduledSql.value;
+          const links = yield* sql<{
+            run_id: string;
+          }>`SELECT run_id FROM scheduled_run_submissions WHERE submission_id=${candidate.commandId}`;
+          if (links[0])
+            yield* sql.withTransaction(
+              fenceScheduledRun(
+                links[0].run_id,
+                new Date(yield* Clock.currentTimeMillis).toISOString(),
+              ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+            );
+          return;
+        }
+        if (gate === "wait") return;
+      }
       yield* Metric.update(
         Metric.withAttributes(deliveryOutboxRowsDecoded, metricAttributes({ source: "claim" })),
         1,
@@ -766,6 +813,15 @@ const make = Effect.gen(function* () {
     );
 
   return {
+    wakeScheduled: (threadId) =>
+      Effect.gen(function* () {
+        const rows = Option.isSome(scheduledSql)
+          ? yield* scheduledSql.value<{
+              deliveryId: CommandId;
+            }>`SELECT delivery_id AS "deliveryId" FROM provider_turn_deliveries WHERE thread_id=${threadId} AND state='pending' ORDER BY created_at,delivery_id LIMIT 64`
+          : (yield* repository.listActionable).filter((row) => row.threadId === threadId);
+        yield* Effect.forEach(rows, (row) => enqueueById(row.deliveryId), { discard: true });
+      }).pipe(Effect.ignore),
     start,
     // Starts can remain active while new steers arrive. Observe the steer lane
     // after the start lane drains so shutdown also waits for those deliveries.

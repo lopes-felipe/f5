@@ -14,6 +14,7 @@ export interface ProviderTurnDeliveryOutcome {
 }
 
 export interface ProviderTurnDeliveryWorkerShape {
+  readonly wakeScheduled?: (threadId: ThreadId) => Effect.Effect<void>;
   readonly start: Effect.Effect<void, never, Scope.Scope>;
   readonly drain: Effect.Effect<void>;
   readonly outcomes: Stream.Stream<ProviderTurnDeliveryOutcome>;

@@ -1,3 +1,4 @@
+import { ensureNativeApi } from "../nativeApi";
 import { usePendingComputerAccessRequests } from "../hooks/usePendingComputerAccessRequests";
 import {
   createNotificationSound,
@@ -187,54 +188,68 @@ export function ThreadStatusNotificationControllerContent({
     previousStatusByThreadIdRef.current = nextStatusByThreadId;
 
     let sounded = false;
-    for (const transition of transitions) {
-      if (needsThreadAttention(transition.status)) {
-        if (soundEnabled && !appFocused && !sounded) {
-          sound.current?.play();
-          sounded = true;
+    for (const transition of transitions)
+      void (async () => {
+        const thread = useStore.getState().threads.find((t) => t.id === transition.threadId);
+        if (thread?.scheduledOrigin && thread.latestTurn?.turnId) {
+          try {
+            const result = await ensureNativeApi().scheduledTasks.listRuns({
+              taskId: thread.scheduledOrigin.taskId,
+              runId: thread.scheduledOrigin.runId,
+            });
+            if (result.runs.some((run) => run.turnIds?.includes(thread.latestTurn!.turnId!)))
+              return;
+          } catch {
+            /* Preserve ordinary notifications when lineage cannot be read. */
+          }
         }
-        if (settings.inAppThreadNotifications) {
-          toastManager.add({
-            title: threadStatusLabel(transition.status) ?? "Thread update",
-            description: [transition.projectName, transition.threadTitle]
-              .filter(Boolean)
-              .join(" · "),
-            type: "info",
-            data: { threadStatus: transition.status },
-            actionProps: {
-              children: "View",
-              onClick: () => {
-                void navigateToThread(transition.threadId);
+        if (needsThreadAttention(transition.status)) {
+          if (soundEnabled && !appFocused && !sounded) {
+            sound.current?.play();
+            sounded = true;
+          }
+          if (settings.inAppThreadNotifications) {
+            toastManager.add({
+              title: threadStatusLabel(transition.status) ?? "Thread update",
+              description: [transition.projectName, transition.threadTitle]
+                .filter(Boolean)
+                .join(" · "),
+              type: "info",
+              data: { threadStatus: transition.status },
+              actionProps: {
+                children: "View",
+                onClick: () => {
+                  void navigateToThread(transition.threadId);
+                },
               },
-            },
-          });
+            });
+          }
         }
-      }
-      if (
-        !shouldDispatchThreadStatusNotification({
-          enabled: systemEnabled,
-          permission,
-          appFocused,
-          status: transition.status,
-        })
-      ) {
-        continue;
-      }
+        if (
+          !shouldDispatchThreadStatusNotification({
+            enabled: systemEnabled,
+            permission,
+            appFocused,
+            status: transition.status,
+          })
+        ) {
+          return;
+        }
 
-      if (typeof window === "undefined" || typeof window.Notification === "undefined") {
-        continue;
-      }
+        if (typeof window === "undefined" || typeof window.Notification === "undefined") {
+          return;
+        }
 
-      showThreadStatusNotification({
-        NotificationConstructor: window.Notification,
-        transition,
-        silent: soundEnabled,
-        focusWindow: () => {
-          window.focus();
-        },
-        navigateToThread,
-      });
-    }
+        showThreadStatusNotification({
+          NotificationConstructor: window.Notification,
+          transition,
+          silent: soundEnabled,
+          focusWindow: () => {
+            window.focus();
+          },
+          navigateToThread,
+        });
+      })().catch(() => undefined);
   }, [
     appFocused,
     navigateToThread,

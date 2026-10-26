@@ -24,6 +24,7 @@ describe("private desktop host", () => {
       backendIncarnation: "i",
       protocolVersion: 1,
       capabilities: [
+        "scheduled-notifications-v1",
         "background-ax-v1",
         "computer-agent-identity-v1",
         "computer-activity-correlation-v1",

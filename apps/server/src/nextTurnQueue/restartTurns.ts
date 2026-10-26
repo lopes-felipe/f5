@@ -1,3 +1,4 @@
+import { scheduledContinuationFor } from "../scheduledTasks/continuations.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { CommandId, MessageId, type ThreadId } from "@t3tools/contracts";
 import { holdsAutomaticResume } from "@t3tools/shared/pendingUserInputs";
@@ -122,6 +123,7 @@ export const recoverRestartTurnMarkers = Effect.gen(function* () {
           )
             return false;
           yield* store.insertSubmission({
+            scheduledRun: yield* scheduledContinuationFor(thread.id, marker.turnId, "restart"),
             submissionId: id,
             itemId: id,
             requestHash: canonicalRequestHash(command),
@@ -133,7 +135,19 @@ export const recoverRestartTurnMarkers = Effect.gen(function* () {
           return true;
         }),
       )
-      .pipe(Effect.mapError((error) => new Error(String(error))));
+      .pipe(
+        Effect.catchTag("ScheduledTaskError", (error) => {
+          if (error.code !== "forbidden") return Effect.fail(new Error(error.message));
+          return sql`DELETE FROM restart_turn_markers WHERE continuation_id=${id}`.pipe(
+            Effect.andThen(
+              Effect.logInfo("restartTurns.scheduledContinuationRetired", { threadId: thread.id }),
+            ),
+            Effect.as(false),
+            Effect.mapError((failure) => new Error(String(failure))),
+          );
+        }),
+        Effect.mapError((error) => new Error(String(error))),
+      );
     if (inserted) resumed.push(thread.id);
   }
   return resumed;

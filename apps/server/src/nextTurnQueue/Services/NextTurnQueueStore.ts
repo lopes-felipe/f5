@@ -67,6 +67,10 @@ export interface NextTurnQueueStoreShape {
     NextTurnQueueError
   >;
   readonly scheduleUsageLimitResume: (input: {
+    scheduledSourceTurnId?: string | null | undefined;
+    scheduledRun?:
+      | import("../../scheduledTasks/continuations.ts").ScheduledContinuationContext
+      | undefined;
     command: ThreadTurnStartCommand;
     itemId: CommandId;
     submissionId: CommandId;
@@ -133,6 +137,9 @@ export interface NextTurnQueueStoreShape {
     submissionId: CommandId,
   ) => Effect.Effect<NextTurnQueueSubmissionRecord | null, NextTurnQueueError>;
   readonly insertSubmission: (input: {
+    scheduledRun?:
+      | import("../../scheduledTasks/continuations.ts").ScheduledContinuationContext
+      | undefined;
     readonly submissionSource?: "human" | "automation";
     readonly submissionId: CommandId;
     readonly requestHash: string;

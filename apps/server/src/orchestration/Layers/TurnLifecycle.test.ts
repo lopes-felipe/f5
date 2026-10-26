@@ -318,6 +318,30 @@ suite("durable turn lifecycle", (it) => {
       }),
   );
   it.effect(
+    "retires a canceled scheduled restart marker and recovers the following ordinary thread",
+    () =>
+      Effect.gen(function* () {
+        const scheduled = yield* seed("a-canceled-scheduled");
+        const ordinary = yield* seed("b-ordinary-restart");
+        yield* interrupted(scheduled);
+        yield* interrupted(ordinary);
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO scheduled_tasks(id,project_id,definition_json,request_hash,requested_at,version,enabled,updated_at)
+        VALUES('canceled-task','project:a-canceled-scheduled','{}','hash',${at},1,0,${at})`;
+        yield* sql`INSERT INTO scheduled_task_runs(id,task_id,scheduled_for,trigger,status,state_json,snapshot_json,thread_id,owns_execution,canceled,created_at)
+        VALUES('canceled-run','canceled-task',${at},'manual','failed','{}','{}',${scheduled},0,1,${at})`;
+        yield* sql`INSERT INTO scheduled_run_submissions(submission_id,run_id,thread_id,message_id,turn_id,kind)
+        VALUES('source','canceled-run',${scheduled},'source-message','old-turn','initial')`;
+        for (const thread of [scheduled, ordinary])
+          yield* sql`INSERT INTO restart_turn_markers(thread_id,turn_id,marked_at,continuation_id) VALUES(${thread},'old-turn',${new Date().toISOString()},${`restart:${thread}`})`;
+        assert.deepEqual(yield* recoverRestartTurnMarkers, [ordinary]);
+        assert.equal((yield* sql`SELECT * FROM restart_turn_markers`).length, 0);
+        const queue = yield* NextTurnQueueStore;
+        assert.equal((yield* queue.listByThread(scheduled)).items.length, 0);
+        assert.equal((yield* queue.listByThread(ordinary)).items.length, 1);
+      }),
+  );
+  it.effect(
     "enqueues each restart continuation once and retains ineligible markers until expiry",
     () =>
       Effect.gen(function* () {

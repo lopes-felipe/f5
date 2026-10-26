@@ -8,6 +8,7 @@ import {
   AGENT_BRIDGE_LOCAL_CLIENT_ID,
   AGENT_BRIDGE_LOCAL_CLIENT_NAME,
   AGENT_BRIDGE_SCOPES,
+  AGENT_BRIDGE_DEFAULT_SCOPES,
   type AgentBridgeClientKind,
   type AgentBridgeScope,
 } from "@t3tools/contracts";
@@ -112,6 +113,9 @@ const toRequest = (row: RequestRow): AgentBridgeRequestRecord => ({
 
 export interface AgentBridgeStore {
   /** Creates the fixed local client on first use. */
+  readonly setSchedulingGrant: (
+    input: import("@t3tools/contracts").AgentBridgeSchedulingGrantInput,
+  ) => Effect.Effect<void, AgentBridgeStoreError>;
   readonly ensureLocalClient: Effect.Effect<void, AgentBridgeStoreError>;
   readonly listClients: Effect.Effect<
     ReadonlyArray<AgentBridgeClientRecord>,
@@ -195,10 +199,35 @@ export const makeAgentBridgeStore = (sql: SqlClient.SqlClient): AgentBridgeStore
     );
 
   return {
+    setSchedulingGrant: (input) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const rows =
+              yield* sql<ClientRow>`SELECT * FROM agent_bridge_clients WHERE id=${input.clientId}`;
+            const current = rows[0];
+            if (
+              !current ||
+              current.revoked_at ||
+              current.grant_generation !== input.expectedGrantGeneration
+            )
+              return yield* new AgentBridgeStoreError({
+                operation: "grant-conflict-reload",
+                cause: null,
+              });
+            const scopes: AgentBridgeScope[] = toClient(current).scopes.filter(
+              (s) => s !== "f5.schedules",
+            );
+            if (input.enabled) scopes.push("f5.schedules");
+            yield* sql`UPDATE agent_bridge_clients SET scopes_json=${JSON.stringify(scopes)},grant_generation=grant_generation+1 WHERE id=${input.clientId}`;
+            yield* bumpRevision;
+          }),
+        )
+        .pipe(wrap("setSchedulingGrant")),
     ensureLocalClient: sql`INSERT OR IGNORE INTO agent_bridge_clients
         (id, kind, name, label, scopes_json, project_ids_json, grant_generation, created_at)
       VALUES (${AGENT_BRIDGE_LOCAL_CLIENT_ID}, 'local', ${AGENT_BRIDGE_LOCAL_CLIENT_NAME}, NULL,
-        ${JSON.stringify(AGENT_BRIDGE_SCOPES)}, '[]', 0, ${new Date().toISOString()})`.pipe(
+        ${JSON.stringify(AGENT_BRIDGE_DEFAULT_SCOPES)}, '[]', 0, ${new Date().toISOString()})`.pipe(
       Effect.asVoid,
       wrap("ensureLocalClient"),
     ),
