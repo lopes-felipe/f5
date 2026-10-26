@@ -5,6 +5,7 @@ import {
   CODEX_CHROME_HELPER_STALE,
   codexChromeChildEnvironment,
   codexChromeRegistrationsUnchanged,
+  codexVersionNote,
   inspectCodexChrome,
   versionInRange,
   type CodexInspectionIo,
@@ -139,6 +140,51 @@ describe.skipIf(process.platform === "win32")("Codex Chrome inspection", () => {
     expect((await inspect(patch)).result).toMatchObject({ available: false, state });
   });
 
+  it("keeps a floor record open for newer builds while every live check passes", async () => {
+    const { appMax: _appMax, pluginMax: _pluginMax, ...floors } = record.versions;
+    const floorRecord = { ...record, versions: floors };
+    const run = (patch: Parameters<typeof fixture>[0]) =>
+      inspectCodexChrome({
+        platform: "darwin",
+        arch: "arm64",
+        userHome: "/Users/me",
+        record: floorRecord,
+        io: fixture(patch).io,
+      });
+    expect(await run({ appVersion: "26.1020.1" })).toMatchObject({
+      available: true,
+      appVersion: "26.1020.1",
+    });
+    // Below the floor, or a newer build whose signature fails, still closes the gate.
+    expect(await run({ appVersion: "26.1012.1" })).toMatchObject({ state: "version" });
+    expect(await run({ appVersion: "26.1020.1", signatureFails: "ChatGPT.app" })).toMatchObject({
+      state: "signature",
+    });
+  });
+
+  it("chooses among overlapping floors by the installed ChatGPT version", async () => {
+    const { appMax: _appMax, pluginMax: _pluginMax, ...floors } = record.versions;
+    const older = { ...record, id: "older", versions: floors, toolInventorySha256: "a".repeat(64) };
+    const newer = {
+      ...record,
+      id: "newer",
+      versions: { appMin: "26.1020.1", pluginMin: "26.1013.40934" },
+      toolInventorySha256: "b".repeat(64),
+    };
+    const run = (appVersion: string) =>
+      inspectCodexChrome({
+        platform: "darwin",
+        arch: "arm64",
+        userHome: "/Users/me",
+        records: [newer, older],
+        io: fixture({ appVersion }).io,
+      });
+    expect(await run("26.1030.1")).toMatchObject({ available: true, record: { id: "newer" } });
+    // Still on a build below the newer floor: the older record keeps covering it.
+    expect(await run("26.1015.1")).toMatchObject({ available: true, record: { id: "older" } });
+    expect(await run("26.1000.1")).toMatchObject({ available: false, state: "version" });
+  });
+
   it("treats a replaced helper as changed setup mid-session", async () => {
     const { io, helper } = fixture();
     const installation = await inspectCodexChrome({
@@ -189,5 +235,18 @@ describe.skipIf(process.platform === "win32")("Codex Chrome inspection", () => {
     expect(versionInRange("26.1013.40934", "26.1013.40934", "26.1013.40934")).toBe(true);
     expect(versionInRange("26.999.1", "26.1013.0", "27.0.0")).toBe(false);
     expect(versionInRange("26.1013.40934-beta", "26.0.0", "27.0.0")).toBe(false);
+  });
+
+  it("treats a missing ceiling as a certified floor", () => {
+    expect(versionInRange("26.1013.40934", "26.1013.40934")).toBe(true);
+    expect(versionInRange("27.1.0", "26.1013.40934")).toBe(true);
+    expect(versionInRange("26.1013.40933", "26.1013.40934")).toBe(false);
+    expect(versionInRange("27.1.0-beta", "26.1013.40934")).toBe(false);
+    // No floor at all is never satisfiable.
+    expect(versionInRange("27.1.0", undefined)).toBe(false);
+    expect(codexVersionNote("26.1013.40934", "26.1013.40934")).toBeUndefined();
+    expect(codexVersionNote("26.1013.40934", "26.1020.1")).toBe(
+      "Certified on ChatGPT 26.1013.40934; running 26.1020.1.",
+    );
   });
 });

@@ -24,7 +24,7 @@ const certified: ClaudeChromeRecord = {
   ...base,
   evidenceId: "fixture-evidence",
   toolNames: ["read_page"],
-  artifactSha256: "a".repeat(64),
+  evidenceCommit: "a".repeat(40),
 };
 
 let root: string;
@@ -58,7 +58,7 @@ const check = (patch: Partial<Parameters<typeof claudeChromeAvailability>[0]> = 
 describe("Claude in Chrome executable identity", () => {
   it("stays off while no record carries evidence", async () => {
     // Built locally, so stamping the shipped record never breaks this test.
-    const { evidenceId: _evidence, artifactSha256: _artifact, ...uncertified } = certified;
+    const { evidenceId: _evidence, evidenceCommit: _commit, ...uncertified } = certified;
     expect(await check({ records: [uncertified] })).toMatchObject({
       unavailable: { reason: "not-certified" },
     });

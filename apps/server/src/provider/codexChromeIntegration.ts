@@ -3,8 +3,10 @@ import { realpath } from "node:fs/promises";
 import { join } from "node:path";
 import type { RuntimeMode } from "@t3tools/contracts";
 import {
+  PROVIDER_INTEGRATION_RECORDS,
   certifiedIntegrationRecord,
   integrationUnavailableDetail,
+  recordCertifies,
 } from "@t3tools/shared/providerIntegrationCertification";
 import type { ComputerAutomationBrokerRuntime } from "../computer/ComputerAutomationBroker";
 import { resolveCodexInstanceHomePaths } from "./Drivers/CodexHomeLayout";
@@ -15,6 +17,7 @@ import {
   codexChromeInstructions,
   codexChromeInstallationUnchanged,
   codexChromeRegistrationsUnchanged,
+  codexVersionNote,
   inspectCodexChrome,
   type CodexChromeInstallation,
 } from "../computer/codexNativeIntegrations";
@@ -64,7 +67,12 @@ export async function codexChromeEligibility(input: {
 }): Promise<CodexChromeEligibility> {
   const platform = input.platform ?? process.platform;
   const arch = input.arch ?? process.arch;
-  const record = certifiedIntegrationRecord("codex-chrome", platform, arch);
+  // Any certifying record opens the gate; the installed ChatGPT version then picks the
+  // one with the highest floor at or below it, so a newer floor never shadows an older.
+  const certifying = PROVIDER_INTEGRATION_RECORDS["codex-chrome"].filter(
+    (entry) => entry.platform === platform && entry.arch === arch && recordCertifies(entry),
+  );
+  const record = certifiedIntegrationRecord("codex-chrome", platform, arch, certifying);
   if (!record)
     return {
       eligible: false,
@@ -86,11 +94,17 @@ export async function codexChromeEligibility(input: {
     platform,
     arch,
     userHome: input.userHome,
-    record,
+    records: certifying,
   });
   if (!installation.available)
     return { eligible: false, reason: installation.reason, recordId: record.id };
   return { eligible: true, installation, codexHome: home };
+}
+
+/** Settings copy for a ready preflight; a newer-than-certified ChatGPT is noted, never blocked. */
+export function codexChromeReadyDetail(installation: CodexChromeInstallation): string {
+  const note = codexVersionNote(installation.record.versions.appMin, installation.appVersion);
+  return note ? `Sessions also need Full access. ${note}` : "Sessions also need Full access.";
 }
 
 /**

@@ -53,7 +53,7 @@ A green dry run with the release's profile is a hard precondition for tagging. T
 3. Run `git tag vX.Y.Z <sha>` and `git push origin vX.Y.Z` (use `-beta.N` for beta). Only stable and beta.N tags are accepted. The version must exceed every published stable/beta version.
 4. Approve the release environment. The workflow builds the profile's desktops (with `all`, it also signs and notarizes macOS; with `windows`, it produces only the unsigned Windows installer), runs the Windows rehearsal, checks all hashes/manifests, and creates a **draft**. Updaters cannot see drafts. `workflow_dispatch` with `dry_run=true` on main rehearses builds with a unique dryrun version and creates no release.
 5. Smoke-test using the checklist for the profile below: Windows only for `windows`; one installer per OS and both macOS architectures for `all`. Inspect `release-bundle`, staged dependency lock artifacts, and the draft's asset names and sizes. Changelog text is the release body; YAML never contains releaseNotes.
-6. Publish: `gh release edit <tag> --draft=false`, adding `--latest` for stable. Beta releases remain prereleases.
+6. Publish with `bun run release:promote --tag <tag>`, then `gh release edit <tag> --latest` for stable. Beta releases remain prereleases. The promote script is the only supported way to undraft: when the tag embeds a certified provider integration record, it publishes only after main holds an all-passed acceptance report for the draft's exact macOS DMG (see "Single certification source" in `docs/agent-browser.md`); otherwise it just publishes.
 
 Published releases are immutable. Fix regressions with a higher patch release; never overwrite assets or enable downgrades. Existing drafts are preserved on retry for inspection. After verifying that an existing release is still a draft and saving anything needed for investigation, the maintainer can remove only that draft with `gh release delete <tag> --yes` (without `--cleanup-tag`), then rerun publication. The tag is retained. Agents do not perform this destructive operation under this repository's Git/GitHub policy.
 
@@ -70,7 +70,7 @@ Releases across both channels must increase globally. If a higher beta is alread
   - Download through a browser (SmartScreen path), verify its hash against `SHA256SUMS`, install, launch without Node/Bun, create data, and uninstall (data is kept).
   - On Windows 11, record Smart App Control behaviour and confirm it matches `docs/install.md`.
   - Test import and side-by-side operation with F5 (Alpha), as in the full checklist.
-- Publish with `gh release edit v0.1.0 --draft=false --latest`.
+- Publish with `bun run release:promote --tag v0.1.0`, then `gh release edit v0.1.0 --latest`.
 - Then confirm that `releases/latest/download/F5-0.1.0-x64.exe`, `latest.yml` and `f5-cli-release.json` return 200 with the expected version. An installed 0.1.0 must report "up to date" against the production feed, and `f5 install` must work from the new manifest.
 
 ## Full checklist (`all` profile; record results in the PR)

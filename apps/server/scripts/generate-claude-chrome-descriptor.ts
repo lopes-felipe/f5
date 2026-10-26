@@ -5,9 +5,9 @@
  *     [--evidence docs/computer-certification/<id>.json [--reinstate]]
  *     [--withdraw <id> --reason <note>]
  *
- * Static facts come from the shipped executable; `toolNames` and `evidenceId` are stamped
- * only from a live report (run outside F5) whose versions match. `--check` fails on drift
- * without writing. Never launches the CLI.
+ * Static facts come from the shipped executable; `toolNames`, `evidenceId` and
+ * `evidenceCommit` are stamped only from a live report (run outside F5, on a clean commit)
+ * whose versions match. `--check` fails on drift without writing. Never launches the CLI.
  */
 import { execFileSync } from "node:child_process";
 import { open, readFile, realpath, writeFile } from "node:fs/promises";
@@ -22,7 +22,7 @@ import {
   extractClaudeChromeDescriptor,
   type DescriptorSource,
 } from "../src/provider/claudeChromeDescriptorExtraction";
-import { mergeClaudeChromeRecords } from "../src/provider/claudeChromeRecordMerge";
+import { mergeIntegrationRecords } from "../src/provider/integrationRecordMerge";
 import { resolveBundledClaudeExecutable } from "../src/provider/claudeSdkExecutable";
 
 const root = resolve(import.meta.dirname, "../../..");
@@ -108,7 +108,7 @@ const withdrawId = argument("--withdraw");
 const withdrawReason = argument("--reason");
 if (withdrawId && !withdrawReason)
   throw new Error("--withdraw needs --reason, matching the CHANGELOG note.");
-const next = mergeClaudeChromeRecords({
+const next = mergeIntegrationRecords({
   existing,
   record,
   ...(evidencePath

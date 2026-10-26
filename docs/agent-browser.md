@@ -585,18 +585,59 @@ keeps these references when creating activities and still extracts other MCP ima
 platform, arch)` is the only gate; desktop main's Chrome lease, the server's availability
 checks and computer backend selection all call it, so they cannot disagree. A record
 certifies only with an `evidenceId` naming a scrubbed report in
-`docs/computer-certification/<evidenceId>.json`, the `artifactSha256` of the packaged
-candidate build that run exercised, and what its runtime needs to work: `toolNames` for
-Claude, `toolInventorySha256` plus advertised definitions for every allowed tool for
-Codex Chrome, and `toolInventorySha256` for Sky. Runtime never reads `docs/`; the desktop
-smoke test asserts the records are bundled into main. No record in this build carries an
+`docs/computer-certification/<evidenceId>.json`, the `evidenceCommit` (the clean F5
+commit that run exercised), and what its runtime needs to work: `toolNames` for Claude,
+`toolInventorySha256` plus advertised definitions for every allowed tool for Codex
+Chrome, and `toolInventorySha256` for Sky. Runtime never reads `docs/`; the desktop smoke
+test asserts the records are bundled into main. No record in this build carries an
 `evidenceId`, so every gate is closed and each surface shows the specific reason
 (platform, architecture, custom binary, home mismatch, isolated profile, awaiting
 certification). A report supports a record only when every required assertion is `true`,
-versions and inventory match, and its `artifactSha256` equals the record's; a unit test
-re-checks every cited report with `evidenceMismatches`. Stamping a record changes the
-bundle, so the digest names the certified candidate; nothing compares it to the release
-that embeds the record.
+versions and inventory match, its `sourceCommit` equals the record's `evidenceCommit` and
+it is not `dirty`; a unit test re-checks every cited report with `evidenceMismatches`.
+
+Certification has two phases, because stamping a record changes the bundle that embeds
+it:
+
+1. **Evidence.** A live harness runs outside F5 on a clean checkout of main and writes a
+   report; the stamper validates it and stamps the record, which lands on main by PR.
+2. **Acceptance.** The release workflow builds the signed **draft** that embeds the
+   stamped record. The operator installs that draft's DMG and runs
+   `bun run integrations:accept --integration <i> --tag vX.Y.Z --artifact <dmg>`, which
+   hashes the DMG, requires the installed app's cdhash and version to match it, and walks
+   the `INTEGRATION_ACCEPTANCE_CHECKS` list: process stops, idle stop, background work
+   (fixture hits) and manifest bytes are observed; the rest are confirmed. Its report,
+   `docs/computer-certification/acceptance-<version>-<integration>-darwin-<arch>.json`
+   (one per architecture's DMG), is committed to
+   main. `bun run release:promote --tag vX.Y.Z` then publishes the draft only when, for
+   every certifying record in the tag, main holds an all-passed acceptance report for the
+   draft's exact DMG digest, the tag's commit and those record IDs, and every
+   `evidenceCommit` is in the tag's history. Both scripts read records at the commit the
+   remote tag names and refuse a local tag that differs; acceptance also requires
+   `codesign --verify --deep --strict` on the installed and the mounted app before
+   comparing their CDHash. It is the only supported way to undraft (by policy: a
+   maintainer can still run `gh release edit --draft=false`).
+
+On any acceptance failure the draft is not published: withdraw the record
+(`--withdraw <id> --reason <note>`), note it in the CHANGELOG and cut a new release.
+
+Codex records hold a **certified floor**: the stamper writes the exercised ChatGPT app,
+plugin or service versions as `appMin`, `pluginMin` or `serviceMin` with no `*Max`, so
+newer ChatGPT builds stay open (settings note "Certified on ChatGPT <floor>; running
+<version>"). Every spawn still re-inspects signatures, extension IDs, origins, the host
+name and the helper, then verifies the live tool inventory digest and advertised schemas
+against the record; any mismatch closes that session with its specific reason. Floors
+can overlap: the installed version picks the record with the highest floor at or below
+it (`recordForVersion`), so a newer floor stamped for a changed inventory takes over for
+the builds it covers while older builds keep theirs. Acceptance exercises that same
+record.
+
+Floors are a deliberate trade-off. Behaviour is re-verified only by a new live run;
+newer ChatGPT builds are trusted on their signatures, identity and unchanged inventory
+(names and schemas; tool descriptions are not hashed, and F5 shows only the stamped
+ones). A behaviour regression behind an unchanged inventory is handled by withdrawing the
+record, and **withdrawal is not retroactive**: it reaches users only when they update F5.
+Installed F5 builds keep accepting later ChatGPT builds until then.
 
 `bun apps/server/scripts/generate-claude-chrome-descriptor.ts --check` (CI job
 `macos-descriptor-drift`) re-extracts the Claude descriptor from the pinned CLI and fails
@@ -778,16 +819,20 @@ DOM text or screenshots) for the operator gate and never stamps a record:
   `F5_CODEX_COMPUTER_SPIKE=<spike file>` and `F5_CODEX_COMPUTER_REPORT=<file>`.
 
 The certification runner (`scripts/computer-certification`) wraps these as its manual
-`chrome` and `builtin` scenarios. `generate-claude-chrome-descriptor.ts --evidence`
-validates a report against its record before stamping. Before release, the maintainer
-runs them against the packaged, signed build and passes its digest
-(`F5_CLAUDE_CHROME_ARTIFACT_SHA256`, `F5_CODEX_CHROME_ARTIFACT_SHA256` or
-`F5_CODEX_COMPUTER_ARTIFACT_SHA256`). Every assertion is computed from an observation;
-the Claude harness records manifest and `connected` timings, compares the origins it
-reads back and the bytes of two real launches, and lists the assertions it cannot yet
-observe (permission mode, routing isolation, stale native host, terminal coexistence,
-frozen-server stop) under `notAutomated`. Those stay `false`, so its report cannot certify
-until they are automated; never edit a report by hand.
+`chrome` and `builtin` scenarios. Each report records `sourceCommit` and `dirty` from the
+checkout (keep spike files outside it). `generate-claude-chrome-descriptor.ts --evidence`
+(Claude) and `bun run integrations:stamp --integration codex-chrome|codex-computer
+--evidence <report>` (Codex; `--template <spike file>` for Sky's first record) validate a
+report against its record before stamping; the Codex stamper also takes `--withdraw`,
+`--reinstate` and `--check`. Every assertion is computed from an observation. The Codex
+Chrome harness reports every tool's schema (the allowed ones become `advertisedTools`)
+and proves `background-work-stops-on-pause`: a `js` call leaves a timer navigating a tab
+to a loopback fixture, the session is paused, and the fixture must go quiet within 2 s
+and stay quiet for 5 s. The Claude harness records manifest and `connected` timings,
+compares the origins it reads back and the bytes of two real launches, and lists the
+assertions it cannot yet observe (permission mode, routing isolation, stale native host,
+terminal coexistence, frozen-server stop) under `notAutomated`. Those stay `false`, so
+its report cannot certify until they are automated; never edit a report by hand.
 `bun apps/server/scripts/probe-computer-builtins.ts` prints read-only availability.
 
 ## Observation lifetime and turn ownership

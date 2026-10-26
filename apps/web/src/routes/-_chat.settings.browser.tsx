@@ -364,6 +364,10 @@ function createNativeApiMock(options?: { serverConfig?: Partial<ServerConfig> })
       })),
       onStateChanged: vi.fn(() => () => {}),
     },
+    // The chat layout subscribes to scheduled-task changes.
+    scheduledTasks: {
+      onChanged: vi.fn(() => () => {}),
+    },
   } as unknown as NativeApi;
 }
 
@@ -1208,7 +1212,8 @@ describe("settings route", () => {
         expect(getCategoryPanelText("tools")).toContain("Common servers");
       });
       expect(document.querySelector('[aria-label="MCP servers project"]')).toBeNull();
-      // The local Agent Bridge is a global Tools setting again (scheduled tasks use it).
+      // Agent Bridge is a global Tools setting (restored for scheduled tasks).
+      expect(getCategoryPanelText("tools")).toContain("Agent Bridge");
       expect(
         document.querySelector('[data-settings-search-target="tools.agent-bridge"]'),
       ).not.toBeNull();
@@ -1224,6 +1229,7 @@ describe("settings route", () => {
         expect(getCategoryPanelText("tools")).toContain("Project One");
         expect(getCategoryPanelText("tools")).toContain("Project servers");
       });
+      expect(getCategoryPanelText("tools")).not.toContain("Agent Bridge");
     } finally {
       await projectScope.screen.unmount();
     }

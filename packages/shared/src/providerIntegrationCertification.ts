@@ -64,6 +64,10 @@ interface RecordBase<I extends ProviderIntegration, Identity> {
   readonly id: string;
   readonly platform: "darwin" | "win32";
   readonly arch: string;
+  /**
+   * Exact versions for bundled providers (Claude). Codex records hold certified floors
+   * (`*Min`); a missing `*Max` means no ceiling, and live checks guard newer builds.
+   */
   readonly versions: Readonly<Record<string, string>>;
   readonly identity: Identity;
   readonly browsers: ReadonlyArray<IntegrationBrowser>;
@@ -73,11 +77,11 @@ interface RecordBase<I extends ProviderIntegration, Identity> {
   /** Names `docs/computer-certification/<evidenceId>.json`. Absent: not certified. */
   readonly evidenceId?: string;
   /**
-   * Digest of the packaged, signed candidate build the live run exercised, copied from
-   * its report. Stamping changes the bundle, so this names the certified candidate, not
-   * the release that embeds the record.
+   * The clean F5 commit the live run exercised, copied from its report. Stamping changes
+   * the bundle, so the shipped build is bound separately: a release is promoted only with
+   * an acceptance report for its exact artifact (`scripts/promote-release.ts`).
    */
-  readonly artifactSha256?: string;
+  readonly evidenceCommit?: string;
   /** Withdrawn records stay for restore but certify nothing; CHANGELOG explains why. */
   readonly withdrawn?: string;
 }
@@ -117,6 +121,7 @@ export const PROVIDER_INTEGRATION_RECORDS: {
 });
 
 const SHA256 = /^[a-f0-9]{64}$/;
+const COMMIT = /^[a-f0-9]{40}$/;
 
 /** What each integration's runtime needs from a record to actually work once certified. */
 function runtimeComplete(record: ProviderIntegrationRecord): boolean {
@@ -144,21 +149,89 @@ export function recordCertifies(record: ProviderIntegrationRecord): boolean {
     !record.withdrawn &&
     typeof record.evidenceId === "string" &&
     record.evidenceId.length > 0 &&
-    SHA256.test(record.artifactSha256 ?? "") &&
+    COMMIT.test(record.evidenceCommit ?? "") &&
     runtimeComplete(record)
   );
 }
 
-/** The only certification gate. Desktop and server both read it, so they cannot disagree. */
+const parseVersion = (value: string | undefined) => {
+  if (value === undefined) return undefined;
+  const parts = value.split(".").map((part) => (/^\d+$/.test(part) ? Number(part) : Number.NaN));
+  return parts.some(Number.isNaN) ? undefined : parts;
+};
+
+/** Compares dotted numeric versions; undefined when either has a non-numeric part. */
+export function compareVersions(a: string | undefined, b: string | undefined): number | undefined {
+  const [left, right] = [parseVersion(a), parseVersion(b)];
+  if (!left || !right) return undefined;
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const delta = (left[index] ?? 0) - (right[index] ?? 0);
+    if (delta) return delta;
+  }
+  return 0;
+}
+
+/** The version a record certifies from: a Codex floor (`appMin`) or Claude's exact CLI. */
+const certifiedFrom = (record: ProviderIntegrationRecord) =>
+  record.versions.appMin ?? record.versions.cliVersion;
+
+/** Newest certified version first; records without a readable version last. */
+export function newestRecordsFirst<R extends ProviderIntegrationRecord>(
+  records: ReadonlyArray<R>,
+): R[] {
+  return [...records].sort(
+    (a, b) =>
+      compareVersions(certifiedFrom(b), certifiedFrom(a)) ??
+      (parseVersion(certifiedFrom(a)) ? -1 : parseVersion(certifiedFrom(b)) ? 1 : 0),
+  );
+}
+
+/**
+ * The record for an installed provider `version`: the highest floor at or below it, so a
+ * newer floor takes over for builds it covers without shadowing builds still below it.
+ */
+export function recordForVersion<R extends ProviderIntegrationRecord>(
+  records: ReadonlyArray<R>,
+  version: string,
+): R | undefined {
+  return newestRecordsFirst(records).find(
+    (record) => (compareVersions(certifiedFrom(record), version) ?? 1) <= 0,
+  );
+}
+
+/**
+ * The static identity a new certification run exercises and stamps: the newest
+ * non-withdrawn record for the target. Shared by the live harness and the stamper.
+ */
+export function integrationTemplateRecord<R extends ProviderIntegrationRecord>(
+  records: ReadonlyArray<R>,
+  platform: string,
+  arch: string,
+): R | undefined {
+  return newestRecordsFirst(
+    records.filter(
+      (record) => record.platform === platform && record.arch === arch && !record.withdrawn,
+    ),
+  )[0];
+}
+
+/**
+ * The only certification gate. Desktop and server both read it, so they cannot disagree.
+ * With the installed provider `version`, the record that covers it; otherwise the newest.
+ */
 export function certifiedIntegrationRecord<I extends ProviderIntegration>(
   integration: I,
   platform: string,
   arch: string,
   records: ReadonlyArray<RecordFor<I>> = PROVIDER_INTEGRATION_RECORDS[integration],
+  version?: string,
 ): RecordFor<I> | undefined {
-  return records.find(
+  const certifying = records.filter(
     (record) => record.platform === platform && record.arch === arch && recordCertifies(record),
   );
+  return version === undefined
+    ? newestRecordsFirst(certifying)[0]
+    : recordForVersion(certifying, version);
 }
 
 export function isIntegrationCertified(
@@ -256,6 +329,7 @@ export const INTEGRATION_REQUIRED_ASSERTIONS: Readonly<
     "open-tab-read-title",
     "registrations-unchanged",
     "interrupt-drains",
+    "background-work-stops-on-pause",
     "tool-inventory",
   ],
   "codex-computer": [
@@ -279,8 +353,16 @@ export interface IntegrationEvidenceReport {
   readonly assertions: Readonly<Record<string, boolean>>;
   readonly toolNames?: ReadonlyArray<string>;
   readonly toolInventorySha256?: string;
-  /** Digest of the packaged, signed artifact the run exercised. */
-  readonly artifactSha256?: string;
+  /** Every listed tool with its schema, as observed; the allow-listed ones become `advertisedTools`. */
+  readonly toolSchemas?: ReadonlyArray<{
+    readonly name: string;
+    readonly description?: string;
+    readonly inputSchema: unknown;
+  }>;
+  /** `git rev-parse HEAD` of the F5 checkout that ran the harness. */
+  readonly sourceCommit?: string;
+  /** Whether that checkout had uncommitted changes; dirty runs certify nothing. */
+  readonly dirty?: boolean;
 }
 
 /** Empty when the report supports the record; otherwise each mismatch. */
@@ -292,6 +374,7 @@ export function evidenceMismatches(
   if (report.integration !== record.integration) problems.push("integration");
   if (report.evidenceId !== record.evidenceId) problems.push("evidenceId");
   if (report.platform !== record.platform || report.arch !== record.arch) problems.push("target");
+  // A floor record cites the versions the run exercised as its `*Min`, with no ceiling.
   for (const [key, value] of Object.entries(record.versions))
     if (report.versions[key] !== value) problems.push(`versions.${key}`);
   for (const assertion of INTEGRATION_REQUIRED_ASSERTIONS[record.integration])
@@ -304,10 +387,126 @@ export function evidenceMismatches(
     problems.push("toolNames");
   if (record.toolInventorySha256 && record.toolInventorySha256 !== report.toolInventorySha256)
     problems.push("toolInventorySha256");
-  // Certification evidence comes from the packaged, signed candidate build, and the
-  // record names that exact build.
-  if (!SHA256.test(report.artifactSha256 ?? "") || report.artifactSha256 !== record.artifactSha256)
+  // What F5 shows before consent must be exactly what the run observed, descriptions too.
+  if (record.integration === "codex-chrome" && record.identity.advertisedTools) {
+    const observed = (name: string) => {
+      const tool = report.toolSchemas?.find((entry) => entry.name === name);
+      return tool && JSON.stringify([tool.name, tool.description ?? null, tool.inputSchema]);
+    };
+    const advertised = record.identity.advertisedTools;
+    if (
+      advertised.length !== record.identity.allowedTools.length ||
+      advertised.some(
+        (tool) =>
+          observed(tool.name) !==
+          JSON.stringify([tool.name, tool.description ?? null, tool.inputSchema]),
+      )
+    )
+      problems.push("advertisedTools");
+  }
+  // Evidence comes from a clean, committed checkout, and the record names that commit.
+  // The shipped artifact is bound later by the release's acceptance report.
+  if (!COMMIT.test(report.sourceCommit ?? "") || report.sourceCommit !== record.evidenceCommit)
+    problems.push("sourceCommit");
+  if (report.dirty !== false) problems.push("dirty");
+  return problems;
+}
+
+/**
+ * Operator checks run in the installed release draft before it may be promoted. "auto"
+ * checks are observed by `integrations:accept`; the rest are confirmed by the operator.
+ */
+export const INTEGRATION_ACCEPTANCE_CHECKS: Readonly<
+  Record<
+    ProviderIntegration,
+    ReadonlyArray<{ readonly id: string; readonly label: string; readonly auto?: true }>
+  >
+> = Object.freeze({
+  "claude-chrome": [
+    { id: "manifests-created", label: "Setup consent creates the seven manifests", auto: true },
+    { id: "read-only-call", label: "A read-only Claude in Chrome call works" },
+    {
+      id: "terminal-conflict",
+      label: "A terminal `claude --chrome` makes F5 report external-cli-conflict",
+    },
+    { id: "emergency-stop", label: "⌃⌘Esc kills the Claude CLI process group", auto: true },
+    {
+      id: "restore-original-bytes",
+      label: "Restore returns the original manifest bytes",
+      auto: true,
+    },
+    { id: "isolated-profile-reason", label: "An isolated profile shows its unavailable reason" },
+  ],
+  "codex-chrome": [
+    {
+      id: "toggle-readiness",
+      label: "The toggle is ready in Full access and shows the specific reason otherwise",
+    },
+    { id: "consent-once", label: "Consent is asked once per session" },
+    { id: "open-tab-read-title", label: "Codex opens a tab and reads its title" },
+    { id: "pause-stops", label: "Pause stops background work Codex started in Chrome", auto: true },
+    { id: "emergency-stop", label: "⌃⌘Esc stops the node_repl process group", auto: true },
+    { id: "idle-stop", label: "The child is gone after 60 s idle", auto: true },
+    {
+      id: "registrations-unchanged",
+      label: "Registrations are byte-identical before and after",
+      auto: true,
+    },
+  ],
+  "codex-computer": [
+    { id: "launch", label: "Computer Use launches from F5" },
+    {
+      id: "consent-disclosure",
+      label: "Consent discloses shared approvals and unmaskable content",
+    },
+    { id: "target-enforced", label: "Calls act only on the granted app" },
+    { id: "f5-windows-excluded", label: "F5 windows are excluded from captures" },
+    { id: "emergency-stop", label: "⌃⌘Esc stops the current call", auto: true },
+  ],
+});
+
+/** Operator acceptance of one release draft's exact artifact for one integration. */
+export interface IntegrationAcceptanceReport {
+  readonly kind: "acceptance";
+  readonly integration: ProviderIntegration;
+  readonly tag: string;
+  readonly platform: string;
+  readonly arch: string;
+  readonly artifactName: string;
+  readonly artifactSha256: string;
+  /** The certifying records embedded in that build. */
+  readonly recordIds: ReadonlyArray<string>;
+  /** Commit the tag points at. */
+  readonly sourceCommit: string;
+  readonly checks: Readonly<Record<string, boolean>>;
+}
+
+/** Empty when the acceptance report covers the records and the artifact; otherwise each problem. */
+export function acceptanceMismatches(
+  report: IntegrationAcceptanceReport,
+  expected: {
+    readonly integration: ProviderIntegration;
+    readonly tag: string;
+    readonly artifactSha256: string;
+    readonly recordIds: ReadonlyArray<string>;
+  },
+): string[] {
+  const problems: string[] = [];
+  if (report.kind !== "acceptance") problems.push("kind");
+  if (report.integration !== expected.integration) problems.push("integration");
+  if (report.tag !== expected.tag) problems.push("tag");
+  if (
+    !SHA256.test(report.artifactSha256 ?? "") ||
+    report.artifactSha256 !== expected.artifactSha256
+  )
     problems.push("artifactSha256");
+  if (
+    JSON.stringify([...(report.recordIds ?? [])].sort()) !==
+    JSON.stringify([...expected.recordIds].sort())
+  )
+    problems.push("recordIds");
+  for (const check of INTEGRATION_ACCEPTANCE_CHECKS[expected.integration])
+    if (report.checks?.[check.id] !== true) problems.push(`check ${check.id}`);
   return problems;
 }
 
