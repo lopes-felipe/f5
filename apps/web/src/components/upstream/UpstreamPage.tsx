@@ -62,6 +62,8 @@ import {
   decisionBatches,
   extendSelection,
   focusAfterRemoval,
+  isActivationKey,
+  isControlTarget,
   isDialogTarget,
   isEditableTarget,
   moveFocus,
@@ -156,10 +158,13 @@ export function UpstreamPage(props: {
     enabled: projectId !== null,
   });
 
+  /** Topics leaving the list while their decision is in flight; refetches cannot bring them back meanwhile. */
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(EMPTY_SET);
   const rows = useMemo(() => {
     if (!topicsQuery.data) return EMPTY_ROWS;
-    return topicsQuery.data.pages.flatMap((page) => page.topics);
-  }, [topicsQuery.data]);
+    const loaded = topicsQuery.data.pages.flatMap((page) => page.topics);
+    return hidden.size === 0 ? loaded : loaded.filter((row) => !hidden.has(row.topic.id));
+  }, [topicsQuery.data, hidden]);
   const ids = useMemo(() => rows.map((row) => row.topic.id), [rows]);
 
   useEffect(() => {
@@ -172,8 +177,9 @@ export function UpstreamPage(props: {
   const [pending, setPending] = useState<ReadonlySet<string>>(EMPTY_SET);
   const pendingRef = useRef(pending);
   pendingRef.current = pending;
-  /** Runs, publication, Start port and the other non-decision actions. */
-  const [busy, setBusy] = useState(false);
+  /** Runs, publication, Start port and the other non-decision actions in flight; a count, since they can overlap. */
+  const [busyCount, setBusyCount] = useState(0);
+  const busy = busyCount > 0;
   const [skipDialog, setSkipDialog] = useState<{ ids: string[]; preselected: string | null; reason?: string } | null>(null);
   const [declineIds, setDeclineIds] = useState<string[] | null>(null);
   const [portRequest, setPortRequest] = useState<{ ids: string[]; note: string | null } | null>(null);
@@ -192,16 +198,28 @@ export function UpstreamPage(props: {
     searchRef.current = search;
     viewRef.current = { projectId, list, focused };
   });
+  /**
+   * A topic opened through a related-topic link. It may sit past the loaded
+   * pages, so focus reconciliation leaves it alone until the user moves on.
+   */
+  const requestedRef = useRef<string | null>(null);
   const setFocused = useCallback(
     (topic: string | null) => {
+      requestedRef.current = null;
       const { topic: _previous, ...rest } = searchRef.current;
       onSearchChange(topic ? { ...rest, topic } : rest);
     },
     [onSearchChange],
   );
+  const openTopic = (topicId: string, state: UpstreamTopicState) => {
+    if (!projectId) return;
+    requestedRef.current = topicId;
+    onSearchChange({ project: projectId, list: state, topic: topicId });
+  };
 
   useEffect(() => {
     if (topicsQuery.isPending) return;
+    if (focused !== null && focused === requestedRef.current) return;
     const next = reconcileFocus(ids, focused, lastIndex.current);
     if (next !== focused && (next !== null || focused !== null)) setFocused(next);
     if (next) lastIndex.current = ids.indexOf(next);
@@ -222,31 +240,40 @@ export function UpstreamPage(props: {
   const selectedVisible = useMemo(() => new Set(ids.filter((id) => selected.has(id))), [ids, selected]);
 
   const withBusy = async <T,>(title: string, action: () => Promise<T>): Promise<T | undefined> => {
-    setBusy(true);
+    setBusyCount((count) => count + 1);
     try {
       return await action();
     } catch (error) {
       toastManager.add({ type: "error", title, description: error instanceof Error ? error.message : String(error) });
       return undefined;
     } finally {
-      setBusy(false);
+      setBusyCount((count) => count - 1);
     }
   };
 
-  const setPendingIds = (topicIds: ReadonlyArray<string>, on: boolean) =>
-    setPending((current) => {
-      const next = new Set(current);
-      for (const id of topicIds) {
-        if (on) next.add(id);
-        else next.delete(id);
-      }
-      return next;
-    });
+  const toggleIds = (current: ReadonlySet<string>, topicIds: Iterable<string>, on: boolean) => {
+    const next = new Set(current);
+    for (const id of topicIds) {
+      if (on) next.add(id);
+      else next.delete(id);
+    }
+    return next;
+  };
+  const setPendingIds = (topicIds: Iterable<string>, on: boolean) =>
+    setPending((current) => toggleIds(current, topicIds, on));
+  const setHiddenIds = (topicIds: Iterable<string>, on: boolean) =>
+    setHidden((current) => toggleIds(current, topicIds, on));
+
+  const adjustOverviewCounts = (forProject: ProjectId, moves: Parameters<typeof adjustCounts>[1]) =>
+    queryClient.setQueryData<UpstreamOverview>(upstreamPortsQueryKeys.overview(forProject), (current) =>
+      current ? { ...current, counts: adjustCounts(current.counts, moves) } : current,
+    );
 
   /**
-   * Records a decision. Rows that leave the list disappear at once and the
-   * counts move with them; the refetch afterwards has the final word, and a
-   * failure brings the rows back.
+   * Records a decision. Rows that leave the list are hidden at once and the
+   * counts move with them. Only topics the server recorded are dropped from
+   * the cache; the rest reappear when the call fails, without relying on the
+   * refetch, which fails too when the connection is gone.
    */
   const applyDecision = async (topicIds: ReadonlyArray<string>, decision: UpstreamDecision | "accept") => {
     if (!projectId) return;
@@ -264,14 +291,8 @@ export function UpstreamPage(props: {
 
     setPendingIds(decided, true);
     if (leaving.size > 0) {
-      await queryClient.cancelQueries({ queryKey: ["upstreamPorts", "topics", projectId, list] });
-      queryClient.setQueriesData<Parameters<typeof withoutTopics>[0]>(
-        { queryKey: ["upstreamPorts", "topics", projectId, list] },
-        (data) => withoutTopics(data, leaving),
-      );
-      queryClient.setQueryData<UpstreamOverview>(upstreamPortsQueryKeys.overview(projectId), (current) =>
-        current ? { ...current, counts: adjustCounts(current.counts, moves) } : current,
-      );
+      setHiddenIds(leaving, true);
+      adjustOverviewCounts(projectId, moves);
       setSelected((current) => new Set([...current].filter((id) => !leaving.has(id))));
       if (canMoveFocusAfterDecision(started, viewRef.current) && started.focused && leaving.has(started.focused))
         setFocused(focusAfterRemoval(order, leaving, started.focused));
@@ -292,6 +313,19 @@ export function UpstreamPage(props: {
     } catch (error) {
       failure = error;
     } finally {
+      const recordedLeaving = new Set([...leaving].filter((id) => recorded.has(id)));
+      if (recordedLeaving.size > 0)
+        queryClient.setQueriesData<Parameters<typeof withoutTopics>[0]>(
+          { queryKey: upstreamPortsQueryKeys.list(projectId, started.list) },
+          (data) => withoutTopics(data, recordedLeaving),
+        );
+      const reverted = moves.filter((move) => !recorded.has(move.id));
+      if (reverted.length > 0)
+        adjustOverviewCounts(
+          projectId,
+          reverted.map((move) => ({ from: move.to, to: move.from })),
+        );
+      setHiddenIds(leaving, false);
       setPendingIds(decided, false);
     }
     const stillHere = viewRef.current.projectId === started.projectId && viewRef.current.list === started.list;
@@ -422,6 +456,21 @@ export function UpstreamPage(props: {
     if (projectId) onSearchChange({ project: projectId, list: next });
   };
 
+  /** Reopening bumps the epoch, so running port threads stop counting; ask first when any is In progress. */
+  const reopen = (topicIds: string[]) => {
+    const inProgress = rows.filter((row) => row.state === "in-progress" && topicIds.includes(row.topic.id)).length;
+    if (inProgress === 0) {
+      void applyDecision(topicIds, { kind: "inbox" });
+      return;
+    }
+    setConfirm({
+      title: `Reopen ${topicIds.length} topic${topicIds.length === 1 ? "" : "s"}?`,
+      description: `${inProgress} ${inProgress === 1 ? "has a port thread" : "have port threads"} in progress. The threads keep running, but they no longer count as these topics' ports.`,
+      confirmLabel: "Reopen",
+      onConfirm: () => void applyDecision(topicIds, { kind: "inbox" }),
+    });
+  };
+
   const runBulkAction = (action: UpstreamBulkAction, topicIds: string[]) => {
     if (topicIds.length === 0) return;
     switch (action) {
@@ -438,7 +487,7 @@ export function UpstreamPage(props: {
       case "equivalent":
         return void applyDecision(topicIds, { kind: "equivalent" });
       case "reopen":
-        return void applyDecision(topicIds, { kind: "inbox" });
+        return reopen(topicIds);
       case "startPort":
         return openStartPort(topicIds);
       case "copyPrompt":
@@ -448,6 +497,8 @@ export function UpstreamPage(props: {
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.defaultPrevented || event.nativeEvent.isComposing) return;
+    // Let a focused button, link or checkbox in the header or empty state activate itself.
+    if (isActivationKey(event.key) && isControlTarget(event.target)) return;
     const command = resolveShortcutCommand(event.nativeEvent, keybindings, {
       context: {
         upstreamListFocus: true,
@@ -649,7 +700,8 @@ export function UpstreamPage(props: {
       </header>
       <div className="flex min-h-0 flex-1">
         <section className="flex min-h-0 w-1/2 min-w-80 flex-col border-r">
-          {topicsQuery.error ? (
+          {/* Loaded rows stay through a failed background refetch. */}
+          {topicsQuery.error && !topicsQuery.data ? (
             <div role="alert" className="space-y-2 p-4 text-sm">
               <p className="text-destructive-foreground">{String(topicsQuery.error)}</p>
               <Button size="sm" variant="outline" onClick={() => void topicsQuery.refetch()}>
@@ -722,13 +774,15 @@ export function UpstreamPage(props: {
               busy={busy}
               pending={pending.has(focused)}
               onAccept={() => void applyDecision([focused], "accept")}
-              onDecide={(decision) => void applyDecision([focused], decision)}
+              onDecide={(decision) =>
+                decision.kind === "inbox" ? reopen([focused]) : void applyDecision([focused], decision)
+              }
               onSkip={(options) => openSkip([focused], options?.reason)}
               onDecline={() => setDeclineIds([focused])}
               onStartPort={() => openStartPort([focused])}
               onCopyPrompt={() => copyPrompt([focused])}
               onUnlink={unlink}
-              onOpenTopic={(topicId, state) => onSearchChange({ project: projectId, list: state ?? list, topic: topicId })}
+              onOpenTopic={openTopic}
             />
           ) : (
             <p className="p-6 text-sm text-muted-foreground">

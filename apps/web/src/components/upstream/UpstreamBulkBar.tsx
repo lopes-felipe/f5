@@ -21,7 +21,7 @@ const ACTIONS: Readonly<
   copyPrompt: { label: "Copy prompt", command: null },
 };
 
-/** Decisions that change the ledger; read-only pages and busy actions disable them. */
+/** Actions that write; a read-only page disables them. */
 const WRITES = new Set<UpstreamBulkAction>([
   "accept",
   "port",
@@ -32,6 +32,13 @@ const WRITES = new Set<UpstreamBulkAction>([
   "reopen",
   "startPort",
 ]);
+
+/**
+ * Actions that hold the page's `busy` state, so they wait while a run, a
+ * publication action or another port start is in flight. Decisions only
+ * wait for their own topics.
+ */
+const BUSY = new Set<UpstreamBulkAction>(["startPort", "copyPrompt"]);
 
 /**
  * The list header: a select-all checkbox and the topic count, or, with a
@@ -82,7 +89,7 @@ export function UpstreamBulkBar(props: {
                   variant={spec.primary ? "default" : "outline"}
                   label={spec.label}
                   command={spec.command}
-                  disabled={WRITES.has(action) && (props.readOnly || props.busy)}
+                  disabled={(WRITES.has(action) && props.readOnly) || (BUSY.has(action) && props.busy)}
                   onClick={() => props.onAction(action)}
                 >
                   {spec.label}

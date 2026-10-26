@@ -5,6 +5,7 @@ import {
   adjacentList,
   adjustCounts,
   bulkActionsForList,
+  canAcceptSuggestion,
   canMoveFocusAfterDecision,
   decisionBatches,
   decisionToastTitle,
@@ -108,6 +109,11 @@ describe("upstream page logic", () => {
     expect(predictedState({ state: "inbox", ...suggestion("skip") }, "accept")).toBeNull();
     expect(predictedState({ state: "inbox", ...suggestion("port", { triageError: "x" }) }, "accept")).toBeNull();
     expect(predictedState(inbox, "accept")).toBeNull();
+    // The row's quick Accept and the detail pane use the same rule as the prediction.
+    expect(canAcceptSuggestion(suggestion("skip").topic.suggestion)).toBe(false);
+    expect(canAcceptSuggestion(suggestion("skip", { reasonKey: "docs" }).topic.suggestion)).toBe(true);
+    expect(canAcceptSuggestion(suggestion("watch", { triageError: "x" }).topic.suggestion)).toBe(false);
+    expect(canAcceptSuggestion(undefined)).toBe(false);
   });
 
   it("moves counts and drops removed rows from loaded pages", () => {

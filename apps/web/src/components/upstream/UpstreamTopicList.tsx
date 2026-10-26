@@ -11,6 +11,7 @@ import { Checkbox } from "../ui/checkbox";
 import { Skeleton } from "../ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
+  canAcceptSuggestion,
   formatConfidence,
   impactClassName,
   impactLabel,
@@ -33,7 +34,9 @@ export interface RowPointerModifiers {
   readonly mod: boolean;
 }
 
-const modifiersOf = (event: React.MouseEvent) => ({ shift: event.shiftKey, mod: event.metaKey || event.ctrlKey });
+const rowElementId = (topicId: string) => `upstream-topic-${topicId}`;
+
+const modifiersOf =(event: React.MouseEvent) => ({ shift: event.shiftKey, mod: event.metaKey || event.ctrlKey });
 
 const eventModifiers = (event: Event | undefined): RowPointerModifiers =>
   event instanceof MouseEvent || event instanceof KeyboardEvent
@@ -77,8 +80,10 @@ const UpstreamTopicRowView = (props: {
   const areas = suggestion?.areas.slice(0, 3) ?? [];
   return (
     <div
+      id={rowElementId(topic.id)}
       role="option"
-      aria-selected={props.focused}
+      // Checked rows are the selection; the focused row is the listbox's active descendant.
+      aria-selected={props.selected}
       aria-busy={props.pending || undefined}
       data-topic-id={topic.id}
       className={cn(
@@ -165,7 +170,7 @@ const UpstreamTopicRowView = (props: {
           onClick={(event) => event.stopPropagation()}
           onDoubleClick={(event) => event.stopPropagation()}
         >
-          {suggestion && !suggestion.triageError && (
+          {canAcceptSuggestion(suggestion) && (
             <Button size="xs" variant="outline" tabIndex={-1} onClick={() => props.onQuickAction("accept")}>
               <CheckIcon />
               Accept {suggestionVerb(suggestion)}
@@ -268,22 +273,26 @@ export const UpstreamTopicList = forwardRef<
       onQuickAction,
     ],
   );
+  const focusedLoaded = focusedId !== null && rows.some((row) => row.topic.id === focusedId);
+  // The shortcuts also work from the header (after clicking select-all) and the empty state.
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col" onKeyDown={props.onKeyDown}>
       {props.header}
+      {rows.length === 0 && props.empty}
       <div
         ref={containerRef}
         role="listbox"
         aria-label="Upstream topics"
         aria-multiselectable="true"
+        aria-activedescendant={focusedLoaded ? rowElementId(focusedId) : undefined}
         tabIndex={0}
         data-upstream-list-focus="true"
-        className="flex min-h-0 flex-1 flex-col outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
-        onKeyDown={props.onKeyDown}
+        className={cn(
+          "flex min-h-0 flex-col outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
+          rows.length > 0 && "flex-1",
+        )}
       >
-        {rows.length === 0 ? (
-          props.empty
-        ) : (
+        {rows.length > 0 && (
           <LegendList<UpstreamTopicRow>
             ref={listRef}
             data={rows as UpstreamTopicRow[]}
