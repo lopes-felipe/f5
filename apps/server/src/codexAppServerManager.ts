@@ -976,6 +976,9 @@ function buildCodexTurnInstructions(input: {
     ...(context?.threadTitle ? { threadTitle: context.threadTitle } : {}),
     ...(context?.turnCount !== undefined ? { turnCount: context.turnCount } : {}),
     ...(context?.cwd ? { cwd: context.cwd } : {}),
+    ...(context?.workflowExecutionProfile
+      ? { workflowExecutionProfile: context.workflowExecutionProfile }
+      : {}),
     ...(context?.runtimeMode ? { runtimeMode: context.runtimeMode } : {}),
     ...(context?.projectMemories ? { projectMemories: context.projectMemories } : {}),
     ...(context?.integrationInstructions

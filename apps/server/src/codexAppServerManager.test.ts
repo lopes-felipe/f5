@@ -1583,6 +1583,34 @@ describe("sendTurn", () => {
     expect(text).not.toContain("### Restored Task Snapshot");
   });
 
+  it("sends the session's workflow host contract after the mode prompt and in the context", async () => {
+    const { manager, sendRequest } = createSendTurnHarness({
+      instructionContext: { workflowExecutionProfile: "unattended-readonly" },
+    });
+
+    await manager.sendTurn({
+      threadId: asThreadId("thread_1"),
+      input: "Plan the stage",
+      interactionMode: "plan",
+    });
+
+    const params = sendRequest.mock.calls[0]![2] as TurnStartContextParams & {
+      collaborationMode: { settings: { developer_instructions: string } };
+    };
+    expect(params.collaborationMode.settings.developer_instructions).toBe(
+      buildCodexModeInstructions({
+        interactionMode: "plan",
+        workflowExecutionProfile: "unattended-readonly",
+      }),
+    );
+    expect(params.collaborationMode.settings.developer_instructions).toContain(
+      "No user reply path exists",
+    );
+    expect(params.additionalContext?.f5_workflow_contract?.value).toContain(
+      "No user reply path exists",
+    );
+  });
+
   it("keeps only the mode prompt in the collaboration mode", () => {
     // Codex drops `developer_instructions` when the model catalog ships its own
     // mode text, so the shared contract must not depend on it.
