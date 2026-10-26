@@ -701,34 +701,116 @@ function buildWorkflowHostContract(
 - ${liveness}`;
 }
 
-export function buildCodexAssistantInstructions(input: SharedInstructionInput): string {
+/**
+ * Mode prompt for `turn/start.collaborationMode.settings.developer_instructions`.
+ *
+ * Only the mode prompt belongs here: when the model catalog ships its own text
+ * for a mode, as newer models do, Codex uses that text and drops the client's
+ * `developer_instructions` entirely. Everything else F5 tells Codex travels in
+ * `buildCodexAdditionalContext`.
+ */
+export function buildCodexModeInstructions(
+  input: Pick<SharedInstructionInput, "interactionMode" | "workflowExecutionProfile">,
+): string {
   const modeInstructions =
     input.interactionMode === "plan"
       ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
       : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS;
-  // The workflow host contract is last among the *static* sections (the dynamic
-  // runtime/memory/resumed sections below still follow it) so it outranks plan
+  // The workflow host contract follows the mode block so it outranks plan
   // mode, which instructs the model to ask many questions — guidance an
-  // unattended stage must override rather than be overridden by.
-  const staticInstructions = [
-    SHARED_BASE_CONTRACT,
-    CODEX_SUPPLEMENT,
-    modeInstructions,
-    buildWorkflowHostContract(input.workflowExecutionProfile),
-  ]
+  // unattended stage must override rather than be overridden by. It is also in
+  // the additional context for models whose catalog replaces this text.
+  return [modeInstructions, buildWorkflowHostContract(input.workflowExecutionProfile)]
     .filter((section): section is string => section !== undefined)
     .join("\n\n");
-  const dynamicSections = [
-    buildRuntimeContextSection(input),
-    input.integrationInstructions?.length
-      ? `## F5 Integrations\n${input.integrationInstructions.map((line) => `- ${line}`).join("\n")}`
-      : undefined,
-    buildProjectMemorySection(input),
-    buildResumedContextSection(input),
-  ].filter((section): section is string => section !== undefined);
-  return dynamicSections.length > 0
-    ? [staticInstructions, ...dynamicSections].join("\n\n")
-    : staticInstructions;
+}
+
+/**
+ * Codex caps each `additionalContext` value at 1,000 tokens, estimated as 4
+ * UTF-8 bytes per token, and truncates the middle of longer values.
+ */
+export const CODEX_ADDITIONAL_CONTEXT_MAX_BYTES = 4_000;
+/** Key prefix of the one-time resumed-session context, which is not restored after compaction. */
+export const CODEX_RESUMED_CONTEXT_KEY = "f5_resumed_context";
+
+export interface CodexAdditionalContextEntry {
+  readonly kind: "application";
+  readonly value: string;
+}
+
+const CHUNK_SEPARATORS = ["\n\n", "\n", ""] as const;
+
+function utf8Length(value: string): number {
+  return Buffer.byteLength(value, "utf8");
+}
+
+/** Splits at paragraph, then line, then code point boundaries so no chunk exceeds `maxBytes`. */
+export function splitUtf8Chunks(text: string, maxBytes: number, level = 0): string[] {
+  if (utf8Length(text) <= maxBytes) return [text];
+  const separator = CHUNK_SEPARATORS[Math.min(level, CHUNK_SEPARATORS.length - 1)]!;
+  const parts = separator ? text.split(separator) : Array.from(text);
+  const chunks: string[] = [];
+  let current: string | undefined;
+  for (const part of parts) {
+    const candidate = current === undefined ? part : `${current}${separator}${part}`;
+    if (utf8Length(candidate) <= maxBytes) {
+      current = candidate;
+      continue;
+    }
+    if (current !== undefined) chunks.push(current);
+    if (utf8Length(part) <= maxBytes) {
+      current = part;
+      continue;
+    }
+    const nested = splitUtf8Chunks(part, maxBytes, level + 1);
+    chunks.push(...nested.slice(0, -1));
+    current = nested.at(-1);
+  }
+  if (current !== undefined) chunks.push(current);
+  return chunks;
+}
+
+/**
+ * F5's Codex contract for `turn/start.additionalContext`. Codex renders each
+ * entry as a `<key>value</key>` developer message in key order and resends an
+ * entry only when its value changes. Sections over the per-entry cap are split
+ * into zero-padded `_01`, `_02`, ... keys so they keep their order.
+ */
+export function buildCodexAdditionalContext(
+  input: SharedInstructionInput,
+): Record<string, CodexAdditionalContextEntry> {
+  const sections: ReadonlyArray<readonly [string, string | undefined]> = [
+    ["f5_contract", `${SHARED_BASE_CONTRACT}\n\n${CODEX_SUPPLEMENT}`],
+    ["f5_integrations", buildIntegrationsSection(input)],
+    ["f5_project_memory", buildProjectMemorySection(input)],
+    [CODEX_RESUMED_CONTEXT_KEY, buildResumedContextSection(input)],
+    ["f5_runtime_context", buildRuntimeContextSection(input)],
+    ["f5_workflow_contract", buildWorkflowHostContract(input.workflowExecutionProfile)],
+  ];
+  const context: Record<string, CodexAdditionalContextEntry> = {};
+  for (const [key, value] of sections) {
+    if (!value) continue;
+    const chunks = splitUtf8Chunks(value, CODEX_ADDITIONAL_CONTEXT_MAX_BYTES);
+    chunks.forEach((chunk, index) => {
+      const chunkKey = chunks.length === 1 ? key : `${key}_${String(index + 1).padStart(2, "0")}`;
+      context[chunkKey] = { kind: "application", value: chunk };
+    });
+  }
+  return context;
+}
+
+/** Everything F5 sends Codex for a turn, as the model sees it: the mode prompt, then each context entry in key order. */
+export function buildCodexInstructionsText(input: SharedInstructionInput): string {
+  const context = Object.entries(buildCodexAdditionalContext(input))
+    .toSorted(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([key, entry]) => `<${key}>${entry.value}</${key}>`);
+  return [buildCodexModeInstructions(input), ...context].join("\n\n");
+}
+
+function buildIntegrationsSection(input: SharedInstructionInput): string | undefined {
+  return input.integrationInstructions?.length
+    ? `## F5 Integrations\n${input.integrationInstructions.map((line) => `- ${line}`).join("\n")}`
+    : undefined;
 }
 
 /**

@@ -257,6 +257,8 @@ export const CODEX_CLIENT_REQUEST_METHODS = [
   ["review/start"],
   ["thread/name/set"],
   ["thread/compact/start"],
+  // Restores F5's turn `additionalContext` after compaction drops it.
+  ["thread/inject_items"],
   ["thread/goal/set"],
   ["thread/goal/get"],
   ["thread/goal/clear"],

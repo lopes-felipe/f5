@@ -5,13 +5,89 @@ import { describe, expect, it } from "vitest";
 import {
   buildClaudeAssistantInstructions,
   buildClaudePlanModeInstructions,
-  buildCodexAssistantInstructions,
+  buildCodexAdditionalContext,
+  buildCodexInstructionsText as codexInstructionsText,
+  buildCodexModeInstructions,
   buildInstructionProfile,
   buildSharedAssistantContractText,
   CLAUDE_SUPPLEMENT_VERSION,
+  CODEX_ADDITIONAL_CONTEXT_MAX_BYTES,
   CODEX_SUPPLEMENT_VERSION,
   SHARED_ASSISTANT_CONTRACT_VERSION,
+  splitUtf8Chunks,
 } from "./sharedAssistantContract";
+
+describe("buildCodexAdditionalContext", () => {
+  it("keeps every entry under Codex's per-entry cap and in section order", () => {
+    const memoryBody = Array.from({ length: 150 }, (_, index) => `- memory fact ${index} é`).join(
+      "\n",
+    );
+    const context = buildCodexAdditionalContext({
+      interactionMode: "default",
+      model: "gpt-5.5",
+      currentDate: "2026-10-26",
+      integrationInstructions: ["Use the F5 browser"],
+      projectMemories: [
+        {
+          id: "memory-1",
+          projectId: "project-1" as never,
+          scope: "user",
+          type: "project",
+          name: "Large memory",
+          description: "Many facts.",
+          body: memoryBody,
+          createdAt: "2026-04-01T12:00:00.000Z",
+          updatedAt: "2026-04-02T12:00:00.000Z",
+          deletedAt: null,
+        },
+      ],
+      workflowExecutionProfile: "unattended-readonly",
+    });
+    const keys = Object.keys(context);
+
+    expect(keys.filter((key) => key.startsWith("f5_project_memory_")).length).toBeGreaterThan(1);
+
+    expect(keys[0]).toBe("f5_contract_01");
+    expect(keys.filter((key) => key.startsWith("f5_contract_")).length).toBeGreaterThan(1);
+    expect(keys).toContain("f5_integrations");
+    expect(keys).toContain("f5_runtime_context");
+    expect(keys.at(-1)).toBe("f5_workflow_contract");
+    // Codex renders entries in key order, which must match section order.
+    expect(keys).toEqual(keys.toSorted());
+    for (const entry of Object.values(context)) {
+      expect(entry.kind).toBe("application");
+      expect(Buffer.byteLength(entry.value, "utf8")).toBeLessThanOrEqual(
+        CODEX_ADDITIONAL_CONTEXT_MAX_BYTES,
+      );
+    }
+    expect(context.f5_runtime_context?.value).toContain("- Active model: gpt-5.5");
+  });
+
+  it("omits the mode prompt, which travels in the collaboration mode", () => {
+    const text = Object.values(buildCodexAdditionalContext({ interactionMode: "plan" }))
+      .map((entry) => entry.value)
+      .join("\n");
+    expect(text).not.toContain("<collaboration_mode>");
+    expect(buildCodexModeInstructions({ interactionMode: "plan" })).not.toContain(
+      "If the user asks what model you are",
+    );
+  });
+});
+
+describe("splitUtf8Chunks", () => {
+  it("returns short text unchanged", () => {
+    expect(splitUtf8Chunks("one\n\ntwo", 100)).toEqual(["one\n\ntwo"]);
+  });
+
+  it("splits at paragraph, line and code point boundaries without losing text", () => {
+    expect(splitUtf8Chunks("aaaa\n\nbbbb\n\ncccc", 10)).toEqual(["aaaa\n\nbbbb", "cccc"]);
+    expect(splitUtf8Chunks("aaaa\nbbbb\ncccc", 9)).toEqual(["aaaa\nbbbb", "cccc"]);
+    const emoji = "😀".repeat(5);
+    const chunks = splitUtf8Chunks(emoji, 9);
+    expect(chunks).toEqual(["😀😀", "😀😀", "😀"]);
+    expect(chunks.join("")).toBe(emoji);
+  });
+});
 
 describe("sharedAssistantContract", () => {
   it("renders the shared base contract with the identity rules", () => {
@@ -23,7 +99,7 @@ describe("sharedAssistantContract", () => {
   });
 
   it("renders the Codex bundle with shared base, supplement, and mode instructions", () => {
-    const text = buildCodexAssistantInstructions({
+    const text = codexInstructionsText({
       interactionMode: "plan",
       model: "gpt-5.3-codex",
     });
@@ -35,7 +111,7 @@ describe("sharedAssistantContract", () => {
   });
 
   it("renders the apply_patch file-editing rule and code-mode escaping for Codex only", () => {
-    const codexText = buildCodexAssistantInstructions({
+    const codexText = codexInstructionsText({
       interactionMode: "default",
       model: "gpt-6-astra",
     });
@@ -72,7 +148,7 @@ describe("sharedAssistantContract", () => {
   });
 
   it("ships a code-mode apply_patch example that round-trips backslashes exactly", async () => {
-    const codexText = buildCodexAssistantInstructions({
+    const codexText = codexInstructionsText({
       interactionMode: "default",
       model: "gpt-6-astra",
     });
@@ -104,7 +180,7 @@ describe("sharedAssistantContract", () => {
   });
 
   it("documents String.raw escapes for backticks and ${ that produce the literal text", () => {
-    const codexText = buildCodexAssistantInstructions({
+    const codexText = codexInstructionsText({
       interactionMode: "default",
       model: "gpt-6-astra",
     });
@@ -120,7 +196,7 @@ describe("sharedAssistantContract", () => {
   });
 
   it("names the host F5 in model-facing text", () => {
-    const codexText = buildCodexAssistantInstructions({
+    const codexText = codexInstructionsText({
       interactionMode: "default",
       model: "gpt-6-astra",
     });
@@ -137,7 +213,7 @@ describe("sharedAssistantContract", () => {
   });
 
   it("renders the compact upstream plan finalization guidance", () => {
-    const text = buildCodexAssistantInstructions({
+    const text = codexInstructionsText({
       interactionMode: "plan",
       model: "gpt-5.3-codex",
     });
@@ -148,7 +224,7 @@ describe("sharedAssistantContract", () => {
   });
 
   it("renders Codex dynamic runtime, memory, and resumed sections when provided", () => {
-    const text = buildCodexAssistantInstructions({
+    const text = codexInstructionsText({
       interactionMode: "default",
       runtimeMode: "full-access",
       projectTitle: "F3 Code",
@@ -321,7 +397,7 @@ describe("sharedAssistantContract", () => {
     expect(attended).toContain("Clarifying questions are supported");
     expect(attended).not.toContain("No user reply path exists");
 
-    const unattended = buildCodexAssistantInstructions({
+    const unattended = codexInstructionsText({
       interactionMode: "plan",
       workflowExecutionProfile: "unattended-readonly",
     });
@@ -336,7 +412,7 @@ describe("sharedAssistantContract", () => {
     // plan mode's "ask early" guidance over a single earlier "never ask" line.
     for (const text of [
       buildClaudePlanModeInstructions({ workflowExecutionProfile: "unattended-readonly" }),
-      buildCodexAssistantInstructions({
+      buildCodexModeInstructions({
         interactionMode: "plan",
         workflowExecutionProfile: "unattended-readonly",
       }),

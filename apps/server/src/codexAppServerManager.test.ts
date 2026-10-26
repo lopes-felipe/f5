@@ -40,7 +40,8 @@ import {
   resolveCodexModelForAccount,
 } from "./codexAppServerManager";
 import {
-  buildCodexAssistantInstructions,
+  buildCodexAdditionalContext,
+  buildCodexModeInstructions,
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
 } from "./provider/sharedAssistantContract";
@@ -48,6 +49,17 @@ import { fingerprintSupportedSlashCommands } from "./provider/supportedSlashComm
 import { ElicitationRegistry } from "./provider/elicitationRegistry";
 
 const asThreadId = (value: string): ThreadId => ThreadId.makeUnsafe(value);
+
+type TurnStartContextParams = {
+  additionalContext?: Record<string, { kind: string; value: string }>;
+};
+
+/** Every `additionalContext` value of a `turn/start` request, in key order. */
+const additionalContextText = (params: unknown): string =>
+  Object.entries((params as TurnStartContextParams).additionalContext ?? {})
+    .toSorted(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([, entry]) => entry.value)
+    .join("\n\n");
 const asEventId = (value: string): EventId => EventId.makeUnsafe(value);
 const currentDate = () => new Date().toISOString().slice(0, 10);
 
@@ -769,12 +781,8 @@ describe("startSession", () => {
         priorWorkSummary: "Recovered requirement: preserve the user's API",
       });
       await manager.sendTurn({ threadId: asThreadId("recovery"), input: "Continue" });
-      const first = requests.mock.calls.find((call) => call[1] === "turn/start")?.[2] as {
-        collaborationMode: { settings: { developer_instructions: string } };
-      };
-      expect(first.collaborationMode.settings.developer_instructions).toContain(
-        "Recovered requirement",
-      );
+      const first = requests.mock.calls.find((call) => call[1] === "turn/start")?.[2];
+      expect(additionalContextText(first)).toContain("Recovered requirement");
     } finally {
       manager.stopAll();
       rmSync(directory, { recursive: true, force: true });
@@ -1122,14 +1130,15 @@ describe("sendTurn", () => {
         settings: {
           model: "gpt-5.3-codex",
           reasoning_effort: "high",
-          developer_instructions: buildCodexAssistantInstructions({
-            interactionMode: "default",
-            currentDate: today,
-            model: "gpt-5.3-codex",
-            effort: "high",
-          }),
+          developer_instructions: CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
         },
       },
+      additionalContext: buildCodexAdditionalContext({
+        interactionMode: "default",
+        currentDate: today,
+        model: "gpt-5.3-codex",
+        effort: "high",
+      }),
     });
     expect(updateSession).toHaveBeenCalledWith(context, {
       status: "running",
@@ -1168,14 +1177,15 @@ describe("sendTurn", () => {
         settings: {
           model: "gpt-5.3-codex",
           reasoning_effort: "high",
-          developer_instructions: buildCodexAssistantInstructions({
-            interactionMode: "default",
-            currentDate: today,
-            model: "gpt-5.3-codex",
-            effort: "high",
-          }),
+          developer_instructions: CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
         },
       },
+      additionalContext: buildCodexAdditionalContext({
+        interactionMode: "default",
+        currentDate: today,
+        model: "gpt-5.3-codex",
+        effort: "high",
+      }),
     });
   });
 
@@ -1205,14 +1215,15 @@ describe("sendTurn", () => {
         settings: {
           model: DEFAULT_MODEL_BY_PROVIDER.codex,
           reasoning_effort: "high",
-          developer_instructions: buildCodexAssistantInstructions({
-            interactionMode: "default",
-            currentDate: today,
-            model: DEFAULT_MODEL_BY_PROVIDER.codex,
-            effort: "high",
-          }),
+          developer_instructions: CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
         },
       },
+      additionalContext: buildCodexAdditionalContext({
+        interactionMode: "default",
+        currentDate: today,
+        model: DEFAULT_MODEL_BY_PROVIDER.codex,
+        effort: "high",
+      }),
     });
     expect(updateSession).toHaveBeenCalledWith(context, {
       status: "running",
@@ -1405,14 +1416,15 @@ describe("sendTurn", () => {
         settings: {
           model: "gpt-5.3-codex",
           reasoning_effort: "high",
-          developer_instructions: buildCodexAssistantInstructions({
-            interactionMode: "plan",
-            currentDate: today,
-            model: "gpt-5.3-codex",
-            effort: "high",
-          }),
+          developer_instructions: CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
         },
       },
+      additionalContext: buildCodexAdditionalContext({
+        interactionMode: "plan",
+        currentDate: today,
+        model: "gpt-5.3-codex",
+        effort: "high",
+      }),
     });
   });
 
@@ -1442,14 +1454,15 @@ describe("sendTurn", () => {
         settings: {
           model: "gpt-5.3-codex",
           reasoning_effort: "high",
-          developer_instructions: buildCodexAssistantInstructions({
-            interactionMode: "default",
-            currentDate: today,
-            model: "gpt-5.3-codex",
-            effort: "high",
-          }),
+          developer_instructions: CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
         },
       },
+      additionalContext: buildCodexAdditionalContext({
+        interactionMode: "default",
+        currentDate: today,
+        model: "gpt-5.3-codex",
+        effort: "high",
+      }),
     });
   });
 
@@ -1480,14 +1493,15 @@ describe("sendTurn", () => {
         settings: {
           model: "gpt-5.2-codex",
           reasoning_effort: "high",
-          developer_instructions: buildCodexAssistantInstructions({
-            interactionMode: "plan",
-            currentDate: today,
-            model: "gpt-5.2-codex",
-            effort: "high",
-          }),
+          developer_instructions: CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
         },
       },
+      additionalContext: buildCodexAdditionalContext({
+        interactionMode: "plan",
+        currentDate: today,
+        model: "gpt-5.2-codex",
+        effort: "high",
+      }),
     });
   });
 
@@ -1513,25 +1527,13 @@ describe("sendTurn", () => {
       input: "Continue again",
     });
 
-    const firstParams = sendRequest.mock.calls[0]?.[2] as {
-      collaborationMode?: { settings: { developer_instructions: string } };
-    };
-    const secondParams = sendRequest.mock.calls[1]?.[2] as {
-      collaborationMode?: { settings: { developer_instructions: string } };
-    };
+    const firstText = additionalContextText(sendRequest.mock.calls[0]?.[2]);
+    const secondText = additionalContextText(sendRequest.mock.calls[1]?.[2]);
 
-    expect(firstParams.collaborationMode?.settings.developer_instructions).toContain(
-      "### Prior Work Summary",
-    );
-    expect(firstParams.collaborationMode?.settings.developer_instructions).toContain(
-      "### Restored Task Snapshot",
-    );
-    expect(secondParams.collaborationMode?.settings.developer_instructions).not.toContain(
-      "### Prior Work Summary",
-    );
-    expect(secondParams.collaborationMode?.settings.developer_instructions).not.toContain(
-      "### Restored Task Snapshot",
-    );
+    expect(firstText).toContain("### Prior Work Summary");
+    expect(firstText).toContain("### Restored Task Snapshot");
+    expect(secondText).not.toContain("### Prior Work Summary");
+    expect(secondText).not.toContain("### Restored Task Snapshot");
   });
 
   it("delivers pending recovery context on turn/start and clears its persisted marker", async () => {
@@ -1547,16 +1549,12 @@ describe("sendTurn", () => {
       Object.assign(context.session, updates);
     });
     await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Continue" });
-    const params = sendRequest.mock.calls[0]?.[2] as {
-      collaborationMode: { settings: { developer_instructions: string } };
-    };
-    expect(params.collaborationMode.settings.developer_instructions).toContain(
+    expect(additionalContextText(sendRequest.mock.calls[0]?.[2])).toContain(
       "Recovered requirement",
     );
     expect(context.session.resumeCursor).toEqual({ threadId: "replacement" });
     await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Continue again" });
-    const next = sendRequest.mock.calls[1]?.[2] as typeof params;
-    expect(next.collaborationMode.settings.developer_instructions).not.toContain(
+    expect(additionalContextText(sendRequest.mock.calls[1]?.[2])).not.toContain(
       "Recovered requirement",
     );
   });
@@ -1579,38 +1577,82 @@ describe("sendTurn", () => {
       input: "Continue the work",
     });
 
-    const params = sendRequest.mock.calls[0]?.[2] as {
-      collaborationMode?: { settings: { developer_instructions: string } };
+    const text = additionalContextText(sendRequest.mock.calls[0]?.[2]);
+
+    expect(text).not.toContain("### Prior Work Summary");
+    expect(text).not.toContain("### Restored Task Snapshot");
+  });
+
+  it("keeps only the mode prompt in the collaboration mode", () => {
+    // Codex drops `developer_instructions` when the model catalog ships its own
+    // mode text, so the shared contract must not depend on it.
+    expect(buildCodexModeInstructions({ interactionMode: "plan" })).toBe(
+      CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+    );
+    expect(buildCodexModeInstructions({ interactionMode: "default" })).toBe(
+      CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+    );
+    expect(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS).not.toContain(
+      "If the user asks what model you are",
+    );
+  });
+
+  it("sends the shared Codex contract and runtime context as additional context", async () => {
+    const { manager, sendRequest } = createSendTurnHarness();
+
+    await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Hi" });
+
+    const params = sendRequest.mock.calls[0]?.[2] as TurnStartContextParams;
+    for (const entry of Object.values(params.additionalContext ?? {})) {
+      expect(entry.kind).toBe("application");
+    }
+    const text = additionalContextText(params);
+    expect(text).toContain("If the user asks what model you are");
+    expect(text).toContain("## Codex Runtime Notes");
+    expect(text).toContain("- Active model: gpt-5.3-codex");
+  });
+
+  it("restores the persistent additional context after compaction on the root thread", async () => {
+    const { manager, context, sendRequest } = createSendTurnHarness({
+      instructionContext: { priorWorkSummary: "Summary:\nPrevious work" },
+    });
+    sendRequest.mockImplementation(async (_context, method) =>
+      method === "turn/start" ? { turn: { id: "turn_1" } } : {},
+    );
+    await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Continue" });
+    const sent = (sendRequest.mock.calls[0]![2] as TurnStartContextParams).additionalContext!;
+    sendRequest.mockClear();
+    (manager as unknown as { sessions: Map<string, unknown> }).sessions.set("thread_1", context);
+
+    const notify = (threadId: string, type: string) =>
+      (
+        manager as unknown as {
+          handleServerNotification: (context: unknown, notification: unknown) => void;
+        }
+      ).handleServerNotification(context, {
+        method: "item/completed",
+        params: { threadId, turnId: "turn_1", item: { type, id: "item_1" } },
+      });
+    notify("thread_1", "agentMessage");
+    notify("child_thread", "contextCompaction");
+    expect(sendRequest).not.toHaveBeenCalledWith(context, "thread/inject_items", expect.anything());
+
+    notify("thread_1", "contextCompaction");
+    const injectCall = sendRequest.mock.calls.find((call) => call[1] === "thread/inject_items");
+    const injected = injectCall?.[2] as {
+      threadId: string;
+      items: Array<{ type: string; role: string; content: Array<{ text: string }> }>;
     };
-
-    expect(params.collaborationMode?.settings.developer_instructions).not.toContain(
-      "### Prior Work Summary",
+    expect(injected.threadId).toBe("thread_1");
+    const expectedKeys = Object.keys(sent).filter((key) => !key.startsWith("f5_resumed_context"));
+    expect(injected.items).toEqual(
+      expectedKeys.map((key) => ({
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: `<${key}>${sent[key]!.value}</${key}>` }],
+      })),
     );
-    expect(params.collaborationMode?.settings.developer_instructions).not.toContain(
-      "### Restored Task Snapshot",
-    );
-  });
-
-  it("composes shared Codex instructions with the detailed plan mode prompt", () => {
-    const instructions = buildCodexAssistantInstructions({
-      interactionMode: "plan",
-      model: "gpt-5.3-codex",
-    });
-
-    expect(instructions).toContain("If the user asks what model you are");
-    expect(instructions).toContain("<proposed_plan>");
-    expect(instructions).toContain(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS);
-  });
-
-  it("composes shared Codex instructions with the detailed default mode prompt", () => {
-    const instructions = buildCodexAssistantInstructions({
-      interactionMode: "default",
-      model: "gpt-5.3-codex",
-    });
-
-    expect(instructions).toContain("If the user asks what model you are");
-    expect(instructions).toContain("request_user_input");
-    expect(instructions).toContain(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS);
+    expect(JSON.stringify(injected)).not.toContain("Previous work");
   });
 
   it("rejects empty turn input", async () => {

@@ -73,8 +73,11 @@ import { Effect, ServiceMap } from "effect";
 
 import { formatCodexUnsupportedModelError } from "./provider/codexErrors.ts";
 import {
-  buildCodexAssistantInstructions,
+  buildCodexAdditionalContext,
+  buildCodexModeInstructions,
   buildInstructionProfile,
+  CODEX_RESUMED_CONTEXT_KEY,
+  type CodexAdditionalContextEntry,
   INSTRUCTION_PROFILE_CONFIG_KEY,
   type SharedInstructionInput,
 } from "./provider/sharedAssistantContract";
@@ -195,6 +198,8 @@ interface CodexSessionContext {
   initialSkillsRetryTimeout: ReturnType<typeof setTimeout> | undefined;
   initialSkillsRetryAttempted: boolean;
   resumedContextSent: boolean;
+  /** The `additionalContext` of the latest `turn/start`, restored after compaction. */
+  lastAdditionalContext?: Record<string, CodexAdditionalContextEntry> | undefined;
   cliVersion?: string | null;
   protocolDecodeFailureCount: number;
   nextRequestId: number;
@@ -851,6 +856,7 @@ export function buildCodexTurnStartParams(
         developer_instructions: string;
       };
     };
+    additionalContext?: Record<string, CodexAdditionalContextEntry>;
   } = {
     threadId: state.providerThreadId,
     input: turnInput,
@@ -886,7 +892,7 @@ export function buildCodexTurnStartParams(
   if (resolvedEffort) {
     turnStartParams.effort = resolvedEffort;
   }
-  const collaborationMode = buildCodexCollaborationMode({
+  const { collaborationMode, additionalContext } = buildCodexTurnInstructions({
     ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
     ...(normalizedModel !== undefined ? { model: normalizedModel } : {}),
     ...(resolvedEffort !== undefined ? { effort: resolvedEffort } : {}),
@@ -899,6 +905,7 @@ export function buildCodexTurnStartParams(
     turnStartParams.model = collaborationMode.settings.model;
   }
   turnStartParams.collaborationMode = collaborationMode;
+  turnStartParams.additionalContext = additionalContext;
 
   return turnStartParams;
 }
@@ -935,19 +942,27 @@ export function buildCodexInitializeParams() {
   } as const;
 }
 
-function buildCodexCollaborationMode(input: {
+/**
+ * The collaboration mode carries only the mode prompt; the rest of F5's
+ * contract travels as `additionalContext`, which Codex keeps even when the
+ * model catalog replaces the client's `developer_instructions`.
+ */
+function buildCodexTurnInstructions(input: {
   readonly interactionMode?: "default" | "plan";
   readonly model?: string;
   readonly effort?: string;
   readonly instructionContext?: Partial<SharedInstructionInput>;
   readonly includeResumedContext?: boolean;
 }): {
-  mode: "default" | "plan";
-  settings: {
-    model: string;
-    reasoning_effort: string | null;
-    developer_instructions: string;
+  collaborationMode: {
+    mode: "default" | "plan";
+    settings: {
+      model: string;
+      reasoning_effort: string | null;
+      developer_instructions: string;
+    };
   };
+  additionalContext: Record<string, CodexAdditionalContextEntry>;
 } {
   const effectiveMode = input.interactionMode ?? "default";
   const model = normalizeCodexModelSlug(input.model) ?? DEFAULT_MODEL_BY_PROVIDER.codex;
@@ -989,14 +1004,17 @@ function buildCodexCollaborationMode(input: {
       : {}),
   };
   return {
-    mode: effectiveMode,
-    settings: {
-      model,
-      // Null when the model takes no effort; a fixed fallback here would
-      // override the resolved model default.
-      reasoning_effort: input.effort ?? null,
-      developer_instructions: buildCodexAssistantInstructions(instructionInput),
+    collaborationMode: {
+      mode: effectiveMode,
+      settings: {
+        model,
+        // Null when the model takes no effort; a fixed fallback here would
+        // override the resolved model default.
+        reasoning_effort: input.effort ?? null,
+        developer_instructions: buildCodexModeInstructions(instructionInput),
+      },
     },
+    additionalContext: buildCodexAdditionalContext(instructionInput),
   };
 }
 
@@ -1564,6 +1582,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       return { threadId: input.threadId, turnId: input.expectedTurnId };
     }
     const response = await this.sendRequest(context, "turn/start", turnStartParams);
+    context.lastAdditionalContext = turnStartParams.additionalContext;
 
     const turn = this.readObject(this.readObject(response), "turn");
     const turnIdRaw = this.readString(turn, "id");
@@ -3310,6 +3329,32 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     );
   }
 
+  /**
+   * Compaction rebuilds history from user messages and Codex's own context,
+   * which drops F5's `additionalContext` messages. Codex resends an entry only
+   * when its value changes, so without this the F5 contract would stay lost
+   * for the rest of the session. The one-time resumed context is not restored.
+   */
+  private restoreAdditionalContext(context: CodexSessionContext, providerThreadId: string): void {
+    const entries = Object.entries(context.lastAdditionalContext ?? {}).filter(
+      ([key]) => !key.startsWith(CODEX_RESUMED_CONTEXT_KEY),
+    );
+    if (entries.length === 0 || !this.isLiveContext(context)) return;
+    void this.sendRequest(context, "thread/inject_items", {
+      threadId: providerThreadId,
+      items: entries.map(([key, entry]) => ({
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: `<${key}>${entry.value}</${key}>` }],
+      })),
+    }).catch((cause: unknown) =>
+      Effect.logWarning("failed to restore Codex additional context after compaction", {
+        threadId: context.session.threadId,
+        cause: cause instanceof Error ? cause.message : String(cause),
+      }).pipe(this.runPromise),
+    );
+  }
+
   private handleServerNotification(
     context: CodexSessionContext,
     notification: JsonRpcNotification,
@@ -3487,6 +3532,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (typeof title === "string") context.lastProviderTitle = title;
     }
     const item = asObject(asObject(notification.params)?.item);
+    if (
+      notification.method === "item/completed" &&
+      item?.type === "contextCompaction" &&
+      notificationProviderThreadId !== undefined &&
+      notificationProviderThreadId === primaryProviderThreadId
+    ) {
+      this.restoreAdditionalContext(context, notificationProviderThreadId);
+    }
     if (context.reviewOperationActive && item?.type === "enteredReviewMode") {
       const reviewTurnId = asObject(notification.params)?.turnId;
       if (typeof reviewTurnId === "string") context.nativeReviewTurnId = reviewTurnId;
