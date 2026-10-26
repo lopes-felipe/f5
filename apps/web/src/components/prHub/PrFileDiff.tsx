@@ -15,7 +15,7 @@ import {
   resolveFileDiffPath,
 } from "../../lib/diffPatch";
 import { getRenderablePrFilePatch } from "../../lib/prFilePatch";
-import { resolveDiffThemeName } from "../../lib/diffRendering";
+import { PREFERRED_HIGHLIGHTER, resolveDiffThemeName } from "../../lib/diffRendering";
 import { DiffSurfaceBoundary } from "../DiffSurfaceBoundary";
 
 export function PrFileDiff({
@@ -86,6 +86,7 @@ export function PrFileDiff({
                   : {}),
                 overflow: settings.diffWordWrap ? "wrap" : "scroll",
                 theme: resolveDiffThemeName(resolvedTheme),
+                preferredHighlighter: PREFERRED_HIGHLIGHTER,
                 themeType: resolvedTheme,
                 unsafeCSS: DIFF_PANEL_UNSAFE_CSS,
               }}

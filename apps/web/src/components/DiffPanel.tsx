@@ -35,7 +35,7 @@ import { readNativeApi } from "../nativeApi";
 import { resolvePathLinkTarget } from "../terminal-links";
 import { clearTurnDiffSearchParams, parseDiffRouteSearch } from "../diffRouteSearch";
 import { useTheme } from "../hooks/useTheme";
-import { resolveDiffThemeName } from "../lib/diffRendering";
+import { PREFERRED_HIGHLIGHTER, resolveDiffThemeName } from "../lib/diffRendering";
 import {
   buildFileDiffLogicalIdentity,
   DIFF_PANEL_UNSAFE_CSS,
@@ -873,6 +873,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
                           collapsed: isCollapsed,
                           overflow: settings.diffWordWrap ? "wrap" : "scroll",
                           theme: resolveDiffThemeName(resolvedTheme),
+                          preferredHighlighter: PREFERRED_HIGHLIGHTER,
                           themeType: resolvedTheme as DiffThemeType,
                           unsafeCSS: DIFF_PANEL_UNSAFE_CSS,
                         }}

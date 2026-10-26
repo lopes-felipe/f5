@@ -14,7 +14,7 @@ import { useFileNavigation } from "../../fileNavigationContext";
 import { readNativeApi } from "../../nativeApi";
 import { resolvePathLinkTarget } from "../../terminal-links";
 import { relativePathForDisplay } from "~/lib/attachedFiles";
-import { resolveDiffThemeName } from "~/lib/diffRendering";
+import { PREFERRED_HIGHLIGHTER, resolveDiffThemeName } from "~/lib/diffRendering";
 import { threadFileChangeQueryOptions } from "../../lib/orchestrationReactQuery";
 import {
   buildFileDiffRenderKey,
@@ -162,6 +162,7 @@ export const InlineExactFileChangeDiff = memo(function InlineExactFileChangeDiff
                     diffStyle: "unified",
                     lineDiffType: "none",
                     theme: resolveDiffThemeName(resolvedTheme),
+                    preferredHighlighter: PREFERRED_HIGHLIGHTER,
                     themeType: resolvedTheme,
                     disableFileHeader: true,
                     overflow: diffWordWrap ? "wrap" : "scroll",

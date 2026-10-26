@@ -19,7 +19,7 @@ import {
   resolveFileDiffPath,
 } from "../../lib/diffPatch";
 import { relativePathForDisplay } from "~/lib/attachedFiles";
-import { resolveDiffThemeName } from "~/lib/diffRendering";
+import { PREFERRED_HIGHLIGHTER, resolveDiffThemeName } from "~/lib/diffRendering";
 import { normalizeFilePathForDiffLookup } from "~/lib/normalizeFilePathForDiff";
 import { checkpointDiffQueryOptions } from "~/lib/providerReactQuery";
 import { resolvePathLinkTarget } from "../../terminal-links";
@@ -222,6 +222,7 @@ export const InlineFileChangeDiff = memo(function InlineFileChangeDiff(
                   diffStyle: "unified",
                   lineDiffType: "none",
                   theme: resolveDiffThemeName(resolvedTheme),
+                  preferredHighlighter: PREFERRED_HIGHLIGHTER,
                   themeType: resolvedTheme,
                   overflow: diffWordWrap ? "wrap" : "scroll",
                   disableFileHeader: true,

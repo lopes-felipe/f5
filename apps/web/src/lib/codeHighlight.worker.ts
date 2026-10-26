@@ -1,5 +1,5 @@
 import { createHighlighterCore, type HighlighterCore } from "shiki/core";
-import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
+import { createOnigurumaEngine } from "shiki/engine/oniguruma";
 
 import type {
   CodeHighlightWorkerRequest,
@@ -26,7 +26,9 @@ function getHighlighter(): Promise<HighlighterCore> {
   highlighter ??= createHighlighterCore({
     themes: [],
     langs: [],
-    engine: createJavaScriptRegexEngine(),
+    // Oniguruma, like PREFERRED_HIGHLIGHTER: the JS regex engine can
+    // backtrack catastrophically and spin until the job times out.
+    engine: createOnigurumaEngine(import("shiki/wasm")),
   });
   return highlighter;
 }
