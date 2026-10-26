@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promotionProblems, type PromotionIo } from "./lib/release-promotion.ts";
+import { promotionProblems, remoteTagCommit, type PromotionIo } from "./lib/release-promotion.ts";
 
 const index = process.argv.indexOf("--tag");
 const tag = index < 0 ? undefined : process.argv[index + 1];
@@ -26,7 +26,18 @@ const io: PromotionIo = {
     const result = spawnSync("git", ["show", `${revision}:${path}`], { encoding: "utf8" });
     return result.status === 0 ? result.stdout : undefined;
   },
-  commitOf: (revision) => run("git", ["rev-list", "-n", "1", revision]).trim(),
+  commitOf: (name) =>
+    remoteTagCommit(name, {
+      local: (local) => run("git", ["rev-list", "-n", "1", local]).trim(),
+      remote: (remote) =>
+        run("git", [
+          "ls-remote",
+          "--tags",
+          "origin",
+          `refs/tags/${remote}`,
+          `refs/tags/${remote}^{}`,
+        ]),
+    }),
   isAncestor: (commit, revision) =>
     spawnSync("git", ["merge-base", "--is-ancestor", commit, revision]).status === 0,
   release: (name) => {

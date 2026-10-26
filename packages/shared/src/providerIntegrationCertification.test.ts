@@ -6,6 +6,8 @@ import {
   PROVIDER_INTEGRATION_RECORDS,
   acceptanceMismatches,
   certifiedIntegrationRecord,
+  integrationTemplateRecord,
+  newestRecordsFirst,
   evidenceMismatches,
   integrationBrowserBundleIds,
   integrationUnavailableDetail,
@@ -86,6 +88,42 @@ describe("provider integration certification records", () => {
         identity: { ...complete.identity, advertisedTools: [{ name: "js", inputSchema: schema }] },
       }),
     ).toBe(codex.identity.allowedTools.every((name) => name === "js"));
+  });
+
+  it("picks the highest certified floor at or below the installed version", () => {
+    const codex = PROVIDER_INTEGRATION_RECORDS["codex-chrome"][0]!;
+    const floor = (appMin: string, inventory: string): CodexChromeRecord => ({
+      ...codex,
+      id: `codex-chrome-darwin-arm64-${appMin}`,
+      versions: { appMin, pluginMin: appMin },
+      evidenceId: `evidence-${appMin}`,
+      evidenceCommit: "c".repeat(40),
+      toolNames: [...codex.identity.allowedTools],
+      toolInventorySha256: inventory.repeat(64),
+      identity: {
+        ...codex.identity,
+        advertisedTools: codex.identity.allowedTools.map((name) => ({ name, inputSchema: {} })),
+      },
+    });
+    // Id order ("26.1020…" < "26.999…") is not version order.
+    const older = floor("26.999.1", "a");
+    const newer = floor("26.1020.1", "b");
+    const records = [newer, older];
+    const pick = (version?: string) =>
+      certifiedIntegrationRecord("codex-chrome", "darwin", "arm64", records, version)?.id;
+    expect(pick("26.1030.0")).toBe(newer.id);
+    expect(pick("26.1020.1")).toBe(newer.id);
+    expect(pick("26.1019.9")).toBe(older.id);
+    expect(pick("26.999.0")).toBeUndefined();
+    expect(pick()).toBe(newer.id);
+    expect(newestRecordsFirst([older, newer]).map((record) => record.id)).toEqual([
+      newer.id,
+      older.id,
+    ]);
+    // Withdrawn records are never a new run's template.
+    expect(
+      integrationTemplateRecord([{ ...newer, withdrawn: "x" }, older], "darwin", "arm64")?.id,
+    ).toBe(older.id);
   });
 
   it("keeps every gate closed until a live run certifies a record", () => {
@@ -173,6 +211,50 @@ describe("provider integration certification records", () => {
     expect(evidenceMismatches(certified, { ...report, toolNames: ["read_page", "extra"] })).toEqual(
       ["toolNames"],
     );
+  });
+
+  it("requires the advertised Codex tools to be exactly the observed ones", () => {
+    const codex = PROVIDER_INTEGRATION_RECORDS["codex-chrome"][0]!;
+    const schemas = codex.identity.allowedTools.map((name) => ({
+      name,
+      description: `Run ${name}`,
+      inputSchema: { type: "object" },
+    }));
+    const record: CodexChromeRecord = {
+      ...codex,
+      evidenceId: "evidence-3",
+      evidenceCommit: "c".repeat(40),
+      toolNames: codex.identity.allowedTools.map((name) => name),
+      toolInventorySha256: "d".repeat(64),
+      identity: { ...codex.identity, advertisedTools: schemas },
+    };
+    const report: IntegrationEvidenceReport = {
+      integration: "codex-chrome",
+      evidenceId: "evidence-3",
+      platform: record.platform,
+      arch: record.arch,
+      versions: { ...record.versions },
+      assertions: Object.fromEntries(
+        INTEGRATION_REQUIRED_ASSERTIONS["codex-chrome"].map((name) => [name, true]),
+      ),
+      toolNames: record.toolNames!,
+      toolInventorySha256: "d".repeat(64),
+      toolSchemas: schemas,
+      sourceCommit: "c".repeat(40),
+      dirty: false,
+    };
+    expect(evidenceMismatches(record, report)).toEqual([]);
+    // A hand-edited description, shown before consent, no longer matches the evidence.
+    const edited = schemas.map((tool, index) =>
+      index ? tool : { ...tool, description: "Totally safe" },
+    );
+    expect(
+      evidenceMismatches(
+        { ...record, identity: { ...record.identity, advertisedTools: edited } },
+        report,
+      ),
+    ).toEqual(["advertisedTools"]);
+    expect(evidenceMismatches(record, { ...report, toolSchemas: [] })).toEqual(["advertisedTools"]);
   });
 
   it("accepts a release only for its exact artifact, records and passed checks", () => {

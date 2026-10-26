@@ -41,15 +41,19 @@ export function promotionProblems(
   const release = io.release(tag);
   if (!release.isDraft) return [`${tag} is already published.`];
   const version = tag.replace(/^v/, "");
+  // Records are read at the commit the remote tag names: the draft was built from it.
   const tagCommit = io.commitOf(tag);
   const digests = new Map<string, string>();
   for (const integration of INTEGRATIONS) {
-    const text = io.show(tag, `packages/shared/src/certification/${integration}.generated.json`);
+    const text = io.show(
+      tagCommit,
+      `packages/shared/src/certification/${integration}.generated.json`,
+    );
     const records = (text ? JSON.parse(text) : []) as ProviderIntegrationRecord[];
     const certifying = records.filter(recordCertifies);
     if (!certifying.length) continue;
     for (const record of certifying)
-      if (!io.isAncestor(record.evidenceCommit!, tag))
+      if (!io.isAncestor(record.evidenceCommit!, tagCommit))
         problems.push(`${record.id}: evidence commit is not in ${tag}'s history`);
     const targets = new Map<string, ProviderIntegrationRecord[]>();
     for (const record of certifying) {
@@ -67,7 +71,7 @@ export function promotionProblems(
         problems.push(`${integration} ${target}: the draft has no ${artifactName}`);
         continue;
       }
-      const path = acceptanceReportPath(version, integration);
+      const path = acceptanceReportPath(version, integration, platform, arch);
       const reportText = io.show(acceptedOn, path);
       if (!reportText) {
         problems.push(`${integration} ${target}: no acceptance report ${path} on ${acceptedOn}`);
@@ -88,4 +92,28 @@ export function promotionProblems(
     }
   }
   return problems;
+}
+
+/**
+ * The commit `refs/tags/<tag>` names on the remote (peeled for annotated tags). A local
+ * tag that differs is refused rather than trusted: it may be stale or moved.
+ */
+export function remoteTagCommit(
+  tag: string,
+  git: { readonly local: (tag: string) => string; readonly remote: (tag: string) => string },
+): string {
+  const refs = new Map(
+    git
+      .remote(tag)
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/))
+      .filter((parts): parts is [string, string] => parts.length === 2)
+      .map(([sha, ref]) => [ref, sha]),
+  );
+  const commit = refs.get(`refs/tags/${tag}^{}`) ?? refs.get(`refs/tags/${tag}`);
+  if (!commit || !/^[a-f0-9]{40}$/.test(commit)) throw new Error(`origin has no tag ${tag}.`);
+  const local = git.local(tag);
+  if (local !== commit)
+    throw new Error(`Local tag ${tag} (${local}) differs from origin's (${commit}). Refetch it.`);
+  return commit;
 }

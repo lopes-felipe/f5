@@ -6,7 +6,7 @@ import {
   type CodexChromeRecord,
   type IntegrationAcceptanceReport,
 } from "@t3tools/shared/providerIntegrationCertification";
-import { promotionProblems, type PromotionIo } from "./release-promotion.ts";
+import { promotionProblems, remoteTagCommit, type PromotionIo } from "./release-promotion.ts";
 
 const TAG = "v1.2.3";
 const TAG_COMMIT = "1".repeat(40);
@@ -40,12 +40,16 @@ const acceptance: IntegrationAcceptanceReport = {
     INTEGRATION_ACCEPTANCE_CHECKS["codex-chrome"].map((check) => [check.id, true]),
   ),
 };
-const ACCEPTANCE_PATH = "docs/computer-certification/acceptance-1.2.3-codex-chrome.json";
+const ACCEPTANCE_PATH =
+  "docs/computer-certification/acceptance-1.2.3-codex-chrome-darwin-arm64.json";
 
 function fake(patch: {
   records?: unknown[];
   acceptance?: IntegrationAcceptanceReport | null;
+  /** More acceptance reports on main, by path. */
+  reports?: Record<string, IntegrationAcceptanceReport>;
   digest?: string;
+  digests?: Record<string, string>;
   isDraft?: boolean;
   ancestor?: boolean;
   assets?: string[];
@@ -53,12 +57,15 @@ function fake(patch: {
   const downloads: string[] = [];
   const io: PromotionIo = {
     show: (revision, path) => {
-      if (revision === TAG && path.endsWith("codex-chrome.generated.json"))
+      // Records are only ever read at the remote tag's commit.
+      if (revision === TAG_COMMIT && path.endsWith("codex-chrome.generated.json"))
         return JSON.stringify(patch.records ?? [certified]);
-      if (revision === TAG && path.endsWith(".generated.json")) return "[]";
-      if (revision === "origin/main" && path === ACCEPTANCE_PATH && patch.acceptance !== null)
+      if (revision === TAG_COMMIT && path.endsWith(".generated.json")) return "[]";
+      if (revision !== "origin/main") return undefined;
+      if (path === ACCEPTANCE_PATH && patch.acceptance !== null)
         return JSON.stringify(patch.acceptance ?? acceptance);
-      return undefined;
+      const extra = patch.reports?.[path];
+      return extra && JSON.stringify(extra);
     },
     commitOf: () => TAG_COMMIT,
     isAncestor: () => patch.ancestor ?? true,
@@ -68,7 +75,7 @@ function fake(patch: {
     }),
     assetSha256: (_tag, name) => {
       downloads.push(name);
-      return patch.digest ?? DIGEST;
+      return patch.digests?.[name] ?? patch.digest ?? DIGEST;
     },
   };
   return { io, downloads };
@@ -137,9 +144,49 @@ describe("release promotion", () => {
     ]);
   });
 
+  it("promotes arm64 and x64 from their own acceptance reports", () => {
+    const x64Dmg = "F5-1.2.3-x64.dmg";
+    const x64 = { ...certified, id: "codex-chrome-darwin-x64-26.1020.5", arch: "x64" };
+    const x64Report: IntegrationAcceptanceReport = {
+      ...acceptance,
+      arch: "x64",
+      artifactName: x64Dmg,
+      artifactSha256: "e".repeat(64),
+      recordIds: [x64.id],
+    };
+    const { io, downloads } = fake({
+      records: [certified, x64],
+      assets: [DMG, x64Dmg],
+      digests: { [x64Dmg]: "e".repeat(64) },
+      reports: {
+        "docs/computer-certification/acceptance-1.2.3-codex-chrome-darwin-x64.json": x64Report,
+      },
+    });
+    expect(promotionProblems(TAG, io)).toEqual([]);
+    expect(downloads.sort()).toEqual([DMG, x64Dmg]);
+    // Without the x64 report, only that target is refused.
+    expect(
+      promotionProblems(TAG, fake({ records: [certified, x64], assets: [DMG, x64Dmg] }).io),
+    ).toEqual([
+      "codex-chrome darwin-x64: no acceptance report docs/computer-certification/acceptance-1.2.3-codex-chrome-darwin-x64.json on origin/main",
+    ]);
+  });
+
   it("uses the same required assertions the stamper does", () => {
     expect(INTEGRATION_REQUIRED_ASSERTIONS["codex-chrome"]).toContain(
       "background-work-stops-on-pause",
     );
+  });
+});
+
+describe("remote tag commit", () => {
+  const sha = (char: string) => char.repeat(40);
+  const git = (remote: string, local: string) => ({ remote: () => remote, local: () => local });
+  it("peels annotated tags and requires the local tag to match", () => {
+    const annotated = `${sha("a")}\trefs/tags/${TAG}\n${sha("b")}\trefs/tags/${TAG}^{}\n`;
+    expect(remoteTagCommit(TAG, git(annotated, sha("b")))).toBe(sha("b"));
+    expect(remoteTagCommit(TAG, git(`${sha("c")}\trefs/tags/${TAG}\n`, sha("c")))).toBe(sha("c"));
+    expect(() => remoteTagCommit(TAG, git(annotated, sha("d")))).toThrow("differs from origin");
+    expect(() => remoteTagCommit(TAG, git("", sha("b")))).toThrow(`origin has no tag ${TAG}`);
   });
 });

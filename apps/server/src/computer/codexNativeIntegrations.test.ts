@@ -162,6 +162,29 @@ describe.skipIf(process.platform === "win32")("Codex Chrome inspection", () => {
     });
   });
 
+  it("chooses among overlapping floors by the installed ChatGPT version", async () => {
+    const { appMax: _appMax, pluginMax: _pluginMax, ...floors } = record.versions;
+    const older = { ...record, id: "older", versions: floors, toolInventorySha256: "a".repeat(64) };
+    const newer = {
+      ...record,
+      id: "newer",
+      versions: { appMin: "26.1020.1", pluginMin: "26.1013.40934" },
+      toolInventorySha256: "b".repeat(64),
+    };
+    const run = (appVersion: string) =>
+      inspectCodexChrome({
+        platform: "darwin",
+        arch: "arm64",
+        userHome: "/Users/me",
+        records: [newer, older],
+        io: fixture({ appVersion }).io,
+      });
+    expect(await run("26.1030.1")).toMatchObject({ available: true, record: { id: "newer" } });
+    // Still on a build below the newer floor: the older record keeps covering it.
+    expect(await run("26.1015.1")).toMatchObject({ available: true, record: { id: "older" } });
+    expect(await run("26.1000.1")).toMatchObject({ available: false, state: "version" });
+  });
+
   it("treats a replaced helper as changed setup mid-session", async () => {
     const { io, helper } = fixture();
     const installation = await inspectCodexChrome({

@@ -2,6 +2,9 @@ import { open, realpath as fsRealpath, stat } from "node:fs/promises";
 import { join, sep } from "node:path";
 import {
   PROVIDER_INTEGRATION_RECORDS,
+  compareVersions,
+  newestRecordsFirst,
+  recordForVersion,
   type CodexChromeRecord,
   type CodexComputerRecord,
 } from "@t3tools/shared/providerIntegrationCertification";
@@ -74,38 +77,53 @@ export const defaultCodexInspectionIo: CodexInspectionIo = {
     inspectChromeNativeHosts(descriptor.locations("", userHome)),
 };
 
-const parseVersion = (value: string | undefined) => {
-  if (value === undefined) return undefined;
-  const parts = value.split(".").map((part) => (/^\d+$/.test(part) ? Number(part) : Number.NaN));
-  return parts.some(Number.isNaN) ? undefined : parts;
-};
-const compareVersions = (a: number[], b: number[]) => {
-  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
-    const delta = (a[index] ?? 0) - (b[index] ?? 0);
-    if (delta) return delta;
-  }
-  return 0;
-};
-
 /**
  * Dotted numeric versions (`26.1013.40934`); non-numeric parts make the range
  * unsatisfiable. A missing `max` is a certified floor with no ceiling: newer builds stay
  * open while the live checks (signatures, origins, inventory digest, schemas) still pass.
  */
 export function versionInRange(version: string, min: string | undefined, max?: string): boolean {
-  const [value, low] = [parseVersion(version), parseVersion(min)];
-  if (!value || !low || compareVersions(value, low) < 0) return false;
+  const low = compareVersions(version, min);
+  if (low === undefined || low < 0) return false;
   if (max === undefined) return true;
-  const high = parseVersion(max);
-  return !!high && compareVersions(value, high) <= 0;
+  const high = compareVersions(version, max);
+  return high !== undefined && high <= 0;
 }
 
 /** Informational readiness copy when the running ChatGPT is newer than its certified floor. */
 export function codexVersionNote(floor: string | undefined, running: string): string | undefined {
-  const [low, value] = [parseVersion(floor), parseVersion(running)];
-  return low && value && compareVersions(value, low) > 0
+  return (compareVersions(running, floor) ?? 0) > 0
     ? `Certified on ChatGPT ${floor}; running ${running}.`
     : undefined;
+}
+
+/**
+ * The record for this installation: the caller's, else the highest floor at or below the
+ * installed version among `records` (default: the target's non-withdrawn records). Below
+ * every floor, the newest is returned so the version check names the problem.
+ */
+async function selectRecord<R extends CodexChromeRecord | CodexComputerRecord>(
+  record: R | undefined,
+  records: ReadonlyArray<R>,
+  appPath: string,
+  io: CodexInspectionIo,
+): Promise<R | undefined> {
+  if (record) return record;
+  // With nothing to choose from, nothing is read.
+  if (records.length < 2) return records[0];
+  const version = await installedVersion(appPath, io);
+  return (version && recordForVersion(records, version)) || newestRecordsFirst(records)[0];
+}
+
+async function installedVersion(appPath: string, io: CodexInspectionIo) {
+  try {
+    return plistString(
+      await io.readText(join(appPath, "Contents", "Info.plist")),
+      "CFBundleShortVersionString",
+    );
+  } catch {
+    return undefined;
+  }
 }
 
 function plistString(plist: string, key: string): string | undefined {
@@ -181,7 +199,10 @@ export async function inspectCodexChrome(input: {
   readonly arch?: string;
   readonly chatGptApp?: string;
   readonly userHome: string;
+  /** Use exactly this record. */
   readonly record?: CodexChromeRecord;
+  /** Otherwise choose among these by the installed version (default: non-withdrawn ones). */
+  readonly records?: ReadonlyArray<CodexChromeRecord>;
   readonly io?: CodexInspectionIo;
 }): Promise<CodexChromeInstallation | CodexInspectionFailure> {
   const platform = input.platform ?? process.platform;
@@ -192,15 +213,18 @@ export async function inspectCodexChrome(input: {
       "unsupported-platform",
       "Codex Chrome control isn't supported on this operating system yet.",
     );
-  const record =
-    input.record ??
-    PROVIDER_INTEGRATION_RECORDS["codex-chrome"].find(
+  const appPath = input.chatGptApp ?? DEFAULT_CHATGPT_APP;
+  const record = await selectRecord(
+    input.record,
+    (input.records ?? PROVIDER_INTEGRATION_RECORDS["codex-chrome"]).filter(
       (entry) => entry.platform === platform && entry.arch === arch && !entry.withdrawn,
-    );
+    ),
+    appPath,
+    io,
+  );
   if (!record)
     return fail("version", "Codex Chrome control is not certified on this Mac's architecture yet.");
   const identity = record.identity;
-  const appPath = input.chatGptApp ?? DEFAULT_CHATGPT_APP;
   const app = await inspectApp(appPath, identity, io);
   if ("available" in app) return app;
   if (!versionInRange(app.version, record.versions.appMin, record.versions.appMax))
@@ -425,18 +449,21 @@ export async function inspectCodexComputer(input: {
       "unsupported-platform",
       "Codex Computer Use isn't supported on this operating system yet.",
     );
-  const record =
-    input.record ??
-    PROVIDER_INTEGRATION_RECORDS["codex-computer"].find(
+  const appPath = input.chatGptApp ?? DEFAULT_CHATGPT_APP;
+  const record = await selectRecord(
+    input.record,
+    PROVIDER_INTEGRATION_RECORDS["codex-computer"].filter(
       (entry) => entry.platform === platform && entry.arch === arch && !entry.withdrawn,
-    );
+    ),
+    appPath,
+    io,
+  );
   if (!record)
     return fail(
       "version",
       "Codex Computer Use is awaiting a live safety certification for this F5 build.",
     );
   const identity = record.identity;
-  const appPath = input.chatGptApp ?? DEFAULT_CHATGPT_APP;
   const app = await inspectApp(appPath, identity, io);
   if ("available" in app) return app;
   const versions = record.versions;

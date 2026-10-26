@@ -154,16 +154,84 @@ export function recordCertifies(record: ProviderIntegrationRecord): boolean {
   );
 }
 
-/** The only certification gate. Desktop and server both read it, so they cannot disagree. */
+const parseVersion = (value: string | undefined) => {
+  if (value === undefined) return undefined;
+  const parts = value.split(".").map((part) => (/^\d+$/.test(part) ? Number(part) : Number.NaN));
+  return parts.some(Number.isNaN) ? undefined : parts;
+};
+
+/** Compares dotted numeric versions; undefined when either has a non-numeric part. */
+export function compareVersions(a: string | undefined, b: string | undefined): number | undefined {
+  const [left, right] = [parseVersion(a), parseVersion(b)];
+  if (!left || !right) return undefined;
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const delta = (left[index] ?? 0) - (right[index] ?? 0);
+    if (delta) return delta;
+  }
+  return 0;
+}
+
+/** The version a record certifies from: a Codex floor (`appMin`) or Claude's exact CLI. */
+const certifiedFrom = (record: ProviderIntegrationRecord) =>
+  record.versions.appMin ?? record.versions.cliVersion;
+
+/** Newest certified version first; records without a readable version last. */
+export function newestRecordsFirst<R extends ProviderIntegrationRecord>(
+  records: ReadonlyArray<R>,
+): R[] {
+  return [...records].sort(
+    (a, b) =>
+      compareVersions(certifiedFrom(b), certifiedFrom(a)) ??
+      (parseVersion(certifiedFrom(a)) ? -1 : parseVersion(certifiedFrom(b)) ? 1 : 0),
+  );
+}
+
+/**
+ * The record for an installed provider `version`: the highest floor at or below it, so a
+ * newer floor takes over for builds it covers without shadowing builds still below it.
+ */
+export function recordForVersion<R extends ProviderIntegrationRecord>(
+  records: ReadonlyArray<R>,
+  version: string,
+): R | undefined {
+  return newestRecordsFirst(records).find(
+    (record) => (compareVersions(certifiedFrom(record), version) ?? 1) <= 0,
+  );
+}
+
+/**
+ * The static identity a new certification run exercises and stamps: the newest
+ * non-withdrawn record for the target. Shared by the live harness and the stamper.
+ */
+export function integrationTemplateRecord<R extends ProviderIntegrationRecord>(
+  records: ReadonlyArray<R>,
+  platform: string,
+  arch: string,
+): R | undefined {
+  return newestRecordsFirst(
+    records.filter(
+      (record) => record.platform === platform && record.arch === arch && !record.withdrawn,
+    ),
+  )[0];
+}
+
+/**
+ * The only certification gate. Desktop and server both read it, so they cannot disagree.
+ * With the installed provider `version`, the record that covers it; otherwise the newest.
+ */
 export function certifiedIntegrationRecord<I extends ProviderIntegration>(
   integration: I,
   platform: string,
   arch: string,
   records: ReadonlyArray<RecordFor<I>> = PROVIDER_INTEGRATION_RECORDS[integration],
+  version?: string,
 ): RecordFor<I> | undefined {
-  return records.find(
+  const certifying = records.filter(
     (record) => record.platform === platform && record.arch === arch && recordCertifies(record),
   );
+  return version === undefined
+    ? newestRecordsFirst(certifying)[0]
+    : recordForVersion(certifying, version);
 }
 
 export function isIntegrationCertified(
@@ -319,6 +387,23 @@ export function evidenceMismatches(
     problems.push("toolNames");
   if (record.toolInventorySha256 && record.toolInventorySha256 !== report.toolInventorySha256)
     problems.push("toolInventorySha256");
+  // What F5 shows before consent must be exactly what the run observed, descriptions too.
+  if (record.integration === "codex-chrome" && record.identity.advertisedTools) {
+    const observed = (name: string) => {
+      const tool = report.toolSchemas?.find((entry) => entry.name === name);
+      return tool && JSON.stringify([tool.name, tool.description ?? null, tool.inputSchema]);
+    };
+    const advertised = record.identity.advertisedTools;
+    if (
+      advertised.length !== record.identity.allowedTools.length ||
+      advertised.some(
+        (tool) =>
+          observed(tool.name) !==
+          JSON.stringify([tool.name, tool.description ?? null, tool.inputSchema]),
+      )
+    )
+      problems.push("advertisedTools");
+  }
   // Evidence comes from a clean, committed checkout, and the record names that commit.
   // The shipped artifact is bound later by the release's acceptance report.
   if (!COMMIT.test(report.sourceCommit ?? "") || report.sourceCommit !== record.evidenceCommit)

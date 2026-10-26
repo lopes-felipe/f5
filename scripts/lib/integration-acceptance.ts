@@ -83,9 +83,13 @@ export function integrationProcessMatcher(
   };
   switch (record.integration) {
     case "claude-chrome":
-      // F5's bundled Claude CLI lives inside the app bundle.
-      return (process) =>
-        inApp(process.command) && process.command.includes(record.identity.platformPackage);
+      // F5's bundled Claude CLI lives inside the app bundle. Chrome launches the same
+      // executable as its native host; that one descends from Chrome, not F5.
+      return (process, table) =>
+        inApp(process.command) &&
+        process.command.includes(record.identity.platformPackage) &&
+        !record.identity.nativeHostArgs.some((arg) => process.command.includes(arg)) &&
+        fromF5(process, table);
     case "codex-chrome":
       return (process, table) =>
         /\/cua_node\/bin\/node_repl(\s|$)/.test(process.command) && fromF5(process, table);
@@ -253,6 +257,42 @@ export function macArtifactName(version: string, arch: string): string {
   return `F5-${version}-${arch}.dmg`;
 }
 
-export function acceptanceReportPath(version: string, integration: string): string {
-  return `docs/computer-certification/acceptance-${version}-${integration}.json`;
+/** One report per release, integration and target: each covers one architecture's DMG. */
+export function acceptanceReportPath(
+  version: string,
+  integration: string,
+  platform: string,
+  arch: string,
+): string {
+  return `docs/computer-certification/acceptance-${version}-${integration}-${platform}-${arch}.json`;
+}
+
+export interface BundleIo {
+  /** `codesign --verify --deep --strict`: the bundle is intact against its seal. */
+  readonly verify: (app: string) => boolean;
+  readonly cdhash: (app: string) => string | undefined;
+  readonly version: (app: string) => string | undefined;
+}
+
+/**
+ * Why the installed app is not the artifact being accepted, or undefined when it is. Both
+ * bundles must verify first: the displayed CDHash alone doesn't prove sealed resources or
+ * nested helpers are unchanged.
+ */
+export function installedAppMismatch(
+  installed: string,
+  mounted: string,
+  version: string,
+  io: BundleIo,
+): string | undefined {
+  if (!io.verify(mounted)) return `The app in the DMG fails code-signature verification.`;
+  if (!io.verify(installed))
+    return `${installed} fails code-signature verification. Reinstall it from the draft's DMG.`;
+  const hash = io.cdhash(installed);
+  if (!hash || hash !== io.cdhash(mounted))
+    return `${installed} is not the app in this DMG. Install the draft's DMG first.`;
+  const installedVersion = io.version(installed);
+  if (installedVersion !== version)
+    return `${installed} is version ${installedVersion ?? "unknown"}, not ${version}.`;
+  return undefined;
 }

@@ -5,6 +5,7 @@ import {
 } from "@t3tools/shared/providerIntegrationCertification";
 import {
   cdhashFromCodesign,
+  installedAppMismatch,
   integrationProcessMatcher,
   macArtifactName,
   manifestPaths,
@@ -192,6 +193,53 @@ describe("integration process matching", () => {
     expect(codexMatch(theirs, table)).toBe(false);
     const claudeMatch = integrationProcessMatcher({ record: claude, appPath: APP });
     expect(claudeMatch({ ...ours, command: "/usr/local/bin/claude" }, table)).toBe(false);
+  });
+
+  it("never counts Chrome's native host, which runs F5's bundled CLI too", () => {
+    const cliPath = `${APP}/Contents/Resources/app.asar.unpacked/node_modules/${claude.identity.platformPackage}/claude`;
+    const chrome = {
+      pid: 60,
+      ppid: 1,
+      pgid: 60,
+      command: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    };
+    const session = { pid: 40, ppid: 11, pgid: 40, command: `${cliPath} --chrome` };
+    const nativeHost = {
+      pid: 61,
+      ppid: 60,
+      pgid: 60,
+      command: `${cliPath} --chrome-native-host chrome-extension://abc/`,
+    };
+    // Even if it were somehow parented under F5, the native-host invocation is excluded.
+    const adopted = { ...nativeHost, pid: 62, ppid: 11, pgid: 62 };
+    const table = [f5, server, chrome, session, nativeHost, adopted];
+    const match = integrationProcessMatcher({ record: claude, appPath: APP });
+    expect(table.filter((process) => match(process, table))).toEqual([session]);
+  });
+});
+
+describe("installed app identity", () => {
+  const MOUNTED = "/tmp/mount/F5.app";
+  const io = (patch: { invalid?: string; cdhash?: Record<string, string>; version?: string }) => ({
+    verify: (app: string) => app !== patch.invalid,
+    cdhash: (app: string) => patch.cdhash?.[app] ?? "abc123",
+    version: () => patch.version ?? "1.2.3",
+  });
+  it("requires both bundles to verify before comparing their CDHash", () => {
+    expect(installedAppMismatch(APP, MOUNTED, "1.2.3", io({}))).toBeUndefined();
+    // A modified installed bundle keeps its displayed CDHash; verification catches it.
+    expect(installedAppMismatch(APP, MOUNTED, "1.2.3", io({ invalid: APP }))).toContain(
+      "fails code-signature verification",
+    );
+    expect(installedAppMismatch(APP, MOUNTED, "1.2.3", io({ invalid: MOUNTED }))).toContain(
+      "DMG fails",
+    );
+    expect(
+      installedAppMismatch(APP, MOUNTED, "1.2.3", io({ cdhash: { [APP]: "other" } })),
+    ).toContain("is not the app in this DMG");
+    expect(installedAppMismatch(APP, MOUNTED, "1.2.3", io({ version: "1.2.2" }))).toContain(
+      "is version 1.2.2",
+    );
   });
 });
 

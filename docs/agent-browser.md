@@ -607,11 +607,16 @@ it:
    hashes the DMG, requires the installed app's cdhash and version to match it, and walks
    the `INTEGRATION_ACCEPTANCE_CHECKS` list: process stops, idle stop, background work
    (fixture hits) and manifest bytes are observed; the rest are confirmed. Its report,
-   `docs/computer-certification/acceptance-<version>-<integration>.json`, is committed to
+   `docs/computer-certification/acceptance-<version>-<integration>-darwin-<arch>.json`
+   (one per architecture's DMG), is committed to
    main. `bun run release:promote --tag vX.Y.Z` then publishes the draft only when, for
    every certifying record in the tag, main holds an all-passed acceptance report for the
    draft's exact DMG digest, the tag's commit and those record IDs, and every
-   `evidenceCommit` is in the tag's history. It is the only supported way to undraft.
+   `evidenceCommit` is in the tag's history. Both scripts read records at the commit the
+   remote tag names and refuse a local tag that differs; acceptance also requires
+   `codesign --verify --deep --strict` on the installed and the mounted app before
+   comparing their CDHash. It is the only supported way to undraft (by policy: a
+   maintainer can still run `gh release edit --draft=false`).
 
 On any acceptance failure the draft is not published: withdraw the record
 (`--withdraw <id> --reason <note>`), note it in the CHANGELOG and cut a new release.
@@ -621,8 +626,18 @@ plugin or service versions as `appMin`, `pluginMin` or `serviceMin` with no `*Ma
 newer ChatGPT builds stay open (settings note "Certified on ChatGPT <floor>; running
 <version>"). Every spawn still re-inspects signatures, extension IDs, origins, the host
 name and the helper, then verifies the live tool inventory digest and advertised schemas
-against the record; any mismatch closes that session with its specific reason. A
-behaviour regression behind an unchanged inventory is handled by withdrawing the record.
+against the record; any mismatch closes that session with its specific reason. Floors
+can overlap: the installed version picks the record with the highest floor at or below
+it (`recordForVersion`), so a newer floor stamped for a changed inventory takes over for
+the builds it covers while older builds keep theirs. Acceptance exercises that same
+record.
+
+Floors are a deliberate trade-off. Behaviour is re-verified only by a new live run;
+newer ChatGPT builds are trusted on their signatures, identity and unchanged inventory
+(names and schemas; tool descriptions are not hashed, and F5 shows only the stamped
+ones). A behaviour regression behind an unchanged inventory is handled by withdrawing the
+record, and **withdrawal is not retroactive**: it reaches users only when they update F5.
+Installed F5 builds keep accepting later ChatGPT builds until then.
 
 `bun apps/server/scripts/generate-claude-chrome-descriptor.ts --check` (CI job
 `macos-descriptor-drift`) re-extracts the Claude descriptor from the pinned CLI and fails

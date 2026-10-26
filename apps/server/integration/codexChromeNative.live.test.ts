@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   INTEGRATION_REQUIRED_ASSERTIONS,
   PROVIDER_INTEGRATION_RECORDS,
+  integrationTemplateRecord,
   type IntegrationEvidenceReport,
 } from "@t3tools/shared/providerIntegrationCertification";
 
@@ -39,10 +40,13 @@ describe.skipIf(!optedIn)("Codex Chrome live certification", () => {
     if (process.env.F5_AGENT_PROCESS === "1")
       throw new Error("Run the Codex Chrome certification outside F5, not from an F5 agent.");
     if (process.platform !== "darwin") throw new Error("Codex Chrome certification is macOS only.");
-    // Only the static identity is used; versions and inventory come from this run.
-    const record = PROVIDER_INTEGRATION_RECORDS["codex-chrome"]
-      .filter((entry) => entry.platform === process.platform && entry.arch === process.arch)
-      .at(-1);
+    // Only the static identity is used; versions and inventory come from this run. The
+    // stamper defaults to the same template, so the identity exercised is the one stamped.
+    const record = integrationTemplateRecord(
+      PROVIDER_INTEGRATION_RECORDS["codex-chrome"],
+      process.platform,
+      process.arch,
+    );
     if (!record) throw new Error(`No Codex Chrome record for darwin-${process.arch}.`);
     // Taken before anything runs; the report file written at the end doesn't count.
     const source = evidenceSource();
