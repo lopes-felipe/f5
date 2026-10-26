@@ -1,13 +1,29 @@
 import {
+  isKnownProviderKind,
+  ProviderDriverKind,
   UPSTREAM_MAX_PORT_TOPICS,
   type ModelSelection,
+  type ProjectId,
   type RuntimeMode,
   type ServerProvider,
   type UpstreamOverview,
 } from "@t3tools/contracts";
-import { RUNTIME_MODE_VALUES } from "@t3tools/contracts";
+import { createModelSelection } from "@t3tools/shared/model";
+import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
 import { useEffect, useState } from "react";
 
+import { useSettings } from "../../hooks/useSettings";
+import { getModelPreferences } from "../../modelPreferencesStore";
+import { getCustomModelOptionsByInstance } from "../../modelSelection";
+import { useStore } from "../../store";
+import {
+  isReadyProvider,
+  pickedModelSelection,
+  resolveNewThreadModelSelection,
+} from "../chat/newThreadModelSelection";
+import { ProviderInstanceModelPicker } from "../chat/ProviderInstanceModelPicker";
+import { RuntimeModePicker } from "../chat/RuntimeModePicker";
+import { TraitsPicker } from "../chat/TraitsPicker";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -195,9 +211,11 @@ export const selectionKey = (selection: ModelSelection | null | undefined) =>
 
 export function StartPortDialog(props: {
   readonly open: boolean;
+  readonly projectId: ProjectId;
   readonly topicIds: ReadonlyArray<string>;
-  readonly models: ReadonlyArray<ModelOption>;
-  readonly defaultModel: ModelSelection | null;
+  readonly providers: ReadonlyArray<ServerProvider>;
+  /** The project's saved port model; otherwise the dialog starts on the new-thread default. */
+  readonly savedModel: ModelSelection | null;
   readonly defaultRuntimeMode: RuntimeMode;
   readonly overview: UpstreamOverview;
   readonly busy: boolean;
@@ -210,34 +228,46 @@ export function StartPortDialog(props: {
     clientRequestId: string;
   }) => void;
 }) {
+  const settings = useSettings(undefined, props.projectId);
+  const project = useStore((s) => s.projects.find((p) => p.id === props.projectId));
+  const providers = projectProviderSnapshots(props.providers, settings, props.projectId);
+  const isReady = (selection: ModelSelection) =>
+    providers.some((p) => p.instanceId === selection.instanceId && isReadyProvider(p));
+  const defaultModel =
+    props.savedModel && isReady(props.savedModel)
+      ? props.savedModel
+      : resolveNewThreadModelSelection({ project, settings, providers, preferences: getModelPreferences() });
   const [grouping, setGrouping] = useState<"together" | "separately">("together");
-  const [model, setModel] = useState("");
+  const [modelSelection, setModelSelection] = useState<ModelSelection>(defaultModel);
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>(props.defaultRuntimeMode);
   // One id per dialog open, reused on retry so the server deduplicates. After the
   // first submit the choices are locked, so a retry repeats the same request.
   const [clientRequestId, setClientRequestId] = useState(() => randomUUID());
   const [submitted, setSubmitted] = useState(false);
-  const savedModelKey = selectionKey(props.defaultModel);
-  const defaultModelKey = props.models.some((option) => option.key === savedModelKey)
-    ? savedModelKey
-    : (props.models[0]?.key ?? "");
-  // Reset only when the dialog opens: parent re-renders pass new `models` arrays.
+  // Reset only when the dialog opens: parent re-renders pass new `providers` arrays.
   const [wasOpen, setWasOpen] = useState(false);
   if (props.open !== wasOpen) {
     setWasOpen(props.open);
     if (props.open) {
       setGrouping("together");
-      setModel(defaultModelKey);
+      setModelSelection(defaultModel);
       setRuntimeMode(props.defaultRuntimeMode);
       setClientRequestId(randomUUID());
       setSubmitted(false);
     }
   }
-  // Models can arrive after opening; fill an empty or vanished choice without overriding the user's.
-  if (props.open && !submitted && defaultModelKey && !props.models.some((option) => option.key === model))
-    setModel(defaultModelKey);
+  // Providers can arrive after opening; replace a choice that cannot run without overriding the user's.
+  if (
+    props.open &&
+    !submitted &&
+    !isReady(modelSelection) &&
+    selectionKey(defaultModel) !== selectionKey(modelSelection)
+  )
+    setModelSelection(defaultModel);
   const limitError = portLimitError(props.topicIds.length, grouping);
-  const selected = props.models.find((option) => option.key === model);
+  const ready = isReady(modelSelection);
+  const provider = providers.find((p) => p.instanceId === modelSelection.instanceId);
+  const driver = provider?.driver ?? ProviderDriverKind.make("codex");
   const locked = props.busy || submitted;
   const untriaged = props.overview.untriagedUpstreamCount;
   return (
@@ -287,38 +317,40 @@ export function StartPortDialog(props: {
               </label>
             </fieldset>
           )}
-          <label className="block space-y-1">
+          <div className="space-y-1">
             <span className="font-medium">Model</span>
-            <select
-              aria-label="Port model"
-              className={selectClassName}
-              disabled={locked}
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-            >
-              {props.models.map((option) => (
-                <option key={option.key} value={option.key}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="block space-y-1">
-            <span className="font-medium">Runtime mode</span>
-            <select
-              aria-label="Runtime mode"
-              className={selectClassName}
-              disabled={locked}
-              value={runtimeMode}
-              onChange={(e) => setRuntimeMode(e.target.value as RuntimeMode)}
-            >
-              {RUNTIME_MODE_VALUES.map((mode) => (
-                <option key={mode} value={mode}>
-                  {mode}
-                </option>
-              ))}
-            </select>
-          </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <ProviderInstanceModelPicker
+                instanceId={modelSelection.instanceId}
+                model={modelSelection.model}
+                lockedInstanceId={null}
+                providers={providers}
+                modelOptionsByInstance={getCustomModelOptionsByInstance(settings, providers)}
+                disabled={locked}
+                onInstanceModelChange={(instanceId, pickedDriver, model) =>
+                  setModelSelection(pickedModelSelection(providers, instanceId, pickedDriver, model))
+                }
+              />
+              <TraitsPicker
+                disabled={locked}
+                provider={driver}
+                model={modelSelection.model}
+                models={provider?.models ?? []}
+                modelOptions={modelSelection.options}
+                onModelOptionsChange={(options) =>
+                  setModelSelection(createModelSelection(modelSelection.instanceId, modelSelection.model, options))
+                }
+              />
+              {isKnownProviderKind(driver) && (
+                <RuntimeModePicker
+                  disabled={locked}
+                  provider={driver}
+                  value={runtimeMode}
+                  onValueChange={setRuntimeMode}
+                />
+              )}
+            </div>
+          </div>
           {limitError && (
             <p role="alert" className="text-destructive-foreground">
               {limitError}
@@ -335,11 +367,11 @@ export function StartPortDialog(props: {
             Cancel
           </Button>
           <Button
-            disabled={props.busy || limitError !== null || !selected}
+            disabled={props.busy || limitError !== null || !ready}
             onClick={() => {
-              if (!selected) return;
+              if (!ready) return;
               setSubmitted(true);
-              props.onStart({ grouping, modelSelection: selected.selection, runtimeMode, clientRequestId });
+              props.onStart({ grouping, modelSelection, runtimeMode, clientRequestId });
             }}
           >
             {submitted ? "Retry" : "Start port"}

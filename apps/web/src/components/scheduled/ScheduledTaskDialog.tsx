@@ -5,7 +5,6 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   type ModelSlug,
-  ProviderInstanceId,
   ProviderDriverKind,
   ScheduledTaskId,
   type ScheduledTask,
@@ -13,20 +12,15 @@ import {
   type ProjectId,
   isKnownProviderKind,
 } from "@t3tools/contracts";
-import { createModelSelection, getDefaultModel } from "@t3tools/shared/model";
+import { createModelSelection } from "@t3tools/shared/model";
 import { buildSlashComposerMenuItems } from "@t3tools/shared/slashCommands";
 import type { Project } from "../../types";
 import { useStore } from "../../store";
 import { useSettings, type UnifiedWebSettings } from "../../hooks/useSettings";
 import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
 import { gitBranchesQueryOptions } from "../../lib/gitReactQuery";
-import { resolveNewThreadPreferences } from "../../newThreadPreferences";
 import { getModelPreferences } from "../../modelPreferencesStore";
-import {
-  resolveAppModelSelectionForInstance,
-  getCustomModelOptionsByInstance,
-} from "../../modelSelection";
-import { providerModelOptionsToSelections } from "../../providerModelOptions";
+import { getCustomModelOptionsByInstance } from "../../modelSelection";
 import { ensureNativeApi } from "../../nativeApi";
 import { useTheme } from "../../hooks/useTheme";
 import { ComposerPromptEditor } from "../ComposerPromptEditor";
@@ -37,7 +31,10 @@ import {
 } from "../chat/ComposerCommandMenu";
 import { ProviderInstanceModelPicker } from "../chat/ProviderInstanceModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
-import { getComposerProviderState } from "../chat/composerProviderState";
+import {
+  pickedModelSelection,
+  resolveNewThreadModelSelection,
+} from "../chat/newThreadModelSelection";
 import { RuntimeModePicker } from "../chat/RuntimeModePicker";
 import {
   Dialog,
@@ -110,55 +107,17 @@ function Editor(
     branches: import("@t3tools/contracts").GitListBranchesResult | undefined;
   },
 ) {
-  const preferences = resolveNewThreadPreferences(
-    props.project,
-    props.settings,
-    getModelPreferences(),
-  );
-  const preferredProvider = props.providers.find(
-    (p) => p.instanceId === (preferences.instanceId ?? preferences.provider),
-  );
-  const initialProvider =
-    preferredProvider?.enabled &&
-    preferredProvider.installed &&
-    preferredProvider.status !== "error" &&
-    preferredProvider.status !== "disabled"
-      ? preferredProvider
-      : props.providers.find(
-          (p) => p.enabled && p.installed && p.status !== "error" && p.status !== "disabled",
-        );
-  const initialDriver =
-    initialProvider && isKnownProviderKind(initialProvider.driver)
-      ? initialProvider.driver
-      : "codex";
-  const keptPreference = initialProvider === preferredProvider;
-  const initialModel =
-    (initialProvider
-      ? resolveAppModelSelectionForInstance(
-          initialProvider.instanceId,
-          props.settings,
-          props.providers,
-          keptPreference ? preferences.model : null,
-        )
-      : null) ?? getDefaultModel(initialDriver);
   const [value, setValue] = useState<ScheduledTaskConfiguration>(
     () =>
       props.task ?? {
         name: "",
         prompt: "",
-        modelSelection: createModelSelection(
-          initialProvider?.instanceId ?? ProviderInstanceId.make("codex"),
-          initialModel,
-          getComposerProviderState({
-            provider: ProviderDriverKind.make(initialDriver),
-            model: initialModel,
-            models: initialProvider?.models ?? [],
-            modelOptions: providerModelOptionsToSelections(
-              initialDriver,
-              keptPreference ? preferences.options : undefined,
-            ),
-          }).modelOptionsForDispatch,
-        ),
+        modelSelection: resolveNewThreadModelSelection({
+          project: props.project,
+          settings: props.settings,
+          providers: props.providers,
+          preferences: getModelPreferences(),
+        }),
         runtimeMode: props.settings.defaultRuntimeMode,
         workspace: { kind: "projectRoot" },
         cron: SCHEDULE_PRESETS.daily,
@@ -385,16 +344,11 @@ function Editor(
                 modelOptionsByInstance={options}
                 onInstanceModelChange={(instanceId, driver, model) =>
                   update({
-                    modelSelection: createModelSelection(
+                    modelSelection: pickedModelSelection(
+                      props.providers,
                       instanceId,
+                      driver,
                       model,
-                      getComposerProviderState({
-                        provider: driver,
-                        model,
-                        models:
-                          props.providers.find((p) => p.instanceId === instanceId)?.models ?? [],
-                        modelOptions: undefined,
-                      }).modelOptionsForDispatch,
                     ),
                   })
                 }

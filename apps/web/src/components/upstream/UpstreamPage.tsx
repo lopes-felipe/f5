@@ -32,7 +32,6 @@ import { PublicationBanner } from "./PublicationBanner";
 import {
   ConfirmDialog,
   DeclineDialog,
-  modelOptions,
   SkipReasonDialog,
   StartPortDialog,
   type ConfirmRequest,
@@ -382,7 +381,6 @@ export function UpstreamPage(props: {
   if (!overview.config) return <UpstreamConfigEmptyState diagnostics={overview.diagnostics} />;
 
   const defaultRuntimeMode = projectSettings.data?.settings.defaultRuntimeMode ?? "full-access";
-  const portModels = modelOptions(providers);
   const runSummary = describeRun(overview?.activeRun ?? overview?.lastRun ?? null);
 
   return (
@@ -664,9 +662,10 @@ export function UpstreamPage(props: {
           <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
           <StartPortDialog
             open={portIds !== null}
+            projectId={projectId}
             topicIds={portIds ?? []}
-            models={portModels}
-            defaultModel={projectSettings.data?.settings.upstreamPorts?.portModelSelection ?? null}
+            providers={providers}
+            savedModel={projectSettings.data?.settings.upstreamPorts?.portModelSelection ?? null}
             defaultRuntimeMode={defaultRuntimeMode}
             overview={overview}
             busy={busy}
