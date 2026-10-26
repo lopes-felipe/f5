@@ -51418,11 +51418,24 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
-      "decidedAt": "2026-10-26T18:29:56.606Z",
+      "decidedAt": "2026-10-26T18:40:33.547Z",
       "decidedBy": "user",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts:1192",
+          "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts:1220",
+          "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts:2045",
+          "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts:2721",
+          "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts:3086"
+        ],
+        "f5Refs": [
+          "ebb933c282af54820aceaf8eeecee95029a63015"
+        ]
+      },
       "id": "pr-6153",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "server",
