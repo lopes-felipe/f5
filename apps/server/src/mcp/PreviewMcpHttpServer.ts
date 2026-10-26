@@ -143,6 +143,7 @@ function makeToolCallHandler(
     name: string,
     rawArguments: unknown,
     invocationId?: string,
+    meta?: unknown,
   ): Promise<McpToolResult> => {
     const scope = resolveScope(token);
     if (!scope) {
@@ -152,7 +153,8 @@ function makeToolCallHandler(
     }
     if (scope.catalog === "integration") {
       if (!scope.integration) return previewToolErrorResult(new Error("Integration unavailable."));
-      return scope.integration.callTool(name, rawArguments, invocationId);
+      // Codex's turn metadata rides in `_meta`; ChatGPT's browser runtime requires it.
+      return scope.integration.callTool(name, rawArguments, invocationId, meta);
     }
     if (scope.catalog === "thread") {
       return thread
@@ -207,6 +209,7 @@ function handleRpcRequest(input: {
     name: string,
     rawArguments: unknown,
     invocationId?: string,
+    meta?: unknown,
   ) => Promise<McpToolResult>;
 }): Promise<JsonRpcResponse | null> {
   const { request } = input;
@@ -289,6 +292,7 @@ function handleRpcRequest(input: {
           name,
           params.arguments,
           request.id === undefined ? undefined : input.invocationKey(JSON.stringify(request.id)),
+          params._meta,
         )
         .then((result) => jsonRpcSuccess(request.id, result));
     }

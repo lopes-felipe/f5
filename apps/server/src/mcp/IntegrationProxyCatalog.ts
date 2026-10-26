@@ -36,6 +36,45 @@ export interface IntegrationTool {
   readonly annotations?: unknown;
 }
 
+/** Codex's per-call turn identity; ChatGPT's browser runtime keys its session on it. */
+export const CODEX_TURN_METADATA_KEY = "x-codex-turn-metadata";
+const MAX_TURN_METADATA_BYTES = 16 * 1024;
+
+/**
+ * The only `_meta` forwarded to the child: Codex's turn metadata (an object or its JSON
+ * text) when it names a `session_id` and `turn_id`. Anything else the client sends is
+ * dropped. Without usable metadata, F5's own thread and session generation stand in,
+ * which keeps one browser session per F5 thread.
+ */
+export function forwardedCallMeta(
+  meta: unknown,
+  identity: Pick<IntegrationProcessIdentity, "threadId" | "sessionGeneration">,
+): Record<string, unknown> {
+  let value =
+    meta && typeof meta === "object" && !Array.isArray(meta)
+      ? (meta as Record<string, unknown>)[CODEX_TURN_METADATA_KEY]
+      : undefined;
+  if (typeof value === "string" && value.length <= MAX_TURN_METADATA_BYTES) {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      value = undefined;
+    }
+  }
+  const usable =
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    typeof (value as Record<string, unknown>).session_id === "string" &&
+    typeof (value as Record<string, unknown>).turn_id === "string" &&
+    JSON.stringify(value).length <= MAX_TURN_METADATA_BYTES;
+  return {
+    [CODEX_TURN_METADATA_KEY]: usable
+      ? value
+      : { session_id: `f5-${identity.threadId}`, turn_id: `f5-${identity.sessionGeneration}` },
+  };
+}
+
 /** Order-insensitive inventory digest over `{name, inputSchema}`; descriptions may change. */
 export function toolInventorySha256(tools: ReadonlyArray<IntegrationTool>): string {
   const canonical = [...tools]
@@ -508,10 +547,12 @@ export class IntegrationProxySession {
     return undefined;
   }
 
+  /** `meta` is the client's `params._meta`; see `forwardedCallMeta` for what is forwarded. */
   async callTool(
     name: string,
     args: unknown,
     requestedId: string = randomUUID(),
+    meta?: unknown,
   ): Promise<McpToolResult> {
     const callId = this.calls.has(requestedId) ? `${requestedId}#${randomUUID()}` : requestedId;
     const call: TrackedCall = { callId, generation: this.deps.generation, state: "admitting" };
@@ -546,7 +587,7 @@ export class IntegrationProxySession {
     call.state = "forwarded";
     const response = this.rpc!.request(
       "tools/call",
-      { name, arguments: args },
+      { name, arguments: args, _meta: forwardedCallMeta(meta, this.deps.identity) },
       {
         onId: (id) => {
           call.requestId = id;

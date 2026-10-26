@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { spawnRegisteredProcess } from "../provider/registeredIntegrationProcess";
 import {
+  CODEX_TURN_METADATA_KEY,
   IntegrationProxySession,
+  forwardedCallMeta,
   toolInventorySha256,
   type IntegrationProxyDeps,
 } from "./IntegrationProxyCatalog";
@@ -80,6 +82,35 @@ function setup(patch: Partial<IntegrationProxyDeps> & { env?: NodeJS.ProcessEnv 
 const text = (result: { content: ReadonlyArray<{ type: string; text?: string }> }) =>
   result.content.map((block) => block.text ?? "").join("");
 
+describe("forwardedCallMeta", () => {
+  const identity = { threadId: "t", sessionGeneration: "g1" };
+  const fallback = { [CODEX_TURN_METADATA_KEY]: { session_id: "f5-t", turn_id: "f5-g1" } };
+
+  it("parses Codex's JSON-text form", () => {
+    const turn = { session_id: "s", turn_id: "t", thread_source: "user" };
+    expect(
+      forwardedCallMeta({ [CODEX_TURN_METADATA_KEY]: JSON.stringify(turn) }, identity),
+    ).toEqual({ [CODEX_TURN_METADATA_KEY]: turn });
+  });
+
+  it("falls back on missing, malformed, incomplete or oversized metadata", () => {
+    const big = { session_id: "s", turn_id: "t", pad: "x".repeat(17 * 1024) };
+    for (const meta of [
+      undefined,
+      null,
+      [],
+      "x",
+      { [CODEX_TURN_METADATA_KEY]: "{not json" },
+      { [CODEX_TURN_METADATA_KEY]: { session_id: "s" } },
+      { [CODEX_TURN_METADATA_KEY]: { session_id: 1, turn_id: "t" } },
+      { [CODEX_TURN_METADATA_KEY]: ["s", "t"] },
+      { [CODEX_TURN_METADATA_KEY]: big },
+      { [CODEX_TURN_METADATA_KEY]: JSON.stringify(big) },
+    ])
+      expect(forwardedCallMeta(meta, identity)).toEqual(fallback);
+  });
+});
+
 describe("integration proxy", () => {
   it("lists the record's tools without starting the child, then verifies a paged, reordered inventory", async () => {
     const { session, spawn, consent } = setup({
@@ -137,6 +168,19 @@ describe("integration proxy", () => {
     expect(releaseLease).not.toHaveBeenCalled();
     expect(state.held).toBe(true);
     expect(text(await session.callTool("extra", {}))).toContain("isn't allowed");
+  });
+
+  it("forwards only Codex's turn metadata and stands in F5's identity without it", async () => {
+    const { session } = setup();
+    const turn = { session_id: "s1", turn_id: "t1", model: "m" };
+    const forwarded = async (meta?: unknown) =>
+      JSON.parse(text(await session.callTool("js", { code: "meta" }, undefined, meta)));
+    expect(await forwarded({ [CODEX_TURN_METADATA_KEY]: turn, other: "dropped" })).toEqual({
+      [CODEX_TURN_METADATA_KEY]: turn,
+    });
+    expect(await forwarded()).toEqual({
+      [CODEX_TURN_METADATA_KEY]: { session_id: "f5-t", turn_id: "f5-g1" },
+    });
   });
 
   it("stops an idle child and releases the lease once it has exited", async () => {
