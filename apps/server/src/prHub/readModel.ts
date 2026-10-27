@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { prSearchPredicate } from "./prSearch.ts";
 import {
   PrHubListFilter,
   type PrHubListInput,
@@ -113,7 +114,7 @@ export function listPrHubPullRequests(
       return empty;
     }
   }
-  const query = input.query?.trim().toLowerCase();
+  const matchesSearch = prSearchPredicate(input.query ?? "", snapshot.viewerLogin);
   const rows = [...snapshot.pullRequests, ...snapshot.recentlyResolved].filter((pr) => {
     if (input.key) return pr.key === input.key;
     return (
@@ -128,10 +129,9 @@ export function listPrHubPullRequests(
       (!input.relationship || pr.roles.includes(input.relationship)) &&
       (!input.ci || pr.checkRollup === input.ci) &&
       (!input.lifecycle || pr.state === input.lifecycle) &&
-      (!query ||
-        `${pr.title} ${pr.repository.nameWithOwner} #${pr.number} ${pr.author ?? ""}`
-          .toLowerCase()
-          .includes(query))
+      (!input.draft || pr.isDraft === (input.draft === "only")) &&
+      (!input.review || pr.reviewDecision === input.review) &&
+      matchesSearch(pr)
     );
   });
   rows.sort(

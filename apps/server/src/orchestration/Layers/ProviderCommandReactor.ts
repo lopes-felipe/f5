@@ -12,6 +12,7 @@ import { deriveProviderInstanceConfigMap } from "../../provider/Layers/ProviderI
 import { makeOperationGate } from "../../provider/operationGate.ts";
 import { resolveBindingInstanceId } from "../../provider/bindingIdentity.ts";
 import { readPersistedSessionGeneration } from "../../provider/sessionCapabilities.ts";
+import { isOpenCodeHistoryContinuation } from "../../provider/openCodeResume.ts";
 import { withWorktreeLifecycleLock } from "../../project/Layers/WorktreeLifecycleCoordinator.ts";
 import {
   assertWorktreeReady,
@@ -937,7 +938,11 @@ const make = Effect.gen(function* () {
           if (
             needsNativeRecovery &&
             expectedIdentity !== undefined &&
-            nativeIdentity(started.resumeCursor) !== expectedIdentity
+            nativeIdentity(started.resumeCursor) !== expectedIdentity &&
+            !(
+              started.provider === "opencode" &&
+              isOpenCodeHistoryContinuation(input?.resumeCursor, started.resumeCursor)
+            )
           ) {
             // A valid-looking cursor can still be missing from the isolated provider store.
             // Summarize only after the adapter actually falls back, then install it before dispatch.
@@ -1101,7 +1106,7 @@ const make = Effect.gen(function* () {
           ? "provider-changed"
           : instanceChanged
             ? "instance-changed"
-            : shouldRestartForCwdChange
+            : shouldRestartForCwdChange && currentProvider !== "opencode"
               ? "cwd-changed"
               : undefined;
         const resumeCursor =
@@ -1201,7 +1206,7 @@ const make = Effect.gen(function* () {
       const resumeCursorForStoppedSession =
         persistedProviderMatches &&
         persistedInstanceMatches &&
-        persistedCwdMatches &&
+        (persistedCwdMatches || persistedBinding?.provider === "opencode") &&
         persistedBinding?.resumeCursor !== undefined &&
         persistedBinding.resumeCursor !== null
           ? persistedBinding.resumeCursor

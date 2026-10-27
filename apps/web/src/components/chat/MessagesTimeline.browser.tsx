@@ -974,6 +974,72 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
+  it("keeps a reader just above the bottom in place while the running reply grows", async () => {
+    const initialEntries = [
+      ...makeOverflowEntries(16),
+      makeAssistantEntry("streaming-tail", "Reply", 121),
+    ];
+    let api: TimelineHarnessApi | null = null;
+    let currentRef: LegendListRef | null = null;
+    const isAtEndCalls: boolean[] = [];
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={initialEntries}
+        initialHeight={800}
+        initialIsWorking
+        onIsAtEndChangeSpy={(value) => isAtEndCalls.push(value)}
+        onListRefChange={(ref) => {
+          currentRef = ref;
+        }}
+        setApi={(nextApi) => {
+          api = nextApi;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const node = await waitForScrollContainer(host);
+      await scrollTimelineToOffset(currentRef, node, node.scrollHeight - node.clientHeight - 65);
+      node.dispatchEvent(new WheelEvent("wheel", { deltaY: -65 }));
+      node.dispatchEvent(new Event("scroll"));
+      await vi.waitFor(() => expect(isAtEndCalls.at(-1)).toBe(false));
+      const before = node.scrollTop;
+      api!.setEntries([
+        ...initialEntries.slice(0, -1),
+        makeAssistantEntry(
+          "streaming-tail",
+          Array.from({ length: 12 }, (_, index) => "Streamed paragraph " + index).join("\n\n"),
+          121,
+        ),
+      ]);
+      await waitForTimelineLayout(() => node);
+      expect(Math.abs(node.scrollTop - before)).toBeLessThan(8);
+      expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeGreaterThan(40);
+      await scrollTimelineToOffset(currentRef, node, node.scrollHeight - node.clientHeight - 30);
+      node.dispatchEvent(new Event("scroll"));
+      await vi.waitFor(() => expect(isAtEndCalls.at(-1)).toBe(true));
+      const beforeContinuedStream = node.scrollHeight;
+      api!.setEntries([
+        ...initialEntries.slice(0, -1),
+        makeAssistantEntry(
+          "streaming-tail",
+          Array.from({ length: 24 }, (_, index) => "Continued paragraph " + index).join("\n\n"),
+          121,
+        ),
+      ]);
+      await vi.waitFor(() => {
+        expect(node.scrollHeight).toBeGreaterThan(beforeContinuedStream + 100);
+        expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(40);
+        expect(isAtEndCalls.at(-1)).toBe(true);
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("follows the tail from a scrolled-up position when a new turn requests it", async () => {
     const initialEntries = makeOverflowEntries(16);
     const isAtEndCalls: boolean[] = [];

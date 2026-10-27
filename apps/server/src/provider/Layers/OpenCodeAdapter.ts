@@ -25,12 +25,14 @@ import {
   Cause,
   Deferred,
   Fiber,
+  FileSystem,
   Effect,
   Exit,
   Queue,
   Random,
   Ref,
   Option,
+  Path,
   Scope,
   Stream,
   Schedule,
@@ -69,6 +71,14 @@ import {
   type OpenCodeServerConnection,
 } from "../opencodeRuntime.ts";
 import { normalizeSupportedSlashCommands } from "../supportedSlashCommands.ts";
+import { makeOperationGate } from "../operationGate.ts";
+import {
+  isOpenCodeNotFound,
+  getOpenCodeResumeSession,
+  isSameOpenCodeDirectory,
+  OPENCODE_RESUME_VERSION,
+  parseOpenCodeResume,
+} from "../openCodeResume.ts";
 import { buildProviderAttachmentRuntimeContext } from "../attachmentRuntimeContext.ts";
 import {
   isOpenCodePasswordUnavailable,
@@ -389,9 +399,13 @@ export function mergeOpenCodeAssistantText(
   readonly deltaToEmit: string;
 } {
   const latestText = resolveLatestAssistantText(previousText, nextText);
+  const previous = previousText ?? "";
+  const prefixLength = latestText.startsWith(previous)
+    ? previous.length
+    : commonPrefixLength(previous, latestText);
   return {
     latestText,
-    deltaToEmit: latestText.slice(commonPrefixLength(previousText ?? "", latestText)),
+    deltaToEmit: latestText.slice(prefixLength),
   };
 }
 
@@ -608,6 +622,8 @@ export function makeOpenCodeAdapter(
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("opencode");
     const serverConfig = yield* ServerConfig;
     const openCodeRuntime = yield* OpenCodeRuntime;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const nativeEventLogger =
       options?.nativeEventLogger ??
       (options?.nativeEventLogPath !== undefined
@@ -621,6 +637,7 @@ export function makeOpenCodeAdapter(
       options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
     const runtimeEvents = yield* Queue.unbounded<ProviderRuntimeEvent>();
     const sessions = new Map<ThreadId, OpenCodeSessionContext>();
+    const withStartLock = makeOperationGate<ThreadId>();
 
     // Layer-level finalizer: when the adapter layer shuts down, stop every
     // session. Each session's `Scope.close` tears down its spawned OpenCode
@@ -1332,7 +1349,7 @@ export function makeOpenCodeAdapter(
       }
     });
 
-    const startSession: OpenCodeAdapterShape["startSession"] = Effect.fn("startSession")(
+    const startSessionUnlocked: OpenCodeAdapterShape["startSession"] = Effect.fn("startSession")(
       function* (input) {
         const binaryPath = openCodeSettings.binaryPath;
         const serverUrl = openCodeSettings.serverUrl;
@@ -1345,6 +1362,7 @@ export function makeOpenCodeAdapter(
           });
         }
         const directory = input.cwd ?? serverConfig.cwd;
+        const resumeSessionId = parseOpenCodeResume(input.resumeCursor)?.sessionId;
         const existing = sessions.get(input.threadId);
         if (existing) {
           yield* stopOpenCodeContext(existing);
@@ -1385,14 +1403,70 @@ export function makeOpenCodeAdapter(
                 directory,
                 ...(server.external && serverPassword ? { serverPassword } : {}),
               });
+              const permission = input.workflowExecutionProfile
+                ? buildOpenCodeWorkflowPermissionRules(input.workflowExecutionProfile)
+                : buildOpenCodePermissionRules(input.runtimeMode);
+              const adopted = resumeSessionId
+                ? yield* getOpenCodeResumeSession(client, resumeSessionId).pipe(
+                    Effect.catchIf(isOpenCodeNotFound, () => Effect.void),
+                  )
+                : undefined;
+              if (adopted) {
+                if (server.external) {
+                  const status = yield* runOpenCodeSdk("session.status", (signal) =>
+                    client.session.status(undefined, { signal }),
+                  );
+                  const state = status.data?.[adopted.id];
+                  if (state && state.type !== "idle") {
+                    return yield* new OpenCodeRuntimeError({
+                      operation: "session.resume",
+                      detail:
+                        "The session is still running on the external OpenCode server. " +
+                        "Wait for it to finish or stop it in OpenCode before retrying.",
+                    });
+                  }
+                }
+                const reuse =
+                  !adopted.directory ||
+                  (yield* isSameOpenCodeDirectory(fileSystem, path, adopted.directory, directory));
+                const resolved = reuse
+                  ? adopted
+                  : (yield* runOpenCodeSdk("session.fork", (signal) =>
+                      client.session.fork({ sessionID: adopted.id, directory }, { signal }),
+                    )).data;
+                if (!resolved) {
+                  return yield* new OpenCodeRuntimeError({
+                    operation: "session.fork",
+                    detail: "OpenCode session.fork returned no session payload.",
+                  });
+                }
+                // Resume and fork skip creation, so apply the current runtime/workflow rules.
+                yield* runOpenCodeSdk("session.update", (signal) =>
+                  client.session.update({ sessionID: resolved.id, permission }, { signal }),
+                );
+                return {
+                  sessionScope,
+                  server,
+                  client,
+                  openCodeSession: resolved,
+                  forkedFromSessionId: reuse ? undefined : adopted.id,
+                };
+              }
+              if (resumeSessionId) {
+                yield* Effect.logWarning(
+                  "OpenCode session '" +
+                    resumeSessionId +
+                    "' could not be found from '" +
+                    directory +
+                    "'; starting a fresh session.",
+                );
+              }
               const openCodeSession = yield* runOpenCodeSdk("session.create", (signal) =>
                 // No title: OpenCode only generates one from the first prompt
                 // when session.create leaves it unset.
                 client.session.create(
                   {
-                    permission: input.workflowExecutionProfile
-                      ? buildOpenCodeWorkflowPermissionRules(input.workflowExecutionProfile)
-                      : buildOpenCodePermissionRules(input.runtimeMode),
+                    permission,
                   },
                   { signal },
                 ),
@@ -1408,30 +1482,42 @@ export function makeOpenCodeAdapter(
                 server,
                 client,
                 openCodeSession: openCodeSession.data,
+                forkedFromSessionId: undefined,
               };
             }).pipe(Effect.provideService(Scope.Scope, sessionScope)),
           );
           if (Exit.isFailure(startedExit)) {
             yield* Scope.close(sessionScope, Exit.void).pipe(Effect.ignore);
-            return yield* toProcessError(input.threadId, Cause.squash(startedExit.cause));
+            const cause = Cause.squash(startedExit.cause);
+            const operation = OpenCodeRuntimeError.is(cause) ? cause.operation : undefined;
+            const recoveryHint =
+              operation === "session.get" || operation === "session.update"
+                ? " Check the OpenCode server connection and permissions, then retry, " +
+                  "or start a new conversation to use a fresh session."
+                : operation === "session.resume"
+                  ? ""
+                  : " Retry, or start a new conversation to use a fresh session.";
+            return yield* toProcessError(
+              input.threadId,
+              resumeSessionId && operation !== "session.create"
+                ? new OpenCodeRuntimeError({
+                    operation: "session.resume",
+                    detail:
+                      "Could not resume OpenCode session '" +
+                      resumeSessionId +
+                      "' from '" +
+                      directory +
+                      "': " +
+                      openCodeRuntimeErrorDetail(cause).replace(/[.\s]+$/, "") +
+                      "." +
+                      recoveryHint,
+                    cause,
+                  })
+                : cause,
+            );
           }
           return startedExit.value;
         });
-
-        // Guard against a concurrent startSession call that may have raced
-        // and already inserted a session while we were awaiting async work.
-        const raceWinner = sessions.get(input.threadId);
-        if (raceWinner) {
-          // Another call won the race – clean up the session we just created
-          // (including the remote SDK session) and return the existing one.
-          yield* runOpenCodeSdk("session.abort", () =>
-            started.client.session.abort({
-              sessionID: started.openCodeSession.id,
-            }),
-          ).pipe(Effect.ignore);
-          yield* Scope.close(started.sessionScope, Exit.void).pipe(Effect.ignore);
-          return raceWinner.session;
-        }
 
         const createdAt = nowIso();
         const session: ProviderSession = {
@@ -1446,6 +1532,13 @@ export function makeOpenCodeAdapter(
               ? { model: input.model }
               : {}),
           threadId: input.threadId,
+          resumeCursor: {
+            schemaVersion: OPENCODE_RESUME_VERSION,
+            sessionId: started.openCodeSession.id,
+            ...(started.forkedFromSessionId
+              ? { forkedFromSessionId: started.forkedFromSessionId }
+              : {}),
+          },
           createdAt,
           updatedAt: createdAt,
         };
@@ -1705,6 +1798,9 @@ export function makeOpenCodeAdapter(
       return {
         threadId: input.threadId,
         turnId,
+        ...(context.session.resumeCursor !== undefined
+          ? { resumeCursor: context.session.resumeCursor }
+          : {}),
       };
     });
 
@@ -1897,12 +1993,12 @@ export function makeOpenCodeAdapter(
         sessionModelSwitch: "in-session",
         runtimeCapabilities: providerRuntimeCapabilities(PROVIDER),
       },
-      startSession,
+      startSession: (input) => withStartLock(input.threadId, startSessionUnlocked(input)),
       sendTurn,
       interruptTurn,
       respondToRequest,
       respondToUserInput,
-      stopSession,
+      stopSession: (threadId) => withStartLock(threadId, stopSession(threadId)),
       listSessions,
       hasSession,
       readThread,

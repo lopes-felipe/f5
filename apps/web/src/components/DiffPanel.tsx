@@ -119,7 +119,6 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
     gitBranchesQueryOptions({
       cwd: scratch ? null : (activeCwd ?? null),
       autoRefresh: gitAutoRefreshEnabled,
-      refetchIntervalMs: gitAutoRefreshIntervalMs,
     }),
   );
   const isGitRepo = !scratch && (gitBranchesQuery.data?.isRepo ?? true);

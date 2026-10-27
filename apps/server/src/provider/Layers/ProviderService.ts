@@ -856,6 +856,34 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           generation,
           eventId: event.eventId,
         });
+        // Cleanup runs in the service scope, outside the shared ingestion worker.
+        // A launch holding this thread's lock must not stall unrelated conversations
+        // or delay the durable fence below. The in-memory fence already gates sends.
+        yield* withProviderThreadAccess(
+          event.threadId,
+          Effect.gen(function* () {
+            const current = currentMcpIdentity(event.threadId);
+            if (!current || current.instanceId !== instanceId || current.generation !== generation)
+              return;
+            const adapter = yield* registry.getByInstance(instanceId);
+            const session = (yield* adapter.listSessions()).find(
+              (session) => session.threadId === event.threadId,
+            );
+            // Turnless or late events cannot identify which work failed.
+            if (!event.turnId || event.turnId !== session?.activeTurnId) return;
+            yield* adapter
+              .interruptTurn(event.threadId, session.activeTurnId)
+              .pipe(Effect.catch(() => adapter.stopSession(event.threadId)));
+          }),
+        ).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logError("failed to stop provider after history ingestion failure", {
+              threadId: event.threadId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+          Effect.forkIn(nativeScope),
+        );
         const binding = Option.getOrUndefined(
           yield* directory.getBinding(event.threadId).pipe(Effect.retry(eventPersistenceRetry)),
         );
@@ -1048,6 +1076,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                     type: "runtime.error",
                     eventId,
                     threadId,
+                    ...(next.event.turnId ? { turnId: next.event.turnId } : {}),
                     provider: next.source.provider,
                     providerInstanceId: next.source.instanceId,
                     ...(generation >= 0 ? { sessionGeneration: generation } : {}),
@@ -2485,6 +2514,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 onNone: () => undefined,
                 onSome: (binding) => readPersistedInstructionContext(binding.runtimePayload),
               });
+              // Acceptance can name a queued turn. Persist the adapter's running
+              // turn so Stop and recovery target the same native work as the UI.
+              const liveSession = (yield* routed.adapter.listSessions()).find(
+                (session) => session.threadId === routed.threadId,
+              );
+              const activeTurnId =
+                liveSession?.status === "running"
+                  ? (liveSession.activeTurnId ?? turn.turnId)
+                  : turn.turnId;
               yield* directory.upsert({
                 threadId: input.threadId,
                 provider: routed.adapter.provider,
@@ -2495,7 +2533,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                   ...persistedRuntimePayload,
                   activeTurnId: routed.adapter.capabilities.turnCompletionOnReturn
                     ? null
-                    : turn.turnId,
+                    : activeTurnId,
                   lastRuntimeEvent: "provider.sendTurn",
                   lastRuntimeEventAt: new Date().toISOString(),
                   instructionContext: persistedInstructionContext ?? null,

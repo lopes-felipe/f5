@@ -155,12 +155,13 @@ describe("gitStatusQueryOptions", () => {
 });
 
 describe("gitBranchesQueryOptions", () => {
-  it("keeps branch refresh behavior enabled by default", () => {
+  it("refreshes branches on reconnect without polling and collects idle queries", () => {
     const options = gitBranchesQueryOptions({ cwd: "/repo/a", autoRefresh: true });
 
-    expect(options.refetchInterval).toBe(60_000);
-    expect(options.refetchOnWindowFocus).toBe(true);
-    expect(options.refetchOnReconnect).toBe(true);
+    expect(options.refetchInterval).toBe(false);
+    expect(options.refetchOnWindowFocus).toBe(false);
+    expect(options.refetchOnReconnect).toBe("always");
+    expect(options.gcTime).toBe(30_000);
   });
 
   it("disables branch interval, focus, and reconnect refreshes when auto-refresh is off", () => {

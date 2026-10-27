@@ -54,16 +54,25 @@ function trackedPr(): TrackedPullRequest {
   };
 }
 
-function responseWithPullRequest(pullRequest: Record<string, unknown>) {
+function responseWithPullRequest(pullRequest: Record<string, unknown>, autoMergeAllowed = false) {
   return {
     data: {
-      repository: { pullRequest },
+      repository: { pullRequest, autoMergeAllowed },
       rateLimit: { remaining: 42, limit: 5_000, resetAt: "2026-01-03T00:00:00.000Z" },
     },
   };
 }
 
 describe("GitHub PR detail decoding", () => {
+  it.each([true, false])("refreshes the repository's auto-merge setting (%s)", (allowed) => {
+    const { detail } = decodeGitHubPrDetail(
+      responseWithPullRequest({ ...trackedPr(), state: "OPEN" }, allowed),
+      trackedPr(),
+    );
+    expect(detail.providerDetails.provider).toBe("github");
+    if (detail.providerDetails.provider === "github")
+      expect(detail.providerDetails.autoMergeAllowed).toBe(allowed);
+  });
   it("rejects partial GraphQL responses instead of treating missing fields as authoritative", () => {
     expect(() =>
       decodeGitHubPrDetail(
