@@ -128,6 +128,30 @@
       "upstreamPrs": []
     },
     {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "c-401b01747c1f",
+      "reason": "This is upstream's own release version bump.",
+      "reasonKey": "release-ci",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "release"
+        ],
+        "confidence": 0.95,
+        "model": "claude-opus-5-5",
+        "reason": "This is upstream's own release version bump.",
+        "reasonKey": "release-ci",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Bumps the package versions to 0.1.3.",
+      "title": "Upstream prepares release v0.1.3",
+      "upstreamPrs": []
+    },
+    {
       "createdAt": "2026-10-26T17:22:32.389Z",
       "decidedAt": "2026-10-26T17:22:32.389Z",
       "decidedBy": "rule",
@@ -476,6 +500,30 @@
       },
       "summary": "Adds shouldNavigateAfterProjectRemoval so removing a project navigates only when the current route is one of its threads or drafts. Also contains provider status banner and CSS fixes from the redesign review.",
       "title": "Removing a project navigates away only when its thread is open",
+      "upstreamPrs": []
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "c-9db3401bdc4e",
+      "reason": "These are mobile e2e test tooling changes only.",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "mobile"
+        ],
+        "confidence": 0.95,
+        "model": "claude-opus-5-5",
+        "reason": "These are mobile e2e test tooling changes only.",
+        "reasonKey": "mobile",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Updates the mobile e2e journey script for agent-device 0.21.32 and makes its tab checks aware of side rails.",
+      "title": "Mobile e2e runner moves to agent-device 0.21.32",
       "upstreamPrs": []
     },
     {
@@ -16910,6 +16958,32 @@
       ]
     },
     {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-18277",
+      "relatedTopics": [
+        "pr-17082"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "settings"
+        ],
+        "confidence": 0.4,
+        "model": "claude-opus-5-5",
+        "question": "Should f5 add Vercel fx as a supported provider alongside its existing ACP providers?",
+        "reason": "This is a new provider capability. Fx is not on f5's provider list, and upstream builds it in packages and orchestration-v2 layers that f5 doesn't have, so it would need a reimplementation on f5's ACP adapter.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Adds an fx provider built on the shared ACP adapter. It is off by default, its health check uses fx --version, status and models, and it offers Supervised (ask) and Auto modes. Upstream builds it as packages/provider-fx on orchestration-v2.",
+      "title": "Vercel fx added as an ACP provider",
+      "upstreamPrs": [
+        18277
+      ]
+    },
+    {
       "createdAt": "2026-10-26T13:50:40.934Z",
       "epoch": 1,
       "id": "pr-18288",
@@ -17273,6 +17347,29 @@
       "title": "Muse native subagents open in their own child threads",
       "upstreamPrs": [
         18353
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-18359",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "worktrees",
+          "git",
+          "threads"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "A deleted worktree can break threads the same way in f5's worktree layer. Port it into f5's turn start instead of orchestration-v2.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Turn start recreates a missing managed worktree. It reuses the thread's local branch, or recreates a deleted branch from the project's current branch. A recovery failure stops before provider startup with a clear branch/path error.",
+      "title": "A thread whose worktree was deleted recovers on its next message",
+      "upstreamPrs": [
+        18359
       ]
     },
     {
@@ -18278,6 +18375,21 @@
       "title": "Mobile segmented controls stay native",
       "upstreamPrs": [
         18532
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-18547",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): round shared Android sheets and Chat settings (#18547)",
+      "upstreamPrs": [
+        18547
       ]
     },
     {
@@ -30095,6 +30207,28 @@
       ]
     },
     {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-21074",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes Cursor turns that always fail on the default long-context models. f5 has the Cursor provider and the dependency in apps/server.",
+        "status": "port",
+        "userImpact": "high"
+      },
+      "summary": "Bumps @cursor/sdk from 1.0.35 to 1.0.38, which sets maxMode for the 500K and 1M variants. Turns on those default variants no longer fail with 'AI Model Not Found'.",
+      "title": "Cursor SDK 1.0.38 sends Max Mode for long-context tiers",
+      "upstreamPrs": [
+        21074,
+        25841
+      ]
+    },
+    {
       "createdAt": "2026-10-26T13:50:40.934Z",
       "epoch": 1,
       "id": "pr-21086",
@@ -31661,6 +31795,21 @@
       "title": "Web moves to React 19.3, which fixes stale effect events in memo components",
       "upstreamPrs": [
         21376
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-21383",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): usage chart bars round at the top instead of the bottom (#21383)",
+      "upstreamPrs": [
+        21383
       ]
     },
     {
@@ -39400,6 +39549,28 @@
       ]
     },
     {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-23780",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline",
+          "accessibility"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "This is an accessibility fix in the timeline, a surface f5 has. f5's MessagesTimeline uses the same virtualized list.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The virtualized timeline always keeps the first and last messages mounted, so screen-reader heading navigation can wrap to either end. It also patches @legendapp/list to sort mounted rows after scrolling settles.",
+      "title": "Screen readers can wrap to the first and last message of a long thread",
+      "upstreamPrs": [
+        23780
+      ]
+    },
+    {
       "createdAt": "2026-10-26T14:35:48.824Z",
       "epoch": 1,
       "id": "pr-23783",
@@ -40431,6 +40602,21 @@
       ]
     },
     {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-23989",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): restore Android chat content corners (#23989)",
+      "upstreamPrs": [
+        23989
+      ]
+    },
+    {
       "createdAt": "2026-10-26T14:35:48.824Z",
       "decidedAt": "2026-10-26T14:35:48.824Z",
       "decidedBy": "rule",
@@ -40835,6 +41021,55 @@
       ]
     },
     {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-24204",
+      "reason": "This changes only docs and review-bot config.",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "docs"
+        ],
+        "confidence": 0.95,
+        "model": "claude-opus-5-5",
+        "reason": "This changes only docs and review-bot config.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Adds testing rules docs and points CodeRabbit at them.",
+      "title": "CodeRabbit reviews tests against docs/internals/testing.md",
+      "upstreamPrs": [
+        24204
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-24205",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer",
+          "model-picker",
+          "providers"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "This is a visible composer and model picker improvement that also covers custom and new models. Reimplement it without the provider packages.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The composer model button and other short labels drop the provider family and vendor prefixes, using per-provider modelFamilies on the client. Full names stay in tooltips and picker rows.",
+      "title": "Model labels use the short name you'd say out loud",
+      "upstreamPrs": [
+        24205
+      ]
+    },
+    {
       "createdAt": "2026-10-26T14:35:48.824Z",
       "decidedAt": "2026-10-26T14:35:48.824Z",
       "decidedBy": "llm",
@@ -41172,6 +41407,21 @@
       ]
     },
     {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-24270",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): isolate file tree state by workspace (#24270)",
+      "upstreamPrs": [
+        24270
+      ]
+    },
+    {
       "createdAt": "2026-10-26T14:35:48.824Z",
       "decidedAt": "2026-10-26T14:35:48.824Z",
       "decidedBy": "rule",
@@ -41350,6 +41600,21 @@
       "title": "fix(mobile): keep the Duo's Home and pull request headers fixed (#24295)",
       "upstreamPrs": [
         24295
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-24298",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "feat(mobile): split wide Android Settings into two panes (#24298)",
+      "upstreamPrs": [
+        24298
       ]
     },
     {
@@ -41819,6 +42084,28 @@
       ]
     },
     {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-24587",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "agents"
+        ],
+        "confidence": 0.5,
+        "model": "claude-opus-5-5",
+        "reason": "Workflow coordinators and this roster live in upstream's client-runtime and v2 runtime. f5 keeps its own Agents panel.",
+        "reasonKey": "upstream-only:orchestration-v2",
+        "status": "skip",
+        "userImpact": "low"
+      },
+      "summary": "The client-runtime subagent roster keeps workflow coordinators after their runs finish, and the pill uses the settled count.",
+      "title": "Completed workflows stay reachable in the agents roster",
+      "upstreamPrs": [
+        24587
+      ]
+    },
+    {
       "createdAt": "2026-10-26T14:35:48.824Z",
       "epoch": 1,
       "id": "pr-24588",
@@ -42243,6 +42530,28 @@
       ]
     },
     {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-24635",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "tooling"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "This is development tooling. It changes the product for no user.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Adds a top-level evals package and an eval of agents' mistakes with T3 MCP tools, plus AGENTS.md guidance.",
+      "title": "Shared evals package with an MCP tool-use eval",
+      "upstreamPrs": [
+        24635
+      ]
+    },
+    {
       "createdAt": "2026-10-26T14:35:48.824Z",
       "epoch": 1,
       "id": "pr-24636",
@@ -42599,6 +42908,32 @@
       "title": "Mobile PR links open in the app the way they do on web",
       "upstreamPrs": [
         24738
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-24741",
+      "reason": "Only the mobile app changes.",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "mobile"
+        ],
+        "confidence": 0.95,
+        "model": "claude-opus-5-5",
+        "reason": "Only the mobile app changes.",
+        "reasonKey": "mobile",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Mobile's global New thread starts in the current or last used project instead of the first registered project. A device-local setting turns this off.",
+      "title": "Mobile New thread reuses the last project, with a Use last project setting",
+      "upstreamPrs": [
+        24741
       ]
     },
     {
@@ -43245,6 +43580,21 @@
       "title": "fix(server): select the active iPhone Duo display for screenshots (#24912)",
       "upstreamPrs": [
         24912
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-24942",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): align the iPad composer with workspace navigation (#24942)",
+      "upstreamPrs": [
+        24942
       ]
     },
     {
@@ -45678,6 +46028,28 @@
       ]
     },
     {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25285",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "pr hub",
+          "server"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "A major reliability fix for the server's PR sync.",
+        "status": "port",
+        "userImpact": "high"
+      },
+      "summary": "PullRequestReadCache detaches the caller's stack frame, so cached entries stop keeping whole sync sweeps alive. Before, server memory grew by about 25 MB a minute until the heap was exhausted.",
+      "title": "PR sync sweeps no longer leak memory through the read cache",
+      "upstreamPrs": [
+        25285
+      ]
+    },
+    {
       "createdAt": "2026-10-26T14:50:59.216Z",
       "epoch": 1,
       "id": "pr-25295",
@@ -46073,6 +46445,28 @@
       ]
     },
     {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25366",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "keybindings"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "A refactor. The listener-order change has no clear visible symptom.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "low"
+      },
+      "summary": "New-thread, preview and Escape shortcuts move from a null component that rebuilt its keydown listener on every store change into commands registered once.",
+      "title": "Chat route shortcuts register once at app start",
+      "upstreamPrs": [
+        25366
+      ]
+    },
+    {
       "createdAt": "2026-10-26T14:50:59.216Z",
       "epoch": 1,
       "id": "pr-25368",
@@ -46153,6 +46547,32 @@
       ]
     },
     {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-25373",
+      "reason": "This is a mobile-app refactor.",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "mobile"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "This is a mobile-app refactor.",
+        "reasonKey": "mobile",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Refactors the mobile pull request list to record pages and stats through answer handlers instead of effects.",
+      "title": "Mobile PR list records answers where they land",
+      "upstreamPrs": [
+        25373
+      ]
+    },
+    {
       "createdAt": "2026-10-26T14:50:59.216Z",
       "decidedAt": "2026-10-26T14:50:59.216Z",
       "decidedBy": "rule",
@@ -46188,6 +46608,31 @@
       ]
     },
     {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25389",
+      "relatedTopics": [
+        "pr-17327"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "panels",
+          "chat"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "This fixes a missing control in f5's right panel for half-screen and zoomed desktop windows.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "At 980px or narrower the right panel sheet keeps its maximize button. Maximizing uses the full-width layout, and restoring returns to the sheet.",
+      "title": "Right panel can still be maximized in narrow windows",
+      "upstreamPrs": [
+        25389
+      ]
+    },
+    {
       "createdAt": "2026-10-26T14:50:59.216Z",
       "epoch": 1,
       "id": "pr-25390",
@@ -46205,6 +46650,48 @@
       "title": "fix(mobile): mobile:install builds on a cache miss for pooled devices, iOS on EAS (#25390)",
       "upstreamPrs": [
         25390
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25396",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): keep expanding composer text above its toolbar (#25396)",
+      "upstreamPrs": [
+        25396
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25401",
+      "relatedTopics": [
+        "pr-10128"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer",
+          "timeline",
+          "threads"
+        ],
+        "confidence": 0.4,
+        "model": "claude-opus-5-5",
+        "question": "Should f5 replace its composer banner stack and tasks badge with upstream's end-of-timeline thread state?",
+        "reason": "This is a major UX redesign of the timeline and composer. It may conflict with f5's banner stack and tasks badge.",
+        "status": "port",
+        "userImpact": "high"
+      },
+      "summary": "Removes the stacked composer banner cards. Subagent input requests, background work, queued runs and the goal move into a 'now' section at the end of the timeline. Todo lists move into work-log rows, and the composer tasks badge is removed.",
+      "title": "Thread state moves from composer cards to the end of the timeline",
+      "upstreamPrs": [
+        25401
       ]
     },
     {
@@ -46263,6 +46750,31 @@
       ]
     },
     {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25423",
+      "relatedTopics": [
+        "pr-17823"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "mcp"
+        ],
+        "confidence": 0.5,
+        "model": "claude-opus-5-5",
+        "reason": "This measurably cuts the token cost of every agent thread. Only the compact-schema part and the tools f5 has apply.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The server advertises compact JSON schemas and keeps the full schemas for decoding. Related tools merge into action tools such as preview_act, t3_queue and t3_pending_request, which takes the count from 84 to 66 and cuts per-thread context cost.",
+      "title": "T3 MCP tool schemas shrink by a third and 18 tools merge into action tools",
+      "upstreamPrs": [
+        25423
+      ]
+    },
+    {
       "createdAt": "2026-10-26T14:50:59.216Z",
       "epoch": 1,
       "id": "pr-25426",
@@ -46280,6 +46792,43 @@
       "title": "fix(server): goals stop the running turn, clear while working, no echoes (#25426)",
       "upstreamPrs": [
         25426
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25432",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline",
+          "composer"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "A timeline UX improvement. Reimplement the composer part in f5's composer.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Inline skills and skill context chips in sent messages open the shared skill popover with the description and View instructions, which opens the skill file in the file panel.",
+      "title": "Skill chips in chat open the composer's details popover",
+      "upstreamPrs": [
+        25432
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25451",
+      "reason": "No user-visible behavior change",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "summary": "",
+      "title": "docs: add an FAQ that answers what people ask every day (#25451)",
+      "upstreamPrs": [
+        25451
       ]
     },
     {
@@ -46363,6 +46912,50 @@
       ]
     },
     {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25461",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings",
+          "theme"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "Mostly a restructuring of effects. The only visible fix is on connect, pair and hosted landing routes, which belong to upstream's relay and pairing flows.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "low"
+      },
+      "summary": "Moves environment theme sync, keybinding-update toasts and slow-RPC toasts out of root null components into app-start services. Environment themes then also apply on /connect, /pair and prompt-link routes.",
+      "title": "Environment themes, toasts and chrome sync start with the app",
+      "upstreamPrs": [
+        25461
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25462",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "preview browser"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a preview browser bug that can happen in f5's preview when the panel is closed.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Viewport resizes from the hosted webview handles or a server tab's device toolbar call the resize command directly. Before, they failed with 'No visible browser viewport handler' when no PreviewView was mounted. Profile reporting starts at app init.",
+      "title": "Browser viewport resizes work without an open preview panel",
+      "upstreamPrs": [
+        25462
+      ]
+    },
+    {
       "createdAt": "2026-10-26T14:50:59.216Z",
       "epoch": 1,
       "id": "pr-25463",
@@ -46403,6 +46996,78 @@
       ]
     },
     {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-25468",
+      "reason": "All changes are in the mobile app.",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "mobile"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "All changes are in the mobile app.",
+        "reasonKey": "mobile",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "The mobile app now uses the shared queued-run-edit store, so an edit ends as soon as its run leaves the queue, even after you leave the thread. It also fixes re-renders from the thread settings sheet.",
+      "title": "Mobile queued edits end when their run starts",
+      "upstreamPrs": [
+        25468
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25474",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "telemetry"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "This only affects delivery to upstream's analytics ingest.",
+        "reasonKey": "upstream-only:analytics-feedback",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "AnalyticsService retries a failed batch with backoff until it has failed for 30 minutes, instead of giving up after 5 attempts. Rejected batches are still dropped at once.",
+      "title": "Server telemetry retries a failed batch for 30 minutes",
+      "upstreamPrs": [
+        25474
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25475",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings",
+          "providers"
+        ],
+        "confidence": 0.4,
+        "model": "claude-opus-5-5",
+        "question": "Should f5 warn users against adding multiple Claude or Codex accounts, as upstream now does?",
+        "reason": "An upstream product stance, similar to declined nags. Whether f5 wants it is a product choice.",
+        "reasonKey": "declined-by-policy",
+        "status": "skip",
+        "userImpact": "low"
+      },
+      "summary": "The add-provider and add-Codex-account dialogs show a note that recommends against managing several accounts in T3 Code, with a link to the FAQ.",
+      "title": "Warning before adding a second Claude or Codex account",
+      "upstreamPrs": [
+        25475
+      ]
+    },
+    {
       "createdAt": "2026-10-26T14:50:59.216Z",
       "decidedAt": "2026-10-26T14:50:59.216Z",
       "decidedBy": "rule",
@@ -46438,6 +47103,28 @@
       ]
     },
     {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25491",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "preview browser"
+        ],
+        "confidence": 0.5,
+        "model": "claude-opus-5-5",
+        "reason": "The empty history came from upstream's V2 merge removing registerThreadProject. f5 may still call it, but the title-clobbering fix applies to the shared history either way.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The history store looks up the thread's project when it writes, so Recently used and page titles fill in again. Re-sent tabs replay titles only when the URL or title really changed, so an older title no longer overwrites a newer one.",
+      "title": "Browser history and page titles are recorded again",
+      "upstreamPrs": [
+        25491,
+        25521
+      ]
+    },
+    {
       "createdAt": "2026-10-26T14:50:59.216Z",
       "decidedAt": "2026-10-26T14:50:59.216Z",
       "decidedBy": "rule",
@@ -46450,6 +47137,2054 @@
       "title": "test(web): say why the useStableCallback test renders without a router (#25493)",
       "upstreamPrs": [
         25493
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25503",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): editing a queued message while a question is open no longer throws (#25503)",
+      "upstreamPrs": [
+        25503
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25515",
+      "reason": "No user-visible behavior change",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "summary": "",
+      "title": "test(web): attachment preview omission tests no longer time out on CI (#25515)",
+      "upstreamPrs": [
+        25515
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25516",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): describe when composer view commands can reject (#25516)",
+      "upstreamPrs": [
+        25516
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25523",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "pr hub"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "A refactor that removes effects. The only visible change is a one-commit stale flash.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "low"
+      },
+      "summary": "The PR page resets a continued list when a turn lands, during render instead of in an effect, and registers sweep Escape as a command instead of a global listener.",
+      "title": "Pull request page reacts to turns without effects",
+      "upstreamPrs": [
+        25523
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25524",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings",
+          "providers"
+        ],
+        "confidence": 0.5,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes visible Codex setup bugs in provider settings.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Codex setup waits on its own operation ID, so an update no longer signs in against stale state, and a sign-in started elsewhere no longer opens a browser on this client. Provider rows and the ACP search stop syncing state through effects.",
+      "title": "Codex setup waits on its own install and sign-in operations",
+      "upstreamPrs": [
+        25524,
+        25868
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25525",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): pull request screens use a file-jump store and handler work (#25525)",
+      "upstreamPrs": [
+        25525
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25526",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings",
+          "connections"
+        ],
+        "confidence": 0.55,
+        "model": "claude-opus-5-5",
+        "reason": "The symptom comes from upstream's scope-based permission gating in client-runtime. f5 has neither that gating nor client-runtime.",
+        "reasonKey": "upstream-only:auth-scopes",
+        "status": "skip",
+        "userImpact": "low"
+      },
+      "summary": "When the session request times out, the client retries it with increasing deadlines up to 60 s. Before, the missing grants made permission-gated Settings read-only.",
+      "title": "Slow host no longer leaves settings read-only",
+      "upstreamPrs": [
+        25526
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25527",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): media previews share file leases and close on blur in one place (#25527)",
+      "upstreamPrs": [
+        25527
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25530",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "pr hub"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a PR hub bug that f5 users can hit.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Inline confirm listeners attach to the armed element and detach when it unmounts. Escape then closes the surrounding dialog or menu again. The Link PR dialog focuses its input through initialFocus.",
+      "title": "Armed PR confirm no longer swallows Escape after its button unmounts",
+      "upstreamPrs": [
+        25530
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25562",
+      "reason": "No user-visible behavior change",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "summary": "",
+      "title": "test(web): attachment preview omission cases check the prepared document instead of rendering each…",
+      "upstreamPrs": [
+        25562
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-25572",
+      "reason": "Only affects the T3 Connect relay client.",
+      "reasonKey": "relay-cloud",
+      "relatedTopics": [
+        "pr-11184"
+      ],
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "relay"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "Only affects the T3 Connect relay client.",
+        "reasonKey": "relay-cloud",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Bumps the managed relay client to drop the compromised eMudhra intermediates.",
+      "title": "T3 Connect cloudflared pinned to 2026.10.4",
+      "upstreamPrs": [
+        25572
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25575",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): drop the unused useLayoutEffect import that fails lint on main (#25575)",
+      "upstreamPrs": [
+        25575
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25581",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): label the pull request toast action View (#25581)",
+      "upstreamPrs": [
+        25581
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25593",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer",
+          "threads"
+        ],
+        "confidence": 0.55,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a composer queue bug if f5 supports editing queued messages.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "While an agent question takes over the composer, editing a queued message is disabled. Before, the edit ran out of sight and was rejected once the run started.",
+      "title": "Queued messages can't be edited while a question is open",
+      "upstreamPrs": [
+        25593
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25609",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "model picker"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes NEW badges that stay forever in the model picker.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The server derives the NEW badge from the model's release date and drops it after seven days, including for cached manifests and the bundled Claude fallback.",
+      "title": "New-model badges expire seven days after release",
+      "upstreamPrs": [
+        25609
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25612",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): thread rows share one clock and cache SVGs instead of per-row effects (#25612)",
+      "upstreamPrs": [
+        25612
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25613",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "A small git UX cleanup in a surface f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "After creating a PR from the panel, the inline success row shows a checkmark and 'Created PR' instead of repeating the PR title and number.",
+      "title": "Created pull request success row shows only 'Created PR'",
+      "upstreamPrs": [
+        25613
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25614",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): pull request list, filters and viewed files without synchronizing effects (#25614)",
+      "upstreamPrs": [
+        25614
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25615",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer",
+          "threads"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "This is an internal refactor. It cuts re-renders but makes no clear user-visible change.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "low"
+      },
+      "summary": "A store subscription started at app init promotes drafts. The thread route no longer subscribes to every thread ref and no longer latches its key during render.",
+      "title": "Drafts promote from the draft store instead of route effects",
+      "upstreamPrs": [
+        25615
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25616",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline",
+          "worktrees"
+        ],
+        "confidence": 0.5,
+        "model": "claude-opus-5-5",
+        "reason": "A small rendering performance improvement in the timeline.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Working, sub-agent and worktree setup timers write text on a shared second tick, so the worktree setup card no longer re-renders every second.",
+      "title": "Running timers share one clock instead of an interval each",
+      "upstreamPrs": [
+        25616
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25627",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "mobile"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Mostly mobile. The client-runtime presentation tweak applies to upstream's shared runtime.",
+        "reasonKey": "mobile",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Enabled environments show as connecting until they report, and the mobile thread route waits for cached data before showing unavailable.",
+      "title": "Mobile opens threads from the local cache instead of 'Thread unavailable'",
+      "upstreamPrs": [
+        25627
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25630",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "This is a refactor that removes a double render on mount. Users see no behavior change.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "MediaVideoPlayer stops keeping its video element in state. Listeners attach in ref callbacks, preload uses the shared observeIntersection helper, and playing becomes a boolean.",
+      "title": "Video previews bind listeners in ref callbacks and share one visibility observer",
+      "upstreamPrs": [
+        25630
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25631",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): voice input session owns recording, metering and keep-awake (#25631)",
+      "upstreamPrs": [
+        25631
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25632",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): opening a new thread before it is created no longer marks it unavailable (#25632)",
+      "upstreamPrs": [
+        25632
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25636",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "sidebar"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "The bug comes only from React Compiler memoization, which f5 has not adopted.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Reads the clock inside a state updater, so React Compiler memoization no longer reuses the first deadline on later holds.",
+      "title": "Thread jump hints wait for their delay on every hold",
+      "upstreamPrs": [
+        25636
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25651",
+      "relatedTopics": [
+        "pr-10705"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings"
+        ],
+        "confidence": 0.45,
+        "model": "claude-opus-5-5",
+        "question": "Should f5 adopt upstream's regrouped settings layout, or keep its current General-centric structure?",
+        "reason": "This is a broad UX restructure of settings, a surface f5 has. Several of the pages it creates, such as Devices and Scheduled tasks, don't exist in f5.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The settings sidebar gets group headings (Agents, Code, Connections). General splits into Chat, Diffs & pull requests, Threads, Maintenance and About. Worktree settings gather on one page, and Connections splits into Environments and Sharing & access.",
+      "title": "Settings regrouped by concern, with General split into focused pages",
+      "upstreamPrs": [
+        25651
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-25653",
+      "reason": "This is upstream build and CI infrastructure (infra/task-cache), which f5 does not ship. Users see no change.",
+      "reasonKey": "release-ci",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "ci"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "This is upstream build and CI infrastructure (infra/task-cache), which f5 does not ship. Users see no change.",
+        "reasonKey": "release-ci",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Upstream's infra/task-cache telemetry flusher keeps draining until no unsent events remain, or until a 15 s deadline passes. An event queued during another process's flush is no longer stranded until the next command.",
+      "title": "Task-cache telemetry flusher rechecks the queue after releasing its lock",
+      "upstreamPrs": [
+        25653
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25660",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "The fix is in orchestration-v2's context handoff bookkeeping, which f5 doesn't have.",
+        "reasonKey": "upstream-only:context-handoff",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Treats a Claude MCP registration timeout as a refusal before the prompt is sent, so the context handoff bookkeeping is restored and the next turn resumes the native session.",
+      "title": "Claude MCP registration timeouts keep the native session",
+      "upstreamPrs": [
+        25660
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25664",
+      "reason": "No user-visible behavior change",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "summary": "",
+      "title": "test(web): attachment preview Word and large-text tests no longer flake on CI (#25664)",
+      "upstreamPrs": [
+        25664
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25667",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "keybindings",
+          "editor"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "This is mostly a refactor. The capture-phase change has only a minor effect when a terminal has focus.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "low"
+      },
+      "summary": "Replaces each picker's keydown listener with one capture-phase editor.openFavorite command that clicks the marked primary button.",
+      "title": "Cmd+O clicks the Open in editor button through one registered command",
+      "upstreamPrs": [
+        25667
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25668",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): scale and align thread list icons (#25668)",
+      "upstreamPrs": [
+        25668
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25671",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): keep floating status within the composer width (#25671)",
+      "upstreamPrs": [
+        25671
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25672",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "orchestration"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "This is orchestration-v2 delegation logic, which f5 doesn't have.",
+        "reasonKey": "upstream-only:lineage-delegation",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Delegated-task acknowledgement and disposal now merge only delegated-completion data into the current parent run inside the transaction, so a settled run no longer goes back to running.",
+      "title": "Delegated acknowledgements no longer reopen settled parent runs",
+      "upstreamPrs": [
+        25672,
+        25666
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-25675",
+      "reason": "This fix lives in the orchestration-v2 effect worker, which f5 does not have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "orchestration"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "This fix lives in the orchestration-v2 effect worker, which f5 does not have.",
+        "reasonKey": "upstream-only:orchestration-v2",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Each delegated-tasks.stop attempt in the orchestration-v2 effect worker is limited to 30 s and falls through to retry or fail, so it no longer blocks the thread's effect queue.",
+      "title": "Hung delegated stops time out so later runs can start (orchestration-v2)",
+      "upstreamPrs": [
+        25675
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25678",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): queued messages are delivered by an app service, not a render loop (#25678)",
+      "upstreamPrs": [
+        25678
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25681",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): a caret move in one composer no longer moves another draft's insert point (#25681)",
+      "upstreamPrs": [
+        25681
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25682",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): thread inspector mode is derived, not synced (#25682)",
+      "upstreamPrs": [
+        25682
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25684",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): drop the unreachable pending-task editor from new-task drafts (#25684)",
+      "upstreamPrs": [
+        25684
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-25686",
+      "reason": "This change is mobile-only.",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "mobile"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "This change is mobile-only.",
+        "reasonKey": "mobile",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Regroups the mobile settings pages to match the restructured web settings.",
+      "title": "Mobile settings follow web's pages and groups",
+      "upstreamPrs": [
+        25686
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25695",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "claude"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "The fix is in the orchestration-v2 Claude adapter's conversation-head pinning, which f5 does not have.",
+        "reasonKey": "upstream-only:orchestration-v2",
+        "status": "skip",
+        "userImpact": "low"
+      },
+      "summary": "ClaudeAdapterV2 clears the pinned conversation head when a stopped turn wrote to the transcript, so the next run resumes the updated transcript.",
+      "title": "Interrupted Claude runs after a revert keep their context (orchestration-v2)",
+      "upstreamPrs": [
+        25695
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25699",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "files"
+        ],
+        "confidence": 0.4,
+        "model": "claude-opus-5-5",
+        "question": "Does f5 ship the PDF viewer in the Files panel?",
+        "reason": "This fixes a search bug in the file preview. It applies only if f5 has the PDF viewer, which is not among f5's paths.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Extracts PdfViewer's layout and search logic into pdfLayout with fast tests. Search then treats line ends as spaces and drops line-ending hyphens, so a phrase that wraps across lines is found and highlighted.",
+      "title": "PDF search finds phrases that wrap across lines",
+      "upstreamPrs": [
+        25699,
+        25702
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25703",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "files"
+        ],
+        "confidence": 0.55,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes paired environments that are reconnecting. The fix is mostly in client-runtime and mobile, which f5 doesn't have.",
+        "reasonKey": "multi-environment",
+        "status": "skip",
+        "userImpact": "low"
+      },
+      "summary": "Queries against an environment that is connecting or backing off now fail at once instead of hanging forever (Effect.never). Mobile PR list refreshes and file reads retry when a new session comes up. The fix lives in client-runtime.",
+      "title": "Searches and refreshes no longer wait on an unreachable environment",
+      "upstreamPrs": [
+        25703
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25704",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "timeline"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "f5 runs ACP providers such as Grok and Cursor. Without this, warnings from the agent show up inside its replies.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The ACP client advertises session notices and decodes notice updates, and the adapter shows them as notices. Warnings such as skipped skills no longer appear in the agent's reply text.",
+      "title": "ACP session notices show as notices instead of reply text",
+      "upstreamPrs": [
+        25704
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25706",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): new-task branch defaults are derived, not written after render (#25706)",
+      "upstreamPrs": [
+        25706
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25710",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer",
+          "timeline"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "This refactor saves one commit per send. Users see no clear change.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "low"
+      },
+      "summary": "Optimistic user messages and their image handoff are reconciled against acknowledged ids during render. This removes a setTimeout-driven extra commit and several effects.",
+      "title": "Optimistic chat messages are reconciled during render instead of on a timer",
+      "upstreamPrs": [
+        25710
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25712",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): a draft route's branch checkout runs once, even across a reconnect (#25712)",
+      "upstreamPrs": [
+        25712
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25713",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): pull request rows refresh their diff stats after a new push (#25713)",
+      "upstreamPrs": [
+        25713
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-25714",
+      "reason": "This only affects the devices and simulators feature.",
+      "reasonKey": "devices",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "preview"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "This only affects the devices and simulators feature.",
+        "reasonKey": "devices",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Moves tracking of agent-opened devices to an app-level subscription per environment, so devices opened in other threads float and get panel tabs.",
+      "title": "Devices opened by agents in background threads now show up",
+      "upstreamPrs": [
+        25714
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25729",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): keep segmented controls readable on cards and screens (#25729)",
+      "upstreamPrs": [
+        25729
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25731",
+      "relatedTopics": [
+        "pr-17858"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "panels"
+        ],
+        "confidence": 0.5,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a popover left visible on screen. Port it if f5's thread details card switches between popover and inline the same way. Most of the touched files don't exist in f5.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Measurements for the chat canvas and thread details card move into a per-view store, so layout settles in one render. When the card switches from popover to inline while the popover is open, the popover no longer stays stuck on screen.",
+      "title": "Thread details popover closes when the card moves inline",
+      "upstreamPrs": [
+        25731
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25732",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "diff",
+          "files"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "A refactor of how refreshes are wired up, with no intended change in behavior.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Replaces effect- and ref-driven refreshes in DiffPanel, file previews, review patches and PR viewed state with revisionedQuery, useLiveRefresh and a files-viewed store.",
+      "title": "Diff and file reveals become requests; workspace edits refetch by construction",
+      "upstreamPrs": [
+        25732
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25733",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "command palette",
+          "git"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "A refactor of state management, with no intended change in behavior.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Moves command palette open state into a zustand store driven through the command bus. GitActionsControl and BranchPicker drop their timer, focus and sync effects.",
+      "title": "Command palette state moves into a store; git and branch pickers drop effects",
+      "upstreamPrs": [
+        25733
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25740",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): app-lifetime services install once, and the usage widget stops re-rendering on ev…",
+      "upstreamPrs": [
+        25740
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25744",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): the share inbox is a module store, presented from navigation state (#25744)",
+      "upstreamPrs": [
+        25744
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25753",
+      "relatedTopics": [
+        "pr-17082"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings",
+          "providers"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "A UX improvement to f5's Add provider dialog. Duplicate registry entries and repeated searches can happen in f5 too.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Non-featured providers and the ACP Registry search move under a Show more fold. Registry results leave out agents that already have first-class providers. Registry search results are cached for 5 minutes, and Muse loses its Beta label.",
+      "title": "Add provider dialog leads with first-class providers",
+      "upstreamPrs": [
+        25753
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25758",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "feat(mobile): add One UI navigation preference on Android (#25758)",
+      "upstreamPrs": [
+        25758
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-25759",
+      "reason": "Only the mobile client uses this.",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "mobile"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "Only the mobile client uses this.",
+        "reasonKey": "mobile",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "The mobile Agents pill stays visible after the turn ends, as long as that turn is still the thread's latest started run.",
+      "title": "Finished subagents stay reachable from the mobile Agents pill",
+      "upstreamPrs": [
+        25759
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25765",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): lists end at the search field, and HTML previews start below the header (#25765)",
+      "upstreamPrs": [
+        25765
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25766",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "timeline"
+        ],
+        "confidence": 0.45,
+        "model": "claude-opus-5-5",
+        "question": "Does f5 want agents to produce inline charts for data answers without being asked?",
+        "reason": "Restores inline visuals that agents had stopped producing. Port it if f5 ships the html_render MCP tool and these orchestration instructions.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Agent instructions again ask for a chart when the data shows a trend or comparison, and the html_render description names its uses (chart, diagram, mockup) again. Eval cases are updated.",
+      "title": "Agents answer trend and comparison data with inline charts again",
+      "upstreamPrs": [
+        25766,
+        25776
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25767",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): theme preferences reach the native runtime without a layout effect (#25767)",
+      "upstreamPrs": [
+        25767
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25768",
+      "relatedTopics": [
+        "pr-16644"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "files",
+          "editor"
+        ],
+        "confidence": 0.55,
+        "model": "claude-opus-5-5",
+        "reason": "This fixes a double-write bug in editable file surfaces, if f5 has editable markdown and editor views.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "One keyed save session per file is shared by every editing surface, with a single ordered write queue. Switching between rendered markdown and the editor no longer requeues the same draft.",
+      "title": "Switching a file between markdown and the editor no longer saves twice",
+      "upstreamPrs": [
+        25768
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-25769",
+      "reason": "This is a mobile app refactor.",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "mobile"
+        ],
+        "confidence": 0.95,
+        "model": "claude-opus-5-5",
+        "reason": "This is a mobile app refactor.",
+        "reasonKey": "mobile",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Mobile notification routing, quick actions and Connect onboarding are installed at app start and navigate through rootNavigationRef.",
+      "title": "Mobile notifications and quick actions navigate through the root ref",
+      "upstreamPrs": [
+        25769
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25774",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "sidebar",
+          "desktop"
+        ],
+        "confidence": 0.55,
+        "model": "claude-opus-5-5",
+        "reason": "A small UX fix. Port it if f5 has the sidebar update pill dialog.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The Update everything dialog returns focus to the sidebar update button only when it closes from the keyboard, so a mouse cancel no longer shows a focus ring and tooltip.",
+      "title": "Cancelling Update everything no longer flashes the button's focus ring and tooltip",
+      "upstreamPrs": [
+        25774
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25778",
+      "relatedTopics": [
+        "c-c5ff51ec1fff"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings",
+          "appearance",
+          "theme"
+        ],
+        "confidence": 0.5,
+        "model": "claude-opus-5-5",
+        "question": "Does f5 carry upstream's redesign toggle, and should it drop the classic look and adopt the pure black dark background?",
+        "reason": "This is mostly a cleanup of upstream's dual styling. The only visible effects are removing a toggle and a darker background, and both depend on whether f5 adopted upstream's redesign.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "low"
+      },
+      "summary": "Removes the Appearance 'New design' switch and the classic styles. Every redesign: class becomes a plain class, saved settings drop the old key, and the dark background moves from #0a0a0a to #000000.",
+      "title": "New design becomes the only design; the New design toggle is removed",
+      "upstreamPrs": [
+        25778
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-25782",
+      "reason": "Test, CI and dead-code changes with no user-visible behavior.",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "ci",
+          "tests"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Test, CI and dead-code changes with no user-visible behavior.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Renames eval cases to .ndjson, adds an agent context budget CI check, removes the unreachable paint-only timeline path, and updates the transfer budget regression test.",
+      "title": "Eval renames, context budget CI, dead timeline code and transfer test updates",
+      "upstreamPrs": [
+        25782,
+        25785,
+        25787,
+        25795
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25790",
+      "relatedTopics": [
+        "pr-17823"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "mcp"
+        ],
+        "confidence": 0.5,
+        "model": "claude-opus-5-5",
+        "reason": "Cuts the context every agent turn pays for. Port it if f5's MCP server registers toolkits the same way. It depends on #25423's advertisedJsonSchema.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Toolkit-registered MCP tools now advertise the compact input schema while decoding still uses the full schema. The model-facing tool list shrinks from 54,964 to 42,328 bytes.",
+      "title": "All MCP tools advertise compact schemas, cutting tool context by 23%",
+      "upstreamPrs": [
+        25790
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25793",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): share imports run outside the new-task screen (#25793)",
+      "upstreamPrs": [
+        25793
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25802",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "chat",
+          "markdown"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "The shared markdownLinks fix changes web chat behavior for non-ASCII file links. Only the mobile half doesn't apply.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The shared relative-path link patterns accept non-ASCII names, so links like pastexam/線性代數/考試.pdf become file chips on web. Mobile also keeps Windows image paths.",
+      "title": "File links with non-ASCII names become file chips",
+      "upstreamPrs": [
+        25802
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25804",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "files",
+          "markdown"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "This is a visible bug fix in file previews, for example opening SKILL.md.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "A shared maskMarkdownFrontmatter helper blanks leading frontmatter to spaces before rendering in the file and attachment previews. Offsets stay intact, so checkbox edits still hit the right bytes.",
+      "title": "Markdown previews hide YAML frontmatter instead of showing a giant heading",
+      "upstreamPrs": [
+        25804
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25809",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): a held thread move retires when a snooze wakes, even with no list open (#25809)",
+      "upstreamPrs": [
+        25809
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25812",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): each new-task draft route keeps its own flow state (#25812)",
+      "upstreamPrs": [
+        25812
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25813",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): workspace tabs, home filters and connection status derive instead of syncing (#25…",
+      "upstreamPrs": [
+        25813
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-25815",
+      "reason": "This only affects the devices and simulators subsystem.",
+      "reasonKey": "devices",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "devices"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "This only affects the devices and simulators subsystem.",
+        "reasonKey": "devices",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Device hub errors from android-utils are hidden when the host has no usable Android SDK.",
+      "title": "Macs without Android stop showing avdmanager discovery warnings",
+      "upstreamPrs": [
+        25815
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25816",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): showcase capture readiness is a tested pure model (#25816)",
+      "upstreamPrs": [
+        25816
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25817",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): opening Review or Files shows the inspector in the first commit (#25817)",
+      "upstreamPrs": [
+        25817
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-25818",
+      "reason": "Compact-before-send is declined by f5 policy.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "composer"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "Compact-before-send is declined by f5 policy.",
+        "reasonKey": "declined-by-policy",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "The compact toggle shows 'Compact 240k' or 'Keep 240k' inside the button.",
+      "title": "Compact-before-send toggle shows the token count again",
+      "upstreamPrs": [
+        25818
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25819",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): Add project path survives its host dropping out and returning (#25819)",
+      "upstreamPrs": [
+        25819
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25820",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): prompt links resolve when the link is parsed, not from screen effects (#25820)",
+      "upstreamPrs": [
+        25820
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25824",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "connection",
+          "mobile"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "This targets mobile app resume in client-runtime's connection supervisor, which f5 does not have.",
+        "reasonKey": "mobile",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "The client-runtime connection supervisor probes the socket on every resume and keeps it if it answers. Slow but live probes over DERP or VPN are no longer torn down.",
+      "title": "iOS resume keeps live sockets and drops dead ones faster",
+      "upstreamPrs": [
+        25824
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25825",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "release",
+          "cli"
+        ],
+        "confidence": 0.5,
+        "model": "claude-opus-5-5",
+        "question": "Does f5 ship linux-arm64 single-executable CLI builds on Node 26.12 or later, which would need this workaround?",
+        "reason": "This is a temporary workaround in upstream's CLI release build for a Node bug. It matters only if f5 ships linux-arm64 single executables on that Node version.",
+        "reasonKey": "release-ci",
+        "status": "skip",
+        "userImpact": "low"
+      },
+      "summary": "Works around a Node 26.12 SEA bug with a custom injection for linux-arm64 single executables, so they no longer segfault on the Raspberry Pi 5, Asahi and similar kernels.",
+      "title": "Temporary fix so linux-arm64 CLI builds run on 16/64 KiB page kernels",
+      "upstreamPrs": [
+        25825
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25829",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "pr-hub"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "This is a UX improvement to the PR hub, which f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Reviewer avatars get a check or X badge. Approve and request-changes reviews from bots pass the hide-bots comment filter.",
+      "title": "Bot approvals show on the PR summary",
+      "upstreamPrs": [
+        25829
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25830",
+      "relatedTopics": [
+        "pr-14896"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline"
+        ],
+        "confidence": 0.5,
+        "model": "claude-opus-5-5",
+        "reason": "This is a visible timeline improvement, if f5 shows interrupted runs as red rows. Reimplement it in f5's timeline.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Run-interrupted timeline rows use the neutral color and a stop icon instead of a red X.",
+      "title": "Stopped runs no longer look like errors",
+      "upstreamPrs": [
+        25830
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25837",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer",
+          "orchestration"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "The fix lives in the v2 orchestrator and targets automatic idle compaction, which f5 declines.",
+        "reasonKey": "upstream-only:orchestration-v2",
+        "status": "skip",
+        "userImpact": "low"
+      },
+      "summary": "Steering into a /compact turn stops the compaction and runs the queued message next, and the timeline shows one 'Context compaction stopped' row. Built in the orchestration-v2 Orchestrator.",
+      "title": "Send now during a compaction stops it and sends the message",
+      "upstreamPrs": [
+        25837
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-25839",
+      "reason": "The change is in the mobile app only.",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "mobile"
+        ],
+        "confidence": 0.95,
+        "model": "claude-opus-5-5",
+        "reason": "The change is in the mobile app only.",
+        "reasonKey": "mobile",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "When a project lives on two machines, the mobile New thread picker prefers the connected copy. It no longer starts the draft on an offline machine as Queue task.",
+      "title": "Mobile new thread picks the connected copy of a project on two machines",
+      "upstreamPrs": [
+        25839
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25846",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer",
+          "queue"
+        ],
+        "confidence": 0.45,
+        "model": "claude-opus-5-5",
+        "question": "Should f5 drop queued-message reordering to adopt upstream's simpler Send now row?",
+        "reason": "This simplifies the composer queue UI, but it removes an existing reordering capability.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Each queued message shows Send now, edit and remove, without the header, position numbers or Steer label. Drag and keyboard reordering is removed on web and mobile, while the server command stays.",
+      "title": "Queued messages get a simpler Send now row and lose reordering",
+      "upstreamPrs": [
+        25846
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25854",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): subagent timers share the visible second clock (#25854)",
+      "upstreamPrs": [
+        25854
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25856",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): app update checks start with the app (#25856)",
+      "upstreamPrs": [
+        25856
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25857",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): showcase capture runs as an app service, not a chain of effects (#25857)",
+      "upstreamPrs": [
+        25857
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25859",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): the Add environment form shows only its own pairing errors (#25859)",
+      "upstreamPrs": [
+        25859
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25860",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "desktop",
+          "keybindings"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "This is a desktop bug fix. Pressing Ctrl+W with no tab open quit the app and the local server.",
+        "status": "port",
+        "userImpact": "high"
+      },
+      "summary": "No application menu item binds CmdOrCtrl+W. The window menu has an explicit submenu, so Electron adds no Close role. On Windows and Linux, Ctrl+W no longer quits the app.",
+      "title": "Cmd/Ctrl+W closes tabs, never the window",
+      "upstreamPrs": [
+        25860
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-25882",
+      "reason": "This only touches the Device/simulator panel, which f5 does not have.",
+      "reasonKey": "devices",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "devices"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "This only touches the Device/simulator panel, which f5 does not have.",
+        "reasonKey": "devices",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "The Device panel stream shows its focus ring only with focus-visible. Clicking or dragging the simulator no longer outlines the pane, but tabbing to it still does.",
+      "title": "Clicking the device screen no longer draws a focus ring",
+      "upstreamPrs": [
+        25882
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25895",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): settings permission and update checks without sync effects (#25895)",
+      "upstreamPrs": [
+        25895
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25900",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "desktop",
+          "build"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "f5 builds its desktop app with the same artifact script, so this check keeps broken macOS builds from shipping.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "build-desktop-artifact now runs the self-contained server check against each packaged .app's app.asar, as it already did on Windows. Missing runtime dependencies then fail the build instead of the user's launch.",
+      "title": "macOS desktop artifacts run the packaged bundle self-check",
+      "upstreamPrs": [
+        25900
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25903",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "desktop",
+          "updates"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "This desktop reliability fix applies to f5's backend manager. It gives users a way out of a broken build.",
+        "status": "port",
+        "userImpact": "high"
+      },
+      "summary": "When the local server keeps failing at startup, the desktop app shows a 'could not start' window with the reason, the server output tail, and Update or Download actions. Before, it restarted the server forever and showed nothing.",
+      "title": "Broken release opens an error window instead of hanging",
+      "upstreamPrs": [
+        25903
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-25908",
+      "reason": "These refactors keep behavior the same.",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "panels"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "These refactors keep behavior the same.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Replaces document and panel native listeners with onContextMenuCapture and onDragStartCapture/onDragEnd on the panel root. Adds a drag-to-composer test.",
+      "title": "File browser uses React handlers for context menu and drag mentions",
+      "upstreamPrs": [
+        25908,
+        25913
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25909",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "This refactor has no visible behavior change.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Resets the scroll-collapsed flag during render when the composer stops being eligible, which removes an effect and an extra commit.",
+      "title": "Composer clears scroll-collapse in render instead of after paint",
+      "upstreamPrs": [
+        25909
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25910",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "perf(mobile): worktree setup updates commit the thread screen once (#25910)",
+      "upstreamPrs": [
+        25910
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25912",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "refactor(mobile): git action results buzz from where they are reported (#25912)",
+      "upstreamPrs": [
+        25912
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-25915",
+      "reason": "This is an internal refactor with no user-visible change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "timeline"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "This is an internal refactor with no user-visible change.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Removes composerMountedRef and a duplicate layout effect in ChatView. Overlay height publishing reads composerMounted directly.",
+      "title": "Composer overlay re-measures from one layout effect",
+      "upstreamPrs": [
+        25915
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25916",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "pr-hub"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "This bug fix in the PR hub can occur in f5.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "A selected commit that is no longer in the PR, for example after a force-push, reads as All commits from the first render. This avoids a stale diff request and a double scope reset.",
+      "title": "PR Code tab no longer requests the diff of a commit the PR dropped",
+      "upstreamPrs": [
+        25916
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:29:26.968Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-25920",
+      "reason": "This cleanup has no behavior change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "preview"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "This cleanup has no behavior change.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Removes isMountedRef and its guards around setPickActive, which React 18 makes unnecessary.",
+      "title": "Preview element picker drops its unmount guard",
+      "upstreamPrs": [
+        25920
+      ]
+    },
+    {
+      "createdAt": "2026-10-27T16:29:26.968Z",
+      "epoch": 1,
+      "id": "pr-25929",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "ci"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "These are upstream release and CI workflow changes.",
+        "reasonKey": "release-ci",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "CI and release workflows boot the built web bundle in headless Chromium. Release jobs also launch the packaged AppImage or DMG against a seeded database before publishing.",
+      "title": "Upstream release CI boots the built web app and packaged desktop app",
+      "upstreamPrs": [
+        25929,
+        25928
       ]
     },
     {
