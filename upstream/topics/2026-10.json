@@ -30208,9 +30208,11 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:30:17.904Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21074",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers"
@@ -46029,9 +46031,11 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:30:17.904Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25285",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "pr hub",
@@ -48907,9 +48911,11 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:30:17.904Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25860",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "desktop",
@@ -48992,9 +48998,11 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-27T16:30:17.904Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25903",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "desktop",
