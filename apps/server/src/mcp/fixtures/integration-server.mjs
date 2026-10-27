@@ -67,6 +67,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     case "tools/call": {
       const code = request.params?.arguments?.code ?? "";
       if (code === "count") return reply(request.id, `calls ${calls}`);
+      if (code === "meta") return reply(request.id, JSON.stringify(request.params._meta ?? null));
       calls += 1;
       if (code === "hang") return;
       if (code === "ask") {
