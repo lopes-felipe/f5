@@ -405,6 +405,10 @@ import { UsageLimitNotice } from "./chat/UsageLimitNotice";
 import { resolveUsageLimitNotice } from "./chat/UsageLimitNotice.logic";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import { dismissThreadSessionError } from "../threadErrorDismissals";
+import {
+  getThreadModelOptionsSeed,
+  recordThreadModelOptionsSeed,
+} from "../threadModelOptionsSeeds";
 import { PendingSendRecoveryBanner } from "./chat/PendingSendRecoveryBanner";
 
 import {
@@ -1442,27 +1446,6 @@ export default memo(function ChatView({
     serverConfigQuery.data?.settings?.providerInstances,
     selectedProvider,
   ]);
-  const threadModelSelection = serverThread?.modelSelection;
-  useEffect(() => {
-    if (workflowThreadSlot) return;
-    const seed = resolveThreadModelOptionsSeed({
-      draftModel: composerDraft.model,
-      draftModelOptions: composerDraft.modelOptions,
-      threadSelection: threadModelSelection,
-      selectedInstanceId: selectedProviderInstanceId,
-      selectedProvider,
-    });
-    if (seed) setComposerDraftModelOptions(threadId, seed);
-  }, [
-    composerDraft.model,
-    composerDraft.modelOptions,
-    selectedProvider,
-    selectedProviderInstanceId,
-    setComposerDraftModelOptions,
-    threadId,
-    threadModelSelection,
-    workflowThreadSlot,
-  ]);
   const modelOptionsByProvider = useMemo(
     () =>
       getCustomModelOptionsByProvider(
@@ -1519,6 +1502,30 @@ export default memo(function ChatView({
       selectedProviderPickerOptions,
     ) ?? baseThreadModel) as ModelSlug;
   }, [baseThreadModel, composerDraft.model, selectedProviderDriver, selectedProviderPickerOptions]);
+  const threadModelSelection = serverThread?.modelSelection;
+  useEffect(() => {
+    if (workflowThreadSlot) return;
+    const next = resolveThreadModelOptionsSeed({
+      draftModelOptions: composerDraft.modelOptions,
+      selectedModel,
+      threadSelection: threadModelSelection,
+      selectedInstanceId: selectedProviderInstanceId,
+      selectedProvider,
+      previous: getThreadModelOptionsSeed(threadId),
+    });
+    if (!next) return;
+    recordThreadModelOptionsSeed(threadId, next.record);
+    if (next.seed) setComposerDraftModelOptions(threadId, next.seed);
+  }, [
+    composerDraft.modelOptions,
+    selectedModel,
+    selectedProvider,
+    selectedProviderInstanceId,
+    setComposerDraftModelOptions,
+    threadId,
+    threadModelSelection,
+    workflowThreadSlot,
+  ]);
   const selectedProviderModelOptions = useMemo(
     () => providerModelOptionsToSelections(selectedProvider, draftModelOptions),
     [draftModelOptions, selectedProvider],

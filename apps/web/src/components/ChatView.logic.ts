@@ -29,6 +29,8 @@ import { Schema } from "effect";
 import { sortModelsForProviderInstance } from "../modelOrdering";
 import { getDefaultServerModel } from "../providerModels";
 import { providerSelectionsToModelOptions } from "../providerModelOptions";
+import type { ThreadModelOptionsSeedRecord } from "../threadModelOptionsSeeds";
+import { areProviderModelOptionsEqual } from "@t3tools/shared/providerOptions";
 import {
   filterTerminalContextsWithText,
   stripInlineTerminalContextPlaceholders,
@@ -579,23 +581,40 @@ export function resolveComposerPickerModel(input: {
 }
 
 /**
- * Draft options to seed from the thread's persisted selection, so a thread
+ * Reconciles the draft with the thread's persisted selection, so a thread
  * created elsewhere (upstream ports, scheduled tasks, another client) keeps its
- * effort instead of the composer dispatching the model default. A draft that
- * already has options, or picked another instance or model, wins.
+ * effort instead of the composer dispatching the model default.
+ *
+ * Each selection is reconciled once: a later `null` draft is the user picking
+ * the default, not a missing seed. A new selection replaces the draft only while
+ * the draft still holds the previous seed; otherwise the user's choice wins.
+ * Returns null when there is nothing to record.
  */
 export function resolveThreadModelOptionsSeed(input: {
-  readonly draftModel: string | null;
   readonly draftModelOptions: ProviderModelOptions | null;
+  readonly selectedModel: string;
   readonly threadSelection: ModelSelection | null | undefined;
   readonly selectedInstanceId: string;
   readonly selectedProvider: ProviderKind;
-}): ProviderModelOptions | null {
+  readonly previous: ThreadModelOptionsSeedRecord | undefined;
+}): {
+  readonly seed: ProviderModelOptions | null;
+  readonly record: ThreadModelOptionsSeedRecord;
+} | null {
   const selection = input.threadSelection;
-  if (input.draftModelOptions !== null || !selection?.options?.length) return null;
+  if (!selection?.options?.length) return null;
   if (selection.instanceId !== input.selectedInstanceId) return null;
-  if (input.draftModel !== null && input.draftModel !== selection.model) return null;
-  return providerSelectionsToModelOptions(input.selectedProvider, selection.options);
+  if (selection.model !== input.selectedModel) return null;
+  const key = JSON.stringify([selection.instanceId, selection.model, selection.options]);
+  if (input.previous?.key === key) return null;
+  const options = providerSelectionsToModelOptions(input.selectedProvider, selection.options);
+  if (!options) return null;
+  const draft = input.draftModelOptions;
+  const follows = input.previous
+    ? input.previous.options !== null && areProviderModelOptionsEqual(draft, input.previous.options)
+    : draft === null;
+  const inSync = follows || areProviderModelOptionsEqual(draft, options);
+  return { seed: follows ? options : null, record: { key, options: inSync ? options : null } };
 }
 
 export function resolveClaudeSubagentModel(
