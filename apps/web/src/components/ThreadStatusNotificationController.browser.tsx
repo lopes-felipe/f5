@@ -463,13 +463,25 @@ describe("ThreadStatusNotificationController", () => {
       }
     });
 
-    it("does not look up conversations without scheduled turns", async () => {
-      const mounted = await transition({});
+    // Background conversations load without activities, so only the server knows the turn's origin.
+    it("asks the server when the conversation's activities are not loaded", async () => {
+      nativeApi.findRunForTurn.mockResolvedValue({ runId: "run" });
+      const scheduled = await transition({ detailsLoaded: false });
+      try {
+        await vi.waitFor(() =>
+          expect(nativeApi.findRunForTurn).toHaveBeenCalledWith({ threadId: THREAD_ID, turnId }),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(MockNotification.instances).toHaveLength(0);
+      } finally {
+        await scheduled.cleanup();
+      }
+      nativeApi.findRunForTurn.mockResolvedValue({ runId: null });
+      const ordinary = await transition({ detailsLoaded: false });
       try {
         await vi.waitFor(() => expect(MockNotification.instances).toHaveLength(1));
-        expect(nativeApi.findRunForTurn).not.toHaveBeenCalled();
       } finally {
-        await mounted.cleanup();
+        await ordinary.cleanup();
       }
     });
   });

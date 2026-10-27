@@ -10,7 +10,7 @@ import { threadStatusLabel } from "../threadStatus";
 import { BellIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { SCHEDULED_TASK_TURN_SUBMITTED_ACTIVITY_KIND, type ThreadId } from "@t3tools/contracts";
+import type { ThreadId } from "@t3tools/contracts";
 
 import { type AppSettings, useAppSettingsSelector } from "../appSettings";
 import { useStore } from "../store";
@@ -192,15 +192,16 @@ export function ThreadStatusNotificationControllerContent({
       void (async () => {
         const thread = useStore.getState().threads.find((t) => t.id === transition.threadId);
         const turnId = thread?.latestTurn?.turnId;
+        const systemNotice = shouldDispatchThreadStatusNotification({
+          enabled: systemEnabled,
+          permission,
+          appFocused,
+          status: transition.status,
+        });
         // Scheduled runs notify through their own outbox; skip the duplicate thread notice.
-        if (
-          thread &&
-          turnId &&
-          (thread.scheduledOrigin ||
-            thread.activities.some(
-              (activity) => activity.kind === SCHEDULED_TASK_TURN_SUBMITTED_ACTIVITY_KIND,
-            ))
-        ) {
+        // Background conversations load without activities, so a bound conversation's
+        // scheduled turn is only known to the server: ask whenever a notice would show.
+        if (thread && turnId && (needsThreadAttention(transition.status) || systemNotice)) {
           try {
             const result = await ensureNativeApi().scheduledTasks.findRunForTurn({
               threadId: thread.id,
@@ -233,14 +234,7 @@ export function ThreadStatusNotificationControllerContent({
             });
           }
         }
-        if (
-          !shouldDispatchThreadStatusNotification({
-            enabled: systemEnabled,
-            permission,
-            appFocused,
-            status: transition.status,
-          })
-        ) {
+        if (!systemNotice) {
           return;
         }
 
