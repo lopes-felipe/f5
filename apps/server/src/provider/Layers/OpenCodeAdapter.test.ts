@@ -95,6 +95,8 @@ const runtimeMock = {
     sessionUpdateCalls: [] as Array<{ sessionID: string; permission: unknown }>,
     forkCalls: [] as Array<{ sessionID: string; directory: string }>,
     forkMissingPayload: false,
+    sessionUpdateError: undefined as Error | undefined,
+    resumedSessionBusy: false,
     onSessionGet: undefined as (() => Promise<void>) | undefined,
   },
   reset() {
@@ -132,6 +134,8 @@ const runtimeMock = {
     this.state.sessionUpdateCalls.length = 0;
     this.state.forkCalls.length = 0;
     this.state.forkMissingPayload = false;
+    this.state.sessionUpdateError = undefined;
+    this.state.resumedSessionBusy = false;
     this.state.onSessionGet = undefined;
   },
 };
@@ -184,6 +188,9 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
       command: { list: async () => ({ data: runtimeMock.state.commands }) },
       app: { skills: async () => ({ data: [] }) },
       session: {
+        status: async () => ({
+          data: runtimeMock.state.resumedSessionBusy ? { ses_saved: { type: "busy" } } : {},
+        }),
         create: async (input?: Record<string, unknown>) => {
           runtimeMock.state.sessionCreateUrls.push(baseUrl);
           runtimeMock.state.sessionCreateInputs.push(input);
@@ -240,6 +247,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         },
         update: async (input: { sessionID: string; permission: unknown }) => {
           runtimeMock.state.sessionUpdateCalls.push(input);
+          if (runtimeMock.state.sessionUpdateError) throw runtimeMock.state.sessionUpdateError;
           return { data: { id: input.sessionID } };
         },
         fork: async (input: { sessionID: string; directory: string }) => {
@@ -488,7 +496,11 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           sameDirectory ? [] : [{ sessionID: "ses_saved", directory: process.cwd() }],
         );
         const sessionId = sameDirectory ? "ses_saved" : "ses_saved_fork";
-        assert.deepEqual(session.resumeCursor, { schemaVersion: 1, sessionId });
+        assert.deepEqual(session.resumeCursor, {
+          schemaVersion: 1,
+          sessionId,
+          ...(sameDirectory ? {} : { forkedFromSessionId: "ses_saved" }),
+        });
         assert.deepEqual(runtimeMock.state.sessionUpdateCalls, [
           {
             sessionID: sessionId,
@@ -520,28 +532,91 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
-  it.effect("does not abort the shared remote session when concurrent resumes race", () =>
+  it.effect("serializes concurrent resumes with different permission modes", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
       const threadId = asThreadId("concurrent-resume");
       const gate = Promise.withResolvers<void>();
-      runtimeMock.state.onSessionGet = () => {
-        if (runtimeMock.state.sessionGetIds.length === 2) gate.resolve();
-        return gate.promise;
-      };
-      const start = adapter.startSession({
+      runtimeMock.state.onSessionGet = () => gate.promise;
+      const input = {
         threadId,
-        provider: "opencode",
-        runtimeMode: "full-access",
+        provider: "opencode" as const,
         resumeCursor: { schemaVersion: 1, sessionId: "ses_shared" },
-      });
-      const [first, second] = yield* Effect.all([start, start], { concurrency: "unbounded" });
-      assert.deepEqual(first.resumeCursor, { schemaVersion: 1, sessionId: "ses_shared" });
-      assert.deepEqual(second.resumeCursor, first.resumeCursor);
+      };
+      const first = yield* adapter
+        .startSession({
+          ...input,
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.forkChild);
+      while (runtimeMock.state.sessionGetIds.length === 0) yield* sleep(1);
+      const second = yield* adapter
+        .startSession({
+          ...input,
+          runtimeMode: "approval-required",
+        })
+        .pipe(Effect.forkChild);
+      yield* sleep(5);
+      assert.equal(runtimeMock.state.sessionGetIds.length, 1);
+      gate.resolve();
+      yield* Fiber.join(first);
+      const final = yield* Fiber.join(second);
+      assert.deepEqual(final.resumeCursor, { schemaVersion: 1, sessionId: "ses_shared" });
+      assert.equal(final.runtimeMode, "approval-required");
+      assert.equal(runtimeMock.state.sessionUpdateCalls.length, 2);
+      const permission = runtimeMock.state.sessionUpdateCalls.at(-1)?.permission as Array<{
+        permission: string;
+        action: string;
+      }>;
+      assert.deepEqual(permission[0], { permission: "*", pattern: "*", action: "ask" });
       assert.deepEqual(runtimeMock.state.sessionCreateUrls, []);
-      assert.deepEqual(runtimeMock.state.abortCalls, []);
       assert.equal(runtimeMock.state.closeCalls.length, 1);
       yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("reports an actionable resume error when permission refresh fails", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      runtimeMock.state.sessionUpdateError = new Error("permission update rejected");
+      const result = yield* adapter
+        .startSession({
+          threadId: asThreadId("resume-permission-error"),
+          provider: "opencode",
+          runtimeMode: "approval-required",
+          resumeCursor: { schemaVersion: 1, sessionId: "ses_saved" },
+        })
+        .pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.match(result.failure.message, /Could not resume OpenCode session 'ses_saved'/);
+        assert.match(result.failure.message, /permission update rejected/);
+        assert.match(result.failure.message, /retry/);
+      }
+      assert.deepEqual(runtimeMock.state.sessionCreateUrls, []);
+      assert.equal(runtimeMock.state.closeCalls.length, 1);
+    }),
+  );
+
+  it.effect("refuses to attach a ready context to an externally running session", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      runtimeMock.state.resumedSessionBusy = true;
+      const threadId = asThreadId("external-busy-resume");
+      const result = yield* adapter
+        .startSession({
+          threadId,
+          provider: "opencode",
+          runtimeMode: "full-access",
+          resumeCursor: { schemaVersion: 1, sessionId: "ses_saved" },
+        })
+        .pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure")
+        assert.match(result.failure.message, /still running.*external OpenCode/);
+      assert.deepEqual(runtimeMock.state.sessionCreateUrls, []);
+      assert.deepEqual(runtimeMock.state.sessionUpdateCalls, []);
+      assert.equal(yield* adapter.hasSession(threadId), false);
     }),
   );
 

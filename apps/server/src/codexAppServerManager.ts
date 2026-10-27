@@ -1600,7 +1600,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       status: "running",
       ...(nextConfiguredModel !== undefined ? { model: nextConfiguredModel } : {}),
       // A queued follow-up has its own id, but interrupt requires the running turn.
-      activeTurnId: context.session.activeTurnId ?? turnId,
+      activeTurnId:
+        context.session.status === "running" ? (context.session.activeTurnId ?? turnId) : turnId,
       ...(context.session.resumeCursor !== undefined
         ? { resumeCursor: context.session.resumeCursor }
         : {}),
@@ -3702,6 +3703,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
       this.updateSession(context, {
         status: willRetry ? "running" : "error",
+        ...(!willRetry ? { activeTurnId: undefined } : {}),
         lastError: message ?? context.session.lastError,
       });
     }

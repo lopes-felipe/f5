@@ -1,4 +1,6 @@
 import { Effect, type FileSystem, type Path } from "effect";
+import type { OpencodeClient } from "@opencode-ai/sdk/v2";
+import { openCodeRuntimeErrorDetail, runOpenCodeSdk } from "./opencodeRuntime.ts";
 
 export const OPENCODE_RESUME_VERSION = 1 as const;
 
@@ -13,6 +15,34 @@ export function parseOpenCodeResume(raw: unknown): { readonly sessionId: string 
     return undefined;
   }
   return { sessionId: record.sessionId.trim() };
+}
+
+/** A fork carries native history even though it has a new session identity. */
+export function isOpenCodeHistoryContinuation(previous: unknown, current: unknown): boolean {
+  const from = parseOpenCodeResume(previous);
+  const to = parseOpenCodeResume(current);
+  return (
+    !!from &&
+    !!to &&
+    (from.sessionId === to.sessionId ||
+      (current as Record<string, unknown>).forkedFromSessionId === from.sessionId)
+  );
+}
+
+/** The SDK normally throws just the body, discarding the authoritative HTTP status. */
+export function getOpenCodeResumeSession(client: OpencodeClient, sessionId: string) {
+  return runOpenCodeSdk("session.get", async (signal) => {
+    const result = await client.session.get(
+      { sessionID: sessionId },
+      { signal, throwOnError: false },
+    );
+    if (result.response?.ok === false) {
+      throw new Error(openCodeRuntimeErrorDetail(result.error), {
+        cause: { status: result.response.status, body: result.error },
+      });
+    }
+    return result.data;
+  });
 }
 
 /** Only a structured, confirmed miss may replace a persisted conversation. */
