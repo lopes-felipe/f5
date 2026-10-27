@@ -103,9 +103,18 @@ describe("PR Hub bounded read model", () => {
     expect(
       listPrHubPullRequests(data, "1", { query: "-draft:true -review:required" }).pullRequests,
     ).toHaveLength(1);
-    data.pullRequests[0]!.title = "fix:crash in repo:org/name is:open";
+    const colonData = {
+      ...data,
+      pullRequests: [
+        makePr({
+          attentionState: "ready_to_merge",
+          title: "fix:crash in repo:org/name is:open",
+        }),
+      ],
+    };
     expect(
-      listPrHubPullRequests(data, "1", { query: "fix:crash repo:org/name is:open" }).pullRequests,
+      listPrHubPullRequests(colonData, "1", { query: "fix:crash repo:org/name is:open" })
+        .pullRequests,
     ).toHaveLength(1);
     expect(
       listPrHubPullRequests(data, "1", { query: 'label:"needs,design"' }).pullRequests,

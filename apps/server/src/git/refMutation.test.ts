@@ -15,7 +15,13 @@ it.each([
   [["tag", "v1"], true],
   [["symbolic-ref", "--quiet", "HEAD"], false],
   [["symbolic-ref", "HEAD", "refs/heads/feature"], true],
-  ...["merge", "rebase", "cherry-pick", "revert"].map((command) => [[command, "feature"], true]),
-] as const)("classifies %j as mutation=%s", (args, expected) => {
-  expect(gitMutatesRefSnapshot(args as readonly string[])).toBe(expected);
-});
+  ...["merge", "rebase", "cherry-pick", "revert"].map((command): [string[], boolean] => [
+    [command, "feature"],
+    true,
+  ]),
+] satisfies Array<[readonly string[], boolean]>)(
+  "classifies %j as mutation=%s",
+  (args, expected) => {
+    expect(gitMutatesRefSnapshot(args)).toBe(expected);
+  },
+);
