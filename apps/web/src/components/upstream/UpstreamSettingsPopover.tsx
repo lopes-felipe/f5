@@ -55,6 +55,18 @@ function SettingSelect(props: {
   );
 }
 
+/**
+ * Options for a model setting. A saved selection the providers no longer offer
+ * stays listed as unavailable rather than reading as the empty default.
+ */
+function modelSettingOptions(models: ReturnType<typeof modelOptions>, key: string, emptyLabel: string) {
+  const options = [{ value: "", label: emptyLabel }, ...models.map((option) => ({ value: option.key, label: option.label }))];
+  if (key && !models.some((option) => option.key === key)) {
+    options.push({ value: key, label: `${key.replace("::", " · ")} (unavailable)` });
+  }
+  return { options, display: options.find((option) => option.value === key)?.label ?? emptyLabel };
+}
+
 export function UpstreamSettingsPopover(props: {
   readonly projectId: ProjectId;
   readonly overview: UpstreamOverview;
@@ -93,6 +105,8 @@ export function UpstreamSettingsPopover(props: {
   const disabled = saving || props.readOnly || !loaded;
   const triageKey = selectionKey(current.triageModelSelection);
   const portKey = selectionKey(current.portModelSelection);
+  const triageSetting = modelSettingOptions(triageModels, triageKey, "Automatic (first Claude instance)");
+  const portSetting = modelSettingOptions(portModels, portKey, "Ask each time");
   return (
     <Popover>
       <PopoverTrigger render={<Button size="icon-sm" variant="ghost" aria-label="Upstream settings" />}>
@@ -147,12 +161,9 @@ export function UpstreamSettingsPopover(props: {
           <SettingSelect
             label="Triage model"
             value={triageKey}
-            display={triageModels.find((option) => option.key === triageKey)?.label ?? "Automatic (first Claude instance)"}
+            display={triageSetting.display}
             disabled={disabled}
-            options={[
-              { value: "", label: "Automatic (first Claude instance)" },
-              ...triageModels.map((option) => ({ value: option.key, label: option.label })),
-            ]}
+            options={triageSetting.options}
             onChange={(key) =>
               void save({ triageModelSelection: triageModels.find((option) => option.key === key)?.selection ?? null })
             }
@@ -166,12 +177,9 @@ export function UpstreamSettingsPopover(props: {
           <SettingSelect
             label="Port model default"
             value={portKey}
-            display={portModels.find((option) => option.key === portKey)?.label ?? "Ask each time"}
+            display={portSetting.display}
             disabled={disabled}
-            options={[
-              { value: "", label: "Ask each time" },
-              ...portModels.map((option) => ({ value: option.key, label: option.label })),
-            ]}
+            options={portSetting.options}
             onChange={(key) =>
               void save({ portModelSelection: portModels.find((option) => option.key === key)?.selection ?? null })
             }
