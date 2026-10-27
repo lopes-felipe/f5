@@ -1,4 +1,4 @@
-import { captureBoundedPage } from "./capture";
+import { captureBoundedPage, releasePreviewCaptures } from "./capture";
 import path from "node:path";
 
 import type {
@@ -331,6 +331,7 @@ export class PreviewRuntime {
       }
       const guest = this.#getWebContents(tabId);
       entry.webContentsId = null;
+      if (guest) releasePreviewCaptures(guest);
       if (guest && !guest.isDestroyed()) {
         guest.close();
       }

@@ -11922,6 +11922,111 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect.each([
+    ["full-access", "Write"],
+    ["auto", "Write"],
+    ["auto-accept-edits", "Write"],
+    ["approval-required", "Write"],
+    ["full-access", "Bash"],
+    ["full-access", "mcp__preview__navigate"],
+  ] as const)("asks before a plan-mode callback in %s mode for %s", ([runtimeMode, toolName]) => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const events: ProviderRuntimeEvent[] = [];
+      const observer = yield* adapter.streamEvents.pipe(
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            events.push(event);
+          }),
+        ),
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "plan",
+        attachments: [],
+        interactionMode: "plan",
+      });
+      const canUseTool = harness.getLastCreateQueryInput()!.options.canUseTool!;
+      const result = canUseTool(
+        toolName,
+        toolName === "Bash"
+          ? { command: "bun run test" }
+          : toolName.startsWith("mcp__")
+            ? { url: "http://localhost:3000" }
+            : { file_path: "/repo/a.ts", content: "work" },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "plan-write",
+          requestId: "plan-write",
+        },
+      );
+      while (!events.some((event) => event.type === "request.opened")) yield* Effect.yieldNow;
+      const opened = events.find((event) => event.type === "request.opened")!;
+      if (opened.type !== "request.opened") return;
+      yield* adapter.respondToRequest(
+        THREAD_ID,
+        ApprovalRequestId.makeUnsafe(opened.requestId!),
+        "decline",
+      );
+      assert.equal((yield* Effect.promise(() => result))?.behavior, "deny");
+      yield* Fiber.interrupt(observer);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect.each(["Write", "Bash", "mcp__preview__navigate"])(
+    "denies plan-mode %s immediately when approvals are disabled",
+    (toolName) => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          runtimeMode: "full-access",
+          approvalPolicy: "never",
+        });
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "plan",
+          attachments: [],
+          interactionMode: "plan",
+        });
+        const result = yield* Effect.promise(() =>
+          harness.getLastCreateQueryInput()!.options.canUseTool!(
+            toolName,
+            toolName === "Bash"
+              ? { command: "bun run test" }
+              : toolName.startsWith("mcp__")
+                ? { url: "http://localhost:3000" }
+                : { file_path: "/repo/a.ts" },
+            {
+              signal: new AbortController().signal,
+              toolUseID: "plan-write",
+              requestId: "plan-write",
+            },
+          ),
+        );
+        assert.equal(result?.behavior, "deny");
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect("passes auto tool search as flag settings rather than only process env", () => {
+    const harness = makeHarness({ processEnvironment: { ENABLE_TOOL_SEARCH: "auto" } });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode: "full-access" });
+      assert.deepEqual(
+        (harness.getLastCreateQueryInput()!.options.settings as { env: unknown }).env,
+        {
+          ENABLE_TOOL_SEARCH: "true",
+        },
+      );
+    }).pipe(Effect.provide(harness.layer));
+  });
+
   it.effect("routes AskUserQuestion through user-input flow even in full-access mode", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

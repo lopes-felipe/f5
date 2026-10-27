@@ -14,6 +14,7 @@ import type {
 export const GITHUB_PR_DETAIL_QUERY = `
 query F5PrDetail($owner:String!,$repo:String!,$number:Int!){
   repository(owner:$owner,name:$repo){
+    autoMergeAllowed
     pullRequest(number:$number){
       id title body url state isDraft mergeable mergeStateStatus
       additions deletions changedFiles headRefName baseRefName headRefOid baseRefOid
@@ -313,6 +314,7 @@ export function decodeGitHubPrDetail(
       provider: "github",
       nodeId: nullableString(pr.id) ?? tracked.nodeId,
       mergeStateStatus: stringOf(pr.mergeStateStatus, tracked.mergeStateStatus),
+      autoMergeAllowed: recordOrNull(root.repository)?.autoMergeAllowed === true,
       headRefOid: nullableString(pr.headRefOid) ?? tracked.headRefOid,
       baseRefOid: nullableString(pr.baseRefOid),
       viewerCanUpdate: pr.viewerCanUpdate === true,

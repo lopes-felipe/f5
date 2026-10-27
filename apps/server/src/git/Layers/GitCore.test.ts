@@ -1003,35 +1003,49 @@ it("skips submodule initialization when the checkout has no .gitmodules", async 
   expect(scripted.calls.filter((call) => call.args.includes("submodule"))).toHaveLength(0);
 });
 
-it("preserves existing branches during forge head materialization, including races", async () => {
+it.each([true, false])(
+  "preserves existing branches during forge head materialization (already exists=%s)",
+  async (alreadyExists) => {
+    const scripted = makeScriptedGitService((input) =>
+      input.args[0] === "show-ref"
+        ? { code: alreadyExists ? 0 : 1 }
+        : input.args[0] === "branch"
+          ? { code: 128, stderr: "fatal: a branch named 'existing' already exists" }
+          : {},
+    );
+    const core = await makeCore(scripted.service);
+    const result = await Effect.runPromise(
+      core
+        .fetchRemoteBranch({
+          cwd: process.cwd(),
+          remoteName: "origin",
+          remoteBranch: "feature",
+          localBranch: "existing",
+          preserveExisting: true,
+        })
+        .pipe(Effect.result),
+    );
+    expect(result._tag).toBe(alreadyExists ? "Success" : "Failure");
+    expect(scripted.calls.find((call) => call.args[0] === "fetch")?.args.at(-1)).toBe(
+      "refs/heads/feature:refs/remotes/origin/feature",
+    );
+    expect(scripted.calls.find((call) => call.args[0] === "branch")?.args).toEqual(
+      alreadyExists ? undefined : ["branch", "--", "existing", "origin/feature"],
+    );
+    expect(scripted.calls.flatMap((call) => call.args)).not.toContain("--force");
+  },
+);
+
+it("does not fast-forward a branch that changed after PR checkout", async () => {
   const scripted = makeScriptedGitService((input) =>
-    input.args[0] === "branch"
-      ? { code: 128, stderr: "fatal: a branch named 'existing' already exists" }
-      : {},
+    input.args[0] === "symbolic-ref" ? { stdout: "other-branch\n" } : {},
   );
   const core = await makeCore(scripted.service);
   const result = await Effect.runPromise(
-    core
-      .fetchRemoteBranch({
-        cwd: process.cwd(),
-        remoteName: "origin",
-        remoteBranch: "feature",
-        localBranch: "existing",
-        preserveExisting: true,
-      })
-      .pipe(Effect.result),
+    core.fastForwardTo(process.cwd(), "a".repeat(40), "pr-branch").pipe(Effect.result),
   );
   expect(result._tag).toBe("Failure");
-  expect(scripted.calls.find((call) => call.args[0] === "fetch")?.args.at(-1)).toBe(
-    "refs/heads/feature:refs/remotes/origin/feature",
-  );
-  expect(scripted.calls.find((call) => call.args[0] === "branch")?.args).toEqual([
-    "branch",
-    "--",
-    "existing",
-    "origin/feature",
-  ]);
-  expect(scripted.calls.flatMap((call) => call.args)).not.toContain("--force");
+  expect(scripted.calls.some((call) => call.args[0] === "merge")).toBe(false);
 });
 
 it("rejects option-shaped checkout targets without running a checkout", async () => {

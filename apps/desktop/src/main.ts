@@ -105,11 +105,13 @@ import * as Crypto from "node:crypto";
 import * as FS from "node:fs";
 import * as OS from "node:os";
 import * as Path from "node:path";
+import { releasePreviewCaptures } from "./preview/capture";
 
 import {
   app,
   BrowserWindow,
   clipboard,
+  ClipboardItem,
   dialog,
   ipcMain,
   globalShortcut,
@@ -1309,6 +1311,7 @@ function closePreviewTab(tabId: string): void {
   entry.faviconAbortController = null;
   const guest = getPreviewWebContents(tabId);
   void previewRuntime.discardRecordingsForTab(tabId);
+  if (guest) releasePreviewCaptures(guest);
   forgetPreviewRecordingOwners((ownership) => ownership.scopedTabId === tabId);
   if (guest && !guest.isDestroyed()) {
     guest.close();
@@ -3689,7 +3692,7 @@ function registerIpcHandlers(): void {
     if (source !== "clipboard" && source !== "selection")
       throw new Error("Invalid clipboard source.");
     if (source === "selection" && process.platform !== "linux") return "";
-    return clipboard.readText(source);
+    return (source === "selection" ? clipboard.selection : clipboard).readText();
   });
 
   ipcMain.removeHandler(COPY_IMAGE_CHANNEL);
@@ -3699,7 +3702,9 @@ function registerIpcHandlers(): void {
     if (image.isEmpty()) {
       throw new Error("F5 could not decode the image for copying.");
     }
-    clipboard.writeImage(image);
+    await clipboard.write([
+      new ClipboardItem({ "image/png": new Blob([new Uint8Array(image.toPNG())]) }),
+    ]);
   });
 
   ipcMain.removeHandler(DOWNLOAD_IMAGE_CHANNEL);

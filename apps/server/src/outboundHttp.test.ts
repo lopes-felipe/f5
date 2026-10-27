@@ -9,10 +9,27 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { builtinFetchUsesHttp2 } from "./outboundHttp.ts";
+import { builtinFetchUsesHttp2, ignoreMacosTypeOfServiceEinval } from "./outboundHttp.ts";
 import { LOCALHOST_TEST_CERT, LOCALHOST_TEST_KEY } from "./testUtils/localhostTls.ts";
 
 const run = promisify(execFile);
+
+it("ignores only macOS EINVAL from the optional socket QoS hint", () => {
+  const socket = {} as Net.Socket;
+  const error = Object.assign(new Error("reset peer"), { code: "EINVAL" });
+  const original = function (this: Net.Socket, _value: number): Net.Socket {
+    throw error;
+  };
+  const prototype = { setTypeOfService: original };
+  ignoreMacosTypeOfServiceEinval("linux", prototype);
+  expect(prototype.setTypeOfService).toBe(original);
+  ignoreMacosTypeOfServiceEinval("darwin", prototype);
+  expect(prototype.setTypeOfService.call(socket, 1)).toBe(socket);
+  error.code = "EPERM";
+  expect(() => prototype.setTypeOfService.call(socket, 1)).toThrow(error);
+  ignoreMacosTypeOfServiceEinval("darwin", {});
+});
+
 const sockets = new Set<Net.Socket>();
 const sessions = new Set<Http2.ServerHttp2Session>();
 const origin = Http2.createSecureServer(

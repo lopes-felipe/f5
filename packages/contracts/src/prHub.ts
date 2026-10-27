@@ -654,6 +654,7 @@ export const PrHubDetailProviderDetails = Schema.Union([
     provider: Schema.Literal("github"),
     nodeId: Schema.NullOr(Schema.String),
     mergeStateStatus: Schema.String,
+    autoMergeAllowed: Schema.optionalKey(Schema.Boolean),
     headRefOid: Schema.NullOr(Schema.String),
     baseRefOid: Schema.NullOr(Schema.String),
     viewerCanUpdate: Schema.Boolean,

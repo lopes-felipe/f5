@@ -61,6 +61,14 @@ describe("collectMarkdownLinkHrefs", () => {
 });
 
 describe("resolveMarkdownFileLinkTarget", () => {
+  it.each([
+    "//attacker/share/a.png",
+    String.raw`\\attacker\share\a.png`,
+    String.raw`/\attacker/share/a.png`,
+    "file://attacker/share/a.png",
+  ])("does not turn a foreign share into a file chip: %s", (href) => {
+    expect(resolveMarkdownFileLinkTarget(href, "C:\\repo")).toBeNull();
+  });
   it("resolves absolute posix file paths", () => {
     expect(resolveMarkdownFileLinkTarget("/Users/julius/project/AGENTS.md")).toBe(
       "/Users/julius/project/AGENTS.md",

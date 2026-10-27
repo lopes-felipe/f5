@@ -3049,6 +3049,7 @@ const makeGitCore = Effect.gen(function* () {
       ]);
 
       const localBranchAlreadyExists = yield* branchExists(input.cwd, input.localBranch);
+      if (localBranchAlreadyExists && input.preserveExisting) return;
       const targetRef = `${input.remoteName}/${input.remoteBranch}`;
       yield* runGit(
         "GitCore.fetchRemoteBranch.materialize",
@@ -3447,11 +3448,27 @@ const makeGitCore = Effect.gen(function* () {
     allocateWorktreePath,
     isValidBranchName,
     resolveAvailableBranchName,
-    fastForwardTo: (cwd, sha) =>
+    fastForwardTo: (cwd, sha, expectedBranch) =>
       withRepositoryLock(
         "GitCore.fastForwardTo",
         cwd,
-        runGit("GitCore.fastForwardTo", cwd, ["merge", "--ff-only", "--", sha]),
+        Effect.gen(function* () {
+          if (expectedBranch !== undefined) {
+            const branch = (yield* runGitStdout("GitCore.fastForwardTo.branch", cwd, [
+              "symbolic-ref",
+              "--short",
+              "HEAD",
+            ])).trim();
+            if (branch !== expectedBranch)
+              return yield* createGitCommandError(
+                "GitCore.fastForwardTo",
+                cwd,
+                [],
+                "The checked-out branch changed before fast-forwarding.",
+              );
+          }
+          yield* runGit("GitCore.fastForwardTo", cwd, ["merge", "--ff-only", "--", sha]);
+        }),
       ),
     initializeWorktreeSubmodules: (path, policy) => initializeSubmodules(path, policy),
     listWorktrees,

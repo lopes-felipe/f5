@@ -622,6 +622,40 @@ it.layer(TestLayer)("git integration", (it) => {
           expect(yield* git(cwd, ["branch", "--show-current"])).toBe("coordinated");
         }),
     );
+    it.effect("fast-forwards only the expected branch and preserves divergent local commits", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const core = yield* GitCore;
+        yield* git(cwd, ["checkout", "-b", "pr-head"]);
+        yield* writeTextFile(path.join(cwd, "pr.txt"), "new head\n");
+        yield* git(cwd, ["add", "pr.txt"]);
+        yield* git(cwd, ["commit", "-m", "PR head"]);
+        const head = yield* git(cwd, ["rev-parse", "HEAD"]);
+        yield* git(cwd, ["checkout", initialBranch]);
+        yield* core.fastForwardTo(cwd, head, initialBranch);
+        expect(yield* git(cwd, ["rev-parse", "HEAD"])).toBe(head);
+        // Two branches now diverge from the same reviewed head.
+        yield* writeTextFile(path.join(cwd, "local.txt"), "keep local work\n");
+        yield* git(cwd, ["add", "local.txt"]);
+        yield* git(cwd, ["commit", "-m", "Local work"]);
+        const localHead = yield* git(cwd, ["rev-parse", "HEAD"]);
+        yield* git(cwd, ["checkout", "pr-head"]);
+        yield* writeTextFile(path.join(cwd, "remote.txt"), "remote work\n");
+        yield* git(cwd, ["add", "remote.txt"]);
+        yield* git(cwd, ["commit", "-m", "Remote work"]);
+        const remoteHead = yield* git(cwd, ["rev-parse", "HEAD"]);
+        yield* git(cwd, ["checkout", initialBranch]);
+        expect(
+          (yield* core.fastForwardTo(cwd, remoteHead, initialBranch).pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        expect(yield* git(cwd, ["rev-parse", "HEAD"])).toBe(localHead);
+        expect(
+          (yield* core.fastForwardTo(cwd, remoteHead, "pr-head").pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        expect(yield* git(cwd, ["rev-parse", "HEAD"])).toBe(localHead);
+      }),
+    );
     it.effect("clones into its reserved empty directory using a local bare remote", () =>
       Effect.gen(function* () {
         const remote = yield* makeTmpDir();
