@@ -3,17 +3,24 @@ import {
   UPSTREAM_MAX_PORT_GROUPS,
   UPSTREAM_MAX_PORT_TOPICS,
   type ProjectSettingsOverrides,
+  type UpstreamDecidedBy,
   type UpstreamDecision,
   type UpstreamListTopicsResult,
   type UpstreamOverview,
   type UpstreamPortsSettings,
   type UpstreamPortLinkSummary,
   type UpstreamStateCounts,
+  type UpstreamSuggestionFilter,
   type UpstreamTopic,
+  type UpstreamTopicFilter,
   type UpstreamTopicList,
+  type UpstreamTopicSort,
   type UpstreamTopicSuggestion,
+  type UpstreamUserImpact,
 } from "@t3tools/contracts";
 import type { InfiniteData } from "@tanstack/react-query";
+
+import type { UpstreamSearch } from "./upstreamSearch";
 
 export const UPSTREAM_LISTS: ReadonlyArray<{ readonly id: UpstreamTopicList; readonly label: string }> = [
   { id: "inbox", label: "Inbox" },
@@ -148,13 +155,25 @@ export function actionTargets(
   return focused !== null && ids.includes(focused) ? [focused] : [];
 }
 
+/**
+ * The state of each topic: its loaded row's, else `unloaded`. "Select all
+ * matching" only selects topics of the current list, so that list's state is
+ * the right answer for the ones past the loaded pages.
+ */
+export function topicStates(
+  rows: ReadonlyArray<{ readonly topic: { readonly id: string }; readonly state: string }>,
+  unloaded: string,
+): (topicId: string) => string {
+  const states = new Map(rows.map((row) => [row.topic.id, row.state]));
+  return (topicId) => states.get(topicId) ?? unloaded;
+}
+
 /** Topics that can be ported: Ready or In progress. */
 export function portableTopicIds(
-  rows: ReadonlyArray<{ readonly topic: { readonly id: string }; readonly state: string }>,
+  stateOf: (topicId: string) => string | undefined,
   topicIds: ReadonlyArray<string>,
 ): string[] {
-  const states = new Map(rows.map((row) => [row.topic.id, row.state]));
-  return topicIds.filter((id) => states.get(id) === "ready" || states.get(id) === "in-progress");
+  return topicIds.filter((id) => stateOf(id) === "ready" || stateOf(id) === "in-progress");
 }
 
 export function promptLimitError(topicCount: number): string | null {
@@ -409,18 +428,50 @@ export function withoutTopics(
   removed: ReadonlySet<string>,
 ): InfiniteData<UpstreamListTopicsResult> | undefined {
   if (!data) return data;
+  const gone = data.pages.flatMap((page) => page.topics.filter((row) => removed.has(row.topic.id)));
+  if (gone.length === 0) return data;
+  // Every removed row matched the whole filter, so it counted once in each facet dimension.
+  const suggestion = { ...data.pages[0]!.facets.suggestion };
+  const impact = { ...data.pages[0]!.facets.impact };
+  const areaDrops = new Map<string, number>();
+  for (const { topic } of gone) {
+    const verb = topic.suggestion?.status ?? "none";
+    suggestion[verb] = Math.max(0, suggestion[verb] - 1);
+    const userImpact = topic.suggestion?.userImpact;
+    if (userImpact) impact[userImpact] = Math.max(0, impact[userImpact] - 1);
+    for (const area of new Set(topic.suggestion?.areas ?? [])) areaDrops.set(area, (areaDrops.get(area) ?? 0) + 1);
+  }
   return {
     ...data,
-    pages: data.pages.map((page) => ({
+    pages: data.pages.map((page, index) => ({
       ...page,
       topics: page.topics.filter((row) => !removed.has(row.topic.id)),
+      total: Math.max(0, page.total - gone.length),
+      facets:
+        index === 0
+          ? {
+              suggestion,
+              impact,
+              areas: page.facets.areas.map((entry) => ({
+                area: entry.area,
+                count: Math.max(0, entry.count - (areaDrops.get(entry.area) ?? 0)),
+              })),
+            }
+          : page.facets,
     })),
   };
 }
 
+/** `1 topic`, `1,204 topics`. */
+export const topicCount = (count: number) => `${count.toLocaleString()} topic${count === 1 ? "" : "s"}`;
+
+/** The confirmation note for a decision that reaches topics past the loaded rows. */
+export const unseenNote = (unseen: number) =>
+  `${topicCount(unseen)} ${unseen === 1 ? "is" : "are"} not loaded in the list, so you have not seen ${unseen === 1 ? "it" : "them"}.`;
+
 /** Toast title after a decision: `Skipped 12 topics`. */
 export function decisionToastTitle(decision: UpstreamDecision | "accept", count: number): string {
-  const noun = `${count} topic${count === 1 ? "" : "s"}`;
+  const noun = topicCount(count);
   if (decision === "accept") return `Accepted suggestions for ${noun}`;
   switch (decision.kind) {
     case "port":
@@ -496,6 +547,111 @@ export function ledgerChipLabel(publication: UpstreamOverview["publication"]): s
   if (publication.unpublishedOps > 0) parts.push(`${publication.unpublishedOps} unpublished`);
   if (parts.length === 0 && publication.pausedReason) parts.push("Publishing paused");
   return parts.length ? parts.join(" · ") : null;
+}
+
+// ── Search and filters ─────────────────────────────────────────────────
+
+export const SUGGESTION_FILTER_LABELS: Readonly<Record<UpstreamSuggestionFilter, string>> = {
+  port: "Port",
+  skip: "Skip",
+  watch: "Watch",
+  equivalent: "Equivalent",
+  none: "No suggestion",
+};
+
+export const IMPACT_LABELS: Readonly<Record<UpstreamUserImpact, string>> = {
+  high: "High impact",
+  medium: "Medium impact",
+  low: "Low impact",
+  none: "No impact",
+};
+
+export const DECIDED_BY_LABELS: Readonly<Record<UpstreamDecidedBy, string>> = {
+  user: "Decided by you",
+  llm: "Automatic (LLM)",
+  rule: "Automatic (rule)",
+};
+
+export const SORT_LABELS: Readonly<Record<UpstreamTopicSort, string>> = {
+  priority: "Priority",
+  newest: "Newest",
+  oldest: "Oldest",
+  confidence: "Confidence",
+};
+
+/** The fields of the page's search params that filter the list. */
+type FilterSearch = Pick<
+  UpstreamSearch,
+  "q" | "suggestion" | "impact" | "area" | "question" | "conflict" | "by"
+>;
+
+/** The server filter for the page's search params. */
+export function filterFromSearch(search: FilterSearch): UpstreamTopicFilter {
+  const query = search.q?.trim();
+  return {
+    ...(query ? { query } : {}),
+    ...(search.suggestion?.length ? { suggestion: [...search.suggestion] } : {}),
+    ...(search.impact?.length ? { impact: [...search.impact] } : {}),
+    ...(search.area ? { area: search.area } : {}),
+    ...(search.question ? { hasQuestion: true } : {}),
+    ...(search.conflict ? { hasConflict: true } : {}),
+    ...(search.by ? { decidedBy: search.by } : {}),
+  };
+}
+
+export const hasActiveFilters = (search: FilterSearch) => Object.keys(filterFromSearch(search)).length > 0;
+
+/** `search` with every filter removed; the list, project, sort and focus stay. */
+export function withoutFilters(search: UpstreamSearch): UpstreamSearch {
+  const { q: _q, suggestion: _s, impact: _i, area: _a, question: _qu, conflict: _c, by: _b, ...rest } = search;
+  return rest;
+}
+
+export interface FilterChip {
+  readonly key: string;
+  readonly label: string;
+  /** The search params without this chip's filter. */
+  readonly remove: (search: UpstreamSearch) => UpstreamSearch;
+}
+
+/** One removable chip per active filter value. */
+export function activeFilterChips(search: FilterSearch): FilterChip[] {
+  const chips: FilterChip[] = [];
+  const query = search.q?.trim();
+  if (query) chips.push({ key: "q", label: `“${query}”`, remove: ({ q: _q, ...rest }) => rest });
+  for (const value of search.suggestion ?? [])
+    chips.push({
+      key: `suggestion:${value}`,
+      label: SUGGESTION_FILTER_LABELS[value],
+      remove: (current) => {
+        const { suggestion, ...rest } = current;
+        const next = (suggestion ?? []).filter((entry) => entry !== value);
+        return next.length ? { ...rest, suggestion: next } : rest;
+      },
+    });
+  for (const value of search.impact ?? [])
+    chips.push({
+      key: `impact:${value}`,
+      label: IMPACT_LABELS[value],
+      remove: (current) => {
+        const { impact, ...rest } = current;
+        const next = (impact ?? []).filter((entry) => entry !== value);
+        return next.length ? { ...rest, impact: next } : rest;
+      },
+    });
+  if (search.area) chips.push({ key: "area", label: `Area: ${search.area}`, remove: ({ area: _a, ...rest }) => rest });
+  if (search.question)
+    chips.push({ key: "question", label: "Has question", remove: ({ question: _q, ...rest }) => rest });
+  if (search.conflict)
+    chips.push({ key: "conflict", label: "Has conflict", remove: ({ conflict: _c, ...rest }) => rest });
+  if (search.by) chips.push({ key: "by", label: DECIDED_BY_LABELS[search.by], remove: ({ by: _b, ...rest }) => rest });
+  return chips;
+}
+
+/** Adds or removes `value` from a multi-value filter. */
+export function toggleValue<T extends string>(values: ReadonlyArray<T> | undefined, value: T): T[] {
+  const current = values ?? [];
+  return current.includes(value) ? current.filter((entry) => entry !== value) : [...current, value];
 }
 
 /** Start port for every Ready topic, capped at the per-start limit. */

@@ -243,6 +243,11 @@ See the full schema for more details: [`packages/contracts/src/keybindings.ts`](
     "key": "[",
     "command": "upstream.previousList",
     "when": "upstreamListFocus && !editableFocus && !dialogFocus"
+  },
+  {
+    "key": "/",
+    "command": "upstream.focusSearch",
+    "when": "upstreamListFocus && !editableFocus && !dialogFocus"
   }
 ]
 ```
@@ -362,6 +367,7 @@ selected, and focus moves to the next row.
 | `Esc`     | `upstream.clearSelection`   | Clear the selection                                        |
 | `]`       | `upstream.nextList`         | Next list (Inbox, Ready, …)                                |
 | `[`       | `upstream.previousList`     | Previous list                                              |
+| `/`       | `upstream.focusSearch`      | Search topics (`Esc` returns to the list)                  |
 
 With the mouse, Shift-click a row or its checkbox to select a range, and Cmd-click (Ctrl-click
 elsewhere) to add or remove one row. The bar above the list shows the actions for the selection.

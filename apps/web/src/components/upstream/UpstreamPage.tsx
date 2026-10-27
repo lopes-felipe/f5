@@ -61,7 +61,9 @@ import {
   canMoveFocusAfterDecision,
   decisionBatches,
   extendSelection,
+  filterFromSearch,
   focusAfterRemoval,
+  hasActiveFilters,
   isActivationKey,
   isControlTarget,
   isDialogTarget,
@@ -76,7 +78,11 @@ import {
   selectRange,
   startAllReady,
   toggleId,
+  topicCount,
+  topicStates,
+  unseenNote,
   upstreamPrUrl,
+  withoutFilters,
   withoutTopics,
   type UpstreamBulkAction,
   type UpstreamView,
@@ -131,16 +137,11 @@ export function UpstreamPage(props: {
   const projects = projectsQuery.data?.projects ?? [];
   const projectId = props.search.project ?? projects[0]?.projectId ?? null;
   const list = props.search.list ?? "inbox";
-  const hasQuestion = list === "inbox" && props.search.question === true;
-  const automaticOnly = list === "skipped" && props.search.auto === true;
-  const filter: UpstreamTopicFilter = useMemo(
-    () => ({
-      ...(hasQuestion ? { hasQuestion: true } : {}),
-      ...(automaticOnly ? { decidedBy: "llm" as const } : {}),
-    }),
-    [hasQuestion, automaticOnly],
-  );
-  const filtered = hasQuestion || automaticOnly;
+  const sort = props.search.sort ?? null;
+  // Keyed by value: the router hands back new arrays for unchanged filters.
+  const filterKey = JSON.stringify(filterFromSearch(props.search));
+  const filter: UpstreamTopicFilter = useMemo(() => JSON.parse(filterKey) as UpstreamTopicFilter, [filterKey]);
+  const filtered = hasActiveFilters(props.search);
 
   const overviewQuery = useQuery({
     ...upstreamOverviewQueryOptions(projectId ?? ("" as ProjectId)),
@@ -148,9 +149,10 @@ export function UpstreamPage(props: {
   });
   const overview = overviewQuery.data;
   const topicsQuery = useInfiniteQuery({
-    ...upstreamTopicsQueryOptions(projectId ?? ("" as ProjectId), list, filter),
+    ...upstreamTopicsQueryOptions(projectId ?? ("" as ProjectId), list, filter, sort),
     enabled: projectId !== null && Boolean(overview?.config),
   });
+  const firstPage = topicsQuery.data?.pages[0];
   const serverConfig = useQuery(serverConfigQueryOptions());
   const providers = serverConfig.data?.providers ?? [];
   const projectSettings = useQuery({
@@ -169,10 +171,24 @@ export function UpstreamPage(props: {
 
   useEffect(() => {
     if (projectId && hasStaleTopicPages(topicsQuery.data))
-      void queryClient.resetQueries({ queryKey: upstreamPortsQueryKeys.topics(projectId, list, filter) });
-  }, [topicsQuery.data, projectId, list, filter, queryClient]);
+      void queryClient.resetQueries({ queryKey: upstreamPortsQueryKeys.topics(projectId, list, filter, sort) });
+  }, [topicsQuery.data, projectId, list, filter, sort, queryClient]);
 
   const [selected, setSelected] = useState<ReadonlySet<string>>(EMPTY_SET);
+  /**
+   * Set after "Select all matching": the selection then reaches past the loaded
+   * rows, so actions use it whole. It is only valid for the revision it was read
+   * at. A null revision marks the topics a partly failed decision left behind:
+   * the user picked them explicitly, so they stay selected for a retry.
+   */
+  const [matching, setMatching] = useState<{ readonly revision: string | null } | null>(null);
+  /** Bumped whenever the selection is reset, so a late "Select all matching" response is dropped. */
+  const selectionEpoch = useRef(0);
+  /** The view a selection belongs to; set while rendering, before the effect that clears the selection. */
+  const scopeRef = useRef("");
+  scopeRef.current = JSON.stringify([projectId, list, filterKey, sort]);
+  const [selectingAll, setSelectingAll] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   /** Topics with a decision in flight: dimmed, and skipped by further actions. */
   const [pending, setPending] = useState<ReadonlySet<string>>(EMPTY_SET);
   const pendingRef = useRef(pending);
@@ -225,19 +241,85 @@ export function UpstreamPage(props: {
     if (next) lastIndex.current = ids.indexOf(next);
   }, [ids, focused, setFocused, topicsQuery.isPending]);
 
-  // A filter can hide selected topics, so a filter change clears the selection too.
-  useEffect(() => {
-    setSelected(EMPTY_SET);
+  /** Replaces the selection with loaded rows only. */
+  const selectLoaded = useCallback((next: ReadonlySet<string>) => {
+    selectionEpoch.current += 1;
+    setSelected(next);
+    setMatching(null);
+  }, []);
+  const clearSelection = useCallback(() => {
+    selectLoaded(EMPTY_SET);
     anchorRef.current = null;
-  }, [projectId, list, hasQuestion, automaticOnly]);
+  }, [selectLoaded]);
+  // A filter or sort change can hide selected topics, so it clears the selection too.
+  useEffect(clearSelection, [projectId, list, filterKey, sort, clearSelection]);
+  // "All matching" was read at one revision; once the list changes it may no longer match.
+  // Decisions in flight move the revision themselves, and settle the selection when they end.
+  const revision = firstPage?.revision ?? null;
+  const revisionRef = useRef(revision);
+  revisionRef.current = revision;
+  useEffect(() => {
+    if (matching?.revision && pending.size === 0 && revision !== null && revision !== matching.revision)
+      clearSelection();
+  }, [matching, revision, pending, clearSelection]);
 
   const readOnly = overview ? !overview.writer.managedByThisProfile && overview.writer.claimed : false;
-  /** Selected visible topics in list order, else the focused row; topics with a decision in flight are left out. */
+  /**
+   * Selected visible topics in list order (every selected topic after "Select all
+   * matching"), else the focused row; topics with a decision in flight are left out.
+   */
   const targets = useCallback(
-    () => actionTargets(ids, selected, focused).filter((id) => !pendingRef.current.has(id)),
-    [selected, ids, focused],
+    () =>
+      (matching ? [...selected] : actionTargets(ids, selected, focused)).filter(
+        (id) => !pendingRef.current.has(id),
+      ),
+    [matching, selected, ids, focused],
   );
   const selectedVisible = useMemo(() => new Set(ids.filter((id) => selected.has(id))), [ids, selected]);
+  const stateOf = useMemo(() => topicStates(rows, list), [rows, list]);
+  const loadedIds = useMemo(() => new Set(ids), [ids]);
+  const unloadedCount = (topicIds: ReadonlyArray<string>) => topicIds.filter((id) => !loadedIds.has(id)).length;
+  const total = firstPage?.total ?? (overview ? overview.counts[list] : 0);
+
+  const selectAllMatching = async () => {
+    if (!projectId) return;
+    // A list, filter or sort change resets the selection and bumps the epoch, so this drops a late answer.
+    const epoch = selectionEpoch.current;
+    const scope = scopeRef.current;
+    const current = () => selectionEpoch.current === epoch && scopeRef.current === scope;
+    setSelectingAll(true);
+    try {
+      const result = await ensureNativeApi().upstreamPorts.listTopicIds({
+        projectId,
+        list,
+        ...(filtered ? { filter } : {}),
+        ...(sort ? { sort } : {}),
+      });
+      if (!current()) return;
+      // The loaded pages may predate the ledger; reload them so the selection is not dropped as stale at once.
+      if (result.revision !== revisionRef.current) {
+        const refreshed = await topicsQuery.refetch();
+        if (!current()) return;
+        if (refreshed.data?.pages[0]?.revision !== result.revision) {
+          toastManager.add({ type: "info", title: "The list changed while selecting. Try again." });
+          return;
+        }
+      }
+      selectionEpoch.current += 1;
+      setSelected(new Set(result.topicIds));
+      setMatching({ revision: result.revision });
+      if (result.truncated)
+        toastManager.add({ type: "warning", title: `Only the first ${result.topicIds.length.toLocaleString()} topics were selected.` });
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: "Could not select every matching topic",
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setSelectingAll(false);
+    }
+  };
 
   const withBusy = async <T,>(title: string, action: () => Promise<T>): Promise<T | undefined> => {
     setBusyCount((count) => count + 1);
@@ -281,6 +363,9 @@ export function UpstreamPage(props: {
     if (decided.length === 0) return;
     const order = ids;
     const started = viewRef.current;
+    const decidedSet = new Set(decided);
+    const allMatching = matching !== null && [...selected].every((id) => decidedSet.has(id) || pendingRef.current.has(id));
+    const epoch = selectionEpoch.current;
     const rowsById = new Map(rows.map((row) => [row.topic.id, row]));
     const moves = decided.flatMap((id) => {
       const row = rowsById.get(id);
@@ -299,6 +384,8 @@ export function UpstreamPage(props: {
     }
 
     const recorded = new Set<string>();
+    /** Recorded, or answered unchanged: either way not worth sending again. */
+    const settled = new Set<string>();
     let unchanged = 0;
     let failure: unknown = null;
     try {
@@ -308,6 +395,7 @@ export function UpstreamPage(props: {
           ? ensureNativeApi().upstreamPorts.acceptSuggestions({ projectId, topicIds: batch as never })
           : ensureNativeApi().upstreamPorts.decide({ projectId, topicIds: batch as never, decision }));
         for (const id of result.updated) recorded.add(id);
+        for (const id of [...result.updated, ...result.unchanged]) settled.add(id);
         unchanged += result.unchanged.length;
       }
     } catch (error) {
@@ -329,6 +417,8 @@ export function UpstreamPage(props: {
       setPendingIds(decided, false);
     }
     const stillHere = viewRef.current.projectId === started.projectId && viewRef.current.list === started.list;
+    // Topics the user did not get a decision for; on failure they stay selected for a retry.
+    const retry = failure !== null && decided.length > 1 ? decided.filter((id) => !settled.has(id)) : [];
     if (failure !== null) {
       const detail = failure instanceof Error ? failure.message : String(failure);
       toastManager.add({
@@ -336,9 +426,21 @@ export function UpstreamPage(props: {
         title: "Decision failed",
         description: recorded.size > 0 ? `${recorded.size} of ${decided.length} topics were recorded. ${detail}` : detail,
       });
-      // Keep the topics that were not recorded selected for a retry.
-      if (stillHere && decided.length > 1)
-        setSelected((current) => new Set([...current, ...decided.filter((id) => !recorded.has(id))]));
+    }
+    if (stillHere && selectionEpoch.current === epoch) {
+      if (allMatching) {
+        // The decision covered the whole "all matching" selection: what is left is only what to retry.
+        if (retry.length === 0) clearSelection();
+        else {
+          setSelected(new Set(retry));
+          setMatching({ revision: null });
+        }
+      } else
+        setSelected((current) => {
+          const next = new Set([...current, ...retry]);
+          for (const id of settled) next.delete(id);
+          return next;
+        });
     }
     if (unchanged > 0 && decision === "accept")
       toastManager.add({ type: "info", title: `${unchanged} topic(s) had no suggestion to accept` });
@@ -423,7 +525,7 @@ export function UpstreamPage(props: {
 
   /** Opens Start port for the Ready and In progress targets; the dialog enforces the count limits. */
   const openStartPort = (topicIds: string[], note: string | null = null) => {
-    const portable = portableTopicIds(rows, topicIds);
+    const portable = portableTopicIds(stateOf, topicIds);
     if (portable.length === 0) {
       toastManager.add({ type: "warning", title: "Only Ready or In progress topics can be ported." });
       return;
@@ -458,34 +560,58 @@ export function UpstreamPage(props: {
 
   /** Reopening bumps the epoch, so running port threads stop counting; ask first when any is In progress. */
   const reopen = (topicIds: string[]) => {
-    const inProgress = rows.filter((row) => row.state === "in-progress" && topicIds.includes(row.topic.id)).length;
-    if (inProgress === 0) {
+    const inProgress = topicIds.filter((id) => stateOf(id) === "in-progress").length;
+    const unseen = unloadedCount(topicIds);
+    if (inProgress === 0 && unseen === 0) {
       void applyDecision(topicIds, { kind: "inbox" });
       return;
     }
     setConfirm({
-      title: `Reopen ${topicIds.length} topic${topicIds.length === 1 ? "" : "s"}?`,
-      description: `${inProgress} ${inProgress === 1 ? "has a port thread" : "have port threads"} in progress. The threads keep running, but they no longer count as these topics' ports.`,
+      title: `Reopen ${topicCount(topicIds.length)}?`,
+      description: [
+        inProgress > 0
+          ? `${inProgress.toLocaleString()} ${inProgress === 1 ? "has a port thread" : "have port threads"} in progress. The threads keep running, but they no longer count as these topics' ports.`
+          : null,
+        unseen > 0 ? unseenNote(unseen) : null,
+      ]
+        .filter(Boolean)
+        .join(" "),
       confirmLabel: "Reopen",
       onConfirm: () => void applyDecision(topicIds, { kind: "inbox" }),
     });
   };
 
+  /** One-key decisions reach every topic of "Select all matching"; ask first when that goes past the loaded rows. */
+  const decideSeen = (topicIds: string[], decision: UpstreamDecision | "accept", title: string, confirmLabel: string) => {
+    const unseen = unloadedCount(topicIds);
+    if (unseen === 0) {
+      void applyDecision(topicIds, decision);
+      return;
+    }
+    setConfirm({
+      title,
+      description: unseenNote(unseen),
+      confirmLabel,
+      onConfirm: () => void applyDecision(topicIds, decision),
+    });
+  };
+
   const runBulkAction = (action: UpstreamBulkAction, topicIds: string[]) => {
     if (topicIds.length === 0) return;
+    const count = topicCount(topicIds.length);
     switch (action) {
       case "accept":
-        return void applyDecision(topicIds, "accept");
+        return decideSeen(topicIds, "accept", `Accept the suggestions for ${count}?`, "Accept");
       case "port":
-        return void applyDecision(topicIds, { kind: "port" });
+        return decideSeen(topicIds, { kind: "port" }, `Mark ${count} ready to port?`, "Mark ready");
       case "skip":
         return openSkip(topicIds);
       case "watch":
-        return void applyDecision(topicIds, { kind: "watch" });
+        return decideSeen(topicIds, { kind: "watch" }, `Watch ${count}?`, "Watch");
       case "decline":
         return setDeclineIds(topicIds);
       case "equivalent":
-        return void applyDecision(topicIds, { kind: "equivalent" });
+        return decideSeen(topicIds, { kind: "equivalent" }, `Mark ${count} as already in f5?`, "Already in f5");
       case "reopen":
         return reopen(topicIds);
       case "startPort":
@@ -539,10 +665,14 @@ export function UpstreamPage(props: {
         setSelected((current) => toggleId(current, focused));
         return;
       case "upstream.selectAll":
-        setSelected((current) => (ids.every((id) => current.has(id)) ? EMPTY_SET : new Set(ids)));
+        selectLoaded(ids.every((id) => selected.has(id)) ? EMPTY_SET : new Set(ids));
         return;
       case "upstream.clearSelection":
-        setSelected(EMPTY_SET);
+        clearSelection();
+        return;
+      case "upstream.focusSearch":
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
         return;
       case "upstream.nextList":
       case "upstream.previousList":
@@ -647,7 +777,7 @@ export function UpstreamPage(props: {
   const defaultRuntimeMode = projectSettings.data?.settings.defaultRuntimeMode ?? "full-access";
   const runTriage: UpstreamRunTriage = overview.triageModelAvailable ? "llm" : "rules-only";
   const runBlocked = runDisabledReason({ readOnly, busy, overview }) !== null;
-  const readyIds = list === "ready" ? portableTopicIds(rows, ids) : [];
+  const readyIds = list === "ready" ? portableTopicIds(stateOf, ids) : [];
 
   return (
     <main className="flex h-full min-h-0 flex-col">
@@ -674,13 +804,14 @@ export function UpstreamPage(props: {
           onResolvePublication={resolvePublication}
         />
         <UpstreamToolbar
+          ref={searchInputRef}
           list={list}
           counts={overview.counts}
           onListChange={changeList}
-          question={hasQuestion}
-          onQuestionChange={(value) => onSearchChange({ project: projectId, list, ...(value ? { question: true } : {}) })}
-          auto={automaticOnly}
-          onAutoChange={(value) => onSearchChange({ project: projectId, list, ...(value ? { auto: true } : {}) })}
+          search={search}
+          onSearchChange={(next) => onSearchChange({ ...next, project: projectId, list })}
+          facets={firstPage?.facets ?? null}
+          onSearchEscape={() => listRef.current?.focus()}
           startAll={
             list === "ready"
               ? {
@@ -727,12 +858,26 @@ export function UpstreamPage(props: {
                   list={list}
                   ids={ids}
                   selected={selectedVisible}
-                  total={filtered ? rows.length : overview.counts[list]}
+                  selectedCount={matching ? selected.size : selectedVisible.size}
+                  total={total}
                   readOnly={readOnly}
                   busy={busy}
-                  onSelectAll={(select) => setSelected(select ? new Set(ids) : EMPTY_SET)}
-                  onClear={() => setSelected(EMPTY_SET)}
+                  onSelectAll={(select) => selectLoaded(select ? new Set(ids) : EMPTY_SET)}
+                  onClear={clearSelection}
                   onAction={(action) => runBulkAction(action, targets())}
+                  selectionNote={
+                    matching ? (
+                      <span className="text-muted-foreground">
+                        {matching.revision === null
+                          ? "Topics that were not recorded stay selected"
+                          : "All matching topics selected"}
+                      </span>
+                    ) : selectedVisible.size === ids.length && total > ids.length ? (
+                      <Button size="xs" variant="link" disabled={selectingAll} onClick={() => void selectAllMatching()}>
+                        Select all {total.toLocaleString()} matching
+                      </Button>
+                    ) : null
+                  }
                 />
               }
               empty={
@@ -742,7 +887,7 @@ export function UpstreamPage(props: {
                   lastRun={describeRun(overview.lastRun)}
                   runDisabled={runBlocked}
                   onRun={() => runNow("upstream", runTriage)}
-                  onClearFilters={() => onSearchChange({ project: projectId, list })}
+                  onClearFilters={() => onSearchChange({ ...withoutFilters(search), project: projectId, list })}
                 />
               }
               onLoadMore={() => void topicsQuery.fetchNextPage()}

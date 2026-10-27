@@ -387,21 +387,87 @@ export type UpstreamOverview = typeof UpstreamOverview.Type;
 export const UpstreamTopicList = UpstreamTopicState;
 export type UpstreamTopicList = UpstreamTopicState;
 
+export const UPSTREAM_QUERY_MAX = 200;
+export const UPSTREAM_LIST_IDS_MAX = 10_000;
+
+/** A suggested status, or `none` for topics without a suggestion. */
+export const UpstreamSuggestionFilter = Schema.Literals([
+  "port",
+  "skip",
+  "watch",
+  "equivalent",
+  "none",
+]);
+export type UpstreamSuggestionFilter = typeof UpstreamSuggestionFilter.Type;
+
+/** `priority` (impact, then confidence) is the Inbox default; `newest` the default elsewhere. */
+export const UpstreamTopicSort = Schema.Literals(["priority", "newest", "oldest", "confidence"]);
+export type UpstreamTopicSort = typeof UpstreamTopicSort.Type;
+
+export const UpstreamTopicFilter = Schema.Struct({
+  decidedBy: Schema.optionalKey(UpstreamDecidedBy),
+  hasQuestion: Schema.optionalKey(Schema.Boolean),
+  hasConflict: Schema.optionalKey(Schema.Boolean),
+  /** Case-insensitive substring of the title, summary, id, PR numbers, reason, areas or commit subjects. */
+  query: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(UPSTREAM_QUERY_MAX))),
+  suggestion: Schema.optionalKey(
+    Schema.Array(UpstreamSuggestionFilter).check(Schema.isMaxLength(5)),
+  ),
+  impact: Schema.optionalKey(Schema.Array(UpstreamUserImpact).check(Schema.isMaxLength(4))),
+  area: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(100))),
+});
+export type UpstreamTopicFilter = typeof UpstreamTopicFilter.Type;
+
 export const UpstreamListTopicsInput = Schema.Struct({
   projectId: ProjectId,
   list: UpstreamTopicList,
-  filter: Schema.optionalKey(
-    Schema.Struct({
-      decidedBy: Schema.optionalKey(UpstreamDecidedBy),
-      hasQuestion: Schema.optionalKey(Schema.Boolean),
-    }),
-  ),
+  filter: Schema.optionalKey(UpstreamTopicFilter),
+  sort: Schema.optionalKey(UpstreamTopicSort),
   limit: Schema.optionalKey(
     Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: UPSTREAM_LIST_MAX_LIMIT })),
   ),
   cursor: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(2_048))),
 });
 export type UpstreamListTopicsInput = typeof UpstreamListTopicsInput.Type;
+
+/**
+ * Counts per filter value over the list. Each dimension counts the topics
+ * matching every other active filter, so picking a value never zeroes its siblings.
+ */
+export const UpstreamTopicFacets = Schema.Struct({
+  suggestion: Schema.Struct({
+    port: NonNegativeInt,
+    skip: NonNegativeInt,
+    watch: NonNegativeInt,
+    equivalent: NonNegativeInt,
+    none: NonNegativeInt,
+  }),
+  impact: Schema.Struct({
+    high: NonNegativeInt,
+    medium: NonNegativeInt,
+    low: NonNegativeInt,
+    none: NonNegativeInt,
+  }),
+  /** The 20 most common areas, plus the filtered area when it is not among them. */
+  areas: Schema.Array(Schema.Struct({ area: Schema.String, count: NonNegativeInt })),
+});
+export type UpstreamTopicFacets = typeof UpstreamTopicFacets.Type;
+
+export const UpstreamListTopicIdsInput = Schema.Struct({
+  projectId: ProjectId,
+  list: UpstreamTopicList,
+  filter: Schema.optionalKey(UpstreamTopicFilter),
+  sort: Schema.optionalKey(UpstreamTopicSort),
+});
+export type UpstreamListTopicIdsInput = typeof UpstreamListTopicIdsInput.Type;
+
+export const UpstreamListTopicIdsResult = Schema.Struct({
+  revision: Schema.String,
+  topicIds: Schema.Array(UpstreamTopicId),
+  /** More than `UPSTREAM_LIST_IDS_MAX` topics matched; only the first ones are listed. */
+  truncated: Schema.Boolean,
+});
+export type UpstreamListTopicIdsResult = typeof UpstreamListTopicIdsResult.Type;
 
 export const UpstreamPortOutcomeKind = Schema.Literals([
   "pr",
@@ -445,6 +511,10 @@ export const UpstreamListTopicsResult = Schema.Struct({
   status: Schema.Literals(["ok", "cursor_stale"]),
   topics: Schema.Array(UpstreamTopicRow),
   nextCursor: Schema.NullOr(Schema.String),
+  /** Topics in the list that match the filter, across all pages. */
+  total: NonNegativeInt,
+  /** Computed for the first page only; later pages carry zero counts. */
+  facets: UpstreamTopicFacets,
 });
 export type UpstreamListTopicsResult = typeof UpstreamListTopicsResult.Type;
 
