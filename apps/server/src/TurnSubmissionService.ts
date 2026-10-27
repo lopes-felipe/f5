@@ -274,6 +274,7 @@ export function makeTurnSubmissionService(deps: TurnSubmissionDependencies) {
           itemId,
           command: queuedCommand,
           submissionSource: options.submissionSource,
+          resumeQueue: options.submissionSource === "human" && body.intent !== "steer",
           supersedeUsageResume: body.intent !== "queue-tail",
           atHead: body.intent === "queue-head" || body.intent === "steer",
         })

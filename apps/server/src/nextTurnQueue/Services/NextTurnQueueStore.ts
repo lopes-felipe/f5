@@ -141,6 +141,8 @@ export interface NextTurnQueueStoreShape {
       | import("../../scheduledTasks/continuations.ts").ScheduledContinuationContext
       | undefined;
     readonly submissionSource?: "human" | "automation";
+    /** A new client message resumes a user-held queue; steering does not. */
+    readonly resumeQueue?: boolean;
     readonly submissionId: CommandId;
     readonly requestHash: string;
     readonly itemId: CommandId;

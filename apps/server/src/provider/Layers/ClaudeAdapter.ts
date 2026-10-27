@@ -74,6 +74,7 @@ import {
   claudeGatewayUsageLimit,
   claudeLimitState,
   usageLimitFromWindows,
+  usageLimitMessage,
 } from "../usageLimitMessages.ts";
 import { isProviderResumeFailureText } from "../resumeFailure.ts";
 import { appendClaudeStderrTail, parseClaudeProcessExit } from "../claudeProcessExit.ts";
@@ -323,6 +324,7 @@ interface ClaudeTurnState {
   /** Open thinking blocks by stream block index, closed on stop or turn end. */
   readonly openThinkingBlocks: Map<number, string>;
   authenticationFailureMessage?: string;
+  rateLimitFailure?: true;
   rejectedUsageLimits?: Map<string, ReturnType<typeof claudeLimitState>>;
   announcedUsageLimits?: Set<string>;
   interruptRequested: boolean;
@@ -695,13 +697,9 @@ function isMissingPathError(cause: unknown): boolean {
   return code === "ENOENT" || code === "ENOTDIR";
 }
 
-// Entry types the SDK's getSessionMessages returns with includeSystemMessages.
-// Metadata lines (summary, queue-operation, file-history-snapshot) don't count.
-const CLAUDE_CONVERSATION_ENTRY_TYPES: ReadonlySet<string> = new Set([
-  "user",
-  "assistant",
-  "system",
-]);
+// Only saved user or assistant messages make a conversation resumable.
+// System records and other metadata can exist before the first prompt is saved.
+const CLAUDE_CONVERSATION_ENTRY_TYPES: ReadonlySet<string> = new Set(["user", "assistant"]);
 
 /**
  * Scans a transcript until it finds a conversation entry. An unparseable line
@@ -741,9 +739,9 @@ async function classifyClaudeTranscript(
  * depending on the CLI's cwd-to-dirname encoding, which truncates and hashes
  * long paths and can be overridden by `CLAUDE_CODE_PROJECT_DIR_NAME`.
  *
- * A transcript counts as present only if it holds a conversation entry, which
- * matches the SDK check this replaces. Only returns "absent" when the store
- * was fully readable and no transcript had one. Anything it cannot see yields
+ * A transcript counts as present only if it holds a user or assistant entry.
+ * Only returns "absent" when the store was fully readable and no transcript
+ * had one. Anything it cannot see yields
  * "unknown" so a valid resume cursor is never discarded on a guess.
  */
 export function probeClaudeSessionAvailability(
@@ -941,6 +939,9 @@ function isInterruptedResult(result: SDKResultMessage): boolean {
       errors.includes("aborted"))
   );
 }
+
+const CLAUDE_CONTEXT_WINDOW_FULL_ERROR =
+  "Claude stopped: the prompt exceeds the model's context window. Run /compact or start a new thread.";
 
 function asRuntimeItemId(value: string): RuntimeItemId {
   return RuntimeItemId.makeUnsafe(value);
@@ -1873,6 +1874,8 @@ ${promptText}`
 
 function turnStatusFromResult(result: SDKResultMessage): ProviderRuntimeTurnStatus {
   if (isInterruptedResult(result)) return "interrupted";
+  if (result.terminal_reason === "blocking_limit" || result.terminal_reason === "prompt_too_long")
+    return "failed";
   if (result.subtype === "success") {
     return result.is_error ? "failed" : "completed";
   }
@@ -4808,6 +4811,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             context.turnState.authenticationFailureMessage =
               "Claude login expired or is invalid. Run /login in this provider account, then retry.";
           }
+          if (message.error === "rate_limit") context.turnState.rateLimitFailure = true;
           context.turnState.items.push(message.message);
           yield* backfillAssistantTextBlocksFromSnapshot(context, message);
         }
@@ -4922,19 +4926,30 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // The CLI also labels a 403 authentication_failed. Logging in again
         // can't grant a permission, so show the CLI's own text instead.
         const permissionDenied = message.subtype === "success" && message.api_error_status === 403;
+        // blocking_limit also means a full context window. A rejected window,
+        // an assistant rate_limit error or HTTP 429 supplies usage evidence.
+        const blockingLimit = message.terminal_reason === "blocking_limit";
+        const typedRateLimit =
+          context.turnState.rateLimitFailure ||
+          (message.subtype === "success" && message.api_error_status === 429);
         const hint = permissionDenied
           ? message.result.trim() || undefined
           : (context.turnState?.authenticationFailureMessage ??
-            [...(context.rejectedUsageLimits?.values() ?? [])][0]?.message);
+            [...(context.rejectedUsageLimits?.values() ?? [])][0]?.message ??
+            (typedRateLimit ? usageLimitMessage("Claude", undefined, undefined) : undefined));
         const status = turnStatusFromResult(message);
         const originalError = resultUserFacingError(message);
         const errorMessage =
-          status === "failed" &&
-          hint &&
-          (!originalError ||
-            /usage.?limit|rate.?limit|authentication|unauthorized/i.test(originalError))
-            ? [originalError, hint].filter(Boolean).join(" ")
-            : originalError;
+          message.terminal_reason === "prompt_too_long" || (blockingLimit && !hint)
+            ? CLAUDE_CONTEXT_WINDOW_FULL_ERROR
+            : blockingLimit && hint
+              ? hint
+              : status === "failed" &&
+                  hint &&
+                  (!originalError ||
+                    /usage.?limit|rate.?limit|authentication|unauthorized/i.test(originalError))
+                ? [originalError, hint].filter(Boolean).join(" ")
+                : originalError;
         const rejectedWindows = [...(context.rejectedUsageLimits?.values() ?? [])]
           .filter((limit) => limit.resettable)
           .map((limit) => limit.structuredWindow);
@@ -4943,9 +4958,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           !context.turnState.authenticationFailureMessage &&
           !/authentication|unauthorized/i.test(originalError ?? "") &&
           hint &&
-          (!originalError ||
+          (blockingLimit ||
+            typedRateLimit ||
+            !originalError ||
             /usage.?limit|rate.?limit|authentication|unauthorized/i.test(originalError)) &&
-          rejectedWindows.length > 0
+          (rejectedWindows.length > 0 || typedRateLimit)
             ? usageLimitFromWindows(rejectedWindows)
             : status === "failed" && !hint
               ? claudeGatewayUsageLimit(message, yield* nowIso)

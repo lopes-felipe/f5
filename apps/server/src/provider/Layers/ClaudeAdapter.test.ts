@@ -6514,6 +6514,77 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  for (const windowStatus of ["allowed", "rejected", "absent", "assistant", "http"] as const) {
+    it.effect(
+      "classifies Claude blocking_limit with " + windowStatus + " rate-limit evidence",
+      () => {
+        const harness = makeHarness();
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+          });
+          yield* adapter.sendTurn({ threadId: THREAD_ID, input: "Continue.", attachments: [] });
+          if (windowStatus === "allowed" || windowStatus === "rejected")
+            harness.query.emit({
+              type: "rate_limit_event",
+              rate_limit_info: {
+                status: windowStatus,
+                rateLimitType: "five_hour",
+                resetsAt: 1790607600,
+              },
+              uuid: "context-window-limit",
+              session_id: "context-window",
+            } as unknown as SDKMessage);
+          if (windowStatus === "assistant")
+            harness.query.emit({
+              type: "assistant",
+              error: "rate_limit",
+              uuid: "context-rate-error",
+              session_id: "context-window",
+              parent_tool_use_id: null,
+              message: { id: "context-rate-error", role: "assistant", content: [], usage: {} },
+            } as unknown as SDKMessage);
+          harness.query.emit({
+            type: "result",
+            subtype: "success",
+            is_error: windowStatus !== "absent",
+            terminal_reason: "blocking_limit",
+            ...(windowStatus === "http" ? { api_error_status: 429 } : {}),
+            result: "Prompt is too long",
+            session_id: "context-window",
+            uuid: "context-window-result",
+            usage: {},
+            modelUsage: {},
+          } as unknown as SDKMessage);
+          const completed = yield* adapter.streamEvents.pipe(
+            Stream.filter((event) => event.type === "turn.completed"),
+            Stream.runHead,
+          );
+          assert.equal(completed._tag, "Some");
+          if (completed._tag !== "Some" || completed.value.type !== "turn.completed") return;
+          assert.equal(completed.value.payload.state, "failed");
+          if (
+            windowStatus === "rejected" ||
+            windowStatus === "assistant" ||
+            windowStatus === "http"
+          ) {
+            assert.equal(completed.value.payload.usageLimit?.evidence, "typed");
+            assert.match(completed.value.payload.errorMessage ?? "", /usage limit reached/);
+          } else {
+            assert.equal(completed.value.payload.usageLimit, undefined);
+            assert.match(
+              completed.value.payload.errorMessage ?? "",
+              /context window.*\/compact.*new thread/,
+            );
+          }
+        }).pipe(Effect.provide(harness.layer));
+      },
+    );
+  }
+
   for (const scenario of [
     "blocked",
     "recovered",
@@ -9387,7 +9458,7 @@ describe("ClaudeAdapterLive", () => {
       configDir: string,
       projectDir: string,
       sessionId: string,
-      contents = '{"type":"system"}\n',
+      contents = '{"type":"user","message":{"role":"user","content":"hello"}}\n',
     ) => {
       const dir = path.join(configDir, "projects", projectDir);
       mkdirSync(dir, { recursive: true });
@@ -9455,6 +9526,10 @@ describe("ClaudeAdapterLive", () => {
             "-Users-me-project",
             probeSessionId,
             [
+              '{"type":"last-prompt","lastPrompt":"hello"}',
+              '{"type":"atis-latch","atis":""}',
+              '{"type":"cost-state","totalCostUSD":0}',
+              '{"type":"system","subtype":"init"}',
               '{"type":"queue-operation","operation":"enqueue"}',
               '{"type":"summary","summary":"x"}',
               '{"type":"file-history-snapshot","snapshot":{}}',

@@ -85,6 +85,80 @@ const insert = (store: NextTurnQueueStoreShape, index: number, threadId: ThreadI
   });
 
 layer("NextTurnQueueStore", (it) => {
+  it.effect(
+    "a new human message releases a hold, while automation, steering and replays do not",
+    () =>
+      Effect.gen(function* () {
+        const store = yield* NextTurnQueueStore;
+        const threadId = ThreadId.makeUnsafe("queue-human-resume");
+        yield* seedThread(threadId);
+        yield* insert(store, 8900, threadId);
+        yield* store.setPaused({ threadId, paused: true, reasonCode: "turn_interrupted" });
+        const submission = (index: number) => ({
+          submissionId: CommandId.makeUnsafe("resume-submission-" + index),
+          requestHash: "resume-" + index,
+          itemId: CommandId.makeUnsafe("resume-item-" + index),
+          command: command(index, threadId),
+          atHead: false,
+          resumeQueue: true,
+        });
+        yield* store.insertSubmission({ ...submission(8901), submissionSource: "automation" });
+        assert.isTrue((yield* store.listByThread(threadId)).state.paused);
+        yield* store.insertSubmission({
+          ...submission(8902),
+          submissionSource: "human",
+          command: { ...command(8902, threadId), expectedTurnId: TurnId.makeUnsafe("active") },
+        });
+        assert.isTrue((yield* store.listByThread(threadId)).state.paused);
+        yield* store.insertSubmission({ ...submission(8903), submissionSource: "human" });
+        const resumed = yield* store.listByThread(threadId);
+        assert.isFalse(resumed.state.paused);
+        assert.equal(resumed.state.pauseReasonCode, null);
+        assert.isNotNull(resumed.state.resumedAt);
+        assert.deepEqual(
+          resumed.items.map((item) => item.command.message.text),
+          ["Turn 8900", "Turn 8901", "Turn 8902", "Turn 8903"],
+        );
+        yield* store.setPaused({ threadId, paused: true, reasonCode: "manual_pause" });
+        yield* store.insertSubmission({ ...submission(8903), submissionSource: "human" });
+        assert.isTrue((yield* store.listByThread(threadId)).state.paused);
+        yield* store.insertSubmission({ ...submission(8904), submissionSource: "human" });
+        assert.isFalse((yield* store.listByThread(threadId)).state.paused);
+      }),
+  );
+
+  for (const reasonCode of [
+    "worktree_setup_failed",
+    "worktree_setup_cancelled",
+    "worktree_missing",
+    "delivery_ambiguous",
+    "turn_failed",
+    "rewind_in_progress",
+  ] as const) {
+    it.effect("sending preserves the recovery gate for " + reasonCode, () =>
+      Effect.gen(function* () {
+        const store = yield* NextTurnQueueStore;
+        const threadId = ThreadId.makeUnsafe("resume-gate-" + reasonCode);
+        yield* seedThread(threadId);
+        yield* store.setPaused({ threadId, paused: true, reasonCode });
+        yield* store.insertSubmission({
+          submissionId: CommandId.makeUnsafe("resume-" + reasonCode),
+          requestHash: reasonCode,
+          itemId: CommandId.makeUnsafe("item-" + reasonCode),
+          command: {
+            ...command(8910, threadId),
+            commandId: CommandId.makeUnsafe("resume-command-" + reasonCode),
+          },
+          submissionSource: "human",
+          resumeQueue: true,
+          atHead: false,
+        });
+        assert.equal((yield* store.listByThread(threadId)).state.pauseReasonCode, reasonCode);
+        assert.isTrue((yield* store.listByThread(threadId)).state.paused);
+      }),
+    );
+  }
+
   it.effect("persists trusted queue provenance and preserves it on duplication", () =>
     Effect.gen(function* () {
       const store = yield* NextTurnQueueStore;

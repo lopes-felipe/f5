@@ -844,6 +844,25 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
 
             const at = now();
             yield* ensureState(input.command.threadId, at);
+            // Release only a user's hold, atomically with the new message.
+            // Worktree failures, delivery failures and usage limits retain their
+            // own recovery gates. A replay never releases a newer hold.
+            if (
+              input.resumeQueue &&
+              input.submissionSource === "human" &&
+              !input.command.expectedTurnId &&
+              !input.scheduledRun &&
+              !input.scheduleReason &&
+              input.worktreeBlockToken === undefined
+            ) {
+              yield* sql`
+                UPDATE next_turn_queue_state
+                SET paused = 0, pause_reason_code = NULL, pause_detail = NULL, resumed_at = ${at}
+                WHERE thread_id = ${input.command.threadId} AND paused = 1
+                  AND pause_reason_code IN ('manual_pause', 'turn_interrupted')
+                  AND worktree_block_token IS NULL
+              `;
+            }
             if (input.worktreeBlockToken !== undefined) {
               yield* sql`
                 UPDATE next_turn_queue_state

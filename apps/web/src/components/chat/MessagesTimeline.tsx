@@ -489,18 +489,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [turnDiffSummaryByAssistantMessageId],
   );
 
-  useEffect(() => {
-    if (!initialScrollAtEndEnabled) {
-      return;
-    }
-    const frame = window.requestAnimationFrame(() => {
-      setInitialScrollAtEndEnabled(false);
-    });
-    return () => {
-      window.cancelAnimationFrame(frame);
-    };
-  }, [initialScrollAtEndEnabled]);
-
   const rowCacheRef = useRef<TimelineRowCache | null>(null);
   rowCacheRef.current ??= createTimelineRowCache();
   const rowCache = rowCacheRef.current;
@@ -529,6 +517,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
 
   const rowCount = rows.length;
+  useEffect(() => {
+    // The empty pane has no list. Keep its initial measured end target armed
+    // until LegendList actually mounts, including after loading a thread.
+    if (rowCount === 0) {
+      setInitialScrollAtEndEnabled(isAtEndRef.current);
+      return;
+    }
+    if (!initialScrollAtEndEnabled) return;
+    const frame = window.requestAnimationFrame(() => setInitialScrollAtEndEnabled(false));
+    return () => window.cancelAnimationFrame(frame);
+  }, [initialScrollAtEndEnabled, rowCount]);
   const lastRowId = rowCount > 0 ? (rows[rowCount - 1]?.id ?? null) : null;
   const entryRowIndexMap = useMemo(
     () =>
@@ -642,11 +641,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const [turnRailHasPersistentGutter, setTurnRailHasPersistentGutter] = useState(false);
   const [turnRailHitStripWidth, setTurnRailHitStripWidth] = useState(0);
 
-  // Upstream fix 33dadb5a:
-  // once a brand-new thread receives its first message, LegendList's
-  // `initialScrollAtEnd` has already latched. Keep tracking the tail signature
-  // so we can explicitly pin again whenever the rendered tail advances while
-  // the user was already following the end of the list.
+  // Follow later tail advances while the user is at the end. A newly mounted
+  // list keeps LegendList's measured initial end target.
   const previousTailSignatureRef = useRef<{
     rowCount: number;
     lastRowId: string | null;
@@ -688,9 +684,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         return;
       }
       isAtEndRef.current = true;
-      // A submitted turn can be thousands of virtual rows away. Jump to its
-      // measured tail instead of animating through estimated intermediate rows.
-      list.scrollToEnd?.({ animated: !followRequested });
+      // The first nonempty render mounts LegendList. Its initialScrollAtEnd
+      // uses measured heights; scrollToEnd would replace it with an estimate.
+      if (followRequested || previousTailSignature.rowCount > 0) {
+        list.scrollToEnd?.({ animated: !followRequested });
+      }
       onIsAtEndChange(true);
     };
     frame = window.requestAnimationFrame(scrollToEndWhenReady);
@@ -1235,6 +1233,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           // changes like response dividers or inline file diffs becoming eligible.
           dataVersion={legendListDataVersion}
           keyExtractor={keyExtractor}
+          getItemType={getTimelineItemType}
           renderItem={renderItem}
           // LegendList caches row renders until either the backing data or
           // extraData changes, so closure-only UI state must flow through here.
@@ -1545,6 +1544,14 @@ const TimelineRowWrapper = memo(function TimelineRowWrapper({
 });
 
 type TimelineEntry = ReturnType<typeof deriveTimelineEntries>[number];
+// Each type has its own measured size average in LegendList. Keep very long
+// replies out of the short-reply average to bound synchronous measurement churn.
+function getTimelineItemType(row: TimelineRow): string {
+  if (row.kind !== "message") return row.kind;
+  const bucket = Math.max(0, Math.floor(Math.log2(row.message.text.length / 1000)));
+  return `message:${row.message.role}:${bucket}`;
+}
+
 type TimelineMessage = Extract<TimelineEntry, { kind: "message" }>["message"];
 type TimelineProposedPlan = Extract<TimelineEntry, { kind: "proposed-plan" }>["proposedPlan"];
 type TimelineWorkEntry = Extract<TimelineEntry, { kind: "work" }>["entry"];
