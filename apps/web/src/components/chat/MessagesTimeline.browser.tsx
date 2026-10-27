@@ -1020,6 +1020,7 @@ describe("MessagesTimeline (LegendList)", () => {
       await scrollTimelineToOffset(currentRef, node, node.scrollHeight - node.clientHeight - 30);
       node.dispatchEvent(new Event("scroll"));
       await vi.waitFor(() => expect(isAtEndCalls.at(-1)).toBe(true));
+      const beforeContinuedStream = node.scrollHeight;
       api!.setEntries([
         ...initialEntries.slice(0, -1),
         makeAssistantEntry(
@@ -1029,6 +1030,7 @@ describe("MessagesTimeline (LegendList)", () => {
         ),
       ]);
       await vi.waitFor(() => {
+        expect(node.scrollHeight).toBeGreaterThan(beforeContinuedStream + 100);
         expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(40);
         expect(isAtEndCalls.at(-1)).toBe(true);
       });
