@@ -74,7 +74,21 @@ describe("startup recovery", () => {
     expect(html).not.toContain("<img");
     expect(html).toContain("default-src 'none'");
     expect(startupRecoveryAction("https://startup-recovery.invalid/update")).toBe("update");
+    expect(startupRecoveryAction("https://startup-recovery.invalid/retry")).toBe("retry");
+    expect(html).toContain(">Retry</a>");
     expect(startupRecoveryAction("https://evil.invalid/update")).toBeNull();
     expect(startupRecoveryAction("https://startup-recovery.invalid/anything")).toBeNull();
+  });
+
+  it("keeps the recovery document stable while download progress advances", () => {
+    const input = {
+      version: "1",
+      profile: "Default",
+      failure: { reason: "Failed", output: "Output" },
+      logDir: "/tmp",
+    };
+    expect(startupRecoveryHtml({ ...input, offer: { kind: "downloading", percent: 2 } })).toBe(
+      startupRecoveryHtml({ ...input, offer: { kind: "downloading", percent: 80 } }),
+    );
   });
 });

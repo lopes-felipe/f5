@@ -1017,9 +1017,21 @@ describe("MessagesTimeline (LegendList)", () => {
       await waitForTimelineLayout(() => node);
       expect(Math.abs(node.scrollTop - before)).toBeLessThan(8);
       expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeGreaterThan(40);
-      await scrollTimelineToOffset(currentRef, node, node.scrollHeight);
+      await scrollTimelineToOffset(currentRef, node, node.scrollHeight - node.clientHeight - 30);
       node.dispatchEvent(new Event("scroll"));
       await vi.waitFor(() => expect(isAtEndCalls.at(-1)).toBe(true));
+      api!.setEntries([
+        ...initialEntries.slice(0, -1),
+        makeAssistantEntry(
+          "streaming-tail",
+          Array.from({ length: 24 }, (_, index) => "Continued paragraph " + index).join("\n\n"),
+          121,
+        ),
+      ]);
+      await vi.waitFor(() => {
+        expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(40);
+        expect(isAtEndCalls.at(-1)).toBe(true);
+      });
     } finally {
       await screen.unmount();
       host.remove();

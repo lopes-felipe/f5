@@ -106,11 +106,12 @@ export function gitStatusQueryOptions({
   });
 }
 
+/** Ref lists refresh on connection or invalidation; the status polling interval does not apply. */
 export function gitBranchesQueryOptions({
   cwd,
   autoRefresh = true,
   staleTimeMs,
-}: GitAutoRefreshQueryOptionsInput) {
+}: Omit<GitAutoRefreshQueryOptionsInput, "refetchIntervalMs">) {
   return queryOptions({
     queryKey: gitQueryKeys.branches(cwd),
     queryFn: async () => {

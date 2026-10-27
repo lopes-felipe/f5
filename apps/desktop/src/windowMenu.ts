@@ -6,9 +6,8 @@ export function desktopWindowMenu(platform: NodeJS.Platform): MenuItemConstructo
     role: "windowMenu",
     submenu: [
       { role: "minimize" },
-      { role: "zoom" },
       ...(platform === "darwin"
-        ? [{ type: "separator" as const }, { role: "front" as const }]
+        ? [{ role: "zoom" as const }, { type: "separator" as const }, { role: "front" as const }]
         : []),
     ],
   };

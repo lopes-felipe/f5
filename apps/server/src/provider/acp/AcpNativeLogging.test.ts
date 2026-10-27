@@ -37,6 +37,23 @@ import { ThreadId } from "@t3tools/contracts";
 import { Cause, Effect } from "effect";
 import { vi } from "vitest";
 
+it("enables verbose protocol diagnostics through the server environment", () => {
+  vi.stubEnv("F5_ACP_PROTOCOL_LOGGING", "1");
+  try {
+    const input = {
+      nativeEventLogger: { write: () => Effect.void } as never,
+      provider: "cursor" as const,
+      threadId: ThreadId.makeUnsafe("log-test"),
+    };
+    expect(makeAcpNativeLoggers(input).protocolLogging?.logIncoming).toBe(true);
+    expect(
+      makeAcpNativeLoggers({ ...input, verboseProtocolLogging: false }).protocolLogging,
+    ).toBeUndefined();
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
 it("redacts MCP array and object configuration, raw frames, echoed failures and late diagnostics", async () => {
   const marker = "credential-sentinel-48be";
   const scrubber = new AcpCredentialScrubber();

@@ -24,6 +24,8 @@ you**, **Needs my review**, **CI failing** and **Ready** narrow the list, and yo
 repository, draft status, review decision, CI or lifecycle. The search field accepts qualifiers
 such as `author:me draft:false review:approved status:success label:"needs design" -label:bug`.
 Repeat `label:` qualifiers to require all of them; comma-separated names match either label.
+Prefix a supported qualifier with `-` to exclude matches. Unknown qualifiers remain search
+text; unquoted words can match in any order, and quoted phrases stay together.
 Each pull request has **Summary**, **Timeline**, **Review threads**
 **Files**, and **Guide · Beta** tabs.
 

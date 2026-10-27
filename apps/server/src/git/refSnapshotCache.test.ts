@@ -72,3 +72,29 @@ it.effect("retries after a failed or interrupted caller without caching its exit
     assert.equal(yield* cache.get("common", Effect.succeed("recovered")), "recovered");
   }),
 );
+
+it.effect("does not interrupt an existing waiter when the scan's caller disconnects", () =>
+  Effect.gen(function* () {
+    const cache = makeRefSnapshotCache<string, Error>(() => new Error("overloaded"));
+    const started = yield* Deferred.make<void>();
+    const leader = yield* cache
+      .get("common", Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)))
+      .pipe(Effect.forkChild);
+    yield* Deferred.await(started);
+    const waiter = yield* cache.get("common", Effect.succeed("recovered")).pipe(Effect.forkChild);
+    yield* Effect.yieldNow;
+    yield* Fiber.interrupt(leader);
+    assert.equal(yield* Fiber.join(waiter), "recovered");
+  }),
+);
+
+it.effect("invalidates one repository without expiring another repository's snapshot", () =>
+  Effect.gen(function* () {
+    const cache = makeRefSnapshotCache<string, Error>(() => new Error("overloaded"));
+    yield* cache.get("one", Effect.succeed("old"));
+    yield* cache.get("two", Effect.succeed("kept"));
+    cache.invalidate("one");
+    assert.equal(yield* cache.get("one", Effect.succeed("new")), "new");
+    assert.equal(yield* cache.get("two", Effect.succeed("unexpected")), "kept");
+  }),
+);

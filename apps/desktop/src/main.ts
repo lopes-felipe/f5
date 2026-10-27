@@ -3044,7 +3044,10 @@ function showStartupRecovery(runtime: BackendRuntime, reason: string): void {
       void (async () => {
         const offer = startupRecoveryOffer();
         if (action === "quit") app.quit();
-        else if (action === "copy")
+        else if (action === "retry") {
+          await stopBackendAndWaitForExit(5_000, runtime);
+          await openProfile(runtime.profile.id);
+        } else if (action === "copy")
           clipboard.writeText(
             "F5 " +
               app.getVersion() +
@@ -3158,17 +3161,18 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
       }
       runtime.recoveryWindow?.close();
       runtime.recoveryWindow = null;
-      if (runtime === defaultBackend) {
-        try {
-          FS.writeFileSync(Path.join(STATE_DIR, "desktop-last-started-version"), app.getVersion());
-        } catch (error) {
-          console.warn("[desktop] Could not save last started version", error);
-        }
-      }
     },
     onStartupTimeout: () =>
       showStartupRecovery(runtime, "The server started but did not become ready in time."),
     onSustainedHealth: () => {
+      if (runtime === defaultBackend) {
+        try {
+          FS.writeFileSync(Path.join(STATE_DIR, "desktop-last-started-version"), app.getVersion());
+          lastStartedVersion = app.getVersion();
+        } catch (error) {
+          console.warn("[desktop] Could not save last started version", error);
+        }
+      }
       if (runtime.restartAttempt > 0) {
         console.info(
           `[desktop] backend healthy for ${BACKEND_HEALTHY_RESET_MS}ms; resetting restart budget`,
@@ -3400,13 +3404,13 @@ async function openProfileOnce(profileId: string): Promise<boolean> {
     (record) => record.id === profileId && record.status === "ready",
   );
   if (!profile) throw new Error("Profile is unknown or not ready.");
-  const existingWindow = BrowserWindow.getAllWindows().find(
-    (window) => profileByWebContentsId.get(window.webContents.id) === profileId,
-  );
   const runtime = backends.get(profileId) ?? makeBackendRuntime(profile);
   backends.set(profileId, runtime);
   await ensureBackendRunning(runtime);
   if (isQuitting) return false;
+  const existingWindow = BrowserWindow.getAllWindows().find(
+    (window) => profileByWebContentsId.get(window.webContents.id) === profileId,
+  );
   if (existingWindow && !existingWindow.isDestroyed()) {
     if (existingWindow.isMinimized()) existingWindow.restore();
     existingWindow.show();

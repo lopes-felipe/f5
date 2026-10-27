@@ -60,12 +60,18 @@ const escapeHtml = (text: string) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] ?? char,
   );
 
-export function startupRecoveryAction(url: string): "update" | "download" | "copy" | "quit" | null {
+export function startupRecoveryAction(
+  url: string,
+): "update" | "download" | "copy" | "retry" | "quit" | null {
   try {
     const target = new URL(url);
     if (target.origin !== STARTUP_RECOVERY_ACTION_ORIGIN) return null;
     const action = target.pathname.slice(1);
-    return action === "update" || action === "download" || action === "copy" || action === "quit"
+    return action === "update" ||
+      action === "download" ||
+      action === "copy" ||
+      action === "retry" ||
+      action === "quit"
       ? action
       : null;
   } catch {
@@ -87,8 +93,7 @@ export function startupRecoveryHtml(input: {
     offer.kind === "checking"
       ? "Checking for a newer version…"
       : offer.kind === "downloading"
-        ? "Downloading the update" +
-          (offer.percent === null ? "…" : " (" + Math.floor(offer.percent) + "%)…")
+        ? "Downloading the update…"
         : offer.kind === "update"
           ? "A newer version is available."
           : offer.version
@@ -111,6 +116,7 @@ export function startupRecoveryHtml(input: {
     escapeHtml(description) +
     "</p>" +
     action +
+    link("retry", "Retry") +
     link("copy", "Copy details") +
     link("quit", "Quit") +
     "<pre>" +

@@ -11,7 +11,7 @@ const generatedNames = new Set([
   "composer.lock",
   "Gemfile.lock",
 ]);
-const generatedDirs = new Set(["__snapshots__", "__generated__", "dist", "build", "vendor"]);
+const generatedDirs = new Set(["__snapshots__", "__generated__", "dist"]);
 const testDirs = new Set(["__tests__", "tests", "test"]);
 const stripExtension = (path: string) => path.replace(/\.[^/.]+$/, "");
 const baseName = (path: string) => stripExtension(path.split("/").at(-1) ?? "");
@@ -31,16 +31,25 @@ export function prFileTier(path: string): "source" | "test" | "generated" {
   return "source";
 }
 
-/** Dependencies first, then their tests, then generated files; stable for partial paged diffs. */
+/** Keep already displayed pages in place when more files arrive. */
+export function orderPrFilePages(
+  pages: readonly { files: readonly PrHubChangedFile[] }[],
+): PrHubChangedFile[] {
+  const seen = new Set<string>();
+  return pages.flatMap((page) =>
+    orderPrFiles(page.files).filter((file) => {
+      if (seen.has(file.path)) return false;
+      seen.add(file.path);
+      return true;
+    }),
+  );
+}
+
+/** Dependencies first, then their tests, then generated files within one page. */
 export function orderPrFiles(files: readonly PrHubChangedFile[]): PrHubChangedFile[] {
   const byPath = new Map(files.map((file) => [file.path, file]));
   const source = [...byPath.keys()].filter((path) => prFileTier(path) === "source").sort();
   const byModule = new Map(source.map((path) => [stripExtension(path), path]));
-  const byBase = new Map<string, string | null>();
-  for (const path of source) {
-    const base = baseName(path);
-    byBase.set(base, byBase.has(base) ? null : path);
-  }
   const imports = new Map<string, Set<string>>();
   for (const path of source) {
     const dependencies = new Set<string>();
@@ -54,8 +63,7 @@ export function orderPrFiles(files: readonly PrHubChangedFile[]): PrHubChangedFi
         else if (part && part !== ".") segments.push(part);
       }
       const module = segments.join("/").replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, "");
-      const target =
-        byModule.get(module) ?? byModule.get(module + "/index") ?? byBase.get(baseName(module));
+      const target = byModule.get(module) ?? byModule.get(module + "/index");
       if (target && target !== path) dependencies.add(target);
     }
     imports.set(path, dependencies);

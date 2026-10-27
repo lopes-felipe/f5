@@ -604,8 +604,8 @@ describe("GitCore unit", () => {
 
   it("parses local and slash-containing remote names without pseudo refs", async () => {
     const scripted = makeScriptedGitService((input) => {
-      if (argsEqual(input, ["symbolic-ref", "--quiet", "--short", "HEAD"]))
-        return { stdout: "feature/current\n" };
+      if (argsEqual(input, ["symbolic-ref", "--quiet", "HEAD"]))
+        return { stdout: "refs/heads/feature/current\n" };
       if (argsEqual(input, ["remote"])) {
         return { stdout: "origin\nteam/fork\n" };
       }
@@ -657,8 +657,8 @@ describe("GitCore unit", () => {
     const scripted = makeScriptedGitService((input) => {
       if (input.operation === "GitCore.listBranches.refs")
         return { stdout: "refs/heads/main\t\t0\n" };
-      if (argsEqual(input, ["symbolic-ref", "--quiet", "--short", "HEAD"]))
-        return { stdout: "main\n" };
+      if (argsEqual(input, ["symbolic-ref", "--quiet", "HEAD"]))
+        return { stdout: "refs/heads/main\n" };
       if (argsEqual(input, ["remote"])) {
         return { code: 1, stderr: "remote lookup failed" };
       }

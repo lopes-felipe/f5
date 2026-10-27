@@ -1269,6 +1269,28 @@ it.layer(TestLayer)("git integration", (it) => {
       }),
     );
 
+    it.effect("keeps the current branch when a tag has the same name", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        yield* git(tmp, ["checkout", "-b", "same-name"]);
+        yield* git(tmp, ["tag", "same-name"]);
+        const result = yield* listGitBranches({ cwd: tmp });
+        expect(result.branches.find((branch) => branch.current)?.name).toBe("same-name");
+      }),
+    );
+
+    it.effect("rescans cached refs when an external checkout creates the current branch", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        yield* listGitBranches({ cwd: tmp });
+        yield* git(tmp, ["checkout", "-b", "external-branch"]);
+        const result = yield* listGitBranches({ cwd: tmp });
+        expect(result.branches.find((branch) => branch.current)?.name).toBe("external-branch");
+      }),
+    );
+
     it.effect("does not include detached HEAD pseudo-refs as branches", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();

@@ -8,12 +8,14 @@ import type {
 import { classifyCompactCommand } from "@t3tools/shared/commandSummary";
 
 /** A small pixel band prevents a large viewport from rearming while the reader is in history. */
+export const TIMELINE_AT_END_PX = 40;
+
 export function timelineIsAtEnd(state: {
   contentLength: number;
   scroll: number;
   scrollLength: number;
 }): boolean {
-  return state.contentLength - state.scroll - state.scrollLength <= 40;
+  return state.contentLength - state.scroll - state.scrollLength < TIMELINE_AT_END_PX;
 }
 
 import { extractTrailingAttachedFiles } from "../../lib/attachedFiles";

@@ -1,5 +1,5 @@
 import { PrViewedFile } from "./PrViewedFile";
-import { orderPrFiles } from "./prFileOrder";
+import { orderPrFilePages } from "./prFileOrder";
 import { ForgeComposer } from "./ForgeControls";
 import { CopyPathButton } from "../CopyPathButton";
 import { MiddleTruncate } from "../MiddleTruncate";
@@ -36,10 +36,7 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
     enabled: active,
   });
   const pages = query.data?.pages ?? [];
-  const files = useMemo(
-    () => orderPrFiles(query.data?.pages.flatMap((page) => page.files) ?? []),
-    [query.data],
-  );
+  const files = useMemo(() => orderPrFilePages(query.data?.pages ?? []), [query.data]);
   const selectionScope = JSON.stringify([
     pr.key,
     getPrHubAccountGeneration(),

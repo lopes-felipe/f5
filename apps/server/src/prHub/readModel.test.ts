@@ -95,7 +95,18 @@ describe("PR Hub bounded read model", () => {
       listPrHubPullRequests(data, "1", { query, draft: "hide", review: "approved", limit: 1 })
         .pullRequests,
     ).toHaveLength(1);
-    expect(listPrHubPullRequests(data, "1", { query: "size:S" }).pullRequests).toHaveLength(1);
+    expect(listPrHubPullRequests(data, "1", { query: "size:S" }).pullRequests).toHaveLength(0);
+    expect(
+      listPrHubPullRequests(data, "1", { query: "layout author:me fix" }).pullRequests,
+    ).toHaveLength(1);
+    expect(listPrHubPullRequests(data, "1", { query: "-author:me" }).pullRequests).toHaveLength(1);
+    expect(
+      listPrHubPullRequests(data, "1", { query: "-draft:true -review:required" }).pullRequests,
+    ).toHaveLength(1);
+    data.pullRequests[0]!.title = "fix:crash in repo:org/name is:open";
+    expect(
+      listPrHubPullRequests(data, "1", { query: "fix:crash repo:org/name is:open" }).pullRequests,
+    ).toHaveLength(1);
     expect(
       listPrHubPullRequests(data, "1", { query: 'label:"needs,design"' }).pullRequests,
     ).toHaveLength(0);

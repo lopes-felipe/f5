@@ -1,5 +1,6 @@
 import { gitConfigArgs, literalGitPathspec } from "@t3tools/shared/git";
 import { makeRefSnapshotCache } from "../refSnapshotCache.ts";
+import { gitMutatesRefSnapshot } from "../refMutation.ts";
 import { makeMoveSnapshotOperations } from "../moveSnapshot.ts";
 import { checkoutFingerprint } from "../checkoutFingerprint.ts";
 import { blockingIgnoredEntries } from "../worktreeIgnoredFiles.ts";
@@ -315,6 +316,7 @@ const makeGitCore = Effect.gen(function* () {
     () => performance.now(),
     (value) => value.refs.code === 0,
   );
+  const refRepositoryByCwd = new Map<string, string>();
 
   // Fail-fast guard: if the working directory no longer exists on disk, short-circuit
   // with a clear error instead of paying a child-process spawn + ENOENT per call.
@@ -351,29 +353,8 @@ const makeGitCore = Effect.gen(function* () {
         Effect.ensuring(
           Effect.sync(() => {
             // Mutations through F5 invalidate snapshots shared by every linked checkout.
-            if (
-              args.some((arg) =>
-                [
-                  "branch",
-                  "checkout",
-                  "switch",
-                  "fetch",
-                  "pull",
-                  "push",
-                  "commit",
-                  "reset",
-                  "update-ref",
-                  "worktree",
-                  "remote",
-                ].includes(arg),
-              ) &&
-              !(args[0] === "worktree" && args[1] === "list") &&
-              !(
-                args[0] === "remote" &&
-                (args.length === 1 || args[1] === "-v" || args[1] === "get-url")
-              )
-            )
-              branchRefsCache.invalidate();
+            if (gitMutatesRefSnapshot(args))
+              branchRefsCache.invalidate(refRepositoryByCwd.get(cwd));
           }),
         ),
         Effect.flatMap((result) => {
@@ -2067,44 +2048,57 @@ const makeGitCore = Effect.gen(function* () {
         ),
       );
       const commonDir = yield* canonicalPath(metadata.commonDir);
-      const { refs, worktrees } = yield* branchRefsCache.get(
-        commonDir,
-        Effect.gen(function* () {
-          const refs = yield* executeGit(
-            "GitCore.listBranches.refs",
+      refRepositoryByCwd.delete(input.cwd);
+      refRepositoryByCwd.set(input.cwd, commonDir);
+      if (refRepositoryByCwd.size > 256)
+        refRepositoryByCwd.delete(refRepositoryByCwd.keys().next().value!);
+      const scanRefs = Effect.gen(function* () {
+        const refs = yield* executeGit(
+          "GitCore.listBranches.refs",
+          input.cwd,
+          [
+            "for-each-ref",
+            "--format=%(refname)%09%(symref)%09%(committerdate:unix)",
+            "refs/heads/",
+            "refs/remotes/",
+          ],
+          { timeoutMs: 15_000, allowNonZeroExit: true },
+        );
+        if (refs.code !== 0) {
+          if (refs.stderr.toLowerCase().includes("not a git repository"))
+            return { refs, worktrees: [] };
+          return yield* createGitCommandError(
+            "GitCore.listBranches",
             input.cwd,
-            [
-              "for-each-ref",
-              "--format=%(refname)%09%(symref)%09%(committerdate:unix)",
-              "refs/heads/",
-              "refs/remotes/",
-            ],
-            { timeoutMs: 15_000, allowNonZeroExit: true },
+            [],
+            refs.stderr || "Git ref scan failed",
           );
-          if (refs.code !== 0) {
-            if (refs.stderr.toLowerCase().includes("not a git repository"))
-              return { refs, worktrees: [] };
-            return yield* createGitCommandError(
-              "GitCore.listBranches",
-              input.cwd,
-              [],
-              refs.stderr || "Git ref scan failed",
-            );
-          }
-          const worktrees = yield* listWorktrees(input.cwd);
-          return { refs, worktrees };
-        }),
-        input.refresh,
-      );
+        }
+        const worktrees = yield* listWorktrees(input.cwd);
+        return { refs, worktrees };
+      });
+      let { refs, worktrees } = yield* branchRefsCache.get(commonDir, scanRefs, input.refresh);
       if (refs.code !== 0) return { branches: [], isRepo: false, hasOriginRemote: false };
       // HEAD is checkout-local, unlike the ref snapshot shared by a repository.
       const current = yield* executeGit(
         "GitCore.listBranches.currentBranch",
         input.cwd,
-        ["symbolic-ref", "--quiet", "--short", "HEAD"],
+        ["symbolic-ref", "--quiet", "HEAD"],
         { allowNonZeroExit: true },
       );
-      const currentBranch = current.code === 0 ? current.stdout.trim() : null;
+      const currentRef = current.code === 0 ? current.stdout.trim() : null;
+      const currentBranch = currentRef?.startsWith("refs/heads/")
+        ? currentRef.slice("refs/heads/".length)
+        : null;
+      // Shells and agents can create branches without going through executeGit.
+      // A fresh HEAD missing from the shared snapshot must trigger a fresh scan.
+      if (
+        currentRef &&
+        !refs.stdout.split("\n").some((line) => line.split("\t")[0] === currentRef)
+      ) {
+        branchRefsCache.invalidate(commonDir);
+        ({ refs, worktrees } = yield* branchRefsCache.get(commonDir, scanRefs));
+      }
       const worktreeMap = new Map<string, string>();
       const present = yield* Effect.forEach(
         worktrees,

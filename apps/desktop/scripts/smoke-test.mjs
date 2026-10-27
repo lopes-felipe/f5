@@ -143,7 +143,7 @@ try {
         message.text().replace(/token=[^&\s']+/gu, "token=REDACTED"),
       );
   });
-  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("pageerror", (error) => errors.push(error.stack || error.message));
   // Positive evidence: bundled renderer and its authenticated server connection both work.
   await page
     .getByRole("button", { name: "Add your first project", exact: true })
@@ -622,7 +622,7 @@ try {
     const reopened = application.waitForEvent("window");
     await application.evaluate(({ app }) => app.emit("activate"));
     page = await reopened;
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", (error) => errors.push(error.stack || error.message));
     await waitForRecovery(beforeActivate);
     await page.goto(retainedRendererUrl);
     await page.locator('[contenteditable="true"]').waitFor({ timeout: 60_000 });
@@ -781,7 +781,7 @@ try {
       output = (output + chunk.toString()).slice(-65_536);
     });
   page = await application.firstWindow({ timeout: 60_000 });
-  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("pageerror", (error) => errors.push(error.stack || error.message));
   await page.goto(providerRendererUrl);
   await page.locator('[contenteditable="true"]').waitFor({ timeout: 60_000 });
   const quitHistory = await nativeRequest("terminal.open", terminalInput);

@@ -60,7 +60,11 @@ end of a turn sums up everything that turn changed, and **View full diff** opens
 If the desktop server repeatedly fails to start, F5 opens a **could not start** window with
 the reason and recent server output. Use **Update** when a newer build is available, or
 **Download** to reinstall the last version that started successfully. **Copy details** includes
-the diagnostic and log directory for a bug report.
+the diagnostic and log directory for a bug report. **Retry** restarts the profile's server.
+The previous version is saved only after the server stays healthy for a minute.
+
+For verbose Cursor and Grok ACP wire diagnostics, start the server with
+`F5_ACP_PROTOCOL_LOGGING=1`. Protocol logging is off by default; request diagnostics remain enabled.
 
 ## Related
 

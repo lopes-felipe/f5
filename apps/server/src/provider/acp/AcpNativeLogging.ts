@@ -174,7 +174,8 @@ export function makeAcpNativeLoggers(input: {
         kind: "request",
         payload: (input.redactForLog ?? redactAcpLogPayload)(formatRequestLogPayload(event)),
       }),
-    ...(input.nativeEventLogger && input.verboseProtocolLogging
+    ...(input.nativeEventLogger &&
+    (input.verboseProtocolLogging ?? process.env.F5_ACP_PROTOCOL_LOGGING === "1")
       ? {
           protocolLogging: {
             logIncoming: true,

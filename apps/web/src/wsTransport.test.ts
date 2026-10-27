@@ -153,6 +153,20 @@ afterEach(() => {
 });
 
 describe("WsTransport", () => {
+  it("retries a cold start quickly, then backs off repeated failures", () => {
+    const transport = new WsTransport("ws://localhost:3020");
+    getSocket().close();
+    vi.advanceTimersByTime(499);
+    expect(sockets).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(sockets).toHaveLength(2);
+    getSocket().close();
+    vi.advanceTimersByTime(2_999);
+    expect(sockets).toHaveLength(2);
+    vi.advanceTimersByTime(1);
+    expect(sockets).toHaveLength(3);
+    transport.dispose();
+  });
   it("cancels hung authentication on its deadline and retries without stale socket creation", async () => {
     let reply!: (response: Response) => void;
     const fetcher = vi.fn(

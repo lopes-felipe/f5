@@ -112,6 +112,7 @@ import {
   summarizeWorkGroup,
   TIMELINE_TURN_RAIL_MIN_ITEMS,
   timelineIsAtEnd,
+  TIMELINE_AT_END_PX,
 } from "./MessagesTimeline.logic";
 import { TimelineTurnRail } from "./TimelineTurnRail";
 import { forwardWheelToTimeline } from "./timelineMinimapWheel";
@@ -234,8 +235,6 @@ function InlineFileChangeDiff(props: InlineFileChangeDiffProps) {
   if (!Component) throw loadInlineFileChangeDiff();
   return <Component {...props} />;
 }
-
-const LEGEND_LIST_IS_AT_END_THRESHOLD = 0.01;
 
 const EMPTY_WORK_GROUP_COLLAPSE_OVERRIDES: Readonly<Record<string, boolean>> = {};
 
@@ -484,6 +483,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const isAtEndRef = useRef(restoredAnchor?.atEnd ?? true);
   const [liveFollowEnabled, setLiveFollowEnabled] = useState(restoredAnchor?.atEnd ?? true);
   const liveFollowEnabledRef = useRef(restoredAnchor?.atEnd ?? true);
+  const [atEndThreshold, setAtEndThreshold] = useState(0);
   const manualScrollGenerationRef = useRef(0);
   const newestTurnDiffId = useMemo(
     () =>
@@ -729,12 +729,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         // LegendList's public `isAtEnd` flag can lag behind passive layout
         // changes, but its exposed scroll metrics stay current.
         const isAtEnd = state.contentLength < state.scrollLength || timelineIsAtEnd(state);
-        isAtEndRef.current = isAtEnd;
-        if (!isAtEnd || allowRearm || state.contentLength <= state.scrollLength) {
+        if (allowRearm || state.contentLength <= state.scrollLength) {
           liveFollowEnabledRef.current = isAtEnd;
           setLiveFollowEnabled(isAtEnd);
         }
-        onIsAtEndChange(isAtEnd);
+        // Content growth can briefly outrun LegendList's layout correction.
+        // Only scrolling changes the reader's intent to follow.
+        isAtEndRef.current = isAtEnd || liveFollowEnabledRef.current;
+        onIsAtEndChange(isAtEndRef.current);
       }
     },
     [listRef, onIsAtEndChange],
@@ -743,6 +745,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const measureTurnRailGutter = useCallback(() => {
     const node = listRef.current?.getScrollableNode?.();
     if (!(node instanceof HTMLElement)) return;
+    setAtEndThreshold(node.clientHeight > 0 ? TIMELINE_AT_END_PX / node.clientHeight : 0);
     // Measure rendered geometry so scrollbars, responsive padding, and zoom
     // cannot make the hit target overlap the content column.
     const column = node.querySelector<HTMLElement>('[data-timeline-root="true"]');
@@ -1312,7 +1315,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           maintainScrollAtEnd={
             liveFollowEnabled ? { on: { itemLayout: true, layout: true } } : false
           }
-          maintainScrollAtEndThreshold={LEGEND_LIST_IS_AT_END_THRESHOLD}
+          maintainScrollAtEndThreshold={atEndThreshold}
           // Stabilize the visible window both when rows resize and when a new user
           // turn appends data. Without `data: true`, historical work rows can drop
           // out of the rendered window during live chat updates even though the

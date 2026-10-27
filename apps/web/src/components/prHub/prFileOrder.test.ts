@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { orderPrFiles, prFileTier } from "./prFileOrder";
+import { orderPrFiles, orderPrFilePages, prFileTier } from "./prFileOrder";
 import type { PrHubChangedFile } from "@t3tools/contracts";
 
 const file = (path: string, patch = ""): PrHubChangedFile => ({
@@ -41,5 +41,21 @@ describe("PR file reading order", () => {
   it("classifies generated tests as generated", () => {
     expect(prFileTier("dist/example.test.js")).toBe("generated");
     expect(prFileTier("tests/example.ts")).toBe("test");
+    expect(prFileTier("build/script.ts")).toBe("source");
+    expect(prFileTier("vendor/library.ts")).toBe("source");
+  });
+  it("appends pages without moving previously displayed files", () => {
+    const first = { files: [file("bun.lock"), file("z.ts")] };
+    const second = { files: [file("a.ts"), file("z.ts")] };
+    expect(orderPrFilePages([first, second]).map((entry) => entry.path)).toEqual([
+      "z.ts",
+      "bun.lock",
+      "a.ts",
+    ]);
+  });
+  it("does not resolve an unknown import to a unique basename in an unrelated directory", () => {
+    const a = file("a.ts", 'import "package/z"');
+    const z = file("unrelated/z.ts");
+    expect(orderPrFiles([z, a])).toEqual([a, z]);
   });
 });

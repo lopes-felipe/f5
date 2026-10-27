@@ -14,8 +14,10 @@ export function prSearchPredicate(raw: string, viewer: string | null) {
       text.push(token.replaceAll('"', ""));
       continue;
     }
-    if (key === "label" || !["author", "draft", "review", "status", "checks"].includes(key ?? "")) {
-      const label = key === "label" ? match![3]! : token.replace(/^-/, "");
+    const add = (test: (pr: TrackedPullRequest) => boolean) =>
+      tests.push((pr) => (negated ? !test(pr) : test(pr)));
+    if (key === "label") {
+      const label = match![3]!;
       const labels = /^"[^"]*"$/.test(label) ? [label.slice(1, -1)] : label.split(",");
       tests.push((pr) => {
         const present = labels.some((name) =>
@@ -25,13 +27,13 @@ export function prSearchPredicate(raw: string, viewer: string | null) {
       });
       continue;
     }
-    if (!negated && key === "author") {
+    if (key === "author") {
       const author = /^@?me$/i.test(value) ? (viewer ?? value) : value;
-      tests.push((pr) => normalize(pr.author ?? "") === normalize(author));
+      add((pr) => normalize(pr.author ?? "") === normalize(author));
       continue;
     }
-    if (!negated && key === "draft" && /^(true|false)$/i.test(value)) {
-      tests.push((pr) => pr.isDraft === (normalize(value) === "true"));
+    if (key === "draft" && /^(true|false)$/i.test(value)) {
+      add((pr) => pr.isDraft === (normalize(value) === "true"));
       continue;
     }
     const reviews: Record<string, TrackedPullRequest["reviewDecision"]> = {
@@ -43,17 +45,16 @@ export function prSearchPredicate(raw: string, viewer: string | null) {
       none: "none",
     };
     const review = Object.hasOwn(reviews, normalize(value)) ? reviews[normalize(value)] : undefined;
-    if (!negated && key === "review" && review) {
-      tests.push((pr) => pr.reviewDecision === review);
+    if (key === "review" && review) {
+      add((pr) => pr.reviewDecision === review);
       continue;
     }
     const checks = normalize(value);
     if (
-      !negated &&
       (key === "status" || key === "checks") &&
       ["success", "passing", "failure", "failing", "pending"].includes(checks)
     ) {
-      tests.push((pr) =>
+      add((pr) =>
         checks === "passing" || checks === "success"
           ? pr.checkRollup === "success"
           : checks === "pending"
@@ -64,11 +65,17 @@ export function prSearchPredicate(raw: string, viewer: string | null) {
     }
     text.push(token.replaceAll('"', ""));
   }
-  const query = text.join(" ").toLowerCase();
-  return (pr: TrackedPullRequest) =>
-    tests.every((test) => test(pr)) &&
-    (!query ||
-      (pr.title + " " + pr.repository.nameWithOwner + " #" + pr.number + " " + (pr.author ?? ""))
-        .toLowerCase()
-        .includes(query));
+  const terms = text.map(normalize);
+  return (pr: TrackedPullRequest) => {
+    const haystack = (
+      pr.title +
+      " " +
+      pr.repository.nameWithOwner +
+      " #" +
+      pr.number +
+      " " +
+      (pr.author ?? "")
+    ).toLowerCase();
+    return tests.every((test) => test(pr)) && terms.every((term) => haystack.includes(term));
+  };
 }
