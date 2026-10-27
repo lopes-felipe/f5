@@ -5,6 +5,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ThreadId,
+  type ModelSelection,
   type ProjectSkill,
   type ProviderKind,
   type ServerProvider,
@@ -28,6 +29,7 @@ import {
   resolveClaudeSubagentModel,
   resolveComposerNativeSlashCommands,
   resolveComposerPickerModel,
+  resolveThreadModelOptionsSeed,
   resolveAttachedFileReferencePaths,
   rewriteComposerRuntimeSkillInvocationForSend,
   shouldRenderTimelineContent,
@@ -260,6 +262,50 @@ describe("resolveComposerPickerModel", () => {
         providers,
       }),
     ).toBe("claude-opus-4-8");
+  });
+});
+
+describe("resolveThreadModelOptionsSeed", () => {
+  const codexInstance = defaultInstanceIdForDriver(ProviderDriverKind.make("codex"));
+  const threadSelection = {
+    instanceId: codexInstance,
+    model: "gpt-5.4",
+    options: [{ id: "reasoningEffort", value: "high" }],
+  } as ModelSelection;
+  const base = {
+    draftModel: null,
+    draftModelOptions: null,
+    threadSelection,
+    selectedInstanceId: codexInstance,
+    selectedProvider: "codex" as const,
+  };
+
+  it("seeds an empty draft from the thread's selection", () => {
+    expect(resolveThreadModelOptionsSeed(base)).toEqual({ codex: { reasoningEffort: "high" } });
+    expect(resolveThreadModelOptionsSeed({ ...base, draftModel: "gpt-5.4" })).toEqual({
+      codex: { reasoningEffort: "high" },
+    });
+  });
+
+  it("keeps the draft's choice", () => {
+    expect(
+      resolveThreadModelOptionsSeed({
+        ...base,
+        draftModelOptions: { codex: { reasoningEffort: "low" } },
+      }),
+    ).toBeNull();
+    expect(resolveThreadModelOptionsSeed({ ...base, draftModel: "gpt-5.4-mini" })).toBeNull();
+  });
+
+  it("ignores another instance or a selection without options", () => {
+    expect(resolveThreadModelOptionsSeed({ ...base, selectedInstanceId: "codex-work" })).toBeNull();
+    expect(
+      resolveThreadModelOptionsSeed({
+        ...base,
+        threadSelection: { instanceId: codexInstance, model: "gpt-5.4" } as ModelSelection,
+      }),
+    ).toBeNull();
+    expect(resolveThreadModelOptionsSeed({ ...base, threadSelection: undefined })).toBeNull();
   });
 });
 

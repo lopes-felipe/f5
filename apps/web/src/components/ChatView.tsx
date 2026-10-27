@@ -435,6 +435,7 @@ import {
   revokeBlobPreviewUrl,
   revokeComposerImagePreviewUrls,
   revokeUserMessagePreviewUrls,
+  resolveThreadModelOptionsSeed,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { ThreadDetailsLoadingState } from "./StartupLoadingState";
@@ -1440,6 +1441,27 @@ export default memo(function ChatView({
     serverConfigQuery.data?.providers,
     serverConfigQuery.data?.settings?.providerInstances,
     selectedProvider,
+  ]);
+  const threadModelSelection = serverThread?.modelSelection;
+  useEffect(() => {
+    if (workflowThreadSlot) return;
+    const seed = resolveThreadModelOptionsSeed({
+      draftModel: composerDraft.model,
+      draftModelOptions: composerDraft.modelOptions,
+      threadSelection: threadModelSelection,
+      selectedInstanceId: selectedProviderInstanceId,
+      selectedProvider,
+    });
+    if (seed) setComposerDraftModelOptions(threadId, seed);
+  }, [
+    composerDraft.model,
+    composerDraft.modelOptions,
+    selectedProvider,
+    selectedProviderInstanceId,
+    setComposerDraftModelOptions,
+    threadId,
+    threadModelSelection,
+    workflowThreadSlot,
   ]);
   const modelOptionsByProvider = useMemo(
     () =>

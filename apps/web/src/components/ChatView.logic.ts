@@ -17,6 +17,7 @@ import {
   type OrchestrationThreadActivity,
   ProviderKind,
   type ModelSelection,
+  type ProviderModelOptions,
 } from "@t3tools/contracts";
 import { normalizeModelSlug, resolveSelectableModel } from "@t3tools/shared/model";
 import { describeFastModeDisabledReason, refusedFastModeReason } from "@t3tools/shared/runtimeInfo";
@@ -27,6 +28,7 @@ import { type ComposerImageAttachment } from "../composerDraftStore";
 import { Schema } from "effect";
 import { sortModelsForProviderInstance } from "../modelOrdering";
 import { getDefaultServerModel } from "../providerModels";
+import { providerSelectionsToModelOptions } from "../providerModelOptions";
 import {
   filterTerminalContextsWithText,
   stripInlineTerminalContextPlaceholders,
@@ -574,6 +576,26 @@ export function resolveComposerPickerModel(input: {
   return (
     resolveSelectableModel(providerDriver, serverDefault, input.pickerOptions) ?? serverDefault
   );
+}
+
+/**
+ * Draft options to seed from the thread's persisted selection, so a thread
+ * created elsewhere (upstream ports, scheduled tasks, another client) keeps its
+ * effort instead of the composer dispatching the model default. A draft that
+ * already has options, or picked another instance or model, wins.
+ */
+export function resolveThreadModelOptionsSeed(input: {
+  readonly draftModel: string | null;
+  readonly draftModelOptions: ProviderModelOptions | null;
+  readonly threadSelection: ModelSelection | null | undefined;
+  readonly selectedInstanceId: string;
+  readonly selectedProvider: ProviderKind;
+}): ProviderModelOptions | null {
+  const selection = input.threadSelection;
+  if (input.draftModelOptions !== null || !selection?.options?.length) return null;
+  if (selection.instanceId !== input.selectedInstanceId) return null;
+  if (input.draftModel !== null && input.draftModel !== selection.model) return null;
+  return providerSelectionsToModelOptions(input.selectedProvider, selection.options);
 }
 
 export function resolveClaudeSubagentModel(
