@@ -645,7 +645,7 @@ export const makeGitManager = Effect.gen(function* () {
                   localBranch +
                   "' collides with a pull request head; select a fresh worktree branch to preserve it.",
               );
-            if (!matchesHead) {
+            if (pullRequest.headOid && !matchesHead) {
               const identity = yield* resolveSourceControlProviderIdentity(cwd);
               const remote = yield* gitCore.readConfigValue(
                 cwd,

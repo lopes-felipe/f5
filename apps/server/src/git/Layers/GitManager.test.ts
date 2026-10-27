@@ -537,6 +537,35 @@ describe("GitManager unit", () => {
     expect(git.calls.checkoutBranch).toHaveLength(1);
   });
 
+  it("preserves an existing branch without tracking when the provider has no head OID", async () => {
+    const { manager, git } = await makeManager({
+      gitHub: {
+        pullRequest: {
+          number: 42,
+          title: "PR",
+          url: "https://github.com/t3tools/f5/pull/42",
+          baseRefName: "main",
+          headRefName: "feature/test",
+          headRefOid: null,
+        },
+      },
+      gitCore: {
+        statusDetails: () => Effect.succeed(cleanStatus),
+        listLocalBranchNames: () => Effect.succeed(["feature/test"]),
+        readDefaultBranch: () => Effect.succeed("main"),
+        resolveCommit: () => Effect.succeed("b".repeat(40)),
+      },
+    });
+    const result = await Effect.runPromise(
+      manager.preparePullRequestThread({ cwd, reference: "42", mode: "local" }),
+    );
+    expect(result.isOnPullRequestHead).toBe(false);
+    expect(git.calls.checkoutBranch).toHaveLength(1);
+    expect(git.calls.fastForwardTo).toHaveLength(0);
+    expect(git.calls.setBranchUpstream).toHaveLength(0);
+    expect(git.calls.fetchRemoteBranch).toHaveLength(0);
+  });
+
   it.each([false, true])(
     "confirms a local checkout only after a successful fast-forward (%s)",
     async (fails) => {
