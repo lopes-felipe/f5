@@ -66,12 +66,17 @@ export function monitorBackendHealth(input: {
   readonly isCurrent: () => boolean;
   readonly checkReady: () => Promise<boolean>;
   readonly onSustainedHealth: () => void;
+  readonly onReady?: () => void;
+  readonly onStartupTimeout?: () => void;
+  readonly startupTimeoutMs?: number;
   readonly healthyForMs?: number;
   readonly pollMs?: number;
 }): () => void {
   const healthyForMs = input.healthyForMs ?? BACKEND_HEALTHY_RESET_MS;
   const pollMs = input.pollMs ?? BACKEND_HEALTH_POLL_MS;
   let cancelled = false;
+  const startedAt = Date.now();
+  let timeoutReported = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const active = () => !cancelled && input.isCurrent();
   const schedule = (delayMs: number, next: () => Promise<void>) => {
@@ -91,8 +96,18 @@ export function monitorBackendHealth(input: {
   };
   const awaitFirstHealth = async (): Promise<void> => {
     if (!active()) return;
-    if (await ready()) schedule(healthyForMs, confirmSustainedHealth);
-    else schedule(pollMs, awaitFirstHealth);
+    const isReady = await ready();
+    if (!active()) return;
+    if (isReady) {
+      input.onReady?.();
+      schedule(healthyForMs, confirmSustainedHealth);
+    } else {
+      if (!timeoutReported && Date.now() - startedAt >= (input.startupTimeoutMs ?? 30_000)) {
+        timeoutReported = true;
+        input.onStartupTimeout?.();
+      }
+      schedule(pollMs, awaitFirstHealth);
+    }
   };
   const confirmSustainedHealth = async (): Promise<void> => {
     if (!active()) return;

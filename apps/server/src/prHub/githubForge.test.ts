@@ -23,7 +23,16 @@ const pr = {
   base: { ref: "main", repo: { full_name: "team/repo" } },
   requested_reviewers: [],
 };
-function fixture(responses: unknown[] = [], mergeMessage?: Record<string, unknown>) {
+function fixture(
+  responses: unknown[] = [],
+  mergeMessage?: Record<string, unknown>,
+  autoMerge = {
+    autoMergeAllowed: true,
+    viewerPermission: "WRITE",
+    state: "OPEN",
+    mergeStateStatus: "BLOCKED",
+  },
+) {
   const calls: GitHubApiRequest[] = [];
   const queries: Array<{ query: string; variables: unknown }> = [];
   const github = makeFakeGitHubCli().service;
@@ -46,6 +55,15 @@ function fixture(responses: unknown[] = [], mergeMessage?: Record<string, unknow
     },
     runGraphql: (input: Parameters<typeof github.runGraphql>[0]) => {
       queries.push({ query: input.query, variables: input.variables });
+      if (input.query.includes("F5AutoMergeAvailability"))
+        return Effect.succeed({
+          data: {
+            repository: {
+              ...autoMerge,
+              pullRequest: { ...autoMerge, headRefOid: "head-sha" },
+            },
+          },
+        });
       if (input.query.includes("F5PullRequestMergeMessage"))
         return Effect.succeed({ data: { repository: { pullRequest: mergeMessage } } });
       if (input.query.startsWith("mutation")) {
@@ -264,10 +282,10 @@ it("auto-merge preserves the prepared head and cleaned body, including an explic
       removeAgentCreditsOnMerge: true,
     }),
   );
-  expect(queries[0]?.variables).toMatchObject({ method: "SQUASH" });
-  expect(queries[1]?.query).toContain("expectedHeadOid:$head");
-  expect(queries[1]?.query).toContain("commitBody:$body");
-  expect(queries[1]?.variables).toMatchObject({ head: "head-sha", method: "SQUASH", body: "" });
+  expect(queries[1]?.variables).toMatchObject({ method: "SQUASH" });
+  expect(queries[2]?.query).toContain("expectedHeadOid:$head");
+  expect(queries[2]?.query).toContain("commitBody:$body");
+  expect(queries[2]?.variables).toMatchObject({ head: "head-sha", method: "SQUASH", body: "" });
 });
 it("keeps the host auto-merge message for a merge queue and rebase", async () => {
   for (const method of ["merge", "rebase"] as const) {
@@ -289,8 +307,32 @@ it("keeps the host auto-merge message for a merge queue and rebase", async () =>
     expect(mutation.query).not.toContain("commitBody");
     expect(mutation.variables).not.toHaveProperty("body");
     expect(mutation.variables).toMatchObject({ head: "head-sha" });
-    if (method === "rebase") expect(queries).toHaveLength(1);
+    if (method === "rebase") expect(queries).toHaveLength(2);
   }
+});
+
+it.each([
+  { autoMergeAllowed: false, mergeStateStatus: "BLOCKED" },
+  { autoMergeAllowed: true, mergeStateStatus: "CLEAN" },
+  { autoMergeAllowed: true, mergeStateStatus: "HAS_HOOKS" },
+  { autoMergeAllowed: true, mergeStateStatus: "UNSTABLE" },
+])("refuses unsafe auto-merge availability %j before sending a mutation", async (availability) => {
+  const { provider, queries } = fixture([], undefined, {
+    ...availability,
+    viewerPermission: "WRITE",
+    state: "OPEN",
+  });
+  const result = await Effect.runPromise(
+    provider
+      .performAction({
+        ref,
+        action: "enable-auto-merge",
+        expectedHeadOid: "head-sha",
+      })
+      .pipe(Effect.result),
+  );
+  expect(result._tag).toBe("Failure");
+  expect(queries.some((query) => query.query.startsWith("mutation"))).toBe(false);
 });
 it("does not activate auto-merge after the prepared head changes", async () => {
   const { provider, queries } = fixture([], {

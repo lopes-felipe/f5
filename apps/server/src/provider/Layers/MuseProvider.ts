@@ -23,7 +23,7 @@ import { MUSE_SERVE_ARGS } from "@t3tools/shared/museProtocolManifest";
 import { Effect, Option, Result } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { resolveInvocationEffect } from "../../spawn/resolveCommand.ts";
+import { resolveMuseInvocation } from "../msp/MusePaths.ts";
 import {
   describeMspError,
   MuseCliError,
@@ -216,7 +216,7 @@ export const checkMuseProviderStatus = Effect.fn("checkMuseProviderStatus")(func
 
   const command = settings.binaryPath || "muse";
   const versionResult = yield* Effect.gen(function* () {
-    const invocation = yield* resolveInvocationEffect(command, ["--version"], environment);
+    const invocation = yield* resolveMuseInvocation(command, ["--version"], environment, tmpdir());
     return yield* spawnAndCollect(
       command,
       ChildProcess.make(invocation.file, [...invocation.args], { env: environment }),

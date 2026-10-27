@@ -1,6 +1,6 @@
 import { Cause, Exit, Tracer } from "effect";
 
-import { compactTraceAttributes } from "./Attributes.ts";
+import { compactTraceAttributes, truncateTraceAttributes } from "./Attributes.ts";
 
 interface TraceRecordEvent {
   readonly name: string;
@@ -93,16 +93,18 @@ export function spanToTraceRecord(span: SerializableSpan): EffectTraceRecord {
     startTimeUnixNano: String(status.startTime),
     endTimeUnixNano: String(status.endTime),
     durationMs: Number(status.endTime - status.startTime) / 1_000_000,
-    attributes: compactTraceAttributes(Object.fromEntries(span.attributes)),
+    attributes: truncateTraceAttributes(
+      compactTraceAttributes(Object.fromEntries(span.attributes)),
+    ),
     events: span.events.map(([name, startTime, attributes]) => ({
       name,
       timeUnixNano: String(startTime),
-      attributes: compactTraceAttributes(attributes),
+      attributes: truncateTraceAttributes(compactTraceAttributes(attributes)),
     })),
     links: span.links.map((link) => ({
       traceId: link.span.traceId,
       spanId: link.span.spanId,
-      attributes: compactTraceAttributes(link.attributes),
+      attributes: truncateTraceAttributes(compactTraceAttributes(link.attributes)),
     })),
     exit: formatTraceExit(status.exit),
   };

@@ -622,6 +622,40 @@ it.layer(TestLayer)("git integration", (it) => {
           expect(yield* git(cwd, ["branch", "--show-current"])).toBe("coordinated");
         }),
     );
+    it.effect("fast-forwards only the expected branch and preserves divergent local commits", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const core = yield* GitCore;
+        yield* git(cwd, ["checkout", "-b", "pr-head"]);
+        yield* writeTextFile(path.join(cwd, "pr.txt"), "new head\n");
+        yield* git(cwd, ["add", "pr.txt"]);
+        yield* git(cwd, ["commit", "-m", "PR head"]);
+        const head = yield* git(cwd, ["rev-parse", "HEAD"]);
+        yield* git(cwd, ["checkout", initialBranch]);
+        yield* core.fastForwardTo(cwd, head, initialBranch);
+        expect(yield* git(cwd, ["rev-parse", "HEAD"])).toBe(head);
+        // Two branches now diverge from the same reviewed head.
+        yield* writeTextFile(path.join(cwd, "local.txt"), "keep local work\n");
+        yield* git(cwd, ["add", "local.txt"]);
+        yield* git(cwd, ["commit", "-m", "Local work"]);
+        const localHead = yield* git(cwd, ["rev-parse", "HEAD"]);
+        yield* git(cwd, ["checkout", "pr-head"]);
+        yield* writeTextFile(path.join(cwd, "remote.txt"), "remote work\n");
+        yield* git(cwd, ["add", "remote.txt"]);
+        yield* git(cwd, ["commit", "-m", "Remote work"]);
+        const remoteHead = yield* git(cwd, ["rev-parse", "HEAD"]);
+        yield* git(cwd, ["checkout", initialBranch]);
+        expect(
+          (yield* core.fastForwardTo(cwd, remoteHead, initialBranch).pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        expect(yield* git(cwd, ["rev-parse", "HEAD"])).toBe(localHead);
+        expect(
+          (yield* core.fastForwardTo(cwd, remoteHead, "pr-head").pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        expect(yield* git(cwd, ["rev-parse", "HEAD"])).toBe(localHead);
+      }),
+    );
     it.effect("clones into its reserved empty directory using a local bare remote", () =>
       Effect.gen(function* () {
         const remote = yield* makeTmpDir();
@@ -1125,6 +1159,8 @@ it.layer(TestLayer)("git integration", (it) => {
         const fs = yield* FileSystem.FileSystem;
         const unrelated = path.join(root, "offline");
         yield* git(cwd, ["worktree", "add", "-b", "offline", unrelated]);
+        const registeredTarget = yield* fs.realPath(target);
+        const registeredUnrelated = yield* fs.realPath(unrelated);
         yield* fs.remove(unrelated, { recursive: true });
         yield* fs.remove(target, { recursive: true });
         const core = yield* GitCore;
@@ -1135,10 +1171,10 @@ it.layer(TestLayer)("git integration", (it) => {
               parseWorktreeListPorcelain(output).map((entry) => path.normalize(entry.path)),
             ),
           );
-        expect(yield* registeredPaths()).toContain(target);
+        expect(yield* registeredPaths()).toContain(registeredTarget);
         yield* core.removeWorktree({ cwd, path: target });
-        expect(yield* registeredPaths()).toContain(unrelated);
-        expect(yield* registeredPaths()).not.toContain(target);
+        expect(yield* registeredPaths()).toContain(registeredUnrelated);
+        expect(yield* registeredPaths()).not.toContain(registeredTarget);
       }),
     );
   });
@@ -1264,6 +1300,28 @@ it.layer(TestLayer)("git integration", (it) => {
         const current = result.branches.find((b) => b.current);
         expect(current).toBeDefined();
         expect(current!.current).toBe(true);
+      }),
+    );
+
+    it.effect("keeps the current branch when a tag has the same name", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        yield* git(tmp, ["checkout", "-b", "same-name"]);
+        yield* git(tmp, ["tag", "same-name"]);
+        const result = yield* listGitBranches({ cwd: tmp });
+        expect(result.branches.find((branch) => branch.current)?.name).toBe("same-name");
+      }),
+    );
+
+    it.effect("rescans cached refs when an external checkout creates the current branch", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        yield* listGitBranches({ cwd: tmp });
+        yield* git(tmp, ["checkout", "-b", "external-branch"]);
+        const result = yield* listGitBranches({ cwd: tmp });
+        expect(result.branches.find((branch) => branch.current)?.name).toBe("external-branch");
       }),
     );
 
@@ -3415,7 +3473,7 @@ it.layer(TestLayer)("git integration", (it) => {
       }),
     );
 
-    it.effect("lists branches when recency lookup fails", () =>
+    it.effect("retries a failed combined ref scan without caching its failure", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();
         yield* initRepoWithCommit(tmp);
@@ -3438,6 +3496,8 @@ it.layer(TestLayer)("git integration", (it) => {
           },
         });
 
+        const failed = yield* Effect.result(core.listBranches({ cwd: tmp }));
+        expect(failed._tag).toBe("Failure");
         const result = yield* core.listBranches({ cwd: tmp });
 
         expect(result.isRepo).toBe(true);
@@ -3447,7 +3507,7 @@ it.layer(TestLayer)("git integration", (it) => {
       }),
     );
 
-    it.effect("falls back to empty remote branch data when remote lookups fail", () =>
+    it.effect("lists refs when optional remote metadata is unavailable", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();
         const remote = yield* makeTmpDir();
@@ -3456,21 +3516,9 @@ it.layer(TestLayer)("git integration", (it) => {
         yield* git(tmp, ["remote", "add", "origin", remote]);
 
         const realGitService = yield* GitService;
-        let didFailRemoteBranches = false;
         let didFailRemoteNames = false;
         const core = yield* makeIsolatedGitCore({
           execute: (input) => {
-            if (input.args.join(" ") === "branch --no-color --remotes") {
-              didFailRemoteBranches = true;
-              return Effect.fail(
-                new GitCommandError({
-                  operation: "git.test.listBranchesRemoteBranches",
-                  command: `git ${input.args.join(" ")}`,
-                  cwd: input.cwd,
-                  detail: "remote unavailable",
-                }),
-              );
-            }
             if (input.args.join(" ") === "remote") {
               didFailRemoteNames = true;
               return Effect.fail(
@@ -3491,7 +3539,7 @@ it.layer(TestLayer)("git integration", (it) => {
         expect(result.isRepo).toBe(true);
         expect(result.branches.length).toBeGreaterThan(0);
         expect(result.branches.every((branch) => !branch.isRemote)).toBe(true);
-        expect(didFailRemoteBranches).toBe(true);
+        expect(result.hasOriginRemote).toBe(false);
         expect(didFailRemoteNames).toBe(true);
       }),
     );

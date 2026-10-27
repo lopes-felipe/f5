@@ -15,6 +15,7 @@ import {
 } from "../sourceControl/ForgeSourceControlProvider.ts";
 import { SourceControlProviderError } from "../sourceControl/SourceControlProvider.ts";
 import { record, text } from "./forgeModel.ts";
+import { GITHUB_AUTO_MERGE_QUERY, gitHubAutoMergeAvailable } from "./githubAutoMerge.ts";
 
 export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvider {
   const scope = <A>(
@@ -378,6 +379,17 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
               return yield* failure(
                 "enable-auto-merge",
                 "The prepared pull request head is missing or changed.",
+              );
+            const [owner, name] = ref.repository.split("/");
+            const availability = yield* graphql(ref, GITHUB_AUTO_MERGE_QUERY, {
+              owner: owner!,
+              name: name!,
+              number: ref.number,
+            });
+            if (!gitHubAutoMergeAvailable(availability, head))
+              return yield* failure(
+                "enable-auto-merge",
+                "Auto-merge is unavailable or this pull request can already merge. Refresh before choosing a merge action.",
               );
             const message = yield* readGitHubMergeMessage({
               ref,

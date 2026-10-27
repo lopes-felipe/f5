@@ -152,7 +152,6 @@ export function BranchToolbarBranchSelector({
     gitBranchesQueryOptions({
       cwd: branchCwd,
       autoRefresh: gitAutoRefreshEnabled,
-      refetchIntervalMs: gitAutoRefreshIntervalMs,
     }),
   );
   const branchStatusQuery = useQuery(

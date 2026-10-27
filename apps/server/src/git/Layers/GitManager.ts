@@ -621,20 +621,69 @@ export const makeGitManager = Effect.gen(function* () {
     pullRequest: ResolvedPullRequest & PullRequestHeadRemoteInfo,
     provider: SourceControlProvider,
     localBranch = pullRequest.headBranch,
+    refreshExisting = false,
   ) =>
     Effect.gen(function* () {
       const repositoryNameWithOwner = resolveHeadRepositoryNameWithOwner(pullRequest) ?? "";
-      {
+      const alreadyMaterialized = yield* Effect.gen(function* () {
         if ((yield* gitCore.listLocalBranchNames(cwd)).includes(localBranch)) {
           const existing = yield* gitCore.resolveCommit(cwd, localBranch);
-          if (pullRequest.headOid && existing !== pullRequest.headOid)
+          const matchesHead =
+            !!pullRequest.headOid &&
+            /^[0-9a-f]{7,64}$/i.test(pullRequest.headOid) &&
+            !!existing?.toLowerCase().startsWith(pullRequest.headOid.toLowerCase());
+          if (refreshExisting) {
+            const defaultBranch = yield* gitCore.readDefaultBranch(cwd);
+            if (
+              pullRequest.isCrossRepository ||
+              localBranch === pullRequest.baseBranch ||
+              localBranch === defaultBranch
+            )
+              return yield* gitManagerError(
+                "preparePullRequestThread",
+                "Local branch '" +
+                  localBranch +
+                  "' collides with a pull request head; select a fresh worktree branch to preserve it.",
+              );
+            if (pullRequest.headOid && !matchesHead) {
+              const identity = yield* resolveSourceControlProviderIdentity(cwd);
+              const remote = yield* gitCore.readConfigValue(
+                cwd,
+                "branch." + localBranch + ".remote",
+              );
+              const merge = yield* gitCore.readConfigValue(cwd, "branch." + localBranch + ".merge");
+              if (
+                remote !== (identity.remoteName ?? "origin") ||
+                merge !== "refs/heads/" + pullRequest.headBranch
+              )
+                return yield* gitManagerError(
+                  "preparePullRequestThread",
+                  "Local branch '" +
+                    localBranch +
+                    "' contains a different commit and does not track this pull request head; select a fresh worktree branch to preserve it.",
+                );
+            }
+          }
+          if (
+            pullRequest.headOid &&
+            !matchesHead &&
+            !(refreshExisting && /^[0-9a-f]{7,64}$/i.test(pullRequest.headOid))
+          )
             return yield* gitManagerError(
               "preparePullRequestThread",
               `Local branch '${localBranch}' contains a different commit; select a fresh worktree branch to preserve it.`,
             );
-          return;
+          if (!refreshExisting || !pullRequest.headOid || matchesHead) return true;
         }
-      }
+        return false;
+      }).pipe(
+        Effect.mapError((cause) =>
+          Schema.is(GitManagerError)(cause)
+            ? cause
+            : gitManagerError("preparePullRequestThread", cause.message),
+        ),
+      );
+      if (alreadyMaterialized) return;
       if (provider.kind !== "github") {
         const identity = yield* resolveSourceControlProviderIdentity(cwd);
         let remoteName = identity.remoteName ?? "origin";
@@ -1392,6 +1441,9 @@ export const makeGitManager = Effect.gen(function* () {
       const changeRequest = toChangeRequest(pullRequestWithRemoteInfo, sourceControlProvider);
 
       if (input.mode === "local") {
+        const branchAlreadyExists = (yield* gitCore.listLocalBranchNames(input.cwd)).includes(
+          pullRequest.headBranch,
+        );
         const initialStatus = yield* gitCore.statusDetails(input.cwd);
         if (initialStatus.hasWorkingTreeChanges)
           return yield* gitManagerError(
@@ -1399,7 +1451,13 @@ export const makeGitManager = Effect.gen(function* () {
             "Commit or stash working tree changes before checking out a pull request.",
           );
         // Fetch/materialize before transition locking. Never force-checkout a user's files.
-        yield* materializePullRequestHeadBranch(input.cwd, pullRequestWithRemoteInfo, provider);
+        yield* materializePullRequestHeadBranch(
+          input.cwd,
+          pullRequestWithRemoteInfo,
+          provider,
+          pullRequest.headBranch,
+          true,
+        );
         const switchWorkspace = yield* GitWorkspaceSwitch;
         if (switchWorkspace)
           yield* switchWorkspace({
@@ -1420,17 +1478,37 @@ export const makeGitManager = Effect.gen(function* () {
             gitCore.checkoutBranch({ cwd: input.cwd, branch: pullRequest.headBranch }),
           );
         const details = yield* gitCore.statusDetails(input.cwd);
-        yield* configurePullRequestHeadUpstream(
-          input.cwd,
-          pullRequestWithRemoteInfo,
-          provider,
-          details.branch ?? pullRequest.headBranch,
-        );
+        const branch = details.branch ?? pullRequest.headBranch;
+        if (branch !== pullRequest.headBranch)
+          return yield* gitManagerError(
+            "preparePullRequestThread",
+            "The checked-out branch changed while preparing the pull request. Retry from the current checkout.",
+          );
+        const isOnPullRequestHead = yield* Effect.gen(function* () {
+          const head = pullRequestSummary.headRefOid;
+          if (!head || !/^[0-9a-f]{7,64}$/i.test(head)) return false;
+          const target = yield* gitCore.resolveCommit(input.cwd, head);
+          // resolveCommit rejects ambiguous abbreviations; Bitbucket supplies short OIDs.
+          if (!target || !target.toLowerCase().startsWith(head.toLowerCase())) return false;
+          yield* gitCore.fastForwardTo(input.cwd, target, branch);
+          return (
+            (yield* gitCore.resolveCommit(input.cwd, "HEAD"))?.toLowerCase() ===
+            target.toLowerCase()
+          );
+        }).pipe(Effect.orElseSucceed(() => false));
+        if (!branchAlreadyExists)
+          yield* configurePullRequestHeadUpstream(
+            input.cwd,
+            pullRequestWithRemoteInfo,
+            provider,
+            branch,
+          );
         return {
           pullRequest,
           changeRequest,
-          branch: details.branch ?? pullRequest.headBranch,
+          branch,
           worktreePath: null,
+          isOnPullRequestHead,
         };
       }
 

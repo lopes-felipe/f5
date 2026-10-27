@@ -209,6 +209,22 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         );
       }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
+  it.effect("saves writing settings when the other fields are defaults", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const fs = yield* FileSystem.FileSystem;
+      const config = yield* ServerConfig;
+      yield* service.updateSettings({
+        sourceControlWriting: { commitMessageStyle: "conventional" },
+      });
+      yield* service.updateSettings({ addProjectBaseDirectory: "~/Development" });
+      const persisted = yield* fs.readFileString(config.settingsPath!);
+      const decoded = Schema.decodeUnknownSync(ServerSettings)(JSON.parse(persisted));
+      assert.equal(decoded.sourceControlWriting.commitMessageStyle, "conventional");
+      assert.equal(decoded.sourceControlWriting.customInstructions, "");
+      assert.equal(decoded.sourceControlWriting.generatePrContent, true);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
   it.effect("decodes nested settings patches", () =>
     Effect.sync(() => {
       const decodePatch = Schema.decodeUnknownSync(ServerSettingsPatch);

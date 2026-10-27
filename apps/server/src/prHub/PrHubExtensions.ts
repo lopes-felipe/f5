@@ -1,4 +1,9 @@
 import { cleanupLocalPrBranch } from "./localBranchCleanup.ts";
+import {
+  GITHUB_AUTO_MERGE_QUERY,
+  gitHubAutoMergeAvailable,
+  gitHubAutoMergeHasWriteAccess,
+} from "./githubAutoMerge.ts";
 import { createHash } from "node:crypto";
 import { Effect, Layer, Schema, Semaphore, ServiceMap } from "effect";
 import { SqlClient } from "effect/unstable/sql";
@@ -311,6 +316,28 @@ export const makePrHubExtensions = Effect.gen(function* () {
     payload: ForgePrepareOperationInput["payload"],
   ) =>
     Effect.gen(function* () {
+      if (
+        ref.provider === "github" &&
+        payload.kind === "action" &&
+        payload.action === "enable-auto-merge"
+      ) {
+        const [owner, name] = ref.repository.split("/");
+        const availability = yield* runtime.provider.query({
+          cwd: config.cwd,
+          host: ref.host,
+          document: GITHUB_AUTO_MERGE_QUERY,
+          variables: { owner, name, number: ref.number },
+        });
+        if (!gitHubAutoMergeHasWriteAccess(availability))
+          return yield* failure(
+            "Auto-merge requires write access to this repository.",
+            "forbidden",
+          );
+        if (!gitHubAutoMergeAvailable(availability))
+          return yield* failure(
+            "Auto-merge is unavailable for the current repository or pull request state. Refresh before retrying.",
+          );
+      }
       if (payload.kind === "edit-comment") {
         const comments = forgeComments(yield* runtime.provider.getComments(ref));
         const comment = comments.find((comment) => String(comment.id) === payload.commentId);

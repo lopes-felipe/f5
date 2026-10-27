@@ -229,7 +229,11 @@ export interface GitCoreShape extends MoveSnapshotOperations {
     path: string;
     branch: string;
   }) => Effect.Effect<{ recreated: boolean }, GitCommandError>;
-  readonly fastForwardTo: (cwd: string, sha: string) => Effect.Effect<void, GitCommandError>;
+  readonly fastForwardTo: (
+    cwd: string,
+    sha: string,
+    expectedBranch?: string,
+  ) => Effect.Effect<void, GitCommandError>;
   readonly initializeWorktreeSubmodules: (
     path: string,
     policy: import("@t3tools/contracts").WorktreeSubmodules,
