@@ -15,6 +15,7 @@ import { AGENT_AUTOMATION_SUPPORT } from "@t3tools/shared/agentAutomationSupport
  */
 import { randomUUID } from "node:crypto";
 import * as nodePath from "node:path";
+import { museWorkspaceRoot } from "../msp/MusePaths.ts";
 
 import {
   MuseGapFillError,
@@ -1146,10 +1147,11 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
           host.durability.kind === "durable"
             ? { permissionProfile: expectedPermissionProfile(input.runtimeMode) }
             : {};
+        const workspaceRoot = yield* Effect.promise(() => museWorkspaceRoot(input.cwd));
         const startFresh = call("session/start", () =>
           host.gate.run("session/start", openTimeoutMs, () =>
             host.client.startSession({
-              workspaceRoot: input.cwd,
+              workspaceRoot,
               approvalMode: verifyExpectedMode(input.runtimeMode),
               ...permissionProfile,
               ...(input.modelId ? { modelId: input.modelId } : {}),

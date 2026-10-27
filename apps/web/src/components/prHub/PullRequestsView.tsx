@@ -164,6 +164,8 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
   const [repository, setRepository] = useState("");
   const [relationship, setRelationship] = useState<PrHubListInput["relationship"]>();
   const [ci, setCi] = useState<PrHubListInput["ci"]>();
+  const [draft, setDraft] = useState<PrHubListInput["draft"]>();
+  const [review, setReview] = useState<PrHubListInput["review"]>();
   const [lifecycle, setLifecycle] = useState<PrHubListInput["lifecycle"]>();
   const [visibility, setVisibility] = useState<PrHubListInput["visibility"]>("active");
   const [selectedKey, setSelectedKey] = useState<PullRequestKey | null>(
@@ -176,7 +178,18 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
   }, []);
   const anchorKey = useMemo(
     () => selectedKeyRef.current ?? undefined,
-    [snapshot?.revision, filter, search, repository, relationship, ci, lifecycle, visibility],
+    [
+      snapshot?.revision,
+      filter,
+      search,
+      repository,
+      relationship,
+      ci,
+      draft,
+      review,
+      lifecycle,
+      visibility,
+    ],
   );
   const listOptions = prHubListQueryOptions(
     {
@@ -185,6 +198,8 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
       query: search,
       relationship,
       ci,
+      draft,
+      review,
       lifecycle,
       visibility,
       ...(repository ? { repository } : {}),
@@ -420,6 +435,8 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
           setRepository("");
           setRelationship(undefined);
           setCi(undefined);
+          setDraft(undefined);
+          setReview(undefined);
           setLifecycle(undefined);
           rememberSelection(pr.key);
           void queryClient.invalidateQueries({ queryKey: ["prHub", "overview"] });
@@ -428,7 +445,8 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
       <div className="flex shrink-0 gap-2 border-b border-border px-5 py-2">
         <input
           aria-label="Search pull requests"
-          placeholder="Search title, repository, number, author"
+          placeholder="Search or use author:me, draft:false, review:approved, label:bug"
+          maxLength={500}
           value={search}
           onChange={(event) => setSearch(event.target.value)}
           className="min-w-0 flex-1 rounded border px-2 py-1 text-sm"
@@ -443,6 +461,36 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
       </div>
 
       <div className="flex flex-wrap shrink-0 gap-2 border-b border-border px-5 py-2 text-xs">
+        <label>
+          Draft{" "}
+          <select
+            aria-label="Filter by draft"
+            value={draft ?? ""}
+            onChange={(event) =>
+              setDraft((event.target.value || undefined) as PrHubListInput["draft"])
+            }
+          >
+            <option value="">Any</option>
+            <option value="only">Draft only</option>
+            <option value="hide">Hide drafts</option>
+          </select>
+        </label>
+        <label>
+          Review{" "}
+          <select
+            aria-label="Filter by review"
+            value={review ?? ""}
+            onChange={(event) =>
+              setReview((event.target.value || undefined) as PrHubListInput["review"])
+            }
+          >
+            <option value="">Any</option>
+            <option value="approved">Approved</option>
+            <option value="changes_requested">Changes requested</option>
+            <option value="review_required">Review required</option>
+            <option value="none">No reviews</option>
+          </select>
+        </label>
         <label>
           Relationship{" "}
           <select

@@ -604,15 +604,8 @@ describe("GitCore unit", () => {
 
   it("parses local and slash-containing remote names without pseudo refs", async () => {
     const scripted = makeScriptedGitService((input) => {
-      if (argsEqual(input, ["branch", "--no-color"])) {
-        return { stdout: "  main\n* feature/current\n" };
-      }
-      if (argsEqual(input, ["branch", "--no-color", "--remotes"])) {
-        return {
-          stdout:
-            "  team/fork/feature/current\n  team/fork/HEAD -> team/fork/main\n  origin/main\n",
-        };
-      }
+      if (argsEqual(input, ["symbolic-ref", "--quiet", "HEAD"]))
+        return { stdout: "refs/heads/feature/current\n" };
       if (argsEqual(input, ["remote"])) {
         return { stdout: "origin\nteam/fork\n" };
       }
@@ -620,7 +613,10 @@ describe("GitCore unit", () => {
         return { stdout: "refs/remotes/origin/main\n" };
       }
       if (input.args[0] === "for-each-ref") {
-        return { stdout: "feature/current\t20\nmain\t10\nteam/fork/feature/current\t30\n" };
+        return {
+          stdout:
+            "refs/heads/feature/current\t\t20\nrefs/heads/main\t\t10\nrefs/remotes/team/fork/feature/current\t\t30\nrefs/remotes/team/fork/HEAD\trefs/remotes/team/fork/main\t0\nrefs/remotes/origin/main\t\t0\n",
+        };
       }
       return {};
     });
@@ -636,11 +632,15 @@ describe("GitCore unit", () => {
       "origin/main",
     ]);
     expect(result.branches[2]).toMatchObject({ isRemote: true, remoteName: "team/fork" });
+    await Effect.runPromise(core.listBranches({ cwd: process.cwd() }));
+    expect(
+      scripted.calls.filter((call) => call.operation === "GitCore.listBranches.refs"),
+    ).toHaveLength(1);
   });
 
   it("returns a non-repository result for git's repository error", async () => {
     const scripted = makeScriptedGitService((input) =>
-      argsEqual(input, ["branch", "--no-color"])
+      input.operation === "GitCore.listBranches.refs"
         ? { code: 128, stderr: "fatal: not a git repository" }
         : {},
     );
@@ -655,10 +655,11 @@ describe("GitCore unit", () => {
 
   it("falls back to local branches when remote lookups fail", async () => {
     const scripted = makeScriptedGitService((input) => {
-      if (argsEqual(input, ["branch", "--no-color"])) {
-        return { stdout: "* main\n" };
-      }
-      if (argsEqual(input, ["branch", "--no-color", "--remotes"]) || argsEqual(input, ["remote"])) {
+      if (input.operation === "GitCore.listBranches.refs")
+        return { stdout: "refs/heads/main\t\t0\n" };
+      if (argsEqual(input, ["symbolic-ref", "--quiet", "HEAD"]))
+        return { stdout: "refs/heads/main\n" };
+      if (argsEqual(input, ["remote"])) {
         return { code: 1, stderr: "remote lookup failed" };
       }
       return {};

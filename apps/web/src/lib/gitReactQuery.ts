@@ -6,7 +6,6 @@ import { ensureNativeApi } from "../nativeApi";
 const GIT_STATUS_STALE_TIME_MS = 5_000;
 const GIT_STATUS_REFETCH_INTERVAL_MS = 60_000;
 const GIT_BRANCHES_STALE_TIME_MS = 15_000;
-const GIT_BRANCHES_REFETCH_INTERVAL_MS = 60_000;
 
 export const gitQueryKeys = {
   all: ["git"] as const,
@@ -107,24 +106,25 @@ export function gitStatusQueryOptions({
   });
 }
 
+/** Ref lists refresh on connection or invalidation; the status polling interval does not apply. */
 export function gitBranchesQueryOptions({
   cwd,
   autoRefresh = true,
   staleTimeMs,
-  refetchIntervalMs,
-}: GitAutoRefreshQueryOptionsInput) {
+}: Omit<GitAutoRefreshQueryOptionsInput, "refetchIntervalMs">) {
   return queryOptions({
     queryKey: gitQueryKeys.branches(cwd),
     queryFn: async () => {
       const api = ensureNativeApi();
       if (!cwd) throw new Error("Git branches are unavailable.");
-      return api.git.listBranches({ cwd });
+      return api.git.listBranches({ cwd, refresh: true });
     },
     enabled: cwd !== null,
     staleTime: autoRefresh ? (staleTimeMs ?? GIT_BRANCHES_STALE_TIME_MS) : Infinity,
-    refetchOnWindowFocus: autoRefresh,
-    refetchOnReconnect: autoRefresh,
-    refetchInterval: autoRefresh ? (refetchIntervalMs ?? GIT_BRANCHES_REFETCH_INTERVAL_MS) : false,
+    gcTime: 30_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: autoRefresh ? "always" : false,
+    refetchInterval: false,
   });
 }
 

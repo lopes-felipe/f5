@@ -25,6 +25,7 @@ import {
   openMspHost,
 } from "../../provider/msp/MspSessionRuntime.ts";
 import { makeMspTransport } from "../../provider/msp/MspTransport.ts";
+import { museWorkspaceRoot } from "../../provider/msp/MusePaths.ts";
 import { TextGenerationError } from "../Errors.ts";
 import { extractJsonObject } from "../Utils.ts";
 import { makePromptTextGeneration } from "../promptTextGeneration.ts";
@@ -66,7 +67,7 @@ export const runMuseReadOnlyPrompt =
               );
             }
             const session = await host.client.startSession({
-              workspaceRoot: input.cwd,
+              workspaceRoot: await museWorkspaceRoot(input.cwd),
               approvalMode: "denyUnmatched",
               permissionProfile: MUSE_READ_ONLY_PERMISSION_PROFILE,
               requirePermissionProfile: true,

@@ -1,4 +1,6 @@
 import { gitConfigArgs, literalGitPathspec } from "@t3tools/shared/git";
+import { makeRefSnapshotCache } from "../refSnapshotCache.ts";
+import { gitMutatesRefSnapshot } from "../refMutation.ts";
 import { makeMoveSnapshotOperations } from "../moveSnapshot.ts";
 import { checkoutFingerprint } from "../checkoutFingerprint.ts";
 import { blockingIgnoredEntries } from "../worktreeIgnoredFiles.ts";
@@ -182,21 +184,6 @@ function parsePorcelainPath(record: string): string | null {
   return null;
 }
 
-function parseBranchLine(line: string): { name: string; current: boolean } | null {
-  const trimmed = line.trim();
-  if (trimmed.length === 0) return null;
-
-  const name = trimmed.replace(/^[*+]\s+/, "");
-  // Exclude symbolic refs like: "origin/HEAD -> origin/main".
-  // Exclude detached HEAD pseudo-refs like: "(HEAD detached at origin/main)".
-  if (name.includes(" -> ") || name.startsWith("(")) return null;
-
-  return {
-    name,
-    current: trimmed.startsWith("* "),
-  };
-}
-
 function sanitizeRemoteName(value: string): string {
   const sanitized = value
     .trim()
@@ -312,6 +299,24 @@ const makeGitCore = Effect.gen(function* () {
   const preparations = yield* WorktreePreparations;
   const { worktreesDir, baseDir } = yield* ServerConfig;
   const fileSystem = yield* FileSystem.FileSystem;
+  const branchRefsCache = makeRefSnapshotCache<
+    {
+      refs: { code: number; stdout: string; stderr: string };
+      worktrees: Effect.Success<ReturnType<GitCoreShape["listWorktrees"]>>;
+    },
+    GitCommandError
+  >(
+    () =>
+      createGitCommandError(
+        "GitCore.listBranches",
+        "",
+        [],
+        "Too many Git ref scans are already pending.",
+      ),
+    () => performance.now(),
+    (value) => value.refs.code === 0,
+  );
+  const refRepositoryByCwd = new Map<string, string>();
 
   // Fail-fast guard: if the working directory no longer exists on disk, short-circuit
   // with a clear error instead of paying a child-process spawn + ENOENT per call.
@@ -345,6 +350,13 @@ const makeGitCore = Effect.gen(function* () {
         ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
       })
       .pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            // Mutations through F5 invalidate snapshots shared by every linked checkout.
+            if (gitMutatesRefSnapshot(args))
+              branchRefsCache.invalidate(refRepositoryByCwd.get(cwd));
+          }),
+        ),
         Effect.flatMap((result) => {
           if (options.allowNonZeroExit || result.code === 0) {
             return Effect.succeed(result);
@@ -1026,43 +1038,6 @@ const makeGitCore = Effect.gen(function* () {
 
       const parsed = Number.parseInt(result.stdout.trim(), 10);
       return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
-    });
-
-  const readBranchRecency = (cwd: string): Effect.Effect<Map<string, number>, GitCommandError> =>
-    Effect.gen(function* () {
-      const branchRecency = yield* executeGit(
-        "GitCore.readBranchRecency",
-        cwd,
-        [
-          "for-each-ref",
-          "--format=%(refname:short)%09%(committerdate:unix)",
-          "refs/heads",
-          "refs/remotes",
-        ],
-        {
-          timeoutMs: 15_000,
-          allowNonZeroExit: true,
-        },
-      );
-
-      const branchLastCommit = new Map<string, number>();
-      if (branchRecency.code !== 0) {
-        return branchLastCommit;
-      }
-
-      for (const line of branchRecency.stdout.split("\n")) {
-        if (line.length === 0) {
-          continue;
-        }
-        const [name, lastCommitRaw] = line.split("\t");
-        if (!name) {
-          continue;
-        }
-        const lastCommit = Number.parseInt(lastCommitRaw ?? "0", 10);
-        branchLastCommit.set(name, Number.isFinite(lastCommit) ? lastCommit : 0);
-      }
-
-      return branchLastCommit;
     });
 
   const statusDetails: GitCoreShape["statusDetails"] = (cwd, options) =>
@@ -2059,167 +2034,119 @@ const makeGitCore = Effect.gen(function* () {
 
   const listBranches: GitCoreShape["listBranches"] = (input) =>
     Effect.gen(function* () {
-      if (
-        !(yield* fileSystem
-          .exists(input.cwd)
-          .pipe(
-            Effect.mapError((error) =>
-              createGitCommandError("GitCore.listBranches", input.cwd, [], error.message),
-            ),
-          ))
-      )
+      if (!(yield* fileSystem.exists(input.cwd).pipe(Effect.orElseSucceed(() => false))))
         return { branches: [], isRepo: false, hasOriginRemote: false, worktreeMissing: true };
 
-      const branchRecencyPromise = readBranchRecency(input.cwd).pipe(
-        Effect.catch(() => Effect.succeed(new Map<string, number>())),
+      const metadata = yield* readStatusStaticMetadata(input.cwd).pipe(
+        Effect.orElseSucceed(
+          (): StatusStaticMetadata => ({
+            commonDir: input.cwd,
+            remoteNames: [],
+            primaryRemoteName: null,
+            defaultBranchName: null,
+          }),
+        ),
       );
-      const localBranchResult = yield* executeGit(
-        "GitCore.listBranches.branchNoColor",
-        input.cwd,
-        ["branch", "--no-color"],
-        {
-          timeoutMs: 10_000,
-          allowNonZeroExit: true,
-        },
-      );
-
-      if (localBranchResult.code !== 0) {
-        const stderr = localBranchResult.stderr.trim();
-        if (stderr.toLowerCase().includes("not a git repository")) {
-          return { branches: [], isRepo: false, hasOriginRemote: false };
-        }
-        return yield* createGitCommandError(
-          "GitCore.listBranches",
+      const commonDir = yield* canonicalPath(metadata.commonDir);
+      refRepositoryByCwd.delete(input.cwd);
+      refRepositoryByCwd.set(input.cwd, commonDir);
+      if (refRepositoryByCwd.size > 256)
+        refRepositoryByCwd.delete(refRepositoryByCwd.keys().next().value!);
+      const scanRefs = Effect.gen(function* () {
+        const refs = yield* executeGit(
+          "GitCore.listBranches.refs",
           input.cwd,
-          ["branch", "--no-color"],
-          stderr || "git branch failed",
-        );
-      }
-
-      const remoteBranchResultEffect = executeGit(
-        "GitCore.listBranches.remoteBranches",
-        input.cwd,
-        ["branch", "--no-color", "--remotes"],
-        {
-          timeoutMs: 10_000,
-          allowNonZeroExit: true,
-        },
-      ).pipe(
-        Effect.catch((error) =>
-          Effect.logWarning(
-            `GitCore.listBranches: remote branch lookup failed for ${input.cwd}: ${error.message}. Falling back to an empty remote branch list.`,
-          ).pipe(Effect.as({ code: 1, stdout: "", stderr: "" })),
-        ),
-      );
-
-      const staticMetadataEffect = readStatusStaticMetadata(input.cwd).pipe(
-        Effect.catch((error) =>
-          Effect.logWarning(
-            `GitCore.listBranches: static metadata lookup failed for ${input.cwd}: ${error.message}. Falling back to empty remote metadata.`,
-          ).pipe(
-            Effect.as({
-              commonDir: input.cwd,
-              remoteNames: [] as ReadonlyArray<string>,
-              primaryRemoteName: null,
-              defaultBranchName: null,
-            } satisfies StatusStaticMetadata),
-          ),
-        ),
-      );
-
-      const [worktreeList, remoteBranchResult, staticMetadata, branchLastCommit] =
-        yield* Effect.all(
           [
-            listWorktrees(input.cwd),
-            remoteBranchResultEffect,
-            staticMetadataEffect,
-            branchRecencyPromise,
+            "for-each-ref",
+            "--format=%(refname)%09%(symref)%09%(committerdate:unix)",
+            "refs/heads/",
+            "refs/remotes/",
           ],
-          { concurrency: "unbounded" },
+          { timeoutMs: 15_000, allowNonZeroExit: true },
         );
-
-      const remoteNames = staticMetadata.remoteNames;
-      if (remoteBranchResult.code !== 0 && remoteBranchResult.stderr.trim().length > 0) {
-        yield* Effect.logWarning(
-          `GitCore.listBranches: remote branch lookup returned code ${remoteBranchResult.code} for ${input.cwd}: ${remoteBranchResult.stderr.trim()}. Falling back to an empty remote branch list.`,
-        );
+        if (refs.code !== 0) {
+          if (refs.stderr.toLowerCase().includes("not a git repository"))
+            return { refs, worktrees: [] };
+          return yield* createGitCommandError(
+            "GitCore.listBranches",
+            input.cwd,
+            [],
+            refs.stderr || "Git ref scan failed",
+          );
+        }
+        const worktrees = yield* listWorktrees(input.cwd);
+        return { refs, worktrees };
+      });
+      let { refs, worktrees } = yield* branchRefsCache.get(commonDir, scanRefs, input.refresh);
+      if (refs.code !== 0) return { branches: [], isRepo: false, hasOriginRemote: false };
+      // HEAD is checkout-local, unlike the ref snapshot shared by a repository.
+      const current = yield* executeGit(
+        "GitCore.listBranches.currentBranch",
+        input.cwd,
+        ["symbolic-ref", "--quiet", "HEAD"],
+        { allowNonZeroExit: true },
+      );
+      const currentRef = current.code === 0 ? current.stdout.trim() : null;
+      const currentBranch = currentRef?.startsWith("refs/heads/")
+        ? currentRef.slice("refs/heads/".length)
+        : null;
+      // Shells and agents can create branches without going through executeGit.
+      // A fresh HEAD missing from the shared snapshot must trigger a fresh scan.
+      if (
+        currentRef &&
+        !refs.stdout.split("\n").some((line) => line.split("\t")[0] === currentRef)
+      ) {
+        branchRefsCache.invalidate(commonDir);
+        ({ refs, worktrees } = yield* branchRefsCache.get(commonDir, scanRefs));
       }
-      const defaultBranch =
-        staticMetadata.primaryRemoteName === "origin" ? staticMetadata.defaultBranchName : null;
-
       const worktreeMap = new Map<string, string>();
       const present = yield* Effect.forEach(
-        worktreeList,
+        worktrees,
         (entry) =>
           inspectionSemaphore
             .withPermits(1)(checkoutExists(entry.path))
-            .pipe(Effect.map((exists) => (exists ? entry : null))),
+            .pipe(Effect.map((exists) => (exists && !entry.prunable ? entry : null))),
         { concurrency: 4 },
       );
-      for (const entry of present) {
-        if (entry?.branch) worktreeMap.set(entry.branch, entry.path);
-      }
-
-      const localBranches = localBranchResult.stdout
+      for (const entry of present) if (entry?.branch) worktreeMap.set(entry.branch, entry.path);
+      const defaultBranch =
+        metadata.primaryRemoteName === "origin" ? metadata.defaultBranchName : null;
+      const recency = new Map<string, number>();
+      const branches = refs.stdout
         .split("\n")
-        .map(parseBranchLine)
-        .filter((branch): branch is { name: string; current: boolean } => branch !== null)
-        .map((branch) => ({
-          name: branch.name,
-          current: branch.current,
-          isRemote: false,
-          isDefault: branch.name === defaultBranch,
-          worktreePath: worktreeMap.get(branch.name) ?? null,
-        }))
+        .flatMap((line) => {
+          const [ref, symbolic, timestamp] = line.split("\t");
+          if (!ref || symbolic) return [];
+          const isRemote = ref.startsWith("refs/remotes/");
+          const prefix = isRemote ? "refs/remotes/" : "refs/heads/";
+          if (!ref.startsWith(prefix)) return [];
+          const name = ref.slice(prefix.length);
+          if (!name) return [];
+          recency.set(name, Number(timestamp) || 0);
+          const remote = isRemote
+            ? parseRemoteRefWithRemoteNames(name, metadata.remoteNames)
+            : null;
+          return [
+            {
+              name,
+              current: !isRemote && name === currentBranch,
+              isRemote,
+              isDefault: !isRemote && name === defaultBranch,
+              worktreePath: isRemote ? null : (worktreeMap.get(name) ?? null),
+              ...(remote ? { remoteName: remote.remoteName } : {}),
+            },
+          ];
+        })
         .toSorted((a, b) => {
-          const aPriority = a.current ? 0 : a.isDefault ? 1 : 2;
-          const bPriority = b.current ? 0 : b.isDefault ? 1 : 2;
-          if (aPriority !== bPriority) return aPriority - bPriority;
-
-          const aLastCommit = branchLastCommit.get(a.name) ?? 0;
-          const bLastCommit = branchLastCommit.get(b.name) ?? 0;
-          if (aLastCommit !== bLastCommit) return bLastCommit - aLastCommit;
-          return a.name.localeCompare(b.name);
+          const priority = (branch: typeof a) =>
+            branch.isRemote ? 3 : branch.current ? 0 : branch.isDefault ? 1 : 2;
+          return (
+            priority(a) - priority(b) ||
+            (recency.get(b.name) ?? 0) - (recency.get(a.name) ?? 0) ||
+            a.name.localeCompare(b.name)
+          );
         });
-
-      const remoteBranches =
-        remoteBranchResult.code === 0
-          ? remoteBranchResult.stdout
-              .split("\n")
-              .map(parseBranchLine)
-              .filter((branch): branch is { name: string; current: boolean } => branch !== null)
-              .map((branch) => {
-                const parsedRemoteRef = parseRemoteRefWithRemoteNames(branch.name, remoteNames);
-                const remoteBranch: {
-                  name: string;
-                  current: boolean;
-                  isRemote: boolean;
-                  remoteName?: string;
-                  isDefault: boolean;
-                  worktreePath: string | null;
-                } = {
-                  name: branch.name,
-                  current: false,
-                  isRemote: true,
-                  isDefault: false,
-                  worktreePath: null,
-                };
-                if (parsedRemoteRef) {
-                  remoteBranch.remoteName = parsedRemoteRef.remoteName;
-                }
-                return remoteBranch;
-              })
-              .toSorted((a, b) => {
-                const aLastCommit = branchLastCommit.get(a.name) ?? 0;
-                const bLastCommit = branchLastCommit.get(b.name) ?? 0;
-                if (aLastCommit !== bLastCommit) return bLastCommit - aLastCommit;
-                return a.name.localeCompare(b.name);
-              })
-          : [];
-
-      const branches = [...localBranches, ...remoteBranches];
-
-      return { branches, isRepo: true, hasOriginRemote: remoteNames.includes("origin") };
+      return { branches, isRepo: true, hasOriginRemote: metadata.remoteNames.includes("origin") };
     });
 
   const initializeSubmodules = (

@@ -2679,7 +2679,6 @@ export default memo(function ChatView({
     gitBranchesQueryOptions({
       cwd: gitCwd,
       autoRefresh: gitAutoRefreshEnabled,
-      refetchIntervalMs: gitAutoRefreshIntervalMs,
     }),
   );
   const workspaceEntriesQuery = useQuery(
