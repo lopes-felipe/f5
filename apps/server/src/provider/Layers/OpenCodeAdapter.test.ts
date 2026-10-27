@@ -96,6 +96,7 @@ const runtimeMock = {
     forkCalls: [] as Array<{ sessionID: string; directory: string }>,
     forkMissingPayload: false,
     sessionUpdateError: undefined as Error | undefined,
+    sessionCreateError: undefined as Error | undefined,
     resumedSessionBusy: false,
     onSessionGet: undefined as (() => Promise<void>) | undefined,
   },
@@ -135,6 +136,7 @@ const runtimeMock = {
     this.state.forkCalls.length = 0;
     this.state.forkMissingPayload = false;
     this.state.sessionUpdateError = undefined;
+    this.state.sessionCreateError = undefined;
     this.state.resumedSessionBusy = false;
     this.state.onSessionGet = undefined;
   },
@@ -192,6 +194,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           data: runtimeMock.state.resumedSessionBusy ? { ses_saved: { type: "busy" } } : {},
         }),
         create: async (input?: Record<string, unknown>) => {
+          if (runtimeMock.state.sessionCreateError) throw runtimeMock.state.sessionCreateError;
           runtimeMock.state.sessionCreateUrls.push(baseUrl);
           runtimeMock.state.sessionCreateInputs.push(input);
           runtimeMock.state.authHeaders.push(
@@ -578,7 +581,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
   it.effect("reports an actionable resume error when permission refresh fails", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
-      runtimeMock.state.sessionUpdateError = new Error("permission update rejected");
+      runtimeMock.state.sessionUpdateError = new Error("permission update rejected.");
       const result = yield* adapter
         .startSession({
           threadId: asThreadId("resume-permission-error"),
@@ -592,6 +595,8 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         assert.match(result.failure.message, /Could not resume OpenCode session 'ses_saved'/);
         assert.match(result.failure.message, /permission update rejected/);
         assert.match(result.failure.message, /retry/);
+        assert.match(result.failure.message, /connection and permissions/);
+        assert.doesNotMatch(result.failure.message, /rejected\.\./);
       }
       assert.deepEqual(runtimeMock.state.sessionCreateUrls, []);
       assert.equal(runtimeMock.state.closeCalls.length, 1);
@@ -612,11 +617,34 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         })
         .pipe(Effect.result);
       assert.equal(result._tag, "Failure");
-      if (result._tag === "Failure")
+      if (result._tag === "Failure") {
         assert.match(result.failure.message, /still running.*external OpenCode/);
+        assert.doesNotMatch(result.failure.message, /connection and permissions|retrying\.\./);
+      }
       assert.deepEqual(runtimeMock.state.sessionCreateUrls, []);
       assert.deepEqual(runtimeMock.state.sessionUpdateCalls, []);
       assert.equal(yield* adapter.hasSession(threadId), false);
+    }),
+  );
+
+  it.effect("keeps fresh-session creation errors distinct after a missing resume", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      runtimeMock.state.resumeError = new Error("missing", { cause: { status: 404 } });
+      runtimeMock.state.sessionCreateError = new Error("creating a new session failed.");
+      const result = yield* adapter
+        .startSession({
+          threadId: asThreadId("resume-create-error"),
+          provider: "opencode",
+          runtimeMode: "full-access",
+          resumeCursor: { schemaVersion: 1, sessionId: "ses_missing" },
+        })
+        .pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.match(result.failure.message, /creating a new session failed/);
+        assert.doesNotMatch(result.failure.message, /Could not resume|connection and permissions/);
+      }
     }),
   );
 

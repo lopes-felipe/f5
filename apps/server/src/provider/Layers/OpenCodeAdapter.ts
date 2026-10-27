@@ -1485,9 +1485,17 @@ export function makeOpenCodeAdapter(
           if (Exit.isFailure(startedExit)) {
             yield* Scope.close(sessionScope, Exit.void).pipe(Effect.ignore);
             const cause = Cause.squash(startedExit.cause);
+            const operation = OpenCodeRuntimeError.is(cause) ? cause.operation : undefined;
+            const recoveryHint =
+              operation === "session.get" || operation === "session.update"
+                ? " Check the OpenCode server connection and permissions, then retry, " +
+                  "or start a new conversation to use a fresh session."
+                : operation === "session.resume"
+                  ? ""
+                  : " Retry, or start a new conversation to use a fresh session.";
             return yield* toProcessError(
               input.threadId,
-              resumeSessionId
+              resumeSessionId && operation !== "session.create"
                 ? new OpenCodeRuntimeError({
                     operation: "session.resume",
                     detail:
@@ -1496,9 +1504,9 @@ export function makeOpenCodeAdapter(
                       "' from '" +
                       directory +
                       "': " +
-                      openCodeRuntimeErrorDetail(cause) +
-                      ". Check the OpenCode server connection and permissions, then retry, " +
-                      "or start a new conversation to use a fresh session.",
+                      openCodeRuntimeErrorDetail(cause).replace(/[.\s]+$/, "") +
+                      "." +
+                      recoveryHint,
                     cause,
                   })
                 : cause,
