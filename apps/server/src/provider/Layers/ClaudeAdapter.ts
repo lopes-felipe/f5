@@ -78,6 +78,8 @@ import {
 import { isProviderResumeFailureText } from "../resumeFailure.ts";
 import { appendClaudeStderrTail, parseClaudeProcessExit } from "../claudeProcessExit.ts";
 import { makeClaudeProcessGroupSpawner } from "../claudeProcessGroup.ts";
+import { resolveClaudeToolSearchOverride } from "../claudeToolSearch.ts";
+import * as Path from "effect/Path";
 /**
  * ClaudeAdapterLive - Scoped live implementation for the Claude Agent provider adapter.
  *
@@ -2262,6 +2264,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
   return Effect.gen(function* () {
     const adapterScope = yield* Effect.scope;
     const fileSystem = yield* FileSystem.FileSystem;
+    const toolSearchPath = yield* Path.Path;
     const serverConfig = yield* ServerConfig;
     const reportedCapabilitiesFor = (
       model: string | undefined,
@@ -7173,7 +7176,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   message: `Tool '${toolName}' is not permitted in a read-only workflow stage.`,
                 } satisfies PermissionResult;
               }
-              const runtimeMode = input.runtimeMode ?? DEFAULT_RUNTIME_MODE;
+              const inPlanMode = context.configuredBase?.permissionMode === "plan";
+              if (inPlanMode && input.approvalPolicy === "never")
+                return {
+                  behavior: "deny",
+                  message: "Plan mode requires approval for this tool, but approvals are disabled.",
+                } satisfies PermissionResult;
+              const runtimeMode = inPlanMode
+                ? "approval-required"
+                : (input.runtimeMode ?? DEFAULT_RUNTIME_MODE);
               switch (runtimeMode) {
                 case "full-access":
                   return {
@@ -7489,12 +7500,23 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             }),
         });
         const launchInstanceSettings = yield* instanceSettings(queryEnvironment, input.cwd);
+        const toolSearchOverride = yield* resolveClaudeToolSearchOverride({
+          cwd: input.cwd,
+          configDirectory: resolveClaudeConfigDir(queryEnvironment, input.cwd),
+          homeDirectory: NodeOS.homedir(),
+          platform: process.platform,
+          environment: queryEnvironment,
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, toolSearchPath),
+        );
         const showThinkingSummaries = claudeShowThinkingSummaries(
           thinkingResolution.thinking,
           launchInstanceSettings.showThinkingSummaries,
         );
         const settings = {
           cleanupPeriodDays: launchInstanceSettings.cleanupPeriodDays,
+          ...(toolSearchOverride ? { env: { ENABLE_TOOL_SEARCH: toolSearchOverride } } : {}),
           ...(providerOptions?.autoCompactWindow
             ? { autoCompactWindow: providerOptions.autoCompactWindow }
             : {}),

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { ChildProcess } from "node:child_process";
 
 import { makeClaudeProcessGroupSpawner } from "./claudeProcessGroup.ts";
 
@@ -38,5 +39,31 @@ describe.skipIf(process.platform === "win32")("makeClaudeProcessGroupSpawner", (
 
   it("leaves Windows on the SDK's own spawn", () => {
     expect(makeClaudeProcessGroupSpawner(() => {}, "win32")).toBeUndefined();
+  });
+
+  it("stops a CLI that ignores stdin closing when its server-held pipe closes", async () => {
+    const child = makeClaudeProcessGroupSpawner(() => {})!({
+      command: "/bin/sh",
+      args: ["-c", "echo ready; while :; do sleep 1; done"],
+      env: { PATH: process.env.PATH },
+      signal: new AbortController().signal,
+    }) as ChildProcess;
+    try {
+      await new Promise<void>((resolve) => child.stdout!.once("data", () => resolve()));
+      const exited = new Promise<NodeJS.Signals | null>((resolve) =>
+        child.once("exit", (_code, signal) => resolve(signal)),
+      );
+      // Simulate the kernel closing all server descriptors after a crash.
+      for (const pipe of child.stdio) pipe?.destroy();
+      expect(await exited).toBe("SIGTERM");
+    } finally {
+      if (child.pid) {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {
+          /* Already stopped. */
+        }
+      }
+    }
   });
 });

@@ -537,6 +537,45 @@ describe("GitManager unit", () => {
     expect(git.calls.checkoutBranch).toHaveLength(1);
   });
 
+  it.each([false, true])(
+    "confirms a local checkout only after a successful fast-forward (%s)",
+    async (fails) => {
+      const head = "a".repeat(40);
+      const { manager, git } = await makeManager({
+        gitCore: {
+          statusDetails: () => Effect.succeed(cleanStatus),
+          resolveCommit: () => Effect.succeed(head),
+          fastForwardTo: () =>
+            fails
+              ? Effect.fail(
+                  new GitCommandError({
+                    operation: "merge",
+                    cwd,
+                    command: "git merge --ff-only",
+                    detail: "local commits diverged",
+                  }),
+                )
+              : Effect.void,
+        },
+        gitHub: {
+          pullRequest: {
+            number: 42,
+            title: "PR",
+            url: "https://github.com/t3tools/f5/pull/42",
+            baseRefName: "main",
+            headRefName: "feature/test",
+            headRefOid: head,
+          },
+        },
+      });
+      const result = await Effect.runPromise(
+        manager.preparePullRequestThread({ cwd, reference: "42", mode: "local" }),
+      );
+      expect(result.isOnPullRequestHead).toBe(!fails);
+      expect(git.calls.fastForwardTo).toEqual([[cwd, head, "feature/test"]]);
+    },
+  );
+
   it.each(["feature/test", "main"])(
     "preserves an existing local %s branch when a PR head differs",
     async (branch) => {

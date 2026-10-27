@@ -4368,6 +4368,64 @@ it.live(
 );
 
 it.effect(
+  "stops the matching live turn after ingestion failure and preserves its conversation",
+  () => {
+    const adapter = makeFakeCodexAdapter();
+    const layer = makeProviderServiceLayerForAdapters(new Map([["codex", adapter.adapter]]));
+    return Effect.gen(function* () {
+      const service = yield* ProviderService;
+      const directory = yield* ProviderSessionDirectory;
+      const threadId = asThreadId("failed-ingestion");
+      const started = yield* service.startSession(threadId, {
+        threadId,
+        provider: "codex",
+        runtimeMode: "full-access",
+        cwd: process.cwd(),
+      });
+      const activeTurnId = asTurnId("failed-ingestion-turn");
+      adapter.listSessions.mockReturnValue(
+        Effect.succeed([{ ...started, activeTurnId, status: "running" }]),
+      );
+      const event: ProviderRuntimeEvent = {
+        type: "runtime.error",
+        provider: "codex",
+        threadId,
+        turnId: activeTurnId,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        sessionGeneration: started.capabilities!.generation,
+        eventId: asEventId("lost-output"),
+        createdAt: new Date().toISOString(),
+        payload: { message: "disk full" },
+      };
+      // A late event must not interrupt the current turn.
+      yield* service.requireHistoryReconciliation!({ ...event, turnId: asTurnId("old-turn") });
+      assert.equal(adapter.interruptTurn.mock.calls.length, 0);
+      yield* service.requireHistoryReconciliation!(event);
+      assert.deepEqual(adapter.interruptTurn.mock.calls, [[threadId, activeTurnId]]);
+      assert.equal(adapter.stopSession.mock.calls.length, 0);
+      const binding = Option.getOrUndefined(yield* directory.getBinding(threadId))!;
+      assert.deepEqual(binding.resumeCursor, started.resumeCursor);
+      const result = yield* service
+        .sendTurn({ threadId, input: "continue", attachments: [] })
+        .pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      assert.equal(adapter.sendTurn.mock.calls.length, 0);
+      adapter.interruptTurn.mockReturnValue(
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: "codex",
+            method: "interrupt",
+            detail: "native stream failed",
+          }),
+        ),
+      );
+      yield* service.requireHistoryReconciliation!(event);
+      assert.equal(adapter.stopSession.mock.calls.length, 1);
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+it.effect(
   "refuses turns with durable incomplete history until the matching recovery is acknowledged",
   () => {
     const adapter = makeFakeCodexAdapter();

@@ -61,7 +61,7 @@ export function PrSummaryTab({
     <div className="flex flex-col gap-5" role="tabpanel" aria-label="Summary">
       {summary}
       <PrStackSection pr={pr} />
-      <ForgeControls pr={pr} />
+      <ForgeControls pr={pr} detail={detail} />
 
       {detailQuery.isPending ? (
         <div className="flex items-center gap-2 border-t border-border pt-4 text-sm text-muted-foreground">

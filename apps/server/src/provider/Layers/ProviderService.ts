@@ -856,6 +856,34 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           generation,
           eventId: event.eventId,
         });
+        // Stop work before attempting another disk write: a full disk can prevent
+        // both the marker and terminal events from being retained. Keep the native
+        // conversation, and let the existing history fence gate its next turn.
+        yield* withProviderThreadAccess(
+          event.threadId,
+          Effect.gen(function* () {
+            const current = currentMcpIdentity(event.threadId);
+            if (!current || current.instanceId !== instanceId || current.generation !== generation)
+              return;
+            const adapter = yield* registry.getByInstance(instanceId);
+            const session = (yield* adapter.listSessions()).find(
+              (session) => session.threadId === event.threadId,
+            );
+            if (!session?.activeTurnId) return;
+            // A late event for a settled turn must not stop a newer turn.
+            if (event.turnId && event.turnId !== session.activeTurnId) return;
+            yield* adapter
+              .interruptTurn(event.threadId, session.activeTurnId)
+              .pipe(Effect.catch(() => adapter.stopSession(event.threadId)));
+          }),
+        ).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logError("failed to stop provider after history ingestion failure", {
+              threadId: event.threadId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
         const binding = Option.getOrUndefined(
           yield* directory.getBinding(event.threadId).pipe(Effect.retry(eventPersistenceRetry)),
         );
@@ -1048,6 +1076,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                     type: "runtime.error",
                     eventId,
                     threadId,
+                    ...(next.event.turnId ? { turnId: next.event.turnId } : {}),
                     provider: next.source.provider,
                     providerInstanceId: next.source.instanceId,
                     ...(generation >= 0 ? { sessionGeneration: generation } : {}),

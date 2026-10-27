@@ -125,6 +125,53 @@ beforeEach(() => {
   }));
 });
 
+it.each([
+  [true, "BLOCKED", true],
+  [false, "BLOCKED", false],
+  [true, "CLEAN", false],
+  [true, "HAS_HOOKS", false],
+  [true, "UNSTABLE", false],
+] as const)(
+  "updates auto-merge controls from fresh detail (%s, %s)",
+  async (autoMergeAllowed, mergeStateStatus, expected) => {
+    const base = fixture("github");
+    const pr: TrackedPullRequest = {
+      ...base,
+      forgeCapabilities: { ...base.forgeCapabilities!, actions: ["close", "enable-auto-merge"] },
+    };
+    const screen = await mount(
+      <ForgeControls
+        pr={pr}
+        detail={{
+          state: "open",
+          providerDetails: {
+            provider: "github",
+            nodeId: "pr",
+            mergeStateStatus,
+            autoMergeAllowed,
+            headRefOid: "head",
+            baseRefOid: "base",
+            viewerCanUpdate: true,
+            viewerDidAuthor: true,
+          },
+        }}
+      />,
+    );
+    try {
+      await expect
+        .element(page.getByRole("combobox", { name: "Forge action", exact: true }))
+        .toBeVisible();
+      expect(
+        document
+          .querySelector('[aria-label="Forge action"]')
+          ?.textContent?.includes("enable auto merge"),
+      ).toBe(expected);
+    } finally {
+      await screen.unmount();
+    }
+  },
+);
+
 it.each(["github", "gitlab", "bitbucket", "azure-devops", "forgejo"] as const)(
   "renders only advertised %s controls",
   async (provider) => {
