@@ -566,6 +566,51 @@ describe("GitManager unit", () => {
     expect(git.calls.fetchRemoteBranch).toHaveLength(0);
   });
 
+  it.each(["default", "tracking", "commit"])(
+    "does not fall back to fetching when PR branch safety metadata fails (%s)",
+    async (failedRead) => {
+      const failure = Effect.fail(
+        new GitCommandError({
+          operation: "read",
+          cwd,
+          command: "git config",
+          detail: "metadata unavailable",
+        }),
+      );
+      const { manager, git } = await makeManager({
+        gitCore: {
+          statusDetails: () => Effect.succeed(cleanStatus),
+          listLocalBranchNames: () => Effect.succeed(["feature/test"]),
+          resolveCommit: () => (failedRead === "commit" ? failure : Effect.succeed("b".repeat(40))),
+          readDefaultBranch: () => (failedRead === "default" ? failure : Effect.succeed("main")),
+          readConfigValue: (_cwd, key) =>
+            key === "branch.feature/test.remote" && failedRead === "tracking"
+              ? failure
+              : Effect.succeed(null),
+        },
+        gitHub: {
+          pullRequest: {
+            number: 42,
+            title: "PR",
+            url: "https://github.com/t3tools/f5/pull/42",
+            baseRefName: "main",
+            headRefName: "feature/test",
+            headRefOid: "a".repeat(40),
+          },
+        },
+      });
+      await expect(
+        Effect.runPromise(
+          manager.preparePullRequestThread({ cwd, reference: "42", mode: "local" }),
+        ),
+      ).rejects.toThrow("metadata unavailable");
+      expect(git.calls.fetchPullRequestBranch).toHaveLength(0);
+      expect(git.calls.fetchRemoteBranch).toHaveLength(0);
+      expect(git.calls.checkoutBranch).toHaveLength(0);
+      expect(git.calls.fastForwardTo).toHaveLength(0);
+    },
+  );
+
   it.each([false, true])(
     "confirms a local checkout only after a successful fast-forward (%s)",
     async (fails) => {

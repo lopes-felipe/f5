@@ -625,7 +625,7 @@ export const makeGitManager = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const repositoryNameWithOwner = resolveHeadRepositoryNameWithOwner(pullRequest) ?? "";
-      {
+      const alreadyMaterialized = yield* Effect.gen(function* () {
         if ((yield* gitCore.listLocalBranchNames(cwd)).includes(localBranch)) {
           const existing = yield* gitCore.resolveCommit(cwd, localBranch);
           const matchesHead =
@@ -673,9 +673,17 @@ export const makeGitManager = Effect.gen(function* () {
               "preparePullRequestThread",
               `Local branch '${localBranch}' contains a different commit; select a fresh worktree branch to preserve it.`,
             );
-          if (!refreshExisting || !pullRequest.headOid || matchesHead) return;
+          if (!refreshExisting || !pullRequest.headOid || matchesHead) return true;
         }
-      }
+        return false;
+      }).pipe(
+        Effect.mapError((cause) =>
+          Schema.is(GitManagerError)(cause)
+            ? cause
+            : gitManagerError("preparePullRequestThread", cause.message),
+        ),
+      );
+      if (alreadyMaterialized) return;
       if (provider.kind !== "github") {
         const identity = yield* resolveSourceControlProviderIdentity(cwd);
         let remoteName = identity.remoteName ?? "origin";
