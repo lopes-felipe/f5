@@ -57,6 +57,11 @@ end of a turn sums up everything that turn changed, and **View full diff** opens
 - `mod+K` searches threads, workflows and commands.
 - Drop files onto the composer to attach them. See [Attachments and media](attachments-and-media.md).
 
+If the desktop server repeatedly fails to start, F5 opens a **could not start** window with
+the reason and recent server output. Use **Update** when a newer build is available, or
+**Download** to reinstall the last version that started successfully. **Copy details** includes
+the diagnostic and log directory for a bug report.
+
 ## Related
 
 - [Threads and workspaces](threads-and-workspaces.md): the composer, queue, panels and Git

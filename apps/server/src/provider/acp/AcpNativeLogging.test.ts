@@ -63,6 +63,7 @@ it("redacts MCP array and object configuration, raw frames, echoed failures and 
   expect(redact(mapped)).toMatchObject({ mcpServers: { f5: { env: { TOKEN: "[redacted]" } } } });
   const write = vi.fn(() => Effect.void);
   const loggers = makeAcpNativeLoggers({
+    verboseProtocolLogging: true,
     nativeEventLogger: { write } as never,
     provider: "cursor",
     threadId: ThreadId.makeUnsafe("log-test"),
@@ -117,6 +118,7 @@ it("redacts once per native log sink and retains failures as failures", async ()
   const write = vi.fn((_value: unknown) => Effect.void);
   const redact = vi.fn(redactAcpLogPayload);
   const loggers = makeAcpNativeLoggers({
+    verboseProtocolLogging: true,
     nativeEventLogger: { write } as never,
     provider: "cursor",
     threadId: ThreadId.makeUnsafe("single-log"),
@@ -147,6 +149,16 @@ it("redacts once per native log sink and retains failures as failures", async ()
     failure: { code: -32000, message: "Usage limit" },
   });
   expect(logged.event.payload).not.toHaveProperty("result");
+});
+
+it("keeps request diagnostics while leaving verbose protocol logging off by default", () => {
+  const loggers = makeAcpNativeLoggers({
+    nativeEventLogger: { write: () => Effect.void } as never,
+    provider: "cursor",
+    threadId: ThreadId.makeUnsafe("quiet-protocol"),
+  });
+  expect(loggers.requestLogger).toBeDefined();
+  expect(loggers.protocolLogging).toBeUndefined();
 });
 
 it("preserves non-computer error details while always scrubbing credentials and MCP config", () => {

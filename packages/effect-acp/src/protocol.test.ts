@@ -46,6 +46,46 @@ const mockPeerPath = Effect.map(Effect.service(Path.Path), (path) =>
   path.join(import.meta.dirname, "../test/fixtures/acp-mock-peer.ts"),
 );
 
+it.effect(
+  "bounds an unread diagnostic stream while delivering every notification to its handler",
+  () =>
+    Effect.gen(function* () {
+      const { stdio, input } = yield* makeInMemoryStdio();
+      const delivered = yield* Deferred.make<void>();
+      let count = 0;
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        serverRequestMethods: new Set(),
+        onNotification: () =>
+          Effect.gen(function* () {
+            if (++count === 100) yield* Deferred.succeed(delivered, undefined);
+          }),
+      });
+      for (let index = 0; index < 100; index++) {
+        yield* Queue.offer(
+          input,
+          yield* encodeJsonl(SessionUpdateNotification, {
+            jsonrpc: "2.0",
+            method: "session/update",
+            params: {
+              sessionId: "session-1",
+              update: {
+                sessionUpdate: "plan",
+                entries: [{ content: String(index), priority: "high", status: "in_progress" }],
+              },
+            },
+          }),
+        );
+      }
+      yield* Deferred.await(delivered);
+      const retained = yield* transport.incoming.pipe(Stream.take(32), Stream.runCollect);
+      assert.equal(count, 100);
+      assert.equal(retained.length, 32);
+      const first = retained[0]?.params as { update: { entries: Array<{ content: string }> } };
+      assert.equal(first.update.entries[0]?.content, "68");
+    }).pipe(Effect.scoped),
+);
+
 const makeHandle = (env?: Record<string, string>) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;

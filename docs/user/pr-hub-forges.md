@@ -21,7 +21,10 @@ The existing GitHub setup stays the default as the legacy profile account.
 
 The **Inbox** and **Focus** views list tracked pull requests. Attention filters such as **Needs
 you**, **Needs my review**, **CI failing** and **Ready** narrow the list, and you can also filter by
-repository, CI or lifecycle. Each pull request has **Summary**, **Timeline**, **Review threads**
+repository, draft status, review decision, CI or lifecycle. The search field accepts qualifiers
+such as `author:me draft:false review:approved status:success label:"needs design" -label:bug`.
+Repeat `label:` qualifiers to require all of them; comma-separated names match either label.
+Each pull request has **Summary**, **Timeline**, **Review threads**
 **Files**, and **Guide · Beta** tabs.
 
 ## Safe actions

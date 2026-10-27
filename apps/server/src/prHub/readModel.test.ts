@@ -75,6 +75,37 @@ function snapshot(count = 5000): PrHubSnapshot {
   };
 }
 describe("PR Hub bounded read model", () => {
+  it("combines draft/review filters and GitHub-style qualifiers before pagination", () => {
+    const data: PrHubSnapshot = {
+      ...snapshot(0),
+      pullRequests: [
+        makePr({
+          attentionState: "ready_to_merge",
+          author: "ME",
+          reviewDecision: "approved",
+          labels: ["needs design", "size:S"],
+          title: "Fix layout",
+        }),
+        makePr({ attentionState: "draft", isDraft: true, labels: ["bug"] }),
+      ],
+    };
+    const query =
+      'layout author:me draft:false review:approved status:success label:"needs design" label:size:S,size:XS -label:bug';
+    expect(
+      listPrHubPullRequests(data, "1", { query, draft: "hide", review: "approved", limit: 1 })
+        .pullRequests,
+    ).toHaveLength(1);
+    expect(listPrHubPullRequests(data, "1", { query: "size:S" }).pullRequests).toHaveLength(1);
+    expect(
+      listPrHubPullRequests(data, "1", { query: 'label:"needs,design"' }).pullRequests,
+    ).toHaveLength(0);
+    expect(listPrHubPullRequests(data, "1", { query: "draft:invalid" }).pullRequests).toHaveLength(
+      0,
+    );
+    expect(
+      listPrHubPullRequests(data, "1", { query: "review:__proto__" }).pullRequests,
+    ).toHaveLength(0);
+  });
   it("paginates 5000 PRs without duplicates and rejects changed revision/filter/account cursors", () => {
     const data = snapshot();
     const first = listPrHubPullRequests(data, "1", { limit: 100 });

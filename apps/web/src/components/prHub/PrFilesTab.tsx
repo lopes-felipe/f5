@@ -1,4 +1,5 @@
 import { PrViewedFile } from "./PrViewedFile";
+import { orderPrFiles } from "./prFileOrder";
 import { ForgeComposer } from "./ForgeControls";
 import { CopyPathButton } from "../CopyPathButton";
 import { MiddleTruncate } from "../MiddleTruncate";
@@ -7,7 +8,7 @@ import { useAppSettings } from "../../appSettings";
 import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
 import type { PrReviewAnchor } from "@t3tools/shared/prReview";
 import { PrReviewDraftEditor } from "./PrReviewDraftEditor";
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { AlertTriangleIcon, FileIcon, LoaderCircleIcon } from "lucide-react";
 import type { TrackedPullRequest } from "@t3tools/contracts";
@@ -35,7 +36,10 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
     enabled: active,
   });
   const pages = query.data?.pages ?? [];
-  const files = pages.flatMap((page) => page.files);
+  const files = useMemo(
+    () => orderPrFiles(query.data?.pages.flatMap((page) => page.files) ?? []),
+    [query.data],
+  );
   const selectionScope = JSON.stringify([
     pr.key,
     getPrHubAccountGeneration(),

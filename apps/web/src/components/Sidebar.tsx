@@ -1,6 +1,7 @@
 import { ArrowLeftIcon, FolderPlusIcon, KeyboardIcon, PlusIcon, SettingsIcon } from "lucide-react";
 import { useShortcutsDialogStore } from "../shortcutsDialogStore";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useStableCallback } from "../hooks/useStableCallback";
 import {
   DndContext,
   type DragCancelEvent,
@@ -375,7 +376,7 @@ export default function Sidebar() {
     () => new Map(projects.map((project) => [project.id, project] as const)),
     [projects],
   );
-  const createSidebarHoverFreezeSnapshot = useCallback((): SidebarHoverFreezeSnapshot => {
+  const createSidebarHoverFreezeSnapshot = useStableCallback((): SidebarHoverFreezeSnapshot => {
     const workflowKeysByProjectId: Record<string, readonly string[]> = {};
     const workflowThreadIdsByWorkflowKey: Record<string, readonly ThreadId[]> = {};
     const activeThreadIdsByProjectId: Record<string, readonly ThreadId[]> = {};
@@ -404,7 +405,7 @@ export default function Sidebar() {
       archivedItemKeysByProjectId,
       attentionThreadIds: liveAttentionThreads.map((thread) => thread.id),
     };
-  }, [liveAttentionThreads, projectSidebarListsById, projects]);
+  });
   // Hover freezes the "Needs you" order so rows do not reshuffle under the
   // pointer; resolved threads still drop out and new ones append at the end.
   const attentionThreads = reconcileFrozenOrder({
@@ -413,34 +414,31 @@ export default function Sidebar() {
     frozenOrder: sidebarHoverFreezeSnapshot?.attentionThreadIds,
   });
 
-  const handleSidebarSearchResultOpened = useCallback(() => {
+  const handleSidebarSearchResultOpened = useStableCallback(() => {
     setSidebarSearchQuery("");
-  }, [setSidebarSearchQuery]);
+  });
 
-  const focusMostRecentThreadForProject = useCallback(
-    (projectId: ProjectId) => {
-      const latestThread = getMostRecentThreadForProject(
-        projectId,
-        threads,
-        planningWorkflows,
-        codeReviewWorkflows,
-        investigationWorkflows,
-      );
-      if (!latestThread) return;
+  const focusMostRecentThreadForProject = useStableCallback((projectId: ProjectId) => {
+    const latestThread = getMostRecentThreadForProject(
+      projectId,
+      threads,
+      planningWorkflows,
+      codeReviewWorkflows,
+      investigationWorkflows,
+    );
+    if (!latestThread) return;
 
-      void navigate({
-        to: "/$threadId",
-        params: { threadId: latestThread.id },
-      });
-    },
-    [codeReviewWorkflows, investigationWorkflows, navigate, planningWorkflows, threads],
-  );
+    void navigate({
+      to: "/$threadId",
+      params: { threadId: latestThread.id },
+    });
+  });
   const addProject = useAddProject({
     projects,
     onProjectAdded: handleNewThread,
     onExistingProject: focusMostRecentThreadForProject,
   });
-  const toggleWorkflowCollapsed = useCallback(
+  const toggleWorkflowCollapsed = useStableCallback(
     (workflowId: string, fallbackExpanded: boolean) => {
       setWorkflowExpandedById((current) =>
         toggleWorkflowThreadListExpansion({
@@ -450,22 +448,18 @@ export default function Sidebar() {
         }),
       );
     },
-    [setWorkflowExpandedById],
   );
-  const handleWorkflowCreated = useCallback(
-    (workflowId: string) => {
-      setWorkflowExpandedById((current) => {
-        if (current[workflowId] === true) {
-          return current;
-        }
-        return {
-          ...current,
-          [workflowId]: true,
-        };
-      });
-    },
-    [setWorkflowExpandedById],
-  );
+  const handleWorkflowCreated = useStableCallback((workflowId: string) => {
+    setWorkflowExpandedById((current) => {
+      if (current[workflowId] === true) {
+        return current;
+      }
+      return {
+        ...current,
+        [workflowId]: true,
+      };
+    });
+  });
   useEffect(() => {
     if (!lastCreatedWorkflowId) return;
     handleWorkflowCreated(lastCreatedWorkflowId);
@@ -478,7 +472,7 @@ export default function Sidebar() {
   } | null>(null);
   const archiveCancelRef = useRef<HTMLButtonElement>(null);
   const archiveTriggerRef = useRef<HTMLElement | null>(null);
-  const archiveWorkflow = useCallback(
+  const archiveWorkflow = useStableCallback(
     (workflowId: SidebarWorkflowId, workflowTitle: string, workflowType: SidebarWorkflowType) => {
       archiveTriggerRef.current =
         document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -488,10 +482,9 @@ export default function Sidebar() {
         workflowType,
       });
     },
-    [],
   );
 
-  const unarchiveWorkflow = useCallback(
+  const unarchiveWorkflow = useStableCallback(
     async (workflowId: SidebarWorkflowId, workflowType: SidebarWorkflowType) => {
       await setWorkflowArchived({
         workflowId,
@@ -499,14 +492,13 @@ export default function Sidebar() {
         archived: false,
       });
     },
-    [],
   );
 
-  const cancelProjectRename = useCallback(() => {
+  const cancelProjectRename = useStableCallback(() => {
     setRenamingProjectId(null);
-  }, [setRenamingProjectId]);
+  });
 
-  const commitProjectRename = useCallback(
+  const commitProjectRename = useStableCallback(
     async (projectId: ProjectId, newTitle: string, originalTitle: string) => {
       const finishRename = () => {
         setRenamingProjectId((current) => (current === projectId ? null : current));
@@ -546,10 +538,9 @@ export default function Sidebar() {
       // an error). Collapse only after the command round-trips.
       finishRename();
     },
-    [setRenamingProjectId],
   );
 
-  const changeProjectWorkspaceRoot = useCallback(
+  const changeProjectWorkspaceRoot = useStableCallback(
     async (project: Pick<Project, "id" | "cwd" | "name">) => {
       const api = readNativeApi();
       if (!api) {
@@ -595,10 +586,9 @@ export default function Sidebar() {
         });
       }
     },
-    [],
   );
 
-  const removeProjectWithThreads = useCallback(
+  const removeProjectWithThreads = useStableCallback(
     async (project: Project, projectThreads: ReadonlyArray<ThreadListItem>): Promise<void> => {
       const api = readNativeApi();
       if (!api) return;
@@ -634,10 +624,9 @@ export default function Sidebar() {
         });
       }
     },
-    [clearProjectDraftThreadId, deleteThreads],
   );
 
-  const handleProjectContextMenu = useCallback(
+  const handleProjectContextMenu = useStableCallback(
     async (projectId: ProjectId, position: { x: number; y: number }) => {
       const api = readNativeApi();
       if (!api) return;
@@ -710,14 +699,6 @@ export default function Sidebar() {
 
       await removeProjectWithThreads(project, []);
     },
-    [
-      changeProjectWorkspaceRoot,
-      navigate,
-      projects,
-      removeProjectWithThreads,
-      setRenamingProjectId,
-      threads,
-    ],
   );
 
   const projectDnDSensors = useSensors(
@@ -725,68 +706,62 @@ export default function Sidebar() {
       activationConstraint: { distance: 6 },
     }),
   );
-  const projectCollisionDetection = useCallback<CollisionDetection>((args) => {
+  const projectCollisionDetection = useStableCallback((args: Parameters<CollisionDetection>[0]) => {
     const pointerCollisions = pointerWithin(args);
     if (pointerCollisions.length > 0) {
       return pointerCollisions;
     }
 
     return closestCorners(args);
-  }, []);
+  });
 
-  const handleProjectDragEnd = useCallback(
-    (event: DragEndEvent) => {
-      dragInProgressRef.current = false;
-      const { active, over } = event;
-      if (!over || active.id === over.id) return;
-      const activeProject = projects.find((project) => project.id === active.id);
-      const overProject = projects.find((project) => project.id === over.id);
-      if (!activeProject || !overProject) return;
-      reorderProjects(activeProject.id, overProject.id);
-    },
-    [projects, reorderProjects],
-  );
+  const handleProjectDragEnd = useStableCallback((event: DragEndEvent) => {
+    dragInProgressRef.current = false;
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const activeProject = projects.find((project) => project.id === active.id);
+    const overProject = projects.find((project) => project.id === over.id);
+    if (!activeProject || !overProject) return;
+    reorderProjects(activeProject.id, overProject.id);
+  });
 
-  const handleProjectDragStart = useCallback((_event: DragStartEvent) => {
+  const handleProjectDragStart = useStableCallback((_event: DragStartEvent) => {
     dragInProgressRef.current = true;
     suppressProjectClickAfterDragRef.current = true;
-  }, []);
+  });
 
-  const handleProjectDragCancel = useCallback((_event: DragCancelEvent) => {
+  const handleProjectDragCancel = useStableCallback((_event: DragCancelEvent) => {
     dragInProgressRef.current = false;
-  }, []);
+  });
 
-  const handlePinnedThreadDragEnd = useCallback(
-    (event: DragEndEvent) => {
-      const activeThreadId = threadIdFromPinnedSortableId(event.active.id);
-      const overThreadId = event.over ? threadIdFromPinnedSortableId(event.over.id) : null;
-      if (activeThreadId === null || overThreadId === null || activeThreadId === overThreadId) {
-        return;
-      }
-      const pinnedThreadIds = orderedPinnedThreadIds(threads);
-      const fromIndex = pinnedThreadIds.indexOf(activeThreadId);
-      const toIndex = pinnedThreadIds.indexOf(overThreadId);
-      if (fromIndex < 0 || toIndex < 0) return;
-      void replacePinnedThreads({
-        anchorThreadId: activeThreadId,
-        pinnedThreadIds: arrayMove(pinnedThreadIds, fromIndex, toIndex),
-        expectedRevision: pinRevision,
-      }).catch((error) => {
-        toastManager.add({
-          type: "error",
-          title: "Failed to reorder pinned threads",
-          description: error instanceof Error ? error.message : "An error occurred.",
-        });
+  const handlePinnedThreadDragEnd = useStableCallback((event: DragEndEvent) => {
+    const activeThreadId = threadIdFromPinnedSortableId(event.active.id);
+    const overThreadId = event.over ? threadIdFromPinnedSortableId(event.over.id) : null;
+    if (activeThreadId === null || overThreadId === null || activeThreadId === overThreadId) {
+      return;
+    }
+    const pinnedThreadIds = orderedPinnedThreadIds(threads);
+    const fromIndex = pinnedThreadIds.indexOf(activeThreadId);
+    const toIndex = pinnedThreadIds.indexOf(overThreadId);
+    if (fromIndex < 0 || toIndex < 0) return;
+    void replacePinnedThreads({
+      anchorThreadId: activeThreadId,
+      pinnedThreadIds: arrayMove(pinnedThreadIds, fromIndex, toIndex),
+      expectedRevision: pinRevision,
+    }).catch((error) => {
+      toastManager.add({
+        type: "error",
+        title: "Failed to reorder pinned threads",
+        description: error instanceof Error ? error.message : "An error occurred.",
       });
-    },
-    [pinRevision, threads],
-  );
+    });
+  });
 
-  const handleProjectTitlePointerDownCapture = useCallback(() => {
+  const handleProjectTitlePointerDownCapture = useStableCallback(() => {
     suppressProjectClickAfterDragRef.current = false;
-  }, []);
+  });
 
-  const handleProjectTitleClick = useCallback(
+  const handleProjectTitleClick = useStableCallback(
     (event: React.MouseEvent<HTMLButtonElement>, projectId: ProjectId) => {
       if (dragInProgressRef.current) {
         event.preventDefault();
@@ -805,10 +780,9 @@ export default function Sidebar() {
       }
       toggleProject(projectId);
     },
-    [clearSelection, toggleProject],
   );
 
-  const handleProjectTitleKeyDown = useCallback(
+  const handleProjectTitleKeyDown = useStableCallback(
     (event: React.KeyboardEvent<HTMLButtonElement>, projectId: ProjectId) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
@@ -817,7 +791,6 @@ export default function Sidebar() {
       }
       toggleProject(projectId);
     },
-    [toggleProject],
   );
 
   useEffect(() => {
@@ -969,11 +942,11 @@ export default function Sidebar() {
     () => shortcutLabelForCommand(keybindings, "prHub.open"),
     [keybindings],
   );
-  const handleOpenCommandPalette = useCallback(() => {
+  const handleOpenCommandPalette = useStableCallback(() => {
     setCommandPaletteOpen(true);
-  }, [setCommandPaletteOpen]);
+  });
 
-  const expandThreadListForProject = useCallback(
+  const expandThreadListForProject = useStableCallback(
     (projectId: ProjectId, bucket: SidebarThreadBucket) => {
       setExpandedThreadListsByProject((current) => {
         const key = threadBucketExpansionKey(projectId, bucket);
@@ -983,10 +956,9 @@ export default function Sidebar() {
         return next;
       });
     },
-    [setExpandedThreadListsByProject],
   );
 
-  const collapseThreadListForProject = useCallback(
+  const collapseThreadListForProject = useStableCallback(
     (projectId: ProjectId, bucket: SidebarThreadBucket) => {
       setExpandedThreadListsByProject((current) => {
         const key = threadBucketExpansionKey(projectId, bucket);
@@ -996,35 +968,28 @@ export default function Sidebar() {
         return next;
       });
     },
-    [setExpandedThreadListsByProject],
   );
 
-  const toggleArchivedSectionForProject = useCallback(
-    (projectId: ProjectId) => {
-      setCollapsedArchivedSectionsByProject((current) => {
-        const next = new Set(current);
-        if (next.has(projectId)) {
-          next.delete(projectId);
-        } else {
-          next.add(projectId);
-        }
-        return next;
-      });
-    },
-    [setCollapsedArchivedSectionsByProject],
-  );
+  const toggleArchivedSectionForProject = useStableCallback((projectId: ProjectId) => {
+    setCollapsedArchivedSectionsByProject((current) => {
+      const next = new Set(current);
+      if (next.has(projectId)) {
+        next.delete(projectId);
+      } else {
+        next.add(projectId);
+      }
+      return next;
+    });
+  });
 
-  const toggleSnoozedSectionForProject = useCallback(
-    (projectId: ProjectId) => {
-      setCollapsedSnoozedSectionsByProject((current) => {
-        const next = new Set(current);
-        if (next.has(projectId)) next.delete(projectId);
-        else next.add(projectId);
-        return next;
-      });
-    },
-    [setCollapsedSnoozedSectionsByProject],
-  );
+  const toggleSnoozedSectionForProject = useStableCallback((projectId: ProjectId) => {
+    setCollapsedSnoozedSectionsByProject((current) => {
+      const next = new Set(current);
+      if (next.has(projectId)) next.delete(projectId);
+      else next.add(projectId);
+      return next;
+    });
+  });
 
   useEffect(() => {
     if (archivedSectionsInitializedRef.current || !threadsHydrated) {

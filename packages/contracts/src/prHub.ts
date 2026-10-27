@@ -292,6 +292,8 @@ export const PrHubListInput = Schema.Struct({
   ...PrHubOverviewInput.fields,
   filter: Schema.optional(PrHubListFilter),
   query: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
+  draft: Schema.optional(Schema.Literals(["only", "hide"])),
+  review: Schema.optional(PrReviewDecision),
   repository: Schema.optional(Schema.String),
   relationship: Schema.optional(PrViewerRole),
   ci: Schema.optional(PrCheckRollup),

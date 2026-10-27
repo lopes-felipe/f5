@@ -88,7 +88,7 @@ interface OutboundMessage {
 const REQUEST_TIMEOUT_MS = 60_000;
 const CONNECTION_TIMEOUT_MS = 10_000;
 const MAX_OUTBOUND_QUEUE_SIZE = 256;
-const RECONNECT_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000];
+const RECONNECT_DELAYS_MS = [3_000, 4_000, 8_000, 16_000];
 const FOREGROUND_PROBE_COALESCE_MS = 10_000;
 const FOREGROUND_PROBE_TIMEOUT_MS = 3_000;
 const INITIAL_CONNECTION_ERROR_MESSAGE = "Unable to connect to the F5 server WebSocket.";
@@ -646,9 +646,7 @@ export class WsTransport {
         noteWsConnectionError(
           asError(error, "WebSocket foreground connectivity probe failed.").message,
         );
-        if (ws.readyState < WebSocket.CLOSING) {
-          ws.close();
-        }
+        this.reconnect();
       })
       .finally(() => {
         if (this.foregroundProbeGeneration === generation) {

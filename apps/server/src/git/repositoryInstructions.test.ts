@@ -1,10 +1,38 @@
-import { mkdtemp, rm, writeFile, symlink } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, symlink, open, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { it, expect, vi } from "vitest";
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
 import { buildCommitMessagePrompt } from "./Prompts.ts";
 import { readRepositoryWritingContext } from "./repositoryInstructions.ts";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...fs, realpath: vi.fn(fs.realpath), open: vi.fn(fs.open) };
+});
+
+it("reads instructions when the registered project itself is a filesystem root", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "f5-root-instructions-"));
+  await writeFile(path.join(cwd, "guidance"), "Root project guidance.");
+  const file = await open(path.join(cwd, "guidance"));
+  vi.mocked(realpath).mockResolvedValueOnce("/").mockResolvedValueOnce("/AGENTS.md");
+  vi.mocked(open).mockResolvedValueOnce(file);
+  try {
+    expect(
+      await readRepositoryWritingContext("/", "codex", {
+        ...DEFAULT_SERVER_SETTINGS.sourceControlWriting,
+        useRepositoryInstructions: true,
+      }),
+    ).toContain("Root project guidance.");
+  } finally {
+    vi.mocked(realpath).mockReset();
+    vi.mocked(realpath).mockImplementation(
+      (await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")).realpath,
+    );
+    await file.close();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
 
 it("includes root instructions and Claude guidance only for the Claude writer", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "f5-writing-"));
