@@ -26,6 +26,7 @@ import {
   type NextTurnQueueStoreShape,
 } from "../Services/NextTurnQueueStore.ts";
 import { NextTurnQueueStoreLive } from "./NextTurnQueueStore.ts";
+import { resolveNextTurnQueueGate } from "../gate.ts";
 
 const testLayer = NextTurnQueueStoreLive.pipe(
   Layer.provideMerge(SqlitePersistenceMemory),
@@ -114,7 +115,7 @@ layer("NextTurnQueueStore", (it) => {
         const resumed = yield* store.listByThread(threadId);
         assert.isFalse(resumed.state.paused);
         assert.equal(resumed.state.pauseReasonCode, null);
-        assert.isNotNull(resumed.state.resumedAt);
+        assert.isNull(resumed.state.resumedAt);
         assert.deepEqual(
           resumed.items.map((item) => item.command.message.text),
           ["Turn 8900", "Turn 8901", "Turn 8902", "Turn 8903"],
@@ -124,6 +125,108 @@ layer("NextTurnQueueStore", (it) => {
         assert.isTrue((yield* store.listByThread(threadId)).state.paused);
         yield* store.insertSubmission({ ...submission(8904), submissionSource: "human" });
         assert.isFalse((yield* store.listByThread(threadId)).state.paused);
+      }),
+  );
+
+  for (const reasonCode of ["manual_pause", "turn_interrupted"] as const) {
+    it.effect("sending after " + reasonCode + " does not acknowledge a provider failure", () =>
+      Effect.gen(function* () {
+        const store = yield* NextTurnQueueStore;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.makeUnsafe("failure-during-hold-" + reasonCode);
+        yield* seedThread(threadId);
+        const acknowledgedAt = "2026-01-01T00:00:00.000Z";
+        yield* store.setPaused({ threadId, paused: true, reasonCode });
+        yield* sql`UPDATE next_turn_queue_state SET resumed_at=${acknowledgedAt} WHERE thread_id=${threadId}`;
+        const inserted = yield* store.insertSubmission({
+          submissionId: CommandId.makeUnsafe("held-failure-" + reasonCode),
+          requestHash: reasonCode,
+          itemId: CommandId.makeUnsafe("held-failure-item-" + reasonCode),
+          command: {
+            ...command(8920, threadId),
+            commandId: CommandId.makeUnsafe("held-failure-command-" + reasonCode),
+          },
+          submissionSource: "human",
+          resumeQueue: true,
+          atHead: false,
+        });
+        assert.equal(inserted.kind, "created");
+        if (inserted.kind !== "created") return;
+        const { state } = yield* store.listByThread(threadId);
+        assert.isFalse(state.paused);
+        assert.equal(state.resumedAt, acknowledgedAt);
+        assert.deepEqual(
+          resolveNextTurnQueueGate({
+            item: inserted.item,
+            state,
+            thread: { threadId, deletedAt: null, archivedAt: null, worktreePath: null } as never,
+            session: {
+              status: "error",
+              lastError: "Provider failed while held",
+              updatedAt: "2026-01-01T00:00:01.000Z",
+              activeTurnId: null,
+            } as never,
+            pendingTurnStart: null,
+            runningTurn: null,
+            hasDispatchingItem: false,
+            automaticCompaction: false,
+            worktreeExists: null,
+          }),
+          { kind: "autoPause", reasonCode: "turn_failed", detail: "Provider failed while held" },
+        );
+      }),
+    );
+  }
+
+  it.effect(
+    "ignores a delayed Stop after a human send, preserving newer holds and later Stops",
+    () =>
+      Effect.gen(function* () {
+        const store = yield* NextTurnQueueStore;
+        const threadId = ThreadId.makeUnsafe("delayed-stop");
+        yield* seedThread(threadId);
+        const sql = yield* SqlClient.SqlClient;
+        const addStop = (version: number) => sql<{ sequence: number }>`
+          INSERT INTO orchestration_events (
+            event_id, aggregate_kind, stream_id, stream_version, event_type,
+            occurred_at, actor_kind, payload_json, metadata_json
+          ) VALUES (${"delayed-stop-" + version}, 'thread', ${threadId}, ${version},
+            'thread.turn-interrupt-requested', '2026-01-01T00:00:00.000Z', 'user', '{}', '{}')
+          RETURNING sequence
+        `;
+        const priorStop = (yield* addStop(1))[0]!.sequence;
+        const input = {
+          submissionId: CommandId.makeUnsafe("delayed-stop-send"),
+          requestHash: "send",
+          itemId: CommandId.makeUnsafe("delayed-stop-item"),
+          command: command(8930, threadId),
+          submissionSource: "human" as const,
+          resumeQueue: true,
+          atHead: false,
+        };
+        const sent = yield* store.insertSubmission(input);
+        assert.equal(sent.kind, "created");
+        if (sent.kind !== "created") return;
+        const stop = (interruptRequestedSequence: number) =>
+          store.setPaused({
+            threadId,
+            paused: true,
+            reasonCode: "turn_interrupted",
+            interruptRequestedSequence,
+          });
+        yield* stop(priorStop);
+        assert.isFalse((yield* store.listByThread(threadId)).state.paused);
+        yield* store.setPaused({ threadId, paused: true, reasonCode: "manual_pause" });
+        yield* stop(priorStop);
+        assert.equal((yield* store.listByThread(threadId)).state.pauseReasonCode, "manual_pause");
+        yield* store.insertSubmission(input);
+        const laterStop = (yield* addStop(2))[0]!.sequence;
+        yield* stop(laterStop);
+        assert.equal(
+          (yield* store.listByThread(threadId)).state.pauseReasonCode,
+          "turn_interrupted",
+        );
+        assert.isNull((yield* store.listByThread(threadId)).state.resumedAt);
       }),
   );
 

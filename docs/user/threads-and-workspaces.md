@@ -67,9 +67,9 @@ commit, push and pull request actions. Linked pull requests also appear in the
 - A usage-limit notice can be snoozed until a time you pick; snoozed threads show a moon icon.
 - A turn running during a restart resumes only if **Settings → Threads → Resume active turns after
   restart** is on (off by default).
-- Sending a new message resumes a queue held by Stop or Pause, preserving its order. Steering an
-  active turn and automated messages leave the hold in place. Workspace and provider recovery
-  gates still need to be resolved before queued work can run.
+- Sending a new message resumes a queue held by Stop or Pause, preserving its order. **Queue at end**,
+  **Queue next**, steering an active turn, and automated messages leave the hold in place. Workspace
+  and provider recovery gates still need to be resolved before queued work can run.
 
 <details>
 <summary>Panels in detail</summary>

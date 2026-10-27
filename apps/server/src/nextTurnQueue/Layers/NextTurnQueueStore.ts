@@ -857,7 +857,13 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
             ) {
               yield* sql`
                 UPDATE next_turn_queue_state
-                SET paused = 0, pause_reason_code = NULL, pause_detail = NULL, resumed_at = ${at}
+                SET last_human_send_sequence =
+                  COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'orchestration_events'), 0)
+                WHERE thread_id = ${input.command.threadId}
+              `;
+              yield* sql`
+                UPDATE next_turn_queue_state
+                SET paused = 0, pause_reason_code = NULL, pause_detail = NULL
                 WHERE thread_id = ${input.command.threadId} AND paused = 1
                   AND pause_reason_code IN ('manual_pause', 'turn_interrupted')
                   AND worktree_block_token IS NULL
@@ -1190,6 +1196,14 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
               return yield* new NextTurnQueueConflictError({
                 message: "The queue changed in another client. Refresh and try again.",
               });
+            }
+            if (input.paused && input.interruptRequestedSequence !== undefined) {
+              const newerSend = yield* sql`
+                SELECT 1 FROM next_turn_queue_state
+                WHERE thread_id = ${input.threadId}
+                  AND last_human_send_sequence >= ${input.interruptRequestedSequence}
+              `;
+              if (newerSend.length > 0) return;
             }
             const at = now();
             yield* sql`

@@ -4932,13 +4932,23 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const typedRateLimit =
           context.turnState.rateLimitFailure ||
           (message.subtype === "success" && message.api_error_status === 429);
+        const status = turnStatusFromResult(message);
+        const gatewayUsageLimit =
+          status === "failed" &&
+          !permissionDenied &&
+          !context.turnState.authenticationFailureMessage
+            ? claudeGatewayUsageLimit(message, yield* nowIso)
+            : undefined;
         const hint = permissionDenied
           ? message.result.trim() || undefined
           : (context.turnState?.authenticationFailureMessage ??
             [...(context.rejectedUsageLimits?.values() ?? [])][0]?.message ??
-            (typedRateLimit ? usageLimitMessage("Claude", undefined, undefined) : undefined));
-        const status = turnStatusFromResult(message);
-        const originalError = resultUserFacingError(message);
+            (typedRateLimit && !gatewayUsageLimit
+              ? usageLimitMessage("Claude", undefined, undefined)
+              : undefined));
+        const originalError =
+          resultUserFacingError(message) ??
+          (gatewayUsageLimit && message.subtype === "success" ? message.result : undefined);
         const errorMessage =
           message.terminal_reason === "prompt_too_long" || (blockingLimit && !hint)
             ? CLAUDE_CONTEXT_WINDOW_FULL_ERROR
@@ -4954,7 +4964,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           .filter((limit) => limit.resettable)
           .map((limit) => limit.structuredWindow);
         const usageLimit =
-          status === "failed" &&
+          gatewayUsageLimit ??
+          (status === "failed" &&
           !context.turnState.authenticationFailureMessage &&
           !/authentication|unauthorized/i.test(originalError ?? "") &&
           hint &&
@@ -4964,9 +4975,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             /usage.?limit|rate.?limit|authentication|unauthorized/i.test(originalError)) &&
           (rejectedWindows.length > 0 || typedRateLimit)
             ? usageLimitFromWindows(rejectedWindows)
-            : status === "failed" && !hint
-              ? claudeGatewayUsageLimit(message, yield* nowIso)
-              : undefined;
+            : undefined);
         const resumeErrorText =
           message.subtype === "success" ? undefined : message.errors.join("\n") || undefined;
         let resumeRejected = false;

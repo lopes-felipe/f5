@@ -3509,7 +3509,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           getSettings: serverSettings.getSettings.pipe(Effect.mapError(asHostError)),
           listProviders: providerAdvisoryProjection.getProviders,
           submitTurn: (body) =>
-            submitTurnSubmission(body, { submissionSource: "human" }).pipe(
+            // A background retry must preserve any hold the user set meanwhile.
+            submitTurnSubmission(body, { submissionSource: "human", resumeQueue: false }).pipe(
               Effect.mapError((error) => ({
                 message: error.message,
                 ...("code" in error && typeof error.code === "string" ? { code: error.code } : {}),

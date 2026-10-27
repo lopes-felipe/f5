@@ -1546,6 +1546,8 @@ const TimelineRowWrapper = memo(function TimelineRowWrapper({
 type TimelineEntry = ReturnType<typeof deriveTimelineEntries>[number];
 // Each type has its own measured size average in LegendList. Keep very long
 // replies out of the short-reply average to bound synchronous measurement churn.
+// Streaming rows intentionally move buckets as they grow; freezing their type
+// would let a long live reply inflate the short-reply average again.
 function getTimelineItemType(row: TimelineRow): string {
   if (row.kind !== "message") return row.kind;
   const bucket = Math.max(0, Math.floor(Math.log2(row.message.text.length / 1000)));

@@ -212,6 +212,8 @@ export interface NextTurnQueueStoreShape {
     readonly reasonCode?: QueueReasonCode | null | undefined;
     readonly detail?: string | null | undefined;
     readonly expectedRevision?: number | undefined;
+    /** A delayed Stop must not hold a plain human send admitted after this event. */
+    readonly interruptRequestedSequence?: number | undefined;
   }) => Effect.Effect<void, NextTurnQueueError>;
   readonly setInterruptSuppression: (input: {
     readonly threadId: ThreadId;
