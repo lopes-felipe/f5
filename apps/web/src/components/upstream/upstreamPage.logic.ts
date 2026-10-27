@@ -2,9 +2,11 @@ import {
   UPSTREAM_MAX_DECIDE_TOPICS,
   UPSTREAM_MAX_PORT_GROUPS,
   UPSTREAM_MAX_PORT_TOPICS,
+  type ProjectId,
   type ProjectSettingsOverrides,
   type UpstreamDecidedBy,
   type UpstreamDecision,
+  type UpstreamHistoryPublication,
   type UpstreamListTopicsResult,
   type UpstreamOverview,
   type UpstreamPortsSettings,
@@ -12,9 +14,12 @@ import {
   type UpstreamStateCounts,
   type UpstreamSuggestionFilter,
   type UpstreamTopic,
+  type UpstreamTopicFiles,
   type UpstreamTopicFilter,
+  type UpstreamTopicHistoryEntry,
   type UpstreamTopicList,
   type UpstreamTopicSort,
+  type UpstreamTopicStatus,
   type UpstreamTopicSuggestion,
   type UpstreamUserImpact,
 } from "@t3tools/contracts";
@@ -488,6 +493,125 @@ export function decisionToastTitle(decision: UpstreamDecision | "accept", count:
       return `Moved ${noun} back to Inbox`;
   }
 }
+
+// ── Undo ───────────────────────────────────────────────────────────────
+
+/** A minute under the server's 15, so the page never offers an undo that has expired. */
+export const UNDO_WINDOW_MS = 14 * 60_000;
+export const UNDO_STACK_MAX = 20;
+
+export interface UndoEntry {
+  /** Also the toast id. */
+  readonly id: string;
+  readonly projectId: ProjectId;
+  /** Every batch of the action joins this one token. */
+  readonly token: string;
+  readonly title: string;
+  readonly expiresAt: number;
+}
+
+export function liveUndoEntries(entries: ReadonlyArray<UndoEntry>, now: number): UndoEntry[] {
+  return entries.filter((entry) => entry.expiresAt > now);
+}
+
+export function undoToastTitle(count: number): string {
+  return `Undid the decision for ${count} topic${count === 1 ? "" : "s"}`;
+}
+
+/** The note for topics an undo left alone; they changed since, in one of several ways. */
+export function undoKeptTitle(count: number): string {
+  return `${topicCount(count)} changed since and ${count === 1 ? "was" : "were"} left as ${count === 1 ? "it is" : "they are"}`;
+}
+
+// ── Changed files and history ──────────────────────────────────────────
+
+export function formatFileTotals(totals: UpstreamTopicFiles["totals"]): string {
+  const files = `${totals.files.toLocaleString()} file${totals.files === 1 ? "" : "s"}`;
+  return `${files} · +${totals.added.toLocaleString()} −${totals.deleted.toLocaleString()} · ${totals.existingInF5.toLocaleString()} exist in f5`;
+}
+
+export interface TopicFileRow {
+  readonly path: string;
+  /** Summed over the commits that report counts; `null` when none do. */
+  readonly added: number | null;
+  readonly deleted: number | null;
+  /** The newest commit that touches the path, for the file link. */
+  readonly sha: string;
+  readonly diffAnchor: string;
+  readonly existsInF5: boolean | null;
+}
+
+/** One row per path across the topic's commits, in first-seen order. */
+export function aggregateTopicFiles(files: UpstreamTopicFiles): TopicFileRow[] {
+  const rows = new Map<string, TopicFileRow>();
+  const sum = (left: number | null, right: number | null) =>
+    left === null ? right : right === null ? left : left + right;
+  for (const commit of files.commits)
+    for (const file of commit.files) {
+      const previous = rows.get(file.path);
+      rows.set(file.path, {
+        path: file.path,
+        added: sum(previous?.added ?? null, file.added),
+        deleted: sum(previous?.deleted ?? null, file.deleted),
+        sha: commit.sha,
+        diffAnchor: file.diffAnchor,
+        existsInF5: file.existsInF5,
+      });
+    }
+  return [...rows.values()];
+}
+
+/**
+ * `https://github.com/o/r/commit/<sha>#diff-…`: the file's change in that
+ * commit, which also works when the commit deleted it. Null off GitHub.
+ */
+export function upstreamFileDiffUrl(repository: string, sha: string, diffAnchor: string): string | null {
+  const base = repositoryUrl(repository);
+  if (!base.startsWith("https://github.com/")) return null;
+  return `${base}/commit/${sha}#${encodeURIComponent(diffAnchor)}`;
+}
+
+/** The note for a file list that does not cover the whole topic, or null. */
+export function topicFilesNote(files: UpstreamTopicFiles): string | null {
+  const notes: string[] = [];
+  if (files.totalCommits > files.commits.length)
+    notes.push(
+      `Only the first ${files.commits.length.toLocaleString()} of ${files.totalCommits.toLocaleString()} commits are listed.`,
+    );
+  if (files.commits.some((commit) => commit.truncated))
+    notes.push("Very large commits list only their first files.");
+  return notes.length ? notes.join(" ") : null;
+}
+
+const HISTORY_STATUS_LABELS: Record<UpstreamTopicStatus, string> = {
+  inbox: "Moved to Inbox",
+  port: "Marked ready",
+  skip: "Skipped",
+  declined: "Declined",
+  watch: "Watching",
+  equivalent: "Recorded as already in f5",
+};
+
+export function historyEntryLabel(entry: UpstreamTopicHistoryEntry): string {
+  switch (entry.kind) {
+    case "created":
+      return "Triaged into the ledger";
+    case "port-started":
+      return "Port thread started";
+    case "unlinked":
+      return "Port thread unlinked";
+    case "decided":
+      return entry.status ? HISTORY_STATUS_LABELS[entry.status] : "Decided";
+  }
+}
+
+export const HISTORY_PUBLICATION_LABELS: Record<UpstreamHistoryPublication, string> = {
+  pending: "Unpublished",
+  published: "Published",
+  superseded: "Replaced",
+  discarded: "Discarded",
+  ledger: "From the ledger",
+};
 
 // ── Header ─────────────────────────────────────────────────────────────
 

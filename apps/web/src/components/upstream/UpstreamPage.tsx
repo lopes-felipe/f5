@@ -1,6 +1,7 @@
 import {
   UPSTREAM_MAX_PORT_TOPICS,
   type ProjectId,
+  type UpstreamDecideResult,
   type UpstreamDecision,
   type UpstreamOverview,
   type UpstreamPortLinkSummary,
@@ -60,6 +61,7 @@ import {
   adjustCounts,
   canMoveFocusAfterDecision,
   decisionBatches,
+  decisionToastTitle,
   extendSelection,
   filterFromSearch,
   focusAfterRemoval,
@@ -68,6 +70,7 @@ import {
   isControlTarget,
   isDialogTarget,
   isEditableTarget,
+  liveUndoEntries,
   moveFocus,
   portableTopicIds,
   predictedState,
@@ -80,10 +83,15 @@ import {
   toggleId,
   topicCount,
   topicStates,
+  UNDO_STACK_MAX,
+  UNDO_WINDOW_MS,
+  undoKeptTitle,
+  undoToastTitle,
   unseenNote,
   upstreamPrUrl,
   withoutFilters,
   withoutTopics,
+  type UndoEntry,
   type UpstreamBulkAction,
   type UpstreamView,
 } from "./upstreamPage.logic";
@@ -204,6 +212,8 @@ export function UpstreamPage(props: {
   const lastIndex = useRef(0);
   /** The range anchor for Shift-click: the last row toggled or clicked. */
   const anchorRef = useRef<string | null>(null);
+  const undoStack = useRef<ReadonlyArray<UndoEntry>>([]);
+  const undoing = useRef(false);
 
   const focused = props.search.topic ?? null;
   const { onSearchChange, search } = props;
@@ -386,16 +396,20 @@ export function UpstreamPage(props: {
     const recorded = new Set<string>();
     /** Recorded, or answered unchanged: either way not worth sending again. */
     const settled = new Set<string>();
+    /** Every batch joins the first batch's token, so one undo reverts the whole action. */
+    let undoToken: string | null = null;
     let unchanged = 0;
     let failure: unknown = null;
     try {
       // The server takes a bounded number of topics per call; earlier batches stay recorded if a later one fails.
       for (const batch of decisionBatches(decided)) {
-        const result = await (decision === "accept"
-          ? ensureNativeApi().upstreamPorts.acceptSuggestions({ projectId, topicIds: batch as never })
-          : ensureNativeApi().upstreamPorts.decide({ projectId, topicIds: batch as never, decision }));
+        const join: { undoToken?: string } = undoToken ? { undoToken } : {};
+        const result: UpstreamDecideResult = await (decision === "accept"
+          ? ensureNativeApi().upstreamPorts.acceptSuggestions({ projectId, topicIds: batch as never, ...join })
+          : ensureNativeApi().upstreamPorts.decide({ projectId, topicIds: batch as never, decision, ...join }));
         for (const id of result.updated) recorded.add(id);
         for (const id of [...result.updated, ...result.unchanged]) settled.add(id);
+        undoToken = result.undoToken ?? undoToken;
         unchanged += result.unchanged.length;
       }
     } catch (error) {
@@ -416,6 +430,14 @@ export function UpstreamPage(props: {
       setHiddenIds(leaving, false);
       setPendingIds(decided, false);
     }
+    if (undoToken && recorded.size > 0)
+      offerUndo({
+        id: crypto.randomUUID(),
+        projectId,
+        token: undoToken,
+        title: decisionToastTitle(decision, recorded.size),
+        expiresAt: Date.now() + UNDO_WINDOW_MS,
+      });
     const stillHere = viewRef.current.projectId === started.projectId && viewRef.current.list === started.list;
     // Topics the user did not get a decision for; on failure they stay selected for a retry.
     const retry = failure !== null && decided.length > 1 ? decided.filter((id) => !settled.has(id)) : [];
@@ -448,6 +470,70 @@ export function UpstreamPage(props: {
     // Return to the list for the next decision, unless the user moved on or is typing.
     if (stillHere && !isEditableTarget(document.activeElement) && !isDialogTarget(document.activeElement))
       listRef.current?.focus();
+  };
+
+  /** Shows the decision toast with an Undo action; `z` undoes the newest one for the project. */
+  const offerUndo = (entry: UndoEntry) => {
+    undoStack.current = [...liveUndoEntries(undoStack.current, Date.now()), entry]
+      .toSorted((left, right) => left.expiresAt - right.expiresAt)
+      .slice(-UNDO_STACK_MAX);
+    toastManager.add({
+      id: entry.id,
+      type: "success",
+      title: entry.title,
+      actionProps: {
+        children: "Undo",
+        onClick: (event) => {
+          event.preventDefault();
+          void undo(entry);
+        },
+      },
+    });
+  };
+
+  const undo = async (entry: UndoEntry) => {
+    if (undoing.current || !undoStack.current.includes(entry)) return;
+    undoing.current = true;
+    undoStack.current = undoStack.current.filter((candidate) => candidate !== entry);
+    toastManager.close(entry.id);
+    const started = viewRef.current;
+    const restored: string[] = [];
+    let kept = 0;
+    try {
+      const result = await ensureNativeApi().upstreamPorts.undoDecisions({
+        projectId: entry.projectId,
+        undoToken: entry.token,
+      });
+      restored.push(...result.updated);
+      kept = result.unchanged.length;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const expired = /expired/iu.test(detail);
+      toastManager.add({ type: "error", title: "Could not undo", description: detail });
+      // The server keeps a token whose undo failed, so offer it again unless it is gone.
+      if (!expired && entry.expiresAt > Date.now()) offerUndo({ ...entry, id: crypto.randomUUID() });
+    } finally {
+      undoing.current = false;
+    }
+    if (restored.length > 0) toastManager.add({ type: "success", title: undoToastTitle(restored.length) });
+    if (kept > 0) toastManager.add({ type: "info", title: undoKeptTitle(kept) });
+    await invalidateUpstreamPorts(queryClient);
+    const now = viewRef.current;
+    const first = restored[0];
+    if (first && now.projectId === started.projectId && now.list === started.list && now.focused === started.focused) {
+      const loaded = queryClient
+        .getQueriesData<Parameters<typeof withoutTopics>[0]>({
+          queryKey: upstreamPortsQueryKeys.list(entry.projectId, now.list),
+        })
+        .some(([, data]) => data?.pages.some((page) => page.topics.some((row) => row.topic.id === first)));
+      if (loaded) setFocused(first);
+    }
+  };
+
+  const undoLatest = () => {
+    const entry = liveUndoEntries(undoStack.current, Date.now()).findLast((candidate) => candidate.projectId === projectId);
+    if (entry) void undo(entry);
+    else toastManager.add({ type: "info", title: "Nothing to undo" });
   };
 
   const openSkip = (topicIds: string[], reason?: string) => {
@@ -710,6 +796,9 @@ export function UpstreamPage(props: {
       case "upstream.startPort":
         if (canDecide && !busy) runBulkAction("startPort", targets());
         return;
+      case "upstream.undo":
+        if (canDecide) undoLatest();
+        return;
     }
   };
 
@@ -792,7 +881,7 @@ export function UpstreamPage(props: {
           busy={busy}
           refreshing={overviewQuery.isFetching}
           onRun={runNow}
-          onRefresh={() => void invalidateUpstreamPorts(queryClient)}
+          onRefresh={() => void invalidateUpstreamPorts(queryClient, { files: true })}
           onResolvePublication={resolvePublication}
         />
         <UpstreamAttention

@@ -107,6 +107,7 @@ import {
   UpstreamResolvePublicationInput,
   UpstreamRunInput,
   UpstreamStartPortInput,
+  UpstreamUndoDecisionsInput,
   UpstreamUnlinkPortInput,
 } from "./upstreamPorts";
 import { AGENTS_WS_METHODS, AgentsDismissInput, AgentsGetSnapshotInput } from "./backgroundWork";
@@ -807,8 +808,10 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.listTopics, UpstreamListTopicsInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.listTopicIds, UpstreamListTopicIdsInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.getTopic, UpstreamGetTopicInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.getTopicFiles, UpstreamGetTopicInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.decide, UpstreamDecideInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.acceptSuggestions, UpstreamAcceptSuggestionsInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.undoDecisions, UpstreamUndoDecisionsInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.run, UpstreamRunInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.startPort, UpstreamStartPortInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.unlinkPort, UpstreamUnlinkPortInput),

@@ -57,6 +57,22 @@ with a prompt that carries the topic's commits and the trailer that completes it
   confirm hundreds of skips in a few clicks. A decision that reaches topics past the loaded
   rows asks first, since you have not seen them. If a batch fails partway, the topics that
   were not recorded stay selected so you can retry them.
+- Every decision shows a toast with **Undo**; `z` undoes the newest one. One undo covers the
+  whole action, however many topics it decided, for 15 minutes. It restores each topic's
+  decision as it was. The epoch stays: undoing a reopen of an In progress topic brings it back as
+  Ready, and its old port thread no longer counts. A topic changed since (decided again, or with a
+  port thread running) keeps its new state, and the toast says how many. If the undo fails, for
+  example while another window holds the repository, the toast comes back so you can retry.
+  Undo lives in memory, so a restart of F5 drops it.
+- The detail pane lists the **Files changed** across the topic's commits, with line counts and
+  a link to each file's change on GitHub. Paths that do not exist on f5's default branch are
+  dimmed and marked `not in f5`, which often means the change belongs to a subsystem f5 does not
+  have. A commit missing from the local clone shows a note; fetch the upstream remote and press
+  Refresh. Topics with more than 50 commits list the first 50, and the panel says so.
+- **History** at the bottom of the detail pane shows when the topic was triaged, each decision
+  made from this profile (unpublished, published, replaced by a later one or discarded), the
+  decision on the default branch when another profile made it, and port threads started or
+  unlinked.
 - Click **Add scope note** before **Mark ready** to limit a mixed commit to the parts you want.
   On a Ready topic, edit the note and click **Save scope**.
 - **Copy port prompt** puts the same prompt on the clipboard without creating a link, for a

@@ -9,6 +9,7 @@ import { render } from "vitest-browser-react";
 
 import { projectSettingsQueryOptions } from "../../lib/projectSettingsQuery";
 import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
+import { ToastProvider } from "../ui/toast";
 import { TooltipProvider } from "../ui/tooltip";
 import { UpstreamPage } from "./UpstreamPage";
 import type { UpstreamSearch } from "./upstreamSearch";
@@ -19,8 +20,10 @@ const api = vi.hoisted(() => ({
   listTopics: vi.fn(),
   listTopicIds: vi.fn(),
   getTopic: vi.fn(),
+  getTopicFiles: vi.fn(),
   decide: vi.fn(),
   acceptSuggestions: vi.fn(),
+  undoDecisions: vi.fn(),
   run: vi.fn(),
 }));
 vi.mock("../../nativeApi", () => ({
@@ -35,6 +38,8 @@ vi.mock("../../hooks/useSettings", () => ({
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   useNavigate: () => vi.fn(),
+  // The toast provider reads the active thread from the route.
+  useParams: () => null,
 }));
 
 const projectId = ProjectId.makeUnsafe("project");
@@ -170,17 +175,24 @@ beforeEach(() => {
     row: ROWS.find((entry) => entry.topic.id === topicId),
     members: [],
     related: [],
+    history: [],
   }));
-  api.decide.mockImplementation(async ({ topicIds }: { topicIds: string[] }) => ({
+  api.getTopicFiles.mockResolvedValue({
+    commits: [],
+    totalCommits: 0,
+    totals: { files: 0, added: 0, deleted: 0, existingInF5: 0 },
+  });
+  let token = 0;
+  // Like the server: a batch that passes a token joins it.
+  const decided = async ({ topicIds, undoToken }: { topicIds: string[]; undoToken?: string }) => ({
     revision: "r2",
     updated: topicIds,
     unchanged: [],
-  }));
-  api.acceptSuggestions.mockImplementation(async ({ topicIds }: { topicIds: string[] }) => ({
-    revision: "r2",
-    updated: topicIds,
-    unchanged: [],
-  }));
+    undoToken: undoToken ?? `token-${(token += 1)}`,
+  });
+  api.decide.mockImplementation(decided);
+  api.acceptSuggestions.mockImplementation(decided);
+  api.undoDecisions.mockResolvedValue({ revision: "r3", updated: ["pr-1"], unchanged: [], undoToken: null });
 });
 
 async function setup(initial: UpstreamSearch = {}, firstTitle = "Topic A") {
@@ -196,9 +208,11 @@ async function setup(initial: UpstreamSearch = {}, firstTitle = "Topic A") {
   });
   active = await render(
     <QueryClientProvider client={client}>
-      <TooltipProvider>
-        <Harness initial={initial} />
-      </TooltipProvider>
+      <ToastProvider>
+        <TooltipProvider>
+          <Harness initial={initial} />
+        </TooltipProvider>
+      </ToastProvider>
     </QueryClientProvider>,
   );
   await expect.element(page.getByRole("checkbox", { name: `Select ${firstTitle}` })).toBeVisible();
@@ -294,6 +308,7 @@ it("keeps the topics a failed batch did not record, and drops the ones it did", 
     row: many.find((entry) => entry.topic.id === topicId),
     members: [],
     related: [],
+    history: [],
   }));
   const recordAll = api.decide.getMockImplementation()!;
   api.decide.mockImplementationOnce(recordAll).mockImplementationOnce(() => Promise.reject(new Error("offline")));
@@ -317,6 +332,7 @@ it("opens a related topic that is not among the loaded rows", async () => {
     row: topicId === far.topic.id ? far : ROWS.find((entry) => entry.topic.id === topicId),
     members: [],
     related: topicId === "pr-1" ? [{ id: far.topic.id, title: far.topic.title, state: "inbox" }] : [],
+    history: [],
   }));
   await setup({ project: projectId, topic: "pr-1" });
   await page.getByRole("button", { name: /Far away topic/u }).click();
@@ -370,6 +386,7 @@ it("saves and clears the scope of a Ready topic without leaving the list", async
     row: ready,
     members: [],
     related: [],
+    history: [],
   });
   await setup({ project: projectId, list: "ready", topic: "pr-1" });
   const scope = page.getByRole("textbox", { name: "Scope note" });
@@ -517,4 +534,102 @@ it("counts unloaded topics of an all-matching selection when reopening In progre
   await expect.element(page.getByText("Reopen 5 topics?")).toBeVisible();
   await expect.element(page.getByText(/^5 have port threads in progress/u)).toBeVisible();
   await expect.element(page.getByText(/3 topics are not loaded/u)).toBeVisible();
+});
+
+it("undoes a decision from its toast, and the newest one with z", async () => {
+  await setup();
+  await page.getByRole("checkbox", { name: "Select Topic C" }).click();
+  await page.getByRole("toolbar", { name: "Bulk actions" }).getByRole("button", { name: "Watch", exact: true }).click();
+  await expect.element(page.getByText("Watching 1 topic")).toBeVisible();
+  await page.getByRole("button", { name: "Undo", exact: true }).click();
+  await vi.waitFor(() => expect(api.undoDecisions).toHaveBeenCalledWith({ projectId, undoToken: "token-1" }));
+  await expect.element(page.getByText("Undid the decision for 1 topic")).toBeVisible();
+
+  await page.getByRole("checkbox", { name: "Select Topic A" }).click();
+  await page.getByRole("toolbar", { name: "Bulk actions" }).getByRole("button", { name: "Watch", exact: true }).click();
+  await vi.waitFor(() => expect(api.decide).toHaveBeenCalledTimes(2));
+  await page.getByRole("listbox").first().click();
+  await userEvent.keyboard("z");
+  await vi.waitFor(() => expect(api.undoDecisions).toHaveBeenLastCalledWith({ projectId, undoToken: "token-2" }));
+  // Each token works once: a second z has nothing left to undo.
+  await userEvent.keyboard("z");
+  await expect.element(page.getByText("Nothing to undo")).toBeVisible();
+  expect(api.undoDecisions).toHaveBeenCalledTimes(2);
+});
+
+it("keeps one undo for a whole bulk action, and offers it again when the undo fails", async () => {
+  api.listTopics.mockResolvedValue(topicsPage(ROWS, 450));
+  api.listTopicIds.mockResolvedValue({ revision: "r1", topicIds: matchingIds(450), truncated: false });
+  await setup();
+  await selectAllMatching(450);
+  await bulkButton("Watch").click();
+  await page.getByRole("button", { name: "Watch", exact: true }).last().click();
+  await vi.waitFor(() => expect(api.decide).toHaveBeenCalledTimes(3));
+  // Later batches join the first batch's token.
+  expect(api.decide.mock.calls.map(([input]) => input.undoToken)).toEqual([undefined, "token-1", "token-1"]);
+  await expect.element(page.getByText("Watching 450 topics")).toBeVisible();
+
+  api.undoDecisions.mockRejectedValueOnce(new Error("The repository is busy"));
+  await page.getByRole("button", { name: "Undo", exact: true }).click();
+  await expect.element(page.getByText("Could not undo")).toBeVisible();
+  // The entry is back, so Undo works once the repository is free (the first toast may still be closing).
+  api.undoDecisions.mockResolvedValueOnce({ revision: "r3", updated: matchingIds(440), unchanged: matchingIds(450).slice(440), undoToken: null });
+  await page.getByRole("button", { name: "Undo", exact: true }).last().click();
+  await vi.waitFor(() => expect(api.undoDecisions).toHaveBeenCalledTimes(2));
+  expect(api.undoDecisions.mock.calls.map(([input]) => input.undoToken)).toEqual(["token-1", "token-1"]);
+  await expect.element(page.getByText("Undid the decision for 440 topics")).toBeVisible();
+  await expect.element(page.getByText("10 topics changed since and were left as they are")).toBeVisible();
+});
+
+it("shows the topic's changed files and history in the detail pane", async () => {
+  const sha = "a".repeat(40);
+  api.getTopicFiles.mockResolvedValue({
+    commits: [
+      {
+        sha,
+        available: true,
+        files: [
+          { path: "apps/web/src/app.tsx", added: 4, deleted: 1, existsInF5: true, diffAnchor: "diff-app" },
+          { path: "apps/mobile/app.tsx", added: 1, deleted: 0, existsInF5: false, diffAnchor: "diff-mobile" },
+        ],
+        totalFiles: 2,
+        truncated: false,
+      },
+    ],
+    totalCommits: 60,
+    totals: { files: 2, added: 5, deleted: 1, existingInF5: 1 },
+  });
+  api.getTopic.mockImplementation(async ({ topicId }: { topicId: string }) => ({
+    revision: "r1",
+    repository: "https://github.com/pingdotgg/t3code.git",
+    row: ROWS.find((entry) => entry.topic.id === topicId),
+    members: [],
+    related: [],
+    history: [
+      { at: "2026-10-26T10:00:00Z", kind: "created", epoch: 1, publication: "published" },
+      {
+        at: "2026-10-26T11:00:00Z",
+        kind: "decided",
+        epoch: 1,
+        publication: "pending",
+        status: "skip",
+        decidedBy: "user",
+        reasonKey: "docs",
+      },
+    ],
+  }));
+  await setup({ project: projectId, topic: "pr-1" });
+  const files = page.getByRole("region", { name: "Files changed" });
+  await expect.element(files.getByText("2 files · +5 −1 · 1 exist in f5")).toBeVisible();
+  await expect.element(files.getByRole("link", { name: "apps/web/src/app.tsx" })).toHaveAttribute(
+    "href",
+    `https://github.com/pingdotgg/t3code/commit/${sha}#diff-app`,
+  );
+  await expect.element(files.getByText("not in f5")).toBeVisible();
+  await expect.element(files.getByText("Only the first 1 of 60 commits are listed.")).toBeVisible();
+  await page.getByRole("button", { name: "History (2)" }).click();
+  const history = page.getByRole("list", { name: "Topic history" });
+  await expect.element(history.getByText("Skipped")).toBeVisible();
+  await expect.element(history.getByText("Docs only")).toBeVisible();
+  await expect.element(history.getByText("Unpublished")).toBeVisible();
 });

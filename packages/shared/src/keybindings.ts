@@ -42,6 +42,7 @@ const UPSTREAM_DEFAULT_KEYS = [
   "]",
   "[",
   "/",
+  "z",
 ] as const satisfies { readonly length: (typeof UPSTREAM_KEYBINDING_COMMANDS)["length"] };
 
 export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [

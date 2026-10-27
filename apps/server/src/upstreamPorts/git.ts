@@ -63,6 +63,9 @@ export interface CommitNumstat {
   /** Every changed path (uncapped; used for revert and rule matching). */
   readonly paths: ReadonlyArray<string>;
   readonly totalFiles: number;
+  /** Lines added and deleted over every file (uncapped); binary files count as 0. */
+  readonly added: number;
+  readonly deleted: number;
 }
 
 export interface TrailerCommit {
@@ -200,6 +203,8 @@ export class NumstatParser {
     const tokens = record.slice(41).split("\0");
     const files: NumstatFile[] = [];
     const paths: string[] = [];
+    let added = 0;
+    let deleted = 0;
     for (let i = 0; i < tokens.length; i++) {
       const token = tokens[i]!.replace(/^\n+/u, "");
       const match = /^(\d+|-)\t(\d+|-)\t(.*)$/su.exec(token);
@@ -212,14 +217,14 @@ export class NumstatParser {
       }
       if (!file) continue;
       paths.push(file);
+      const fileAdded = match[1] === "-" ? null : Number(match[1]);
+      const fileDeleted = match[2] === "-" ? null : Number(match[2]);
+      added += fileAdded ?? 0;
+      deleted += fileDeleted ?? 0;
       if (files.length < MAX_FILES_PER_COMMIT)
-        files.push({
-          path: file,
-          added: match[1] === "-" ? null : Number(match[1]),
-          deleted: match[2] === "-" ? null : Number(match[2]),
-        });
+        files.push({ path: file, added: fileAdded, deleted: fileDeleted });
     }
-    this.result.set(sha, { files, paths, totalFiles: paths.length });
+    this.result.set(sha, { files, paths, totalFiles: paths.length, added, deleted });
   }
 }
 

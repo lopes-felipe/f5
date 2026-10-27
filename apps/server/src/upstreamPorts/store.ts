@@ -31,6 +31,8 @@ export class UpstreamStoreError extends Data.TaggedError("UpstreamStoreError")<{
 
 export type OpState = "recorded" | "merged" | "superseded" | "discarded";
 
+export const TOPIC_HISTORY_LIMIT = 50;
+
 export interface OpRecord {
   readonly opId: string;
   readonly projectId: string;
@@ -93,6 +95,8 @@ export interface PortLinkRecord {
   readonly clientRequestId: string;
   readonly groupIndex: number;
   readonly state: "active" | "unlinked";
+  /** When the port request that created the link was accepted. */
+  readonly startedAt?: string | null;
 }
 
 const parseJson = <A>(value: string | null, fallback: A): A => {
@@ -181,6 +185,7 @@ interface LinkRow {
   readonly client_request_id: string;
   readonly group_index: number;
   readonly state: "active" | "unlinked";
+  readonly started_at: string | null;
 }
 
 const toOp = (row: OpRow): OpRecord => ({
@@ -260,6 +265,7 @@ const toLink = (row: LinkRow): PortLinkRecord => ({
   clientRequestId: row.client_request_id,
   groupIndex: Number(row.group_index),
   state: row.state,
+  startedAt: row.started_at,
 });
 
 export const DEFAULT_PUBLICATION = (projectId: string): PublicationRecord => ({
@@ -320,6 +326,11 @@ export interface UpstreamStore {
     projectId: string,
     at: string,
   ) => Effect.Effect<number, UpstreamStoreError>;
+  /** The topic's latest decision ops in any state, oldest first. */
+  readonly listTopicDecisionOps: (
+    projectId: string,
+    topicId: string,
+  ) => Effect.Effect<ReadonlyArray<OpRecord>, UpstreamStoreError>;
 
   readonly getPublication: (
     projectId: string,
@@ -631,8 +642,22 @@ export function makeUpstreamStore(sql: SqlClient.SqlClient): UpstreamStore {
       Effect.mapError(fail("setGroupStatus")),
     );
 
+  const listTopicDecisionOps: UpstreamStore["listTopicDecisionOps"] = (projectId, topicId) =>
+    sql<OpRow>`SELECT op_id, project_id, seq, payload_json, state, created_at
+      FROM upstream_ledger_ops WHERE project_id = ${projectId} AND kind = 'decision'
+        AND target = ${topicId}
+      ORDER BY seq DESC LIMIT ${TOPIC_HISTORY_LIMIT}`.pipe(
+      Effect.map((rows) => rows.map(toOp).toReversed()),
+      Effect.mapError(fail("listTopicDecisionOps")),
+    );
+
   const listLinks: UpstreamStore["listLinks"] = (projectId) =>
-    sql<LinkRow>`SELECT * FROM upstream_port_links WHERE project_id = ${projectId}`.pipe(
+    sql<LinkRow>`SELECT l.project_id, l.topic_id, l.epoch, l.thread_id, l.client_request_id,
+        l.group_index, l.state, r.created_at AS started_at
+      FROM upstream_port_links l
+      LEFT JOIN upstream_port_requests r
+        ON r.project_id = l.project_id AND r.client_request_id = l.client_request_id
+      WHERE l.project_id = ${projectId}`.pipe(
       Effect.map((rows) => rows.map(toLink)),
       Effect.mapError(fail("listLinks")),
     );
@@ -662,6 +687,7 @@ export function makeUpstreamStore(sql: SqlClient.SqlClient): UpstreamStore {
     recordOps,
     setOpStates,
     discardOpenOps,
+    listTopicDecisionOps,
     getPublication,
     savePublication,
     insertRun,

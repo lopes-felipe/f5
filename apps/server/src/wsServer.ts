@@ -3960,6 +3960,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* upstreamRoute(
           (yield* requireUpstreamPorts).getTopic(stripRequestTag(request.body)),
         );
+      case UPSTREAM_PORTS_WS_METHODS.getTopicFiles:
+        return yield* upstreamRoute(
+          (yield* requireUpstreamPorts).getTopicFiles(stripRequestTag(request.body)),
+        );
       case UPSTREAM_PORTS_WS_METHODS.decide:
         return yield* upstreamRoute(
           (yield* requireUpstreamPorts).decide(stripRequestTag(request.body)),
@@ -3967,6 +3971,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case UPSTREAM_PORTS_WS_METHODS.acceptSuggestions:
         return yield* upstreamRoute(
           (yield* requireUpstreamPorts).acceptSuggestions(stripRequestTag(request.body)),
+        );
+      case UPSTREAM_PORTS_WS_METHODS.undoDecisions:
+        return yield* upstreamRoute(
+          (yield* requireUpstreamPorts).undoDecisions(stripRequestTag(request.body)),
         );
       case UPSTREAM_PORTS_WS_METHODS.run:
         return yield* upstreamRoute(

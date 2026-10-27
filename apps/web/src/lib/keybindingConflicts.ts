@@ -248,6 +248,8 @@ export function formatKeybindingCommandLabel(
       return "Previous upstream list";
     case "upstream.focusSearch":
       return "Search upstream topics";
+    case "upstream.undo":
+      return "Undo upstream decision";
 
     case "sidebar.toggle":
       return "Toggle main sidebar";

@@ -49,6 +49,7 @@ export const UPSTREAM_KEYBINDING_COMMANDS = [
   "upstream.nextList",
   "upstream.previousList",
   "upstream.focusSearch",
+  "upstream.undo",
 ] as const;
 export type UpstreamKeybindingCommand = (typeof UPSTREAM_KEYBINDING_COMMANDS)[number];
 

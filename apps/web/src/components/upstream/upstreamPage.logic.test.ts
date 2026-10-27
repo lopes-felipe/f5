@@ -6,6 +6,7 @@ import {
   activeFilterChips,
   adjacentList,
   adjustCounts,
+  aggregateTopicFiles,
   bulkActionsForList,
   canAcceptSuggestion,
   canMoveFocusAfterDecision,
@@ -15,9 +16,12 @@ import {
   extendSelection,
   filterFromSearch,
   focusAfterRemoval,
+  formatFileTotals,
   hasActiveFilters,
   headerCheckState,
+  historyEntryLabel,
   ledgerChipLabel,
+  liveUndoEntries,
   moveFocus,
   portableTopicIds,
   portLimitError,
@@ -35,7 +39,11 @@ import {
   toggleValue,
   topicCount,
   topicStates,
+  undoKeptTitle,
+  undoToastTitle,
   unseenNote,
+  topicFilesNote,
+  upstreamFileDiffUrl,
   upstreamSettingsOverrides,
   watchFromBlocked,
   withoutFilters,
@@ -355,5 +363,66 @@ describe("upstream page logic", () => {
       }),
     ).toBe("mobile");
     expect(preselectedSkipReason({})).toBeNull();
+  });
+});
+
+describe("undo, files and history", () => {
+  it("keeps only undo entries that have not expired", () => {
+    const entry = (id: string, expiresAt: number) => ({ id, projectId: "p" as never, token: "t", title: "x", expiresAt });
+    expect(liveUndoEntries([entry("old", 100), entry("new", 300)], 200).map((e) => e.id)).toEqual(["new"]);
+    expect(undoToastTitle(1)).toBe("Undid the decision for 1 topic");
+    expect(undoToastTitle(3)).toBe("Undid the decision for 3 topics");
+    expect(undoKeptTitle(1)).toBe("1 topic changed since and was left as it is");
+    expect(undoKeptTitle(2)).toBe("2 topics changed since and were left as they are");
+  });
+
+  it("merges a path's counts across commits and links the newest commit", () => {
+    const files = {
+      commits: [
+        {
+          sha: "a".repeat(40),
+          available: true,
+          files: [
+            { path: "x.ts", added: 2, deleted: 1, existsInF5: true, diffAnchor: "diff-x" },
+            { path: "logo.png", added: null, deleted: null, existsInF5: false, diffAnchor: "diff-logo" },
+          ],
+          totalFiles: 2,
+          truncated: false,
+        },
+        {
+          sha: "b".repeat(40),
+          available: true,
+          files: [{ path: "x.ts", added: 3, deleted: null, existsInF5: true, diffAnchor: "diff-x" }],
+          totalFiles: 1,
+          truncated: false,
+        },
+      ],
+      totalCommits: 2,
+      totals: { files: 2, added: 5, deleted: 1, existingInF5: 1 },
+    };
+    expect(aggregateTopicFiles(files)).toEqual([
+      { path: "x.ts", added: 5, deleted: 1, sha: "b".repeat(40), diffAnchor: "diff-x", existsInF5: true },
+      { path: "logo.png", added: null, deleted: null, sha: "a".repeat(40), diffAnchor: "diff-logo", existsInF5: false },
+    ]);
+    expect(topicFilesNote(files)).toBeNull();
+    expect(topicFilesNote({ ...files, totalCommits: 63 })).toBe("Only the first 2 of 63 commits are listed.");
+    expect(formatFileTotals({ files: 1, added: 1200, deleted: 0, existingInF5: 1 })).toBe(
+      "1 file · +1,200 −0 · 1 exist in f5",
+    );
+  });
+
+  it("links a file to its change on the GitHub commit page", () => {
+    expect(upstreamFileDiffUrl("https://github.com/o/r.git", "abc", "diff-123")).toBe(
+      "https://github.com/o/r/commit/abc#diff-123",
+    );
+    expect(upstreamFileDiffUrl("https://gitlab.com/o/r", "abc", "diff-123")).toBeNull();
+  });
+
+  it("labels history entries by kind and status", () => {
+    expect(historyEntryLabel({ at: null, kind: "decided", epoch: 1, status: "port" })).toBe("Marked ready");
+    expect(historyEntryLabel({ at: null, kind: "unlinked", epoch: 2 })).toBe("Port thread unlinked");
+    expect(historyEntryLabel({ at: "2026-10-01T00:00:00Z", kind: "created", epoch: 1 })).toBe(
+      "Triaged into the ledger",
+    );
   });
 });

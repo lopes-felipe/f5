@@ -19,6 +19,7 @@ import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { Textarea } from "../ui/textarea";
 import { UpstreamActionButton } from "./UpstreamActionButton";
+import { UpstreamChangedFiles, UpstreamTopicHistory } from "./UpstreamTopicExtras";
 import {
   canAcceptSuggestion,
   equivalentFromLink,
@@ -363,6 +364,8 @@ export function UpstreamTopicDetail(props: {
         </ul>
       </section>
 
+      <UpstreamChangedFiles projectId={props.projectId} topicId={topic.id} repository={detail.repository} />
+
       {detail.related.length > 0 && (
         <section className="space-y-1">
           <h3 className="font-medium">Related topics</h3>
@@ -396,6 +399,10 @@ export function UpstreamTopicDetail(props: {
             })}
           </ul>
         </section>
+      )}
+
+      {detail.history.length > 0 && (
+        <UpstreamTopicHistory history={detail.history} reasonLabels={props.overview.reasonLabels} />
       )}
     </article>
   );

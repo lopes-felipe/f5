@@ -248,6 +248,11 @@ See the full schema for more details: [`packages/contracts/src/keybindings.ts`](
     "key": "/",
     "command": "upstream.focusSearch",
     "when": "upstreamListFocus && !editableFocus && !dialogFocus"
+  },
+  {
+    "key": "z",
+    "command": "upstream.undo",
+    "when": "upstreamListFocus && !editableFocus && !dialogFocus"
   }
 ]
 ```
@@ -368,6 +373,7 @@ selected, and focus moves to the next row.
 | `]`       | `upstream.nextList`         | Next list (Inbox, Ready, …)                                |
 | `[`       | `upstream.previousList`     | Previous list                                              |
 | `/`       | `upstream.focusSearch`      | Search topics (`Esc` returns to the list)                  |
+| `z`       | `upstream.undo`             | Undo the last decision (for 15 minutes)                    |
 
 With the mouse, Shift-click a row or its checkbox to select a range, and Cmd-click (Ctrl-click
 elsewhere) to add or remove one row. The bar above the list shows the actions for the selection.

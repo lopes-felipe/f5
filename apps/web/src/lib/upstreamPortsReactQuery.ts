@@ -35,6 +35,13 @@ export const upstreamPortsQueryKeys = {
   ) => ["upstreamPorts", "topics", projectId, list, filter, sort] as const,
   topic: (projectId: ProjectId, topicId: string) =>
     ["upstreamPorts", "topic", projectId, topicId] as const,
+  /**
+   * Outside `all`: commits do not change, so decisions need not refetch them.
+   * Refresh, reconnects and ledger changes (a fetch, a moved base) still do.
+   */
+  topicFiles: (projectId: ProjectId, topicId: string) =>
+    ["upstreamPortsFiles", projectId, topicId] as const,
+  allTopicFiles: ["upstreamPortsFiles"] as const,
 };
 
 export function upstreamProjectsQueryOptions() {
@@ -89,6 +96,17 @@ export function upstreamTopicQueryOptions(projectId: ProjectId, topicId: string 
   });
 }
 
+export function upstreamTopicFilesQueryOptions(projectId: ProjectId, topicId: string | null) {
+  return queryOptions({
+    queryKey: upstreamPortsQueryKeys.topicFiles(projectId, topicId ?? ""),
+    queryFn: () => ensureNativeApi().upstreamPorts.getTopicFiles({ projectId, topicId: topicId! }),
+    enabled: topicId !== null,
+    // Missing commits appear once the user fetches the upstream remote, so do not keep that answer.
+    staleTime: (query) =>
+      query.state.data?.commits.some((commit) => !commit.available) ? 0 : 10 * 60_000,
+  });
+}
+
 /** True when any loaded page mixes revisions or came back stale. */
 export function hasStaleTopicPages(
   data: InfiniteData<UpstreamListTopicsResult> | undefined,
@@ -98,8 +116,17 @@ export function hasStaleTopicPages(
   return data.pages.some((page) => page.status === "cursor_stale" || page.revision !== revision);
 }
 
-export function invalidateUpstreamPorts(queryClient: QueryClient) {
-  return queryClient.invalidateQueries({ queryKey: upstreamPortsQueryKeys.all });
+/** `files` also refetches changed files: for Refresh, reconnects and server-side changes, not decisions. */
+export function invalidateUpstreamPorts(
+  queryClient: QueryClient,
+  options: { readonly files?: boolean } = {},
+) {
+  return Promise.all([
+    queryClient.invalidateQueries({ queryKey: upstreamPortsQueryKeys.all }),
+    options.files
+      ? queryClient.invalidateQueries({ queryKey: upstreamPortsQueryKeys.allTopicFiles })
+      : null,
+  ]).then(() => undefined);
 }
 
 const msUntilLocalMidnight = (now = new Date()) =>
@@ -118,7 +145,7 @@ export function useUpstreamPortsInvalidation() {
       if (timer) return;
       timer = setTimeout(() => {
         timer = undefined;
-        void invalidateUpstreamPorts(queryClient);
+        void invalidateUpstreamPorts(queryClient, { files: true });
       }, 150);
     };
     const unsubscribeChanged = api?.upstreamPorts?.onChanged(schedule) ?? (() => {});

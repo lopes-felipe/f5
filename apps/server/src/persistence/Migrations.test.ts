@@ -116,6 +116,7 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 137, name: "UpstreamPorts" },
       { migration_id: 138, name: "ScheduledTasks" },
       { migration_id: 139, name: "ScheduledTaskQuarantine" },
+      { migration_id: 140, name: "UpstreamTopicHistoryIndex" },
     ]);
     expect(
       yield* sql`SELECT event_id,attempt,origin_session_generation,next_due_at IS NOT NULL AS retry FROM provider_terminal_events`,
