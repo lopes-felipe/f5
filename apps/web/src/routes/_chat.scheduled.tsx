@@ -1,10 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { AppTitlebar } from "../components/AppTitlebar";
 import { SidebarInset } from "../components/ui/sidebar";
-import {
-  ScheduledRouteContent,
-  parseScheduledSearch,
-} from "../components/scheduled/ScheduledRouteContent";
+import { ScheduledRouteContent } from "../components/scheduled/ScheduledRouteContent";
+import { parseScheduledSearch } from "../components/scheduled/scheduledSearch";
 import { RouteErrorView } from "../components/RouteErrorView";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 

@@ -17,7 +17,8 @@ import {
   ThreadId,
   type ScheduledTask,
 } from "@t3tools/contracts";
-import { ScheduledRouteContent, parseScheduledSearch } from "./ScheduledRouteContent";
+import { ScheduledRouteContent } from "./ScheduledRouteContent";
+import { parseScheduledSearch } from "./scheduledSearch";
 import { useScheduledInvalidation } from "../../hooks/useScheduledInvalidation";
 import { useStore } from "../../store";
 import { TooltipProvider } from "../ui/tooltip";
