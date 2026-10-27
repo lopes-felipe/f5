@@ -402,8 +402,8 @@ it.effect("routes the integration catalog to its proxy session and revokes it on
       let disposed = 0;
       const proxy = {
         listTools: async () => [{ name: "js", inputSchema: { type: "object" } }],
-        callTool: async (name: string, args: unknown, callId: string) => {
-          calls.push([name, args, callId]);
+        callTool: async (name: string, args: unknown, callId: string, meta: unknown) => {
+          calls.push([name, args, callId, meta]);
           return { content: [{ type: "text" as const, text: "ok" }] };
         },
         cancelCall: (callId: string) => cancelled.push(callId),
@@ -437,11 +437,17 @@ it.effect("routes the integration catalog to its proxy session and revokes it on
         jsonrpc: "2.0",
         id: 2,
         method: "tools/call",
-        params: { name: "js", arguments: { code: "1" } },
+        params: {
+          name: "js",
+          arguments: { code: "1" },
+          _meta: { "x-codex-turn-metadata": { session_id: "s", turn_id: "t" } },
+        },
       });
       assert.equal(calls.length, 1);
-      const [name, args, callId] = calls[0] as [string, unknown, string];
+      const [name, args, callId, meta] = calls[0] as [string, unknown, string, unknown];
       assert.deepEqual([name, args], ["js", { code: "1" }]);
+      // The client's `_meta` reaches the proxy, which decides what to forward.
+      assert.deepEqual(meta, { "x-codex-turn-metadata": { session_id: "s", turn_id: "t" } });
       assert.match(callId, /:2$/);
       // A client cancellation reaches the call it names, under the same connection key.
       yield* postMcpHttp(url, token, {

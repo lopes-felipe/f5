@@ -1554,7 +1554,8 @@ export function makeUpstreamPortsService(
         yield* requireConfig(context);
         const snapshot = yield* currentView(context);
         const result = selectTopicIds(snapshot.rows, input, subjectsOf(snapshot));
-        return { revision: snapshot.revision, ...result } as UpstreamListTopicIdsResult;
+        const ids: UpstreamListTopicIdsResult = { revision: snapshot.revision, ...result };
+        return ids;
       }).pipe(Effect.mapError(internal));
 
     const getTopic: UpstreamPortsService["getTopic"] = (input) =>

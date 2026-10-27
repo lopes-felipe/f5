@@ -192,9 +192,7 @@ type FacetDimension = "suggestion" | "impact" | "area";
 const suggestionKey = (topic: UpstreamTopic): UpstreamSuggestionFilter =>
   topic.suggestion?.status ?? "none";
 
-function matchesQuery(topic: UpstreamTopic, query: string, subjectsOf: SubjectsOf): boolean {
-  const needle = query.trim().toLowerCase().replace(/^#/u, "");
-  if (!needle) return true;
+function matchesQuery(topic: UpstreamTopic, needle: string, subjectsOf: SubjectsOf): boolean {
   const haystack = [
     topic.title,
     topic.summary,
@@ -207,6 +205,55 @@ function matchesQuery(topic: UpstreamTopic, query: string, subjectsOf: SubjectsO
   return haystack.some((value) => value.toLowerCase().includes(needle));
 }
 
+type RowFilter = (row: DerivedRow, skip?: FacetDimension | null) => boolean;
+
+/**
+ * Compiles `filter` once for a pass over many rows: the query needle is
+ * normalized once, and each topic's query match is remembered so the facet
+ * passes do not rebuild its haystack.
+ */
+function compileFilter(filter: UpstreamTopicFilter, subjectsOf: SubjectsOf): RowFilter {
+  const needle = (filter.query ?? "").trim().toLowerCase().replace(/^#/u, "");
+  const queryMatches = new Map<string, boolean>();
+  const matchesNeedle = (topic: UpstreamTopic) => {
+    let match = queryMatches.get(topic.id);
+    if (match === undefined) {
+      match = matchesQuery(topic, needle, subjectsOf);
+      queryMatches.set(topic.id, match);
+    }
+    return match;
+  };
+  return ({ topic }, skip = null) => {
+    if (filter.decidedBy !== undefined && topic.decidedBy !== filter.decidedBy) return false;
+    if (
+      filter.hasQuestion !== undefined &&
+      Boolean(topic.suggestion?.question) !== filter.hasQuestion
+    )
+      return false;
+    if (
+      filter.hasConflict !== undefined &&
+      Boolean(topic.suggestion?.conflict) !== filter.hasConflict
+    )
+      return false;
+    if (
+      skip !== "suggestion" &&
+      filter.suggestion?.length &&
+      !filter.suggestion.includes(suggestionKey(topic))
+    )
+      return false;
+    if (
+      skip !== "impact" &&
+      filter.impact?.length &&
+      !(topic.suggestion && filter.impact.includes(topic.suggestion.userImpact))
+    )
+      return false;
+    if (skip !== "area" && filter.area && !(topic.suggestion?.areas ?? []).includes(filter.area))
+      return false;
+    if (needle && !matchesNeedle(topic)) return false;
+    return true;
+  };
+}
+
 /** Whether `row` passes `filter`, ignoring the `skip` dimension (for its facet counts). */
 export function matchesFilter(
   row: DerivedRow,
@@ -214,63 +261,43 @@ export function matchesFilter(
   subjectsOf: SubjectsOf = NO_SUBJECTS,
   skip: FacetDimension | null = null,
 ): boolean {
-  const { topic } = row;
-  if (filter.decidedBy !== undefined && topic.decidedBy !== filter.decidedBy) return false;
-  if (
-    filter.hasQuestion !== undefined &&
-    Boolean(topic.suggestion?.question) !== filter.hasQuestion
-  )
-    return false;
-  if (
-    filter.hasConflict !== undefined &&
-    Boolean(topic.suggestion?.conflict) !== filter.hasConflict
-  )
-    return false;
-  if (
-    skip !== "suggestion" &&
-    filter.suggestion?.length &&
-    !filter.suggestion.includes(suggestionKey(topic))
-  )
-    return false;
-  if (
-    skip !== "impact" &&
-    filter.impact?.length &&
-    !(topic.suggestion && filter.impact.includes(topic.suggestion.userImpact))
-  )
-    return false;
-  if (skip !== "area" && filter.area && !(topic.suggestion?.areas ?? []).includes(filter.area))
-    return false;
-  if (filter.query && !matchesQuery(topic, filter.query, subjectsOf)) return false;
-  return true;
+  return compileFilter(filter, subjectsOf)(row, skip);
 }
 
 const MAX_AREA_FACETS = 20;
+
+/** Facets of a page past the first; clients read facets from the first page only. */
+const EMPTY_FACETS: UpstreamTopicFacets = {
+  suggestion: { port: 0, skip: 0, watch: 0, equivalent: 0, none: 0 },
+  impact: { high: 0, medium: 0, low: 0, none: 0 },
+  areas: [],
+};
 
 export function computeFacets(
   listRows: ReadonlyArray<DerivedRow>,
   filter: UpstreamTopicFilter,
   subjectsOf: SubjectsOf = NO_SUBJECTS,
+  compiled: RowFilter = compileFilter(filter, subjectsOf),
 ): UpstreamTopicFacets {
   const suggestion = { port: 0, skip: 0, watch: 0, equivalent: 0, none: 0 };
   const impact = { high: 0, medium: 0, low: 0, none: 0 };
   const areas = new Map<string, number>();
   for (const row of listRows) {
-    if (matchesFilter(row, filter, subjectsOf, "suggestion"))
-      suggestion[suggestionKey(row.topic)] += 1;
+    if (compiled(row, "suggestion")) suggestion[suggestionKey(row.topic)] += 1;
     const userImpact = row.topic.suggestion?.userImpact;
-    if (userImpact && matchesFilter(row, filter, subjectsOf, "impact")) impact[userImpact] += 1;
-    if (matchesFilter(row, filter, subjectsOf, "area"))
+    if (userImpact && compiled(row, "impact")) impact[userImpact] += 1;
+    if (compiled(row, "area"))
       for (const area of new Set(row.topic.suggestion?.areas ?? []))
         areas.set(area, (areas.get(area) ?? 0) + 1);
   }
-  return {
-    suggestion,
-    impact,
-    areas: [...areas]
-      .map(([area, count]) => ({ area, count }))
-      .toSorted((a, b) => b.count - a.count || a.area.localeCompare(b.area))
-      .slice(0, MAX_AREA_FACETS),
-  };
+  const top = [...areas]
+    .map(([area, count]) => ({ area, count }))
+    .toSorted((a, b) => b.count - a.count || a.area.localeCompare(b.area))
+    .slice(0, MAX_AREA_FACETS);
+  // The active area stays listed so the Filter menu can show it as selected.
+  if (filter.area && !top.some((entry) => entry.area === filter.area))
+    top.push({ area: filter.area, count: areas.get(filter.area) ?? 0 });
+  return { suggestion, impact, areas: top };
 }
 
 interface ListQuery {
@@ -284,11 +311,11 @@ export function selectRows<Row extends DerivedRow>(
   rows: ReadonlyArray<Row>,
   input: ListQuery,
   subjectsOf: SubjectsOf = NO_SUBJECTS,
+  compiled: RowFilter = compileFilter(input.filter ?? {}, subjectsOf),
 ): Array<{ readonly row: Row; readonly key: SortKey }> {
-  const filter = input.filter ?? {};
   const sort = resolveSort(input.list, input.sort);
   return rows
-    .filter((row) => row.state === input.list && matchesFilter(row, filter, subjectsOf))
+    .filter((row) => row.state === input.list && compiled(row))
     .map((row) => ({ row, key: sortKey(sort, row.topic) }))
     .toSorted((a, b) => compareKeys(a.key, b.key));
 }
@@ -367,12 +394,18 @@ export function pageRows<Row extends DerivedRow>(
 ): Omit<UpstreamListTopicsResult, "topics"> & { readonly rows: ReadonlyArray<Row> } {
   const limit = input.limit ?? UPSTREAM_LIST_DEFAULT_LIMIT;
   const signature = listSignature(input, limit);
-  const selected = selectRows(rows, input, subjectsOf);
-  const facets = computeFacets(
-    rows.filter((row) => row.state === input.list),
-    input.filter ?? {},
-    subjectsOf,
-  );
+  const filter = input.filter ?? {};
+  const compiled = compileFilter(filter, subjectsOf);
+  const selected = selectRows(rows, input, subjectsOf, compiled);
+  const facets =
+    input.cursor === undefined
+      ? computeFacets(
+          rows.filter((row) => row.state === input.list),
+          filter,
+          subjectsOf,
+          compiled,
+        )
+      : EMPTY_FACETS;
   let after: SortKey | null = null;
   if (input.cursor !== undefined) {
     const cursor = decodeCursor(input.cursor);

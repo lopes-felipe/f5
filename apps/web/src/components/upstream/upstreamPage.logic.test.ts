@@ -37,7 +37,10 @@ import {
   suggestionChipLabel,
   toggleId,
   toggleValue,
+  topicCount,
+  topicStates,
   undoToastTitle,
+  unseenNote,
   upstreamBlobUrl,
   upstreamSettingsOverrides,
   watchFromBlocked,
@@ -136,17 +139,34 @@ describe("upstream page logic", () => {
         { from: "inbox", to: "skipped" },
       ]),
     ).toEqual({ ...counts, inbox: 1, ready: 1, skipped: 2 });
-    const row = (id: string) => ({ topic: { id } }) as never;
-    const data = {
-      pageParams: [null, "c1"],
-      pages: [
-        { revision: "r", status: "ok" as const, nextCursor: "c1", topics: [row("a"), row("b")] },
-        { revision: "r", status: "ok" as const, nextCursor: null, topics: [row("c")] },
+    const row = (id: string, status: string, areas: string[]) =>
+      ({ topic: { id, suggestion: { status, userImpact: "high", areas } } }) as never;
+    const facets = {
+      suggestion: { port: 2, skip: 1, watch: 0, equivalent: 0, none: 0 },
+      impact: { high: 3, medium: 0, low: 0, none: 0 },
+      areas: [
+        { area: "terminal", count: 2 },
+        { area: "git", count: 1 },
       ],
     };
-    const next = withoutTopics(data as never, new Set(["b", "c"]));
-    expect(next?.pages.map((page) => page.topics.length)).toEqual([1, 0]);
+    const page = (topics: never[], nextCursor: string | null) => ({ revision: "r", status: "ok" as const, nextCursor, total: 3, facets, topics });
+    const data = {
+      pageParams: [null, "c1"],
+      pages: [page([row("a", "port", ["git"]), row("b", "port", ["terminal"])], "c1"), page([row("c", "skip", ["terminal"])], null)],
+    };
+    const next = withoutTopics(data as never, new Set(["b", "c", "unloaded"]));
+    expect(next?.pages.map((entry) => entry.topics.length)).toEqual([1, 0]);
+    expect(next?.pages.map((entry) => entry.total)).toEqual([1, 1]);
+    expect(next?.pages[0]?.facets).toEqual({
+      suggestion: { port: 1, skip: 0, watch: 0, equivalent: 0, none: 0 },
+      impact: { high: 1, medium: 0, low: 0, none: 0 },
+      areas: [
+        { area: "terminal", count: 0 },
+        { area: "git", count: 1 },
+      ],
+    });
     expect(next?.pageParams).toEqual(data.pageParams);
+    expect(withoutTopics(data as never, new Set(["unloaded"]))).toBe(data);
     expect(withoutTopics(undefined, new Set(["a"]))).toBeUndefined();
   });
 
@@ -314,7 +334,13 @@ describe("upstream page logic", () => {
       { topic: { id: "b" }, state: "inbox" },
       { topic: { id: "c" }, state: "in-progress" },
     ];
-    expect(portableTopicIds(rows, ["a", "b", "c"])).toEqual(["a", "c"]);
+    expect(portableTopicIds(topicStates(rows, "inbox"), ["a", "b", "c", "unloaded"])).toEqual(["a", "c"]);
+    // Topics past the loaded rows take the list's state ("Select all matching" stays within one list).
+    expect(portableTopicIds(topicStates(rows, "ready"), ["b", "unloaded"])).toEqual(["unloaded"]);
+    expect(topicCount(1)).toBe("1 topic");
+    expect(topicCount(1204)).toBe(`${(1204).toLocaleString()} topics`);
+    expect(unseenNote(1)).toMatch(/^1 topic is not loaded .* seen it\.$/u);
+    expect(unseenNote(3)).toMatch(/^3 topics are not loaded .* seen them\.$/u);
     expect(promptLimitError(0)).toMatch(/at least one/u);
     expect(promptLimitError(20)).toBeNull();
     expect(promptLimitError(21)).toMatch(/20/u);

@@ -448,7 +448,7 @@ export const UpstreamTopicFacets = Schema.Struct({
     low: NonNegativeInt,
     none: NonNegativeInt,
   }),
-  /** The 20 most common areas. */
+  /** The 20 most common areas, plus the filtered area when it is not among them. */
   areas: Schema.Array(Schema.Struct({ area: Schema.String, count: NonNegativeInt })),
 });
 export type UpstreamTopicFacets = typeof UpstreamTopicFacets.Type;
@@ -513,6 +513,7 @@ export const UpstreamListTopicsResult = Schema.Struct({
   nextCursor: Schema.NullOr(Schema.String),
   /** Topics in the list that match the filter, across all pages. */
   total: NonNegativeInt,
+  /** Computed for the first page only; later pages carry zero counts. */
   facets: UpstreamTopicFacets,
 });
 export type UpstreamListTopicsResult = typeof UpstreamListTopicsResult.Type;

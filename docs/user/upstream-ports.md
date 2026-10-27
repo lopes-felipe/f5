@@ -54,7 +54,9 @@ with a prompt that carries the topic's commits and the trailer that completes it
   confidence. Filters live in the URL and show as chips you can remove one at a time.
 - The strip under the Inbox tabs counts the suggestions (`Port 6 · Skip 1,204 …`). Click one,
   tick the header checkbox, click **Select all N matching**, then **Accept suggestions** to
-  confirm hundreds of skips in three clicks.
+  confirm hundreds of skips in a few clicks. A decision that reaches topics past the loaded
+  rows asks first, since you have not seen them. If a batch fails partway, the topics that
+  were not recorded stay selected so you can retry them.
 - Every decision shows a toast with **Undo**; `z` undoes the newest one. Undo restores each
   topic exactly as it was, epoch included, for 15 minutes. A topic decided again since, or with a
   port thread running, keeps its new state, and the toast says how many. Undo lives in memory, so

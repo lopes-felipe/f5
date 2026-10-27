@@ -160,13 +160,25 @@ export function actionTargets(
   return focused !== null && ids.includes(focused) ? [focused] : [];
 }
 
+/**
+ * The state of each topic: its loaded row's, else `unloaded`. "Select all
+ * matching" only selects topics of the current list, so that list's state is
+ * the right answer for the ones past the loaded pages.
+ */
+export function topicStates(
+  rows: ReadonlyArray<{ readonly topic: { readonly id: string }; readonly state: string }>,
+  unloaded: string,
+): (topicId: string) => string {
+  const states = new Map(rows.map((row) => [row.topic.id, row.state]));
+  return (topicId) => states.get(topicId) ?? unloaded;
+}
+
 /** Topics that can be ported: Ready or In progress. */
 export function portableTopicIds(
-  rows: ReadonlyArray<{ readonly topic: { readonly id: string }; readonly state: string }>,
+  stateOf: (topicId: string) => string | undefined,
   topicIds: ReadonlyArray<string>,
 ): string[] {
-  const states = new Map(rows.map((row) => [row.topic.id, row.state]));
-  return topicIds.filter((id) => states.get(id) === "ready" || states.get(id) === "in-progress");
+  return topicIds.filter((id) => stateOf(id) === "ready" || stateOf(id) === "in-progress");
 }
 
 export function promptLimitError(topicCount: number): string | null {
@@ -421,18 +433,50 @@ export function withoutTopics(
   removed: ReadonlySet<string>,
 ): InfiniteData<UpstreamListTopicsResult> | undefined {
   if (!data) return data;
+  const gone = data.pages.flatMap((page) => page.topics.filter((row) => removed.has(row.topic.id)));
+  if (gone.length === 0) return data;
+  // Every removed row matched the whole filter, so it counted once in each facet dimension.
+  const suggestion = { ...data.pages[0]!.facets.suggestion };
+  const impact = { ...data.pages[0]!.facets.impact };
+  const areaDrops = new Map<string, number>();
+  for (const { topic } of gone) {
+    const verb = topic.suggestion?.status ?? "none";
+    suggestion[verb] = Math.max(0, suggestion[verb] - 1);
+    const userImpact = topic.suggestion?.userImpact;
+    if (userImpact) impact[userImpact] = Math.max(0, impact[userImpact] - 1);
+    for (const area of new Set(topic.suggestion?.areas ?? [])) areaDrops.set(area, (areaDrops.get(area) ?? 0) + 1);
+  }
   return {
     ...data,
-    pages: data.pages.map((page) => ({
+    pages: data.pages.map((page, index) => ({
       ...page,
       topics: page.topics.filter((row) => !removed.has(row.topic.id)),
+      total: Math.max(0, page.total - gone.length),
+      facets:
+        index === 0
+          ? {
+              suggestion,
+              impact,
+              areas: page.facets.areas.map((entry) => ({
+                area: entry.area,
+                count: Math.max(0, entry.count - (areaDrops.get(entry.area) ?? 0)),
+              })),
+            }
+          : page.facets,
     })),
   };
 }
 
+/** `1 topic`, `1,204 topics`. */
+export const topicCount = (count: number) => `${count.toLocaleString()} topic${count === 1 ? "" : "s"}`;
+
+/** The confirmation note for a decision that reaches topics past the loaded rows. */
+export const unseenNote = (unseen: number) =>
+  `${topicCount(unseen)} ${unseen === 1 ? "is" : "are"} not loaded in the list, so you have not seen ${unseen === 1 ? "it" : "them"}.`;
+
 /** Toast title after a decision: `Skipped 12 topics`. */
 export function decisionToastTitle(decision: UpstreamDecision | "accept", count: number): string {
-  const noun = `${count} topic${count === 1 ? "" : "s"}`;
+  const noun = topicCount(count);
   if (decision === "accept") return `Accepted suggestions for ${noun}`;
   switch (decision.kind) {
     case "port":
