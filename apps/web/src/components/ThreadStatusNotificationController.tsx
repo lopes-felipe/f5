@@ -10,7 +10,7 @@ import { threadStatusLabel } from "../threadStatus";
 import { BellIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import type { ThreadId } from "@t3tools/contracts";
+import { SCHEDULED_TASK_TURN_SUBMITTED_ACTIVITY_KIND, type ThreadId } from "@t3tools/contracts";
 
 import { type AppSettings, useAppSettingsSelector } from "../appSettings";
 import { useStore } from "../store";
@@ -191,14 +191,22 @@ export function ThreadStatusNotificationControllerContent({
     for (const transition of transitions)
       void (async () => {
         const thread = useStore.getState().threads.find((t) => t.id === transition.threadId);
-        if (thread?.scheduledOrigin && thread.latestTurn?.turnId) {
+        const turnId = thread?.latestTurn?.turnId;
+        // Scheduled runs notify through their own outbox; skip the duplicate thread notice.
+        if (
+          thread &&
+          turnId &&
+          (thread.scheduledOrigin ||
+            thread.activities.some(
+              (activity) => activity.kind === SCHEDULED_TASK_TURN_SUBMITTED_ACTIVITY_KIND,
+            ))
+        ) {
           try {
-            const result = await ensureNativeApi().scheduledTasks.listRuns({
-              taskId: thread.scheduledOrigin.taskId,
-              runId: thread.scheduledOrigin.runId,
+            const result = await ensureNativeApi().scheduledTasks.findRunForTurn({
+              threadId: thread.id,
+              turnId,
             });
-            if (result.runs.some((run) => run.turnIds?.includes(thread.latestTurn!.turnId!)))
-              return;
+            if (result.runId) return;
           } catch {
             /* Preserve ordinary notifications when lineage cannot be read. */
           }

@@ -39,6 +39,7 @@ export function settlementErrorDetail(error: unknown): string {
 export type ThreadActionId =
   | "scheduled-origin"
   | "edit-schedule"
+  | "schedule-in-conversation"
   | "rename"
   | "regenerate-title"
   | "title-regeneration-pending"
@@ -73,8 +74,14 @@ export function buildThreadActionMenuItems(input: {
   readonly pinned: boolean;
   readonly snoozed: boolean;
   readonly schedule?: ScheduledTaskMenuState;
+  /** A server thread that a new task can send its runs into. */
+  readonly canScheduleInConversation?: boolean;
 }): ThreadActionMenuItem[] {
   const { thread, pinned, snoozed } = input;
+  const schedulable =
+    input.canScheduleInConversation === true &&
+    thread.archivedAt === null &&
+    !thread.scheduledOrigin;
   return [
     ...(thread.scheduledOrigin
       ? [
@@ -103,6 +110,9 @@ export function buildThreadActionMenuItems(input: {
     thread.titleRegeneration
       ? { id: "title-regeneration-pending", label: "Regenerating title…", disabled: true }
       : { id: "regenerate-title", label: "Regenerate title" },
+    ...(schedulable
+      ? [{ id: "schedule-in-conversation" as const, label: "Schedule in this conversation…" }]
+      : []),
     ...(thread.archivedAt === null
       ? [
           { id: pinned ? "unpin" : "pin", label: pinned ? "Unpin" : "Pin" } as const,
@@ -216,6 +226,7 @@ export function useThreadActionController(input: {
         pinned: orderedPinnedThreadIds(useStore.getState().threads).includes(thread.id),
         snoozed: isSnoozedThread(thread),
         schedule,
+        canScheduleInConversation: true,
       }),
     [],
   );
@@ -362,6 +373,13 @@ export function useThreadActionController(input: {
             description: error instanceof Error ? error.message : "An error occurred.",
           });
         }
+        return;
+      }
+      if (actionId === "schedule-in-conversation") {
+        await navigate({
+          to: "/scheduled",
+          search: { projectId: thread.projectId, threadId: thread.id },
+        });
         return;
       }
       if (actionId === "rename") {

@@ -8,6 +8,7 @@ export const WS_METHODS = {
   scheduledTasksSetEnabled: SCHEDULED_TASK_WS_METHODS.setEnabled,
   scheduledTasksRunNow: SCHEDULED_TASK_WS_METHODS.runNow,
   scheduledTasksListRuns: SCHEDULED_TASK_WS_METHODS.listRuns,
+  scheduledTasksFindRunForTurn: SCHEDULED_TASK_WS_METHODS.findRunForTurn,
   scheduledTasksPreviewSchedule: SCHEDULED_TASK_WS_METHODS.previewSchedule,
   scheduledTasksResolveRun: SCHEDULED_TASK_WS_METHODS.resolveRun,
   scheduledTasksClaimNotifications: SCHEDULED_TASK_WS_METHODS.claimNotifications,

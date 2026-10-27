@@ -2,8 +2,9 @@ import { it } from "@effect/vitest";
 import { expect } from "vitest";
 import { Effect } from "effect";
 import { TestClock } from "effect/testing";
-import { ProjectId, type ScheduledTask } from "@t3tools/contracts";
-import { setup, testLayer } from "../scheduledTasks/testing.ts";
+import { ProjectId, ProviderInstanceId, type ScheduledTask } from "@t3tools/contracts";
+import { provider } from "./testing/fakeHost.ts";
+import { seedBoundThread, setup, testLayer } from "../scheduledTasks/testing.ts";
 import { userScheduleActor } from "../scheduledTasks/Service.ts";
 import { scheduledSendGate } from "../scheduledTasks/sendGate.ts";
 import { makeAgentBridgeStore } from "./AgentBridgeStore.ts";
@@ -481,5 +482,175 @@ it.effect("MCP metadata edits preserve an expired one-shot without probing its p
     expect(result.task.oneShotAt).toBe(task.oneShotAt);
     expect(result.task.maxRuns).toBe(1);
     expect(result.schedule.nextFireTimes).toEqual([]);
+  }).pipe(Effect.provide(testLayer), Effect.scoped),
+);
+
+it.effect("partial updates keep every omitted field, including the stored schedule", () =>
+  Effect.gen(function* () {
+    const f = yield* setupTools;
+    yield* f.grant(true);
+    const task = savedTask(yield* f.createTask(undefined, { maxRuns: 3 }));
+    yield* f.store
+      .sql`UPDATE scheduled_tasks SET definition_json=json_set(definition_json,'$.scheduleSource','weekdays') WHERE id=${task.id}`;
+    const stored = (yield* f.store.task(task.id))!.task;
+    const prompt = savedTask(
+      yield* f.call("update_scheduled_task", {
+        taskId: task.id,
+        expectedVersion: stored.version,
+        clientRequestId: "prompt-only",
+        configuration: { prompt: "Run the linter" },
+      }),
+    );
+    expect(prompt.prompt).toBe("Run the linter");
+    expect(prompt.name).toBe(task.name);
+    for (const key of ["cron", "timezone", "scheduleSource", "oneShotAt", "maxRuns"] as const)
+      expect(prompt[key]).toEqual(stored[key]);
+    const disabled = savedTask(
+      yield* f.call("update_scheduled_task", {
+        taskId: task.id,
+        expectedVersion: prompt.version,
+        clientRequestId: "disable-only",
+        configuration: { enabled: false },
+      }),
+    );
+    expect(disabled.enabled).toBe(false);
+    expect(disabled.prompt).toBe("Run the linter");
+  }).pipe(Effect.provide(testLayer), Effect.scoped),
+);
+it.effect("partial updates preserve a completed one-shot's target and budget", () =>
+  Effect.gen(function* () {
+    const f = yield* setupTools;
+    yield* f.grant(true);
+    const task = savedTask(yield* f.createTask(undefined, { cron: "0 0 12 1 6 * 1970" }));
+    expect(task.oneShotAt).not.toBeNull();
+    yield* f.call("run_scheduled_task", { taskId: task.id, clientRequestId: "fire-once" });
+    yield* f.service.dispatch;
+    yield* f.service.drainDispatches;
+    const completed = (yield* f.store.task(task.id))!.task;
+    expect(completed.enabled).toBe(false);
+    const result = savedTask(
+      yield* f.call("update_scheduled_task", {
+        taskId: task.id,
+        expectedVersion: completed.version,
+        clientRequestId: "one-shot-prompt",
+        configuration: { prompt: "Summarize the results" },
+      }),
+    );
+    expect(result.prompt).toBe("Summarize the results");
+    for (const key of ["cron", "timezone", "scheduleSource", "oneShotAt", "maxRuns"] as const)
+      expect(result[key]).toEqual(completed[key]);
+    expect(result.runsConsumed).toBe(1);
+  }).pipe(Effect.provide(testLayer), Effect.scoped),
+);
+it.effect("a timezone-only update previews the stored cron in the new timezone", () =>
+  Effect.gen(function* () {
+    const f = yield* setupTools;
+    yield* f.grant(true);
+    const task = savedTask(yield* f.createTask());
+    const update = {
+      taskId: task.id,
+      expectedVersion: task.version,
+      clientRequestId: "timezone-only",
+      configuration: { timezone: "Asia/Tokyo" },
+    };
+    const result = yield* f.call("update_scheduled_task", update);
+    const moved = savedTask(result);
+    expect(moved.cron).toBe(task.cron);
+    expect(moved.timezone).toBe("Asia/Tokyo");
+    expect(moved.nextRunAt).not.toBe(task.nextRunAt);
+    expect((result as { schedule: { timezone: string } }).schedule.timezone).toBe("Asia/Tokyo");
+    yield* f.store
+      .sql`UPDATE agent_bridge_requests SET status='pending',result_json=NULL WHERE namespace='schedules:local' AND request_id='timezone-only'`;
+    expect(savedTask(yield* f.call("update_scheduled_task", update)).version).toBe(moved.version);
+    expect((yield* f.store.task(task.id))!.task.version).toBe(moved.version);
+  }).pipe(Effect.provide(testLayer), Effect.scoped),
+);
+it.effect("an interaction-mode change on a revoked agent task requires user adoption", () =>
+  Effect.gen(function* () {
+    const f = yield* setupTools;
+    yield* f.grant(true);
+    const task = savedTask(yield* f.createTask());
+    expect(task.interactionMode).toBe("default");
+    yield* f.grant(false);
+    yield* f.grant(true);
+    const revoked = (yield* f.store.task(task.id))!.task;
+    expect(revoked.disabledReason).toBe("authority_revoked");
+    const result = yield* Effect.result(
+      f.call("update_scheduled_task", {
+        taskId: task.id,
+        expectedVersion: revoked.version,
+        clientRequestId: "plan-mode",
+        configuration: { interactionMode: "plan" },
+      }),
+    );
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure") expect(result.failure.message).toContain("adopt");
+    expect((yield* f.store.task(task.id))!.task.interactionMode).toBe("default");
+  }).pipe(Effect.provide(testLayer), Effect.scoped),
+);
+it.effect("agent tasks bound to a conversation require supervision at save and at claim", () =>
+  Effect.gen(function* () {
+    const f = yield* setupTools;
+    yield* f.grant(true);
+    const workspace = { kind: "thread", threadId: "conversation" };
+    yield* seedBoundThread(f.host, f.store, "conversation", { runtimeMode: "full-access" });
+    expect((yield* Effect.result(f.createTask(undefined, { workspace })))._tag).toBe("Failure");
+    yield* seedBoundThread(f.host, f.store, "conversation");
+    const task = savedTask(yield* f.createTask(undefined, { workspace }));
+    expect(task.workspace).toEqual(workspace);
+    yield* seedBoundThread(f.host, f.store, "conversation", { runtimeMode: "full-access" });
+    const fired = (yield* f.call("run_scheduled_task", {
+      taskId: task.id,
+      clientRequestId: "unsupervised",
+    })) as { run: { id: string } };
+    yield* f.service.dispatch;
+    const run = (yield* f.store.run(fired.run.id))!;
+    expect([run.run.status, run.run.reason]).toEqual(["skipped", "authority_revoked"]);
+    expect(f.host.submissions).toHaveLength(0);
+  }).pipe(Effect.provide(testLayer), Effect.scoped),
+);
+it.effect("updates to a bound task ignore its obsolete stored provider", () =>
+  Effect.gen(function* () {
+    const f = yield* setupTools;
+    yield* f.grant(true);
+    const workspace = { kind: "thread", threadId: "conversation" };
+    yield* seedBoundThread(f.host, f.store, "conversation");
+    const task = savedTask(yield* f.createTask(undefined, { workspace }));
+    // The conversation moved to another provider and the stored one was removed.
+    f.host.providers = [provider("second", "codex", ["model-c"])];
+    yield* seedBoundThread(f.host, f.store, "conversation", {
+      modelSelection: { instanceId: ProviderInstanceId.make("second"), model: "model-c" },
+    });
+    const updated = savedTask(
+      yield* f.call("update_scheduled_task", {
+        taskId: task.id,
+        clientRequestId: "bound-prompt",
+        expectedVersion: task.version,
+        configuration: { prompt: "Check again" },
+      }),
+    );
+    expect(updated.prompt).toBe("Check again");
+    expect(updated.modelSelection).toEqual({ instanceId: "second", model: "model-c" });
+  }).pipe(Effect.provide(testLayer), Effect.scoped),
+);
+it.effect("run history by runId returns that run's conversation", () =>
+  Effect.gen(function* () {
+    const f = yield* setupTools;
+    yield* f.grant(true);
+    const task = savedTask(yield* f.createTask());
+    const fired = (yield* f.call("run_scheduled_task", {
+      taskId: task.id,
+      clientRequestId: "history-run",
+    })) as { run: { id: string } };
+    yield* f.service.dispatch;
+    yield* f.service.drainDispatches;
+    const page = (yield* f.call("list_scheduled_task_runs", {
+      taskId: task.id,
+      runId: fired.run.id,
+    })) as { runs: Array<{ id: string; threadId: string | null }> };
+    expect(page.runs).toHaveLength(1);
+    expect(page.runs[0]!.id).toBe(fired.run.id);
+    expect(page.runs[0]!.threadId).toBe((yield* f.store.run(fired.run.id))!.run.threadId);
+    expect(page.runs[0]!.threadId).not.toBeNull();
   }).pipe(Effect.provide(testLayer), Effect.scoped),
 );

@@ -6729,6 +6729,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* scheduledTasks
           .listRuns(stripRequestTag(request.body), userScheduleActor)
           .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      case WS_METHODS.scheduledTasksFindRunForTurn:
+        return yield* scheduledTasks
+          .findRunForTurn(stripRequestTag(request.body), userScheduleActor)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
       case WS_METHODS.scheduledTasksPreviewSchedule:
         return yield* scheduledTasks
           .previewSchedule(stripRequestTag(request.body))

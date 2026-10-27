@@ -5,6 +5,7 @@ import { messageListStructure } from "./lib/streamingTextRevision";
 import { Schema } from "effect";
 import {
   AGENT_BRIDGE_TURN_SUBMITTED_ACTIVITY_KIND,
+  SCHEDULED_TASK_TURN_SUBMITTED_ACTIVITY_KIND,
   ApprovalRequestId,
   ProviderApprovalOption,
   ProviderApprovalPresentation,
@@ -710,6 +711,8 @@ const ALWAYS_VISIBLE_KINDS = new Set([
   "hook.completed",
   // "Sent by … via F5 Agent Bridge" stays visible after later turns.
   AGENT_BRIDGE_TURN_SUBMITTED_ACTIVITY_KIND,
+  // So does "Queued by scheduled task …" in a conversation bound to a task.
+  SCHEDULED_TASK_TURN_SUBMITTED_ACTIVITY_KIND,
 ]);
 
 function inferWorkLogStatus(

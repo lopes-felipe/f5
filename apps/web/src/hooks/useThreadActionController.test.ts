@@ -132,4 +132,25 @@ describe("scheduled thread actions", () => {
       expect(items.some((item) => item.id === "rename")).toBe(true);
     }
   });
+  it("offers scheduling into active, unscheduled conversations only", () => {
+    const ids = (overrides: Partial<Parameters<typeof buildThreadActionMenuItems>[0]["thread"]>) =>
+      buildThreadActionMenuItems({
+        thread: { ...thread, scheduledOrigin: null, ...overrides },
+        pinned: false,
+        snoozed: false,
+        canScheduleInConversation: true,
+      }).map((item) => item.id);
+    expect(ids({}).slice(0, 3)).toEqual(["rename", "regenerate-title", "schedule-in-conversation"]);
+    expect(ids({ archivedAt: "2026-01-01T00:00:00Z" })).not.toContain("schedule-in-conversation");
+    expect(ids({ scheduledOrigin: thread.scheduledOrigin })).not.toContain(
+      "schedule-in-conversation",
+    );
+    expect(
+      buildThreadActionMenuItems({
+        thread: { ...thread, scheduledOrigin: null },
+        pinned: false,
+        snoozed: false,
+      }).map((item) => item.id),
+    ).not.toContain("schedule-in-conversation");
+  });
 });

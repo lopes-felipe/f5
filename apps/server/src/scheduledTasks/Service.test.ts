@@ -107,6 +107,59 @@ it.effect("requires optimistic versions and expires old create requests", () =>
     expect((yield* Effect.result(create()))._tag).toBe("Failure");
   }).pipe(Effect.provide(testLayer), Effect.scoped),
 );
+it.effect("lists tasks by creation time across toggles and claims", () =>
+  Effect.gen(function* () {
+    const { create, service } = yield* setup;
+    const older = (yield* create({ name: "Older" }, new Date(0).toISOString())).task;
+    const newer = (yield* create({ name: "Newer" }, new Date(1000).toISOString())).task;
+    const order = () =>
+      service.list({}, actor).pipe(Effect.map((result) => result.tasks.map((t) => t.task.id)));
+    expect(yield* order()).toEqual([newer.id, older.id]);
+    yield* service.setEnabled(
+      { id: older.id, expectedVersion: older.version, enabled: false },
+      actor,
+    );
+    expect(yield* order()).toEqual([newer.id, older.id]);
+    yield* service.runNow(
+      {
+        taskId: newer.id,
+        runId: ScheduledTaskRunId.makeUnsafe(crypto.randomUUID()),
+        requestedAt: new Date(0).toISOString(),
+      },
+      actor,
+    );
+    yield* service.dispatch;
+    yield* service.drainDispatches;
+    expect(yield* order()).toEqual([newer.id, older.id]);
+  }).pipe(Effect.provide(testLayer), Effect.scoped),
+);
+it.effect("decodes stored tasks without an interaction mode as default", () =>
+  Effect.gen(function* () {
+    const { create, store } = yield* setup;
+    const { task } = yield* create();
+    yield* store.sql`UPDATE scheduled_tasks SET definition_json=json_remove(definition_json,'$.interactionMode') WHERE id=${task.id}`;
+    expect((yield* store.task(task.id))!.task.interactionMode).toBe("default");
+  }).pipe(Effect.provide(testLayer), Effect.scoped),
+);
+it.effect("sends plan-mode tasks with plan interaction in the bootstrap command", () =>
+  Effect.gen(function* () {
+    const { create, service, host } = yield* setup;
+    const { task } = yield* create({ interactionMode: "plan" });
+    yield* service.runNow(
+      {
+        taskId: task.id,
+        runId: ScheduledTaskRunId.makeUnsafe(crypto.randomUUID()),
+        requestedAt: new Date(0).toISOString(),
+      },
+      actor,
+    );
+    yield* service.dispatch;
+    yield* service.drainDispatches;
+    const command = host.submissions[0]!.command;
+    expect(command.interactionMode).toBe("plan");
+    expect(command.bootstrap?.createThread?.interactionMode).toBe("plan");
+  }).pipe(Effect.provide(testLayer), Effect.scoped),
+);
 it.effect("does not turn disabled intervals into catch-up work", () =>
   Effect.gen(function* () {
     const { create, service, settings, store } = yield* setup;

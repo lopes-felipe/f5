@@ -29,7 +29,12 @@ import {
   isScratchThreadFolder,
 } from "@t3tools/shared/scratchProject";
 
-import { OrchestrationCommandInvariantError, ThreadTurnAlreadyActiveError } from "./Errors.ts";
+import { canonicalJson } from "../canonicalJsonHash.ts";
+import {
+  OrchestrationCommandInvariantError,
+  ThreadSettingsChangedError,
+  ThreadTurnAlreadyActiveError,
+} from "./Errors.ts";
 import {
   listThreadsByProjectId,
   requireProject,
@@ -118,7 +123,7 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
   readonly providerInstances?: ReadonlyArray<Pick<ServerProvider, "instanceId" | "driver">>;
 }): Effect.fn.Return<
   Omit<OrchestrationEvent, "sequence"> | ReadonlyArray<Omit<OrchestrationEvent, "sequence">>,
-  OrchestrationCommandInvariantError | ThreadTurnAlreadyActiveError
+  OrchestrationCommandInvariantError | ThreadTurnAlreadyActiveError | ThreadSettingsChangedError
 > {
   switch (command.type) {
     case "project.create": {
@@ -1461,6 +1466,16 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
           commandType: command.type,
           detail: "The active turn, model, or mode changed before steering.",
         });
+      }
+      // Checked with acceptance so a later model or access change cannot be reverted.
+      if (
+        command.requireCurrentSettings === true &&
+        (targetThread.runtimeMode !== command.runtimeMode ||
+          targetThread.interactionMode !== command.interactionMode ||
+          (command.modelSelection !== undefined &&
+            canonicalJson(targetThread.modelSelection) !== canonicalJson(command.modelSelection)))
+      ) {
+        return yield* new ThreadSettingsChangedError({ threadId: command.threadId });
       }
       const threadIsBusy =
         targetThread.latestTurn?.state === "running" ||

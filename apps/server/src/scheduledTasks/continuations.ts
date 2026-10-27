@@ -19,7 +19,10 @@ export const scheduledContinuationFor = (
       parentSubmissionId: string;
       owner: number;
       canceled: number;
-    }>`SELECT r.id AS "runId",s.submission_id AS "parentSubmissionId",r.owns_execution AS owner,r.canceled FROM scheduled_task_runs r JOIN scheduled_run_submissions s ON s.run_id=r.id WHERE r.thread_id=${threadId} AND s.turn_id=${turnId} LIMIT 1`;
+      workspace: string | null;
+    }>`SELECT r.id AS "runId",s.submission_id AS "parentSubmissionId",r.owns_execution AS owner,r.canceled,json_extract(r.snapshot_json,'$.workspace.kind') AS workspace FROM scheduled_task_runs r JOIN scheduled_run_submissions s ON s.run_id=r.id WHERE r.thread_id=${threadId} AND s.turn_id=${turnId} LIMIT 1`;
+    // Bound conversations belong to the user: resumes and answers there are ordinary work.
+    if (rows[0]?.workspace === "thread") return undefined;
     // A human answer after a canceled/terminal scheduled execution is ordinary
     // user work. Automatic recovery must never lose its scheduling association.
     if (kind === "user_input" && rows[0] && (!rows[0].owner || rows[0].canceled)) return undefined;
