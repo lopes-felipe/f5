@@ -183,6 +183,12 @@ const SHORTCUT_SECTION_DEFINITIONS: ReadonlyArray<{
       "upstream.openDetail",
       "upstream.openUpstreamPr",
       "upstream.startPort",
+      "upstream.equivalent",
+      "upstream.extendNext",
+      "upstream.extendPrevious",
+      "upstream.clearSelection",
+      "upstream.nextList",
+      "upstream.previousList",
     ],
   },
 ];

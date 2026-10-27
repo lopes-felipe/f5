@@ -23,6 +23,9 @@ export const upstreamPortsQueryKeys = {
   all: ["upstreamPorts"] as const,
   projects: () => ["upstreamPorts", "projects"] as const,
   overview: (projectId: ProjectId) => ["upstreamPorts", "overview", projectId] as const,
+  /** Every filter and sort of one list; optimistic updates edit them together. */
+  list: (projectId: ProjectId, list: UpstreamTopicList) =>
+    ["upstreamPorts", "topics", projectId, list] as const,
   topics: (projectId: ProjectId, list: UpstreamTopicList, filter: UpstreamTopicFilter) =>
     ["upstreamPorts", "topics", projectId, list, filter] as const,
   topic: (projectId: ProjectId, topicId: string) =>

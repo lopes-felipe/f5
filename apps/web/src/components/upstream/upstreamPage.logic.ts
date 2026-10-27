@@ -4,12 +4,16 @@ import {
   UPSTREAM_MAX_PORT_TOPICS,
   type ProjectSettingsOverrides,
   type UpstreamDecision,
+  type UpstreamListTopicsResult,
+  type UpstreamOverview,
   type UpstreamPortsSettings,
   type UpstreamPortLinkSummary,
+  type UpstreamStateCounts,
   type UpstreamTopic,
   type UpstreamTopicList,
   type UpstreamTopicSuggestion,
 } from "@t3tools/contracts";
+import type { InfiniteData } from "@tanstack/react-query";
 
 export const UPSTREAM_LISTS: ReadonlyArray<{ readonly id: UpstreamTopicList; readonly label: string }> = [
   { id: "inbox", label: "Inbox" },
@@ -22,35 +26,69 @@ export const UPSTREAM_LISTS: ReadonlyArray<{ readonly id: UpstreamTopicList; rea
 
 export { isUpstreamList } from "./upstreamSearch";
 
-const formatConfidence = (value: number) => value.toFixed(2);
+export const UPSTREAM_STATE_LABELS: Readonly<Record<UpstreamTopicList, string>> = {
+  inbox: "Inbox",
+  ready: "Ready",
+  "in-progress": "In progress",
+  watch: "Watch",
+  done: "Done",
+  skipped: "Skipped",
+};
 
-/** `Port 0.92`, `Skip: mobile 0.97`, `Equivalent 0.70`. */
+/** `85%`: confidence as a whole percentage. */
+export const formatConfidence = (value: number) => `${Math.round(value * 100)}%`;
+
+const SUGGESTION_VERBS: Readonly<Record<UpstreamTopicSuggestion["status"], string>> = {
+  port: "Port",
+  skip: "Skip",
+  watch: "Watch",
+  equivalent: "Equivalent",
+};
+
+export const suggestionVerb = (suggestion: Pick<UpstreamTopicSuggestion, "status">) =>
+  SUGGESTION_VERBS[suggestion.status];
+
+/** `Port 92%`, `Skip: mobile 97%`, `Equivalent 70%`. */
 export function suggestionChipLabel(suggestion: UpstreamTopicSuggestion): string {
   const confidence = formatConfidence(suggestion.confidence);
-  switch (suggestion.status) {
+  if (suggestion.status === "skip" && suggestion.reasonKey) return `Skip: ${suggestion.reasonKey} ${confidence}`;
+  return `${suggestionVerb(suggestion)} ${confidence}`;
+}
+
+/** Badge variant per suggested verb: Port stands out, Skip recedes. */
+export function suggestionBadgeVariant(
+  status: UpstreamTopicSuggestion["status"],
+): "primary-soft" | "secondary" | "warning" | "success" {
+  switch (status) {
     case "port":
-      return `Port ${confidence}`;
+      return "primary-soft";
     case "skip":
-      return suggestion.reasonKey ? `Skip: ${suggestion.reasonKey} ${confidence}` : `Skip ${confidence}`;
+      return "secondary";
     case "watch":
-      return `Watch ${confidence}`;
+      return "warning";
     case "equivalent":
-      return `Equivalent ${confidence}`;
+      return "success";
   }
 }
 
+/** Impact marker color. Red is kept for errors, so high impact uses the warning color. */
 export function impactClassName(impact: UpstreamTopicSuggestion["userImpact"] | undefined): string {
   switch (impact) {
     case "high":
-      return "bg-destructive";
+      return "bg-warning";
+    case "medium":
+      return "bg-info";
     case "low":
       return "bg-muted-foreground/50";
     case "none":
       return "bg-transparent border border-muted-foreground/40";
     default:
-      return "bg-warning";
+      return "bg-transparent border border-dashed border-muted-foreground/40";
   }
 }
+
+export const impactLabel = (impact: UpstreamTopicSuggestion["userImpact"] | undefined) =>
+  impact ? `Impact: ${impact}` : "Impact: not triaged";
 
 /**
  * After a decision removes rows, focus moves to the next surviving id in the
@@ -210,3 +248,257 @@ export const isEditableTarget = (target: EventTarget | null) =>
 
 export const isDialogTarget = (target: EventTarget | null) =>
   target instanceof Element && Boolean(target.closest("[role=dialog], [role=alertdialog], [role=menu]"));
+
+/** Buttons, links and checkboxes, which Enter and Space must activate rather than run a list shortcut. */
+export const isControlTarget = (target: EventTarget | null) =>
+  target instanceof Element &&
+  Boolean(target.closest("button, a[href], input, [role=button], [role=checkbox], [role=link]"));
+
+/** Keys a focused control handles itself. */
+export const isActivationKey = (key: string) => key === "Enter" || key === " ";
+
+// ── Selection ──────────────────────────────────────────────────────────
+
+/** Adds every id between `anchor` and `target` (inclusive, list order) to the selection. */
+export function selectRange(
+  ids: ReadonlyArray<string>,
+  selected: ReadonlySet<string>,
+  anchor: string | null,
+  target: string,
+): Set<string> {
+  const next = new Set(selected);
+  const to = ids.indexOf(target);
+  if (to < 0) return next;
+  const from = anchor === null ? -1 : ids.indexOf(anchor);
+  if (from < 0) {
+    next.add(target);
+    return next;
+  }
+  for (let index = Math.min(from, to); index <= Math.max(from, to); index += 1) next.add(ids[index]!);
+  return next;
+}
+
+export function toggleId(selected: ReadonlySet<string>, id: string): Set<string> {
+  const next = new Set(selected);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  return next;
+}
+
+/** Shift+J/K: moves focus and selects both the row it leaves and the row it lands on. */
+export function extendSelection(
+  ids: ReadonlyArray<string>,
+  selected: ReadonlySet<string>,
+  focused: string | null,
+  delta: 1 | -1,
+): { readonly focused: string | null; readonly selected: Set<string> } {
+  const next = new Set(selected);
+  const target = moveFocus(ids, focused, delta);
+  if (focused !== null && ids.includes(focused)) next.add(focused);
+  if (target !== null) next.add(target);
+  return { focused: target, selected: next };
+}
+
+/** The header checkbox: all loaded rows, some of them, or none. */
+export function headerCheckState(
+  ids: ReadonlyArray<string>,
+  selected: ReadonlySet<string>,
+): "all" | "some" | "none" {
+  const count = ids.filter((id) => selected.has(id)).length;
+  if (count === 0) return "none";
+  return count === ids.length ? "all" : "some";
+}
+
+// ── Actions ────────────────────────────────────────────────────────────
+
+export type UpstreamBulkAction =
+  | "accept"
+  | "port"
+  | "skip"
+  | "watch"
+  | "decline"
+  | "equivalent"
+  | "reopen"
+  | "startPort"
+  | "copyPrompt";
+
+/** The bulk bar's actions for each list, in display order. */
+export function bulkActionsForList(list: UpstreamTopicList): ReadonlyArray<UpstreamBulkAction> {
+  switch (list) {
+    case "inbox":
+      return ["accept", "port", "skip", "watch", "decline", "equivalent"];
+    case "ready":
+    case "in-progress":
+      return ["startPort", "copyPrompt", "reopen", "skip"];
+    case "watch":
+      return ["reopen", "port", "skip", "decline", "equivalent"];
+    case "done":
+      return ["reopen", "port", "skip", "watch", "decline"];
+    case "skipped":
+      return ["reopen", "port", "watch", "equivalent"];
+  }
+}
+
+export const UPSTREAM_LIST_IDS: ReadonlyArray<UpstreamTopicList> = UPSTREAM_LISTS.map((entry) => entry.id);
+
+/** `]` and `[`: the next or previous list, wrapping around. */
+export function adjacentList(list: UpstreamTopicList, delta: 1 | -1): UpstreamTopicList {
+  const index = UPSTREAM_LIST_IDS.indexOf(list);
+  return UPSTREAM_LIST_IDS[(index + delta + UPSTREAM_LIST_IDS.length) % UPSTREAM_LIST_IDS.length]!;
+}
+
+/**
+ * The list a topic most likely lands in after `decision`, for optimistic
+ * updates; `null` when it stays put or cannot be predicted. The refetch that
+ * follows every decision has the final word.
+ */
+/**
+ * Whether accepting the suggestion records a decision. The server refuses a
+ * failed triage and a skip without a reason key (`suggestionDecision`).
+ */
+export function canAcceptSuggestion(suggestion: UpstreamTopicSuggestion | undefined): suggestion is UpstreamTopicSuggestion {
+  return Boolean(suggestion && !suggestion.triageError && !(suggestion.status === "skip" && !suggestion.reasonKey));
+}
+
+export function predictedState(
+  row: { readonly state: UpstreamTopicList; readonly topic: Pick<UpstreamTopic, "suggestion"> },
+  decision: UpstreamDecision | "accept",
+): UpstreamTopicList | null {
+  const kind =
+    decision === "accept"
+      ? canAcceptSuggestion(row.topic.suggestion)
+        ? row.topic.suggestion.status
+        : null
+      : decision.kind;
+  const target = (() => {
+    switch (kind) {
+      case null:
+        return null;
+      case "port":
+        return row.state === "in-progress" ? "in-progress" : "ready";
+      case "skip":
+      case "declined":
+        return "skipped";
+      case "watch":
+        return "watch";
+      case "equivalent":
+        return "done";
+      case "inbox":
+        return "inbox";
+    }
+  })();
+  return target === row.state ? null : target;
+}
+
+/** Overview counts after moving topics between lists. */
+export function adjustCounts(
+  counts: UpstreamStateCounts,
+  moves: ReadonlyArray<{ readonly from: UpstreamTopicList; readonly to: UpstreamTopicList }>,
+): UpstreamStateCounts {
+  const next = { ...counts };
+  for (const move of moves) {
+    next[move.from] = Math.max(0, next[move.from] - 1);
+    next[move.to] += 1;
+  }
+  return next;
+}
+
+/** Drops `removed` topics from every loaded page of a topic list. */
+export function withoutTopics(
+  data: InfiniteData<UpstreamListTopicsResult> | undefined,
+  removed: ReadonlySet<string>,
+): InfiniteData<UpstreamListTopicsResult> | undefined {
+  if (!data) return data;
+  return {
+    ...data,
+    pages: data.pages.map((page) => ({
+      ...page,
+      topics: page.topics.filter((row) => !removed.has(row.topic.id)),
+    })),
+  };
+}
+
+/** Toast title after a decision: `Skipped 12 topics`. */
+export function decisionToastTitle(decision: UpstreamDecision | "accept", count: number): string {
+  const noun = `${count} topic${count === 1 ? "" : "s"}`;
+  if (decision === "accept") return `Accepted suggestions for ${noun}`;
+  switch (decision.kind) {
+    case "port":
+      return `Marked ${noun} ready`;
+    case "skip":
+      return `Skipped ${noun}`;
+    case "declined":
+      return `Declined ${noun}`;
+    case "watch":
+      return `Watching ${noun}`;
+    case "equivalent":
+      return `Recorded ${noun} as already in f5`;
+    case "inbox":
+      return `Moved ${noun} back to Inbox`;
+  }
+}
+
+// ── Header ─────────────────────────────────────────────────────────────
+
+/** `https://github.com/pingdotgg/t3code.git` → `pingdotgg/t3code`. */
+export function shortRepository(repository: string): string {
+  return repository
+    .replace(/^https:\/\/github\.com\//u, "")
+    .replace(/\.git$/u, "")
+    .replace(/\/$/u, "");
+}
+
+export function repositoryUrl(repository: string): string {
+  return repository.replace(/\.git$/u, "").replace(/\/$/u, "");
+}
+
+export interface RunStatus {
+  readonly tone: "running" | "failed" | "idle" | "never";
+  readonly label: string;
+}
+
+/** The run status chip: running, failed, or the last sync time and the next run. */
+export function runStatus(
+  overview: Pick<UpstreamOverview, "activeRun" | "lastRun" | "nextRunAt" | "occurrence">,
+  formatRelative: (iso: string) => string,
+  formatNext: (iso: string) => string,
+): RunStatus {
+  const next = overview.nextRunAt ? ` · next ${formatNext(overview.nextRunAt)}` : "";
+  if (overview.activeRun) {
+    const left = overview.activeRun.remainingCount;
+    return { tone: "running", label: left > 0 ? `Triaging… ${left} left` : "Triaging…" };
+  }
+  if (overview.occurrence?.status === "failed") return { tone: "failed", label: "Scheduled run failed" };
+  const last = overview.lastRun;
+  if (!last) return { tone: "never", label: `Never run${next}` };
+  if (last.status === "failed") return { tone: "failed", label: "Last run failed" };
+  return { tone: "idle", label: `Synced ${formatRelative(last.finishedAt ?? last.startedAt)}${next}` };
+}
+
+/** Why Run is disabled, or `null` when it can run. */
+export function runDisabledReason(input: {
+  readonly readOnly: boolean;
+  readonly busy: boolean;
+  readonly overview: Pick<UpstreamOverview, "activeRun" | "remoteStatus">;
+}): string | null {
+  if (input.readOnly) return "Another profile manages this repository.";
+  if (input.overview.activeRun) return "A run is in progress.";
+  if (input.overview.remoteStatus === "missing") return "The upstream remote is missing.";
+  if (input.overview.remoteStatus === "mismatch") return "The upstream remote points at another repository.";
+  if (input.busy) return "Another action is in progress.";
+  return null;
+}
+
+/** The ledger chip label: `#228 · 11 unpublished`. */
+export function ledgerChipLabel(publication: UpstreamOverview["publication"]): string | null {
+  const parts: string[] = [];
+  if (publication.prNumber !== null) parts.push(`#${publication.prNumber}`);
+  if (publication.unpublishedOps > 0) parts.push(`${publication.unpublishedOps} unpublished`);
+  if (parts.length === 0 && publication.pausedReason) parts.push("Publishing paused");
+  return parts.length ? parts.join(" · ") : null;
+}
+
+/** Start port for every Ready topic, capped at the per-start limit. */
+export function startAllReady(ids: ReadonlyArray<string>): { readonly ids: string[]; readonly capped: boolean } {
+  return { ids: ids.slice(0, UPSTREAM_MAX_PORT_TOPICS), capped: ids.length > UPSTREAM_MAX_PORT_TOPICS };
+}

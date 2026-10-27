@@ -21,12 +21,17 @@ with a prompt that carries the topic's commits and the trailer that completes it
 2. Open **Upstream** in the sidebar. If the remote is missing, click **Add upstream remote**. F5
    adds it with pushes disabled.
 3. Click **Run now**. F5 fetches the upstream branch and triages every commit after the last
-   tracked one.
-4. Review the **Inbox**: `j`/`k` to move, `a` to accept the suggestion, `p` to port, `s` to skip,
-   `w` to watch, `d` to decline. Each decision is saved locally at once.
-5. Select **Ready** topics and press `Shift+P` (**Start port**). Each thread opens in its own
-   worktree on `f5/upstream-<topic>`.
-6. Merge the ledger pull request F5 opens (**Track upstream t3code changes (<date>)**) whenever
+   tracked one. The menu next to it runs with rules only or triages the legacy backlog.
+4. Review the **Inbox**: `j`/`k` to move, `a` to accept the suggestion, `p` to mark it ready, `s`
+   to skip, `w` to watch, `d` to decline, `e` when f5 already has the change. Each decision is
+   saved locally at once and the topic leaves the list right away. With the mouse, use
+   **Accept** in the detail pane or the buttons that appear when you hover a row.
+5. To decide many topics at once, tick their checkboxes (Shift-click selects a range, `x` and
+   `Shift+J`/`Shift+K` from the keyboard). The bar above the list shows the actions for the
+   current list.
+6. Open **Ready**, select topics and press `Shift+P` (**Start port**), or click **Start port for
+   all**. Each thread opens in its own worktree on `f5/upstream-<topic>`.
+7. Merge the ledger pull request F5 opens (**Track upstream t3code changes (<date>)**) whenever
    convenient. It only touches `upstream/` and needs no line review.
 
 ## The daily flow
@@ -35,12 +40,16 @@ with a prompt that carries the topic's commits and the trailer that completes it
   hour). F5 runs at that time, catches up after sleep or a restart, retries a failed run after 10
   minutes, 30 minutes and 2 hours, and continues a large backlog every 5 minutes until it is
   covered. With F5 unfocused, a notification says how many new topics arrived.
-- Suggestions show as chips such as `Port 0.92` or `Skip: mobile 0.97`. Confident skips with a
-  known reason, no open question and no conflict are applied automatically (`decidedBy: llm`).
-  **Skipped** with **Automatic only** lists them for spot checks.
+- The header shows when F5 last synced and when the next run is due; click it for the run
+  details. The ledger chip (`#228 · 11 unpublished`) shows the publication state.
+- Suggestions show as chips such as `Port 92%` or `Skip: mobile 97%`. The dot before the title
+  is the user impact (high, medium, low, none). Confident skips with a known reason, no open
+  question and no conflict are applied automatically (`decidedBy: llm`). **Skipped** with
+  **Automatic only** lists them for spot checks.
 - `?` marks an open question: the choice depends on a product preference that
   `upstream/policy.md` does not cover. Answer it in the policy so later runs stop asking.
-- Add a **Scope note** before **Port** to limit a mixed commit to the parts you want.
+- Click **Add scope note** before **Mark ready** to limit a mixed commit to the parts you want.
+  On a Ready topic, edit the note and click **Save scope**.
 - **Copy port prompt** puts the same prompt on the clipboard without creating a link, for a
   Feature workflow or any thread. The trailer still completes the topic once merged.
 
@@ -83,7 +92,7 @@ moves it, and the paths below are then relative to that directory.
   marketing, CI, docs, tests) and `autoSkipConfidence` (0.85).
 - `upstream/archive/schema6.json` is the frozen earlier catch-up. Its deferred records are
   triaged through **Triage legacy backlog**. Records whose implementation commits are already on
-  the default branch get an `Equivalent 0.70` suggestion you confirm with `a`.
+  the default branch get an `Equivalent 70%` suggestion you confirm with `a`.
 - Never hand-edit `upstream/intervals`, `upstream/legacy` or `upstream/topics`.
   `bun run upstream-ports:check` rejects edits to coverage files and ledger changes mixed with
   code.
@@ -103,9 +112,10 @@ and keep the default batch of 20 unless the median exceeds 90 seconds.
 ## Publication
 
 Decisions and run results are saved in F5 first, then published to one rolling ledger pull
-request. The banner shows its number, phase and unpublished changes.
+request. The ledger chip in the header shows its number and unpublished changes; its popover
+shows the phase. When publishing pauses, an alert above the lists says why and offers the fix.
 
-| Banner                     | What to do                                                                       |
+| Alert                      | What to do                                                                       |
 | -------------------------- | -------------------------------------------------------------------------------- |
 | Signed out, push rejected  | Fix credentials or signing, then **Retry publish**                               |
 | Closed without merging     | **Re-publish on a new PR**, or **Discard N changes**                             |

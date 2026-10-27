@@ -42,6 +42,12 @@ export const UPSTREAM_KEYBINDING_COMMANDS = [
   "upstream.openDetail",
   "upstream.openUpstreamPr",
   "upstream.startPort",
+  "upstream.equivalent",
+  "upstream.extendNext",
+  "upstream.extendPrevious",
+  "upstream.clearSelection",
+  "upstream.nextList",
+  "upstream.previousList",
 ] as const;
 export type UpstreamKeybindingCommand = (typeof UPSTREAM_KEYBINDING_COMMANDS)[number];
 
