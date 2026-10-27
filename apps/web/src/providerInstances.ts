@@ -13,16 +13,21 @@
  * @module providerInstances
  */
 import {
+  DEFAULT_MODEL_BY_PROVIDER,
+  type ModelSelection,
   defaultInstanceIdForDriver,
   PROVIDER_DISPLAY_NAMES,
   type ProviderDriverKind,
-  type ProviderInstanceId,
+  ProviderInstanceId,
   type ServerProvider,
   type ServerProviderModel,
   type ServerProviderState,
 } from "@t3tools/contracts";
 
 import { formatProviderDriverKindLabel } from "./providerModels";
+
+/** Local placeholder only. Sending is disabled until a live instance replaces it. */
+export const NO_PROVIDER_INSTANCE_ID = ProviderInstanceId.make("f5_no_provider");
 
 /**
  * UI-facing projection of one configured provider instance. Carries the
@@ -212,24 +217,88 @@ export function getProviderInstanceModels(
 /**
  * Resolve the routing key for a selection that may reference an instance
  * id that no longer exists (e.g. a persisted thread selection after the
- * user deleted the custom instance). Returns the first enabled instance
- * as a fallback so downstream code can still send a turn.
+ * user deleted the custom instance). Prefer a ready fallback, then a
+ * non-error probe, without inventing an errored new-user default.
  */
 export function resolveSelectableProviderInstance(
   providers: ReadonlyArray<ServerProvider>,
   instanceId: ProviderInstanceId | undefined,
 ): ProviderInstanceId | undefined {
-  if (instanceId === undefined) {
-    return deriveProviderInstanceEntries(providers).find(
-      (entry) => entry.enabled && entry.isAvailable,
-    )?.instanceId;
-  }
   const entries = deriveProviderInstanceEntries(providers);
+  return resolveSelectableProviderInstanceEntry(entries, instanceId)?.instanceId;
+}
+
+export function resolveSelectableProviderInstanceEntry(
+  entries: ReadonlyArray<ProviderInstanceEntry>,
+  instanceId: ProviderInstanceId | undefined,
+): ProviderInstanceEntry | undefined {
+  const selectable = (entry: ProviderInstanceEntry) => entry.enabled && entry.isAvailable;
   const requested = entries.find((entry) => entry.instanceId === instanceId);
-  if (requested && requested.enabled && requested.isAvailable) {
-    return instanceId;
+  if (requested && selectable(requested)) {
+    return requested;
   }
-  return entries.find((entry) => entry.enabled && entry.isAvailable)?.instanceId;
+  return (
+    entries.find((entry) => selectable(entry) && entry.status === "ready") ??
+    entries.find((entry) => selectable(entry) && entry.status !== "error")
+  );
+}
+
+export function getDefaultProviderInstanceModel(
+  providers: ReadonlyArray<ServerProvider>,
+  instanceId: ProviderInstanceId,
+): string | undefined {
+  const entry = getProviderInstanceEntry(providers, instanceId);
+  if (!entry) return undefined;
+  return (
+    entry.models.find(
+      (model) =>
+        !model.isCustom &&
+        model.slug ===
+          DEFAULT_MODEL_BY_PROVIDER[entry.driverKind as keyof typeof DEFAULT_MODEL_BY_PROVIDER],
+    )?.slug ??
+    entry.models.find((model) => !model.isCustom)?.slug ??
+    entry.models[0]?.slug ??
+    DEFAULT_MODEL_BY_PROVIDER[entry.driverKind as keyof typeof DEFAULT_MODEL_BY_PROVIDER]
+  );
+}
+
+export function resolveDefaultProviderModelSelection(
+  providers: ReadonlyArray<ServerProvider>,
+  selection: ModelSelection | null | undefined,
+): ModelSelection | null {
+  const instanceId = resolveSelectableProviderInstance(providers, selection?.instanceId);
+  if (instanceId === undefined) return null;
+  if (selection?.instanceId === instanceId) return selection;
+  const model = getDefaultProviderInstanceModel(providers, instanceId);
+  return model ? { instanceId, model } : null;
+}
+
+/** Keep started threads inside their driver and native continuation group. */
+export function resolveComposerProviderInstance(
+  entries: ReadonlyArray<ProviderInstanceEntry>,
+  input: {
+    readonly candidates: ReadonlyArray<ProviderInstanceId | null | undefined>;
+    readonly preferredDriver: ProviderDriverKind | undefined;
+    readonly lockedDriver: ProviderDriverKind | null;
+    readonly lockedContinuationGroup?: string | undefined;
+  },
+): ProviderInstanceEntry | undefined {
+  const compatible = entries.filter(
+    (entry) =>
+      (!input.lockedDriver || entry.driverKind === input.lockedDriver) &&
+      (!input.lockedContinuationGroup ||
+        entry.continuationGroupKey === input.lockedContinuationGroup),
+  );
+  for (const id of input.candidates) {
+    const requested = compatible.find((entry) => entry.instanceId === id);
+    if (requested?.enabled && requested.isAvailable) return requested;
+  }
+  return (
+    resolveSelectableProviderInstanceEntry(
+      compatible.filter((entry) => entry.driverKind === input.preferredDriver),
+      undefined,
+    ) ?? resolveSelectableProviderInstanceEntry(compatible, undefined)
+  );
 }
 
 /**

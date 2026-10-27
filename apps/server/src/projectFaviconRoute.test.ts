@@ -3,11 +3,11 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { makeWorkspaceAssetAuthorizer } from "./WorkspaceAssetAuthorizer";
 import { makeCheckedInProjectFileService } from "./project/CheckedInProjectFileService";
-import { tryHandleProjectFaviconRequest } from "./projectFaviconRoute";
+import { findFaviconRelativePath, tryHandleProjectFaviconRequest } from "./projectFaviconRoute";
 import { fakePng, icns } from "./icns.testkit";
 
 interface HttpResponse {
@@ -79,6 +79,105 @@ describe("tryHandleProjectFaviconRequest", () => {
     for (const directory of tempDirs.splice(0)) {
       fs.rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it("starts well-known probes and source reads concurrently while preserving stages", async () => {
+    const projectRoot = makeTempDir("f5-favicon-concurrent-");
+    const authorizer = makeWorkspaceAssetAuthorizer({
+      resolveProjectWorkspaceRoot: async () => projectRoot,
+    });
+    const reader = await authorizer.forProject(PROJECT_ID);
+    const images = Promise.withResolvers<void>();
+    const sources = Promise.withResolvers<void>();
+    const readImage = vi.fn(async (input: Parameters<typeof reader.readImage>[0]) => {
+      await images.promise;
+      return reader.readImage(input);
+    });
+    const readText = vi.fn(async (input: Parameters<typeof reader.readText>[0]) => {
+      await sources.promise;
+      return reader.readText(input);
+    });
+    const resolution = findFaviconRelativePath(
+      {
+        ...authorizer,
+        forProject: async () => ({ ...reader, readImage, readText }),
+      },
+      PROJECT_ID,
+    );
+    await vi.waitFor(() => expect(readImage).toHaveBeenCalledTimes(22));
+    expect(readText).not.toHaveBeenCalled();
+    images.resolve();
+    await vi.waitFor(() => expect(readText).toHaveBeenCalledTimes(7));
+    sources.resolve();
+    expect(await resolution).toBeNull();
+  });
+
+  it("preserves candidate rank without waiting for a stuck lower-ranked probe", async () => {
+    const projectRoot = makeTempDir("f5-favicon-ranked-");
+    fs.writeFileSync(path.join(projectRoot, "favicon.svg"), "<svg>root</svg>");
+    const authorizer = makeWorkspaceAssetAuthorizer({
+      resolveProjectWorkspaceRoot: async () => projectRoot,
+    });
+    const reader = await authorizer.forProject(PROJECT_ID);
+    const stuck = Promise.withResolvers<void>();
+    try {
+      expect(
+        await findFaviconRelativePath(
+          {
+            ...authorizer,
+            forProject: async () => ({
+              ...reader,
+              readImage: async (input) => {
+                if (input.relativePath === "favicon.ico") await stuck.promise;
+                return reader.readImage(input);
+              },
+            }),
+          },
+          PROJECT_ID,
+        ),
+      ).toBe("favicon.svg");
+    } finally {
+      stuck.resolve();
+    }
+  });
+
+  it("waits for a higher-ranked candidate even when a lower-ranked icon is ready", async () => {
+    const projectRoot = makeTempDir("f5-favicon-rank-order-");
+    fs.mkdirSync(path.join(projectRoot, "public"));
+    fs.writeFileSync(path.join(projectRoot, "favicon.svg"), "<svg>root</svg>");
+    fs.writeFileSync(path.join(projectRoot, "public", "favicon.svg"), "<svg>public</svg>");
+    const authorizer = makeWorkspaceAssetAuthorizer({
+      resolveProjectWorkspaceRoot: async () => projectRoot,
+    });
+    const reader = await authorizer.forProject(PROJECT_ID);
+    const releaseRoot = Promise.withResolvers<void>();
+    const publicReady = Promise.withResolvers<void>();
+    let settled = false;
+    const result = findFaviconRelativePath(
+      {
+        ...authorizer,
+        forProject: async () => ({
+          ...reader,
+          readImage: async (input) => {
+            if (input.relativePath === "favicon.svg") await releaseRoot.promise;
+            const asset = await reader.readImage(input);
+            if (input.relativePath === "public/favicon.svg") publicReady.resolve();
+            return asset;
+          },
+        }),
+      },
+      PROJECT_ID,
+    ).then((found) => {
+      settled = true;
+      return found;
+    });
+    try {
+      await publicReady.promise;
+      expect(settled).toBe(false);
+    } finally {
+      releaseRoot.resolve();
+    }
+    expect(await result).toBe("favicon.svg");
   });
 
   it("requires a registered project identity instead of an arbitrary cwd", async () => {

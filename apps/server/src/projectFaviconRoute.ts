@@ -148,21 +148,37 @@ function sendAssetError(res: http.ServerResponse, error: unknown): void {
   res.end(statusCode === 404 ? "Not Found" : "Invalid workspace asset");
 }
 
-async function findFaviconRelativePath(
+// Start all probes together, but preserve rank and return without waiting on
+// lower-ranked filesystem operations. Each probe handles its own rejection.
+async function firstFaviconInOrder<A>(
+  items: readonly A[],
+  probe: (item: A) => Promise<string | null>,
+): Promise<string | null> {
+  const probes = items.map(probe);
+  for (const pending of probes) {
+    const found = await pending;
+    if (found) return found;
+  }
+  return null;
+}
+
+export async function findFaviconRelativePath(
   authorizer: WorkspaceAssetAuthorizer,
   projectId: string,
 ): Promise<string | null> {
   const reader = await authorizer.forProject(projectId);
-  for (const relativePath of FAVICON_CANDIDATES) {
+  const known = await firstFaviconInOrder(FAVICON_CANDIDATES, async (relativePath) => {
     try {
       await reader.readImage({ relativePath, maxBytes: faviconMaxBytes(relativePath) });
       return relativePath;
     } catch {
       // Missing, oversized, escaped, and spoofed candidates all fall through.
+      return null;
     }
-  }
+  });
+  if (known) return known;
 
-  for (const sourcePath of ICON_SOURCE_FILES) {
+  return firstFaviconInOrder(ICON_SOURCE_FILES, async (sourcePath) => {
     let source: string;
     try {
       source = await reader.readText({
@@ -170,10 +186,10 @@ async function findFaviconRelativePath(
         maxBytes: ICON_SOURCE_FILE_MAX_BYTES,
       });
     } catch {
-      continue;
+      return null;
     }
     const href = extractIconHref(source);
-    if (!href) continue;
+    if (!href) return null;
     for (const relativePath of resolveIconHref(href)) {
       try {
         await reader.readImage({ relativePath, maxBytes: faviconMaxBytes(relativePath) });
@@ -182,8 +198,8 @@ async function findFaviconRelativePath(
         // Continue looking for an authorized favicon candidate.
       }
     }
-  }
-  return null;
+    return null;
+  });
 }
 
 export async function tryHandleProjectFaviconRequest(

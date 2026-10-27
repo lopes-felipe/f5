@@ -1,4 +1,4 @@
-import { DEFAULT_MODEL_BY_PROVIDER, type ProjectId } from "@t3tools/contracts";
+import { type ProjectId } from "@t3tools/contracts";
 import { ensureNativeApi } from "../nativeApi";
 import { useStore } from "../store";
 import { newCommandId, newProjectId } from "./utils";
@@ -58,7 +58,6 @@ export function registerProjectFromPath(cwd: string, title?: string): Promise<Pr
         projectId,
         title: title ?? cwd.split(/[/\\]/).filter(Boolean).at(-1) ?? cwd,
         workspaceRoot: cwd,
-        defaultModel: DEFAULT_MODEL_BY_PROVIDER.codex,
         createdAt: new Date().toISOString(),
       });
       return await waitForRegisteredProject(projectId, true);

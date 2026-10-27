@@ -2,6 +2,9 @@ import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3
 import { describe, expect, it } from "vitest";
 import {
   deriveProviderInstanceEntries,
+  getDefaultProviderInstanceModel,
+  resolveDefaultProviderModelSelection,
+  resolveComposerProviderInstance,
   resolveSelectableProviderInstance,
   resolveProviderDriverKindForInstanceSelection,
 } from "./providerInstances";
@@ -12,6 +15,8 @@ function provider(input: {
   enabled?: boolean;
   availability?: ServerProvider["availability"];
   displayName?: string;
+  status?: ServerProvider["status"];
+  models?: ServerProvider["models"];
 }): ServerProvider {
   return {
     instanceId: ProviderInstanceId.make(input.instanceId),
@@ -20,11 +25,11 @@ function provider(input: {
     enabled: input.enabled ?? true,
     installed: true,
     version: null,
-    status: "ready",
+    status: input.status ?? "ready",
     ...(input.availability ? { availability: input.availability } : {}),
     auth: { status: "authenticated" },
     checkedAt: "2026-01-01T00:00:00.000Z",
-    models: [],
+    models: input.models ?? [],
     slashCommands: [],
     skills: [],
   };
@@ -41,6 +46,87 @@ describe("deriveProviderInstanceEntries", () => {
     expect(entry?.instanceId).toBe("codex_personal");
     expect(entry?.driverKind).toBe("codex");
     expect(entry?.isDefault).toBe(false);
+  });
+});
+
+describe("usable provider defaults", () => {
+  const codex = provider({
+    provider: ProviderDriverKind.make("codex"),
+    instanceId: "codex",
+    status: "error",
+  });
+  const claude = provider({
+    provider: ProviderDriverKind.make("claudeAgent"),
+    instanceId: "claude_work",
+    models: [{ slug: "my-model", name: "My model", isCustom: false, capabilities: {} }],
+  });
+
+  it("chooses a ready non-Codex instance and its own model", () => {
+    expect(resolveDefaultProviderModelSelection([codex, claude], null)).toEqual({
+      instanceId: "claude_work",
+      model: "my-model",
+    });
+    expect(getDefaultProviderInstanceModel([codex, claude], claude.instanceId)).toBe("my-model");
+    expect(resolveDefaultProviderModelSelection([codex], null)).toBeNull();
+    expect(resolveDefaultProviderModelSelection([], null)).toBeNull();
+  });
+
+  it("retains an explicitly requested errored instance and its options", () => {
+    const stored = {
+      instanceId: codex.instanceId,
+      model: "custom",
+      options: [{ id: "effort", value: "high" }],
+    };
+    expect(resolveDefaultProviderModelSelection([codex, claude], stored)).toBe(stored);
+  });
+
+  it("falls back from a disabled persisted provider without crossing a thread lock", () => {
+    const disabled = { ...codex, enabled: false };
+    const entries = deriveProviderInstanceEntries([disabled, claude]);
+    const input = {
+      candidates: [codex.instanceId],
+      preferredDriver: codex.driver,
+      lockedDriver: null,
+    };
+    expect(resolveComposerProviderInstance(entries, input)?.instanceId).toBe(claude.instanceId);
+    expect(
+      resolveComposerProviderInstance(entries, { ...input, lockedDriver: codex.driver }),
+    ).toBeUndefined();
+    expect(
+      resolveDefaultProviderModelSelection([disabled, claude], {
+        instanceId: codex.instanceId,
+        model: "stale",
+      }),
+    ).toEqual({ instanceId: claude.instanceId, model: "my-model" });
+  });
+
+  it("only falls back within the locked continuation group", () => {
+    const entries = deriveProviderInstanceEntries([
+      { ...claude, enabled: false, continuation: { groupKey: "group-a" } },
+      {
+        ...claude,
+        instanceId: ProviderInstanceId.make("other"),
+        continuation: { groupKey: "group-b" },
+      },
+      {
+        ...claude,
+        instanceId: ProviderInstanceId.make("compatible"),
+        continuation: { groupKey: "group-a" },
+      },
+    ]);
+    expect(
+      resolveComposerProviderInstance(entries, {
+        candidates: [claude.instanceId],
+        preferredDriver: claude.driver,
+        lockedDriver: claude.driver,
+        lockedContinuationGroup: "group-a",
+      })?.instanceId,
+    ).toBe("compatible");
+  });
+
+  it("prefers an unprobed instance over an implicit errored default", () => {
+    const warning = { ...claude, status: "warning" as const };
+    expect(resolveSelectableProviderInstance([codex, warning], undefined)).toBe(claude.instanceId);
   });
 });
 

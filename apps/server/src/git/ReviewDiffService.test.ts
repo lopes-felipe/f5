@@ -146,6 +146,30 @@ afterEach(() => {
 });
 
 describe("getReviewPreviewDiff", () => {
+  it.each(["working-tree", "branch-range"] as const)(
+    "ignores configured external diff, textconv and color for %s previews",
+    async (source) => {
+      const cwd = makeRepository();
+      git(cwd, ["config", "diff.external", "false"]);
+      git(cwd, ["config", "color.ui", "always"]);
+      git(cwd, ["config", "diff.test.textconv", "false"]);
+      write(cwd, ".gitattributes", "*.md diff=test\n");
+      write(cwd, "README.md", "changed\n");
+      write(cwd, "untracked.md", "new\n");
+      if (source === "branch-range") {
+        git(cwd, ["switch", "-c", "feature"]);
+        git(cwd, ["add", "."]);
+        git(cwd, ["commit", "-m", "change"]);
+      }
+      const result = await preview(cwd, source, source === "branch-range" ? "main" : undefined);
+      expect(result.kind).toBe("success");
+      if (result.kind !== "success") return;
+      expect(result.patch).toContain("+changed");
+      expect(result.patch).toContain("+new");
+      expect(result.patch).not.toContain("\u001b[");
+    },
+  );
+
   it("returns the complete working-tree diff without changing the real index", async () => {
     const cwd = makeRepository();
     write(cwd, "README.md", "staged\n");

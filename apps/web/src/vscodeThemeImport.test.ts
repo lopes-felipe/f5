@@ -2,8 +2,21 @@ import { strToU8, zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 
 import { importThemeFile, importVsCodeThemeDocument } from "./vscodeThemeImport";
+import { resolveThemePalette } from "./themePalette";
+import { wcagContrast } from "culori";
 
 describe("VS Code theme import", () => {
+  it("keeps generated fallback muted and placeholder text dimmer than entered text", () => {
+    const definition = importVsCodeThemeDocument({
+      name: "Dark fallback",
+      type: "dark",
+      colors: { "editor.background": "#1e1e2e", "editor.foreground": "#cdd6f4" },
+    });
+    const colors = resolveThemePalette(definition.id, [definition]).dark;
+    const mutedContrast = wcagContrast(colors["muted-foreground"], colors.background);
+    expect(mutedContrast).toBeGreaterThanOrEqual(4.6);
+    expect(mutedContrast).toBeLessThan(wcagContrast(colors.foreground, colors.background));
+  });
   it("maps workbench and token colors without evaluating theme content", () => {
     const theme = importVsCodeThemeDocument({
       name: "Blue Night",

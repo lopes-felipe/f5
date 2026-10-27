@@ -11,6 +11,7 @@ import {
   NATIVE_OPERATION_WS_METHODS,
   CommandId,
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
+  DEFAULT_SERVER_SETTINGS,
   EventId,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
@@ -2296,6 +2297,101 @@ describe("ChatView timeline (full app)", () => {
   afterEach(() => {
     useRightPanelStore.setState({ byThreadId: {} });
     document.body.innerHTML = "";
+  });
+
+  it.each(["missing-codex", "unprobed-codex", "disabled-selection"] as const)(
+    "sends with a usable provider for a draft with %s",
+    async (scenario) => {
+      useComposerDraftStore.getState().setProjectDraftThreadId(PROJECT_ID, THREAD_ID, {
+        runtimeMode: "full-access",
+        branch: "main",
+        envMode: "local",
+      });
+      if (scenario === "disabled-selection") {
+        useComposerDraftStore.getState().setProvider(THREAD_ID, "codex");
+        useComposerDraftStore
+          .getState()
+          .setProviderInstance(THREAD_ID, ProviderInstanceId.make("codex"));
+        useComposerDraftStore.getState().setModel(THREAD_ID, "gpt-5");
+      }
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createDraftOnlySnapshot(),
+        configureFixture: (next) => {
+          next.serverConfig = {
+            ...next.serverConfig,
+            settings: {
+              ...DEFAULT_SERVER_SETTINGS,
+              providers: {
+                ...DEFAULT_SERVER_SETTINGS.providers,
+                codex: {
+                  ...DEFAULT_SERVER_SETTINGS.providers.codex,
+                  enabled: scenario !== "disabled-selection",
+                },
+              },
+            },
+            providers: [
+              createTestServerProvider("codex", {
+                status: scenario === "unprobed-codex" ? "warning" : "error",
+                enabled: scenario !== "disabled-selection",
+                installed: false,
+              }),
+              createTestServerProvider("claudeAgent", {
+                models: [
+                  {
+                    slug: "claude-fable-5",
+                    name: "Claude Fable 5",
+                    isCustom: false,
+                    capabilities: null,
+                  },
+                ],
+              }),
+            ],
+          };
+        },
+      });
+      try {
+        useComposerDraftStore.getState().setPrompt(THREAD_ID, "Use the available provider");
+        const send = await waitForSendButton();
+        await vi.waitFor(() => expect(send.disabled).toBe(false));
+        send.click();
+        await vi.waitFor(() => {
+          const command = getDispatchCommandRequests("thread.turn.start")[0]?.command as
+            | { provider?: string; modelSelection?: { instanceId: string; model: string } }
+            | undefined;
+          expect(command?.provider).toBe("claudeAgent");
+          expect(command?.modelSelection).toMatchObject({
+            instanceId: "claudeAgent",
+            model: "claude-fable-5",
+          });
+        });
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it("keeps a providerless draft editable and prevents dispatch", async () => {
+    useComposerDraftStore.getState().setProjectDraftThreadId(PROJECT_ID, THREAD_ID);
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      configureFixture: (next) => {
+        next.serverConfig = { ...next.serverConfig, providers: [] };
+      },
+    });
+    try {
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Keep my draft");
+      await vi.waitFor(() => expect(document.body.textContent).toContain("No provider available"));
+      const send = await waitForSendButton();
+      expect(send.disabled).toBe(true);
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+      expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+        "Keep my draft",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
   });
 
   describe("composer redesign", () => {
@@ -4781,6 +4877,15 @@ describe("ChatView timeline (full app)", () => {
       configureFixture: (nextFixture) => {
         nextFixture.serverConfig = {
           ...nextFixture.serverConfig,
+          settings: {
+            ...DEFAULT_SERVER_SETTINGS,
+            providerInstances: {
+              [testCase.selectedInstanceId]: {
+                driver: createTestServerProvider("claudeAgent").driver,
+                enabled: true,
+              },
+            },
+          },
           providers: [
             createTestServerProvider("claudeAgent", {
               version: testCase.defaultIncludesOpus5
@@ -8767,6 +8872,7 @@ describe("ChatView timeline (full app)", () => {
         snapshot,
       });
       try {
+        await waitForTimelineScrollToSettle();
         const paragraph = await vi.waitFor(() => {
           const node = document.querySelector('[data-message-role="assistant"] p');
           expect(node).not.toBeNull();

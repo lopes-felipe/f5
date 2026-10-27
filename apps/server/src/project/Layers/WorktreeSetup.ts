@@ -3,6 +3,7 @@ import { WorkspaceTransition } from "../Services/WorkspaceTransition.ts";
 import { dispatchVerifiedWorkspace } from "../workspaceTransitionContext.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
 import { buildGeneratedWorktreeBranchName } from "../../git/worktreeBranchNames.ts";
+import { resolveTemporaryWorktreeBranch } from "../../git/temporaryWorktreeBranch.ts";
 import { isTemporaryWorktreeBranch, canonicalWorktreePath } from "../../git/worktreePaths.ts";
 import {
   WorktreePreparations,
@@ -682,6 +683,11 @@ export const makeWorktreeSetup = Effect.gen(function* () {
                 );
                 creationIntent = "generated";
               }
+              checkoutBranch = yield* resolveTemporaryWorktreeBranch(
+                git,
+                request.projectCwd,
+                checkoutBranch,
+              );
               worktreePath ??= yield* git.allocateWorktreePath({
                 cwd: request.projectCwd,
                 branch: checkoutBranch,
@@ -1247,7 +1253,7 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         (prepareWorktree.branch !== undefined && !isTemporaryWorktreeBranch(branch));
       if (
         explicit &&
-        (!(yield* git.isValidBranchName(branch)) || /^t3code\/[0-9a-f]{8}$/i.test(branch))
+        (!(yield* git.isValidBranchName(branch)) || isTemporaryWorktreeBranch(branch))
       )
         return yield* new WorktreeSetupError({
           message: "Invalid branch name",

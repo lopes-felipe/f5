@@ -1009,6 +1009,101 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect("preserves tool lifecycle and late-role text without caching tool outputs", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("tool-lifecycle");
+      const sessionID = "http://127.0.0.1:9999/session";
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Run tools",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("opencode"),
+          "anthropic/claude-sonnet-4-5",
+        ),
+      });
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.takeUntil((event) => event.type === "content.delta"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      while (!runtimeMock.state.emitEvent) yield* Effect.yieldNow;
+      const input = { command: "pwd" };
+      const output = "large output\n".repeat(8192);
+      for (const state of [
+        { status: "pending", input, raw: "" },
+        { status: "running", input, title: "pwd", time: { start: 1 } },
+        {
+          status: "completed",
+          input,
+          output,
+          title: "pwd",
+          metadata: {},
+          time: { start: 1, end: 2 },
+        },
+        { status: "error", input, error: "failed", time: { start: 2, end: 3 } },
+      ]) {
+        runtimeMock.state.emitEvent!({
+          type: "message.part.updated",
+          properties: {
+            sessionID,
+            part: {
+              id: state.status === "error" ? "failed-part" : "working-part",
+              sessionID,
+              messageID: "message-tools",
+              type: "tool",
+              callID: state.status === "error" ? "failed-call" : "working-call",
+              tool: "bash",
+              state,
+            },
+          },
+        });
+      }
+      runtimeMock.state.emitEvent!({
+        type: "message.part.updated",
+        properties: {
+          sessionID,
+          part: {
+            id: "late-text",
+            sessionID,
+            messageID: "message-tools",
+            type: "text",
+            text: "Done",
+          },
+        },
+      });
+      runtimeMock.state.emitEvent!({
+        type: "message.updated",
+        properties: { sessionID, info: { id: "message-tools", role: "assistant" } },
+      });
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("2 seconds")));
+      yield* adapter.stopSession(threadId);
+      const tools = events.filter(
+        (event) =>
+          event.type === "item.started" ||
+          event.type === "item.updated" ||
+          event.type === "item.completed",
+      );
+      assert.deepEqual(
+        tools.map((event) => [event.type, event.itemId, event.payload.status]),
+        [
+          ["item.started", "working-call", "inProgress"],
+          ["item.updated", "working-call", "inProgress"],
+          ["item.completed", "working-call", "completed"],
+          ["item.completed", "failed-call", "failed"],
+        ],
+      );
+      assert.equal((tools[2]?.payload.data as { state: { output: string } }).state.output, output);
+      assert.equal(events.at(-1)?.type, "content.delta");
+    }),
+  );
+
   it.effect("emits one session.exited event when stopping a session", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;

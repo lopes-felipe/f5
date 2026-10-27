@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AntigravityInstallation } from "./AntigravityInstallation.ts";
-import type { AntigravityReleaseAsset } from "./antigravityRelease.ts";
+import {
+  resolveAntigravityReleaseAsset,
+  type AntigravityReleaseAsset,
+} from "./antigravityRelease.ts";
 
 // Synthetic archive containing two tiny executable placeholders, never provider binaries.
 const zip = Buffer.from(
@@ -31,6 +34,20 @@ afterEach(async () => {
 });
 
 describe("Antigravity explicit installation", () => {
+  it("resolves verified 1.3.0 assets for every supported platform including Intel Mac", () => {
+    for (const platform of ["darwin", "linux", "win32"] as const) {
+      for (const arch of ["arm64", "x64"]) {
+        const release = resolveAntigravityReleaseAsset(platform, arch);
+        expect(release?.version).toBe("1.3.0");
+        expect(release?.url).toContain("1.3.0");
+        expect(release?.sha256).toMatch(/^[a-f0-9]{64}$/);
+        expect(release?.archiveBytes).toBeGreaterThan(0);
+        expect(release?.executable.bytes).toBeGreaterThan(0);
+        expect(release?.harness.bytes).toBeGreaterThan(0);
+      }
+    }
+    expect(resolveAntigravityReleaseAsset("freebsd", "x64")).toBeNull();
+  });
   it("does not download during status resolution and publishes only a verified complete release", async () => {
     const download = vi.fn(async () => new Response(zip));
     vi.stubGlobal("fetch", download);
