@@ -1110,6 +1110,25 @@ describe("TerminalManager", () => {
     await manager.dispose();
   });
 
+  it.each(["x".repeat(300), "thread:provider:subagent:".repeat(12), "x".repeat(120)])(
+    "persists and removes all terminal histories for a long thread id (%s)",
+    async (threadId) => {
+      const { manager, ptyAdapter, logsDir } = makeManager();
+      const terminalId = "t".repeat(128);
+      await manager.open(openInput({ threadId }));
+      await manager.open(openInput({ threadId, terminalId }));
+      ptyAdapter.processes[0]!.emitData("default\n");
+      ptyAdapter.processes[1]!.emitData("secondary\n");
+      await manager.close({ threadId });
+      expect((await manager.open(openInput({ threadId }))).history).toBe("default\n");
+      expect((await manager.open(openInput({ threadId, terminalId }))).history).toBe("secondary\n");
+      expect(fs.readdirSync(logsDir).every((name) => Buffer.byteLength(name) <= 255)).toBe(true);
+      await manager.close({ threadId, deleteHistory: true });
+      expect(fs.readdirSync(logsDir)).toEqual([]);
+      await manager.dispose();
+    },
+  );
+
   it("migrates legacy transcript filenames to terminal-scoped history path on open", async () => {
     const { manager, logsDir } = makeManager();
     const legacyPath = path.join(logsDir, "thread-1.log");
@@ -1186,6 +1205,17 @@ describe("TerminalManager", () => {
     setEnv("T3CODE_PORT", "3773");
     setEnv("VITE_DEV_SERVER_URL", "http://localhost:5173");
     setEnv("TEST_TERMINAL_KEEP", "keep-me");
+    const multiplexerKeys = [
+      "TMUX",
+      "TMUX_PANE",
+      "STY",
+      "WINDOW",
+      "ZELLIJ",
+      "ZELLIJ_SESSION_NAME",
+      "ZELLIJ_PANE_ID",
+    ];
+    for (const key of multiplexerKeys) setEnv(key, "launching-pane");
+    setEnv("ZELLIJ_CONFIG_DIR", "/custom/zellij");
 
     try {
       const { manager, ptyAdapter } = makeManager();
@@ -1198,6 +1228,10 @@ describe("TerminalManager", () => {
       expect(spawnInput.env.T3CODE_PORT).toBeUndefined();
       expect(spawnInput.env.VITE_DEV_SERVER_URL).toBeUndefined();
       expect(spawnInput.env.TEST_TERMINAL_KEEP).toBe("keep-me");
+      for (const key of multiplexerKeys) expect(spawnInput.env[key]).toBeUndefined();
+      expect(spawnInput.env.ZELLIJ_CONFIG_DIR).toBe("/custom/zellij");
+      await manager.open(openInput({ terminalId: "explicit", env: { TMUX_PANE: "%9" } }));
+      expect(ptyAdapter.spawnInputs[1]?.env.TMUX_PANE).toBe("%9");
 
       await manager.dispose();
     } finally {

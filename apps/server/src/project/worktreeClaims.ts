@@ -1,4 +1,5 @@
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
+import { readManagedWorktreesDirectories } from "../worktreesDirectory.ts";
 import { WorkspaceTransitions } from "../persistence/Services/WorkspaceTransitions.ts";
 import { sameMoveSnapshot, isMoveCopySnapshot, type MoveSnapshot } from "../git/moveSnapshot.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -425,16 +426,18 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
   let branchDeletable = false;
   let discardChanges: DiscardableChanges | undefined;
   const target = yield* canonical(input.path);
-  const root = yield* canonical(
+  const roots =
     input.policy.kind === "legacyCleanup"
-      ? Path.join(legacyT3BaseDir(), "worktrees")
-      : config.worktreesDir,
-  );
-  if (!target || !root) blockedReasons.push("workspace identity could not be verified");
+      ? [yield* canonical(Path.join(legacyT3BaseDir(), "worktrees"))].filter(
+          (root): root is string => root !== null,
+        )
+      : yield* readManagedWorktreesDirectories(config.worktreesDir);
+  if (!target || !roots.length) blockedReasons.push("workspace identity could not be verified");
   else if (input.policy.kind === "externalCleanup") {
     // External checkouts are only ever linked worktrees of a project's own repository.
     const legacyRoot = yield* canonical(Path.join(legacyT3BaseDir(), "worktrees"));
-    if (pathContains(root, target)) blockedReasons.push("inside the F5 worktrees folder");
+    if (roots.some((root) => root === target || pathContains(root, target)))
+      blockedReasons.push("inside the F5 worktrees folder");
     else if (legacyRoot && pathContains(legacyRoot, target))
       blockedReasons.push("inside the legacy T3 worktrees folder");
     const otherRoots = yield* Effect.tryPromise(() => readOtherProfileManagedRoots(config)).pipe(
@@ -451,7 +454,7 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
     );
     if (!projectCwd || !projectRoots.includes(projectCwd))
       blockedReasons.push("not a worktree of an F5 project");
-  } else if (target === root || !pathContains(root, target))
+  } else if (!roots.some((root) => target !== root && pathContains(root, target)))
     blockedReasons.push("outside the allowed worktrees root");
   // Never execute Git in an arbitrary client-supplied checkout.
   if (blockedReasons.length)

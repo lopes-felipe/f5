@@ -1,4 +1,5 @@
 import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { readManagedWorktreesDirectories } from "../../worktreesDirectory.ts";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { setupProjectScript } from "@t3tools/shared/projectScripts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -961,7 +962,7 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
             ? thread.branch
             : `t3code/${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
         baseRef = base!;
-        const managed = yield* canonicalWorkspace(config.worktreesDir);
+        const managed = yield* readManagedWorktreesDirectories(config.worktreesDir);
         const missing = yield* Effect.tryPromise({
           try: async () => {
             try {
@@ -976,7 +977,7 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
         });
         target = {
           path:
-            missing && sourcePath !== managed && pathContains(managed, sourcePath)
+            missing && managed.some((root) => sourcePath !== root && pathContains(root, sourcePath))
               ? sourcePath
               : yield* git.allocateWorktreePath({ cwd: project.workspaceRoot, branch }),
           repository,

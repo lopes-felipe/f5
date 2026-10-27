@@ -1,7 +1,7 @@
 import { registerShutdown, ServerShutdown } from "../../shutdown.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { writeFileStringAtomically } from "../../atomicWrite.ts";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { killProcessTreeAsync } from "@t3tools/shared/processTree";
 import { PROJECT_SCRIPT_ENV_NAMES } from "@t3tools/shared/projectScripts";
 import { BoundedTerminalHistory } from "../BoundedTerminalHistory";
@@ -64,7 +64,18 @@ const DEFAULT_PROCESS_KILL_GRACE_MS = 1_000;
 const DEFAULT_MAX_RETAINED_INACTIVE_SESSIONS = 128;
 const DEFAULT_OPEN_COLS = 120;
 const DEFAULT_OPEN_ROWS = 30;
-const TERMINAL_ENV_BLOCKLIST = new Set(["PORT", "ELECTRON_RENDERER_PORT", "ELECTRON_RUN_AS_NODE"]);
+const TERMINAL_ENV_BLOCKLIST = new Set([
+  "PORT",
+  "ELECTRON_RENDERER_PORT",
+  "ELECTRON_RUN_AS_NODE",
+  "TMUX",
+  "TMUX_PANE",
+  "STY",
+  "WINDOW",
+  "ZELLIJ",
+  "ZELLIJ_SESSION_NAME",
+  "ZELLIJ_PANE_ID",
+]);
 
 const decodeTerminalOpenInput = Schema.decodeUnknownSync(TerminalOpenInput);
 const decodeTerminalRestartInput = Schema.decodeUnknownSync(TerminalRestartInput);
@@ -187,8 +198,18 @@ function toSafeThreadId(threadId: string): string {
   return `terminal_${Encoding.encodeBase64Url(threadId)}`;
 }
 
-function toSafeTerminalId(terminalId: string): string {
-  return Encoding.encodeBase64Url(terminalId);
+const MAX_FILE_NAME_BYTES = 255;
+function hashHistoryId(id: string): string {
+  return createHash("sha256").update(id).digest("base64url");
+}
+
+// "." is outside the base64url alphabet, preventing collisions with encoded names.
+function hashedThreadPart(threadId: string): string {
+  return `terminal_sha256.${hashHistoryId(threadId)}`;
+}
+
+function hasLegacyHistoryPath(threadId: string): boolean {
+  return Buffer.byteLength(`${legacySafeThreadId(threadId)}.log`) <= MAX_FILE_NAME_BYTES;
 }
 
 function toSessionKey(threadId: string, terminalId: string): string {
@@ -1211,7 +1232,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       }
     }
 
-    if (terminalId !== DEFAULT_TERMINAL_ID) {
+    if (terminalId !== DEFAULT_TERMINAL_ID || !hasLegacyHistoryPath(threadId)) {
       return new BoundedTerminalHistory(this.historyLineLimit);
     }
 
@@ -1241,7 +1262,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
 
   private async deleteHistory(threadId: string, terminalId: string): Promise<void> {
     const deletions = [fs.promises.rm(this.historyPath(threadId, terminalId), { force: true })];
-    if (terminalId === DEFAULT_TERMINAL_ID) {
+    if (terminalId === DEFAULT_TERMINAL_ID && hasLegacyHistoryPath(threadId)) {
       deletions.push(fs.promises.rm(this.legacyHistoryPath(threadId), { force: true }));
     }
     try {
@@ -1396,7 +1417,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   }
 
   private async deleteAllHistoryForThread(threadId: string): Promise<void> {
-    const threadPrefix = `${toSafeThreadId(threadId)}_`;
+    const threadParts = [toSafeThreadId(threadId), hashedThreadPart(threadId)];
     try {
       const entries = await fs.promises.readdir(this.logsDir, { withFileTypes: true });
       const removals = entries
@@ -1404,9 +1425,8 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         .map((entry) => entry.name)
         .filter(
           (name) =>
-            name === `${toSafeThreadId(threadId)}.log` ||
             name === `${legacySafeThreadId(threadId)}.log` ||
-            name.startsWith(threadPrefix),
+            threadParts.some((part) => name === `${part}.log` || name.startsWith(`${part}_`)),
         )
         .map((name) => fs.promises.rm(path.join(this.logsDir, name), { force: true }));
       await Promise.all(removals);
@@ -1484,11 +1504,13 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   }
 
   private historyPath(threadId: string, terminalId: string): string {
-    const threadPart = toSafeThreadId(threadId);
-    if (terminalId === DEFAULT_TERMINAL_ID) {
-      return path.join(this.logsDir, `${threadPart}.log`);
-    }
-    return path.join(this.logsDir, `${threadPart}_${toSafeTerminalId(terminalId)}.log`);
+    const isDefault = terminalId === DEFAULT_TERMINAL_ID;
+    const encoded = `${toSafeThreadId(threadId)}${isDefault ? "" : "_" + Encoding.encodeBase64Url(terminalId)}.log`;
+    if (encoded.length <= MAX_FILE_NAME_BYTES) return path.join(this.logsDir, encoded);
+    return path.join(
+      this.logsDir,
+      `${hashedThreadPart(threadId)}${isDefault ? "" : "_" + hashHistoryId(terminalId)}.log`,
+    );
   }
 
   private legacyHistoryPath(threadId: string): string {

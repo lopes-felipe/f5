@@ -408,6 +408,10 @@ const makeServerSettings = Effect.gen(function* () {
   });
 
   const getSettingsFromCache = Cache.get(settingsCache, cacheKey);
+  // Call under writeSemaphore: watcher delivery may lag behind an external edit.
+  const reloadSettingsForWrite = Cache.invalidate(settingsCache, cacheKey).pipe(
+    Effect.andThen(getSettingsFromCache),
+  );
 
   const toSettingsError = (detail: string, cause: unknown) =>
     new ServerSettingsError({
@@ -718,7 +722,7 @@ const makeServerSettings = Effect.gen(function* () {
     migrateClientSetting: ({ key, value }) =>
       writeSemaphore.withPermits(1)(
         Effect.gen(function* () {
-          const current = yield* getSettingsFromCache;
+          const current = yield* reloadSettingsForWrite;
           if (current.clientSettingMigrations[key])
             return { applied: false, currentValue: current[key] };
           const next = {
@@ -787,7 +791,7 @@ const makeServerSettings = Effect.gen(function* () {
                 }),
             });
           }
-          const current = yield* getSettingsFromCache;
+          const current = yield* reloadSettingsForWrite;
           // Apply explicit replacements/removals before resolving references. This lets a
           // user repair a missing secret, while unchanged references still fail closed.
           const patched = yield* materializeProviderEnvironmentSecrets(

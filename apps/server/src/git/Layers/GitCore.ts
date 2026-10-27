@@ -1,4 +1,11 @@
 import { gitConfigArgs, literalGitPathspec } from "@t3tools/shared/git";
+import {
+  canonicalManagedWorktreesDirectories,
+  managedWorktreesDirectories,
+  makeWorktreesSettingsReader,
+  resolveWorktreesDirectory,
+  isFilesystemRoot,
+} from "../../worktreesDirectory.ts";
 import { makeRefSnapshotCache } from "../refSnapshotCache.ts";
 import { gitMutatesRefSnapshot } from "../refMutation.ts";
 import { makeMoveSnapshotOperations } from "../moveSnapshot.ts";
@@ -25,12 +32,7 @@ import {
   parseRemoteFetchUrls,
   NONINTERACTIVE_GIT_ENV as BACKGROUND_GIT_FETCH_ENV,
 } from "../remoteInspection.ts";
-import {
-  isAbsolute as isAbsolutePath,
-  join as joinPath,
-  relative as relativePath,
-  resolve as resolvePath,
-} from "node:path";
+import { isAbsolute as isAbsolutePath, join as joinPath, resolve as resolvePath } from "node:path";
 
 import {
   Cache,
@@ -298,6 +300,10 @@ const makeGitCore = Effect.gen(function* () {
   const git = yield* GitService;
   const preparations = yield* WorktreePreparations;
   const { worktreesDir, baseDir } = yield* ServerConfig;
+  const readWorktreesSettings = yield* makeWorktreesSettingsReader;
+  const managedWorktreesRoots = readWorktreesSettings.pipe(
+    Effect.flatMap((settings) => canonicalManagedWorktreesDirectories(settings, worktreesDir)),
+  );
   const fileSystem = yield* FileSystem.FileSystem;
   const branchRefsCache = makeRefSnapshotCache<
     {
@@ -1378,15 +1384,10 @@ const makeGitCore = Effect.gen(function* () {
                 [],
                 "The target appeared during recreation. Retry verification.",
               );
-            const managedRoot = yield* canonicalPath(worktreesDir);
-            const relative = relativePath(managedRoot, target);
+            const managedRoots = yield* managedWorktreesRoots;
             if (
               !isAbsolutePath(input.path) ||
-              !relative ||
-              relative === ".." ||
-              relative.startsWith("../") ||
-              relative.startsWith("..\\") ||
-              isAbsolutePath(relative)
+              !managedRoots.some((root) => target !== root && pathContains(root, target))
             ) {
               return yield* createGitCommandError(
                 "GitCore.ensureWorktree",
@@ -2228,10 +2229,27 @@ const makeGitCore = Effect.gen(function* () {
 
   const allocateWorktreePath: GitCoreShape["allocateWorktreePath"] = ({ cwd, branch }) =>
     Effect.gen(function* () {
+      const settings = yield* readWorktreesSettings;
+      const directory = resolveWorktreesDirectory(settings.worktreesDirectory, worktreesDir);
+      if (directory === null)
+        return yield* createGitCommandError(
+          "GitCore.allocateWorktreePath",
+          cwd,
+          [],
+          "The worktree location must be an absolute folder on this machine, not a drive root. Change it in Settings → Storage.",
+        );
+      const root = yield* canonicalPath(directory);
+      if (isFilesystemRoot(root))
+        return yield* createGitCommandError(
+          "GitCore.allocateWorktreePath",
+          cwd,
+          [],
+          "The worktree location must not resolve to a drive root. Change it in Settings → Storage.",
+        );
       const common = yield* canonicalPath(yield* resolveCommonDir(cwd));
       const repository = basename(common) === ".git" ? basename(dirname(common)) : basename(common);
       const target = joinPath(
-        worktreesDir,
+        directory,
         `${worktreePathSlug(repository)}-${repositoryIdentityHash(common).slice(0, 12)}`,
         `${worktreePathSlug(branch)}-${createHash("sha256").update(branch).digest("hex").slice(0, 8)}`,
       );
@@ -2242,7 +2260,6 @@ const makeGitCore = Effect.gen(function* () {
           [],
           "The new worktree path exceeds the Windows limit of 180 UTF-16 code units.",
         );
-      const root = yield* canonicalPath(worktreesDir);
       const canonical = yield* canonicalPath(target);
       if (canonical === root || !pathContains(root, canonical))
         return yield* createGitCommandError(
@@ -2312,11 +2329,15 @@ const makeGitCore = Effect.gen(function* () {
           .exists(worktreePath)
           .pipe(Effect.orElseSucceed(() => true));
         const target = yield* canonicalPath(worktreePath);
-        const managedRoot = yield* canonicalPath(worktreesDir);
+        const settings = yield* readWorktreesSettings;
+        const managedDirectories = managedWorktreesDirectories(settings, worktreesDir);
+        const managedRoots = yield* managedWorktreesRoots;
         // Explicit paths remain supported, but a symlink may never redirect a managed allocation.
         if (
-          pathContains(resolvePath(worktreesDir), resolvePath(worktreePath)) &&
-          (target === managedRoot || !pathContains(managedRoot, target))
+          managedDirectories.some((root) =>
+            pathContains(resolvePath(root), resolvePath(worktreePath)),
+          ) &&
+          !managedRoots.some((root) => target !== root && pathContains(root, target))
         )
           return yield* createGitCommandError(
             "GitCore.createWorktree",

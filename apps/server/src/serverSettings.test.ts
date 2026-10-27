@@ -8,7 +8,17 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { assert, it } from "@effect/vitest";
-import { Cause, Exit, Effect, FileSystem, Layer, Logger, Schema, Stream } from "effect";
+import {
+  Cause,
+  Exit,
+  Effect,
+  FileSystem,
+  Layer,
+  Logger,
+  Schema,
+  Stream,
+  PlatformError,
+} from "effect";
 import { ServerConfig } from "./config.ts";
 import { SecretStoreError, ServerSecretStore } from "./auth/Services/ServerSecretStore.ts";
 import {
@@ -29,6 +39,30 @@ const makeServerSettingsLayer = () =>
   );
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect("applies a save to external edits before the watcher reloads them", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      yield* service.getSettings;
+      yield* fs.writeFileString(
+        config.settingsPath!,
+        JSON.stringify({ worktreesDirectory: "/external", futureSetting: "preserved" }),
+      );
+      yield* service.updateSettings({ enableAssistantStreaming: false });
+      const saved = JSON.parse(yield* fs.readFileString(config.settingsPath!));
+      assert.equal(saved.worktreesDirectory, "/external");
+      assert.equal(saved.futureSetting, "preserved");
+      assert.equal(saved.enableAssistantStreaming, false);
+      const broken = '{ "worktreesDirectory": ';
+      yield* fs.writeFileString(config.settingsPath!, broken);
+      const result = yield* Effect.exit(
+        service.updateSettings({ worktreesDirectory: "/overwrite" }),
+      );
+      assert.isTrue(Exit.isFailure(result));
+      assert.equal(yield* fs.readFileString(config.settingsPath!), broken);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
   it.effect("defaults legacy password masking to fast and persists a conservative choice", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsService;
@@ -790,10 +824,30 @@ it.layer(NodeServices.layer)("server settings", (it) => {
 
   it.effect(
     "restores replaced and removed secrets and removes new secrets after settings publication fails",
-    () =>
-      Effect.gen(function* () {
+    () => {
+      let failWrites = false;
+      const filesystem = Layer.effect(
+        FileSystem.FileSystem,
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          return {
+            ...fs,
+            rename: (...args: Parameters<typeof fs.rename>) =>
+              failWrites
+                ? Effect.fail(
+                    PlatformError.systemError({
+                      _tag: "Unknown",
+                      module: "FileSystem",
+                      method: "rename",
+                      description: "injected publication failure",
+                    }),
+                  )
+                : fs.rename(...args),
+          };
+        }),
+      );
+      return Effect.gen(function* () {
         const service = yield* ServerSettingsService;
-        const fs = yield* FileSystem.FileSystem;
         const config = yield* ServerConfig;
         assert.ok(config.settingsPath);
         const before = yield* service.updateSettings({
@@ -808,9 +862,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
             },
           },
         });
-        const saved = config.settingsPath + ".saved";
-        yield* fs.rename(config.settingsPath, saved);
-        yield* fs.makeDirectory(config.settingsPath);
+        failWrites = true;
         const result = yield* Effect.result(
           service.updateSettings({
             providerInstances: {
@@ -830,8 +882,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           (yield* service.getSettings).providerInstances[ProviderInstanceId.make("codex")],
           before.providerInstances[ProviderInstanceId.make("codex")],
         );
-        yield* fs.remove(config.settingsPath, { recursive: true });
-        yield* fs.rename(saved, config.settingsPath);
+        failWrites = false;
         // A later redacted reference must not recover the rejected new value.
         const recovered = yield* service.updateSettings({
           providerInstances: {
@@ -846,7 +897,8 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           recovered.providerInstances[ProviderInstanceId.make("codex")]?.environment?.[0]?.value,
           "",
         );
-      }).pipe(Effect.provide(makeServerSettingsLayer())),
+      }).pipe(Effect.provide(makeServerSettingsLayer().pipe(Layer.provideMerge(filesystem))));
+    },
   );
   it.effect("rolls back partial secret writes even when the failed operation already mutated", () =>
     Effect.gen(function* () {

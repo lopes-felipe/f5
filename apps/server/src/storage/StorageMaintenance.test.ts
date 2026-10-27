@@ -3569,6 +3569,68 @@ it.layer(
   );
 });
 
+it.layer(
+  makeStorageTestLayer({ gitCore: "real" }).pipe(
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+  ),
+)("StorageMaintenance custom worktree locations", (it) => {
+  it.effect(
+    "reviews and removes worktrees in both current and previous custom roots",
+    () =>
+      withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance;
+          const config = yield* ServerConfig;
+          const settings = yield* ServerSettingsService;
+          const sql = yield* SqlClient.SqlClient;
+          yield* Effect.promise(() => new ProfileRegistryStore(config.defaultStateDir!).init());
+          const repo = yield* Effect.promise(() => makeClonedRepo("f5-custom-storage-"));
+          yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+          const oldRoot = NodePath.join(config.baseDir, "old-worktrees");
+          const currentRoot = NodePath.join(config.baseDir, "new-worktrees");
+          yield* settings.updateSettings({ worktreesDirectory: oldRoot });
+          yield* settings.updateSettings({ worktreesDirectory: currentRoot });
+          const oldTree = NodePath.join(oldRoot, "repo", "old");
+          const currentTree = NodePath.join(currentRoot, "repo", "current");
+          yield* Effect.promise(async () => {
+            runGit(repo.root, "worktree", "add", "-q", "-b", "custom-old", oldTree, "main");
+            runGit(repo.root, "worktree", "add", "-q", "-b", "custom-current", currentTree, "main");
+          });
+          yield* seedProject({
+            sql,
+            projectId: "custom-storage-project",
+            workspaceRoot: repo.root,
+          });
+          const report = yield* storage.inspect({ force: true });
+          const targets = report.categories.find(
+            (category) => category.id === "inactiveF5Worktrees",
+          )!.targets;
+          for (const tree of [oldTree, currentTree])
+            assert.equal(targets.find((target) => target.path === tree)?.safeToDelete, true);
+          assert.deepEqual(
+            report.categories.find((category) => category.id === "externalWorktrees")!.targets,
+            [],
+          );
+          const cleaned = yield* storage.cleanup({
+            operationId: "custom-root-cleanup",
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["inactiveF5Worktrees"],
+            targetSelections: [
+              { categoryId: "inactiveF5Worktrees", targetIds: targets.map((target) => target.id) },
+            ],
+            confirmationText: "DELETE",
+            options: { vacuumAfterDeletes: false },
+          });
+          assert.equal(cleaned.results[0]?.status, "Cleaned");
+          assert.equal(yield* Effect.promise(() => pathExists(oldTree)), false);
+          assert.equal(yield* Effect.promise(() => pathExists(currentTree)), false);
+        }),
+      ),
+    60_000,
+  );
+});
+
 it.layer(makeStorageTestLayer({ gitCore: "real" }))(
   "StorageMaintenance automatic worktree cleanup",
   (it) => {

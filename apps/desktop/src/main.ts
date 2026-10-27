@@ -1,4 +1,5 @@
 import { registerHtmlPreviewIpc } from "./htmlPreview";
+import { appZoomMenu, zoomAppContents, type AppZoomDirection } from "./appZoom";
 import { desktopCloseWindowItem, desktopWindowMenu, selectAppMenuWindow } from "./windowMenu";
 import {
   BackendOutputTail,
@@ -2425,6 +2426,21 @@ function registerDesktopProtocol(profileSession = electronSession.defaultSession
   registeredDesktopSessions.add(profileSession);
 }
 
+function zoomMainWindow(direction: AppZoomDirection): void {
+  const window = selectAppMenuWindow(
+    BrowserWindow.getFocusedWindow(),
+    mainWindow,
+    BrowserWindow.getAllWindows(),
+    (candidate) => !candidate.isDestroyed() && profileByWebContentsId.has(candidate.webContents.id),
+  );
+  if (!window || window.webContents.isDestroyed()) return;
+  zoomAppContents(window.webContents, direction);
+  for (const [tabId, entry] of previewTabs) {
+    const guest = getPreviewWebContents(tabId);
+    if (guest && !guest.isDestroyed()) guest.setZoomFactor(entry.zoomFactor);
+  }
+}
+
 function dispatchMenuAction(action: string): void {
   const existingWindow = selectAppMenuWindow(
     BrowserWindow.getFocusedWindow(),
@@ -2597,10 +2613,7 @@ function configureApplicationMenu(): void {
         { role: "forceReload" },
         { role: "toggleDevTools" },
         { type: "separator" },
-        { role: "resetZoom" },
-        { role: "zoomIn", accelerator: "CmdOrCtrl+=" },
-        { role: "zoomIn", accelerator: "CmdOrCtrl+Plus", visible: false },
-        { role: "zoomOut" },
+        ...appZoomMenu(zoomMainWindow),
         { type: "separator" },
         { role: "togglefullscreen" },
       ],

@@ -65,6 +65,33 @@ it("blocks shared-root changes for another profile's archived effective workspac
         siblingManaged,
       ),
     ).rejects.toThrow(/Another profile owns/);
+    const custom = Path.join(root, "other-custom");
+    const previous = Path.join(root, "other-previous");
+    await FS.mkdir(custom);
+    await FS.mkdir(previous);
+    await FS.writeFile(
+      Path.join(otherState, "settings.json"),
+      JSON.stringify({
+        worktreesDirectory: custom,
+        previousWorktreesDirectories: [previous],
+      }),
+    );
+    for (const managed of [custom, previous]) {
+      await expect(
+        assertNotOtherProfileManagedCheckout(
+          { defaultStateDir: state, profile: current, baseDir: root },
+          Path.join(managed, "repo", "topic"),
+        ),
+      ).rejects.toThrow(/Another profile owns/);
+    }
+    await FS.writeFile(Path.join(otherState, "settings.json"), '{"credential":"private-value",');
+    await expect(
+      assertNotOtherProfileManagedCheckout(
+        { defaultStateDir: state, profile: current, baseDir: root },
+        siblingManaged,
+      ),
+    ).rejects.toThrow("Managed workspace ownership could not be established.");
+    await FS.writeFile(Path.join(otherState, "settings.json"), "{}");
     const db = new DatabaseSync(Path.join(otherState, "state.sqlite"));
     try {
       db.exec(

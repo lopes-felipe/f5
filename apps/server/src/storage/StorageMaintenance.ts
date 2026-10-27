@@ -86,6 +86,11 @@ import { withWorktreeLifecycleLock } from "../project/Layers/WorktreeLifecycleCo
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import {
+  makeWorktreesSettingsReader,
+  canonicalManagedWorktreesDirectories,
+  validManagedWorktreesDirectories,
+} from "../worktreesDirectory.ts";
+import {
   type CodexMarketplaceLeftover,
   codexMarketplaceLeftoverBytes,
   listCodexMarketplaceLeftovers,
@@ -707,6 +712,33 @@ const makeStorageMaintenance = Effect.gen(function* () {
   const git = yield* GitCore;
   const eventStore = yield* OrchestrationEventStore;
   const settingsService = yield* Effect.serviceOption(ServerSettingsService);
+  const readWorktreesSettings = yield* makeWorktreesSettingsReader;
+  const managedWorktreesRoots = readWorktreesSettings.pipe(
+    Effect.flatMap((settings) => validManagedWorktreesDirectories(settings, config.worktreesDir)),
+  );
+  const canonicalWorktreesRoots = readWorktreesSettings.pipe(
+    Effect.flatMap((settings) =>
+      canonicalManagedWorktreesDirectories(settings, config.worktreesDir),
+    ),
+  );
+  const listManagedWorktrees = managedWorktreesRoots.pipe(
+    Effect.flatMap((roots) =>
+      Effect.tryPromise(async () => {
+        const listings = await Promise.all(
+          roots.map((root) =>
+            listGitWorktreeDirectories({
+              root,
+              maxDepth: WORKTREE_SCAN_MAX_DEPTH,
+            }),
+          ),
+        );
+        return {
+          paths: [...new Set(listings.flatMap((listing) => listing.paths))],
+          warnings: listings.flatMap((listing) => listing.warnings),
+        };
+      }),
+    ),
+  );
   const withSql = Effect.provideService(SqlClient.SqlClient, sql);
   const readPages = withSql(readDatabasePages);
   const compactDatabase = (operationId?: string) =>
@@ -1241,19 +1273,17 @@ const makeStorageMaintenance = Effect.gen(function* () {
       const disposablePathsFor = yield* makeDisposablePathsLookup;
       const listed = scan
         ? { paths: scan.paths, warnings: [] }
-        : yield* Effect.tryPromise({
-            try: () =>
-              listGitWorktreeDirectories({
-                root: config.worktreesDir,
-                maxDepth: WORKTREE_SCAN_MAX_DEPTH,
-              }),
-            catch: (cause) =>
-              new StorageMaintenanceError({
-                operation: "StorageMaintenance.inspect.f5Worktrees.list",
-                message: "Failed to inspect F5 worktrees.",
-                cause,
-              }),
-          });
+        : yield* listManagedWorktrees.pipe(
+            Effect.mapError(
+              (cause) =>
+                new StorageMaintenanceError({
+                  operation: "StorageMaintenance.inspect.f5Worktrees.list",
+                  message: "Failed to inspect F5 worktrees.",
+                  cause,
+                }),
+            ),
+          );
+      const managedRoots = yield* managedWorktreesRoots;
       warnings.push(...listed.warnings);
 
       const targets = yield* Effect.forEach(
@@ -1299,9 +1329,11 @@ const makeStorageMaintenance = Effect.gen(function* () {
 
             let disabledReason: string | undefined;
             let review: WorktreeReview | undefined;
-            if (Path.resolve(targetPath) === Path.resolve(config.worktreesDir)) {
+            if (managedRoots.includes(Path.resolve(targetPath))) {
               disabledReason = "Refused to delete the configured F5 worktrees root.";
-            } else if (!isPathWithinRoot({ root: config.worktreesDir, target: targetPath })) {
+            } else if (
+              !managedRoots.some((root) => isPathWithinRoot({ root, target: targetPath }))
+            ) {
               disabledReason = "Worktree is outside the configured F5 worktrees root.";
             } else if (activeReferences.length > 0) {
               disabledReason = "Referenced by an active thread.";
@@ -1319,7 +1351,10 @@ const makeStorageMaintenance = Effect.gen(function* () {
             }
             const discards = disabledReason === undefined ? discardDetail(review) : null;
 
-            const relativeLabel = Path.relative(config.worktreesDir, targetPath);
+            const relativeLabel = Path.relative(
+              managedRoots.find((root) => pathContains(root, targetPath)) ?? config.worktreesDir,
+              targetPath,
+            );
             const contextThread = nonDeletedReferences.toSorted((a, b) =>
               b.lastInteractionAt.localeCompare(a.lastInteractionAt),
             )[0];
@@ -1411,7 +1446,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
     Effect.gen(function* () {
       const warnings: StoragePathWarning[] = [];
       const allThreads = scan?.threads ?? (yield* queryThreadRows());
-      const managedRoot = yield* canonicalOrNull(config.worktreesDir);
+      const managedRoots = yield* canonicalWorktreesRoots;
       const legacyRoot = yield* canonicalOrNull(Path.join(legacyT3BaseDir(), "worktrees"));
       const disposablePathsFor = yield* makeDisposablePathsLookup;
       const listed = yield* listProjectRegistrations();
@@ -1419,7 +1454,10 @@ const makeStorageMaintenance = Effect.gen(function* () {
       const candidates: Array<(typeof listed.registrations)[number]> = [];
       for (const registration of listed.registrations) {
         const canonicalPath = registration.entry.canonicalPath;
-        if (managedRoot && pathContains(managedRoot, canonicalPath)) continue;
+        if (
+          managedRoots.some((root) => root === canonicalPath || pathContains(root, canonicalPath))
+        )
+          continue;
         if (legacyRoot && pathContains(legacyRoot, canonicalPath)) continue;
         if (listed.projectRoots.includes(canonicalPath)) continue;
         const stat = yield* Effect.tryPromise(() => safeLstat(registration.entry.path)).pipe(
@@ -1630,12 +1668,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
 
       phase("files");
       const rootTraversalStartedAt = Date.now();
-      const listedWorktrees = yield* Effect.tryPromise(() =>
-        listGitWorktreeDirectories({
-          root: config.worktreesDir,
-          maxDepth: WORKTREE_SCAN_MAX_DEPTH,
-        }),
-      );
+      const managedRoots = yield* managedWorktreesRoots;
+      const listedWorktrees = yield* listManagedWorktrees;
       const providerHomesDir =
         config.providerHomesDir ?? Path.join(config.stateDir, "provider-homes");
       let providerHomesListingFailed = false;
@@ -1661,7 +1695,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
         config.logsDir,
         config.providerLogsDir,
         config.attachmentsDir,
-        config.worktreesDir,
+        ...managedRoots,
         providerHomesDir,
         ...listedWorktrees.paths,
       ]);
@@ -1671,14 +1705,14 @@ const makeStorageMaintenance = Effect.gen(function* () {
       let visited = 0,
         lastProgressAt = 0;
       const measured = yield* Effect.tryPromise(() =>
-        measureTree([config.stateDir, config.worktreesDir], {
+        measureTree([config.stateDir, ...managedRoots], {
           ...(signal ? { signal } : {}),
           checkpoints: [
             config.stateDir,
             config.logsDir,
             config.providerLogsDir,
             config.attachmentsDir,
-            config.worktreesDir,
+            ...managedRoots,
             providerHomesDir,
             ...providerChildren,
             ...listedWorktrees.paths,
@@ -1730,7 +1764,11 @@ const makeStorageMaintenance = Effect.gen(function* () {
       });
       const logsUsage = usageAt(config.logsDir);
       const attachmentsUsage = usageAt(config.attachmentsDir);
-      const worktreesUsage = usageAt(config.worktreesDir);
+      const worktreesUsage = {
+        bytes: sumNonOverlappingPathUsages(
+          managedRoots.map((root) => ({ path: root, bytes: usageAt(root).bytes })),
+        ),
+      };
       const providerHomesUsage = usageAt(providerHomesDir);
       const databaseBytes = yield* Effect.tryPromise(() => databaseFileBytes(config.dbPath));
       const attachmentsStartedAt = Date.now();
@@ -2177,7 +2215,9 @@ const makeStorageMaintenance = Effect.gen(function* () {
               ]
             : category.section === "providers"
               ? category.targets.flatMap((target) => (target.path ? [target.path] : []))
-              : [root];
+              : category.section === "worktrees"
+                ? managedRoots
+                : [root];
         const errors = warnings.filter((warning) =>
           measurementRoots.some(
             (root) =>
@@ -2241,16 +2281,21 @@ const makeStorageMaintenance = Effect.gen(function* () {
         .filter(
           (target) =>
             !pathContainsOrEquals(config.stateDir, target.path) &&
-            !pathContainsOrEquals(config.worktreesDir, target.path),
+            !managedRoots.some((root) => pathContainsOrEquals(root, target.path)),
         );
       const legacyOverlap =
         (legacyUsages.some((entry) => pathContainsOrEquals(entry.path, config.stateDir))
           ? usageAt(config.stateDir).bytes
           : 0) +
-        (!pathContainsOrEquals(config.stateDir, config.worktreesDir) &&
-        legacyUsages.some((entry) => pathContainsOrEquals(entry.path, config.worktreesDir))
-          ? worktreesUsage.bytes
-          : 0);
+        sumNonOverlappingPathUsages(
+          managedRoots
+            .filter(
+              (root) =>
+                !pathContainsOrEquals(config.stateDir, root) &&
+                legacyUsages.some((entry) => pathContainsOrEquals(entry.path, root)),
+            )
+            .map((root) => ({ path: root, bytes: usageAt(root).bytes })),
+        );
       const legacyBytes = Math.max(0, sumNonOverlappingPathUsages(legacyUsages) - legacyOverlap);
       const usage: Omit<StorageUsageReport, "scanId"> = {
         scannedAt: nowIso(),
@@ -3280,10 +3325,13 @@ const makeStorageMaintenance = Effect.gen(function* () {
         Effect.gen(function* () {
           if (checkCancelled(operationId)) return { kind: "skipped" as const, warnings: [] };
           if (input.kind === "storageMaintenance") {
+            const allowedRoot =
+              (yield* managedWorktreesRoots).find((root) => pathContains(root, targetPath)) ??
+              config.worktreesDir;
             const reviewedPath = yield* Effect.promise(() =>
               validateDeletablePath({
                 path: targetPath,
-                allowedRoot: config.worktreesDir,
+                allowedRoot,
                 expectedIdentity: reviewIdentity(operationId, targetPath),
                 directoryIdentityOnly: true,
               }),
@@ -3465,12 +3513,9 @@ const makeStorageMaintenance = Effect.gen(function* () {
   /** Missing worktree folders that were inside the F5 worktrees folder. */
   const isManagedWorktreePath = (path: string) =>
     Effect.gen(function* () {
-      const managedRoot = yield* canonicalOrNull(config.worktreesDir);
+      const managedRoots = [...(yield* managedWorktreesRoots), ...(yield* canonicalWorktreesRoots)];
       const resolved = Path.resolve(path);
-      return (
-        pathContains(Path.resolve(config.worktreesDir), resolved) ||
-        (managedRoot !== null && pathContains(managedRoot, resolved))
-      );
+      return managedRoots.some((root) => resolved !== root && pathContains(root, resolved));
     });
 
   /**
@@ -3590,14 +3635,15 @@ const makeStorageMaintenance = Effect.gen(function* () {
           completedTargets += 1;
           continue;
         }
-        if (Path.resolve(targetPath) === Path.resolve(config.worktreesDir)) {
+        const managedRoots = yield* managedWorktreesRoots;
+        if (managedRoots.includes(Path.resolve(targetPath))) {
           warnings.push(
             warningFor(targetPath, "Refused to delete the configured F5 worktrees root."),
           );
           completedTargets += 1;
           continue;
         }
-        if (!isPathWithinRoot({ root: config.worktreesDir, target: targetPath })) {
+        if (!managedRoots.some((root) => isPathWithinRoot({ root, target: targetPath }))) {
           warnings.push(warningFor(targetPath, "Target is outside the F5 worktrees root."));
           completedTargets += 1;
           continue;

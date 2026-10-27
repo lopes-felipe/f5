@@ -508,6 +508,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "storage.automation": {
     category: "storage",
   },
+  "storage.worktree-location": {
+    category: "storage",
+  },
   "storage.backup": {
     category: "storage",
   },

@@ -4,7 +4,10 @@ import { canonicalWorktreePath } from "../git/worktreePaths.ts";
 import { pathContains } from "../project/Layers/WorktreeLifecycleCoordinator.ts";
 import * as FS from "node:fs/promises";
 import * as Path from "node:path";
-import type { ProfileSummary } from "@t3tools/contracts";
+import { ServerSettings, type ProfileSummary } from "@t3tools/contracts";
+import { Schema } from "effect";
+import { fromLenientJson } from "@t3tools/shared/schemaJson";
+import { managedWorktreesDirectories, isFilesystemRoot } from "../worktreesDirectoryPaths.ts";
 import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { executionDirectoryIssue } from "./executionDirectory";
 import { ProfileRegistryStore } from "./ProfileRegistryStore.ts";
@@ -157,18 +160,37 @@ export async function readOtherProfileManagedRoots(
   if (!config.defaultStateDir || !config.profile) return [];
   const registry = await new ProfileRegistryStore(config.defaultStateDir).read();
   if (!registry.ok) throw new Error("Managed workspace ownership could not be established.");
-  return Promise.all(
+  const roots = await Promise.all(
     registry.registry.profiles
       .filter((profile) => profile.id !== config.profile!.id)
-      .map((profile) =>
-        canonicalWorktreePath(
-          Path.join(
-            profile.isDefault ? config.baseDir : profileStateDir(config.defaultStateDir!, profile),
-            "worktrees",
+      .map(async (profile) => {
+        const stateDir = profileStateDir(config.defaultStateDir!, profile);
+        let raw = "{}";
+        try {
+          raw = await FS.readFile(Path.join(stateDir, "settings.json"), "utf8");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        const settings = Schema.decodeUnknownOption(
+          fromLenientJson(
+            Schema.Struct({
+              worktreesDirectory: ServerSettings.fields.worktreesDirectory,
+              previousWorktreesDirectories: ServerSettings.fields.previousWorktreesDirectories,
+            }),
           ),
-        ),
-      ),
+        )(raw);
+        if (settings._tag === "None")
+          throw new Error("Managed workspace ownership could not be established.");
+        const directories = managedWorktreesDirectories(
+          settings.value,
+          Path.join(profile.isDefault ? config.baseDir : stateDir, "worktrees"),
+        );
+        return (await Promise.all(directories.map(canonicalWorktreePath))).filter(
+          (root) => !isFilesystemRoot(root),
+        );
+      }),
   );
+  return [...new Set(roots.flat())];
 }
 
 /** A project root cannot turn another profile's managed checkout into an attachable target. */

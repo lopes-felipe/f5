@@ -17,6 +17,17 @@ import {
 } from "./serverSettings";
 
 describe("serverSettings helpers", () => {
+  it("remembers former worktree locations across changes and resets", () => {
+    const first = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, { worktreesDirectory: "/a" });
+    expect(first.previousWorktreesDirectories).toEqual([]);
+    const second = applyServerSettingsPatch(first, { worktreesDirectory: "/b" });
+    expect(second.previousWorktreesDirectories).toEqual(["/a"]);
+    const reset = applyServerSettingsPatch(second, { worktreesDirectory: "" });
+    expect(reset.previousWorktreesDirectories).toEqual(["/a", "/b"]);
+    expect(
+      applyServerSettingsPatch(reset, { worktreesDirectory: "/a" }).previousWorktreesDirectories,
+    ).toEqual(["/b"]);
+  });
   it("defaults summaries to Luna low independently of Git generation", () => {
     expect(DEFAULT_SERVER_SETTINGS.sessionNotesModelSelection).toEqual({
       instanceId: "codex",
