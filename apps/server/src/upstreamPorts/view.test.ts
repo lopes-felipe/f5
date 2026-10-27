@@ -1,4 +1,5 @@
 import { ProjectId } from "@t3tools/contracts";
+import { sha256Hex } from "@t3tools/shared/upstreamPorts";
 import { describe, expect, it } from "vitest";
 
 import { decisionFields, nextEpoch, suggestionDecision } from "./decisions.ts";
@@ -467,22 +468,46 @@ describe("topic files", () => {
             ],
             paths: ["src/file0.ts", "src/file1.ts", "logo.png"],
             totalFiles: 3,
+            // src/file0.ts is past git's per-file count limit but still in the commit totals.
+            added: 9,
+            deleted: 1,
           },
         ],
-        [sha(2), { files: [], paths, totalFiles: paths.length }],
+        [sha(2), { files: [], paths, totalFiles: paths.length, added: 320, deleted: 0 }],
       ]),
       new Set(["src/file1.ts"]),
+      63,
     );
+    const anchor = (path: string) => `diff-${sha256Hex(path)}`;
     expect(files.commits[0]!.files).toEqual([
-      { path: "src/file1.ts", added: 4, deleted: 1, existsInF5: true },
-      { path: "logo.png", added: null, deleted: null, existsInF5: false },
-      { path: "src/file0.ts", added: null, deleted: null, existsInF5: false },
+      {
+        path: "src/file1.ts",
+        added: 4,
+        deleted: 1,
+        existsInF5: true,
+        diffAnchor: anchor("src/file1.ts"),
+      },
+      {
+        path: "logo.png",
+        added: null,
+        deleted: null,
+        existsInF5: false,
+        diffAnchor: anchor("logo.png"),
+      },
+      {
+        path: "src/file0.ts",
+        added: null,
+        deleted: null,
+        existsInF5: false,
+        diffAnchor: anchor("src/file0.ts"),
+      },
     ]);
     expect(files.commits[1]!.files).toHaveLength(300);
     expect(files.commits[1]!.truncated).toBe(true);
     expect(files.commits[1]!.totalFiles).toBe(320);
-    // Paths count once across commits.
-    expect(files.totals).toEqual({ files: 321, added: 4, deleted: 1, existingInF5: 1 });
+    // Paths count once across commits; line counts cover every file, counted or not.
+    expect(files.totals).toEqual({ files: 321, added: 329, deleted: 1, existingInF5: 1 });
+    expect(files.totalCommits).toBe(63);
   });
 
   it("marks commits missing from the clone, and unknown f5 paths as null", () => {
@@ -491,7 +516,13 @@ describe("topic files", () => {
       new Map([
         [
           sha(1),
-          { files: [{ path: "a.ts", added: 1, deleted: 0 }], paths: ["a.ts"], totalFiles: 1 },
+          {
+            files: [{ path: "a.ts", added: 1, deleted: 0 }],
+            paths: ["a.ts"],
+            totalFiles: 1,
+            added: 1,
+            deleted: 0,
+          },
         ],
       ]),
       null,

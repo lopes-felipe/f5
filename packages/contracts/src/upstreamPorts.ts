@@ -579,6 +579,8 @@ export const UpstreamTopicDetail = Schema.Struct({
 export type UpstreamTopicDetail = typeof UpstreamTopicDetail.Type;
 
 export const UPSTREAM_MAX_FILES_PER_COMMIT = 300;
+/** Changed files cover at most this many of a topic's commits. */
+export const UPSTREAM_MAX_FILES_COMMITS = 50;
 
 export const UpstreamChangedFile = Schema.Struct({
   path: Schema.String,
@@ -587,6 +589,8 @@ export const UpstreamChangedFile = Schema.Struct({
   deleted: Schema.NullOr(NonNegativeInt),
   /** Whether the path exists on f5's default branch; `null` when that is unknown. */
   existsInF5: Schema.NullOr(Schema.Boolean),
+  /** GitHub's anchor for the file on the commit page (`diff-<sha256 of the path>`). */
+  diffAnchor: Schema.String,
 });
 export type UpstreamChangedFile = typeof UpstreamChangedFile.Type;
 
@@ -601,7 +605,11 @@ export const UpstreamCommitFiles = Schema.Struct({
 export type UpstreamCommitFiles = typeof UpstreamCommitFiles.Type;
 
 export const UpstreamTopicFiles = Schema.Struct({
+  /** The topic's first commits, at most `UPSTREAM_MAX_FILES_COMMITS`. */
   commits: Schema.Array(UpstreamCommitFiles),
+  /** Every commit of the topic; more than `commits.length` when the list was cut. */
+  totalCommits: NonNegativeInt,
+  /** Over `commits`: line counts include files past the per-commit display cap. */
   totals: Schema.Struct({
     files: NonNegativeInt,
     added: NonNegativeInt,
@@ -643,16 +651,26 @@ export const UpstreamDecision = Schema.Union([
 ]);
 export type UpstreamDecision = typeof UpstreamDecision.Type;
 
+const UndoToken = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128));
+
 export const UpstreamDecideInput = Schema.Struct({
   projectId: ProjectId,
   topicIds: TopicIds(UPSTREAM_MAX_DECIDE_TOPICS),
   decision: UpstreamDecision,
+  /**
+   * The token an earlier batch of the same user action returned. This batch
+   * joins it, so one undo reverts the whole action; a new token is minted
+   * when it has expired.
+   */
+  undoToken: Schema.optionalKey(UndoToken),
 });
 export type UpstreamDecideInput = typeof UpstreamDecideInput.Type;
 
 export const UpstreamAcceptSuggestionsInput = Schema.Struct({
   projectId: ProjectId,
   topicIds: TopicIds(UPSTREAM_MAX_DECIDE_TOPICS),
+  /** See `UpstreamDecideInput.undoToken`. */
+  undoToken: Schema.optionalKey(UndoToken),
 });
 export type UpstreamAcceptSuggestionsInput = typeof UpstreamAcceptSuggestionsInput.Type;
 
@@ -660,14 +678,17 @@ export const UpstreamDecideResult = Schema.Struct({
   revision: Schema.String,
   updated: Schema.Array(UpstreamTopicId),
   unchanged: Schema.Array(UpstreamTopicId),
-  /** Reverts `updated` through `undoDecisions` for a while; `null` when nothing changed. */
+  /**
+   * Reverts `updated`, plus the batches that joined the same token, through
+   * `undoDecisions` for a while; `null` when nothing changed and no token was passed.
+   */
   undoToken: Schema.NullOr(Schema.String),
 });
 export type UpstreamDecideResult = typeof UpstreamDecideResult.Type;
 
 export const UpstreamUndoDecisionsInput = Schema.Struct({
   projectId: ProjectId,
-  undoToken: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  undoToken: UndoToken,
 });
 export type UpstreamUndoDecisionsInput = typeof UpstreamUndoDecisionsInput.Type;
 

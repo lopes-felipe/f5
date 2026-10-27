@@ -504,8 +504,9 @@ export interface UndoEntry {
   /** Also the toast id. */
   readonly id: string;
   readonly projectId: ProjectId;
-  /** One per decision batch, oldest first. */
-  readonly tokens: ReadonlyArray<string>;
+  /** Every batch of the action joins this one token. */
+  readonly token: string;
+  readonly title: string;
   readonly expiresAt: number;
 }
 
@@ -515,6 +516,11 @@ export function liveUndoEntries(entries: ReadonlyArray<UndoEntry>, now: number):
 
 export function undoToastTitle(count: number): string {
   return `Undid the decision for ${count} topic${count === 1 ? "" : "s"}`;
+}
+
+/** The note for topics an undo left alone; they changed since, in one of several ways. */
+export function undoKeptTitle(count: number): string {
+  return `${topicCount(count)} changed since and ${count === 1 ? "was" : "were"} left as ${count === 1 ? "it is" : "they are"}`;
 }
 
 // ── Changed files and history ──────────────────────────────────────────
@@ -531,6 +537,7 @@ export interface TopicFileRow {
   readonly deleted: number | null;
   /** The newest commit that touches the path, for the file link. */
   readonly sha: string;
+  readonly diffAnchor: string;
   readonly existsInF5: boolean | null;
 }
 
@@ -547,17 +554,33 @@ export function aggregateTopicFiles(files: UpstreamTopicFiles): TopicFileRow[] {
         added: sum(previous?.added ?? null, file.added),
         deleted: sum(previous?.deleted ?? null, file.deleted),
         sha: commit.sha,
+        diffAnchor: file.diffAnchor,
         existsInF5: file.existsInF5,
       });
     }
   return [...rows.values()];
 }
 
-/** `https://github.com/o/r/blob/<sha>/<path>`, or null for a non-GitHub repository. */
-export function upstreamBlobUrl(repository: string, sha: string, path: string): string | null {
+/**
+ * `https://github.com/o/r/commit/<sha>#diff-…`: the file's change in that
+ * commit, which also works when the commit deleted it. Null off GitHub.
+ */
+export function upstreamFileDiffUrl(repository: string, sha: string, diffAnchor: string): string | null {
   const base = repositoryUrl(repository);
   if (!base.startsWith("https://github.com/")) return null;
-  return `${base}/blob/${sha}/${path.split("/").map(encodeURIComponent).join("/")}`;
+  return `${base}/commit/${sha}#${encodeURIComponent(diffAnchor)}`;
+}
+
+/** The note for a file list that does not cover the whole topic, or null. */
+export function topicFilesNote(files: UpstreamTopicFiles): string | null {
+  const notes: string[] = [];
+  if (files.totalCommits > files.commits.length)
+    notes.push(
+      `Only the first ${files.commits.length.toLocaleString()} of ${files.totalCommits.toLocaleString()} commits are listed.`,
+    );
+  if (files.commits.some((commit) => commit.truncated))
+    notes.push("Very large commits list only their first files.");
+  return notes.length ? notes.join(" ") : null;
 }
 
 const HISTORY_STATUS_LABELS: Record<UpstreamTopicStatus, string> = {

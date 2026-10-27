@@ -123,6 +123,8 @@ export class FakeGitRepo {
             files: commit.paths.slice(0, 15).map((file) => ({ path: file, added: 1, deleted: 0 })),
             paths: commit.paths,
             totalFiles: commit.paths.length,
+            added: commit.paths.length,
+            deleted: 0,
           },
         ];
       }),
@@ -337,6 +339,12 @@ export class FakeHost {
     ledgerDir: "upstream",
   };
 
+  /**
+   * Runs once before the next locked section, as if another writer took the
+   * lock first; set it to interleave a write with a pending one.
+   */
+  beforeNextLock: Effect.Effect<unknown, Error> | null = null;
+
   constructor(readonly repo: FakeGitRepo) {}
 
   readonly host: UpstreamPortsHost = {
@@ -407,6 +415,11 @@ export class FakeHost {
         return candidate;
       }),
     resolveCommonDir: () => Effect.succeed(this.commonDir),
-    withRepositoryLock: (_dir, _mode, effect) => effect,
+    withRepositoryLock: (_dir, _mode, effect) =>
+      Effect.suspend(() => {
+        const first = this.beforeNextLock;
+        this.beforeNextLock = null;
+        return first ? Effect.andThen(Effect.orDie(first), effect) : effect;
+      }),
   };
 }

@@ -445,8 +445,13 @@ export function buildTopicFiles(
   shas: ReadonlyArray<string>,
   numstat: ReadonlyMap<string, CommitNumstat>,
   pathsInF5: ReadonlySet<string> | null,
+  totalCommits: number = shas.length,
 ): UpstreamTopicFiles {
   const exists = (file: string) => (pathsInF5 ? pathsInF5.has(file) : null);
+  const fileFacts = (file: string) => ({
+    existsInF5: exists(file),
+    diffAnchor: `diff-${sha256Hex(file)}`,
+  });
   const unique = new Set<string>();
   const totals = { files: 0, added: 0, deleted: 0, existingInF5: 0 };
   const commits = shas.map((sha): UpstreamCommitFiles => {
@@ -454,14 +459,15 @@ export function buildTopicFiles(
     if (!entry) return { sha, available: false, files: [], totalFiles: 0, truncated: false };
     const counted = new Set(entry.files.map((file) => file.path));
     const all: UpstreamChangedFile[] = [
-      ...entry.files.map((file) => ({ ...file, existsInF5: exists(file.path) })),
+      ...entry.files.map((file) => ({ ...file, ...fileFacts(file.path) })),
       ...entry.paths
         .filter((file) => !counted.has(file))
-        .map((file) => ({ path: file, added: null, deleted: null, existsInF5: exists(file) })),
+        .map((file) => ({ path: file, added: null, deleted: null, ...fileFacts(file) })),
     ];
+    // Git reports per-file counts for the first few files only; the commit totals cover them all.
+    totals.added += entry.added;
+    totals.deleted += entry.deleted;
     for (const file of all) {
-      totals.added += file.added ?? 0;
-      totals.deleted += file.deleted ?? 0;
       if (unique.has(file.path)) continue;
       unique.add(file.path);
       totals.files += 1;
@@ -471,7 +477,7 @@ export function buildTopicFiles(
     const files = all.slice(0, UPSTREAM_MAX_FILES_PER_COMMIT);
     return { sha, available: true, files, totalFiles, truncated: files.length < totalFiles };
   });
-  return { commits, totals };
+  return { commits, totalCommits: Math.max(totalCommits, shas.length), totals };
 }
 
 const PUBLICATION_BY_STATE: Record<OpState, UpstreamHistoryPublication> = {
@@ -508,25 +514,20 @@ export function buildTopicHistory(input: {
 }): UpstreamTopicHistoryEntry[] {
   const { topic, baseTopic } = input;
   const timed: UpstreamTopicHistoryEntry[] = [];
-  const decisions = input.ops.filter((record) => record.op.kind === "decision");
-  for (const record of decisions) {
-    if (record.op.kind !== "decision") continue;
+  const decisions = input.ops.flatMap((record) =>
+    record.op.kind === "decision" ? [{ record, fields: record.op.fields }] : [],
+  );
+  for (const { record, fields } of decisions) {
     timed.push({
       at: record.createdAt,
       kind: "decided",
-      epoch: record.op.fields.epoch,
+      epoch: fields.epoch,
       publication: PUBLICATION_BY_STATE[record.state],
-      ...decisionDetails(record.op.fields),
+      ...decisionDetails(fields),
     });
   }
   const decidedAt = baseTopic?.decidedAt;
-  if (
-    baseTopic &&
-    decidedAt &&
-    !decisions.some(
-      (record) => record.op.kind === "decision" && record.op.fields.decidedAt === decidedAt,
-    )
-  )
+  if (baseTopic && decidedAt && !decisions.some(({ fields }) => fields.decidedAt === decidedAt))
     timed.push({
       at: decidedAt,
       kind: "decided",

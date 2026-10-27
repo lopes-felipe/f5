@@ -177,13 +177,18 @@ beforeEach(() => {
     related: [],
     history: [],
   }));
-  api.getTopicFiles.mockResolvedValue({ commits: [], totals: { files: 0, added: 0, deleted: 0, existingInF5: 0 } });
+  api.getTopicFiles.mockResolvedValue({
+    commits: [],
+    totalCommits: 0,
+    totals: { files: 0, added: 0, deleted: 0, existingInF5: 0 },
+  });
   let token = 0;
-  const decided = async ({ topicIds }: { topicIds: string[] }) => ({
+  // Like the server: a batch that passes a token joins it.
+  const decided = async ({ topicIds, undoToken }: { topicIds: string[]; undoToken?: string }) => ({
     revision: "r2",
     updated: topicIds,
     unchanged: [],
-    undoToken: `token-${(token += 1)}`,
+    undoToken: undoToken ?? `token-${(token += 1)}`,
   });
   api.decide.mockImplementation(decided);
   api.acceptSuggestions.mockImplementation(decided);
@@ -552,6 +557,30 @@ it("undoes a decision from its toast, and the newest one with z", async () => {
   expect(api.undoDecisions).toHaveBeenCalledTimes(2);
 });
 
+it("keeps one undo for a whole bulk action, and offers it again when the undo fails", async () => {
+  api.listTopics.mockResolvedValue(topicsPage(ROWS, 450));
+  api.listTopicIds.mockResolvedValue({ revision: "r1", topicIds: matchingIds(450), truncated: false });
+  await setup();
+  await selectAllMatching(450);
+  await bulkButton("Watch").click();
+  await page.getByRole("button", { name: "Watch", exact: true }).last().click();
+  await vi.waitFor(() => expect(api.decide).toHaveBeenCalledTimes(3));
+  // Later batches join the first batch's token.
+  expect(api.decide.mock.calls.map(([input]) => input.undoToken)).toEqual([undefined, "token-1", "token-1"]);
+  await expect.element(page.getByText("Watching 450 topics")).toBeVisible();
+
+  api.undoDecisions.mockRejectedValueOnce(new Error("The repository is busy"));
+  await page.getByRole("button", { name: "Undo", exact: true }).click();
+  await expect.element(page.getByText("Could not undo")).toBeVisible();
+  // The entry is back, so Undo works once the repository is free (the first toast may still be closing).
+  api.undoDecisions.mockResolvedValueOnce({ revision: "r3", updated: matchingIds(440), unchanged: matchingIds(450).slice(440), undoToken: null });
+  await page.getByRole("button", { name: "Undo", exact: true }).last().click();
+  await vi.waitFor(() => expect(api.undoDecisions).toHaveBeenCalledTimes(2));
+  expect(api.undoDecisions.mock.calls.map(([input]) => input.undoToken)).toEqual(["token-1", "token-1"]);
+  await expect.element(page.getByText("Undid the decision for 440 topics")).toBeVisible();
+  await expect.element(page.getByText("10 topics changed since and were left as they are")).toBeVisible();
+});
+
 it("shows the topic's changed files and history in the detail pane", async () => {
   const sha = "a".repeat(40);
   api.getTopicFiles.mockResolvedValue({
@@ -560,13 +589,14 @@ it("shows the topic's changed files and history in the detail pane", async () =>
         sha,
         available: true,
         files: [
-          { path: "apps/web/src/app.tsx", added: 4, deleted: 1, existsInF5: true },
-          { path: "apps/mobile/app.tsx", added: 1, deleted: 0, existsInF5: false },
+          { path: "apps/web/src/app.tsx", added: 4, deleted: 1, existsInF5: true, diffAnchor: "diff-app" },
+          { path: "apps/mobile/app.tsx", added: 1, deleted: 0, existsInF5: false, diffAnchor: "diff-mobile" },
         ],
         totalFiles: 2,
         truncated: false,
       },
     ],
+    totalCommits: 60,
     totals: { files: 2, added: 5, deleted: 1, existingInF5: 1 },
   });
   api.getTopic.mockImplementation(async ({ topicId }: { topicId: string }) => ({
@@ -593,9 +623,10 @@ it("shows the topic's changed files and history in the detail pane", async () =>
   await expect.element(files.getByText("2 files · +5 −1 · 1 exist in f5")).toBeVisible();
   await expect.element(files.getByRole("link", { name: "apps/web/src/app.tsx" })).toHaveAttribute(
     "href",
-    `https://github.com/pingdotgg/t3code/blob/${sha}/apps/web/src/app.tsx`,
+    `https://github.com/pingdotgg/t3code/commit/${sha}#diff-app`,
   );
   await expect.element(files.getByText("not in f5")).toBeVisible();
+  await expect.element(files.getByText("Only the first 1 of 60 commits are listed.")).toBeVisible();
   await page.getByRole("button", { name: "History (2)" }).click();
   const history = page.getByRole("list", { name: "Topic history" });
   await expect.element(history.getByText("Skipped")).toBeVisible();

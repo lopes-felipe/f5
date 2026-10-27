@@ -16,7 +16,8 @@ import {
   formatFileTotals,
   HISTORY_PUBLICATION_LABELS,
   historyEntryLabel,
-  upstreamBlobUrl,
+  topicFilesNote,
+  upstreamFileDiffUrl,
 } from "./upstreamPage.logic";
 
 const FILES_COLLAPSED = 20;
@@ -49,7 +50,7 @@ export function UpstreamChangedFiles(props: {
   const rows = aggregateTopicFiles(files);
   const shown = expanded ? rows : rows.slice(0, FILES_COLLAPSED);
   const missing = files.commits.filter((commit) => !commit.available).length;
-  const truncated = files.commits.some((commit) => commit.truncated);
+  const note = topicFilesNote(files);
   return (
     <section aria-label="Files changed" className="space-y-1">
       <h3 className="font-medium">Files changed</h3>
@@ -63,7 +64,7 @@ export function UpstreamChangedFiles(props: {
       {shown.length > 0 && (
         <ul className="space-y-0.5">
           {shown.map((file) => {
-            const href = upstreamBlobUrl(props.repository, file.sha, file.path);
+            const href = upstreamFileDiffUrl(props.repository, file.sha, file.diffAnchor);
             const missingInF5 = file.existsInF5 === false;
             return (
               <li key={file.path} className="flex items-center gap-2 text-xs">
@@ -107,7 +108,7 @@ export function UpstreamChangedFiles(props: {
           {expanded ? "Show fewer files" : `Show all ${rows.length.toLocaleString()} files`}
         </Button>
       )}
-      {truncated && <p className="text-xs text-muted-foreground">Very large commits list only their first files.</p>}
+      {note && <p className="text-xs text-muted-foreground">{note}</p>}
     </section>
   );
 }

@@ -52,6 +52,7 @@ import {
   type UpstreamTopicRow,
   type UpstreamUndoDecisionsInput,
   type UpstreamUnlinkPortInput,
+  UPSTREAM_MAX_FILES_COMMITS,
 } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { setupProjectScript } from "@t3tools/shared/projectScripts";
@@ -168,6 +169,10 @@ const describe = (error: unknown) =>
       ? error.message
       : String(error);
 
+/** Git could not find a commit, as opposed to timing out or failing otherwise. */
+const isMissingObject = (error: GitCommandError) =>
+  /bad object|bad revision|unknown revision|invalid object|not a valid object/iu.test(error.detail);
+
 const internal = (error: unknown) =>
   error instanceof UpstreamPortsError
     ? error
@@ -255,18 +260,29 @@ const decisionSignature = (fields: DecisionFields) => {
 
 export const UNDO_TOKENS_PER_PROJECT = 20;
 export const UNDO_TTL_MS = 15 * 60_000;
-/** Changed files cover at most this many of a topic's commits. */
-const TOPIC_FILES_MAX_COMMITS = 50;
 
+/** One user action, however many batches it took. */
 interface UndoRecord {
   readonly token: string;
   readonly expiresAt: number;
   readonly entries: ReadonlyArray<{
     readonly topicId: string;
     readonly before: DecisionFields;
-    readonly afterSignature: string;
+    /** `undoKey` of the decision's fields. */
+    readonly after: string;
   }>;
 }
+
+/**
+ * What an undo checks is still in place. The timestamp is in, so a later
+ * decision that repeats the same values does not make an old token valid
+ * again. The epoch is out: undo never lowers it, so an undone reopen leaves
+ * the earlier decision at a higher epoch but otherwise intact.
+ */
+const undoKey = (fields: DecisionFields) => {
+  const { epoch: _epoch, ...rest } = fields;
+  return canonicalJson(rest);
+};
 
 export interface UpstreamPortsService {
   readonly listProjects: Effect.Effect<UpstreamPortsListProjectsResult, UpstreamPortsError>;
@@ -602,6 +618,7 @@ export function makeUpstreamPortsService(
         });
         return { base, view, rows, links, publication, revision, maxSeq };
       });
+    type CurrentView = Effect.Success<ReturnType<typeof currentView>>;
 
     /** Recording over a partial ledger would drop or rewrite the files that failed to parse. */
     const requireParsedLedger = (base: BaseState) =>
@@ -617,39 +634,32 @@ export function makeUpstreamPortsService(
     // ── Recording ──
 
     /**
-     * The ledger the new ops will apply to. A decision supersedes the open
-     * decisions for its topic, so those drop out; this lets an undo restore
-     * the epoch an unpublished reopen bumped.
+     * Records the ops `plan` picks from the view read under the repository
+     * lock, after the writer check, so a decision recorded meanwhile is seen;
+     * pushes `ledger-updated`.
      */
-    const ledgerReplacing = (view: LedgerView, ops: ReadonlyArray<UpstreamLedgerOp>) => {
-      const replaced = new Set(ops.flatMap((op) => (op.kind === "decision" ? [op.topicId] : [])));
-      const kept = view.openOps.filter(
-        (record) => !(record.op.kind === "decision" && replaced.has(record.op.topicId)),
-      );
-      return kept.length === view.openOps.length
-        ? view.ledger
-        : buildView(view.baseSha, view.base, kept).ledger;
-    };
-
-    /** Records ops under the repository lock after the writer check; pushes `ledger-updated`. */
-    const recordOps = (
+    const recordPlanned = <A>(
       context: ProjectContext,
-      ops: ReadonlyArray<UpstreamLedgerOp>,
       mode: "user" | "background",
+      plan: (snapshot: CurrentView) => {
+        readonly ops: ReadonlyArray<UpstreamLedgerOp>;
+        readonly result: A;
+      },
       newInbox?: number,
     ) =>
       Effect.gen(function* () {
-        if (ops.length === 0) return;
-        yield* withLock(
+        const planned = yield* withLock(
           context.cwd,
           mode,
           Effect.gen(function* () {
             yield* requireWriter(context.cwd);
             const snapshot = yield* currentView(context);
             yield* requireParsedLedger(snapshot.base);
+            const { ops, result } = plan(snapshot);
+            if (ops.length === 0) return { recorded: false, result };
             const check = buildView(
               snapshot.base.baseSha,
-              ledgerReplacing(snapshot.view, ops),
+              snapshot.view.ledger,
               ops.map((op, index) => ({
                 opId: `check-${index}`,
                 projectId: context.projectId,
@@ -667,12 +677,27 @@ export function makeUpstreamPortsService(
                 now().toISOString(),
               )
               .pipe(Effect.mapError(internal));
+            return { recorded: true, result };
           }),
         );
-        viewCache.delete(context.projectId);
-        yield* emit(context.projectId, "ledger-updated", newInbox);
-        schedulePublish(context.projectId, PUBLISH_DEBOUNCE_MS);
+        if (planned.recorded) {
+          viewCache.delete(context.projectId);
+          yield* emit(context.projectId, "ledger-updated", newInbox);
+          schedulePublish(context.projectId, PUBLISH_DEBOUNCE_MS);
+        }
+        return planned.result;
       });
+
+    /** Records ops under the repository lock after the writer check; pushes `ledger-updated`. */
+    const recordOps = (
+      context: ProjectContext,
+      ops: ReadonlyArray<UpstreamLedgerOp>,
+      mode: "user" | "background",
+      newInbox?: number,
+    ) =>
+      ops.length === 0
+        ? Effect.void
+        : recordPlanned(context, mode, () => ({ ops, result: undefined }), newInbox);
 
     // ── Publisher ──
 
@@ -1215,7 +1240,11 @@ export function makeUpstreamPortsService(
     // ── Decisions ──
 
     const applyDecisions = (
-      input: { readonly projectId: ProjectId; readonly topicIds: ReadonlyArray<string> },
+      input: {
+        readonly projectId: ProjectId;
+        readonly topicIds: ReadonlyArray<string>;
+        readonly undoToken?: string | undefined;
+      },
       decisionFor: (topic: UpstreamTopic) => UpstreamDecision | null,
     ) =>
       Effect.gen(function* () {
@@ -1254,31 +1283,48 @@ export function makeUpstreamPortsService(
               }),
           });
           const before = pickDecisionFields(row.topic);
-          const afterSignature = decisionSignature(fields);
-          if (afterSignature === decisionSignature(before)) {
+          if (decisionSignature(fields) === decisionSignature(before)) {
             unchanged.push(topicId);
             continue;
           }
           ops.push({ kind: "decision", topicId, fields });
           updated.push(topicId);
-          undo.push({ topicId, before, afterSignature });
+          undo.push({ topicId, before, after: undoKey(fields) });
         }
         yield* recordOps(context, ops, "user");
         const after = yield* currentView(context);
-        return {
+        const result: UpstreamDecideResult = {
           revision: after.revision,
           updated,
           unchanged,
-          undoToken: undo.length ? saveUndo(context.projectId, undo) : null,
-        } as UpstreamDecideResult;
+          undoToken: saveUndo(context.projectId, undo, input.undoToken),
+        };
+        return result;
       });
 
-    const saveUndo = (projectId: string, entries: UndoRecord["entries"]) => {
-      const token = mintId();
+    /**
+     * Keeps `entries` for undo. Passing the token of an earlier batch of the
+     * same action adds them to it, so the action stays one token however many
+     * batches it took and cannot evict its own first batches.
+     */
+    const saveUndo = (projectId: string, entries: UndoRecord["entries"], join?: string) => {
       const at = now().getTime();
-      const kept = (undoTokens.get(projectId) ?? []).filter((record) => record.expiresAt > at);
-      kept.push({ token, expiresAt: at + UNDO_TTL_MS, entries });
-      undoTokens.set(projectId, kept.slice(-UNDO_TOKENS_PER_PROJECT));
+      const live = (undoTokens.get(projectId) ?? []).filter((record) => record.expiresAt > at);
+      const joined = join === undefined ? undefined : live.find((record) => record.token === join);
+      if (joined) {
+        if (entries.length > 0)
+          undoTokens.set(
+            projectId,
+            live.map((record) =>
+              record === joined ? { ...joined, entries: [...joined.entries, ...entries] } : record,
+            ),
+          );
+        return joined.token;
+      }
+      if (entries.length === 0) return null;
+      const token = mintId();
+      live.push({ token, expiresAt: at + UNDO_TTL_MS, entries });
+      undoTokens.set(projectId, live.slice(-UNDO_TOKENS_PER_PROJECT));
       return token;
     };
 
@@ -1307,9 +1353,10 @@ export function makeUpstreamPortsService(
       });
 
     /**
-     * Restores each topic's fields from before the decision, epoch and
-     * timestamp included. Topics decided again since, now in progress, or
-     * whose decision another writer built on stay as they are.
+     * Restores each topic's fields from before the decision, timestamp
+     * included. Topics decided again since, or now in progress, stay as they
+     * are. The epoch never goes back: a reopen may already be in the ledger
+     * pull request, and a lower epoch would conflict with it once merged.
      */
     const applyUndo = (input: UpstreamUndoDecisionsInput) =>
       Effect.gen(function* () {
@@ -1325,52 +1372,46 @@ export function makeUpstreamPortsService(
 
     const restoreDecisions = (context: ProjectContext, record: UndoRecord) =>
       Effect.gen(function* () {
-        const snapshot = yield* currentView(context);
-        yield* requireParsedLedger(snapshot.base);
-        const rowsById = new Map(snapshot.rows.map((row) => [row.topic.id, row]));
-        const candidates = record.entries.flatMap((entry) => {
-          const row = rowsById.get(entry.topicId);
-          if (!row || decisionSignature(pickDecisionFields(row.topic)) !== entry.afterSignature)
-            return [];
-          const linked = snapshot.links.some(
-            (link) =>
-              link.topicId === entry.topicId &&
-              link.state === "active" &&
-              link.epoch === row.topic.epoch,
-          );
-          return linked ? [] : [entry];
+        // Eligibility is read under the lock, so a decision recorded meanwhile is not overwritten.
+        const restored = yield* recordPlanned(context, "user", (snapshot) => {
+          const rowsById = new Map(snapshot.rows.map((row) => [row.topic.id, row]));
+          const ops: UpstreamLedgerOp[] = [];
+          const topicIds = new Set<string>();
+          // Newest entry first: within one action a topic is decided at most once, but stay safe.
+          for (const entry of record.entries.toReversed()) {
+            const row = rowsById.get(entry.topicId);
+            if (!row || topicIds.has(entry.topicId)) continue;
+            if (undoKey(pickDecisionFields(row.topic)) !== entry.after) continue;
+            const linked = snapshot.links.some(
+              (link) =>
+                link.topicId === entry.topicId &&
+                link.state === "active" &&
+                link.epoch === row.topic.epoch,
+            );
+            if (linked) continue;
+            const fields = {
+              ...entry.before,
+              epoch: Math.max(entry.before.epoch, row.topic.epoch),
+            };
+            ops.push({ kind: "decision", topicId: entry.topicId, fields });
+            topicIds.add(entry.topicId);
+          }
+          return { ops, result: topicIds };
         });
-        const ledger = ledgerReplacing(
-          snapshot.view,
-          candidates.map((entry) => ({
-            kind: "decision" as const,
-            topicId: entry.topicId,
-            fields: entry.before,
-          })),
-        );
-        const epochs = new Map(ledger.topics.map((topic) => [topic.id, topic.epoch]));
-        const restorable = candidates.filter(
-          (entry) => (epochs.get(entry.topicId) ?? Infinity) <= entry.before.epoch,
-        );
-        yield* recordOps(
-          context,
-          restorable.map((entry) => ({
-            kind: "decision" as const,
-            topicId: entry.topicId,
-            fields: entry.before,
-          })),
-          "user",
-        );
         const after = yield* currentView(context);
-        const restored = new Set(restorable.map((entry) => entry.topicId));
-        return {
+        const result: UpstreamDecideResult = {
           revision: after.revision,
           updated: [...restored],
-          unchanged: record.entries
-            .map((entry) => entry.topicId)
-            .filter((topicId) => !restored.has(topicId)),
+          unchanged: [
+            ...new Set(
+              record.entries
+                .map((entry) => entry.topicId)
+                .filter((topicId) => !restored.has(topicId)),
+            ),
+          ],
           undoToken: null,
-        } as UpstreamDecideResult;
+        };
+        return result;
       });
 
     // ── RPC ──
@@ -1612,26 +1653,32 @@ export function makeUpstreamPortsService(
         const snapshot = yield* currentView(context);
         if (!snapshot.view.topicsById.has(input.topicId))
           return yield* fail("not-found", `Topic ${input.topicId} does not exist.`);
-        const shas = (snapshot.view.members.get(input.topicId) ?? [])
-          .map((member) => member.sha)
-          .slice(0, TOPIC_FILES_MAX_COMMITS);
+        const members = (snapshot.view.members.get(input.topicId) ?? []).map(
+          (member) => member.sha,
+        );
+        const shas = members.slice(0, UPSTREAM_MAX_FILES_COMMITS);
         // One missing commit fails the whole `git log`; retry one by one to find it.
+        // Any other failure (a timeout, say) is reported rather than shown as missing commits.
         const numstat = yield* git
           .streamNumstat(context.cwd, { kind: "shas", shas })
           .pipe(
-            Effect.catch(() =>
+            Effect.catchIf(isMissingObject, () =>
               Effect.forEach(
                 shas,
                 (sha) =>
                   git
                     .streamNumstat(context.cwd, { kind: "shas", shas: [sha] })
-                    .pipe(Effect.orElseSucceed(() => new Map<string, CommitNumstat>())),
+                    .pipe(
+                      Effect.catchIf(isMissingObject, () =>
+                        Effect.succeed(new Map<string, CommitNumstat>()),
+                      ),
+                    ),
                 { concurrency: 4 },
               ).pipe(Effect.map((maps) => new Map(maps.flatMap((map) => [...map])))),
             ),
           );
         const paths = yield* basePaths(context, snapshot.base.baseSha);
-        return buildTopicFiles(shas, numstat, paths);
+        return buildTopicFiles(shas, numstat, paths, members.length);
       }).pipe(Effect.mapError(internal));
 
     const decide: UpstreamPortsService["decide"] = (input) =>

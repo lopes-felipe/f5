@@ -1,6 +1,7 @@
 import {
   UPSTREAM_MAX_PORT_TOPICS,
   type ProjectId,
+  type UpstreamDecideResult,
   type UpstreamDecision,
   type UpstreamOverview,
   type UpstreamPortLinkSummary,
@@ -84,6 +85,7 @@ import {
   topicStates,
   UNDO_STACK_MAX,
   UNDO_WINDOW_MS,
+  undoKeptTitle,
   undoToastTitle,
   unseenNote,
   upstreamPrUrl,
@@ -394,18 +396,20 @@ export function UpstreamPage(props: {
     const recorded = new Set<string>();
     /** Recorded, or answered unchanged: either way not worth sending again. */
     const settled = new Set<string>();
-    const undoTokens: string[] = [];
+    /** Every batch joins the first batch's token, so one undo reverts the whole action. */
+    let undoToken: string | null = null;
     let unchanged = 0;
     let failure: unknown = null;
     try {
       // The server takes a bounded number of topics per call; earlier batches stay recorded if a later one fails.
       for (const batch of decisionBatches(decided)) {
-        const result = await (decision === "accept"
-          ? ensureNativeApi().upstreamPorts.acceptSuggestions({ projectId, topicIds: batch as never })
-          : ensureNativeApi().upstreamPorts.decide({ projectId, topicIds: batch as never, decision }));
+        const join: { undoToken?: string } = undoToken ? { undoToken } : {};
+        const result: UpstreamDecideResult = await (decision === "accept"
+          ? ensureNativeApi().upstreamPorts.acceptSuggestions({ projectId, topicIds: batch as never, ...join })
+          : ensureNativeApi().upstreamPorts.decide({ projectId, topicIds: batch as never, decision, ...join }));
         for (const id of result.updated) recorded.add(id);
         for (const id of [...result.updated, ...result.unchanged]) settled.add(id);
-        if (result.undoToken) undoTokens.push(result.undoToken);
+        undoToken = result.undoToken ?? undoToken;
         unchanged += result.unchanged.length;
       }
     } catch (error) {
@@ -426,7 +430,14 @@ export function UpstreamPage(props: {
       setHiddenIds(leaving, false);
       setPendingIds(decided, false);
     }
-    if (undoTokens.length > 0) offerUndo(projectId, decisionToastTitle(decision, recorded.size), undoTokens);
+    if (undoToken && recorded.size > 0)
+      offerUndo({
+        id: crypto.randomUUID(),
+        projectId,
+        token: undoToken,
+        title: decisionToastTitle(decision, recorded.size),
+        expiresAt: Date.now() + UNDO_WINDOW_MS,
+      });
     const stillHere = viewRef.current.projectId === started.projectId && viewRef.current.list === started.list;
     // Topics the user did not get a decision for; on failure they stay selected for a retry.
     const retry = failure !== null && decided.length > 1 ? decided.filter((id) => !settled.has(id)) : [];
@@ -462,18 +473,14 @@ export function UpstreamPage(props: {
   };
 
   /** Shows the decision toast with an Undo action; `z` undoes the newest one for the project. */
-  const offerUndo = (forProject: ProjectId, title: string, tokens: ReadonlyArray<string>) => {
-    const entry: UndoEntry = {
-      id: crypto.randomUUID(),
-      projectId: forProject,
-      tokens,
-      expiresAt: Date.now() + UNDO_WINDOW_MS,
-    };
-    undoStack.current = [...liveUndoEntries(undoStack.current, Date.now()), entry].slice(-UNDO_STACK_MAX);
+  const offerUndo = (entry: UndoEntry) => {
+    undoStack.current = [...liveUndoEntries(undoStack.current, Date.now()), entry]
+      .toSorted((left, right) => left.expiresAt - right.expiresAt)
+      .slice(-UNDO_STACK_MAX);
     toastManager.add({
       id: entry.id,
       type: "success",
-      title,
+      title: entry.title,
       actionProps: {
         children: "Undo",
         onClick: (event) => {
@@ -493,27 +500,23 @@ export function UpstreamPage(props: {
     const restored: string[] = [];
     let kept = 0;
     try {
-      // Newest batch first, so each undo sees the state its decision left.
-      for (const token of entry.tokens.toReversed()) {
-        const result = await ensureNativeApi().upstreamPorts.undoDecisions({ projectId: entry.projectId, undoToken: token });
-        restored.push(...result.updated);
-        kept += result.unchanged.length;
-      }
-    } catch (error) {
-      toastManager.add({
-        type: "error",
-        title: "Could not undo",
-        description: error instanceof Error ? error.message : String(error),
+      const result = await ensureNativeApi().upstreamPorts.undoDecisions({
+        projectId: entry.projectId,
+        undoToken: entry.token,
       });
+      restored.push(...result.updated);
+      kept = result.unchanged.length;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const expired = /expired/iu.test(detail);
+      toastManager.add({ type: "error", title: "Could not undo", description: detail });
+      // The server keeps a token whose undo failed, so offer it again unless it is gone.
+      if (!expired && entry.expiresAt > Date.now()) offerUndo({ ...entry, id: crypto.randomUUID() });
     } finally {
       undoing.current = false;
     }
     if (restored.length > 0) toastManager.add({ type: "success", title: undoToastTitle(restored.length) });
-    if (kept > 0)
-      toastManager.add({
-        type: "info",
-        title: `${kept} topic${kept === 1 ? " was" : "s were"} decided again or started since, and kept`,
-      });
+    if (kept > 0) toastManager.add({ type: "info", title: undoKeptTitle(kept) });
     await invalidateUpstreamPorts(queryClient);
     const now = viewRef.current;
     const first = restored[0];
@@ -878,7 +881,7 @@ export function UpstreamPage(props: {
           busy={busy}
           refreshing={overviewQuery.isFetching}
           onRun={runNow}
-          onRefresh={() => void invalidateUpstreamPorts(queryClient)}
+          onRefresh={() => void invalidateUpstreamPorts(queryClient, { files: true })}
           onResolvePublication={resolvePublication}
         />
         <UpstreamAttention
