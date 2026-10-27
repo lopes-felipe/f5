@@ -1599,7 +1599,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     this.updateSession(context, {
       status: "running",
       ...(nextConfiguredModel !== undefined ? { model: nextConfiguredModel } : {}),
-      activeTurnId: turnId,
+      // A queued follow-up has its own id, but interrupt requires the running turn.
+      activeTurnId: context.session.activeTurnId ?? turnId,
       ...(context.session.resumeCursor !== undefined
         ? { resumeCursor: context.session.resumeCursor }
         : {}),

@@ -25,12 +25,14 @@ import {
   Cause,
   Deferred,
   Fiber,
+  FileSystem,
   Effect,
   Exit,
   Queue,
   Random,
   Ref,
   Option,
+  Path,
   Scope,
   Stream,
   Schedule,
@@ -69,6 +71,12 @@ import {
   type OpenCodeServerConnection,
 } from "../opencodeRuntime.ts";
 import { normalizeSupportedSlashCommands } from "../supportedSlashCommands.ts";
+import {
+  isOpenCodeNotFound,
+  isSameOpenCodeDirectory,
+  OPENCODE_RESUME_VERSION,
+  parseOpenCodeResume,
+} from "../openCodeResume.ts";
 import { buildProviderAttachmentRuntimeContext } from "../attachmentRuntimeContext.ts";
 import {
   isOpenCodePasswordUnavailable,
@@ -608,6 +616,8 @@ export function makeOpenCodeAdapter(
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("opencode");
     const serverConfig = yield* ServerConfig;
     const openCodeRuntime = yield* OpenCodeRuntime;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const nativeEventLogger =
       options?.nativeEventLogger ??
       (options?.nativeEventLogPath !== undefined
@@ -1345,6 +1355,7 @@ export function makeOpenCodeAdapter(
           });
         }
         const directory = input.cwd ?? serverConfig.cwd;
+        const resumeSessionId = parseOpenCodeResume(input.resumeCursor)?.sessionId;
         const existing = sessions.get(input.threadId);
         if (existing) {
           yield* stopOpenCodeContext(existing);
@@ -1385,14 +1396,57 @@ export function makeOpenCodeAdapter(
                 directory,
                 ...(server.external && serverPassword ? { serverPassword } : {}),
               });
+              const permission = input.workflowExecutionProfile
+                ? buildOpenCodeWorkflowPermissionRules(input.workflowExecutionProfile)
+                : buildOpenCodePermissionRules(input.runtimeMode);
+              const adopted = resumeSessionId
+                ? yield* runOpenCodeSdk("session.get", (signal) =>
+                    client.session.get({ sessionID: resumeSessionId }, { signal }),
+                  ).pipe(
+                    Effect.map((response) => response.data),
+                    Effect.catchIf(isOpenCodeNotFound, () => Effect.void),
+                  )
+                : undefined;
+              if (adopted) {
+                const reuse =
+                  !adopted.directory ||
+                  (yield* isSameOpenCodeDirectory(fileSystem, path, adopted.directory, directory));
+                const resolved = reuse
+                  ? adopted
+                  : (yield* runOpenCodeSdk("session.fork", (signal) =>
+                      client.session.fork({ sessionID: adopted.id, directory }, { signal }),
+                    )).data;
+                if (!resolved) {
+                  return yield* new OpenCodeRuntimeError({
+                    operation: "session.fork",
+                    detail: "OpenCode session.fork returned no session payload.",
+                  });
+                }
+                // Resume and fork skip creation, so apply the current runtime/workflow rules.
+                yield* runOpenCodeSdk("session.update", (signal) =>
+                  client.session.update({ sessionID: resolved.id, permission }, { signal }),
+                );
+                return {
+                  sessionScope,
+                  server,
+                  client,
+                  openCodeSession: resolved,
+                  created: !reuse,
+                };
+              }
+              if (resumeSessionId) {
+                yield* Effect.logWarning(
+                  "OpenCode session '" +
+                    resumeSessionId +
+                    "' no longer exists; starting a fresh session.",
+                );
+              }
               const openCodeSession = yield* runOpenCodeSdk("session.create", (signal) =>
                 // No title: OpenCode only generates one from the first prompt
                 // when session.create leaves it unset.
                 client.session.create(
                   {
-                    permission: input.workflowExecutionProfile
-                      ? buildOpenCodeWorkflowPermissionRules(input.workflowExecutionProfile)
-                      : buildOpenCodePermissionRules(input.runtimeMode),
+                    permission,
                   },
                   { signal },
                 ),
@@ -1408,6 +1462,7 @@ export function makeOpenCodeAdapter(
                 server,
                 client,
                 openCodeSession: openCodeSession.data,
+                created: true,
               };
             }).pipe(Effect.provideService(Scope.Scope, sessionScope)),
           );
@@ -1422,13 +1477,12 @@ export function makeOpenCodeAdapter(
         // and already inserted a session while we were awaiting async work.
         const raceWinner = sessions.get(input.threadId);
         if (raceWinner) {
-          // Another call won the race – clean up the session we just created
-          // (including the remote SDK session) and return the existing one.
-          yield* runOpenCodeSdk("session.abort", () =>
-            started.client.session.abort({
-              sessionID: started.openCodeSession.id,
-            }),
-          ).pipe(Effect.ignore);
+          // A resumed session can be shared with the winner; only abort our own creation.
+          if (started.created && started.openCodeSession.id !== raceWinner.openCodeSessionId) {
+            yield* runOpenCodeSdk("session.abort", (signal) =>
+              started.client.session.abort({ sessionID: started.openCodeSession.id }, { signal }),
+            ).pipe(Effect.ignore);
+          }
           yield* Scope.close(started.sessionScope, Exit.void).pipe(Effect.ignore);
           return raceWinner.session;
         }
@@ -1446,6 +1500,10 @@ export function makeOpenCodeAdapter(
               ? { model: input.model }
               : {}),
           threadId: input.threadId,
+          resumeCursor: {
+            schemaVersion: OPENCODE_RESUME_VERSION,
+            sessionId: started.openCodeSession.id,
+          },
           createdAt,
           updatedAt: createdAt,
         };
@@ -1705,6 +1763,9 @@ export function makeOpenCodeAdapter(
       return {
         threadId: input.threadId,
         turnId,
+        ...(context.session.resumeCursor !== undefined
+          ? { resumeCursor: context.session.resumeCursor }
+          : {}),
       };
     });
 
