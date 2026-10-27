@@ -2485,6 +2485,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 onNone: () => undefined,
                 onSome: (binding) => readPersistedInstructionContext(binding.runtimePayload),
               });
+              // Acceptance can name a queued turn. Persist the adapter's running
+              // turn so Stop and recovery target the same native work as the UI.
+              const liveSession = (yield* routed.adapter.listSessions()).find(
+                (session) => session.threadId === routed.threadId,
+              );
+              const activeTurnId =
+                liveSession?.status === "running"
+                  ? (liveSession.activeTurnId ?? turn.turnId)
+                  : turn.turnId;
               yield* directory.upsert({
                 threadId: input.threadId,
                 provider: routed.adapter.provider,
@@ -2495,7 +2504,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                   ...persistedRuntimePayload,
                   activeTurnId: routed.adapter.capabilities.turnCompletionOnReturn
                     ? null
-                    : turn.turnId,
+                    : activeTurnId,
                   lastRuntimeEvent: "provider.sendTurn",
                   lastRuntimeEventAt: new Date().toISOString(),
                   instructionContext: persistedInstructionContext ?? null,

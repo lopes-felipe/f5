@@ -2395,6 +2395,49 @@ routing.layer("ProviderServiceLive routing", (it) => {
       }
     }),
   );
+
+  it.effect("persists the running native turn after accepting a queued follow-up", () =>
+    Effect.gen(function* () {
+      const service = yield* ProviderService;
+      const repository = yield* ProviderSessionRuntimeRepository;
+      const threadId = asThreadId("queued-stop");
+      yield* service.startSession(threadId, {
+        threadId,
+        provider: "codex",
+        runtimeMode: "full-access",
+      });
+      const running = asTurnId("running-native-turn");
+      const queued = asTurnId("queued-native-turn");
+      const originalList = routing.codex.listSessions.getMockImplementation()!;
+      const originalSend = routing.codex.sendTurn.getMockImplementation()!;
+      try {
+        routing.codex.listSessions.mockImplementation(() =>
+          originalList().pipe(
+            Effect.map((sessions) =>
+              sessions.map((session) =>
+                session.threadId === threadId
+                  ? { ...session, status: "running" as const, activeTurnId: running }
+                  : session,
+              ),
+            ),
+          ),
+        );
+        routing.codex.sendTurn.mockReturnValueOnce(Effect.succeed({ threadId, turnId: running }));
+        routing.codex.sendTurn.mockReturnValueOnce(Effect.succeed({ threadId, turnId: queued }));
+        yield* service.sendTurn({ threadId, input: "work" });
+        const accepted = yield* service.sendTurn({ threadId, input: "follow-up" });
+        assert.equal(accepted.turnId, queued);
+        const row = yield* repository.getByThreadId({ threadId });
+        assert(Option.isSome(row));
+        assert.equal((row.value.runtimePayload as { activeTurnId: string }).activeTurnId, running);
+        yield* service.interruptTurn({ threadId, turnId: running });
+        assert.deepEqual(routing.codex.interruptTurn.mock.lastCall, [threadId, running]);
+      } finally {
+        routing.codex.listSessions.mockImplementation(originalList);
+        routing.codex.sendTurn.mockImplementation(originalSend);
+      }
+    }),
+  );
 });
 
 let terminalReceiptPersisted = false;
