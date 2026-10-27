@@ -628,16 +628,52 @@ export const makeGitManager = Effect.gen(function* () {
       {
         if ((yield* gitCore.listLocalBranchNames(cwd)).includes(localBranch)) {
           const existing = yield* gitCore.resolveCommit(cwd, localBranch);
+          const matchesHead =
+            !!pullRequest.headOid &&
+            /^[0-9a-f]{7,64}$/i.test(pullRequest.headOid) &&
+            !!existing?.toLowerCase().startsWith(pullRequest.headOid.toLowerCase());
+          if (refreshExisting) {
+            const defaultBranch = yield* gitCore.readDefaultBranch(cwd);
+            if (
+              pullRequest.isCrossRepository ||
+              localBranch === pullRequest.baseBranch ||
+              localBranch === defaultBranch
+            )
+              return yield* gitManagerError(
+                "preparePullRequestThread",
+                "Local branch '" +
+                  localBranch +
+                  "' collides with a pull request head; select a fresh worktree branch to preserve it.",
+              );
+            if (!matchesHead) {
+              const identity = yield* resolveSourceControlProviderIdentity(cwd);
+              const remote = yield* gitCore.readConfigValue(
+                cwd,
+                "branch." + localBranch + ".remote",
+              );
+              const merge = yield* gitCore.readConfigValue(cwd, "branch." + localBranch + ".merge");
+              if (
+                remote !== (identity.remoteName ?? "origin") ||
+                merge !== "refs/heads/" + pullRequest.headBranch
+              )
+                return yield* gitManagerError(
+                  "preparePullRequestThread",
+                  "Local branch '" +
+                    localBranch +
+                    "' contains a different commit and does not track this pull request head; select a fresh worktree branch to preserve it.",
+                );
+            }
+          }
           if (
             pullRequest.headOid &&
-            existing !== pullRequest.headOid &&
+            !matchesHead &&
             !(refreshExisting && /^[0-9a-f]{7,64}$/i.test(pullRequest.headOid))
           )
             return yield* gitManagerError(
               "preparePullRequestThread",
               `Local branch '${localBranch}' contains a different commit; select a fresh worktree branch to preserve it.`,
             );
-          if (!refreshExisting || !pullRequest.headOid || existing === pullRequest.headOid) return;
+          if (!refreshExisting || !pullRequest.headOid || matchesHead) return;
         }
       }
       if (provider.kind !== "github") {
@@ -1397,6 +1433,9 @@ export const makeGitManager = Effect.gen(function* () {
       const changeRequest = toChangeRequest(pullRequestWithRemoteInfo, sourceControlProvider);
 
       if (input.mode === "local") {
+        const branchAlreadyExists = (yield* gitCore.listLocalBranchNames(input.cwd)).includes(
+          pullRequest.headBranch,
+        );
         const initialStatus = yield* gitCore.statusDetails(input.cwd);
         if (initialStatus.hasWorkingTreeChanges)
           return yield* gitManagerError(
@@ -1441,19 +1480,21 @@ export const makeGitManager = Effect.gen(function* () {
           const head = pullRequestSummary.headRefOid;
           if (!head || !/^[0-9a-f]{7,64}$/i.test(head)) return false;
           const target = yield* gitCore.resolveCommit(input.cwd, head);
-          if (!target || target.toLowerCase() !== head.toLowerCase()) return false;
+          // resolveCommit rejects ambiguous abbreviations; Bitbucket supplies short OIDs.
+          if (!target || !target.toLowerCase().startsWith(head.toLowerCase())) return false;
           yield* gitCore.fastForwardTo(input.cwd, target, branch);
           return (
             (yield* gitCore.resolveCommit(input.cwd, "HEAD"))?.toLowerCase() ===
             target.toLowerCase()
           );
         }).pipe(Effect.orElseSucceed(() => false));
-        yield* configurePullRequestHeadUpstream(
-          input.cwd,
-          pullRequestWithRemoteInfo,
-          provider,
-          branch,
-        );
+        if (!branchAlreadyExists)
+          yield* configurePullRequestHeadUpstream(
+            input.cwd,
+            pullRequestWithRemoteInfo,
+            provider,
+            branch,
+          );
         return {
           pullRequest,
           changeRequest,

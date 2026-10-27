@@ -1,5 +1,9 @@
 import { cleanupLocalPrBranch } from "./localBranchCleanup.ts";
-import { GITHUB_AUTO_MERGE_QUERY, gitHubAutoMergeAvailable } from "./githubAutoMerge.ts";
+import {
+  GITHUB_AUTO_MERGE_QUERY,
+  gitHubAutoMergeAvailable,
+  gitHubAutoMergeHasWriteAccess,
+} from "./githubAutoMerge.ts";
 import { createHash } from "node:crypto";
 import { Effect, Layer, Schema, Semaphore, ServiceMap } from "effect";
 import { SqlClient } from "effect/unstable/sql";
@@ -324,10 +328,14 @@ export const makePrHubExtensions = Effect.gen(function* () {
           document: GITHUB_AUTO_MERGE_QUERY,
           variables: { owner, name, number: ref.number },
         });
+        if (!gitHubAutoMergeHasWriteAccess(availability))
+          return yield* failure(
+            "Auto-merge requires write access to this repository.",
+            "forbidden",
+          );
         if (!gitHubAutoMergeAvailable(availability))
           return yield* failure(
-            "Auto-merge requires repository support, write access, and a pull request that still needs to wait.",
-            "forbidden",
+            "Auto-merge is unavailable for the current repository or pull request state. Refresh before retrying.",
           );
       }
       if (payload.kind === "edit-comment") {

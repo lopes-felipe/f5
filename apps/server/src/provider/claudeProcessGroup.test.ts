@@ -53,8 +53,8 @@ describe.skipIf(process.platform === "win32")("makeClaudeProcessGroupSpawner", (
       const exited = new Promise<NodeJS.Signals | null>((resolve) =>
         child.once("exit", (_code, signal) => resolve(signal)),
       );
-      // Simulate the kernel closing all server descriptors after a crash.
-      for (const pipe of child.stdio) pipe?.destroy();
+      // Isolate the liveness pipe: stdin/stdout/stderr remain open.
+      child.stdio[3]?.destroy();
       expect(await exited).toBe("SIGTERM");
     } finally {
       if (child.pid) {

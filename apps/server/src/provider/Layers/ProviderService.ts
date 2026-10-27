@@ -856,9 +856,9 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           generation,
           eventId: event.eventId,
         });
-        // Stop work before attempting another disk write: a full disk can prevent
-        // both the marker and terminal events from being retained. Keep the native
-        // conversation, and let the existing history fence gate its next turn.
+        // Cleanup runs in the service scope, outside the shared ingestion worker.
+        // A launch holding this thread's lock must not stall unrelated conversations
+        // or delay the durable fence below. The in-memory fence already gates sends.
         yield* withProviderThreadAccess(
           event.threadId,
           Effect.gen(function* () {
@@ -869,9 +869,8 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             const session = (yield* adapter.listSessions()).find(
               (session) => session.threadId === event.threadId,
             );
-            if (!session?.activeTurnId) return;
-            // A late event for a settled turn must not stop a newer turn.
-            if (event.turnId && event.turnId !== session.activeTurnId) return;
+            // Turnless or late events cannot identify which work failed.
+            if (!event.turnId || event.turnId !== session?.activeTurnId) return;
             yield* adapter
               .interruptTurn(event.threadId, session.activeTurnId)
               .pipe(Effect.catch(() => adapter.stopSession(event.threadId)));
@@ -883,6 +882,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               cause: Cause.pretty(cause),
             }),
           ),
+          Effect.forkIn(nativeScope),
         );
         const binding = Option.getOrUndefined(
           yield* directory.getBinding(event.threadId).pipe(Effect.retry(eventPersistenceRetry)),

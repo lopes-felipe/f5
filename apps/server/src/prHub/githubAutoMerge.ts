@@ -7,8 +7,8 @@ export const GITHUB_AUTO_MERGE_QUERY = `query F5AutoMergeAvailability($owner:Str
   }
 }`;
 
-export function gitHubAutoMergeAvailable(result: unknown, expectedHeadOid?: string): boolean {
-  const repository = (
+function repositoryFromResult(result: unknown) {
+  return (
     result as {
       data?: {
         repository?: {
@@ -19,9 +19,19 @@ export function gitHubAutoMergeAvailable(result: unknown, expectedHeadOid?: stri
       };
     } | null
   )?.data?.repository;
+}
+
+export function gitHubAutoMergeHasWriteAccess(result: unknown): boolean {
+  return ["WRITE", "MAINTAIN", "ADMIN"].includes(
+    repositoryFromResult(result)?.viewerPermission ?? "",
+  );
+}
+
+export function gitHubAutoMergeAvailable(result: unknown, expectedHeadOid?: string): boolean {
+  const repository = repositoryFromResult(result);
   return (
     !!repository &&
-    ["WRITE", "MAINTAIN", "ADMIN"].includes(repository.viewerPermission ?? "") &&
+    gitHubAutoMergeHasWriteAccess(result) &&
     repository.pullRequest?.state === "OPEN" &&
     (!expectedHeadOid || repository.pullRequest.headRefOid === expectedHeadOid) &&
     canQueueGitHubAutoMerge(repository.autoMergeAllowed, repository.pullRequest.mergeStateStatus)
