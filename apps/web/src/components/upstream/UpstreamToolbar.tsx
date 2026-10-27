@@ -64,15 +64,18 @@ const SearchBox = forwardRef<
       setText(props.value);
     }
   }, [props.value]);
-  const { onChange } = props;
+  // Through a ref: the parent passes a new closure each render, which must not restart the debounce.
+  const onChangeRef = useRef(props.onChange);
+  onChangeRef.current = props.onChange;
+  const onChange = (value: string) => onChangeRef.current(value);
   useEffect(() => {
     if (text === pushed.current) return;
     const timer = setTimeout(() => {
       pushed.current = text;
-      onChange(text);
+      onChangeRef.current(text);
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [text, onChange]);
+  }, [text]);
   return (
     <div className="relative w-56">
       <SearchIcon className="pointer-events-none absolute start-2 top-1/2 z-10 size-3.5 -translate-y-1/2 text-muted-foreground" />

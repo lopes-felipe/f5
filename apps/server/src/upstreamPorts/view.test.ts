@@ -190,6 +190,41 @@ describe("listing", () => {
       ]);
     });
 
+    it("keeps the filtered area in the facets even past the top 20", () => {
+      const many = Array.from({ length: 22 }, (_, index) =>
+        row({
+          id: `pr-${100 + index}`,
+          title: `Topic ${index}`,
+          createdAt: "2026-10-01T00:00:00.000Z",
+          upstreamPrs: [100 + index],
+          // area-0 is on one topic, every other area on two, so area-0 sorts last.
+          suggestion: suggestion("port", "low", 0.5, [`area-${index}`, `area-${(index % 21) + 1}`]),
+        }),
+      );
+      const areasOf = (filter: object) =>
+        pageRows(many, { projectId, list: "inbox", filter }, "rev").facets.areas.map(
+          (entry) => entry.area,
+        );
+      expect(areasOf({})).toHaveLength(20);
+      expect(areasOf({})).not.toContain("area-0");
+      expect(areasOf({ area: "area-0" })).toHaveLength(21);
+      expect(areasOf({ area: "area-0" }).at(-1)).toBe("area-0");
+    });
+
+    it("computes facets for the first page only", () => {
+      const first = pageRows(inbox, { projectId, list: "inbox", limit: 2 }, "rev");
+      expect(first.facets.suggestion.port).toBe(2);
+      const second = pageRows(
+        inbox,
+        { projectId, list: "inbox", limit: 2, cursor: first.nextCursor! },
+        "rev",
+      );
+      expect(ids(second)).toHaveLength(2);
+      expect(second.total).toBe(4);
+      expect(second.facets.suggestion.port).toBe(0);
+      expect(second.facets.areas).toEqual([]);
+    });
+
     it("sorts by priority, newest, oldest or confidence", () => {
       expect(ids(list({}, "priority"))).toEqual(["pr-10", "pr-12", "pr-13", "pr-11"]);
       expect(ids(list({}, "newest"))).toEqual(["pr-13", "pr-12", "pr-11", "pr-10"]);

@@ -435,17 +435,86 @@ it("filters from the suggestion strip and searches with a debounce", async () =>
   await expect.element(page.getByRole("searchbox", { name: "Search topics" })).toHaveValue("");
 });
 
-it("selects every matching topic and applies a bulk action to all of them", async () => {
-  const many = Array.from({ length: 250 }, (_, index) => `pr-${index + 100}`);
+const matchingIds = (count: number) => Array.from({ length: count }, (_, index) => `pr-${index + 100}`);
+const selectAllMatching = async (total: number) => {
+  await page.getByRole("checkbox", { name: "Select all loaded topics" }).click();
+  await page.getByRole("button", { name: `Select all ${total} matching` }).click();
+};
+
+it("selects every matching topic, asks before a shortcut reaches unseen ones, and decides them all", async () => {
   api.listTopics.mockResolvedValue(topicsPage(ROWS, 250));
-  api.listTopicIds.mockResolvedValue({ revision: "r1", topicIds: many, truncated: false });
+  api.listTopicIds.mockResolvedValue({ revision: "r1", topicIds: matchingIds(250), truncated: false });
   await setup();
   await expect.element(page.getByText("250 topics")).toBeVisible();
-  await page.getByRole("checkbox", { name: "Select all loaded topics" }).click();
-  await page.getByRole("button", { name: "Select all 250 matching" }).click();
+  await selectAllMatching(250);
   await expect.element(page.getByText("250 selected")).toBeVisible();
   expect(api.listTopicIds).toHaveBeenCalledWith({ projectId, list: "inbox" });
-  await page.getByRole("toolbar", { name: "Bulk actions" }).getByRole("button", { name: "Watch", exact: true }).click();
+  focusList();
+  await userEvent.keyboard("w");
+  await expect.element(page.getByText("Watch 250 topics?")).toBeVisible();
+  await expect.element(page.getByText(/^250 topics are not loaded/u)).toBeVisible();
+  expect(api.decide).not.toHaveBeenCalled();
+  await page.getByRole("button", { name: "Watch", exact: true }).last().click();
   await vi.waitFor(() => expect(api.decide).toHaveBeenCalledTimes(2));
   expect(api.decide.mock.calls.map(([input]) => input.topicIds.length)).toEqual([200, 50]);
+  // Every selected topic got its decision, so nothing stays selected.
+  await expect.element(page.getByText("250 topics")).toBeVisible();
+});
+
+it("drops a Select all matching answer that arrives after the list changed", async () => {
+  let answer: (value: unknown) => void = () => {};
+  api.listTopics.mockResolvedValue(topicsPage(ROWS, 250));
+  api.listTopicIds.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+  await setup();
+  await selectAllMatching(250);
+  focusList();
+  await userEvent.keyboard("]");
+  await expect.element(page.getByTestId("search")).toHaveTextContent('"list":"ready"');
+  answer({ revision: "r1", topicIds: matchingIds(250), truncated: false });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await expect.element(page.getByText("250 topics")).toBeVisible();
+  await expect.element(page.getByText("250 selected")).not.toBeInTheDocument();
+});
+
+it.each(["succeeds", "fails"])(
+  "keeps only the unrecorded topics of an all-matching decision selected when the refetch %s",
+  async (refetch) => {
+    api.listTopics.mockResolvedValue(topicsPage(ROWS, 450));
+    api.listTopicIds.mockResolvedValue({ revision: "r1", topicIds: matchingIds(450), truncated: false });
+    const recordAll = api.decide.getMockImplementation()!;
+    api.decide
+      .mockImplementationOnce(recordAll)
+      .mockImplementationOnce(recordAll)
+      .mockImplementationOnce(() => Promise.reject(new Error("offline")));
+    await setup();
+    await selectAllMatching(450);
+    // The recorded batches move the ledger revision; a successful refetch must not drop the retry set.
+    if (refetch === "succeeds") api.listTopics.mockResolvedValue({ ...topicsPage(ROWS, 50), revision: "r2" });
+    else api.listTopics.mockRejectedValue(new Error("offline"));
+    await bulkButton("Watch").click();
+    await page.getByRole("button", { name: "Watch", exact: true }).last().click();
+    await vi.waitFor(() => expect(api.decide).toHaveBeenCalledTimes(3));
+    await expect.element(page.getByText("50 selected")).toBeVisible();
+    await expect.element(page.getByText("Topics that were not recorded stay selected")).toBeVisible();
+    await bulkButton("Watch").click();
+    await page.getByRole("button", { name: "Watch", exact: true }).last().click();
+    await vi.waitFor(() => expect(api.decide).toHaveBeenCalledTimes(4));
+    expect(api.decide.mock.calls[3]![0].topicIds).toEqual(matchingIds(450).slice(400));
+  },
+);
+
+it("counts unloaded topics of an all-matching selection when reopening In progress topics", async () => {
+  const loaded = [inState(ROWS[0]!, "in-progress"), inState(ROWS[2]!, "in-progress")];
+  api.listTopics.mockResolvedValue(topicsPage(loaded, 5));
+  api.listTopicIds.mockResolvedValue({
+    revision: "r1",
+    topicIds: ["pr-1", "pr-3", ...matchingIds(3)],
+    truncated: false,
+  });
+  await setup({ project: projectId, list: "in-progress" });
+  await selectAllMatching(5);
+  await bulkButton("Reopen").click();
+  await expect.element(page.getByText("Reopen 5 topics?")).toBeVisible();
+  await expect.element(page.getByText(/^5 have port threads in progress/u)).toBeVisible();
+  await expect.element(page.getByText(/3 topics are not loaded/u)).toBeVisible();
 });
