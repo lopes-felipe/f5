@@ -4,6 +4,7 @@ import { compareSetupPairs, jobTiming, runTimingSummary, type TimedJob } from ".
 function job(name: string, duration: number): TimedJob {
   return {
     name,
+    run_attempt: 1,
     conclusion: "success",
     created_at: "2026-10-28T00:00:00Z",
     started_at: "2026-10-28T00:01:00Z",
@@ -66,10 +67,20 @@ it("counts cache-save time when choosing the winning layout", () => {
 });
 it("retains the timing table when a failed or missing sample prevents comparison", () => {
   const values = pairs().slice(1);
+  for (const sample of values) sample.run_attempt = 2;
   values[0]!.conclusion = "failure";
   const summary = runTimingSummary("123", "2", values, true);
   expect(summary.valid).toBe(false);
   expect(summary.markdown).toContain("| setup (1, split) | failure |");
   expect(summary.markdown).toContain("attempt 2");
   expect(summary.markdown).toContain("Benchmark comparison unavailable:");
+});
+it("does not present inherited jobs as new rerun samples", () => {
+  const inherited = job("setup (1, combined)", 100);
+  const rerun = { ...job("setup (1, electron-only)", 40), run_attempt: 2 };
+  const summary = runTimingSummary("123", "2", [inherited, rerun], true);
+  expect(summary.valid).toBe(false);
+  expect(summary.markdown).not.toContain("| setup (1, combined) |");
+  expect(summary.markdown).toContain("| setup (1, electron-only) |");
+  expect(summary.markdown).toContain("setup (1, combined) (attempt 1)");
 });

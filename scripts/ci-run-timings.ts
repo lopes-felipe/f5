@@ -3,8 +3,9 @@ import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { median } from "./lib/ci-test-sharding.ts";
+import { latestJobExecutions, type JobExecution } from "./lib/ci-job-attempts.ts";
 
-export interface TimedJob {
+export interface TimedJob extends JobExecution {
   name: string;
   conclusion: string | null;
   created_at: string;
@@ -72,7 +73,11 @@ export function runTimingSummary(
   jobs: readonly TimedJob[],
   benchmark: boolean,
 ) {
-  const rows = jobs.filter((job) => job.conclusion !== "skipped").map(jobTiming);
+  const executed = jobs.filter((job) => job.run_attempt === Number(attempt));
+  const inherited = jobs.filter(
+    (job) => job.run_attempt < Number(attempt) && job.conclusion !== "skipped",
+  );
+  const rows = executed.filter((job) => job.conclusion !== "skipped").map(jobTiming);
   let markdown =
     "\nRun " +
     runId +
@@ -95,10 +100,15 @@ export function runTimingSummary(
       )
       .join("\n") +
     "\n";
+  if (inherited.length)
+    markdown +=
+      "\nInherited job executions excluded from this attempt's timings: " +
+      inherited.map((job) => job.name + " (attempt " + job.run_attempt + ")").join(", ") +
+      ".\n";
   let valid = true;
   if (benchmark) {
     try {
-      const comparison = compareSetupPairs(jobs);
+      const comparison = compareSetupPairs(executed);
       markdown +=
         "\nMedian combined setup: " +
         comparison.medianSeconds.combined +
@@ -135,10 +145,12 @@ async function main() {
   const run = JSON.parse(gh("api", endpoint));
   const attempt = process.argv[benchmark ? 4 : 3] ?? String(run.run_attempt);
   if (!/^[1-9]\d*$/.test(attempt)) throw new Error("Invalid run attempt");
-  const pages = JSON.parse(
-    gh("api", "--paginate", "--slurp", endpoint + "/attempts/" + attempt + "/jobs"),
+  const pages = JSON.parse(gh("api", "--paginate", "--slurp", endpoint + "/jobs?filter=all"));
+  const jobs = latestJobExecutions(
+    (pages as { jobs: TimedJob[] }[])
+      .flatMap((page) => page.jobs)
+      .filter((job) => job.run_attempt <= Number(attempt)),
   );
-  const jobs = (pages as { jobs: TimedJob[] }[]).flatMap((page) => page.jobs);
   const { markdown, valid } = runTimingSummary(runId, attempt, jobs, benchmark);
   console.log(markdown);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, markdown);
