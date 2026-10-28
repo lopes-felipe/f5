@@ -416,12 +416,16 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "c-8b2ea5721a21",
+      "reason": "Only touches the cloud boot service and service launcher, which f5 does not have.",
+      "reasonKey": "relay-cloud",
       "relatedTopics": [
         "pr-5374"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server",
@@ -773,12 +777,16 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "c-df2f1273e9e1",
+      "reason": "Covers only the cloud link and managed tunnel lifecycle.",
+      "reasonKey": "relay-cloud",
       "relatedTopics": [
         "c-64a3cd6d7daa"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server"
@@ -1340,9 +1348,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-10298",
-      "status": "inbox",
+      "reason": "Depends on upstream's grant-scope permission system, which f5 does not have.",
+      "reasonKey": "upstream-only:auth-scopes",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "auth"
@@ -1552,12 +1564,16 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-10465",
+      "reason": "Most of the change is the multi-computer and T3 Connect onboarding flow, which f5 does not have.",
+      "reasonKey": "multi-environment",
       "relatedTopics": [
         "pr-16887"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "onboarding"
@@ -1877,9 +1893,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-10705",
-      "status": "inbox",
+      "reason": "The full-width fix is superseded by the submenu's removal. f5 has no SettingsSidebarNav file, so it likely never had the submenu.",
+      "reasonKey": "reverted",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings"
@@ -1923,9 +1943,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-10819",
-      "status": "inbox",
+      "reason": "This is a T3 branding asset change. f5's installer branding is separate.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop"
@@ -1946,9 +1970,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-10820",
-      "status": "inbox",
+      "reason": "This only changes upstream installer branding artwork. f5 ships its own release packaging, and the change does not affect app behavior.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop"
@@ -2630,12 +2658,16 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-11317",
+      "reason": "Upstream release pipeline. f5 already tracks the archive builders separately.",
+      "reasonKey": "release-ci",
       "relatedTopics": [
         "pr-11732"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "release"
@@ -2839,9 +2871,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-11433",
-      "status": "inbox",
+      "reason": "A tool-row redesign of the spawn row, which f5 policy declines. f5 keeps its own Agents panel and CTA.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline",
@@ -3511,9 +3547,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-12199",
-      "status": "inbox",
+      "reason": "Lives in the server's cloud boot service, which supports T3 Connect hosting. f5 likely has no equivalent.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server"
@@ -3816,9 +3856,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-12488",
-      "status": "inbox",
+      "reason": "Upstream build and release tooling only. It has no runtime behavior; revisit only if f5's CLI packaging hits the same false rejection.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "build"
@@ -4080,9 +4124,13 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-12657",
-      "status": "inbox",
+      "reason": "This is a structural refactor. The output is identical because one set of env vars fills all signals.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "observability",
@@ -4617,12 +4665,16 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-13397",
+      "reason": "Mostly a lint-driven token cleanup across 109 files, with only minor pixel-level rounding.",
+      "reasonKey": "maintenance",
       "relatedTopics": [
         "pr-13366"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "styling"
@@ -5105,9 +5157,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-13685",
-      "status": "inbox",
+      "reason": "Targets upstream's t3 triage CLI and boot-service, which f5 lacks. The only fork-side change removes an unused config path.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "cli",
@@ -5413,9 +5469,13 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-13867",
-      "status": "inbox",
+      "reason": "Upstream release packaging validation for the WSL runtime in Windows artifacts.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "release"
@@ -5740,12 +5800,16 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-14179",
+      "reason": "The crash happens only under node --watch during development, and the patch targets a node-pty beta that f5 has not adopted.",
+      "reasonKey": "maintenance",
       "relatedTopics": [
         "pr-13748"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "terminal"
@@ -5765,9 +5829,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-14263",
-      "status": "inbox",
+      "reason": "The background service launcher in apps/server/src/cloud is part of upstream's cloud and service stack, which f5 does not have.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server"
@@ -6102,9 +6170,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-14413",
-      "status": "inbox",
+      "reason": "Affects only the built-in relay tracer.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "telemetry"
@@ -6366,9 +6438,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-14534",
-      "status": "inbox",
+      "reason": "The motivating surface is the Device panel, which belongs to the devices subsystem.",
+      "reasonKey": "devices",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "devices",
@@ -6710,9 +6786,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-14627",
-      "status": "inbox",
+      "reason": "A build-script change to generated license notices, with no product behavior change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "build"
@@ -6917,9 +6997,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-14725",
-      "status": "inbox",
+      "reason": "The fix is in orchestration-v2's Orchestrator and EffectWorker, which f5 doesn't have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "orchestration",
@@ -7592,12 +7676,16 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15002",
+      "reason": "Applies to saved remote servers whose protocol is incompatible, and is built on client-runtime connection layers that f5 doesn't have.",
+      "reasonKey": "multi-environment",
       "relatedTopics": [
         "pr-21402"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
@@ -7758,9 +7846,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15029",
-      "status": "inbox",
+      "reason": "Relies on orchestration-v2 run projection and client-runtime, which f5 does not have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "sidebar",
@@ -8074,12 +8166,16 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15107",
+      "reason": "Applies to saved remote environments and the client-runtime connection registry, which f5 does not have.",
+      "reasonKey": "multi-environment",
       "relatedTopics": [
         "pr-18563"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings"
@@ -8143,9 +8239,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15115",
-      "status": "inbox",
+      "reason": "Tied to upstream's orchestrator MCP delegation subsystem, which f5 does not have.",
+      "reasonKey": "upstream-only:lineage-delegation",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "orchestration"
@@ -8209,9 +8309,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15219",
-      "status": "inbox",
+      "reason": "This is groundwork for MCP OAuth sign-in by outside agents, which the policy lists under relay-cloud.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "mcp",
@@ -8503,9 +8607,13 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15384",
-      "status": "inbox",
+      "reason": "A tool-row restyle on upstream's V2 inspector and work log, which f5 doesn't have. The policy declines tool-row redesigns.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline"
@@ -8761,9 +8869,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15442",
-      "status": "inbox",
+      "reason": "Implemented in the orchestration-v2 effect worker, orchestrator and outbox, which f5 does not have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "orchestration"
@@ -8810,9 +8922,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15458",
-      "status": "inbox",
+      "reason": "Removes a dev-only console warning. Users see no change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "threads"
@@ -8914,9 +9030,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15468",
-      "status": "inbox",
+      "reason": "Builds on client-runtime multi-route environments and relay routing, which f5 does not have.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "connections"
@@ -8936,9 +9056,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15477",
-      "status": "inbox",
+      "reason": "Mostly changes upstream's context-handoff lifecycle row and mobile; f5 lacks that subsystem.",
+      "reasonKey": "upstream-only:context-handoff",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline",
@@ -9215,9 +9339,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15548",
-      "status": "inbox",
+      "reason": "Mostly a refactor that depends on upstream's middleware layout. The observability gain for rejected calls is small.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server",
@@ -9519,9 +9647,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15636",
-      "status": "inbox",
+      "reason": "Only matters when grouped projects span several environments.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "sidebar",
@@ -10043,9 +10175,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15825",
-      "status": "inbox",
+      "reason": "Only matters when the local environment is disabled and remote environments are used.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings"
@@ -10283,9 +10419,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15920",
-      "status": "inbox",
+      "reason": "This fixes the legacy V1 importer in orchestration-v2. f5 does not have that subsystem or that import path.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server",
@@ -10334,9 +10474,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15925",
-      "status": "inbox",
+      "reason": "The guard protects orchestration-v2's schema migrations from id 55 up. f5 has no orchestration-v2 schema, so its migration numbering doesn't have this clash.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "persistence",
@@ -10357,9 +10501,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15937",
-      "status": "inbox",
+      "reason": "This targets orchestration-v2 subscriptions and contracts, which f5 doesn't have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server",
@@ -10416,9 +10564,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15948",
-      "status": "inbox",
+      "reason": "Repairs upstream-specific release data and the V1-to-V2 import, neither of which f5 has.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "persistence"
@@ -10661,9 +10813,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-16040",
-      "status": "inbox",
+      "reason": "The Device panel is an upstream devices and simulators feature.",
+      "reasonKey": "devices",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "devices"
@@ -10735,9 +10891,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-16118",
-      "status": "inbox",
+      "reason": "This is a contract refactor tied to v2 protocol gating, with no user-visible change in f5.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "projects",
@@ -10801,9 +10961,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-16138",
-      "status": "inbox",
+      "reason": "A dependency migration with no intended behavior change. f5 should do its own upgrade.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "dependencies"
@@ -11413,9 +11577,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-16309",
-      "status": "inbox",
+      "reason": "compression is a dev-server dependency. Shipped app behavior doesn't change; f5 can take it in a routine dependency update.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "deps"
@@ -11769,9 +11937,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-16411",
-      "status": "inbox",
+      "reason": "Upstream release build tooling with no runtime behavior.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "release"
@@ -11884,9 +12056,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-16495",
-      "status": "inbox",
+      "reason": "Only fixes upstream typecheck and test breakage from merges.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview"
@@ -12046,9 +12222,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-16563",
-      "status": "inbox",
+      "reason": "Concerns upstream's usage analytics opt-out, which f5 does not have.",
+      "reasonKey": "upstream-only:analytics-feedback",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop"
@@ -12207,9 +12387,13 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-16619",
-      "status": "inbox",
+      "reason": "The bug comes from markdown parsing in upstream's Tiptap composer, which f5 does not have.",
+      "reasonKey": "upstream-only:tiptap-composer",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -12345,9 +12529,13 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-16653",
-      "status": "inbox",
+      "reason": "Peer linking between environments over outside-agent OAuth is a multi-environment subsystem that f5 does not have. It builds on orchestration-v2 and delegation.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "mcp",
@@ -12631,9 +12819,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-16730",
-      "status": "inbox",
+      "reason": "One-time pairing grants fall under relay-cloud in the fork policy, and the pairing-link repository path does not exist in f5.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "auth",
@@ -12933,9 +13125,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-16886",
-      "status": "inbox",
+      "reason": "Only mobile is affected, through client-runtime, which f5 does not have.",
+      "reasonKey": "mobile",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "mobile"
@@ -13030,9 +13226,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-16909",
-      "status": "inbox",
+      "reason": "Copy MCP URL serves outside-agent MCP access and depends on client-runtime connection presentation, which f5 does not have.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
@@ -13229,9 +13429,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-17017",
-      "status": "inbox",
+      "reason": "Depends on upstream orchestrator MCP thread tools and v2 thread-link rendering, which f5 does not have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "mcp",
@@ -13278,9 +13482,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-17020",
-      "status": "inbox",
+      "reason": "Devices and simulators only.",
+      "reasonKey": "devices",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "devices"
@@ -13476,12 +13684,16 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-17082",
+      "reason": "f5 already has a Muse provider. The upstream implementation is an orchestration-v2 adapter that does not exist here.",
+      "reasonKey": "upstream-only:orchestration-v2",
       "relatedTopics": [
         "pr-17163"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers"
@@ -13776,12 +13988,16 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-17158",
+      "reason": "Depends on upstream's multi-route saved environment model in client-runtime, which f5 does not have.",
+      "reasonKey": "multi-environment",
       "relatedTopics": [
         "pr-15468"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "connections"
@@ -14065,9 +14281,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-17300",
-      "status": "inbox",
+      "reason": "A refactor for upstream's provider packages, which f5 does not have. Migrated behavior stays the same.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
@@ -14547,9 +14767,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-17417",
-      "status": "inbox",
+      "reason": "An architectural refactor for upstream packages/provider-*, which f5 does not have. No behavior change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers"
@@ -14668,9 +14892,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-17435",
-      "status": "inbox",
+      "reason": "Changes only the Tiptap rich-text composer, which f5 does not have.",
+      "reasonKey": "upstream-only:tiptap-composer",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -14712,9 +14940,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-17440",
-      "status": "inbox",
+      "reason": "SshDeviceHost belongs to the device subsystem, which f5 lacks.",
+      "reasonKey": "devices",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "devices"
@@ -14763,9 +14995,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-17448",
-      "status": "inbox",
+      "reason": "Device hub SSH hosts are part of the devices and simulators subsystem.",
+      "reasonKey": "devices",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "devices"
@@ -14785,9 +15021,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-17451",
-      "status": "inbox",
+      "reason": "Fix to the scheduled-tasks subsystem, which f5 does not have.",
+      "reasonKey": "upstream-only:scheduled-tasks",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "scheduled tasks"
@@ -14878,9 +15118,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-17462",
-      "status": "inbox",
+      "reason": "Handoff budget belongs to upstream's context-handoff subsystem in packages/provider-cursor.",
+      "reasonKey": "upstream-only:context-handoff",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers"
@@ -15090,9 +15334,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-17569",
-      "status": "inbox",
+      "reason": "Device hub and agent device tool settings are a devices-only subsystem.",
+      "reasonKey": "devices",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
@@ -15625,9 +15873,13 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-17739",
-      "status": "inbox",
+      "reason": "It's a contract refactor feeding upstream's source-control-* package series, with no user-visible change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "PR hub",
@@ -15755,9 +16007,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-17757",
-      "status": "inbox",
+      "reason": "This is mostly a refactor that depends on client-runtime source-control-clients, which f5 doesn't have. The only visible change, the host name in the stack merge copy, is minor.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "git",
@@ -15803,9 +16059,13 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-17761",
-      "status": "inbox",
+      "reason": "Relies on orchestration-v2 superseded attempts and their completedAt stamps, which f5 does not have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline"
@@ -16018,9 +16278,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-17820",
-      "status": "inbox",
+      "reason": "This only targets the Tiptap composer, which f5 does not have.",
+      "reasonKey": "upstream-only:tiptap-composer",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -16195,9 +16459,13 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-17885",
-      "status": "inbox",
+      "reason": "The bug comes from orchestration-v2's queue-hold and wake-latch model, which f5 does not have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "orchestration",
@@ -16537,9 +16805,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-18085",
-      "status": "inbox",
+      "reason": "This only affects pairing links for other devices, which falls under pairing and remote access that f5 does not ship.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
@@ -16914,9 +17186,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-18149",
-      "status": "inbox",
+      "reason": "ThreadRelationshipsControl lineage UI and client-runtime are upstream-only.",
+      "reasonKey": "upstream-only:lineage-delegation",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "threads"
@@ -16960,9 +17236,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-18155",
-      "status": "inbox",
+      "reason": "This is client-runtime environment supervision for multi-environment and T3 Connect handoffs. Neither exists in f5.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "usage"
@@ -17008,9 +17288,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-18163",
-      "status": "inbox",
+      "reason": "Both the fix and the ownership race that causes the bug live in upstream orchestration-v2's Orchestrator, which f5 doesn't have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "threads",
@@ -17383,9 +17667,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-18301",
-      "status": "inbox",
+      "reason": "Only affects upstream's devices and simulators tooling.",
+      "reasonKey": "devices",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "devices"
@@ -17449,9 +17737,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-18310",
-      "status": "inbox",
+      "reason": "Only matters when drafts move between environments.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -17943,9 +18235,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-18397",
-      "status": "inbox",
+      "reason": "Affects only the developer dev-runner script. App users see no change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
@@ -18106,9 +18402,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-18414",
-      "status": "inbox",
+      "reason": "The symptom needs the Local environment toggle and a backend pool, which come from upstream's multi-environment desktop. The f5 desktop update paths differ.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
@@ -18530,9 +18830,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-18469",
-      "status": "inbox",
+      "reason": "Mainly an iOS resume symptom in client-runtime, which f5 does not have.",
+      "reasonKey": "mobile",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "connection"
@@ -18694,9 +18998,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-18503",
-      "status": "inbox",
+      "reason": "This only matters when there are several environments with a per-environment settings scope.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings"
@@ -18716,9 +19024,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-18505",
-      "status": "inbox",
+      "reason": "Refactor of secret handling that preserves the stored names and behavior, and partly relies on upstream source-control packages.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
@@ -18871,9 +19183,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-18563",
-      "status": "inbox",
+      "reason": "This is the client-runtime saved remote host compatibility flow, which is only used with multiple environments and relay.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "connections"
@@ -19104,9 +19420,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-18603",
-      "status": "inbox",
+      "reason": "This is the upstream Lineage control. f5 keeps its own Agents panel.",
+      "reasonKey": "upstream-only:lineage-delegation",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "agents"
@@ -19219,9 +19539,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-18628",
-      "status": "inbox",
+      "reason": "Applies only to orchestration-v2 projection tables, which f5 does not have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server"
@@ -19265,12 +19589,16 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-18642",
+      "reason": "The feature is mobile parity. Its server parts live in orchestration-v2 and client-runtime, which f5 does not have.",
+      "reasonKey": "mobile",
       "relatedTopics": [
         "pr-24587"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "mobile",
@@ -19912,9 +20240,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-18819",
-      "status": "inbox",
+      "reason": "The commit has no file changes. The behavior was delivered by a different upstream commit, which should be triaged separately.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "files"
@@ -20076,9 +20408,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-18832",
-      "status": "inbox",
+      "reason": "SSH tunnels to remote environments are part of upstream's multi-environment support.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "ssh"
@@ -20815,12 +21151,16 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-18972",
+      "reason": "Changes the upstream Tiptap rich-text composer document, which the fork does not have.",
+      "reasonKey": "upstream-only:tiptap-composer",
       "relatedTopics": [
         "pr-17820"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -20840,9 +21180,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-18980",
-      "status": "inbox",
+      "reason": "Remote server self-update through the cloud boot service is upstream cloud infrastructure that f5 does not have.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server"
@@ -21355,9 +21699,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-19102",
-      "status": "inbox",
+      "reason": "It extends upstream's delegation and orchestration-v2 launch service, and f5 has neither.",
+      "reasonKey": "upstream-only:lineage-delegation",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "orchestration",
@@ -21402,9 +21750,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-19129",
-      "status": "inbox",
+      "reason": "A storage migration for upstream's orchestration-v2 records, which f5 does not have. Behavior does not change.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "persistence"
@@ -21646,9 +21998,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-19186",
-      "status": "inbox",
+      "reason": "Applies only to the upstream Tiptap rich-text composer.",
+      "reasonKey": "upstream-only:tiptap-composer",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -22044,9 +22400,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-19277",
-      "status": "inbox",
+      "reason": "Build-script fix for developers with no end-user behavior change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
@@ -22108,9 +22468,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-19298",
-      "status": "inbox",
+      "reason": "Repairs freshly merged upstream code that f5 does not have. If f5 ports server ownership later, it would include this fix.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server"
@@ -22244,9 +22608,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-19337",
-      "status": "inbox",
+      "reason": "It depends on upstream's grant scopes and pairing, which f5 does not have.",
+      "reasonKey": "upstream-only:auth-scopes",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "chat",
@@ -22267,9 +22635,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-19354",
-      "status": "inbox",
+      "reason": "Applies only to remote environment pairing in client-runtime and onboarding, which f5 does not have.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "connections"
@@ -22314,12 +22686,16 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-19361",
+      "reason": "The symptom comes from upstream's scope-gated provider panel in client-runtime, which f5 does not have.",
+      "reasonKey": "upstream-only:auth-scopes",
       "relatedTopics": [
         "pr-10298"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
@@ -22481,9 +22857,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-19382",
-      "status": "inbox",
+      "reason": "Depends on orchestration-v2 ThreadSearch and the reader worker. f5 uses one connection behind a semaphore.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server",
@@ -22692,9 +23072,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-19423",
-      "status": "inbox",
+      "reason": "The fix lives entirely in orchestration-v2 history paging, which f5 does not have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "threads",
@@ -22779,12 +23163,16 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-19435",
+      "reason": "Built on the orchestration-v2 event store and projections, which f5 does not have.",
+      "reasonKey": "upstream-only:orchestration-v2",
       "relatedTopics": [
         "pr-20990"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server",
@@ -22854,9 +23242,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-19450",
-      "status": "inbox",
+      "reason": "Fix is in upstream's ProseMirror/Tiptap composer serializer, which f5 does not have.",
+      "reasonKey": "upstream-only:tiptap-composer",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -23162,12 +23554,16 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-19521",
+      "reason": "Built on the orchestration-v2 delegate_task lineage, which f5 doesn't have.",
+      "reasonKey": "upstream-only:lineage-delegation",
       "relatedTopics": [
         "pr-19538"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "orchestration",
@@ -23188,9 +23584,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-19523",
-      "status": "inbox",
+      "reason": "Context handoff is an upstream-only subsystem.",
+      "reasonKey": "upstream-only:context-handoff",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -23700,9 +24100,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-19616",
-      "status": "inbox",
+      "reason": "Only affects T3 Connect relay signing.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "relay"
@@ -23814,9 +24218,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-19640",
-      "status": "inbox",
+      "reason": "T3 Connect relay authentication only.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "auth"
@@ -25030,9 +25438,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-19900",
-      "status": "inbox",
+      "reason": "Only applies to projects that span several environments.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -25404,9 +25816,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-19972",
-      "status": "inbox",
+      "reason": "This only affects device-host commands.",
+      "reasonKey": "devices",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "devices"
@@ -25452,9 +25868,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-19974",
-      "status": "inbox",
+      "reason": "Changes only the devices and simulators subsystem.",
+      "reasonKey": "devices",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "devices"
@@ -25474,9 +25894,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-19975",
-      "status": "inbox",
+      "reason": "Affects only the Devices and simulators surface.",
+      "reasonKey": "devices",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "devices"
@@ -25628,9 +26052,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-20032",
-      "status": "inbox",
+      "reason": "This is upstream release branding. f5 keeps its own product identity.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
@@ -25788,9 +26216,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-20059",
-      "status": "inbox",
+      "reason": "Only affects SSH remote runtime installs in upstream's ssh package, which serves multi-environment hosting.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "ssh",
@@ -26183,9 +26615,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-20148",
-      "status": "inbox",
+      "reason": "Changes upstream's release pipeline and npm distribution. It doesn't affect f5's product surfaces.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "release"
@@ -26323,9 +26759,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-20180",
-      "status": "inbox",
+      "reason": "Only fixes the provider-handoff budget, a context-handoff subsystem f5 does not have.",
+      "reasonKey": "upstream-only:context-handoff",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -26519,9 +26959,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-20213",
-      "status": "inbox",
+      "reason": "It belongs to upstream's delegation and orchestration-v2 subsystem, which f5 does not have.",
+      "reasonKey": "upstream-only:lineage-delegation",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "orchestration"
@@ -26777,9 +27221,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-20289",
-      "status": "inbox",
+      "reason": "This is mainly a React Compiler refactor. The small exit fallback is not worth porting as a separate change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "terminal"
@@ -27238,9 +27686,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-20350",
-      "status": "inbox",
+      "reason": "The fix is in the upstream Tiptap composer, which f5 does not have.",
+      "reasonKey": "upstream-only:tiptap-composer",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -27891,9 +28343,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-20462",
-      "status": "inbox",
+      "reason": "This is React Compiler adoption with no intended behavior change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "sidebar"
@@ -28955,9 +29411,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-20778",
-      "status": "inbox",
+      "reason": "React Compiler adoption. Upstream describes no user-visible behavior change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
@@ -29362,9 +29822,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-20825",
-      "status": "inbox",
+      "reason": "The flow is mobile-only. The server change only supports it.",
+      "reasonKey": "mobile",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "git",
@@ -29526,9 +29990,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-20856",
-      "status": "inbox",
+      "reason": "Implemented in the orchestration-v2 Claude adapter and workflow member threads, which f5 does not have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -29549,9 +30017,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-20857",
-      "status": "inbox",
+      "reason": "Built on orchestration-v2 subagent child threads, client-runtime subagentRuntime and v2 contracts, which f5 does not have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline",
@@ -29848,9 +30320,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-20891",
-      "status": "inbox",
+      "reason": "Fixes a regression created when two upstream changes merged (#20842 and #20868). f5 does not have that lifted dialog state.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "project actions"
@@ -29906,9 +30382,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-20907",
-      "status": "inbox",
+      "reason": "Only matters when the app's product name changes, as with upstream's Alpha-to-Beta rename. f5 has its own product identity.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
@@ -30033,9 +30513,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-20947",
-      "status": "inbox",
+      "reason": "Both changes clean up after the upstream V1→V2 database upgrade. f5 has no orchestration-v2 or statev2 database.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "persistence",
@@ -30353,9 +30837,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-20999",
-      "status": "inbox",
+      "reason": "Affects only the device and simulator viewer.",
+      "reasonKey": "devices",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "devices"
@@ -30398,9 +30886,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21019",
-      "status": "inbox",
+      "reason": "The bug comes from the React Compiler caching clock reads. f5 treats React Compiler adoption as maintenance and does not run it, so the symptom should not occur. Several touched files are also upstream-only surfaces.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "chat",
@@ -30569,9 +31061,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21050",
-      "status": "inbox",
+      "reason": "Part of upstream's V1-to-V2 migration importer, which f5 does not have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "database"
@@ -30682,9 +31178,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21065",
-      "status": "inbox",
+      "reason": "Developer-only dev script change; no effect for users.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server"
@@ -31452,12 +31952,16 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21197",
+      "reason": "Only affects the Device panel. The changed files and client-runtime do not exist in f5.",
+      "reasonKey": "devices",
       "relatedTopics": [
         "pr-14534"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "devices"
@@ -32459,9 +32963,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21394",
-      "status": "inbox",
+      "reason": "The visible behavior is in the mobile app. The web edits move shared logic without changing what web users see.",
+      "reasonKey": "mobile",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "mobile",
@@ -32545,9 +33053,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21401",
-      "status": "inbox",
+      "reason": "Mainly a mobile feature. The web hooks change in a shared refactor, possibly with a minor fix for undoing an expired snooze.",
+      "reasonKey": "mobile",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "mobile",
@@ -32620,9 +33132,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21404",
-      "status": "inbox",
+      "reason": "Only mobile behavior changes. The web part is a refactor into shared code.",
+      "reasonKey": "mobile",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "mobile"
@@ -33275,9 +33791,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21505",
-      "status": "inbox",
+      "reason": "The fix only matters when several environments are connected.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline",
@@ -33680,9 +34200,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21682",
-      "status": "inbox",
+      "reason": "The policy declines automatic compaction before resume. This is an opt-in variant of that idea.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -34784,12 +35308,16 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22011",
+      "reason": "ComposerPromptEditorTiptap does not exist in f5; tiptap-composer is upstream-only.",
+      "reasonKey": "upstream-only:tiptap-composer",
       "relatedTopics": [
         "pr-17435"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -35589,9 +36117,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22180",
-      "status": "inbox",
+      "reason": "The feature moves projects between connected machines, which is multi-environment behavior.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "projects",
@@ -35881,9 +36413,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22229",
-      "status": "inbox",
+      "reason": "Reverts a recent feature that f5 likely never ported. Don't restore it.",
+      "reasonKey": "reverted",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -35929,9 +36465,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22233",
-      "status": "inbox",
+      "reason": "Reverts a recent change that f5 likely never ported. f5 keeps its existing banner.",
+      "reasonKey": "reverted",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -36070,9 +36610,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22277",
-      "status": "inbox",
+      "reason": "Only affects upstream release signing on its CI runners.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
@@ -36404,12 +36948,16 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22492",
+      "reason": "Copy to machine is a multi-environment feature, and its dialog does not exist in f5.",
+      "reasonKey": "multi-environment",
       "relatedTopics": [
         "pr-15636"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "projects",
@@ -36832,9 +37380,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22575",
-      "status": "inbox",
+      "reason": "It only removes duplication when several environments are connected, and it depends on client-runtime and a notice f5 doesn't appear to have.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
@@ -37225,9 +37777,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22638",
-      "status": "inbox",
+      "reason": "Automation messages come from scheduled and webhook tasks, which f5 does not have.",
+      "reasonKey": "upstream-only:scheduled-tasks",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline"
@@ -37286,9 +37842,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22653",
-      "status": "inbox",
+      "reason": "Lives in upstream's orchestration-v2 Orchestrator and Lineage delegation, which f5 does not have.",
+      "reasonKey": "upstream-only:lineage-delegation",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "orchestration"
@@ -37411,9 +37971,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22671",
-      "status": "inbox",
+      "reason": "A refactor stack with no behavior change. The small render savings come from component boundaries and are not a user-visible fix.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "pr hub"
@@ -37438,9 +38002,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22679",
-      "status": "inbox",
+      "reason": "This is a structural refactor. Its one render gain depends on React Compiler caching boundaries, which the policy counts as maintenance.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "command palette"
@@ -37487,9 +38055,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22683",
-      "status": "inbox",
+      "reason": "Pure file moves with no behavior change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings"
@@ -37512,9 +38084,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22689",
-      "status": "inbox",
+      "reason": "A refactor stack with no behavior change. Its render savings come from React Compiler boundaries, which the policy counts as maintenance.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -38420,12 +38996,16 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22855",
+      "reason": "Pairing CLI is covered by relay-cloud, and the pair command file does not exist in f5.",
+      "reasonKey": "relay-cloud",
       "relatedTopics": [
         "pr-10958"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "cli",
@@ -38973,12 +39553,16 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22922",
+      "reason": "The fix lives in the Tiptap rich-text document builder and in shared composer inline tokens. Neither exists in f5.",
+      "reasonKey": "upstream-only:tiptap-composer",
       "relatedTopics": [
         "pr-18735"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -39361,9 +39945,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23103",
-      "status": "inbox",
+      "reason": "This is a React Compiler render-caching tweak in a hook f5 does not have, and the total change in renders is within noise.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -39580,9 +40168,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23165",
-      "status": "inbox",
+      "reason": "Upstream build and release pipeline change. f5 manages its own toolchain.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "build"
@@ -39721,9 +40313,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23233",
-      "status": "inbox",
+      "reason": "Most of the launch-toast files do not exist in f5, which suggests f5 never shipped this toast. If f5 does have an equivalent toast, removing it is a product choice.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -40463,9 +41059,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23799",
-      "status": "inbox",
+      "reason": "A copy-style change. Whether f5 wants it is a product style preference.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "ui",
@@ -40535,9 +41135,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23813",
-      "status": "inbox",
+      "reason": "A typecheck-only refactor with no runtime behavior change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server"
@@ -40783,12 +41387,16 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23886",
+      "reason": "The regression and the fix are both in upstream orchestration-v2's thread.stop path, which f5 doesn't have.",
+      "reasonKey": "upstream-only:orchestration-v2",
       "relatedTopics": [
         "pr-22653"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "orchestration",
@@ -41457,9 +42065,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23992",
-      "status": "inbox",
+      "reason": "This is an architectural refactor into source-control-* packages, which f5 does not have. Any small behavior fixes, such as forge-neutral merge detection, can be ported on their own if they show up.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "pull requests",
@@ -41537,9 +42149,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24008",
-      "status": "inbox",
+      "reason": "It only fixes the automatic compact-before-send path, which f5 declined.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer",
@@ -41695,9 +42311,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24063",
-      "status": "inbox",
+      "reason": "The conflict only exists in upstream's Tiptap rich-text composer, which f5 doesn't have.",
+      "reasonKey": "upstream-only:tiptap-composer",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer",
@@ -41739,9 +42359,13 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24111",
-      "status": "inbox",
+      "reason": "Pairing a remote backend to the desktop is upstream's multi-environment and pairing flow.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop"
@@ -42390,9 +43014,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24287",
-      "status": "inbox",
+      "reason": "This only changes upstream's anonymous PostHog MCP analytics, which belong to the analytics-feedback subsystem that f5 does not have.",
+      "reasonKey": "upstream-only:analytics-feedback",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "mcp",
@@ -42553,12 +43181,16 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24349",
+      "reason": "Context handoff is an upstream-only subsystem under the policy.",
+      "reasonKey": "upstream-only:context-handoff",
       "relatedTopics": [
         "pr-19523"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "threads"
@@ -42954,9 +43586,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24587",
-      "status": "inbox",
+      "reason": "Workflow coordinators and this roster live in upstream's client-runtime and v2 runtime. f5 keeps its own Agents panel.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "agents"
@@ -42976,12 +43612,16 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24588",
+      "reason": "This serves remote devices and multi-environment use. It also turns on network exposure automatically, while f5 policy ships new automatic behavior off.",
+      "reasonKey": "multi-environment",
       "relatedTopics": [
         "pr-19486"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server",
@@ -43400,9 +44040,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24635",
-      "status": "inbox",
+      "reason": "This is development tooling. It changes the product for no user.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "tooling"
@@ -43442,9 +44086,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24643",
-      "status": "inbox",
+      "reason": "Applies to the orchestration-v2 snapshot transport and client-runtime only.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline"
@@ -43499,9 +44147,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24647",
-      "status": "inbox",
+      "reason": "This is a wire optimization of orchestration-v2 snapshots and client-runtime, which f5 does not have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline"
@@ -43634,9 +44286,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24682",
-      "status": "inbox",
+      "reason": "The symptom appears only in the mobile native diff viewer. The server cache priming serves that viewer.",
+      "reasonKey": "mobile",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "pr-hub"
@@ -43763,9 +44419,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24738",
-      "status": "inbox",
+      "reason": "The behavior change is mobile-only. On web it is a refactor into client-runtime.",
+      "reasonKey": "mobile",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "pr-hub"
@@ -43944,9 +44604,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24770",
-      "status": "inbox",
+      "reason": "The user-visible parts are mobile-only. The server part only changes the GitCafe provider path, which f5 does not have.",
+      "reasonKey": "mobile",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "mobile",
@@ -44111,9 +44775,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24809",
-      "status": "inbox",
+      "reason": "Builds on the secret-request card, which f5 declined.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "mcp"
@@ -44267,12 +44935,16 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24839",
+      "reason": "A dev tooling bump plus a build script fix. Users see no change.",
+      "reasonKey": "maintenance",
       "relatedTopics": [
         "pr-22776"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "build"
@@ -47006,12 +47678,16 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25281",
+      "reason": "Mostly T3 Connect, Clerk and pairing surfaces.",
+      "reasonKey": "relay-cloud",
       "relatedTopics": [
         "pr-6300"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "auth"
@@ -47473,9 +48149,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25366",
-      "status": "inbox",
+      "reason": "A refactor. The listener-order change has no clear visible symptom.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "keybindings"
@@ -47942,9 +48622,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25461",
-      "status": "inbox",
+      "reason": "Mostly a restructuring of effects. The only visible fix is on connect, pair and hosted landing routes, which belong to upstream's relay and pairing flows.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
@@ -48052,9 +48736,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25474",
-      "status": "inbox",
+      "reason": "This only affects delivery to upstream's analytics ingest.",
+      "reasonKey": "upstream-only:analytics-feedback",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "telemetry"
@@ -48074,9 +48762,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25475",
-      "status": "inbox",
+      "reason": "An upstream product stance, similar to declined nags. Whether f5 wants it is a product choice.",
+      "reasonKey": "declined-by-policy",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
@@ -48215,9 +48907,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25523",
-      "status": "inbox",
+      "reason": "A refactor that removes effects. The only visible change is a one-commit stale flash.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "pr hub"
@@ -48275,9 +48971,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25526",
-      "status": "inbox",
+      "reason": "The symptom comes from upstream's scope-based permission gating in client-runtime. f5 has neither that gating nor client-runtime.",
+      "reasonKey": "upstream-only:auth-scopes",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
@@ -48551,9 +49251,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25615",
-      "status": "inbox",
+      "reason": "This is an internal refactor. It cuts re-renders but makes no clear user-visible change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer",
@@ -48596,9 +49300,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25627",
-      "status": "inbox",
+      "reason": "Mostly mobile. The client-runtime presentation tweak applies to upstream's shared runtime.",
+      "reasonKey": "mobile",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "mobile"
@@ -48618,9 +49326,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25630",
-      "status": "inbox",
+      "reason": "This is a refactor that removes a double render on mount. Users see no behavior change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline"
@@ -48670,9 +49382,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25636",
-      "status": "inbox",
+      "reason": "The bug comes only from React Compiler memoization, which f5 has not adopted.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "sidebar"
@@ -48743,9 +49459,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25660",
-      "status": "inbox",
+      "reason": "The fix is in orchestration-v2's context handoff bookkeeping, which f5 doesn't have.",
+      "reasonKey": "upstream-only:context-handoff",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers"
@@ -48780,9 +49500,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25667",
-      "status": "inbox",
+      "reason": "This is mostly a refactor. The capture-phase change has only a minor effect when a terminal has focus.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "keybindings",
@@ -48833,9 +49557,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25672",
-      "status": "inbox",
+      "reason": "This is orchestration-v2 delegation logic, which f5 doesn't have.",
+      "reasonKey": "upstream-only:lineage-delegation",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "orchestration"
@@ -48968,9 +49696,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25695",
-      "status": "inbox",
+      "reason": "The fix is in the orchestration-v2 Claude adapter's conversation-head pinning, which f5 does not have.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -49038,9 +49770,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25703",
-      "status": "inbox",
+      "reason": "Fixes paired environments that are reconnecting. The fix is mostly in client-runtime and mobile, which f5 doesn't have.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "files"
@@ -49097,9 +49833,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25710",
-      "status": "inbox",
+      "reason": "This refactor saves one commit per send. Users see no clear change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer",
@@ -49242,9 +49982,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25732",
-      "status": "inbox",
+      "reason": "A refactor of how refreshes are wired up, with no intended change in behavior.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "diff",
@@ -49265,9 +50009,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25733",
-      "status": "inbox",
+      "reason": "A refactor of state management, with no intended change in behavior.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "command palette",
@@ -49533,12 +50281,16 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25778",
+      "reason": "This is mostly a cleanup of upstream's dual styling. The only visible effects are removing a toggle and a darker background, and both depend on whether f5 adopted upstream's redesign.",
+      "reasonKey": "maintenance",
       "relatedTopics": [
         "c-c5ff51ec1fff"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
@@ -49832,9 +50584,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25824",
-      "status": "inbox",
+      "reason": "This targets mobile app resume in client-runtime's connection supervisor, which f5 does not have.",
+      "reasonKey": "mobile",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "connection",
@@ -49855,9 +50611,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25825",
-      "status": "inbox",
+      "reason": "This is a temporary workaround in upstream's CLI release build for a Node bug. It matters only if f5 ships linux-arm64 single executables on that Node version.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "release",
@@ -49924,9 +50684,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25837",
-      "status": "inbox",
+      "reason": "The fix lives in the v2 orchestrator and targets automatic idle compaction, which f5 declines.",
+      "reasonKey": "upstream-only:orchestration-v2",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer",
@@ -49996,12 +50760,16 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25850",
+      "reason": "This targets upstream's device manager and simulators, which f5 does not have. The eval half is test-only.",
+      "reasonKey": "devices",
       "relatedTopics": [
         "pr-24635"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "devices",
@@ -50288,9 +51056,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25909",
-      "status": "inbox",
+      "reason": "This refactor has no visible behavior change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -50413,9 +51185,13 @@
     },
     {
       "createdAt": "2026-10-27T16:29:26.968Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25929",
-      "status": "inbox",
+      "reason": "These are upstream release and CI workflow changes.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "ci"
@@ -50577,9 +51353,13 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26050",
-      "status": "inbox",
+      "reason": "Refactor that keeps the same result, including for restored files.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer",
@@ -50773,12 +51553,16 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26138",
+      "reason": "This changes upstream's channel artwork (SidebarStageBackdrop), which f5 does not appear to ship. It is low value unless f5 keeps the channel art.",
+      "reasonKey": "maintenance",
       "relatedTopics": [
         "pr-5636"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
@@ -50863,9 +51647,13 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26155",
-      "status": "inbox",
+      "reason": "The fix is in upstream's Tiptap composer, which f5 does not have.",
+      "reasonKey": "upstream-only:tiptap-composer",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -51110,12 +51898,16 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26178",
+      "reason": "Lives in the client-runtime multi-route registry, which f5 doesn't have.",
+      "reasonKey": "multi-environment",
       "relatedTopics": [
         "pr-17158"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "pairing",
@@ -51304,9 +52096,13 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26201",
-      "status": "inbox",
+      "reason": "Depends on upstream's linked-environments (peerLinks) feature.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -51326,9 +52122,13 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26202",
-      "status": "inbox",
+      "reason": "The motivation is pasting threads across linked machines. The shortcut change also replaces bare-ID copying for single-machine users.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "command-palette",
@@ -51351,9 +52151,13 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26207",
-      "status": "inbox",
+      "reason": "Development tooling only. Release users see no change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -51529,9 +52333,13 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26245",
-      "status": "inbox",
+      "reason": "Depends on upstream's hosted GitHub App and is internal testing only.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "git",
@@ -51879,9 +52687,13 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26323",
-      "status": "inbox",
+      "reason": "Guest share links are a Connect-based sharing feature, and f5 has no guest subsystem.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "guest share"
@@ -51968,12 +52780,16 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26333",
+      "reason": "Concerns handoff items inside V2 superseded-attempt folds, which are upstream-only subsystems.",
+      "reasonKey": "upstream-only:context-handoff",
       "relatedTopics": [
         "pr-17761"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline"
@@ -52372,12 +53188,16 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26440",
+      "reason": "Upstream build and CI reliability change with no user-visible behavior.",
+      "reasonKey": "release-ci",
       "relatedTopics": [
         "pr-12489"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "build"
@@ -53102,9 +53922,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-4276",
-      "status": "inbox",
+      "reason": "The bug only occurs when threads are created on non-primary remote environments.",
+      "reasonKey": "multi-environment",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "worktrees",
@@ -53445,9 +54269,13 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-4372",
-      "status": "inbox",
+      "reason": "This is about upstream's npm release packaging and branding.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "release"
@@ -53823,9 +54651,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-4556",
-      "status": "inbox",
+      "reason": "Upstream developer tooling. The pairing changes serve that dev flow, not fork users.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "dev tooling"
@@ -53926,9 +54758,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-4643",
-      "status": "inbox",
+      "reason": "This is a dependency upgrade plus relay infrastructure work, with no user-visible behavior change. f5 manages its own dependency versions.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server"
@@ -54699,9 +55535,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-4955",
-      "status": "inbox",
+      "reason": "Pairing grants for mobile remote access fall under relay-cloud in the policy.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "cli",
@@ -54750,9 +55590,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-4975",
-      "status": "inbox",
+      "reason": "A build-cache fix for the upstream Vercel marketing deploy. No user-visible behavior.",
+      "reasonKey": "release-ci",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "build"
@@ -54819,9 +55663,13 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-5015",
-      "status": "inbox",
+      "reason": "This is Clerk sign-in only.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
@@ -55247,9 +56095,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-5217",
-      "status": "inbox",
+      "reason": "This is part of upstream's cloud and T3 Connect background service installer (apps/server/src/cloud), which f5 does not have.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "cloud"
@@ -55381,9 +56233,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-5314",
-      "status": "inbox",
+      "reason": "This fixes a regression in upstream's libghostty renderer, which f5 does not have (none of the ghostty files exist in the fork), so the symptom cannot occur here.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "terminal"
@@ -55654,12 +56510,16 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-5374",
+      "reason": "Lives in upstream's cloud boot-service and launcher, which f5 does not have.",
+      "reasonKey": "relay-cloud",
       "relatedTopics": [
         "pr-15002"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server",
@@ -56402,9 +57262,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-5584",
-      "status": "inbox",
+      "reason": "This only changes upstream's development server and worktree setup. Users of the shipped app see no change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "dev-tooling"
@@ -56424,12 +57288,16 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-5586",
+      "reason": "Contributor dev tooling and docs only. Nothing changes for app users.",
+      "reasonKey": "maintenance",
       "relatedTopics": [
         "pr-4556"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "dev-tooling"
@@ -56450,9 +57318,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-5593",
-      "status": "inbox",
+      "reason": "Only feeds upstream product analytics.",
+      "reasonKey": "upstream-only:analytics-feedback",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers"
@@ -57025,12 +57897,16 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-5788",
+      "reason": "Changes only the cloud boot service unit, which serves upstream's relay or cloud hosts.",
+      "reasonKey": "relay-cloud",
       "relatedTopics": [
         "pr-17662"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server"
@@ -58450,9 +59326,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.794Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-6535",
-      "status": "inbox",
+      "reason": "SidebarStageBackdrop doesn't exist in f5. This only affects upstream channel artwork.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "sidebar",
@@ -59098,12 +59978,16 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-7718",
+      "reason": "Undoes an upstream change (#7595) that f5 never took. f5's sparse newest-first table already matches the final upstream behavior.",
+      "reasonKey": "reverted",
       "relatedTopics": [
         "pr-7147"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "usage"
@@ -59876,12 +60760,16 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-8395",
+      "reason": "This restyles tool rows, which may fall under the declined tool-row redesigns. It could also be read as a simple status-color fix.",
+      "reasonKey": "declined-by-policy",
       "relatedTopics": [
         "pr-14896"
       ],
-      "status": "inbox",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline",
@@ -59993,9 +60881,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-8606",
-      "status": "inbox",
+      "reason": "A developer-only workflow for upstream's dev worktrees. Shipped desktop and non-dev servers ignore the token.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "auth",
@@ -60038,9 +60930,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-8673",
-      "status": "inbox",
+      "reason": "Serves the OAuth sign-in callbacks for upstream cloud accounts. f5 lacks the DesktopLinuxUrlHandler module.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop"
@@ -60587,9 +61483,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-9132",
-      "status": "inbox",
+      "reason": "This is a product-analytics telemetry event that feeds upstream's analytics pipeline, which f5 does not have. It changes nothing users can see.",
+      "reasonKey": "upstream-only:analytics-feedback",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -61236,9 +62136,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-9488",
-      "status": "inbox",
+      "reason": "Regenerates a build artifact. It depends on upstream's Tailwind version.",
+      "reasonKey": "maintenance",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
@@ -62174,9 +63078,13 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-9785",
-      "status": "inbox",
+      "reason": "Part of upstream's auth-scopes and pairing-grant subsystem, which f5 does not have.",
+      "reasonKey": "upstream-only:auth-scopes",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "auth"
@@ -62222,9 +63130,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-9787",
-      "status": "inbox",
+      "reason": "f5 does not have upstream's grant-scope authorization subsystem.",
+      "reasonKey": "upstream-only:auth-scopes",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "auth"
@@ -62244,9 +63156,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-9788",
-      "status": "inbox",
+      "reason": "Part of upstream's grant-scope auth system, which f5 does not have.",
+      "reasonKey": "upstream-only:auth-scopes",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "auth"
@@ -62266,9 +63182,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:02:45.718Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-9791",
-      "status": "inbox",
+      "reason": "Built on upstream's auth-scope grant system, which f5 doesn't have.",
+      "reasonKey": "upstream-only:auth-scopes",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "terminal",
