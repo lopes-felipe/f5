@@ -330,7 +330,7 @@ export class FakeHost {
   unavailableProviders = new Set<string>();
   cancelError: Error | null = null;
   private threadValues: OrchestrationReadModel["threads"][number][] = [];
-  get threads() {
+  get threads(): OrchestrationReadModel["threads"][number][] {
     return this.threadValues;
   }
   set threads(value: OrchestrationReadModel["threads"]) {
