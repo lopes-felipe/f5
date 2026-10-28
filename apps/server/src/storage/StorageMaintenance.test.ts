@@ -3662,6 +3662,10 @@ it.layer(
           assert.equal(yield* Effect.promise(() => pathExists(oldTree)), false);
           assert.equal(yield* Effect.promise(() => pathExists(currentTree)), false);
           assert.equal(yield* Effect.promise(() => pathExists(foreignTree)), true);
+          yield* storage.cleanInactiveWorktreesAutomatically({
+            operationId: "foreign-custom-root",
+          });
+          assert.equal(yield* Effect.promise(() => pathExists(foreignTree)), true);
           const unavailable = currentRoot + "-offline";
           yield* Effect.promise(() => NodeFS.rename(currentRoot, unavailable));
           yield* Effect.addFinalizer(() =>

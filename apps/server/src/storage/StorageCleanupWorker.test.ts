@@ -8,6 +8,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ServerConfig } from "../config.ts";
+import { customWorktreesDirectory } from "../worktreesDirectoryPaths.ts";
 import { createLargeIgnoredDependencyTree } from "../git/ignoredPaths.testUtils.ts";
 import { GitCore } from "../git/Services/GitCore.ts";
 import { withWorktreeLifecycleLock } from "../project/Layers/WorktreeLifecycleCoordinator.ts";
@@ -223,7 +224,12 @@ describe("StorageCleanupWorker", { timeout: 60_000 }, () => {
       return yield* Effect.gen(function* () {
         const config = yield* ServerConfig;
         const worktreePath = path.join(
-          location === "symlink" ? linkedRoot : location ? customRoot : config.worktreesDir,
+          location
+            ? customWorktreesDirectory(
+                location === "symlink" ? linkedRoot : customRoot,
+                config.worktreesDir,
+              )
+            : config.worktreesDir,
           "project",
           "feature",
         );
