@@ -571,12 +571,12 @@ keeps these references when creating activities and still extracts other MCP ima
 
 ## Provider-native integrations
 
-| Integration      | Record           | Path                                                       | Lease                | Status         |
-| ---------------- | ---------------- | ---------------------------------------------------------- | -------------------- | -------------- |
-| Claude in Chrome | `claude-chrome`  | CLI `--chrome`, native host registered by the CLI          | Whole session        | Gate closed    |
-| Codex Chrome     | `codex-chrome`   | F5 HTTP MCP `node_repl` proxying ChatGPT.app's `node_repl` | Child's lifetime     | Gate closed    |
-| Codex Sky        | `codex-computer` | Proxy to `SkyComputerUseClient mcp` (spike only)           | Foreground, per call | No record      |
-| Claude built-in  | none             | The CLI starts computer use only in interactive terminals  | n/a                  | Not applicable |
+| Integration      | Record           | Path                                                           | Lease                | Status         |
+| ---------------- | ---------------- | -------------------------------------------------------------- | -------------------- | -------------- |
+| Claude in Chrome | `claude-chrome`  | CLI `--chrome`, native host registered by the CLI              | Whole session        | Gate closed    |
+| Codex Chrome     | `codex-chrome`   | Codex starts ChatGPT.app's `node_repl`; desktop main adopts it | Runtime's lifetime   | Gate closed    |
+| Codex Sky        | `codex-computer` | Proxy to `SkyComputerUseClient mcp` (spike only)               | Foreground, per call | No record      |
+| Claude built-in  | none             | The CLI starts computer use only in interactive terminals      | n/a                  | Not applicable |
 
 ### Single certification source
 
@@ -586,9 +586,10 @@ platform, arch)` is the only gate; desktop main's Chrome lease, the server's ava
 checks and computer backend selection all call it, so they cannot disagree. A record
 certifies only with an `evidenceId` naming a scrubbed report in
 `docs/computer-certification/<evidenceId>.json`, the `evidenceCommit` (the clean F5
-commit that run exercised), and what its runtime needs to work: `toolNames` for Claude,
-`toolInventorySha256` plus advertised definitions for every allowed tool for Codex
-Chrome, and `toolInventorySha256` for Sky. Runtime never reads `docs/`; the desktop smoke
+commit that run exercised), and what its runtime needs to work: `toolNames` for Claude;
+for Codex Chrome, `toolInventorySha256`, `toolNames` covering the allowed tools and the
+`turn_ended` drain hook, `identity.admission: "session"` and a `versions.codexMin`
+floor; and `toolInventorySha256` for Sky. Runtime never reads `docs/`; the desktop smoke
 test asserts the records are bundled into main. No record in this build carries an
 `evidenceId`, so every gate is closed and each surface shows the specific reason
 (platform, architecture, custom binary, home mismatch, isolated profile, awaiting
@@ -622,11 +623,12 @@ On any acceptance failure the draft is not published: withdraw the record
 (`--withdraw <id> --reason <note>`), note it in the CHANGELOG and cut a new release.
 
 Codex records hold a **certified floor**: the stamper writes the exercised ChatGPT app,
-plugin or service versions as `appMin`, `pluginMin` or `serviceMin` with no `*Max`, so
-newer ChatGPT builds stay open (settings note "Certified on ChatGPT <floor>; running
-<version>"). Every spawn still re-inspects signatures, extension IDs, origins, the host
-name and the helper, then verifies the live tool inventory digest and advertised schemas
-against the record; any mismatch closes that session with its specific reason. Floors
+plugin or service versions (and, for Codex Chrome, the Codex CLI version) as `appMin`,
+`pluginMin`, `serviceMin` or `codexMin` with no `*Max`, so newer builds stay open
+(settings note "Certified on ChatGPT <floor>; running <version>"). Every runtime start
+still re-inspects signatures, extension IDs, origins, the host name and the helper, then
+verifies the live tool inventory digest against the record; any mismatch closes that
+session with its specific reason. Floors
 can overlap: the installed version picks the record with the highest floor at or below
 it (`recordForVersion`), so a newer floor stamped for a changed inventory takes over for
 the builds it covers while older builds keep theirs. Acceptance exercises that same
@@ -687,7 +689,8 @@ guide disclose this, along with the seven browser folders that get created.
 
 Chrome-enabled CLIs and proxied integration children are spawned in their own process
 group and registered with desktop main (`chromeProcessRegister`) before any stdio flows;
-a refused registration kills the child. Main accepts a registration only for a group
+a refused registration kills the child. A process a provider starts itself (Codex's
+`node_repl`) is adopted instead (`chromeProcessAdopt`, below). Main accepts a registration only for a group
 leader that descends from that backend's own server process, so a server cannot have
 main signal an arbitrary group. `ChromeProcessSupervisor` reads `ps` in UTC under the C
 locale and guards against PID reuse with the observed start time. On ⌃⌘Esc, profile
@@ -734,56 +737,189 @@ reported with its reason and "No files were changed." Settings marks **stale** t
 missing or its target gone) with "Restore recommended", and shows legacy v1 journals,
 whose unprovable slots are reported as unresolved.
 
-### Codex Chrome: the proxy veto
+### Codex Chrome: session admission
 
-Codex skips MCP approvals in Full access, so its approvals cannot act as a veto. F5
-instead serves the integration itself: Codex sees an HTTP MCP server named `node_repl`
-on F5's loopback MCP server (`/mcp/integration`), and `IntegrationProxyCatalog.ts`
-lazily spawns ChatGPT.app's `Contents/Resources/cua_node/bin/node_repl` as a registered
-child. Every call is admitted in F5's own transport:
+ChatGPT's Chrome host serves only a `node_repl` whose parent is a signed Codex (see Spike
+D below), so F5 can't start or proxy it. Codex starts ChatGPT.app's
+`Contents/Resources/cua_node/bin/node_repl` itself, from a stdio MCP entry named
+`node_repl` that F5 adds at session start (`codexChromeMcpServer`): the verified path,
+`codexChromeChildEnvironment` (no credentials or F5 secrets), `enabled_tools` = the
+record's `js` and `js_reset` plus the `turn_ended` drain hook, and the old proxy's
+per-call deadline as `tool_timeout_sec`. Codex asks no approval for its calls in Full
+access, so F5 controls the session's runtime, not single calls (`identity.admission:
+"session"`; the consent dialog and the toggle say so). `CodexChromeSession`
+(`apps/server/src/provider/codexChromeSession.ts`) does it:
 
-- `tools/list` answers from the record's `advertisedTools`, so listing never starts
-  `node_repl`; only `js` and `js_reset` are exposed;
 - the user consents once per session generation (consent kind `chrome-session`) before
-  the child is first spawned; declining never starts it;
-- the app, plugin, `node_repl` and helper are inspected again (signatures through a cache
-  keyed by the bundle's identity and seal) right before each spawn, which can be hours
-  after session start; a change refuses the spawn;
-- the paged live inventory hashes to the record's `toolInventorySha256` and its schemas
-  match the advertised ones; until then every call is denied, and `tools/list_changed`
-  re-lists (without a second `initialize`) and re-verifies;
-- a call is tracked from its first await, so a cancel during consent, checks or
-  verification stops it before it is forwarded;
-- live policy, session generation and pause are checked on every call, and again after
-  the lease wait and immediately before forwarding;
-- the native-host registrations, the helper link's realpath and the helper binary's file
-  fingerprint still match the snapshot taken at session start;
-- a Chrome lease is acquired before the first forwarded call and held for the child's
-  whole life, because `node_repl` keeps state and code a call started (timers,
-  listeners) can outlive it. An idle child is stopped after 60 s, like an idle native
-  lease. The proxy releases when the child exits, and main keeps the lease until every
-  process in its group is gone, stopping whatever remains.
+  the MCP config that starts `node_repl` is built; declining leaves the entry out. A
+  session an automation starts (a scheduled run's turn) asks nothing and gets no
+  `node_repl`; the next person's turn restarts it with Chrome, and an automation's turn
+  never restarts a session for Chrome;
+- when Codex reports `node_repl` ready (`mcpServer/startupStatus/updated`), the server
+  asks main to adopt it (`chromeProcessAdopt`), naming the launch token first so a stop
+  reaches a runtime main adopts after the request timed out. Main takes one `ps` snapshot
+  and requires exactly one live child of the session's Codex process running the
+  verified `node_repl`, leading its own process group, under a parent that descends from
+  the backend. `codesign` then checks both running processes by PID (`ps` reports
+  `argv[0]`, a bare `codex` when it was found on PATH): `node_repl` and a parent signed
+  by team `2DC432GLL2` as `codex` or `com.openai.codex.*`. Then main registers the group
+  as it would a spawned child. The listing comes first, so every refusal (recovery
+  required, a generation ⌃⌘Esc stopped, a duplicate token included) SIGKILLs every
+  candidate's group, re-checking start times first so a reused PID is never signalled. A
+  stop that arrives during adoption is kept, and a runtime this session already
+  supervises is returned unchanged;
+- the app, plugin, `node_repl`, helper and registrations are inspected again and must
+  match the snapshot taken at session start, and the inventory Codex lists
+  (`mcpServerStatus/list`) must have exactly the enabled names and hash to the record's
+  `toolInventorySha256`;
+- live policy, session generation and pause are checked again, and the Chrome lease is
+  acquired and held for the runtime's life, because `node_repl` keeps state and Node
+  timers a call started outlive it. Only then is Chrome `connected`; any failure stops
+  the runtime through main and reports the reason;
+- a turn waits up to 20 s for that adoption. A runtime still not supervised then is
+  stopped for the turn (and swept through main), so the model never reaches an
+  unverified, unleased runtime; the next turn starts it again.
 
-Pause, interrupts and turning the integration off cancel in-flight calls and stop the
-child (`SIGTERM`, then `SIGKILL` after 3 s), so background work stops too. The client's
-own `notifications/cancelled` and a 120 s per-call deadline cancel just that call; a
-child that doesn't answer within 10 s is killed. Late responses after a generation change
-are discarded. Requests the child sends to F5 get "method not found", and an output line
-over 16 MB kills the child. Each MCP connection has its own id space, so a late
-cancellation from a previous connection never names a live call. Stdio errors on a dead
-child's pipes are absorbed rather than crashing the server. The `node_repl` source and
-output are fully masked in F5's activity.
+Pause (and ⌃⌘Esc, which pauses) and turning the integration off stop the runtime at once:
+main signals its process group (`SIGTERM`, then `SIGKILL` after 1 s) and releases the
+lease once the group is gone. Ten minutes after a turn ends with no new one
+(`CODEX_CHROME_IDLE_MS`; never during a turn, however long before its first call) the
+runtime gets the graceful `release` stop instead. The window is long because a restart
+runs `config/mcpServer/reload`, which takes no server name and reloads the session's
+whole MCP config, the user's own servers included. Spike D showed a stop ends everything:
+Chrome commands work only inside a running call, a call in flight fails with "Transport
+closed", and Node timers stop with the process. The next turn re-checks the gates,
+reloads (Codex starts a new `node_repl`) and adopts and verifies the new process before
+the turn starts. A `node_repl` Codex reports ready while the session is stopped is
+adopted only to be stopped; one Codex replaces while it runs (any MCP reload) is adopted
+and verified under the lease already held, and a repeated `ready` for the supervised
+process changes nothing. When a turn completes or is interrupted, F5 calls
+`turn_ended` (`{hook_event_name: "Stop", session_id, turn_id}`) through
+`mcpServer/tool/call`, once per turn, so the runtime releases that turn's browser session.
+The `node_repl` source and output are fully masked in F5's activity. A user MCP server
+already named `node_repl` blocks the integration with that reason.
 
 Requirements: an isolated effective Codex home (the instance's `homePath`, else an
 inherited `CODEX_HOME`, else `~/.codex`, which never qualifies), Full access (`node_repl` runs
 unsandboxed JavaScript that an approval UI cannot meaningfully show), an interactive
-desktop session (workflow profiles and synthetic threads never get it) and a verified
-ChatGPT.app. Inspection is read-only: the app and `node_repl` signatures (team
+desktop session (workflow profiles and synthetic threads never get it), an OpenAI-signed
+Codex at or above the record's `codexMin` ("F5's Codex isn't an OpenAI-signed build"
+otherwise; the settings preflight checks the signature only, because it never runs Codex)
+and a verified ChatGPT.app. Inspection is read-only: the app and `node_repl` signatures (team
 `2DC432GLL2`), app and plugin versions, `extension-ids.json`, and the native-host
 manifests in the record's browser folders with their `latest` helper target. F5 never
 reads Codex's `config.toml` or auth and never writes the registrations. A helper whose
 version lags the app reports "Open the ChatGPT app once to update its Chrome helper."
 Toggling `enableCodexChrome` restarts the session before the next turn.
+
+### Codex Chrome: moving `node_repl` under Codex (Spike D)
+
+The proxy can't reach Chrome. ChatGPT's Chrome host (`ChatGPT for Chrome`) checks its
+peer's audit token: it only serves a `node_repl` whose parent is signed by team
+`2DC432GLL2` as `codex` or `com.openai.codex.*`. A probe of the two live host sockets
+showed an F5-started `node_repl` being accepted and then disconnected within 7–14 ms,
+with no answer to `ping`. The redesign has Codex start `node_repl` itself, as a stdio MCP
+server. The spike tested it with `default_tools_approval_mode = "prompt"` (set only in
+the spike harness, not in F5's MCP contract), planning for F5
+to keep control in three ways:
+
+- it answers Codex's approval request for each call;
+- desktop main adopts and kills the Codex-started process;
+- F5 checks the inventory through `mcpServerStatus/list`.
+
+Codex asked for no approval in Full access, so the runtime uses the last two only
+(session admission, above). The gate stays closed until a certification run is stamped.
+
+`integration/codexChromeCodexHosted.live.test.ts` (Spike D) runs that configuration
+against a real `codex app-server` in Full access. It writes a spike file, never
+evidence:
+
+- A browser probe, made of the harness's own `js` calls, connects to Chrome, opens a
+  tab, loads a loopback fixture page and reads its title. Each step is a separate call,
+  so a hang names the step that hung.
+- One turn asks the model to make two `js` calls that each fetch their own fixture
+  marker. The harness approves the first call once and declines the second.
+- It then calls `turn_ended` and starts work that `node_repl` must stop:
+  - a 100 ms `fetch` timer;
+  - a sequential loop navigating the probe's tab, left running after its call;
+  - a call still in flight that keeps navigating the tab.
+
+  The two tab variants need the probe to have reached Chrome.
+
+- Finally it kills the `node_repl` tree, reloads the MCP config and makes a direct `js`
+  call.
+
+The harness's own calls carry `_meta["x-codex-turn-metadata"]`. ChatGPT's browser runtime
+refuses a call without it ("Missing required Codex turn metadata"), and Codex forwards
+`_meta` on `mcpServer/tool/call` to `node_repl`.
+
+The spike file records eight observations:
+
+| Observation             | What it checks                                                                                                                          |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `codex-parent-accepted` | The browser probe reads the fixture's title.                                                                                            |
+| `parent-identity`       | Exactly one verified `node_repl` runs below the app-server, and its parent is signed as above.                                          |
+| `approval-requested`    | Each model `js` call produced an approval request; the approved call reached the fixture and the declined call never did.               |
+| `own-process-group`     | `node_repl`'s pgid equals its pid.                                                                                                      |
+| `inventory-via-status`  | `mcpServerStatus/list` lists the allowed tools with input schemas.                                                                      |
+| `kill-stops-background` | Work driving Chrome was observably running before the kill, and every kind of work goes quiet within 2 s and stays quiet for 5 s.       |
+| `reload-respawns`       | `config/mcpServer/reload` leads to a new `node_repl` process that serves a direct `js` call (through Chrome when the probe reached it). |
+| `turn-ended-callable`   | `mcpServer/tool/call` of `turn_ended` succeeds.                                                                                         |
+
+The file also names the Phase 1 branches these select:
+
+- admission: `per-call`, `session`, or `blocked` when the host rejects the Codex parent;
+- group or tree kill;
+- whether idle stop is possible;
+- whether interrupts drain through `turn_ended` or by kill.
+
+A `blocked` result keeps the gate closed until ChatGPT changes upstream.
+
+Two facts were verified against codex-cli 0.163.0 without signing in:
+
+- Codex refuses `mcpServer/tool/call` for a tool outside `enabled_tools` ("tool
+  'turn_ended' is disabled for MCP server 'node_repl'"). The spike therefore enables
+  `turn_ended` next to `js` and `js_reset`. Admission must decline any model call to it.
+- A client-initiated `mcpServer/tool/call` of `js` runs without an approval request,
+  even with `prompt`. Only model calls can be admitted that way; calls F5 makes itself
+  are its own.
+
+The first signed-in run (Codex 0.163.0, ChatGPT 26.1016.62342) found:
+
+- **Approval:** Full access sent no approval request for the model's `js` call, so
+  admission per call isn't available and the `session` branch applies.
+- **Parent identity:** the parent is `/usr/local/bin/codex`, signed `2DC432GLL2` as
+  `codex`, and `node_repl` leads its own process group.
+- **Browser:** the model's browser call timed out after 30 s, although Codex reported a
+  connected Chrome browser in the result's `_meta`. That run couldn't tell which step
+  hung, which is why the browser probe now runs step by step.
+- **Respawn:** reload started a new `node_repl` process.
+
+The second run, with the step-by-step probe, found:
+
+- **Chrome accepts the Codex parent.** ChatGPT's Chrome host serves the Codex-started
+  `node_repl`: connect, new tab, loading the loopback page and reading its title all
+  passed. Reload respawned `node_repl`, and the next call reached Chrome again.
+- **No approval in Full access.** The model's two calls ran without an approval request;
+  the declined call reached the fixture.
+- **The background check was inconclusive.** A 100 ms tab timer left running after its
+  call never reached the fixture, so there was no positive control. The harness now
+  checks three kinds of work separately: a Node timer, a tab loop left running after its
+  call, and a tab loop in a call that is still running at the kill. The tab loop records
+  why each navigation failed.
+
+The third run settled every observation. It selects `session` admission, group kill,
+idle stop through reload, and interrupt drain through `turn_ended`:
+
+- **Chrome control is scoped to a running call.** The tab loop left behind made one
+  navigation, then every command failed with "node_repl exec context not found". Code
+  that outlives its call can't drive Chrome.
+- **Node-side work does outlive its call.** The `fetch` timer made 42 requests before the
+  kill. It stopped within 41 ms and stayed quiet.
+- **A kill stops a call in flight.** The in-flight tab loop made 3 navigations, then
+  stopped at the kill. Its call failed with "Transport closed".
+
+Pause and the emergency stop therefore only need to kill `node_repl`'s process group.
 
 ### Codex Computer Use (Sky)
 
@@ -814,9 +950,18 @@ DOM text or screenshots) for the operator gate and never stamps a record:
   with `CLAUDE_CONFIG_DIR` set to an authenticated isolated config and
   `F5_CLAUDE_CHROME_REPORT=<file>`;
 - `F5_CODEX_NATIVE_LIVE=chrome … integration/codexChromeNative.live.test.ts` with
-  `F5_CODEX_CHROME_REPORT=<file>`;
+  `F5_CODEX_CHROME_HOME=<dir>` (a Codex home signed in once with
+  `CODEX_HOME=<dir> codex login`), `F5_CODEX_CHROME_REPORT=<file>` and, optionally,
+  `F5_CODEX_BINARY`;
 - `F5_CODEX_NATIVE_LIVE=computer … integration/codexComputerSpike.live.test.ts` with
-  `F5_CODEX_COMPUTER_SPIKE=<spike file>` and `F5_CODEX_COMPUTER_REPORT=<file>`.
+  `F5_CODEX_COMPUTER_SPIKE=<spike file>` and `F5_CODEX_COMPUTER_REPORT=<file>`;
+- `F5_CODEX_NATIVE_LIVE=codex-hosted … integration/codexChromeCodexHosted.live.test.ts`
+  (Spike D), with:
+  - `F5_CODEX_HOSTED_HOME=<dir>`: a Codex home signed in once with
+    `CODEX_HOME=<dir> codex login`. Vitest drops an inherited `CODEX_HOME`.
+  - `F5_CODEX_HOSTED_SPIKE=<file>`: where the spike file is written.
+  - `F5_CODEX_BINARY` (optional): a Codex 0.162.1 or newer, when the `codex` on `PATH`
+    is older.
 
 The certification runner (`scripts/computer-certification`) wraps these as its manual
 `chrome` and `builtin` scenarios. Each report records `sourceCommit` and `dirty` from the
@@ -825,15 +970,31 @@ checkout (keep spike files outside it). `generate-claude-chrome-descriptor.ts --
 --evidence <report>` (Codex; `--template <spike file>` for Sky's first record) validate a
 report against its record before stamping; the Codex stamper also takes `--withdraw`,
 `--reinstate` and `--check`. Every assertion is computed from an observation. The Codex
-Chrome harness reports every tool's schema (the allowed ones become `advertisedTools`)
-and proves `background-work-stops-on-pause`: a `js` call leaves a timer navigating a tab
-to a loopback fixture, the session is paused, and the fixture must go quiet within 2 s
-and stay quiet for 5 s. The Claude harness records manifest and `connected` timings,
-compares the origins it reads back and the bytes of two real launches, and lists the
-assertions it cannot yet observe (permission mode, routing isolation, stale native host,
-terminal coexistence, frozen-server stop) under `notAutomated`. Those stay `false`, so
-its report cannot certify until they are automated; never edit a report by hand.
-`bun apps/server/scripts/probe-computer-builtins.ts` prints read-only availability.
+Chrome harness has the configured Codex (`launches.codex` in the runner) start
+`node_repl` from F5's own MCP entry, and runs F5's `CodexChromeSession` against it, with
+main's adoption and group kill played the way main does them. Real Full-access turns
+make the model's calls. It reports every tool's schema, the Codex, app and plugin
+versions (stamped as floors) and `admission: "session"`, and computes:
+
+- `codex-parent-verified`: adoption found exactly one `node_repl` child of the
+  app-server, in its own process group, under a parent signed as above, and the session
+  reached `connected`;
+- `tool-inventory`: Codex lists exactly the enabled tools, with schemas;
+- `open-tab-read-title`: the model's call opens a loopback fixture page and reads its
+  title;
+- `interrupt-drains`: a turn interrupted during a hanging call completes as
+  `interrupted`, `turn_ended` succeeds, and a fresh tab claim works afterwards;
+- `background-work-stops-on-pause`: a `fetch` timer and a tab loop in a call still in
+  flight drive the fixture, the session is paused, `node_repl` is gone and the fixture
+  goes quiet within 2 s and stays quiet for 5 s;
+- `policy-off-kills`: after the next turn restarts the runtime, turning the integration
+  off does the same, and the following turn doesn't restart it;
+- `registrations-unchanged`. The Claude harness records manifest and `connected` timings,
+  compares the origins it reads back and the bytes of two real launches, and lists the
+  assertions it cannot yet observe (permission mode, routing isolation, stale native host,
+  terminal coexistence, frozen-server stop) under `notAutomated`. Those stay `false`, so
+  its report cannot certify until they are automated; never edit a report by hand.
+  `bun apps/server/scripts/probe-computer-builtins.ts` prints read-only availability.
 
 ## Observation lifetime and turn ownership
 

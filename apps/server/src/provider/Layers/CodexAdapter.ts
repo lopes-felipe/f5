@@ -63,6 +63,7 @@ import {
   ProviderItemId,
   ThreadId,
   TurnId,
+  type McpServerDefinition,
 } from "@t3tools/contracts";
 import { validateProposedPlanOutput } from "@t3tools/shared/proposedPlan";
 import {
@@ -141,11 +142,13 @@ import {
   CODEX_CHROME_SERVER_NAME,
   codexChromeEligibility,
   codexChromeFingerprint,
+  codexChromeMcpServer,
   codexChromeReadyDetail,
   effectiveCodexHome,
-  makeCodexChromeProxy,
+  inspectCodexBinary,
 } from "../codexChromeIntegration.ts";
-import type { IntegrationProxySession } from "../../mcp/IntegrationProxyCatalog.ts";
+import { CodexChromeSession } from "../codexChromeSession.ts";
+import { codexChromeInstructions } from "../../computer/codexNativeIntegrations.ts";
 
 const PROVIDER = "codex" as const;
 
@@ -1187,6 +1190,32 @@ function describePatchApproval(payload: Record<string, unknown> | undefined): st
  * F5 configures Codex's preview server itself, with a per-session credential, so its
  * provenance holds by construction: there is no SDK check to wait for.
  */
+/**
+ * Feeds Codex Chrome's supervision from the session's own events: `node_repl`'s startup
+ * (adoption), its calls (not idle) and turn completion (drain, then the idle stop).
+ */
+export function observeCodexChrome(
+  session: Pick<CodexChromeSession, "startupStatus" | "toolActivity" | "turnEnded">,
+  event: Pick<ProviderEvent, "method" | "payload" | "turnId">,
+): void {
+  const payload = asObject(event.payload);
+  if (event.method === "mcpServer/startupStatus/updated") {
+    // The manager reads either key; so does this.
+    if ((asString(payload?.name) ?? asString(payload?.server)) !== CODEX_CHROME_SERVER_NAME) return;
+    const status = asString(payload?.status);
+    const error = asString(payload?.error);
+    if (status) session.startupStatus(status, error);
+    return;
+  }
+  if (event.method === "item/started" || event.method === "item/completed") {
+    const item = asObject(payload?.item);
+    if (item?.type === "mcpToolCall" && item.server === CODEX_CHROME_SERVER_NAME)
+      session.toolActivity();
+    return;
+  }
+  if (event.method === "turn/completed" && event.turnId) session.turnEnded(event.turnId);
+}
+
 export function withAgentBrowserPreview(
   events: ReadonlyArray<ProviderRuntimeEvent>,
   previewServerName: string | undefined,
@@ -2544,14 +2573,14 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     };
     /** Interactive desktop sessions only: a toggle change restarts before the next turn. */
     const chromeFingerprints = new Map<ThreadId, string>();
-    /** Codex Chrome per session: the proxied `node_repl` catalog and its reported state. */
+    /** Codex Chrome per session: Codex's `node_repl` entry, its supervision and its state. */
     const chromeSessions = new Map<
       ThreadId,
       {
         state: { state: AgentCapabilityState; detail?: string };
-        config?: PreviewMcpSessionConfig;
-        proxy?: IntegrationProxySession;
-        /** Set when this catalog bound the broker session itself (no computer catalog). */
+        serverDefinition?: McpServerDefinition;
+        session?: CodexChromeSession;
+        /** Set when Chrome bound the broker session itself (no computer catalog). */
         boundGeneration?: string;
       }
     >();
@@ -2559,7 +2588,8 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       const chrome = chromeSessions.get(threadId);
       if (!chrome) return;
       chromeSessions.delete(threadId);
-      chrome.config?.dispose();
+      // Main stops the adopted `node_repl`; it would otherwise outlive the session.
+      chrome.session?.dispose();
       if (chrome.boundGeneration)
         options?.computerAutomationBroker?.releaseSession(threadId, chrome.boundGeneration);
     };
@@ -2684,8 +2714,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             kind: "f5-computer",
           });
         }
-        // Codex Chrome: an F5-owned `node_repl` proxy. Only interactive desktop sessions
-        // with the toggle on do any Chrome I/O; workflow and synthetic sessions never do.
+        // Codex Chrome: Codex starts ChatGPT's `node_repl` and F5 supervises it. Only
+        // interactive desktop sessions with the toggle on do any Chrome I/O; workflow and
+        // synthetic sessions never do.
         disposeChromeSession(input.threadId);
         chromeFingerprints.delete(input.threadId);
         const chromeBroker = options?.computerAutomationBroker;
@@ -2694,36 +2725,47 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           serverConfig.mode === "desktop" &&
           !input.workflowExecutionProfile &&
           !isSyntheticOneOffThreadId(input.threadId);
+        // A session an automation starts gets no Chrome (consent needs a person); its
+        // fingerprint says so, and the next person's turn restarts it with Chrome.
         if (chromeInteractive)
           chromeFingerprints.set(
             input.threadId,
-            codexChromeFingerprint(computerPolicy.codexChrome),
+            codexChromeFingerprint(computerPolicy.codexChrome && !input.unattended),
           );
-        if (
-          computerPolicy.codexChrome &&
-          chromeInteractive &&
-          chromeBroker &&
-          options?.previewMcpHttpServer
-        ) {
+        if (computerPolicy.codexChrome && chromeInteractive && chromeBroker) {
           const entry: NonNullable<ReturnType<typeof chromeSessions.get>> = {
             state: { state: "unavailable" },
           };
           chromeSessions.set(input.threadId, entry);
-          if (baseProviderMcpServers?.[CODEX_CHROME_SERVER_NAME])
+          if (input.unattended)
+            entry.state = {
+              state: "unavailable",
+              detail:
+                "Not started for a scheduled run. Chrome control starts with your next message.",
+            };
+          else if (baseProviderMcpServers?.[CODEX_CHROME_SERVER_NAME])
             entry.state = {
               state: "unavailable",
               detail: `An MCP server named "${CODEX_CHROME_SERVER_NAME}" is configured. Rename it to use Codex Chrome control.`,
             };
           else {
             const userHome = userInfo().homedir;
+            const processEnvironment = options?.processEnvironment ?? process.env;
+            const codexHomePath = resolveCodexHome({ homePath: providerOptions?.codex?.homePath });
+            const codex = yield* Effect.promise(() =>
+              inspectCodexBinary({
+                binaryPath: providerOptions?.codex?.binaryPath ?? "codex",
+                processEnvironment,
+                cwd: input.cwd ?? process.cwd(),
+                ...(codexHomePath ? { homePath: codexHomePath } : {}),
+              }),
+            );
             const eligibility = yield* Effect.promise(() =>
               codexChromeEligibility({
-                codexHome: effectiveCodexHome(
-                  resolveCodexHome({ homePath: providerOptions?.codex?.homePath }),
-                  options.processEnvironment ?? process.env,
-                ),
+                codexHome: effectiveCodexHome(codexHomePath, processEnvironment),
                 userHome,
                 runtimeMode: input.runtimeMode,
+                codex,
               }),
             );
             if (!eligibility.eligible)
@@ -2735,45 +2777,69 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 chromeBroker.bindSession(input.threadId, generation, "codex");
                 entry.boundGeneration = generation;
               }
-              const services = yield* Effect.services<never>();
               const threadId = input.threadId;
-              const proxy = makeCodexChromeProxy({
-                threadId,
-                generation,
-                eligibility,
-                userHome,
-                ...(input.cwd ? { cwd: input.cwd } : {}),
-                broker: chromeBroker,
-                policyEnabled: () =>
-                  Effect.runPromise(
-                    resolveAgentBrowserPolicy(threadId).pipe(
-                      Effect.map((policy) => policy.codexChrome),
-                      Effect.provide(services),
+              // Codex starts `node_repl` with the session and asks nothing per call, so the
+              // user consents before the MCP config that starts it is built.
+              const allowed = yield* Effect.promise(() =>
+                chromeBroker.requestChromeSession(threadId, generation, "codex-chrome"),
+              );
+              if (!allowed)
+                entry.state = {
+                  state: "unavailable",
+                  detail: "Chrome control wasn't allowed for this session.",
+                };
+              else {
+                const services = yield* Effect.services<never>();
+                entry.serverDefinition = codexChromeMcpServer(eligibility, processEnvironment);
+                entry.session = new CodexChromeSession({
+                  threadId,
+                  generation,
+                  installation: eligibility.installation,
+                  userHome,
+                  broker: chromeBroker,
+                  codex: {
+                    pid: () => manager.codexProcessId(threadId),
+                    providerThreadId: () => manager.providerThreadId(threadId),
+                    listServer: async () => {
+                      const listing = await manager.getMcpServerStatuses(threadId, {
+                        deadline: Date.now() + 10_000,
+                      });
+                      return listing.complete
+                        ? listing.entries.find((row) => row.name === CODEX_CHROME_SERVER_NAME)
+                        : undefined;
+                    },
+                    reload: async () => {
+                      await manager.reloadMcpConfig(threadId);
+                    },
+                    callTool: (tool, args, meta) =>
+                      manager.callMcpServerTool(
+                        threadId,
+                        CODEX_CHROME_SERVER_NAME,
+                        tool,
+                        args,
+                        meta,
+                      ),
+                  },
+                  policyEnabled: () =>
+                    Effect.runPromise(
+                      resolveAgentBrowserPolicy(threadId).pipe(
+                        Effect.map((policy) => policy.codexChrome),
+                        Effect.provide(services),
+                      ),
                     ),
-                  ),
-                ...(options.processEnvironment
-                  ? { processEnvironment: options.processEnvironment }
-                  : {}),
-                stateChanged: (state, detail) => {
-                  if (chromeSessions.get(threadId) === entry)
-                    entry.state = { state, ...(detail ? { detail } : {}) };
-                },
-              });
-              entry.proxy = proxy.session;
-              entry.config = options.previewMcpHttpServer.createSessionConfig({
-                threadId,
-                catalog: "integration",
-                serverName: CODEX_CHROME_SERVER_NAME,
-                integration: proxy.session,
-              });
-              entry.state = { state: "pending" };
-              chromeInstructions = proxy.instructions;
-              // JavaScript source and page output have no safe field-level structure.
-              automationEventSanitizer.mask(threadId, CODEX_CHROME_SERVER_NAME);
+                  stateChanged: (state, detail) => {
+                    if (chromeSessions.get(threadId) === entry)
+                      entry.state = { state, ...(detail ? { detail } : {}) };
+                  },
+                });
+                chromeInstructions = codexChromeInstructions(eligibility.installation);
+                // JavaScript source and page output have no safe field-level structure.
+                automationEventSanitizer.mask(threadId, CODEX_CHROME_SERVER_NAME);
+              }
             }
           }
         }
-        const chromeMcpSession = chromeSessions.get(input.threadId)?.config;
+        const chromeServer = chromeSessions.get(input.threadId)?.serverDefinition;
         threadMcpSessions.get(input.threadId)?.dispose();
         threadMcpSessions.delete(input.threadId);
         threadMcpSession =
@@ -2790,13 +2856,13 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                   ...Object.keys(baseProviderMcpServers ?? {}),
                   ...(previewMcpSession ? [previewMcpSession.serverName] : []),
                   ...(computerMcpSession ? [computerMcpSession.serverName] : []),
-                  ...(chromeMcpSession ? [chromeMcpSession.serverName] : []),
+                  ...(chromeServer ? [CODEX_CHROME_SERVER_NAME] : []),
                 ]),
               })
             : undefined;
         if (threadMcpSession) threadMcpSessions.set(input.threadId, threadMcpSession);
         const providerMcpServers =
-          previewMcpSession || computerMcpSession || threadMcpSession || chromeMcpSession
+          previewMcpSession || computerMcpSession || threadMcpSession || chromeServer
             ? {
                 ...baseProviderMcpServers,
                 ...(threadMcpSession
@@ -2808,9 +2874,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 ...(computerMcpSession
                   ? { [computerMcpSession.serverName]: computerMcpSession.serverDefinition }
                   : {}),
-                ...(chromeMcpSession
-                  ? { [chromeMcpSession.serverName]: chromeMcpSession.serverDefinition }
-                  : {}),
+                ...(chromeServer ? { [CODEX_CHROME_SERVER_NAME]: chromeServer } : {}),
               }
             : baseProviderMcpServers;
         yield* Effect.try({
@@ -2886,13 +2950,12 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           ...(providerMcpServers
             ? { mcpServers: translateMcpForCodex(providerMcpServers) ?? {} }
             : {}),
-          ...(previewMcpSession || computerMcpSession || threadMcpSession || chromeMcpSession
+          ...(previewMcpSession || computerMcpSession || threadMcpSession
             ? {
                 mcpEnvironment: {
                   ...previewMcpSession?.env,
                   ...computerMcpSession?.env,
                   ...threadMcpSession?.env,
-                  ...chromeMcpSession?.env,
                 },
               }
             : {}),
@@ -2985,7 +3048,15 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           input.modelOptions?.codex !== undefined;
 
         return yield* Effect.tryPromise({
-          try: () => {
+          try: async () => {
+            // A new turn restarts Chrome's runtime if it was stopped while idle or paused,
+            // and waits (bounded) until main supervises it; one that isn't supervised by
+            // then is stopped, so the model never reaches an unsupervised runtime.
+            // Steering joins a turn that already has it.
+            const chrome = input.expectedTurnId
+              ? undefined
+              : chromeSessions.get(input.threadId)?.session;
+            await chrome?.beforeTurn();
             const managerInput = {
               threadId: input.threadId,
               ...(input.expectedTurnId ? { expectedTurnId: input.expectedTurnId } : {}),
@@ -3006,7 +3077,13 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 : {}),
               ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
             };
-            return manager.sendTurn(managerInput);
+            try {
+              return await manager.sendTurn(managerInput);
+            } catch (error) {
+              // No turn started, so none will end: let the idle stop run again.
+              chrome?.turnAborted();
+              throw error;
+            }
           },
           catch: (cause) => toRequestError(input.threadId, "turn/start", cause),
         }).pipe(
@@ -3019,10 +3096,12 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
 
     const interruptTurn: CodexAdapterShape["interruptTurn"] = (threadId, turnId) =>
       Effect.tryPromise({
-        try: () => {
-          // In-flight Chrome calls are cancelled and drained, never left running.
-          chromeSessions.get(threadId)?.proxy?.cancel();
-          return manager.interruptTurn(threadId, turnId);
+        try: async () => {
+          const result = await manager.interruptTurn(threadId, turnId);
+          // Codex interrupts the call; Chrome's runtime releases the turn's browser
+          // session through its own hook.
+          if (turnId) chromeSessions.get(threadId)?.session?.turnEnded(turnId);
+          return result;
         },
         catch: (cause) => toRequestError(threadId, "turn/interrupt", cause),
       });
@@ -3189,7 +3268,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         [
           previewMcpSessions.get(threadId)?.serverName,
           computerMcpSessions.get(threadId)?.serverName,
-          chromeSessions.get(threadId)?.config?.serverName,
+          chromeSessions.get(threadId)?.serverDefinition ? CODEX_CHROME_SERVER_NAME : undefined,
         ].filter((name): name is string => Boolean(name)),
       );
 
@@ -3542,6 +3621,10 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 : undefined;
               if (ownsAutomation && event.method === "turn/completed" && event.turnId)
                 computerMcpSessions.get(event.threadId)?.endTurn?.(event.turnId);
+              const chromeSession = ownsAutomation
+                ? chromeSessions.get(event.threadId)?.session
+                : undefined;
+              if (chromeSession) observeCodexChrome(chromeSession, event);
               let runtimeEvents = withAgentBrowserPreview(
                 mapToRuntimeEvents(
                   event,
@@ -3735,13 +3818,21 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             eligibility: "recovery-required" as const,
             reason: "Browser control from an earlier session hasn't stopped yet.",
           };
+        const processEnvironment = options?.processEnvironment ?? process.env;
         const eligibility = await codexChromeEligibility({
           codexHome: effectiveCodexHome(
             resolveCodexHome({ homePath: options?.defaultProviderOptions?.codex?.homePath }),
-            options?.processEnvironment ?? process.env,
+            processEnvironment,
           ),
           userHome: userInfo().homedir,
           runtimeMode: "preflight",
+          // The binary's path and signature only: the preflight never runs Codex.
+          codex: await inspectCodexBinary({
+            binaryPath: options?.defaultProviderOptions?.codex?.binaryPath ?? "codex",
+            processEnvironment,
+            cwd: process.cwd(),
+            probeVersion: false,
+          }),
         });
         return eligibility.eligible
           ? {

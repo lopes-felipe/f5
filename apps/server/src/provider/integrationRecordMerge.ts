@@ -18,9 +18,7 @@ function withoutStamp<R extends ProviderIntegrationRecord>(record: R): R {
     withdrawn: _withdrawn,
     ...rest
   } = record;
-  if (rest.integration !== "codex-chrome") return rest as R;
-  const { advertisedTools: _advertised, ...identity } = (rest as CodexChromeRecord).identity;
-  return { ...rest, identity } as R;
+  return rest as R;
 }
 
 /** What a supporting report adds to the record it certifies. */
@@ -28,7 +26,7 @@ function stamp<R extends ProviderIntegrationRecord>(
   record: R,
   report: IntegrationEvidenceReport,
 ): R {
-  const stamped = {
+  return {
     ...record,
     evidenceId: report.evidenceId,
     ...(report.sourceCommit ? { evidenceCommit: report.sourceCommit } : {}),
@@ -37,24 +35,6 @@ function stamp<R extends ProviderIntegrationRecord>(
       ? { toolInventorySha256: report.toolInventorySha256 }
       : {}),
   };
-  if (stamped.integration !== "codex-chrome") return stamped;
-  // Advertised before consent so listing never starts `node_repl`: copied verbatim from
-  // the schemas the live run observed, for the allow-listed tools only.
-  const chrome = stamped as CodexChromeRecord;
-  const advertisedTools = chrome.identity.allowedTools.map((name) => {
-    const tool = report.toolSchemas?.find((entry) => entry.name === name);
-    if (!tool) throw new Error(`Evidence has no schema for the allowed tool ${name}.`);
-    return {
-      name: tool.name,
-      ...(tool.description !== undefined ? { description: tool.description } : {}),
-      inputSchema: tool.inputSchema,
-    };
-  });
-  const advertised: CodexChromeRecord = {
-    ...chrome,
-    identity: { ...chrome.identity, advertisedTools },
-  };
-  return advertised as R;
 }
 
 /**
@@ -132,14 +112,6 @@ export function mergeIntegrationRecords<R extends ProviderIntegrationRecord>(inp
           ? { toolInventorySha256: previous.toolInventorySha256 }
           : {}),
         ...(previous.withdrawn ? { withdrawn: previous.withdrawn } : {}),
-        ...(previous.integration === "codex-chrome" && previous.identity.advertisedTools
-          ? {
-              identity: {
-                ...(kept as CodexChromeRecord).identity,
-                advertisedTools: previous.identity.advertisedTools,
-              },
-            }
-          : {}),
       } as R;
     }
   }
