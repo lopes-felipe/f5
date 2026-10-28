@@ -17,7 +17,7 @@ export function confirmedSchedule(
 export function validateScheduledDraft(value: ScheduledTaskConfiguration): string | null {
   if (!value.name.trim() || !value.prompt.trim()) return "Enter a name and prompt.";
   if (/^\s*\/(model|plan|default)(\s|$)/i.test(value.prompt))
-    return "Interactive /model, /plan and /default commands cannot be scheduled.";
+    return "Use the Mode setting instead of /plan or /default; /model cannot be scheduled.";
   if (!value.modelSelection.model) return "Select a model.";
   if (value.workspace.kind === "worktree" && !value.workspace.baseBranch.trim())
     return "Choose a base branch or explicitly use the project root.";

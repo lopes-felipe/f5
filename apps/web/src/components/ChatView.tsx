@@ -5,6 +5,12 @@ import {
   readPullRequestReferenceDrag,
 } from "../lib/pullRequestReference";
 import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
+import {
+  deriveProviderInstanceEntries,
+  getDefaultProviderInstanceModel,
+  NO_PROVIDER_INSTANCE_ID,
+  resolveComposerProviderInstance,
+} from "../providerInstances";
 import { preserveTimelineAnchorDuringHistoryLoad } from "./chat/timelineScrollAnchors";
 import { messageAttachmentSources } from "../lib/streamingTextRevision";
 import { WorkspaceTransitionBanner } from "./chat/WorkspaceTransitionBanner";
@@ -691,27 +697,6 @@ function isEventInDialogKeybindingContext(event: globalThis.KeyboardEvent): bool
   return Boolean(eventTargetElement?.closest(DIALOG_PORTALED_POPUP_SELECTOR));
 }
 
-function providerInstanceBelongsToProvider(input: {
-  readonly instanceId: ProviderInstanceId | null | undefined;
-  readonly provider: ProviderKind;
-  readonly providers: ReadonlyArray<ServerProvider>;
-  readonly providerInstances:
-    | Readonly<Record<string, { readonly driver: ProviderDriverKind } | undefined>>
-    | undefined;
-}): boolean {
-  if (!input.instanceId) return false;
-  const driver = ProviderDriverKind.make(input.provider);
-  const liveProvider = input.providers.find((provider) => provider.instanceId === input.instanceId);
-  if (liveProvider) {
-    return liveProvider.driver === driver;
-  }
-  const configuredInstance = input.providerInstances?.[input.instanceId];
-  if (configuredInstance) {
-    return configuredInstance.driver === driver;
-  }
-  return input.instanceId === defaultInstanceIdForDriver(driver);
-}
-
 function providerKindForDriver(driver: ProviderDriverKind): ProviderKind | null {
   return driver === "codex" ||
     driver === "claudeAgent" ||
@@ -1390,6 +1375,15 @@ export default memo(function ChatView({
   ]);
 
   const sessionProvider = activeThread?.session?.provider ?? null;
+  const providerStatuses = useMemo(
+    () =>
+      projectProviderSnapshots(
+        serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES,
+        projectSettings,
+        activeThread?.projectId,
+      ),
+    [serverConfigQuery.data?.providers, projectSettings, activeThread?.projectId],
+  );
   const selectedProviderByThreadId = composerDraft.provider;
   const hasThreadStarted = Boolean(
     activeThread &&
@@ -1407,10 +1401,48 @@ export default memo(function ChatView({
       ? (importedThreadProvider ?? inferProviderForModel(activeThread.model, "codex"))
       : null;
   const lockedProvider: ProviderKind | null = hasThreadStarted
-    ? (sessionProvider ?? importedThreadProvider ?? selectedProviderByThreadId ?? null)
+    ? (sessionProvider ??
+      importedThreadProvider ??
+      selectedProviderByThreadId ??
+      inferredThreadProvider)
     : null;
-  const selectedProvider: ProviderKind =
-    lockedProvider ?? selectedProviderByThreadId ?? inferredThreadProvider ?? "codex";
+  const requestedInstanceId =
+    composerDraft.providerInstanceId ??
+    activeThread?.session?.providerInstanceId ??
+    activeThread?.modelSelection?.instanceId ??
+    activeProject?.defaultModelSelection?.instanceId;
+  const selectedProviderEntry = useMemo(() => {
+    const entries = deriveProviderInstanceEntries(providerStatuses);
+    const lockedInstanceId =
+      activeThread?.session?.providerInstanceId ??
+      activeThread?.modelSelection?.instanceId ??
+      (lockedProvider
+        ? defaultInstanceIdForDriver(ProviderDriverKind.make(lockedProvider))
+        : undefined);
+    const preferred =
+      selectedProviderByThreadId ?? (isServerThread ? inferredThreadProvider : null);
+    return resolveComposerProviderInstance(entries, {
+      candidates: [hasThreadStarted ? lockedInstanceId : requestedInstanceId],
+      preferredDriver: preferred ? ProviderDriverKind.make(preferred) : undefined,
+      lockedDriver: lockedProvider ? ProviderDriverKind.make(lockedProvider) : null,
+      lockedInstanceId: hasThreadStarted ? lockedInstanceId : undefined,
+    });
+  }, [
+    providerStatuses,
+    requestedInstanceId,
+    lockedProvider,
+    hasThreadStarted,
+    activeThread?.session?.providerInstanceId,
+    activeThread?.modelSelection?.instanceId,
+    selectedProviderByThreadId,
+    inferredThreadProvider,
+    isServerThread,
+  ]);
+  const noProviderAvailable = selectedProviderEntry === undefined;
+  const selectedProvider = (selectedProviderEntry?.driverKind ??
+    lockedProvider ??
+    selectedProviderByThreadId ??
+    "codex") as ProviderKind;
   const selectedThreadTitleModel = resolveThreadTitleModel(settings);
   const selectedThreadTitleModelSelection = useMemo(
     () =>
@@ -1420,32 +1452,14 @@ export default memo(function ChatView({
       ),
     [selectedThreadTitleModel],
   );
-  const draftModelOptions = composerDraft.modelOptions;
+  const providerSelectionChanged =
+    !hasThreadStarted &&
+    selectedProviderEntry !== undefined &&
+    requestedInstanceId !== undefined &&
+    requestedInstanceId !== selectedProviderEntry.instanceId;
+  const draftModelOptions = providerSelectionChanged ? null : composerDraft.modelOptions;
   const selectedProviderDriver = ProviderDriverKind.make(selectedProvider);
-  const selectedProviderInstanceId = useMemo(() => {
-    const fallbackInstanceId = defaultInstanceIdForDriver(
-      ProviderDriverKind.make(selectedProvider),
-    );
-    const threadInstanceId =
-      composerDraft.providerInstanceId ??
-      activeThread?.session?.providerInstanceId ??
-      activeThread?.modelSelection?.instanceId;
-    return providerInstanceBelongsToProvider({
-      instanceId: threadInstanceId,
-      provider: selectedProvider,
-      providers: serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES,
-      providerInstances: serverConfigQuery.data?.settings?.providerInstances,
-    })
-      ? threadInstanceId!
-      : fallbackInstanceId;
-  }, [
-    activeThread?.modelSelection?.instanceId,
-    activeThread?.session?.providerInstanceId,
-    composerDraft.providerInstanceId,
-    serverConfigQuery.data?.providers,
-    serverConfigQuery.data?.settings?.providerInstances,
-    selectedProvider,
-  ]);
+  const selectedProviderInstanceId = selectedProviderEntry?.instanceId ?? NO_PROVIDER_INSTANCE_ID;
   const modelOptionsByProvider = useMemo(
     () =>
       getCustomModelOptionsByProvider(
@@ -1473,9 +1487,15 @@ export default memo(function ChatView({
   const selectedProviderPickerOptions =
     modelOptionsByInstance.get(selectedProviderInstanceId) ?? [];
   const baseThreadModel = useMemo(() => {
+    const instanceDefault = getDefaultProviderInstanceModel(
+      providerStatuses,
+      selectedProviderInstanceId,
+    );
     const rawModel =
-      activeThread?.model ??
-      activeProject?.model ??
+      (providerSelectionChanged
+        ? instanceDefault
+        : (activeThread?.model ?? activeProject?.model)) ??
+      instanceDefault ??
       pickPreferredModel(selectedProviderPickerOptions, [getDefaultModel(selectedProvider)])
         ?.slug ??
       getDefaultModel(selectedProvider);
@@ -1485,6 +1505,9 @@ export default memo(function ChatView({
       getDefaultModel(selectedProvider)
     );
   }, [
+    providerStatuses,
+    selectedProviderInstanceId,
+    providerSelectionChanged,
     activeProject?.model,
     activeThread?.model,
     selectedProvider,
@@ -1492,7 +1515,7 @@ export default memo(function ChatView({
     selectedProviderPickerOptions,
   ]);
   const selectedModel = useMemo(() => {
-    const draftModel = composerDraft.model;
+    const draftModel = providerSelectionChanged ? null : composerDraft.model;
     if (!draftModel) {
       return baseThreadModel;
     }
@@ -1501,7 +1524,13 @@ export default memo(function ChatView({
       draftModel,
       selectedProviderPickerOptions,
     ) ?? baseThreadModel) as ModelSlug;
-  }, [baseThreadModel, composerDraft.model, selectedProviderDriver, selectedProviderPickerOptions]);
+  }, [
+    baseThreadModel,
+    composerDraft.model,
+    providerSelectionChanged,
+    selectedProviderDriver,
+    selectedProviderPickerOptions,
+  ]);
   const threadModelSelection = serverThread?.modelSelection;
   useEffect(() => {
     if (workflowThreadSlot) return;
@@ -2778,15 +2807,6 @@ export default memo(function ChatView({
   );
   const keybindings = serverConfigQuery.data?.keybindings ?? EMPTY_KEYBINDINGS;
   const availableEditors = serverConfigQuery.data?.availableEditors ?? EMPTY_AVAILABLE_EDITORS;
-  const providerStatuses = useMemo(
-    () =>
-      projectProviderSnapshots(
-        serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES,
-        projectSettings,
-        activeThread?.projectId,
-      ),
-    [serverConfigQuery.data?.providers, projectSettings, activeThread?.projectId],
-  );
   const activeProvider = activeThread?.session?.provider ?? "codex";
   const activeProviderDefaultInstanceId = defaultInstanceIdForDriver(
     ProviderDriverKind.make(activeProvider),
@@ -3089,9 +3109,9 @@ export default memo(function ChatView({
   }, [composerFocusRequest, hasActiveThread, threadId]);
   const promptStashFallbackSelection = useMemo<PromptStashDraftSelection>(
     () => ({
-      provider: selectedProvider,
-      providerInstanceId: selectedProviderInstanceId,
-      model: selectedModel,
+      provider: noProviderAvailable ? null : selectedProvider,
+      providerInstanceId: noProviderAvailable ? null : selectedProviderInstanceId,
+      model: noProviderAvailable ? null : selectedModel,
       modelOptions: composerDraft.modelOptions,
       runtimeMode,
       interactionMode,
@@ -3107,6 +3127,7 @@ export default memo(function ChatView({
       selectedModel,
       selectedProvider,
       selectedProviderInstanceId,
+      noProviderAvailable,
     ],
   );
   const onPromptStashed = useCallback(() => {
@@ -5176,6 +5197,7 @@ export default memo(function ChatView({
       onAdvanceActivePendingUserInput();
       return;
     }
+    if (noProviderAvailable) return;
     if (
       /^\/review(?:\s|$)/.test(promptRef.current.trim()) &&
       activeThread.session?.provider === "codex" &&
@@ -5870,6 +5892,7 @@ export default memo(function ChatView({
     }) => {
       const api = readNativeApi();
       if (
+        noProviderAvailable ||
         !api ||
         !activeThread ||
         !isServerThread ||
@@ -6062,6 +6085,7 @@ export default memo(function ChatView({
       runtimeMode,
       selectedModel,
       selectedModelSelectionForDispatch,
+      noProviderAvailable,
       selectedThreadTitleModel,
       selectedThreadTitleModelSelection,
       selectedModelOptionsForDispatch,
@@ -6077,6 +6101,7 @@ export default memo(function ChatView({
   );
 
   const onImplementPlanInNewThread = useCallback(async () => {
+    if (noProviderAvailable) return;
     if (planImplementationManagedByWorkflow) {
       if (canImplementMergeFromChat) {
         setWorkflowImplementDialogOpen(true);
@@ -6224,6 +6249,7 @@ export default memo(function ChatView({
     runtimeMode,
     selectedModel,
     selectedModelSelectionForDispatch,
+    noProviderAvailable,
     selectedThreadTitleModel,
     selectedThreadTitleModelSelection,
     selectedModelOptionsForDispatch,
@@ -6386,7 +6412,7 @@ export default memo(function ChatView({
   );
   const onToggleFanOutModel = useCallback(
     (instanceId: ProviderInstanceId, driver: ProviderDriverKind, model: ModelSlug) => {
-      if (!canFanOut || isPendingTurnDispatchBlocked) return;
+      if (!canFanOut || isPendingTurnDispatchBlocked || noProviderAvailable) return;
       const current: FanOutModel = {
         instanceId: selectedProviderInstanceId,
         driver: ProviderDriverKind.make(selectedProvider),
@@ -6403,6 +6429,7 @@ export default memo(function ChatView({
     },
     [
       canFanOut,
+      noProviderAvailable,
       clearFanOut,
       fanOutModels,
       isPendingTurnDispatchBlocked,
@@ -7238,6 +7265,9 @@ export default memo(function ChatView({
       activeThread?.pinOrderKey,
       activeThread?.snoozedUntil,
       activeThread?.titleRegeneration,
+      // Scheduling into the conversation needs a server thread with settings.
+      activeThread?.modelSelection,
+      isServerThread,
       threadActionController.menuItemsForThread,
     ],
   );
@@ -7537,6 +7567,7 @@ export default memo(function ChatView({
     onRespondToApproval,
   };
   const composerModelControls: ComposerModelControls = {
+    noProviderAvailable,
     selectedProvider,
     selectedProviderInstanceId,
     selectedModel,
@@ -7573,7 +7604,9 @@ export default memo(function ChatView({
     nativeGoal: nativeGoalControls,
   };
   const composerSendControls: ComposerSendControls = {
-    mutationsUnavailable: wsInteractionBlocked,
+    mutationsUnavailable:
+      wsInteractionBlocked ||
+      (noProviderAvailable && !activePendingProgress && prompt.trim() !== "/usage-limits"),
     onSend,
     onInterrupt,
     phase,

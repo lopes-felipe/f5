@@ -1,3 +1,4 @@
+import "./stdioErrors";
 import { registerHtmlPreviewIpc } from "./htmlPreview";
 import { appZoomMenu, zoomAppContents, type AppZoomDirection } from "./appZoom";
 import { desktopCloseWindowItem, desktopWindowMenu, selectAppMenuWindow } from "./windowMenu";

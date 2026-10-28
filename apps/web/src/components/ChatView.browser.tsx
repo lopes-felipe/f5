@@ -11,6 +11,7 @@ import {
   NATIVE_OPERATION_WS_METHODS,
   CommandId,
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
+  DEFAULT_SERVER_SETTINGS,
   EventId,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
@@ -26,6 +27,7 @@ import {
   type OrchestrationReadModel,
   type ProjectId,
   ProviderInstanceId,
+  ProviderDriverKind,
   type ServerConfig,
   ThreadId,
   TurnId,
@@ -1310,6 +1312,9 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
     return { entries: [], generatedAt: NOW_ISO };
   }
   if (tag === NATIVE_OPERATION_WS_METHODS.list) return [];
+  // The chat header lists the conversation's automations from the shared task list.
+  if (tag === WS_METHODS.scheduledTasksList) return { tasks: [], revision: 0 };
+  if (tag === WS_METHODS.scheduledTasksFindRunForTurn) return { runId: null };
   if (tag === WS_METHODS.nextTurnQueueSummary) {
     return { threads: [] };
   }
@@ -2301,6 +2306,192 @@ describe("ChatView timeline (full app)", () => {
     document.body.innerHTML = "";
   });
 
+  it.each(["missing-codex", "unprobed-codex", "disabled-selection"] as const)(
+    "sends with a usable provider for a draft with %s",
+    async (scenario) => {
+      useComposerDraftStore.getState().setProjectDraftThreadId(PROJECT_ID, THREAD_ID, {
+        runtimeMode: "full-access",
+        branch: "main",
+        envMode: "local",
+      });
+      if (scenario === "disabled-selection") {
+        useComposerDraftStore.getState().setProvider(THREAD_ID, "codex");
+        useComposerDraftStore
+          .getState()
+          .setProviderInstance(THREAD_ID, ProviderInstanceId.make("codex"));
+        useComposerDraftStore.getState().setModel(THREAD_ID, "gpt-5");
+      }
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createDraftOnlySnapshot(),
+        configureFixture: (next) => {
+          next.serverConfig = {
+            ...next.serverConfig,
+            settings: {
+              ...DEFAULT_SERVER_SETTINGS,
+              providers: {
+                ...DEFAULT_SERVER_SETTINGS.providers,
+                codex: {
+                  ...DEFAULT_SERVER_SETTINGS.providers.codex,
+                  enabled: scenario !== "disabled-selection",
+                },
+              },
+            },
+            providers: [
+              createTestServerProvider("codex", {
+                status: scenario === "unprobed-codex" ? "warning" : "error",
+                enabled: scenario !== "disabled-selection",
+                installed: false,
+              }),
+              createTestServerProvider("claudeAgent", {
+                models: [
+                  {
+                    slug: "claude-fable-5",
+                    name: "Claude Fable 5",
+                    isCustom: false,
+                    capabilities: null,
+                  },
+                ],
+              }),
+            ],
+          };
+        },
+      });
+      try {
+        useComposerDraftStore.getState().setPrompt(THREAD_ID, "Use the available provider");
+        const send = await waitForSendButton();
+        await vi.waitFor(() => expect(send.disabled).toBe(false));
+        send.click();
+        await vi.waitFor(() => {
+          const command = getDispatchCommandRequests("thread.turn.start")[0]?.command as
+            | { provider?: string; modelSelection?: { instanceId: string; model: string } }
+            | undefined;
+          expect(command?.provider).toBe("claudeAgent");
+          expect(command?.modelSelection).toMatchObject({
+            instanceId: "claudeAgent",
+            model: "claude-fable-5",
+          });
+        });
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it("keeps a providerless draft editable and prevents dispatch", async () => {
+    useComposerDraftStore.getState().setProjectDraftThreadId(PROJECT_ID, THREAD_ID);
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      configureFixture: (next) => {
+        next.serverConfig = { ...next.serverConfig, providers: [] };
+      },
+    });
+    try {
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Keep my draft");
+      await vi.waitFor(() => expect(document.body.textContent).toContain("No provider available"));
+      const send = await waitForSendButton();
+      expect(send.disabled).toBe(true);
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+      expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+        "Keep my draft",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("runs the local usage command without an available provider", async () => {
+    useComposerDraftStore.getState().setProjectDraftThreadId(PROJECT_ID, THREAD_ID);
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      configureFixture: (next) => {
+        next.serverConfig = { ...next.serverConfig, providers: [] };
+        next.resolveWsRequest = (body) =>
+          body._tag === "usage.getAccounts" ? { type: "result", result: [] } : null;
+      },
+    });
+    try {
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "/usage-limits");
+      const send = await waitForSendButton();
+      await vi.waitFor(() => expect(send.disabled).toBe(false));
+      send.click();
+      await vi.waitFor(() =>
+        expect(wsRequests).toContainEqual(
+          expect.objectContaining({ _tag: "usage.getAccounts", refresh: "none" }),
+        ),
+      );
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "").toBe(""),
+      );
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it.each(["enabled", "disabled", "deleted"] as const)(
+    "keeps a started legacy thread on its native instance when it is %s",
+    async (availability) => {
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotForTargetUser({
+          targetMessageId: "native-instance-user" as MessageId,
+          targetText: "Existing native context",
+          fillerPairCount: 0,
+        }),
+        configureFixture: (next) => {
+          next.serverConfig = {
+            ...next.serverConfig,
+            settings: {
+              ...DEFAULT_SERVER_SETTINGS,
+              providers: {
+                ...DEFAULT_SERVER_SETTINGS.providers,
+                codex: {
+                  ...DEFAULT_SERVER_SETTINGS.providers.codex,
+                  enabled: availability === "enabled",
+                },
+              },
+              providerInstances: {
+                [ProviderInstanceId.make("codex_sibling")]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  enabled: true,
+                },
+              },
+            },
+            providers: [
+              ...(availability === "deleted"
+                ? []
+                : [createTestServerProvider("codex", { enabled: availability === "enabled" })]),
+              createTestServerProvider("codex", {
+                instanceId: ProviderInstanceId.make("codex_sibling"),
+              }),
+            ],
+          };
+        },
+      });
+      try {
+        useComposerDraftStore.getState().setPrompt(THREAD_ID, "Continue existing context");
+        const send = await waitForSendButton();
+        await vi.waitFor(() => expect(send.disabled).toBe(availability !== "enabled"));
+        if (availability !== "enabled") {
+          expect(document.body.textContent).toContain("No provider available");
+          const editor = await waitForComposerEditor();
+          editor
+            .closest("form")!
+            .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+          expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+          expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+            "Continue existing context",
+          );
+        }
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
   describe("composer redesign", () => {
     beforeEach(() => {
       serverBootstrapFixture = redesignBootstrapFixture;
@@ -2868,9 +3059,13 @@ describe("ChatView timeline (full app)", () => {
     });
   });
 
-  it.each(["Changed editor text", ""])(
+  it.each([
+    ["Changed editor text", false],
+    ["", false],
+    ["Answer after disabling providers", true],
+  ] as const)(
     "keeps a provider editor prefill editable and restores the original composer draft: %s",
-    async (answer) => {
+    async (answer, disableProviders) => {
       const snapshot = createSnapshotForTargetUser({
         targetMessageId: "editor-user" as MessageId,
         targetText: "Ask me",
@@ -2901,8 +3096,10 @@ describe("ChatView timeline (full app)", () => {
       const mounted = await mountChatView({
         viewport: DEFAULT_VIEWPORT,
         snapshot: withQuestion,
-        configureFixture: () =>
-          useComposerDraftStore.getState().setPrompt(THREAD_ID, "Keep original composer draft"),
+        configureFixture: (next) => {
+          useComposerDraftStore.getState().setPrompt(THREAD_ID, "Keep original composer draft");
+          if (disableProviders) next.serverConfig = { ...next.serverConfig, providers: [] };
+        },
       });
       try {
         const editor = await waitForComposerEditor();
@@ -4822,6 +5019,15 @@ describe("ChatView timeline (full app)", () => {
       configureFixture: (nextFixture) => {
         nextFixture.serverConfig = {
           ...nextFixture.serverConfig,
+          settings: {
+            ...DEFAULT_SERVER_SETTINGS,
+            providerInstances: {
+              [testCase.selectedInstanceId]: {
+                driver: createTestServerProvider("claudeAgent").driver,
+                enabled: true,
+              },
+            },
+          },
           providers: [
             createTestServerProvider("claudeAgent", {
               version: testCase.defaultIncludesOpus5
@@ -8879,6 +9085,7 @@ describe("ChatView timeline (full app)", () => {
         snapshot,
       });
       try {
+        await waitForTimelineScrollToSettle();
         const paragraph = await vi.waitFor(() => {
           const node = document.querySelector('[data-message-role="assistant"] p');
           expect(node).not.toBeNull();

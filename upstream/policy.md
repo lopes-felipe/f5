@@ -16,6 +16,7 @@ Use the reason keys in `rules.json`.
 - `relay-cloud` covers T3 Connect, relay, tunnels, Clerk, outside-agent OAuth, pairing grants and webhooks.
 - `maintenance` covers chore, test, ci, docs and style changes, React Compiler adoption, and refactors with no behavior change.
 - `upstream-only:<slug>` covers upstream subsystems f5 does not have (listed in `rules.json`).
+- f5 has its own scheduler (`apps/server/src/scheduledTasks`). Judge upstream scheduled-task changes by behavior against it. Webhook triggers are `relay-cloud`; interval schedules are `upstream-only:scheduled-task-intervals`. `upstream-only:scheduled-tasks` is retired; do not use it.
 
 ## Declined (`declined-by-policy`)
 

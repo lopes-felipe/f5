@@ -627,6 +627,10 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(Scheduled.SCHEDULED_TASK_WS_METHODS.runNow, Scheduled.ScheduledTaskRunNowInput),
   tagRequestBody(Scheduled.SCHEDULED_TASK_WS_METHODS.listRuns, Scheduled.ScheduledTaskRunsInput),
   tagRequestBody(
+    Scheduled.SCHEDULED_TASK_WS_METHODS.findRunForTurn,
+    Scheduled.ScheduledFindRunForTurnInput,
+  ),
+  tagRequestBody(
     Scheduled.SCHEDULED_TASK_WS_METHODS.previewSchedule,
     Scheduled.SchedulePreviewInput,
   ),

@@ -1475,6 +1475,11 @@ export const ThreadTurnStartCommand = Schema.Struct({
   expectedTurnId: Schema.optional(TurnId),
   presentation: Schema.optional(Schema.Literal("continuation")),
   dispatchSource: Schema.optional(Schema.Literal("next-turn-queue")),
+  /**
+   * Server-only: reject instead of applying settings when the thread's model or
+   * modes differ from the command's. Thread-bound scheduled turns use it.
+   */
+  requireCurrentSettings: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,
 });
 export type ThreadTurnStartCommand = typeof ThreadTurnStartCommand.Type;

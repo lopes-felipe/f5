@@ -848,6 +848,45 @@ describe("ProviderRuntimeIngestion", () => {
     },
   );
 
+  it.each([false, true])(
+    "only applies named completions with no active turn (targeted: %s)",
+    async (targeted) => {
+      const harness = await createHarness();
+      const createdAt = new Date().toISOString();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.makeUnsafe("pending-handshake"),
+          threadId: asThreadId("thread-1"),
+          session: {
+            threadId: asThreadId("thread-1"),
+            status: "starting",
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            updatedAt: createdAt,
+            lastError: null,
+          },
+          createdAt,
+        }),
+      );
+      harness.emit({
+        type: "turn.completed",
+        eventId: asEventId("handshake-completion"),
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt,
+        ...(targeted ? { turnId: asTurnId("lost-start") } : {}),
+        payload: { state: "completed" },
+      });
+      await harness.drain();
+      await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.status === (targeted ? "ready" : "starting"),
+      );
+    },
+  );
+
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

@@ -191,14 +191,23 @@ export function ThreadStatusNotificationControllerContent({
     for (const transition of transitions)
       void (async () => {
         const thread = useStore.getState().threads.find((t) => t.id === transition.threadId);
-        if (thread?.scheduledOrigin && thread.latestTurn?.turnId) {
+        const turnId = thread?.latestTurn?.turnId;
+        const systemNotice = shouldDispatchThreadStatusNotification({
+          enabled: systemEnabled,
+          permission,
+          appFocused,
+          status: transition.status,
+        });
+        // Scheduled runs notify through their own outbox; skip the duplicate thread notice.
+        // Background conversations load without activities, so a bound conversation's
+        // scheduled turn is only known to the server: ask whenever a notice would show.
+        if (thread && turnId && (needsThreadAttention(transition.status) || systemNotice)) {
           try {
-            const result = await ensureNativeApi().scheduledTasks.listRuns({
-              taskId: thread.scheduledOrigin.taskId,
-              runId: thread.scheduledOrigin.runId,
+            const result = await ensureNativeApi().scheduledTasks.findRunForTurn({
+              threadId: thread.id,
+              turnId,
             });
-            if (result.runs.some((run) => run.turnIds?.includes(thread.latestTurn!.turnId!)))
-              return;
+            if (result.runId) return;
           } catch {
             /* Preserve ordinary notifications when lineage cannot be read. */
           }
@@ -225,14 +234,7 @@ export function ThreadStatusNotificationControllerContent({
             });
           }
         }
-        if (
-          !shouldDispatchThreadStatusNotification({
-            enabled: systemEnabled,
-            permission,
-            appFocused,
-            status: transition.status,
-          })
-        ) {
+        if (!systemNotice) {
           return;
         }
 

@@ -8,6 +8,7 @@ import {
   allocationWorktreesDirectory,
   isFilesystemRoot,
 } from "../../worktreesDirectory.ts";
+import { resolveTemporaryWorktreeBranch } from "../temporaryWorktreeBranch.ts";
 import { makeRefSnapshotCache } from "../refSnapshotCache.ts";
 import { gitMutatesRefSnapshot } from "../refMutation.ts";
 import { makeMoveSnapshotOperations } from "../moveSnapshot.ts";
@@ -2283,6 +2284,16 @@ const makeGitCore = Effect.gen(function* () {
 
   const createWorktree: GitCoreShape["createWorktree"] = (input) =>
     Effect.gen(function* () {
+      if (input.newBranch) {
+        input = {
+          ...input,
+          newBranch: yield* resolveTemporaryWorktreeBranch(
+            { branchExists },
+            input.cwd,
+            input.newBranch,
+          ),
+        };
+      }
       const targetBranch = input.newBranch ?? input.branch;
       const baseRefName = input.baseRefName ?? input.branch;
       // worktree add can invoke git branch internally; a terminator before

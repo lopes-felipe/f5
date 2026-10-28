@@ -71,6 +71,7 @@
     "lineage-delegation",
     "context-handoff",
     "scheduled-tasks",
+    "scheduled-task-intervals",
     "source-control-gitcafe",
     "analytics-feedback",
     "t3-connect"

@@ -59,6 +59,7 @@ export interface ComposerPendingInteraction {
 
 /** Provider, model and provider-specific trait pickers. */
 export interface ComposerModelControls {
+  noProviderAvailable?: boolean;
   selectedProvider: ComposerProvider;
   selectedProviderInstanceId: ProviderInstanceId;
   selectedModel: string;

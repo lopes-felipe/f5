@@ -3874,7 +3874,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       Effect.gen(function* () {
         const turnState = context.turnState;
         if (!turnState) {
-          // A result without an owned turn is a trailer, not a new completion.
+          yield* Effect.logInfo("claude.turn.result-without-active-turn", {
+            threadId: context.session.threadId,
+            status,
+            numTurns: result?.num_turns,
+            hasUsage: result?.usage !== undefined,
+          });
           return;
         }
 

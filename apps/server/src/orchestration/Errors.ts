@@ -81,6 +81,16 @@ export class ThreadTurnAlreadyActiveError extends Schema.TaggedErrorClass<Thread
   }
 }
 
+/** The conversation's model or mode changed after a scheduled turn was admitted. */
+export class ThreadSettingsChangedError extends Schema.TaggedErrorClass<ThreadSettingsChangedError>()(
+  "ThreadSettingsChangedError",
+  { threadId: Schema.String },
+) {
+  override get message(): string {
+    return `Thread '${this.threadId}' settings changed before the scheduled turn started.`;
+  }
+}
+
 /** Readiness changed between the queue gate and command acceptance; retry the same identity. */
 export class ThreadTurnNotReadyError extends Schema.TaggedErrorClass<ThreadTurnNotReadyError>()(
   "ThreadTurnNotReadyError",
@@ -141,6 +151,7 @@ export type OrchestrationDispatchError =
   | OrchestrationCommandInvariantError
   | OrchestrationCommandPreviouslyRejectedError
   | ThreadTurnAlreadyActiveError
+  | ThreadSettingsChangedError
   | ThreadTurnNotReadyError
   | OrchestrationProjectorDecodeError
   | OrchestrationListenerCallbackError;
