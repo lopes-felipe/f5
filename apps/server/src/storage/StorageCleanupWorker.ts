@@ -42,6 +42,10 @@ import {
 import { resolveHeadInDefaultBranch } from "../project/worktreeMerge.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import {
+  canonicalManagedWorktreesDirectories,
+  managedWorktreesDirectories,
+} from "../worktreesDirectory.ts";
 import { TerminalManager } from "../terminal/Services/Manager.ts";
 import { pruneStorageAutomationAudit, recordStorageAutomationAudit } from "./automationAudit.ts";
 import {
@@ -439,8 +443,8 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
     if (global === null || !global.storageCleanup.enabled) {
       return { global, evaluations: [] as Evaluation[] };
     }
-    const worktreesRoot = yield* canonical(config.worktreesDir);
-    if (worktreesRoot === null || !(yield* exists(worktreesRoot))) {
+    const worktreesRoots = yield* canonicalManagedWorktreesDirectories(global, config.worktreesDir);
+    if (!worktreesRoots.length) {
       return { global, evaluations: [] as Evaluation[] };
     }
     const model = yield* engine.getReadModel();
@@ -449,7 +453,22 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
     const evaluations = yield* Effect.forEach(
       model.threads.filter((thread) => thread.worktreePath !== null),
       (thread) =>
-        evaluate({ thread, projects: model.projects, global, worktreesRoot, nowMs, activity }),
+        Effect.gen(function* () {
+          const target = thread.worktreePath ? yield* canonical(thread.worktreePath) : null;
+          const worktreesRoot = target
+            ? worktreesRoots.find((root) => target !== root && pathContains(root, target))
+            : null;
+          return worktreesRoot
+            ? yield* evaluate({
+                thread,
+                projects: model.projects,
+                global,
+                worktreesRoot,
+                nowMs,
+                activity,
+              })
+            : ({ kind: "ignore" } as const);
+        }),
       { concurrency: EVALUATION_CONCURRENCY },
     );
     return { global, evaluations };
@@ -784,8 +803,12 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
     }).pipe(Effect.provideServices(services), logJobFailure("terminal thread log cleanup"));
 
   /** Audit label: relative to the managed worktrees directory, else `~`-relative. */
-  const worktreeAuditTarget = (path: string) => {
-    const relative = Path.relative(config.worktreesDir, path);
+  const worktreeAuditTarget = (path: string, settings: ServerSettings) => {
+    const root =
+      managedWorktreesDirectories(settings, config.worktreesDir).find((root) =>
+        pathContains(root, path),
+      ) ?? config.worktreesDir;
+    const relative = Path.relative(root, path);
     return relative.length > 0 && !relative.startsWith("..") && !Path.isAbsolute(relative)
       ? relative
       : redactHomePath(path);
@@ -805,7 +828,7 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
           yield* recordStorageAutomationAudit({
             operationId,
             job: "worktree-cleanup",
-            target: worktreeAuditTarget(target.path ?? target.id),
+            target: worktreeAuditTarget(target.path ?? target.id, settings),
             result: "removed",
             reason: pruning
               ? "the worktree folder was missing; its registration was pruned"
@@ -823,7 +846,7 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
             {
               operationId,
               job: "worktree-cleanup",
-              target: worktreeAuditTarget(warning.path),
+              target: worktreeAuditTarget(warning.path, settings),
               result: "skipped",
               reason: warning.reason,
             },
@@ -920,7 +943,7 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
       for (const preview of previews)
         targets.push({
           job: "worktree-cleanup",
-          target: worktreeAuditTarget(preview.path),
+          target: worktreeAuditTarget(preview.path, global),
           projectId: null,
           threadId: null,
           action: preview.action,

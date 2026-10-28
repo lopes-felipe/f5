@@ -37,6 +37,21 @@ branch and PR text use the project's account, model and writing settings. The PR
 project's merge default when the checkout maps to one project, and a method you pick by hand still
 wins.
 
+## Worktree location
+
+Set **Settings → Storage → Worktree location** to an absolute folder on this machine,
+such as `D:\worktrees` or `~/worktrees`, to create new worktrees on another drive.
+Click **Save** (or press Enter), or leave it empty to use this profile's F5 worktrees folder.
+F5 creates a separate directory for each profile beneath the chosen folder, then repository
+and branch names with identity hashes. Profiles can share a parent folder without sharing
+checkouts. The folder must be separate from app data and project checkouts.
+
+Existing worktrees stay where they are. Cleanup and workspace recovery cover the default
+folder and custom locations where F5 has created checkouts. Unused, reachable locations are
+forgotten when saving settings; unavailable drives remain remembered. Automatic cleanup
+never prunes missing registrations on custom drives. Use the reviewed Storage cleanup to
+remove those entries after confirming that a drive is connected.
+
 ## Good to know
 
 - Automatic thread settlement, worktree cleanup, auto-pull, external preview hosts, Claude in Chrome and computer use

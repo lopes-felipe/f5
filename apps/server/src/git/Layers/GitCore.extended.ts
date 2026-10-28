@@ -1520,10 +1520,8 @@ it.layer(TestLayer)("git integration", (it) => {
         const remoteName = "my-org/upstream";
 
         yield* git(remote, ["init", "--bare"]);
-        yield* initRepoWithCommit(tmp);
-        const defaultBranch = (yield* listGitBranches({ cwd: tmp })).branches.find(
-          (branch) => branch.current,
-        )!.name;
+        // Finish raw-Git setup before warming the ref snapshot under test.
+        const { initialBranch: defaultBranch } = yield* initRepoWithCommit(tmp);
 
         yield* git(tmp, ["remote", "add", remoteName, remote]);
         yield* git(tmp, ["push", "-u", remoteName, defaultBranch]);

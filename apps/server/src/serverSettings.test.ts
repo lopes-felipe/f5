@@ -1,4 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodePath from "node:path";
+import { homedir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
+import { customWorktreesDirectory } from "./worktreesDirectoryPaths.ts";
+import * as WorktreeLocation from "./worktreeLocationValidation.ts";
+import * as TestClock from "effect/testing/TestClock";
+import { vi } from "vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
@@ -8,7 +15,17 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { assert, it } from "@effect/vitest";
-import { Cause, Exit, Effect, FileSystem, Layer, Logger, Schema, Stream } from "effect";
+import {
+  Cause,
+  Exit,
+  Effect,
+  FileSystem,
+  Layer,
+  Logger,
+  Schema,
+  Stream,
+  PlatformError,
+} from "effect";
 import { ServerConfig } from "./config.ts";
 import { SecretStoreError, ServerSecretStore } from "./auth/Services/ServerSecretStore.ts";
 import {
@@ -29,6 +46,175 @@ const makeServerSettingsLayer = () =>
   );
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect("times out location validation without saving or holding the settings write lock", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      yield* service.updateSettings({ enableAssistantStreaming: true });
+      const before = yield* fs.readFileString(config.settingsPath!);
+      const validation = vi
+        .spyOn(WorktreeLocation, "validateWorktreeLocation")
+        .mockImplementation(() => new Promise<void>(() => {}));
+      yield* Effect.addFinalizer(() => Effect.sync(() => validation.mockRestore()));
+      const result = yield* Effect.exit(
+        service.updateSettings({ worktreesDirectory: config.baseDir + "-stalled" }),
+      );
+      assert.isTrue(Exit.isFailure(result));
+      if (Exit.isFailure(result))
+        assert.include(
+          Cause.pretty(result.cause),
+          "Timed out while checking the worktree location.",
+        );
+      assert.equal(yield* fs.readFileString(config.settingsPath!), before);
+      assert.equal((yield* service.getSettings).worktreesDirectory, "");
+      yield* service.updateSettings({ enableAssistantStreaming: false });
+      assert.equal((yield* service.getSettings).enableAssistantStreaming, false);
+    }).pipe(TestClock.withLive, Effect.provide(makeServerSettingsLayer())),
+  );
+  it.effect("remembers a used old root when checkout history recording failed", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const location = config.baseDir + "-unrecorded";
+      const root = customWorktreesDirectory(location, config.worktreesDir);
+      yield* service.updateSettings({ worktreesDirectory: location });
+      yield* fs.makeDirectory(root, { recursive: true });
+      yield* fs.writeFileString(NodePath.join(root, "checkout"), "existing checkout");
+      yield* Effect.addFinalizer(() =>
+        fs.remove(location, { recursive: true }).pipe(Effect.ignore),
+      );
+      // No recordWorktreeLocation call: exercise a checkout whose post-add save failed.
+      assert.deepEqual((yield* service.getSettings).previousWorktreesDirectories, []);
+      yield* service.updateSettings({ worktreesDirectory: config.baseDir + "-never-used" });
+      assert.deepEqual((yield* service.getSettings).previousWorktreesDirectories, [location]);
+      yield* service.updateSettings({ worktreesDirectory: "" });
+      assert.deepEqual((yield* service.getSettings).previousWorktreesDirectories, [location]);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+  it.effect("retains history when a drive scan hangs and releases the settings write lock", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const directory = config.baseDir + "-unavailable";
+      yield* fs.writeFileString(
+        config.settingsPath!,
+        JSON.stringify({ previousWorktreesDirectories: [directory] }),
+      );
+      const probe = vi
+        .spyOn(WorktreeLocation, "unusedWorktreeLocation")
+        .mockImplementation(() => new Promise<boolean>(() => {}));
+      yield* Effect.addFinalizer(() => Effect.sync(() => probe.mockRestore()));
+      const saved = yield* service.updateSettings({ enableAssistantStreaming: false });
+      assert.deepEqual(saved.previousWorktreesDirectories, [directory]);
+      assert.equal((yield* service.getSettings).enableAssistantStreaming, false);
+      assert.equal(probe.mock.calls.length, 1);
+    }).pipe(TestClock.withLive, Effect.provide(makeServerSettingsLayer())),
+  );
+  it.effect("keeps an empty location needed to recover a recorded thread checkout", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const location = config.baseDir + "-recovery";
+      const root = customWorktreesDirectory(location, config.worktreesDir);
+      yield* fs.makeDirectory(root, { recursive: true });
+      yield* Effect.addFinalizer(() =>
+        fs.remove(location, { recursive: true }).pipe(Effect.ignore),
+      );
+      const database = new DatabaseSync(config.dbPath);
+      database.exec("CREATE TABLE projection_threads(worktree_path TEXT)");
+      database
+        .prepare("INSERT INTO projection_threads VALUES (?)")
+        .run(NodePath.join(root, "repo", "missing-checkout"));
+      database.close();
+      yield* service.recordWorktreeLocation!(location);
+      yield* service.updateSettings({ enableAssistantStreaming: false });
+      assert.deepEqual((yield* service.getSettings).previousWorktreesDirectories, [location]);
+      const purged = new DatabaseSync(config.dbPath);
+      purged.exec("DELETE FROM projection_threads");
+      purged.close();
+      yield* service.updateSettings({ enableAssistantStreaming: true });
+      assert.deepEqual((yield* service.getSettings).previousWorktreesDirectories, []);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+  it.effect(
+    "rejects unsafe worktree locations before persisting and records only used locations",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsService;
+        const config = yield* ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        for (const location of [
+          "relative/worktrees",
+          NodePath.parse(config.baseDir).root,
+          homedir(),
+          config.baseDir,
+          config.stateDir,
+          NodePath.join(config.stateDir, "nested"),
+        ]) {
+          const result = yield* Effect.result(
+            service.updateSettings({ worktreesDirectory: location }),
+          );
+          assert.equal(result._tag, "Failure");
+          assert.equal((yield* service.getSettings).worktreesDirectory, "");
+        }
+        const location = config.baseDir + "-custom";
+        yield* service.updateSettings({ worktreesDirectory: location });
+        assert.deepEqual((yield* service.getSettings).previousWorktreesDirectories, []);
+        yield* service.recordWorktreeLocation!(location);
+        yield* service.updateSettings({ worktreesDirectory: "" });
+        assert.deepEqual((yield* service.getSettings).previousWorktreesDirectories, [location]);
+        const persisted = Schema.decodeUnknownSync(ServerSettings)(
+          JSON.parse(yield* fs.readFileString(config.settingsPath!)),
+        );
+        assert.deepEqual(persisted.previousWorktreesDirectories, [location]);
+        const managedRoot = customWorktreesDirectory(location, config.worktreesDir);
+        yield* fs.makeDirectory(managedRoot, { recursive: true });
+        yield* Effect.addFinalizer(() =>
+          fs.remove(location, { recursive: true }).pipe(Effect.ignore),
+        );
+        yield* service.updateSettings({ enableAssistantStreaming: false });
+        assert.deepEqual((yield* service.getSettings).previousWorktreesDirectories, []);
+        const projectRoot = config.baseDir + "-project";
+        const database = new DatabaseSync(config.dbPath);
+        database.exec("CREATE TABLE projection_projects(workspace_root TEXT,deleted_at TEXT)");
+        database.prepare("INSERT INTO projection_projects VALUES (?,NULL)").run(projectRoot);
+        database.close();
+        for (const value of [projectRoot, NodePath.join(projectRoot, "nested")]) {
+          const result = yield* Effect.result(
+            service.updateSettings({ worktreesDirectory: value }),
+          );
+          assert.equal(result._tag, "Failure");
+        }
+      }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+  it.effect("applies a save to external edits before the watcher reloads them", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      yield* service.getSettings;
+      yield* fs.writeFileString(
+        config.settingsPath!,
+        JSON.stringify({ worktreesDirectory: "/external", futureSetting: "preserved" }),
+      );
+      yield* service.updateSettings({ enableAssistantStreaming: false });
+      const saved = JSON.parse(yield* fs.readFileString(config.settingsPath!));
+      assert.equal(saved.worktreesDirectory, "/external");
+      assert.equal(saved.futureSetting, "preserved");
+      assert.equal(saved.enableAssistantStreaming, false);
+      const broken = '{ "worktreesDirectory": ';
+      yield* fs.writeFileString(config.settingsPath!, broken);
+      const result = yield* Effect.exit(
+        service.updateSettings({ worktreesDirectory: "/overwrite" }),
+      );
+      assert.isTrue(Exit.isFailure(result));
+      assert.equal(yield* fs.readFileString(config.settingsPath!), broken);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
   it.effect("defaults legacy password masking to fast and persists a conservative choice", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsService;
@@ -790,10 +976,30 @@ it.layer(NodeServices.layer)("server settings", (it) => {
 
   it.effect(
     "restores replaced and removed secrets and removes new secrets after settings publication fails",
-    () =>
-      Effect.gen(function* () {
+    () => {
+      let failWrites = false;
+      const filesystem = Layer.effect(
+        FileSystem.FileSystem,
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          return {
+            ...fs,
+            rename: (...args: Parameters<typeof fs.rename>) =>
+              failWrites
+                ? Effect.fail(
+                    PlatformError.systemError({
+                      _tag: "Unknown",
+                      module: "FileSystem",
+                      method: "rename",
+                      description: "injected publication failure",
+                    }),
+                  )
+                : fs.rename(...args),
+          };
+        }),
+      );
+      return Effect.gen(function* () {
         const service = yield* ServerSettingsService;
-        const fs = yield* FileSystem.FileSystem;
         const config = yield* ServerConfig;
         assert.ok(config.settingsPath);
         const before = yield* service.updateSettings({
@@ -808,9 +1014,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
             },
           },
         });
-        const saved = config.settingsPath + ".saved";
-        yield* fs.rename(config.settingsPath, saved);
-        yield* fs.makeDirectory(config.settingsPath);
+        failWrites = true;
         const result = yield* Effect.result(
           service.updateSettings({
             providerInstances: {
@@ -830,8 +1034,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           (yield* service.getSettings).providerInstances[ProviderInstanceId.make("codex")],
           before.providerInstances[ProviderInstanceId.make("codex")],
         );
-        yield* fs.remove(config.settingsPath, { recursive: true });
-        yield* fs.rename(saved, config.settingsPath);
+        failWrites = false;
         // A later redacted reference must not recover the rejected new value.
         const recovered = yield* service.updateSettings({
           providerInstances: {
@@ -846,7 +1049,8 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           recovered.providerInstances[ProviderInstanceId.make("codex")]?.environment?.[0]?.value,
           "",
         );
-      }).pipe(Effect.provide(makeServerSettingsLayer())),
+      }).pipe(Effect.provide(makeServerSettingsLayer().pipe(Layer.provideMerge(filesystem))));
+    },
   );
   it.effect("rolls back partial secret writes even when the failed operation already mutated", () =>
     Effect.gen(function* () {
