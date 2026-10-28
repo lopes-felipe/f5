@@ -2652,7 +2652,6 @@ describe("WebSocket Server", () => {
     ).toBe(false);
   });
 
-
   it("native fork persists and prepares the flat branch when t3code already exists", async () => {
     const workspaceRoot = makeTempDir("f5-native-fork-repo-");
     const stateDir = makeTempDir("f5-native-fork-state-");
@@ -2769,5 +2768,4 @@ describe("WebSocket Server", () => {
       database.close();
     }
   }, 60_000);
-
 });

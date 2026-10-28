@@ -274,7 +274,6 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
     expect(result.result?.branch).toBe("changed-outside");
   });
 
-
   it("moves to a flat temporary branch when the t3code namespace is occupied", async () => {
     const f = await fixture();
     git(f.repo.root, "branch", "t3code");
@@ -286,7 +285,6 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
     expect(git(thread.worktreePath!, "branch", "--show-current").trim()).toBe(thread.branch);
   });
 
-
   it.each(["t3code/abcdef12", "t3code-abcdef12", "t3code/12345678-1234-4234-8234-123456789abc"])(
     "reserves temporary branch %s for managed worktrees",
     async (branch) => {
@@ -297,5 +295,4 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
       );
     },
   );
-
 });
