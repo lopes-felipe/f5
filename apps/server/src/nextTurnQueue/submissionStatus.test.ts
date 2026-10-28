@@ -89,11 +89,15 @@ describe("resolveTurnSubmissionStatus", () => {
     ).toMatchObject({ status, turnId });
   });
   it("falls back to the same latest turn when its projection is temporarily missing", async () => {
-    expect(await Effect.runPromise(resolveTurnSubmissionStatus(
-      deps({ getTurnState: () => Effect.succeed(null) }),
-      { thread: { ...thread, latestTurn: { ...thread.latestTurn!, turnId, state: "completed" } },
-        submissionId: "revision", knownTurnId: turnId },
-    ))).toEqual({ status: "completed", turnId });
+    expect(
+      await Effect.runPromise(
+        resolveTurnSubmissionStatus(deps({ getTurnState: () => Effect.succeed(null) }), {
+          thread: { ...thread, latestTurn: { ...thread.latestTurn!, turnId, state: "completed" } },
+          submissionId: "revision",
+          knownTurnId: turnId,
+        }),
+      ),
+    ).toEqual({ status: "completed", turnId });
   });
   it.each(["canceled", "cleared", "rejected"] as const)(
     "maps %s to rejected",
