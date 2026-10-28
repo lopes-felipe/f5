@@ -1,5 +1,11 @@
 import { expect, it } from "vitest";
-import { collectTestDurations, serverTestPath } from "./ci-test-timings.ts";
+import {
+  collectSchedulingDurations,
+  collectTestDurations,
+  medianDurations,
+  reportArtifact,
+  serverTestPath,
+} from "./ci-test-timings.ts";
 
 function report(name = "/a/f5/apps/server/src/example.test.ts") {
   return {
@@ -47,4 +53,45 @@ it("requires a complete, unique, successful inventory before updating timings", 
   expect(() => collectTestDurations([{ ...report(), numTotalTests: 2 }], expected)).toThrow(
     "incomplete",
   );
+});
+
+it("uses per-file medians across at least three complete samples", () => {
+  const samples = [
+    { a: 1, b: 90 },
+    { a: 100, b: 10 },
+    { a: 5, b: 20 },
+  ];
+  expect(medianDurations(samples)).toEqual({ a: 5, b: 20 });
+  expect(() => medianDurations(samples.slice(1))).toThrow("three");
+  expect(() => medianDurations([...samples, { a: 1 }])).toThrow("inventories");
+  expect(() => medianDurations([...samples, { a: NaN, b: 1 }])).toThrow("Invalid");
+});
+
+it("requires complete import-aware metrics alongside successful test reports", () => {
+  const expected = ["src/example.test.ts"];
+  const metrics = { version: 1, durationsMs: { "/a/f5/apps/server/src/example.test.ts": 1000 } };
+  expect(collectSchedulingDurations([report()], [metrics], expected)).toEqual({
+    "src/example.test.ts": 1000,
+  });
+  expect(() => collectSchedulingDurations([report()], [], expected)).toThrow("Missing scheduling");
+  expect(() => collectSchedulingDurations([report()], [metrics, metrics], expected)).toThrow(
+    "Duplicate",
+  );
+  expect(() =>
+    collectSchedulingDurations([{ ...report(), success: false }], [metrics], expected),
+  ).toThrow("unsuccessful");
+});
+
+it("maps exact artifact names to their job and individual run attempt", () => {
+  expect(reportArtifact("reports-windows-server-unit-Windows-2-3")).toEqual({
+    platform: "win32",
+    job: "windows-server-unit (3)",
+    attempt: 3,
+  });
+  expect(reportArtifact("reports-server-unit-Linux-0-1")).toEqual({
+    platform: "linux",
+    job: "server-unit (1)",
+    attempt: 1,
+  });
+  expect(() => reportArtifact("reports-server-unit-FreeBSD-0-1")).toThrow("Unknown");
 });
