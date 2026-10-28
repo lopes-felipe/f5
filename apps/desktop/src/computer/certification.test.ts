@@ -3,7 +3,22 @@ import {
   computerBackgroundGate,
   computerCertificationStatus,
   COMPUTER_CONTROL_CERTIFIED,
+  verifyCodexChromeAdoption,
 } from "./certification";
+
+describe("Codex Chrome adoption", () => {
+  it("verifies nothing and adopts nothing while Codex Chrome is uncertified", async () => {
+    let verified = 0;
+    const verify = async () => {
+      verified += 1;
+      return { ok: true as const, teamId: "2DC432GLL2", identifier: "codex" };
+    };
+    await expect(
+      verifyCodexChromeAdoption("/bin/codex", "/node_repl", verify, "darwin", "arm64"),
+    ).resolves.toBe("Codex Chrome control isn't certified.");
+    expect(verified).toBe(0);
+  });
+});
 describe("preview availability is not certification", () => {
   it("permits macOS 14+ packaged opt-in preview without a development bypass", () => {
     expect(COMPUTER_CONTROL_CERTIFIED).toEqual({ darwin: false, win32: false });

@@ -494,3 +494,154 @@ describe("ChromeLeaseAuthority with a supervisor", () => {
     expect(() => lease.assertNativeAvailable("p")).toThrow("hasn't stopped yet");
   });
 });
+
+describe("adopting a provider-started process", () => {
+  const CODEX = "/usr/local/bin/codex";
+  const NODE_REPL = "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl";
+  const adoption = {
+    profileId: "p",
+    backendIncarnation: "i",
+    threadId: "t",
+    sessionGeneration: "g",
+    launchToken: "adopted",
+    integration: "codex-chrome" as const,
+    parentPid: 60,
+    executable: NODE_REPL,
+  };
+  const setup = () => {
+    const h = fakeIo();
+    h.processes.delete(100);
+    h.processes.set(60, { ppid: BACKEND, pgid: 60, startTime: 500, zombie: false, command: CODEX });
+    h.processes.set(70, {
+      ppid: 60,
+      pgid: 70,
+      startTime: 1_000,
+      zombie: false,
+      command: NODE_REPL,
+    });
+    const kills: number[] = [];
+    const io: ChromeProcessIo = {
+      ...h.io,
+      kill: (pid) => {
+        kills.push(pid);
+        h.processes.delete(pid);
+      },
+    };
+    const verified: Array<[string, string]> = [];
+    const verify = async (parent: string, executable: string) => {
+      verified.push([parent, executable]);
+      return undefined;
+    };
+    return { h, io, kills, verified, verify };
+  };
+
+  it("reads the executable after the start time, spaces included", () => {
+    expect(
+      parseProcessListing(
+        "   70    60    70 S    Wed Oct 22 17:29:15 2026 /Applications/My App.app/node_repl\n",
+      ),
+    ).toEqual([
+      {
+        pid: 70,
+        ppid: 60,
+        pgid: 70,
+        zombie: false,
+        startTime: Date.UTC(2026, 9, 22, 17, 29, 15),
+        command: "/Applications/My App.app/node_repl",
+      },
+    ]);
+  });
+
+  it("registers the one verified child of the provider and stops it like any group", async () => {
+    const t = setup();
+    const supervisor = new ChromeProcessSupervisor({ io: t.io });
+    const registration = await supervisor.adopt(adoption, BACKEND, t.verify);
+    expect(registration).toMatchObject({
+      pid: 70,
+      pgid: 70,
+      startTime: 1_000,
+      launchToken: "adopted",
+    });
+    expect(t.verified).toEqual([[CODEX, NODE_REPL]]);
+    expect(supervisor.registrations().map((entry) => entry.pid)).toEqual([70]);
+    supervisor.stop((entry) => entry.launchToken === "adopted", "unresponsive");
+    await t.h.advance(0);
+    expect(t.h.signals).toContainEqual([70, "SIGTERM"]);
+  });
+
+  it("refuses when the runtime isn't running or runs another executable", async () => {
+    const t = setup();
+    t.h.processes.set(70, { ...t.h.processes.get(70)!, command: "/tmp/node_repl" });
+    const supervisor = new ChromeProcessSupervisor({ io: t.io });
+    await expect(supervisor.adopt(adoption, BACKEND, t.verify)).rejects.toThrow("isn't running");
+    expect(t.kills).toEqual([]);
+    expect(supervisor.registrations()).toEqual([]);
+  });
+
+  it("refuses and stops several candidates", async () => {
+    const t = setup();
+    t.h.processes.set(71, { ...t.h.processes.get(70)!, pgid: 71 });
+    const supervisor = new ChromeProcessSupervisor({ io: t.io });
+    await expect(supervisor.adopt(adoption, BACKEND, t.verify)).rejects.toThrow("more than one");
+    expect(t.kills.sort()).toEqual([70, 71]);
+  });
+
+  it("refuses and stops the runtime when a signature fails", async () => {
+    const t = setup();
+    const supervisor = new ChromeProcessSupervisor({ io: t.io });
+    await expect(
+      supervisor.adopt(adoption, BACKEND, async () => "F5's Codex isn't an OpenAI-signed build."),
+    ).rejects.toThrow("OpenAI-signed");
+    expect(t.kills).toEqual([70]);
+    expect(supervisor.registrations()).toEqual([]);
+  });
+
+  it("never touches a provider the backend didn't start", async () => {
+    const t = setup();
+    t.h.processes.set(60, { ...t.h.processes.get(60)!, ppid: 1 });
+    const supervisor = new ChromeProcessSupervisor({ io: t.io });
+    await expect(supervisor.adopt(adoption, BACKEND, t.verify)).rejects.toThrow(
+      "could not be verified",
+    );
+    expect(t.kills).toEqual([]);
+    expect(t.verified).toEqual([]);
+  });
+
+  it("refuses a runtime that doesn't lead its own process group", async () => {
+    const t = setup();
+    t.h.processes.set(70, { ...t.h.processes.get(70)!, pgid: 60 });
+    const supervisor = new ChromeProcessSupervisor({ io: t.io });
+    await expect(supervisor.adopt(adoption, BACKEND, t.verify)).rejects.toThrow(
+      "own process group",
+    );
+    expect(t.kills).toEqual([70]);
+  });
+
+  it("refuses a process replaced between the listing and its registration", async () => {
+    const t = setup();
+    const supervisor = new ChromeProcessSupervisor({ io: t.io });
+    // The PID is reused with another start time while the signatures are verified.
+    const verify = async () => {
+      t.h.processes.set(70, { ...t.h.processes.get(70)!, startTime: 60_000 });
+      return undefined;
+    };
+    await expect(supervisor.adopt(adoption, BACKEND, verify)).rejects.toThrow(
+      "could not be verified",
+    );
+    expect(supervisor.registrations()).toEqual([]);
+    expect(t.kills).toEqual([70]);
+  });
+
+  it("stops the runtime when ⌃⌘Esc lands during adoption", async () => {
+    const t = setup();
+    const supervisor = new ChromeProcessSupervisor({ io: t.io });
+    const verify = async () => {
+      supervisor.stop(() => true, "emergency");
+      return undefined;
+    };
+    await expect(supervisor.adopt(adoption, BACKEND, verify)).rejects.toThrow("stopped");
+    expect(t.kills).toEqual([70]);
+    expect(supervisor.invalidated("p", "t", "g")).toBe(true);
+    await expect(supervisor.adopt(adoption, BACKEND, t.verify)).rejects.toThrow("Resume");
+  });
+});

@@ -41,14 +41,28 @@ export interface CodexChromeIdentity {
   readonly mcpServerName: string;
   readonly allowedTools: ReadonlyArray<string>;
   /**
-   * The allow-listed tools exactly as the live run listed them. F5 advertises these before
-   * consent so listing never starts `node_repl`; stamped from evidence with the inventory.
+   * How F5 controls the Codex-started `node_repl`. `session`: consent once per session,
+   * and main stops the process on pause, policy-off or a new session generation, but no
+   * single call can be refused (Codex asks no approval in Full access). `per-call`: F5
+   * would answer an approval for each call; this F5 build doesn't support it.
    */
-  readonly advertisedTools?: ReadonlyArray<{
-    readonly name: string;
-    readonly description?: string;
-    readonly inputSchema: unknown;
-  }>;
+  readonly admission?: CodexChromeAdmission;
+}
+
+export type CodexChromeAdmission = "session" | "per-call";
+/** The only admission mode this F5 build runs. */
+export const SUPPORTED_CODEX_CHROME_ADMISSION: CodexChromeAdmission = "session";
+/**
+ * `node_repl`'s turn-end hook. Codex only lets F5 call a tool listed in `enabled_tools`,
+ * so it is enabled next to the allowed tools and is part of the recorded inventory.
+ */
+export const CODEX_CHROME_DRAIN_TOOL = "turn_ended";
+/**
+ * Signing identifiers ChatGPT's Chrome host accepts for `node_repl`'s parent (with the
+ * record's team): its only connection check is that a signed Codex started the runtime.
+ */
+export function codexParentIdentifierAllowed(identifier: string): boolean {
+  return identifier === "codex" || /^com\.openai\.codex\.[A-Za-z0-9._-]+$/.test(identifier);
 }
 
 export interface CodexComputerIdentity {
@@ -129,16 +143,18 @@ function runtimeComplete(record: ProviderIntegrationRecord): boolean {
     case "claude-chrome":
       // Admission checks the live server's tools against the stamped names.
       return (record.toolNames?.length ?? 0) > 0;
-    case "codex-chrome": {
-      // The proxy verifies the live inventory against the digest and lists the advertised
-      // tools before consent; without both, every call would be denied.
-      const advertised = new Set(record.identity.advertisedTools?.map((tool) => tool.name));
+    case "codex-chrome":
+      // The session verifies Codex's listed inventory against the digest and the names,
+      // requires a Codex at or above the floor, and runs only the supported admission.
       return (
         SHA256.test(record.toolInventorySha256 ?? "") &&
         record.identity.allowedTools.length > 0 &&
-        record.identity.allowedTools.every((name) => advertised.has(name))
+        [...record.identity.allowedTools, CODEX_CHROME_DRAIN_TOOL].every((name) =>
+          record.toolNames?.includes(name),
+        ) &&
+        record.identity.admission === SUPPORTED_CODEX_CHROME_ADMISSION &&
+        parseVersion(record.versions.codexMin) !== undefined
       );
-    }
     case "codex-computer":
       return SHA256.test(record.toolInventorySha256 ?? "");
   }
@@ -297,7 +313,7 @@ export const INTEGRATION_DISCLOSURES: Readonly<Record<ProviderIntegration, Reado
     "codex-chrome": [
       "Codex uses the ChatGPT app's Chrome extension and helper; F5 never changes their setup.",
       "Its browser runtime runs unsandboxed JavaScript, so it needs Full access.",
-      "Every call still goes through F5 and stops when you pause or press ⌃⌘Esc.",
+      "Codex runs the browser runtime itself: after you allow it, F5 can't refuse a single call, but pausing, turning it off or pressing ⌃⌘Esc stops the runtime right away.",
     ],
     "codex-computer": [
       "Computer Use approvals are shared with the ChatGPT app on this Mac.",
@@ -325,12 +341,15 @@ export const INTEGRATION_REQUIRED_ASSERTIONS: Readonly<
     "frozen-server-stop-cancels-queued",
     "byte-identical-launches",
   ],
+  // Session admission: `policy-off-kills` stands in for a per-call denial F5 can't make.
   "codex-chrome": [
     "open-tab-read-title",
     "registrations-unchanged",
     "interrupt-drains",
     "background-work-stops-on-pause",
     "tool-inventory",
+    "codex-parent-verified",
+    "policy-off-kills",
   ],
   "codex-computer": [
     "launch",
@@ -353,7 +372,9 @@ export interface IntegrationEvidenceReport {
   readonly assertions: Readonly<Record<string, boolean>>;
   readonly toolNames?: ReadonlyArray<string>;
   readonly toolInventorySha256?: string;
-  /** Every listed tool with its schema, as observed; the allow-listed ones become `advertisedTools`. */
+  /** Codex Chrome: the admission mode the run exercised (`identity.admission`). */
+  readonly admission?: CodexChromeAdmission;
+  /** Every listed tool with its schema, as observed. */
   readonly toolSchemas?: ReadonlyArray<{
     readonly name: string;
     readonly description?: string;
@@ -387,23 +408,9 @@ export function evidenceMismatches(
     problems.push("toolNames");
   if (record.toolInventorySha256 && record.toolInventorySha256 !== report.toolInventorySha256)
     problems.push("toolInventorySha256");
-  // What F5 shows before consent must be exactly what the run observed, descriptions too.
-  if (record.integration === "codex-chrome" && record.identity.advertisedTools) {
-    const observed = (name: string) => {
-      const tool = report.toolSchemas?.find((entry) => entry.name === name);
-      return tool && JSON.stringify([tool.name, tool.description ?? null, tool.inputSchema]);
-    };
-    const advertised = record.identity.advertisedTools;
-    if (
-      advertised.length !== record.identity.allowedTools.length ||
-      advertised.some(
-        (tool) =>
-          observed(tool.name) !==
-          JSON.stringify([tool.name, tool.description ?? null, tool.inputSchema]),
-      )
-    )
-      problems.push("advertisedTools");
-  }
+  // The run certifies one admission mode; a record claiming another is unsupported.
+  if (record.integration === "codex-chrome" && record.identity.admission !== report.admission)
+    problems.push("admission");
   // Evidence comes from a clean, committed checkout, and the record names that commit.
   // The shipped artifact is bound later by the release's acceptance report.
   if (!COMMIT.test(report.sourceCommit ?? "") || report.sourceCommit !== record.evidenceCommit)
@@ -445,8 +452,8 @@ export const INTEGRATION_ACCEPTANCE_CHECKS: Readonly<
     { id: "consent-once", label: "Consent is asked once per session" },
     { id: "open-tab-read-title", label: "Codex opens a tab and reads its title" },
     { id: "pause-stops", label: "Pause stops background work Codex started in Chrome", auto: true },
-    { id: "emergency-stop", label: "⌃⌘Esc stops the node_repl process group", auto: true },
-    { id: "idle-stop", label: "The child is gone after 60 s idle", auto: true },
+    { id: "emergency-stop", label: "⌃⌘Esc stops Codex's node_repl", auto: true },
+    { id: "idle-stop", label: "Codex's node_repl is gone after 60 s idle", auto: true },
     {
       id: "registrations-unchanged",
       label: "Registrations are byte-identical before and after",

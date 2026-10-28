@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  CODEX_CHROME_DRAIN_TOOL,
   INTEGRATION_ACCEPTANCE_CHECKS,
   INTEGRATION_REQUIRED_ASSERTIONS,
   PROVIDER_INTEGRATION_RECORDS,
@@ -18,13 +19,11 @@ const certified: CodexChromeRecord = {
   ...base,
   id: "codex-chrome-darwin-arm64-26.1020.5",
   evidenceId: "evidence",
+  versions: { ...base.versions, codexMin: "0.163.0" },
   evidenceCommit: EVIDENCE_COMMIT,
-  toolNames: [...base.identity.allowedTools],
+  toolNames: [...base.identity.allowedTools, CODEX_CHROME_DRAIN_TOOL],
   toolInventorySha256: "d".repeat(64),
-  identity: {
-    ...base.identity,
-    advertisedTools: base.identity.allowedTools.map((name) => ({ name, inputSchema: {} })),
-  },
+  identity: { ...base.identity, admission: "session" },
 };
 const acceptance: IntegrationAcceptanceReport = {
   kind: "acceptance",

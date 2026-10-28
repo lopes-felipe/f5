@@ -560,6 +560,21 @@ export const ChromeProcessRegistration = Schema.Struct({
   startTime: NonNegative,
 });
 export type ChromeProcessRegistration = typeof ChromeProcessRegistration.Type;
+/**
+ * A process the provider started, not the backend: main finds the one child of
+ * `parentPid` running `executable`, verifies both signatures and registers it.
+ */
+export const ChromeProcessAdoption = Schema.Struct({
+  profileId: Id,
+  backendIncarnation: Id,
+  threadId: Id,
+  sessionGeneration: Id,
+  launchToken: Id,
+  integration: ProviderIntegrationKind,
+  parentPid: Positive,
+  executable: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096)),
+});
+export type ChromeProcessAdoption = typeof ChromeProcessAdoption.Type;
 export const ChromeNativeHostTransactionState = Schema.Literals([
   "approved",
   "launched",
@@ -691,6 +706,14 @@ export const DesktopComputerHostMessage = Schema.Union([
     registration: ChromeProcessRegistration,
   }),
   Schema.Struct({ type: Schema.Literal("chromeProcessExited"), launchToken: Id }),
+  // Answered with the registration main verified and now supervises.
+  Schema.Struct({
+    type: Schema.Literal("chromeProcessAdopt"),
+    requestId: Id,
+    adoption: ChromeProcessAdoption,
+  }),
+  // The backend can't signal a process it didn't start; main stops it for the backend.
+  Schema.Struct({ type: Schema.Literal("chromeProcessStop"), launchToken: Id }),
   // Built-in (provider-native) computer use holds the shared foreground lease per call.
   Schema.Struct({
     type: Schema.Literals(["builtinLeaseAcquire", "builtinLeaseValidate", "builtinLeaseRelease"]),

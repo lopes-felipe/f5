@@ -14,9 +14,10 @@ function setup(
       notice: import("@t3tools/contracts").DesktopScheduledNotification,
     ) => boolean;
     supervisor?: ChromeProcessSupervisor;
+    verifyAdoption?: (parent: string, executable: string) => Promise<string | undefined>;
   } = {},
 ) {
-  const { notification, supervisor } = options;
+  const { notification, supervisor, verifyAdoption } = options;
   const controller = {
     disconnect: vi.fn(),
     setPaused: vi.fn(),
@@ -34,7 +35,11 @@ function setup(
     controller as unknown as ComputerController,
     () => ({ available: true }),
     vi.fn(),
-    { certified: () => certified, ...(supervisor ? { supervisor } : {}) },
+    {
+      certified: () => certified,
+      ...(supervisor ? { supervisor } : {}),
+      ...(verifyAdoption ? { verifyAdoption } : {}),
+    },
     undefined,
     {
       ...(notification ? { notification } : {}),
@@ -213,6 +218,78 @@ describe("private computer host channel", () => {
     supervisor.resumed("profile", "thread");
     h.process.emit("message", { type: "chromeLeaseAcquire", requestId: "resumed", holder });
     await vi.waitFor(() => expect(response("resumed")).toMatchObject({ result: true }));
+  });
+  it("adopts Codex's node_repl for its own backend and stops it on request", async () => {
+    const NODE_REPL = "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl";
+    const killGroup = vi.fn();
+    const io: ChromeProcessIo = {
+      snapshot: async () => [
+        { pid: 50, ppid: 1, pgid: 50, startTime: 0, zombie: false, command: "/bin/server" },
+        { pid: 60, ppid: 50, pgid: 60, startTime: 0, zombie: false, command: "/bin/codex" },
+        { pid: 70, ppid: 60, pgid: 70, startTime: 1_000, zombie: false, command: NODE_REPL },
+      ],
+      killGroup,
+      setTimeout: (run) => {
+        run();
+        return 0;
+      },
+      clearTimeout: () => {},
+      now: () => 0,
+    };
+    const supervisor = new ChromeProcessSupervisor({ io });
+    const verifyAdoption = vi.fn(async () => undefined);
+    const h = setup(true, undefined, { supervisor, verifyAdoption });
+    h.hello();
+    const adoption = {
+      profileId: "profile",
+      backendIncarnation: "incarnation",
+      threadId: "thread",
+      sessionGeneration: "s",
+      launchToken: "adopted",
+      integration: "codex-chrome",
+      parentPid: 60,
+      executable: NODE_REPL,
+    };
+    const response = (requestId: string) =>
+      h.process.send.mock.calls.find(([message]) => message.requestId === requestId)?.[0];
+    h.process.emit("message", { type: "chromeProcessAdopt", requestId: "adopt", adoption });
+    await vi.waitFor(() =>
+      expect(response("adopt")).toMatchObject({ result: { pid: 70, pgid: 70 } }),
+    );
+    expect(verifyAdoption).toHaveBeenCalledWith("/bin/codex", NODE_REPL);
+    // Another incarnation's token stops nothing; the backend's own does.
+    h.process.emit("message", { type: "chromeProcessStop", launchToken: "other" });
+    expect(killGroup).not.toHaveBeenCalled();
+    h.process.emit("message", { type: "chromeProcessStop", launchToken: "adopted" });
+    await vi.waitFor(() => expect(killGroup).toHaveBeenCalledWith(70, "SIGTERM"));
+  });
+  it("refuses adoption while Codex Chrome is uncertified", async () => {
+    const supervisor = new ChromeProcessSupervisor();
+    const h = setup(false, undefined, { supervisor, verifyAdoption: async () => undefined });
+    h.hello();
+    h.process.emit("message", {
+      type: "chromeProcessAdopt",
+      requestId: "adopt",
+      adoption: {
+        profileId: "profile",
+        backendIncarnation: "incarnation",
+        threadId: "thread",
+        sessionGeneration: "s",
+        launchToken: "adopted",
+        integration: "codex-chrome",
+        parentPid: 60,
+        executable: "/node_repl",
+      },
+    });
+    await vi.waitFor(() =>
+      expect(h.process.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          requestId: "adopt",
+          error: { _tag: "Unavailable", reason: "not-certified" },
+        }),
+        expect.any(Function),
+      ),
+    );
   });
   it("refuses Sky's foreground lease while codex-computer is uncertified", async () => {
     const h = setup(true);

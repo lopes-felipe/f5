@@ -71,6 +71,7 @@ import {
   computerBackgroundGate,
   computerCertificationStatus,
   chromeControlCertified,
+  verifyCodexChromeAdoption,
 } from "./computer/certification";
 import { COMPUTER_BACKGROUND_CAPABILITY, type ComputerBackgroundStatus } from "@t3tools/contracts";
 import { ComputerHelperClient } from "./computer/ComputerHelperClient";
@@ -548,6 +549,7 @@ function initializeComputerSystem(): void {
       builtinCertified: () =>
         isIntegrationCertified("codex-computer", process.platform, process.arch),
       supervisor,
+      verifyAdoption: (parent, executable) => verifyCodexChromeAdoption(parent, executable),
       changed: () => {
         if (!syncKillChord()) throw new Error("The computer-control kill shortcut is unavailable.");
       },

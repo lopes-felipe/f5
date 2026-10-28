@@ -49,6 +49,8 @@ export class ComputerHostChannel {
       builtinCertified?: () => boolean;
       changed?: (holder: ChromeLeaseHolder | null) => void;
       supervisor?: ChromeProcessSupervisor;
+      /** Signature check for an adopted process and its parent; returns why it fails. */
+      verifyAdoption?: (parent: string, executable: string) => Promise<string | undefined>;
     },
     private readonly grants = new ComputerGrantAuthority(
       process.platform === "win32" ? "win32" : "darwin",
@@ -437,6 +439,55 @@ export class ComputerHostChannel {
           );
           break;
         }
+        case "chromeProcessAdopt": {
+          const adoption = message.adoption;
+          if (adoption.profileId !== profileId || adoption.backendIncarnation !== incarnation) {
+            child.disconnect();
+            return;
+          }
+          const supervisor = this.chromeOptions?.supervisor;
+          const verify = this.chromeOptions?.verifyAdoption;
+          if (
+            !supervisor ||
+            !verify ||
+            child.pid === undefined ||
+            adoption.integration !== "codex-chrome" ||
+            !this.chromeOptions?.certified("codex")
+          ) {
+            fail(
+              message.requestId,
+              new ComputerControlError({ _tag: "Unavailable", reason: "not-certified" }),
+            );
+            break;
+          }
+          void supervisor.adopt(adoption, child.pid, verify).then(
+            (registration) =>
+              this.send(profileId, {
+                type: "response",
+                requestId: message.requestId,
+                result: registration,
+              }),
+            (error: unknown) =>
+              fail(
+                message.requestId,
+                new ComputerControlError({
+                  _tag: "Execution",
+                  message: error instanceof Error ? error.message : "Adoption failed.",
+                }),
+              ),
+          );
+          break;
+        }
+        case "chromeProcessStop":
+          // Only this backend's own registrations; anything else is ignored.
+          this.chromeOptions?.supervisor?.stop(
+            (registration) =>
+              registration.launchToken === message.launchToken &&
+              registration.profileId === profileId &&
+              registration.backendIncarnation === incarnation,
+            "unresponsive",
+          );
+          break;
         case "chromeProcessExited":
           this.chromeOptions?.supervisor?.reportedExit(message.launchToken);
           break;

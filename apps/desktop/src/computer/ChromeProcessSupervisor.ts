@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { ChromeProcessRegistration } from "@t3tools/contracts";
+import type { ChromeProcessAdoption, ChromeProcessRegistration } from "@t3tools/contracts";
 
 export interface ChromeProcessRow {
   readonly pid: number;
@@ -11,11 +11,15 @@ export interface ChromeProcessRow {
   readonly startTime: number | undefined;
   /** Zombies can no longer act. */
   readonly zombie: boolean;
+  /** The executable path `comm` reports; undefined when it wasn't listed. */
+  readonly command?: string;
 }
 export interface ChromeProcessIo {
   /** Every process on the machine, or null when the listing could not be read. */
   readonly snapshot: () => Promise<ReadonlyArray<ChromeProcessRow> | null>;
   readonly killGroup: (pgid: number, signal: NodeJS.Signals) => void;
+  /** Signals one process; only used for a verified candidate that failed adoption. */
+  readonly kill?: (pid: number, signal: NodeJS.Signals) => void;
   readonly setTimeout: (callback: () => void, ms: number) => unknown;
   readonly clearTimeout: (handle: unknown) => void;
   readonly now: () => number;
@@ -24,6 +28,8 @@ export interface ChromeProcessIo {
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const PS_ROW = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s*(.*?)\s*$/;
 const LSTART = /^\w{3}\s+(\w{3})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})$/;
+/** `lstart` is always five fields, so the executable (which may contain spaces) follows it. */
+const LSTART_THEN_COMMAND = /^(\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})(?:\s+(.+))?$/;
 
 function parseStart(text: string): number | undefined {
   const match = LSTART.exec(text);
@@ -40,11 +46,12 @@ function parseStart(text: string): number | undefined {
 }
 
 /**
- * Parses `ps -o pid=,ppid=,pgid=,stat=,lstart=` run with `TZ=UTC`. `lstart` carries no
- * zone, so it is read explicitly as UTC rather than through `Date.parse` (local time).
- * A row whose start column is unreadable is kept without a start time: it still counts
- * as a member of its group, so it can only keep a group alive. A row whose IDs are
- * unreadable could belong to any group, so it makes the whole listing unknown.
+ * Parses `ps -o pid=,ppid=,pgid=,stat=,lstart=,comm=` run with `TZ=UTC`. `lstart` carries
+ * no zone, so it is read explicitly as UTC rather than through `Date.parse` (local time).
+ * A row whose start column is unreadable is kept without a start time or command: it
+ * still counts as a member of its group, so it can only keep a group alive (and is never
+ * adopted). A row whose IDs are unreadable could belong to any group, so it makes the
+ * whole listing unknown.
  */
 export function parseProcessListing(stdout: string): ChromeProcessRow[] | null {
   const rows: ChromeProcessRow[] = [];
@@ -52,12 +59,14 @@ export function parseProcessListing(stdout: string): ChromeProcessRow[] | null {
     if (!line.trim()) continue;
     const match = PS_ROW.exec(line);
     if (!match) return null;
+    const rest = LSTART_THEN_COMMAND.exec(match[5]!);
     rows.push({
       pid: Number(match[1]),
       ppid: Number(match[2]),
       pgid: Number(match[3]),
       zombie: match[4]!.startsWith("Z"),
-      startTime: parseStart(match[5]!),
+      startTime: rest ? parseStart(rest[1]!) : undefined,
+      ...(rest?.[2] ? { command: rest[2] } : {}),
     });
   }
   return rows.length ? rows : null;
@@ -69,7 +78,7 @@ export const defaultChromeProcessIo: ChromeProcessIo = {
     new Promise((resolve) => {
       execFile(
         "/bin/ps",
-        ["-A", "-o", "pid=,ppid=,pgid=,stat=,lstart="],
+        ["-A", "-o", "pid=,ppid=,pgid=,stat=,lstart=,comm="],
         { timeout: 2000, maxBuffer: 16 * 1024 * 1024, env: { LC_ALL: "C", TZ: "UTC" } },
         (error, stdout) => resolve(error ? null : parseProcessListing(stdout)),
       );
@@ -77,6 +86,13 @@ export const defaultChromeProcessIo: ChromeProcessIo = {
   killGroup: (pgid, signal) => {
     try {
       process.kill(-pgid, signal);
+    } catch {
+      // Already gone.
+    }
+  },
+  kill: (pid, signal) => {
+    try {
+      process.kill(pid, signal);
     } catch {
       // Already gone.
     }
@@ -245,6 +261,82 @@ export class ChromeProcessSupervisor {
     // Persisted while alive, so a crashed desktop finds and stops it on the next launch.
     this.persist();
     this.schedulePoll();
+  }
+
+  /**
+   * Adopts a process the provider started rather than the backend (Codex's `node_repl`):
+   * the only live child of `parentPid` running `executable`, where the parent descends from
+   * the registering backend. `verify` checks both executables' signatures and returns why
+   * they fail. Once candidates are known, any failure stops all of them: each is a verified
+   * descendant of the backend that F5 couldn't supervise.
+   */
+  async adopt(
+    adoption: ChromeProcessAdoption,
+    ancestorPid: number,
+    verify: (parent: string, executable: string) => Promise<string | undefined>,
+  ): Promise<ChromeProcessRegistration> {
+    if (this.recoveryRequired())
+      throw new Error("A previous browser-control process has not exited yet.");
+    const { parentPid, executable, ...identity } = adoption;
+    if (this.invalidated(identity.profileId, identity.threadId, identity.sessionGeneration))
+      throw new Error("Computer control was stopped for this session. Resume it first.");
+    const token = identity.launchToken;
+    if (this.entries.has(token) || this.pending.has(token))
+      throw new Error("Duplicate launch token.");
+    // A stop while `ps` and the signatures are read must still reach the adopted process.
+    // The provisional registration is never signalled; it only records that stop.
+    const pending: {
+      readonly registration: ChromeProcessRegistration;
+      stoppedBy?: ChromeStopReason;
+    } = { registration: { ...identity, pid: parentPid, pgid: parentPid, startTime: 0 } };
+    this.pending.set(token, pending);
+    let candidates: ChromeProcessRow[] = [];
+    let registration: ChromeProcessRegistration;
+    try {
+      const rows = await this.io.snapshot();
+      if (!rows) throw new Error("The process listing could not be read.");
+      const parent = rows.find((row) => row.pid === parentPid);
+      if (!parent?.command || parent.zombie || !descendsFrom(rows, parentPid, ancestorPid))
+        throw new Error("The provider process could not be verified.");
+      candidates = rows.filter(
+        (row) => row.ppid === parentPid && !row.zombie && row.command === executable,
+      );
+      if (candidates.length !== 1)
+        throw new Error(
+          candidates.length
+            ? "The provider started more than one browser runtime."
+            : "The provider's browser runtime isn't running.",
+        );
+      const failure = await verify(parent.command, executable);
+      if (failure) throw new Error(failure);
+      const leader = candidates[0]!;
+      if (leader.startTime === undefined)
+        throw new Error("The browser runtime could not be verified.");
+      if (leader.pgid !== leader.pid)
+        throw new Error("The browser runtime doesn't lead its own process group.");
+      if (pending.stoppedBy)
+        throw new Error("Computer control was stopped for this session. Resume it first.");
+      registration = {
+        ...identity,
+        pid: leader.pid,
+        pgid: leader.pgid,
+        startTime: leader.startTime,
+      };
+    } catch (error) {
+      for (const candidate of candidates) this.io.kill?.(candidate.pid, "SIGKILL");
+      throw error;
+    } finally {
+      this.pending.delete(token);
+    }
+    // Registration re-reads `ps`: same start time, group and ancestry, and a stop that lands
+    // meanwhile still reaches it. A refused registration leaves nothing unsupervised.
+    try {
+      await this.register(registration, ancestorPid);
+    } catch (error) {
+      if (!this.entries.has(token)) this.io.kill?.(registration.pid, "SIGKILL");
+      throw error;
+    }
+    return registration;
   }
 
   registrations(filter: (registration: ChromeProcessRegistration) => boolean = () => true) {

@@ -1,30 +1,28 @@
-import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { join } from "node:path";
-import type { RuntimeMode } from "@t3tools/contracts";
+import type { McpServerDefinition, RuntimeMode } from "@t3tools/contracts";
+import { CodeSignatureCache } from "@t3tools/shared/codeSignature";
 import {
+  CODEX_CHROME_DRAIN_TOOL,
   PROVIDER_INTEGRATION_RECORDS,
   certifiedIntegrationRecord,
+  codexParentIdentifierAllowed,
+  compareVersions,
   integrationUnavailableDetail,
   recordCertifies,
 } from "@t3tools/shared/providerIntegrationCertification";
-import type { ComputerAutomationBrokerRuntime } from "../computer/ComputerAutomationBroker";
+import { probeCodexCliVersion } from "../codex/cliVersionProbe";
+import { resolveExecutable } from "../spawn/resolveCommand";
 import { resolveCodexInstanceHomePaths } from "./Drivers/CodexHomeLayout";
 import {
   CODEX_CHROME_NEEDS_FULL_ACCESS,
   CODEX_CHROME_NEEDS_ISOLATED_HOME,
   codexChromeChildEnvironment,
-  codexChromeInstructions,
-  codexChromeInstallationUnchanged,
-  codexChromeRegistrationsUnchanged,
   codexVersionNote,
   inspectCodexChrome,
   type CodexChromeInstallation,
 } from "../computer/codexNativeIntegrations";
-import {
-  IntegrationProxySession,
-  type IntegrationProxyState,
-} from "../mcp/IntegrationProxyCatalog";
+import { INTEGRATION_TOOL_TIMEOUT_SEC } from "../mcp/IntegrationProxyCatalog";
 
 export const CODEX_CHROME_SERVER_NAME = "node_repl";
 
@@ -51,19 +49,65 @@ export function effectiveCodexHome(
   })[0]!;
 }
 
+export const CODEX_CHROME_UNSIGNED_CODEX = "F5's Codex isn't an OpenAI-signed build.";
+
+/** The `codex` F5 launches: its real path (signature) and version, when readable. */
+export interface CodexBinaryFacts {
+  readonly path?: string;
+  readonly version?: string;
+}
+
+/**
+ * Resolves the Codex binary a session would launch and, unless `probeVersion` is false
+ * (the read-only settings preflight never spawns), asks it for its version. Never throws.
+ */
+export async function inspectCodexBinary(input: {
+  readonly binaryPath: string;
+  readonly processEnvironment: NodeJS.ProcessEnv;
+  readonly cwd: string;
+  readonly homePath?: string;
+  readonly probeVersion?: boolean;
+}): Promise<CodexBinaryFacts> {
+  const resolved = resolveExecutable(input.binaryPath, input.processEnvironment, {
+    cwd: input.cwd,
+  });
+  const [path, version] = await Promise.all([
+    resolved ? realpath(resolved).catch(() => undefined) : Promise.resolve(undefined),
+    input.probeVersion === false
+      ? Promise.resolve(null)
+      : probeCodexCliVersion({
+          processEnvironment: input.processEnvironment,
+          binaryPath: input.binaryPath,
+          cwd: input.cwd,
+          ...(input.homePath ? { homePath: input.homePath } : {}),
+        }).catch(() => null),
+  ]);
+  return { ...(path ? { path } : {}), ...(version ? { version } : {}) };
+}
+
+const codexSignatures = new CodeSignatureCache();
+/** ChatGPT's Chrome host serves `node_repl` only under a Codex signed like this. */
+export async function codexBinarySigned(path: string, teamId: string): Promise<boolean> {
+  const signature = await codexSignatures.probe(path, { teamId });
+  return signature.ok && codexParentIdentifierAllowed(signature.identifier);
+}
+
 /**
  * Read-only eligibility for one Codex instance: a certified record, an isolated
- * CODEX_HOME (never the user's global `~/.codex`) and a verified ChatGPT installation.
- * Session start passes its runtime mode and requires Full access; only the settings
- * preflight passes `"preflight"`, and reports that requirement in its text instead.
+ * CODEX_HOME (never the user's global `~/.codex`), an OpenAI-signed Codex at or above the
+ * record's floor, and a verified ChatGPT installation. Session start passes its runtime
+ * mode and requires Full access; only the settings preflight passes `"preflight"`, and
+ * reports that requirement in its text instead.
  */
 export async function codexChromeEligibility(input: {
   readonly codexHome: string | undefined;
   readonly userHome: string;
   readonly runtimeMode: RuntimeMode | "preflight";
+  readonly codex: CodexBinaryFacts;
   readonly platform?: string;
   readonly arch?: string;
   readonly inspect?: typeof inspectCodexChrome;
+  readonly codexSigned?: (path: string, teamId: string) => Promise<boolean>;
 }): Promise<CodexChromeEligibility> {
   const platform = input.platform ?? process.platform;
   const arch = input.arch ?? process.arch;
@@ -90,6 +134,25 @@ export async function codexChromeEligibility(input: {
   ]);
   if (home === global)
     return { eligible: false, reason: CODEX_CHROME_NEEDS_ISOLATED_HOME, recordId: record.id };
+  const floor = record.versions.codexMin;
+  // The preflight doesn't run Codex, so only session start knows its version.
+  const versionKnown = input.codex.version !== undefined || input.runtimeMode !== "preflight";
+  if (
+    versionKnown &&
+    (!input.codex.version || (compareVersions(input.codex.version, floor) ?? -1) < 0)
+  )
+    return {
+      eligible: false,
+      reason: `Codex Chrome control needs Codex ${floor ?? "(certified)"} or newer${
+        input.codex.version ? `; F5 runs ${input.codex.version}` : ""
+      }.`,
+      recordId: record.id,
+    };
+  if (
+    !input.codex.path ||
+    !(await (input.codexSigned ?? codexBinarySigned)(input.codex.path, record.identity.teamId))
+  )
+    return { eligible: false, reason: CODEX_CHROME_UNSIGNED_CODEX, recordId: record.id };
   const installation = await (input.inspect ?? inspectCodexChrome)({
     platform,
     arch,
@@ -104,100 +167,34 @@ export async function codexChromeEligibility(input: {
 /** Settings copy for a ready preflight; a newer-than-certified ChatGPT is noted, never blocked. */
 export function codexChromeReadyDetail(installation: CodexChromeInstallation): string {
   const note = codexVersionNote(installation.record.versions.appMin, installation.appVersion);
-  return note ? `Sessions also need Full access. ${note}` : "Sessions also need Full access.";
+  const floor = installation.record.versions.codexMin;
+  const needs = `Sessions also need Full access${floor ? ` and Codex ${floor} or newer` : ""}.`;
+  return note ? `${needs} ${note}` : needs;
 }
 
 /**
- * One proxied `node_repl` per session generation. Session consent is asked on the
- * first call; every call still passes live policy, pause, generation, the registration
- * snapshot, the verified inventory and the Chrome lease held for the child's life.
+ * Codex's own MCP entry for ChatGPT's `node_repl`: Codex starts it, because ChatGPT's
+ * Chrome host serves only a runtime whose parent is a signed Codex. Only the allowed tools
+ * and the drain hook are enabled, and calls are bounded like the old proxy's. No approval
+ * mode is set: Codex asks none in Full access, so F5 controls the session, not each call.
  */
-export function makeCodexChromeProxy(input: {
-  readonly threadId: string;
-  readonly generation: string;
-  readonly eligibility: Extract<CodexChromeEligibility, { eligible: true }>;
-  readonly userHome: string;
-  readonly cwd?: string;
-  readonly broker: ComputerAutomationBrokerRuntime;
-  readonly policyEnabled: () => Promise<boolean>;
-  readonly processEnvironment?: NodeJS.ProcessEnv;
-  readonly stateChanged?: (state: IntegrationProxyState, detail?: string) => void;
-  readonly inspect?: typeof inspectCodexChrome;
-}): { readonly session: IntegrationProxySession; readonly instructions: string } {
-  const { installation, codexHome } = input.eligibility;
-  const { broker } = input;
-  const holder = {
-    profileId: broker.host.profileId,
-    threadId: input.threadId,
-    sessionGeneration: input.generation,
-    provider: "codex" as const,
-  };
-  const session = new IntegrationProxySession({
-    integration: "codex-chrome",
-    threadId: input.threadId,
-    generation: input.generation,
+export function codexChromeMcpServer(
+  eligibility: Extract<CodexChromeEligibility, { eligible: true }>,
+  processEnvironment: NodeJS.ProcessEnv = process.env,
+): McpServerDefinition {
+  const { installation, codexHome } = eligibility;
+  return {
+    type: "stdio",
     command: installation.nodeRepl,
     args: [],
-    env: codexChromeChildEnvironment(
-      installation,
-      codexHome,
-      input.processEnvironment ?? process.env,
+    env: Object.fromEntries(
+      Object.entries(
+        codexChromeChildEnvironment(installation, codexHome, processEnvironment),
+      ).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
     ),
-    ...(input.cwd ? { cwd: input.cwd } : {}),
-    allowedTools: installation.record.identity.allowedTools,
-    toolInventorySha256: installation.record.toolInventorySha256,
-    ...(installation.record.identity.advertisedTools
-      ? { advertisedTools: installation.record.identity.advertisedTools }
-      : {}),
-    identity: {
-      profileId: broker.host.profileId,
-      backendIncarnation: broker.host.backendIncarnation,
-      threadId: input.threadId,
-      sessionGeneration: input.generation,
-      integration: "codex-chrome",
-    },
-    register: (registration) => broker.registerIntegrationProcess(registration),
-    exited: (launchToken) => broker.reportIntegrationExit(launchToken),
-    policyEnabled: input.policyEnabled,
-    currentGeneration: () => broker.generation(input.threadId),
-    paused: () => broker.pause.has(input.threadId),
-    consent: () => broker.requestChromeSession(input.threadId, input.generation, "codex-chrome"),
-    check: async () => {
-      if (broker.chromeRecoveryRequired())
-        return "Browser control from an earlier session hasn't stopped yet.";
-      return (await codexChromeRegistrationsUnchanged(installation, input.userHome))
-        ? undefined
-        : "The ChatGPT Chrome helper's setup changed. Start a new session to use Chrome.";
-    },
-    // The child may start hours after the session: signatures and versions are checked
-    // again so an app update in between never runs under the session's verification.
-    beforeSpawn: async () => {
-      const current = await (input.inspect ?? inspectCodexChrome)({
-        userHome: input.userHome,
-        record: installation.record,
-      });
-      if (!current.available) return current.reason;
-      return codexChromeInstallationUnchanged(installation, current)
-        ? undefined
-        : "The ChatGPT app changed since this session started. Start a new session to use Chrome.";
-    },
-    acquireLease: async () => {
-      await broker.host.correlated(
-        { type: "chromeLeaseAcquire", requestId: randomUUID(), holder },
-        5000,
-        false,
-      );
-    },
-    releaseLease: () =>
-      broker.host.send({ type: "chromeLeaseRelease", requestId: randomUUID(), holder }),
-    ...(input.stateChanged ? { stateChanged: input.stateChanged } : {}),
-    disposed: () => offPause(),
-  });
-  // Pause cancels in-flight calls and stops the child; the lease ends once its group exits.
-  const offPause = broker.pause.subscribe((threadId, paused) => {
-    if (paused && threadId === input.threadId) session.cancel();
-  });
-  return { session, instructions: codexChromeInstructions(installation) };
+    enabledTools: [...installation.record.identity.allowedTools, CODEX_CHROME_DRAIN_TOOL],
+    toolTimeoutSec: INTEGRATION_TOOL_TIMEOUT_SEC,
+  };
 }
 
 /**

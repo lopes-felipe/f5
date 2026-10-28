@@ -28,6 +28,8 @@ import {
   type CodexAppServerSendTurnInput,
 } from "../../codexAppServerManager.ts";
 import { ServerConfig } from "../../config.ts";
+import * as browserAccess from "../../mcp/browserAccess.ts";
+import * as codexChromeIntegration from "../codexChromeIntegration.ts";
 import { CodexAdapter, type CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import { readRuntimeConfiguredPayload } from "@t3tools/shared/orchestrationActivityPayload";
@@ -35,6 +37,7 @@ import {
   hookTargetItemId,
   makeCodexAdapterLive,
   normalizeCodexThreadItemType,
+  observeCodexChrome,
   withAgentBrowserPreview,
 } from "./CodexAdapter.ts";
 
@@ -2969,6 +2972,34 @@ afterAll(() => {
   assert.ok(lifecycleManager.stopAllImpl.mock.calls.length >= 1);
 });
 
+it("feeds Codex's node_repl startup, tool calls and turn ends to the Chrome session", () => {
+  const session = { startupStatus: vi.fn(), toolActivity: vi.fn(), turnEnded: vi.fn() };
+  const observe = (method: string, payload: unknown, turnId?: string) =>
+    observeCodexChrome(session, {
+      method,
+      payload,
+      ...(turnId ? { turnId: TurnId.makeUnsafe(turnId) } : {}),
+    });
+  observe("mcpServer/startupStatus/updated", { name: "node_repl", status: "ready" });
+  observe("mcpServer/startupStatus/updated", { name: "other", status: "failed" });
+  observe("mcpServer/startupStatus/updated", {
+    name: "node_repl",
+    status: "failed",
+    error: "boom",
+  });
+  observe("item/started", { item: { type: "mcpToolCall", server: "node_repl" } });
+  observe("item/completed", { item: { type: "mcpToolCall", server: "other" } });
+  observe("item/completed", { item: { type: "commandExecution" } });
+  observe("turn/completed", {}, "turn-1");
+  observe("turn/completed", {});
+  assert.deepEqual(session.startupStatus.mock.calls, [
+    ["ready", undefined],
+    ["failed", "boom"],
+  ]);
+  assert.equal(session.toolActivity.mock.calls.length, 1);
+  assert.deepEqual(session.turnEnded.mock.calls, [["turn-1"]]);
+});
+
 it("reports computer fallback and unavailability without installing both tool catalogs", () => {
   const event: ProviderRuntimeEvent = {
     type: "session.configured",
@@ -3186,5 +3217,98 @@ it.effect(
         assert.equal(manager.sendTurnImpl.mock.calls.length, 1);
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.scoped);
+  },
+);
+
+it.effect(
+  "has Codex start node_repl only for consented, interactive desktop sessions without a node_repl of their own",
+  () => {
+    const manager = new FakeCodexManager();
+    const broker = {
+      host: { status: () => ({ available: false, reason: "no-host" }) },
+      generation: vi.fn(() => undefined),
+      bindSession: vi.fn(),
+      releaseSession: vi.fn(),
+      requestChromeSession: vi.fn(async () => true),
+      pause: { subscribe: () => () => undefined, has: () => false },
+      onChromeDisabled: () => () => undefined,
+      chromeRecoveryRequired: () => false,
+    };
+    const installation = {
+      nodeRepl: "/plugin/bin/node_repl",
+      skillPath: "/plugin/SKILL.md",
+      pluginRoot: "/plugin",
+      record: {},
+    };
+    const policy = vi
+      .spyOn(browserAccess, "resolveAgentBrowserPolicy")
+      .mockReturnValue(Effect.succeed({ codexChrome: true } as never));
+    const inspect = vi
+      .spyOn(codexChromeIntegration, "inspectCodexBinary")
+      .mockResolvedValue({ path: "/opt/codex", version: "0.163.0" });
+    const eligibility = vi
+      .spyOn(codexChromeIntegration, "codexChromeEligibility")
+      .mockResolvedValue({
+        eligible: true,
+        installation,
+        codexHome: "/isolated",
+      } as never);
+    const server = vi
+      .spyOn(codexChromeIntegration, "codexChromeMcpServer")
+      .mockReturnValue({ type: "stdio", command: "/plugin/bin/node_repl", enabledTools: ["js"] });
+    const layer = makeCodexAdapterLive({ manager, computerAutomationBroker: broker as never }).pipe(
+      Layer.provideMerge(
+        ServerConfig.layerTest(process.cwd(), { prefix: "codex-chrome-" }, { mode: "desktop" }),
+      ),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    const servers = () =>
+      (manager.startSessionImpl.mock.calls.at(-1)?.[0] as { mcpServers?: Record<string, unknown> })
+        ?.mcpServers ?? {};
+    return Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({ threadId: asThreadId("chrome"), runtimeMode: "full-access" });
+      assert.deepEqual(Object.keys(servers()), ["node_repl"]);
+      assert.equal(broker.requestChromeSession.mock.calls.length, 1);
+      assert.ok(
+        String(manager.startSessionImpl.mock.calls.at(-1)?.[0].integrationInstructions).includes(
+          "/plugin/SKILL.md",
+        ),
+      );
+
+      broker.requestChromeSession.mockResolvedValueOnce(false);
+      yield* adapter.startSession({ threadId: asThreadId("declined"), runtimeMode: "full-access" });
+      assert.equal(servers().node_repl, undefined);
+
+      yield* adapter.startSession({
+        threadId: asThreadId("own"),
+        runtimeMode: "full-access",
+        providerOptions: { mcpServers: { node_repl: { type: "stdio", command: "mine" } } },
+      });
+      assert.deepEqual(servers().node_repl, { type: "stdio", command: "mine" });
+      assert.equal(broker.requestChromeSession.mock.calls.length, 2);
+
+      eligibility.mockClear();
+      yield* adapter.startSession({
+        threadId: asThreadId("workflow"),
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      yield* adapter.startSession({
+        threadId: asThreadId("one-off:x"),
+        runtimeMode: "full-access",
+      });
+      assert.equal(eligibility.mock.calls.length, 0);
+      assert.equal(servers().node_repl, undefined);
+    }).pipe(
+      Effect.provide(layer),
+      Effect.scoped,
+      Effect.ensuring(
+        Effect.sync(() => {
+          for (const spy of [policy, inspect, eligibility, server]) spy.mockRestore();
+        }),
+      ),
+    );
   },
 );

@@ -23,7 +23,8 @@ import {
   type ComputerApp,
   type DesktopComputerHostMessage,
   type ChromeLeaseHolder,
-  type ChromeProcessRegistration,
+  type ChromeProcessAdoption,
+  ChromeProcessRegistration,
 } from "@t3tools/contracts";
 import {
   ComputerControlError,
@@ -142,6 +143,9 @@ export class ComputerAutomationBrokerRuntime {
   readonly pause: AgentControlPause;
   readonly access: ComputerAccessService;
   private readonly bindings = new Map<string, ComputerBinding>();
+  private readonly chromeDisabledListeners = new Set<
+    (threadId: string, generation: string) => void
+  >();
   /**
    * Last policy revision per thread, kept after a session is released. Electron's minimum
    * revision per thread only grows, so a replacement session must continue from here.
@@ -605,6 +609,43 @@ export class ComputerAutomationBrokerRuntime {
   }
   reportIntegrationExit(launchToken: string): void {
     this.host.send({ type: "chromeProcessExited", launchToken });
+  }
+  /**
+   * Main adopts a process the provider started (Codex's `node_repl`): it verifies it and
+   * its parent, then supervises it like a registered child. Answers what main registered.
+   */
+  async adoptIntegrationProcess(
+    adoption: Omit<ChromeProcessAdoption, "profileId" | "backendIncarnation">,
+  ): Promise<ChromeProcessRegistration> {
+    const result = await this.host.correlated(
+      {
+        type: "chromeProcessAdopt",
+        requestId: randomUUID(),
+        adoption: {
+          ...adoption,
+          profileId: this.host.profileId,
+          backendIncarnation: this.host.backendIncarnation,
+        },
+      },
+      15_000,
+      false,
+    );
+    const registration = Schema.decodeUnknownOption(ChromeProcessRegistration)(result);
+    if (Option.isNone(registration) || registration.value.launchToken !== adoption.launchToken)
+      throw new ComputerControlError({
+        _tag: "Execution",
+        message: "The desktop answered the adoption with something else.",
+      });
+    return registration.value;
+  }
+  /** Main stops an adopted process; the backend can't signal what it didn't start. */
+  stopIntegrationProcess(launchToken: string): void {
+    this.host.send({ type: "chromeProcessStop", launchToken });
+  }
+  /** Called with each binding whose provider-native Chrome policy is off after a refresh. */
+  onChromeDisabled(listener: (threadId: string, generation: string) => void): () => void {
+    this.chromeDisabledListeners.add(listener);
+    return () => this.chromeDisabledListeners.delete(listener);
   }
   chromeRecoveryRequired(): boolean {
     return this.chromeRecovery;
@@ -1393,10 +1434,18 @@ export class ComputerAutomationBrokerRuntime {
         /* An unreadable policy removes execution permission. */
       }
       if (this.bindings.get(threadId) !== binding) continue;
-      if (!chromeEnabled)
+      if (!chromeEnabled) {
         for (const pending of this.setupConsents.values())
           if (pending.threadId === threadId && pending.generation === binding.generation)
             pending.settle(false);
+        for (const listener of this.chromeDisabledListeners) {
+          try {
+            listener(threadId, binding.generation);
+          } catch {
+            // One integration's failure must not keep the others running.
+          }
+        }
+      }
       const applied = JSON.stringify({ computerEnabled, mode, passwordMasking });
       const changed = binding.appliedPolicy !== undefined && binding.appliedPolicy !== applied;
       binding.appliedPolicy = applied;
