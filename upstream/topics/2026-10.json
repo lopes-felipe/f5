@@ -34830,11 +34830,21 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-10-28T20:52:49.225Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-28T23:50:54.954Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/git/Layers/GitCore.ts:1211",
+          "apps/server/src/git/Layers/GitCore.ts:1224"
+        ],
+        "f5Refs": [
+          "69454e01d716370ea72fb7a20b968167d7d84b2b"
+        ]
+      },
       "id": "pr-21872",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "git",
@@ -52056,11 +52066,22 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
-      "decidedAt": "2026-10-28T20:58:11.533Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-28T23:50:54.954Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/git/githubHttpTransport.ts:84",
+          "apps/server/src/git/githubApi.ts:79",
+          "apps/server/src/git/ProfileGithubAccount.ts:13"
+        ],
+        "f5Refs": [
+          "69454e01d716370ea72fb7a20b968167d7d84b2b"
+        ]
+      },
       "id": "pr-26176",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "pr-hub",
