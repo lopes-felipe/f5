@@ -9758,11 +9758,21 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T20:52:55.882Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-28T23:34:20.038Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/ClaudeProvider.ts:483",
+          "packages/shared/src/slashCommands.ts:116"
+        ],
+        "f5Refs": [
+          "69454e01d716370ea72fb7a20b968167d7d84b2b"
+        ]
+      },
       "id": "pr-15662",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -20026,11 +20036,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T20:52:58.884Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-28T23:34:20.038Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-18771",
-      "status": "port",
+      "reason": "f5's Grok readiness probe uses `grok --version` and `grok models` and never sends an ACP initialize request, so there is no initialize timeout to raise.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -28748,11 +28760,21 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T20:53:04.036Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-28T23:34:20.038Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/ProviderHealth.ts:464",
+          "apps/server/src/provider/Drivers/CodexDriver.ts:438"
+        ],
+        "f5Refs": [
+          "69454e01d716370ea72fb7a20b968167d7d84b2b"
+        ]
+      },
       "id": "pr-20537",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -37146,11 +37168,21 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-10-28T20:58:30.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-28T23:34:20.038Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/providerInstallChannel.ts:327",
+          "apps/server/src/provider/providerInstallChannel.ts:174"
+        ],
+        "f5Refs": [
+          "69454e01d716370ea72fb7a20b968167d7d84b2b"
+        ]
+      },
       "id": "pr-22504",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
