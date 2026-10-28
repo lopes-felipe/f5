@@ -4,7 +4,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqliteClient from "../NodeSqliteClient.ts";
 import migration138 from "./138_ScheduledTasks.ts";
 import migration139 from "./139_ScheduledTaskQuarantine.ts";
-import migration from "./141_ScheduledRunSharedThreads.ts";
+import migration from "./142_ScheduledRunSharedThreads.ts";
 
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -30,7 +30,7 @@ const legacyAlterTable = Effect.gen(function* () {
     .legacy_alter_table;
 });
 
-it.layer(SqliteClient.layerMemory())("141_ScheduledRunSharedThreads", (it) => {
+it.layer(SqliteClient.layerMemory())("142_ScheduledRunSharedThreads", (it) => {
   it.effect("drops the unique thread constraint and keeps every run and submission", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -99,7 +99,7 @@ it.layer(SqliteClient.layerMemory())("141_ScheduledRunSharedThreads", (it) => {
   );
 });
 
-it.layer(SqliteClient.layerMemory())("141_ScheduledRunSharedThreads rollback", (it) => {
+it.layer(SqliteClient.layerMemory())("142_ScheduledRunSharedThreads rollback", (it) => {
   it.effect("rolls back atomically and restores legacy_alter_table", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
