@@ -40,6 +40,13 @@ In the terminal, Shift+PageUp and Shift+PageDown page through scrollback. `mod+S
 Cmd+A on macOS and Ctrl+Shift+A elsewhere select all retained output, while Ctrl+A still moves to
 the start of shell input.
 
+F5 starts fish with `no-query-term` in `fish_features`, so fish 4.1+ does not wait for terminal
+replies at startup. This disables optional fish features that depend on those replies, and the
+exported variable hides flags set with `set -U fish_features`. To keep those flags or enable
+queries with `query-term`, set `fish_features` in the environment that launches F5; a shell export
+does not reach a desktop app launched from the Dock or Finder. Enabling queries can restore the
+startup wait.
+
 The Files panel can edit files. If a file changes on disk while you have unsaved edits, F5 marks a
 conflict and keeps your draft. **Open in editor** hands the file to your external editor.
 
