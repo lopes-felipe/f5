@@ -55,7 +55,7 @@ describe("makeDrainableWorker", () => {
   );
 });
 
-it.live("settles every drain waiter and rejects admission after processing failure", () =>
+it.live("settles every drain waiter and continues admission after processing failure", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const entered = yield* Deferred.make<void>(),
@@ -77,11 +77,43 @@ it.live("settles every drain waiter and rejects admission after processing failu
       const first = yield* Effect.exit(worker.drain).pipe(Effect.forkChild);
       const second = yield* Effect.exit(worker.drain).pipe(Effect.forkChild);
       yield* Deferred.succeed(release, undefined);
-      expect(Exit.isFailure(yield* Fiber.join(first))).toBe(true);
-      expect(Exit.isFailure(yield* Fiber.join(second))).toBe(true);
-      expect(processed).toEqual([1]);
-      expect((yield* worker.snapshot).phase).toBe("failed");
-      expect(Exit.isFailure(yield* Effect.exit(worker.enqueue(3)))).toBe(true);
+      expect(Exit.isSuccess(yield* Fiber.join(first))).toBe(true);
+      expect(Exit.isSuccess(yield* Fiber.join(second))).toBe(true);
+      expect(processed).toEqual([1, 2]);
+      expect((yield* worker.snapshot).phase).toBe("accepting");
+      yield* worker.enqueue(3);
+      yield* worker.drain;
+      expect(processed).toEqual([1, 2, 3]);
+      expect((yield* worker.snapshot).entries).toBe(0);
+      expect((yield* worker.snapshot).failures).toBe(3);
+    }),
+  ),
+);
+
+it.effect("recovers from thrown construction, defects and self-interruption", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const processed: string[] = [];
+      const worker = yield* makeDrainableWorker(
+        (item: string) => {
+          if (item === "throw") throw new Error("construction failure");
+          if (item === "die") return Effect.die("defect");
+          if (item === "interrupt") return Effect.interrupt;
+          return Effect.sync(() => {
+            processed.push(item);
+          });
+        },
+        { maxEntries: 2, maxBytes: 20, sizeOf: (item) => item.length },
+      );
+      for (const item of ["throw", "die", "interrupt", "ok"]) yield* worker.enqueue(item);
+      yield* worker.drain;
+      expect(processed).toEqual(["ok"]);
+      expect(yield* worker.snapshot).toMatchObject({
+        entries: 0,
+        bytes: 0,
+        failures: 2,
+        phase: "accepting",
+      });
     }),
   ),
 );

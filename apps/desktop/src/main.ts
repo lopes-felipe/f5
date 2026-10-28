@@ -1,3 +1,4 @@
+import "./stdioErrors";
 import { registerHtmlPreviewIpc } from "./htmlPreview";
 import { desktopCloseWindowItem, desktopWindowMenu, selectAppMenuWindow } from "./windowMenu";
 import {

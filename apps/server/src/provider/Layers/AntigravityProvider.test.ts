@@ -6,9 +6,34 @@ import { Effect, Schema } from "effect";
 import { AntigravitySettings } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { checkAntigravityProviderStatus } from "./AntigravityProvider.ts";
-import { AntigravityInstallation } from "../AntigravityInstallation.ts";
+import {
+  AntigravityInstallation,
+  AntigravityUpdateRequiredError,
+} from "../AntigravityInstallation.ts";
 
 describe("Antigravity status", () => {
+  it("explains the required update without downloading or misreporting an existing version", async () => {
+    const resolve = vi
+      .spyOn(AntigravityInstallation.prototype, "resolve")
+      .mockRejectedValue(new AntigravityUpdateRequiredError("1.1.1", "1.3.0"));
+    const install = vi.spyOn(AntigravityInstallation.prototype, "install");
+    try {
+      const snapshot = await Effect.runPromise(
+        checkAntigravityProviderStatus(
+          Schema.decodeSync(AntigravitySettings)({ enabled: true }),
+          "/unused",
+          "antigravity",
+        ),
+      );
+      expect(snapshot.version).toBe("1.1.1");
+      expect(snapshot.message).toContain("Update to 1.3.0");
+      expect(snapshot.status).toBe("warning");
+      expect(install).not.toHaveBeenCalled();
+    } finally {
+      resolve.mockRestore();
+      install.mockRestore();
+    }
+  });
   it("defaults off and never probes or installs a disabled instance", async () => {
     const resolve = vi.spyOn(AntigravityInstallation.prototype, "resolve");
     const install = vi.spyOn(AntigravityInstallation.prototype, "install");

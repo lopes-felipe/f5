@@ -865,6 +865,30 @@ it.layer(TestLayer)("git integration", (it) => {
       }),
     );
 
+    it.effect("creates and renames temporary branches when a local t3code branch exists", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const worktrees = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        yield* git(cwd, ["branch", "t3code"]);
+        const core = yield* GitCore;
+        const result = yield* core.createWorktree({
+          cwd,
+          branch: initialBranch,
+          newBranch: "t3code/deadbeef",
+          path: path.join(worktrees, "temporary"),
+        });
+        expect(result.worktree.branch).toBe("t3code-deadbeef");
+        const renamed = yield* core.renameBranch({
+          cwd: result.worktree.path,
+          oldBranch: "t3code-deadbeef",
+          newBranch: "generated-name",
+        });
+        expect(renamed.branch).toBe("generated-name");
+        expect(yield* core.branchExists(cwd, "t3code")).toBe(true);
+      }),
+    );
+
     it.effect("allows a local-only worktree base when a remote exists", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
