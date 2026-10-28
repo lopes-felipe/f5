@@ -66,6 +66,33 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       assert.equal(probe.mock.calls.length, 1);
     }).pipe(TestClock.withLive, Effect.provide(makeServerSettingsLayer())),
   );
+  it.effect("keeps an empty location needed to recover a recorded thread checkout", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const location = config.baseDir + "-recovery";
+      const root = customWorktreesDirectory(location, config.worktreesDir);
+      yield* fs.makeDirectory(root, { recursive: true });
+      yield* Effect.addFinalizer(() =>
+        fs.remove(location, { recursive: true }).pipe(Effect.ignore),
+      );
+      const database = new DatabaseSync(config.dbPath);
+      database.exec("CREATE TABLE projection_threads(worktree_path TEXT)");
+      database
+        .prepare("INSERT INTO projection_threads VALUES (?)")
+        .run(NodePath.join(root, "repo", "missing-checkout"));
+      database.close();
+      yield* service.recordWorktreeLocation!(location);
+      yield* service.updateSettings({ enableAssistantStreaming: false });
+      assert.deepEqual((yield* service.getSettings).previousWorktreesDirectories, [location]);
+      const purged = new DatabaseSync(config.dbPath);
+      purged.exec("DELETE FROM projection_threads");
+      purged.close();
+      yield* service.updateSettings({ enableAssistantStreaming: true });
+      assert.deepEqual((yield* service.getSettings).previousWorktreesDirectories, []);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
   it.effect(
     "rejects unsafe worktree locations before persisting and records only used locations",
     () =>

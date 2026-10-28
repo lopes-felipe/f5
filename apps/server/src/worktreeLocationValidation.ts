@@ -3,7 +3,7 @@ import * as Path from "node:path";
 import { homedir } from "node:os";
 import { canonicalWorktreePath } from "./git/worktreePaths.ts";
 import { resolveWorktreesDirectory, customWorktreesDirectory } from "./worktreesDirectoryPaths.ts";
-import { projectRoots } from "./profiles/RepositorySharing.ts";
+import { projectRoots, recordedWorktreePaths } from "./profiles/RepositorySharing.ts";
 import type { ServerConfigShape } from "./config.ts";
 import { pathContains } from "./project/Layers/WorktreeLifecycleCoordinator.ts";
 
@@ -33,6 +33,7 @@ export async function validateWorktreeLocation(setting: string, config: ServerCo
 export async function unusedWorktreeLocation(
   setting: string,
   defaultDir: string,
+  stateDir?: string,
 ): Promise<boolean> {
   const directory = resolveWorktreesDirectory(setting, defaultDir);
   if (!directory) return false;
@@ -47,7 +48,14 @@ export async function unusedWorktreeLocation(
     return true;
   };
   try {
-    return await empty(customWorktreesDirectory(directory, defaultDir), 3);
+    const root = customWorktreesDirectory(directory, defaultDir);
+    if (!(await empty(root, 3))) return false;
+    if (stateDir) {
+      const canonicalRoot = await canonicalWorktreePath(root);
+      for (const recorded of await recordedWorktreePaths(stateDir))
+        if (pathContains(canonicalRoot, await canonicalWorktreePath(recorded))) return false;
+    }
+    return true;
   } catch {
     return false;
   }

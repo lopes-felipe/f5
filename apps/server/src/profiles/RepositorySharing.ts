@@ -63,22 +63,35 @@ export async function canonicalGitCommonDirectory(workspaceRoot: string): Promis
   }
 }
 
-export async function projectRoots(stateDir: string): Promise<string[]> {
+async function profilePaths(stateDir: string, query: string): Promise<string[]> {
   const file = Path.join(stateDir, "state.sqlite");
-  if (!(await FS.stat(file).catch(() => null))?.isFile()) return [];
+  const stat = await FS.stat(file).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!stat?.isFile()) return [];
   const database = process.versions.bun
     ? new (await import("bun:sqlite")).Database(file, { readonly: true })
     : new (await import("node:sqlite")).DatabaseSync(file, { readOnly: true });
   try {
-    return (
-      database
-        .prepare("SELECT workspace_root FROM projection_projects WHERE deleted_at IS NULL")
-        .all() as { workspace_root: string }[]
-    ).map((row) => row.workspace_root);
+    return (database.prepare(query).all() as { path: string }[]).map((row) => row.path);
   } finally {
     database.close();
   }
 }
+
+export const projectRoots = (stateDir: string) =>
+  profilePaths(
+    stateDir,
+    "SELECT workspace_root AS path FROM projection_projects WHERE deleted_at IS NULL",
+  );
+
+/** Archived/deleted threads keep their recorded path until their records are purged. */
+export const recordedWorktreePaths = (stateDir: string) =>
+  profilePaths(
+    stateDir,
+    "SELECT worktree_path AS path FROM projection_threads WHERE worktree_path IS NOT NULL",
+  );
 
 /** Only project roots are read from siblings; no account or conversation data leaves its profile. */
 export async function repositorySharingWarnings(

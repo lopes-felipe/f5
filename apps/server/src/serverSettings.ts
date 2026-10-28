@@ -827,7 +827,7 @@ const makeServerSettings = Effect.gen(function* () {
             current.previousWorktreesDirectories,
             (directory) =>
               Effect.promise(() =>
-                unusedWorktreeLocation(directory, serverConfig.worktreesDir),
+                unusedWorktreeLocation(directory, serverConfig.worktreesDir, serverConfig.stateDir),
               ).pipe(
                 Effect.timeoutOption("500 millis"),
                 Effect.map((unused) => Option.isNone(unused) || !unused.value),
