@@ -1,4 +1,5 @@
 import "../../index.css";
+import { readAppSettingsSnapshot } from "../../appSettings";
 import { DEFAULT_UNIFIED_SETTINGS, ProjectId, type UpstreamOverview, type UpstreamTopicRow } from "@t3tools/contracts";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -25,6 +26,7 @@ const api = vi.hoisted(() => ({
   acceptSuggestions: vi.fn(),
   undoDecisions: vi.fn(),
   run: vi.fn(),
+  retryPortReview: vi.fn(),
 }));
 vi.mock("../../nativeApi", () => ({
   ensureNativeApi: () => ({ upstreamPorts: api, server: { updateSettings: vi.fn() } }),
@@ -32,7 +34,7 @@ vi.mock("../../nativeApi", () => ({
 }));
 // The Start port dialog reads the merged settings.
 vi.mock("../../hooks/useSettings", () => ({
-  useSettings: () => DEFAULT_UNIFIED_SETTINGS,
+  useSettings: () => ({ ...DEFAULT_UNIFIED_SETTINGS, ...readAppSettingsSnapshot() }),
   useUpdateSettings: () => ({ updateSettings: vi.fn() }),
 }));
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
@@ -232,6 +234,25 @@ it("shows the bulk bar for a selection and applies its action to the selected ro
   await vi.waitFor(() =>
     expect(api.decide).toHaveBeenCalledWith({ projectId, topicIds: ["pr-1", "pr-3"], decision: { kind: "watch" } }),
   );
+});
+
+it("shows review errors separately from port outcomes and retries the review", async () => {
+  api.retryPortReview.mockResolvedValue({ revision: "r2" });
+  api.getTopic.mockResolvedValue({
+    revision: "r1", repository: overview.config!.repository, members: [], related: [], history: [],
+    row: { ...ROWS[0]!, links: [{
+      threadId: "port-thread", threadTitle: "Port", epoch: 1, threadStatus: "completed",
+      branch: "port", prNumber: 42, prUrl: "https://github.com/o/f5/pull/42", prState: "open",
+      outcome: { kind: "pr", detail: "https://github.com/o/f5/pull/42" },
+      review: { status: "error", detail: "Provider unavailable", workflowId: "review-1", retryable: true },
+    }] },
+  });
+  await setup({ project: projectId, topic: "pr-1" });
+  await expect.element(page.getByText("Code review failed: Provider unavailable")).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Open review", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Retry review", exact: true }).click();
+  await vi.waitFor(() => expect(api.retryPortReview).toHaveBeenCalledWith({ projectId, threadId: "port-thread" }));
+  await expect.element(page.getByText("Outcome:", { exact: false })).toBeVisible();
 });
 
 it("selects a range with Shift-click", async () => {

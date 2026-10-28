@@ -16,6 +16,7 @@ import {
   type UpstreamLedger,
 } from "@t3tools/shared/upstreamPorts";
 import { Deferred, Effect, Layer } from "effect";
+import { TestClock } from "effect/testing";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { TextGenerationError } from "../git/Errors.ts";
@@ -23,6 +24,8 @@ import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { UpstreamGitHubError } from "./github.ts";
 import { makeUpstreamPortsService, type UpstreamPortsDeps } from "./service.ts";
 import { makeUpstreamStore } from "./store.ts";
+import { REVIEW_SLOTS, reviewThread } from "./testing/reviewFixtures.ts";
+import { SCHEDULER_TICK_MS } from "./scheduler.ts";
 import {
   FakeGitHub,
   FakeGitRepo,
@@ -65,6 +68,7 @@ const setup = (
     yield* sql`DELETE FROM upstream_port_requests`;
     yield* sql`DELETE FROM upstream_port_groups`;
     yield* sql`DELETE FROM upstream_port_links`;
+    yield* sql`DELETE FROM upstream_port_reviews`;
     const repo = new FakeGitRepo();
     repo.remotes.set("upstream", UPSTREAM_REPOSITORY);
     repo.remotes.set("origin", "https://github.com/o/f5.git");
@@ -168,6 +172,136 @@ const triageAll =
   };
 
 layer("upstream ports service", (it) => {
+  it.effect("advances and retries reviews with the schedule off and without the writer claim", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup();
+      const first = yield* fixture.make();
+      yield* first.decide({
+        projectId: PROJECT_ID,
+        topicIds: ["pr-1"],
+        decision: { kind: "port" },
+      });
+      const result = yield* first.startPort({
+        projectId: PROJECT_ID,
+        topicIds: ["pr-1"],
+        grouping: "together",
+        review: REVIEW_SLOTS,
+        modelSelection: { instanceId: "claudeAgent", model: "claude-test" } as never,
+        runtimeMode: "full-access",
+        clientRequestId: "review-background",
+      });
+      yield* first.testing.awaitIdle;
+      const thread = reviewThread({ id: result.groups[0]!.threadId, projectId: PROJECT_ID });
+      fixture.host.threads = [
+        { ...thread, latestTurn: { ...thread.latestTurn!, state: "running" } },
+      ];
+      fixture.gh.available = false;
+      const second = yield* fixture.make({
+        profileId: "p2",
+        stateDir: "/state/p2",
+        hostname: "host",
+      });
+      assert.isFalse((yield* second.getOverview(PROJECT_ID)).writer.managedByThisProfile);
+      assert.strictEqual((yield* second.getOverview(PROJECT_ID)).schedule.mode, "off");
+      yield* second.start;
+      fixture.host.threads = [
+        {
+          ...thread,
+          messages: thread.messages.map((m) => ({
+            ...m,
+            text: "UPSTREAM-OUTCOME: blocked dependency",
+          })),
+        },
+      ];
+      yield* TestClock.adjust(SCHEDULER_TICK_MS);
+      const store = makeUpstreamStore(yield* SqlClient.SqlClient);
+      for (
+        let count = 0;
+        count < 100 && (yield* store.getPortReviewByThread(thread.id))?.status !== "skipped";
+        count++
+      )
+        yield* Effect.yieldNow;
+      assert.strictEqual((yield* store.getPortReviewByThread(thread.id))?.status, "skipped");
+      fixture.host.threads = [thread];
+      const retried = yield* second.retryPortReview({ projectId: PROJECT_ID, threadId: thread.id });
+      assert.strictEqual(retried.revision, (yield* second.getOverview(PROJECT_ID)).revision);
+      assert.lengthOf(fixture.host.reviews, 1);
+    }),
+  );
+  it.effect(
+    "admits one review per group, validates all slots before admission, and leaves review-less ports alone",
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* setup({ count: 1 });
+        const service = yield* fixture.make();
+        yield* service.run({ projectId: PROJECT_ID, kind: "upstream", triage: "rules-only" });
+        yield* service.testing.awaitIdle;
+        const ids = (yield* service.listTopics({
+          projectId: PROJECT_ID,
+          list: "inbox",
+        })).topics.map((row) => row.topic.id);
+        yield* service.decide({ projectId: PROJECT_ID, topicIds: ids, decision: { kind: "port" } });
+        const input = {
+          projectId: PROJECT_ID,
+          topicIds: ids,
+          grouping: "together" as const,
+          modelSelection: { instanceId: "claudeAgent", model: "claude-test" } as never,
+          runtimeMode: "full-access" as const,
+          clientRequestId: "review-request-1",
+        };
+        for (const key of ["reviewerA", "reviewerB", "consolidation"] as const) {
+          const error = yield* service
+            .startPort({
+              ...input,
+              review: { ...REVIEW_SLOTS, [key]: { provider: "grok", model: "grok-code" } },
+            })
+            .pipe(Effect.flip);
+          assert.strictEqual(error.code, "invalid");
+          assert.include(error.message, key);
+        }
+        const store = makeUpstreamStore(yield* SqlClient.SqlClient);
+        assert.lengthOf(yield* store.listGroups(PROJECT_ID, input.clientRequestId), 0);
+        fixture.host.unavailableProviders.add("codex");
+        for (const key of ["reviewerA", "reviewerB", "consolidation"] as const) {
+          const review = {
+            reviewerA: REVIEW_SLOTS.reviewerB,
+            reviewerB: REVIEW_SLOTS.reviewerB,
+            consolidation: REVIEW_SLOTS.reviewerB,
+            [key]: REVIEW_SLOTS.reviewerA,
+          };
+          const error = yield* service.startPort({ ...input, review }).pipe(Effect.flip);
+          assert.strictEqual(error.code, "invalid");
+          assert.include(error.message, key);
+          assert.include(error.message, "Provider unavailable");
+        }
+        assert.lengthOf(yield* store.listGroups(PROJECT_ID, input.clientRequestId), 0);
+        fixture.host.unavailableProviders.clear();
+        const result = yield* service.startPort({ ...input, review: REVIEW_SLOTS });
+        yield* service.testing.awaitIdle;
+        assert.lengthOf(result.groups, 1);
+        const row = yield* store.getPortReviewByThread(result.groups[0]!.threadId);
+        assert.deepStrictEqual(row?.reviewers, REVIEW_SLOTS);
+        assert.strictEqual(row?.status, "waiting");
+        assert.lengthOf(
+          (yield* store.listLinks(PROJECT_ID)).filter((link) => link.threadId === row?.threadId),
+          ids.length,
+        );
+        yield* service.startPort({ ...input, review: REVIEW_SLOTS });
+        assert.lengthOf(yield* store.listActivePortReviews, 1);
+        const plain = yield* service.startPort({
+          ...input,
+          clientRequestId: "plain-request-1",
+          review: null,
+        });
+        fixture.host.threads = [
+          reviewThread({ id: plain.groups[0]!.threadId, projectId: PROJECT_ID }),
+        ];
+        yield* service.testing.reconcilePortReviews;
+        assert.isNull(yield* store.getPortReviewByThread(plain.groups[0]!.threadId));
+        assert.lengthOf(fixture.host.reviews, 0);
+        assert.isTrue(fixture.host.submissionSources.every((source) => source === "human"));
+      }),
+  );
   it.effect("records decisions locally with no network and bumps epochs on reopen", () =>
     Effect.gen(function* () {
       const fixture = yield* setup();
@@ -901,6 +1035,48 @@ layer("upstream ports service", (it) => {
       }),
   );
 
+  it.effect(
+    "publishes a successful unlink even if review cancellation is temporarily unavailable",
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* setup({ count: 1 });
+        const service = yield* fixture.make();
+        yield* service.decide({
+          projectId: PROJECT_ID,
+          topicIds: ["pr-1"],
+          decision: { kind: "port" },
+        });
+        const result = yield* service.startPort({
+          projectId: PROJECT_ID,
+          topicIds: ["pr-1"],
+          grouping: "together",
+          modelSelection: { instanceId: "claudeAgent", model: "claude-test" } as never,
+          runtimeMode: "full-access",
+          clientRequestId: "unlink-review-failure",
+          review: REVIEW_SLOTS,
+        });
+        yield* service.testing.awaitIdle;
+        const threadId = result.groups[0]!.threadId;
+        fixture.host.threads = [reviewThread({ id: threadId, projectId: PROJECT_ID })];
+        const store = makeUpstreamStore(yield* SqlClient.SqlClient);
+        const row = (yield* store.getPortReviewByThread(threadId))!;
+        const group = (yield* store.listGroups(PROJECT_ID, row.clientRequestId))[0]!;
+        yield* store.updatePortReview({
+          ...row,
+          status: "applying",
+          applyCommandJson: JSON.stringify(group.command),
+        });
+        fixture.host.cancelError = new Error("Temporary queue outage");
+        const before = fixture.host.published.length;
+        yield* service.unlinkPort({ projectId: PROJECT_ID, threadId, topicId: "pr-1" });
+        assert.strictEqual((yield* store.listLinks(PROJECT_ID))[0]!.state, "unlinked");
+        assert.isAbove(fixture.host.published.length, before);
+        assert.strictEqual(fixture.host.cancellations.length, 1);
+        fixture.host.cancelError = null;
+        yield* service.retryPortReview({ projectId: PROJECT_ID, threadId }).pipe(Effect.flip);
+      }),
+  );
+
   it.effect("reconciles pending port groups and interrupted scheduled runs at startup", () =>
     Effect.gen(function* () {
       const fixture = yield* setup({ count: 1 });
@@ -960,6 +1136,7 @@ layer("upstream ports service", (it) => {
       fixture.host.settings = {
         ...fixture.host.settings,
         upstreamPorts: {
+          portReview: fixture.host.settings.upstreamPorts.portReview,
           schedule: { mode: "daily", hour: 0, weekday: 1 },
           triageModelSelection: null,
           portModelSelection: null,

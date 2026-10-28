@@ -47,6 +47,7 @@ import { UpstreamConfigEmptyState } from "./UpstreamConfigEmptyState";
 import { UpstreamHeader } from "./UpstreamHeader";
 import { UpstreamListEmpty } from "./UpstreamListEmpty";
 import { UpstreamTopicDetail } from "./UpstreamTopicDetail";
+import { useSaveUpstreamSettings } from "./useSaveUpstreamSettings";
 import {
   UpstreamTopicList,
   UpstreamTopicListSkeleton,
@@ -144,6 +145,7 @@ export function UpstreamPage(props: {
   const projectsQuery = useQuery(upstreamProjectsQueryOptions());
   const projects = projectsQuery.data?.projects ?? [];
   const projectId = props.search.project ?? projects[0]?.projectId ?? null;
+  const { save: saveUpstreamSettings } = useSaveUpstreamSettings(projectId);
   const list = props.search.list ?? "inbox";
   const sort = props.search.sort ?? null;
   // Keyed by value: the router hands back new arrays for unchanged filters.
@@ -1070,6 +1072,8 @@ export function UpstreamPage(props: {
         note={portRequest?.note ?? null}
         providers={providers}
         savedModel={projectSettings.data?.settings.upstreamPorts?.portModelSelection ?? null}
+        savedReview={projectSettings.data?.settings.upstreamPorts?.portReview}
+        reviewSettingsLoaded={Boolean(projectSettings.data && serverConfig.data)}
         defaultRuntimeMode={defaultRuntimeMode}
         overview={overview}
         busy={busy}
@@ -1079,13 +1083,19 @@ export function UpstreamPage(props: {
           runNow("upstream", runTriage);
         }}
         onStart={(input) => {
+          const { reviewPreference, ...request } = input;
           const topicIds = portRequest?.ids ?? [];
           void withBusy("Could not start the port", async () => {
             const result = await ensureNativeApi().upstreamPorts.startPort({
               projectId,
               topicIds: topicIds as never,
-              ...input,
+              ...request,
             });
+            try {
+              await saveUpstreamSettings({ portReview: reviewPreference });
+            } catch (error) {
+              toastManager.add({ type: "warning", title: "Port started, but review preferences could not be saved", description: String(error) });
+            }
             setPortRequest(null);
             const rejected = result.groups.filter((group) => group.status === "rejected");
             const pendingGroups = result.groups.filter((group) => group.status === "pending");

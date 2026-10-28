@@ -109,6 +109,7 @@ import {
   UpstreamStartPortInput,
   UpstreamUndoDecisionsInput,
   UpstreamUnlinkPortInput,
+  UpstreamRetryPortReviewInput,
 } from "./upstreamPorts";
 import { AGENTS_WS_METHODS, AgentsDismissInput, AgentsGetSnapshotInput } from "./backgroundWork";
 import { ProjectGetCheckedInConfigInput } from "./checkedInProjectFile";
@@ -815,6 +816,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.run, UpstreamRunInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.startPort, UpstreamStartPortInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.unlinkPort, UpstreamUnlinkPortInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.retryPortReview, UpstreamRetryPortReviewInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.getPortPrompt, UpstreamGetPortPromptInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.resolvePublication, UpstreamResolvePublicationInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.addRemote, UpstreamPortsProjectInput),

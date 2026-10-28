@@ -25,6 +25,7 @@ import {
   moveFocus,
   portableTopicIds,
   portLimitError,
+  portReviewLabel,
   predictedState,
   preselectedSkipReason,
   promptLimitError,
@@ -49,6 +50,18 @@ import {
   withoutFilters,
   withoutTopics,
 } from "./upstreamPage.logic";
+
+it("labels each review stage independently of the port outcome", () => {
+  expect(portReviewLabel(null)).toBeNull();
+  for (const [status, label] of [
+    ["waiting", "Code review: waits for the pull request"],
+    ["reviewing", "Code review: in progress"],
+    ["applying", "Code review: applying feedback: paused"],
+    ["completed", "Code review: feedback applied: paused"],
+    ["skipped", "Code review: skipped (paused)"],
+    ["error", "Code review failed: paused"],
+  ] as const) expect(portReviewLabel({ status, detail: "paused", workflowId: null, retryable: false })).toBe(label);
+});
 
 const link = (outcome: { kind: "pr" | "equivalent" | "not-applicable" | "blocked"; detail: string } | null, prNumber: number | null = null) =>
   ({
@@ -298,6 +311,7 @@ describe("upstream page logic", () => {
   it("keeps the project's other overrides when saving upstream settings", () => {
     const triage = { instanceId: "claude", model: "claude-opus-5-5" } as never;
     const current = {
+      portReview: { enabled: true, reviewerA: null, reviewerB: null, consolidation: null },
       schedule: { mode: "daily" as const, hour: 7, weekday: 1 },
       triageModelSelection: triage,
       portModelSelection: null,

@@ -6,6 +6,8 @@
  * @module upstreamPorts/store
  */
 import type {
+  UpstreamPortReviewRequest,
+  UpstreamPortReviewStatus,
   UpstreamOccurrenceStatus,
   UpstreamPortGroupStatus,
   UpstreamPublicationPauseReason,
@@ -97,6 +99,30 @@ export interface PortLinkRecord {
   readonly state: "active" | "unlinked";
   /** When the port request that created the link was accepted. */
   readonly startedAt?: string | null;
+}
+
+export interface PortReviewSummaryRecord {
+  readonly threadId: string;
+  readonly status: UpstreamPortReviewStatus | "apply_pending";
+  readonly reviewWorkflowId: string | null;
+  readonly detail: string | null;
+}
+
+export interface PortReviewRecord extends PortReviewSummaryRecord {
+  readonly projectId: string;
+  readonly clientRequestId: string;
+  readonly groupIndex: number;
+  readonly reviewers: UpstreamPortReviewRequest;
+  readonly errorStage: "review-setup" | "review" | "apply-feedback" | null;
+  readonly prUrl: string | null;
+  readonly reviewedHeadSha: string | null;
+  readonly finalHeadSha: string | null;
+  readonly reviewInputJson: string | null;
+  readonly applyCommandJson: string | null;
+  readonly applyTurnId: string | null;
+  readonly submitFailures: number;
+  readonly attempt: number;
+  readonly updatedAt: string;
 }
 
 const parseJson = <A>(value: string | null, fallback: A): A => {
@@ -291,6 +317,11 @@ export interface NewOp {
 }
 
 export interface NewPortRequest {
+  readonly reviews: ReadonlyArray<{
+    readonly groupIndex: number;
+    readonly threadId: string;
+    readonly reviewers: UpstreamPortReviewRequest;
+  }>;
   readonly projectId: string;
   readonly clientRequestId: string;
   readonly argsHash: string;
@@ -307,6 +338,17 @@ export interface NewPortRequest {
 }
 
 export interface UpstreamStore {
+  readonly listActivePortReviews: Effect.Effect<
+    ReadonlyArray<PortReviewRecord>,
+    UpstreamStoreError
+  >;
+  readonly listPortReviewsForThreads: (
+    threadIds: ReadonlyArray<string>,
+  ) => Effect.Effect<ReadonlyArray<PortReviewSummaryRecord>, UpstreamStoreError>;
+  readonly getPortReviewByThread: (
+    threadId: string,
+  ) => Effect.Effect<PortReviewRecord | null, UpstreamStoreError>;
+  readonly updatePortReview: (record: PortReviewRecord) => Effect.Effect<void, UpstreamStoreError>;
   readonly listOpenOps: (
     projectId: string,
   ) => Effect.Effect<ReadonlyArray<OpRecord>, UpstreamStoreError>;
@@ -397,6 +439,49 @@ export interface UpstreamStore {
 export function makeUpstreamStore(sql: SqlClient.SqlClient): UpstreamStore {
   const fail = (operation: string) => (cause: unknown) =>
     new UpstreamStoreError({ operation, cause });
+
+  const reviewColumns = sql`project_id AS "projectId", client_request_id AS "clientRequestId",
+    group_index AS "groupIndex", port_thread_id AS "threadId", reviewers_json AS "reviewersJson",
+    status, error_stage AS "errorStage", detail, pr_url AS "prUrl",
+    reviewed_head_sha AS "reviewedHeadSha", final_head_sha AS "finalHeadSha",
+    review_workflow_id AS "reviewWorkflowId", review_input_json AS "reviewInputJson",
+    apply_command_json AS "applyCommandJson", apply_turn_id AS "applyTurnId",
+    submit_failures AS "submitFailures", attempt, updated_at AS "updatedAt"`;
+  type ReviewRow = Omit<PortReviewRecord, "reviewers"> & { readonly reviewersJson: string };
+  const toReview = ({ reviewersJson, ...row }: ReviewRow): PortReviewRecord => ({
+    ...row,
+    reviewers: JSON.parse(reviewersJson) as UpstreamPortReviewRequest,
+  });
+  const listActivePortReviews = sql<ReviewRow>`SELECT ${reviewColumns} FROM upstream_port_reviews
+    WHERE status IN ('waiting','reviewing','apply_pending','applying')`.pipe(
+    Effect.map((rows) => rows.map(toReview)),
+    Effect.mapError(fail("listActivePortReviews")),
+  );
+  const listPortReviewsForThreads: UpstreamStore["listPortReviewsForThreads"] = (ids) =>
+    ids.length === 0
+      ? Effect.succeed([])
+      : sql<PortReviewSummaryRecord>`SELECT
+      port_thread_id AS "threadId", status, review_workflow_id AS "reviewWorkflowId", detail
+      FROM upstream_port_reviews WHERE ${sql.in("port_thread_id", ids)}`.pipe(
+          Effect.mapError(fail("listPortReviewsForThreads")),
+        );
+  const getPortReviewByThread: UpstreamStore["getPortReviewByThread"] = (id) =>
+    sql<ReviewRow>`SELECT ${reviewColumns} FROM upstream_port_reviews WHERE port_thread_id = ${id}`.pipe(
+      Effect.map((rows) => (rows[0] ? toReview(rows[0]) : null)),
+      Effect.mapError(fail("getPortReviewByThread")),
+    );
+  const updatePortReview: UpstreamStore["updatePortReview"] = (row) =>
+    sql`UPDATE upstream_port_reviews SET status = ${row.status}, error_stage = ${row.errorStage},
+      detail = ${row.detail}, pr_url = ${row.prUrl}, reviewed_head_sha = ${row.reviewedHeadSha},
+      final_head_sha = ${row.finalHeadSha}, review_workflow_id = ${row.reviewWorkflowId},
+      review_input_json = ${row.reviewInputJson}, apply_command_json = ${row.applyCommandJson},
+      apply_turn_id = ${row.applyTurnId}, submit_failures = ${row.submitFailures},
+      attempt = ${row.attempt}, updated_at = ${row.updatedAt}
+      WHERE project_id = ${row.projectId} AND client_request_id = ${row.clientRequestId}
+        AND group_index = ${row.groupIndex}`.pipe(
+      Effect.asVoid,
+      Effect.mapError(fail("updatePortReview")),
+    );
 
   const listOpenOps: UpstreamStore["listOpenOps"] = (projectId) =>
     sql<OpRow>`SELECT op_id, project_id, seq, payload_json, state, created_at
@@ -613,6 +698,11 @@ export function makeUpstreamStore(sql: SqlClient.SqlClient): UpstreamStore {
                 thread_id, client_request_id, group_index, state)
               VALUES (${request.projectId}, ${link.topicId}, ${link.epoch}, ${link.threadId},
                 ${request.clientRequestId}, ${link.groupIndex}, 'active')`;
+          for (const review of request.reviews)
+            yield* sql`INSERT INTO upstream_port_reviews
+              (project_id, client_request_id, group_index, port_thread_id, reviewers_json, status, updated_at)
+              VALUES (${request.projectId}, ${request.clientRequestId}, ${review.groupIndex},
+                ${review.threadId}, ${JSON.stringify(review.reviewers)}, 'waiting', ${request.at})`;
           yield* sql`INSERT INTO upstream_ledger_publication (project_id, links_version)
             VALUES (${request.projectId}, 1)
             ON CONFLICT (project_id) DO UPDATE SET links_version = links_version + 1`;
@@ -682,6 +772,10 @@ export function makeUpstreamStore(sql: SqlClient.SqlClient): UpstreamStore {
       .pipe(Effect.mapError(fail("setLinkState")));
 
   return {
+    listActivePortReviews,
+    listPortReviewsForThreads,
+    getPortReviewByThread,
+    updatePortReview,
     listOpenOps,
     maxSeq,
     recordOps,

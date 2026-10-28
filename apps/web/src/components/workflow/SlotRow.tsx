@@ -36,6 +36,7 @@ function MenuGroupLabel(props: { children: ReactNode }) {
 }
 
 export function WorkflowReasoningPicker(props: {
+  disabled?: boolean | undefined;
   provider: ProviderKind;
   model: string;
   capabilities?: ModelCapabilities | null | undefined;
@@ -126,6 +127,7 @@ export function WorkflowReasoningPicker(props: {
       <MenuTrigger
         render={
           <Button
+            disabled={props.disabled}
             type="button"
             size="sm"
             variant="ghost"
@@ -184,6 +186,7 @@ export function WorkflowReasoningPicker(props: {
 }
 
 export function SlotRow(props: {
+  disabled?: boolean | undefined;
   label: string;
   provider: ProviderKind;
   model: ModelSlug;
@@ -197,6 +200,8 @@ export function SlotRow(props: {
   return (
     <div
       data-slot="workflow-slot-row"
+      role="group"
+      aria-label={props.label}
       className={cn("flex min-w-0 items-center gap-3", props.className)}
     >
       <label className="w-24 shrink-0 truncate text-ui text-muted-foreground" title={props.label}>
@@ -204,6 +209,8 @@ export function SlotRow(props: {
       </label>
       <div className="flex h-9 min-w-0 flex-1 items-center gap-0.5 rounded-lg border border-input bg-background px-1 transition-colors focus-within:border-ring/60">
         <ProviderModelPicker
+          providers={props.providers}
+          disabled={props.disabled ?? false}
           provider={props.provider}
           model={props.model}
           lockedProvider={null}
@@ -213,6 +220,7 @@ export function SlotRow(props: {
           triggerClassName="flex-1 max-w-none sm:max-w-none"
         />
         <WorkflowReasoningPicker
+          disabled={props.disabled}
           provider={props.provider}
           model={props.model}
           modelOptions={props.modelOptions}

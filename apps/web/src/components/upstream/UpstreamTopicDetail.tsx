@@ -5,14 +5,16 @@ import type {
   UpstreamPortLinkSummary,
   UpstreamTopicState,
 } from "@t3tools/contracts";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { CheckIcon, CopyIcon, HelpCircleIcon, SplitIcon, TriangleAlertIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { formatRelativeTimeLabel } from "../../lib/relativeTime";
-import { upstreamTopicQueryOptions } from "../../lib/upstreamPortsReactQuery";
+import { upstreamTopicQueryOptions, invalidateUpstreamPorts } from "../../lib/upstreamPortsReactQuery";
+import { ensureNativeApi } from "../../nativeApi";
+import { toastManager } from "../ui/toast";
 import { Alert, AlertDescription } from "../ui/alert";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -31,6 +33,7 @@ import {
   upstreamCommitUrl,
   upstreamPrUrl,
   watchFromBlocked,
+  portReviewLabel,
 } from "./upstreamPage.logic";
 
 export function UpstreamTopicDetailSkeleton() {
@@ -65,11 +68,13 @@ export function UpstreamTopicDetail(props: {
   readonly onUnlink: (link: UpstreamPortLinkSummary) => void;
   readonly onOpenTopic: (topicId: string, state: UpstreamTopicState) => void;
 }) {
+  const queryClient = useQueryClient();
   const navigate = useNavigate();
   const query = useQuery(upstreamTopicQueryOptions(props.projectId, props.topicId));
   const { copyToClipboard, isCopied } = useCopyToClipboard();
   const [scope, setScope] = useState("");
   const [scopeOpen, setScopeOpen] = useState(false);
+  const [retryingReviews, setRetryingReviews] = useState<ReadonlySet<string>>(new Set());
   const detail = query.data;
   useEffect(() => {
     setScope(detail?.row.topic.scope ?? "");
@@ -315,6 +320,24 @@ export function UpstreamTopicDetail(props: {
                     Outcome: <span className="font-medium">{link.outcome.kind}</span> {link.outcome.detail}
                   </p>
                 )}
+                {link.review && <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span>{portReviewLabel(link.review)}</span>
+                  {link.review.workflowId && <Button size="xs" variant="link" onClick={() =>
+                    void navigate({ to: "/code-review/$workflowId", params: { workflowId: link.review!.workflowId! } })
+                  }>Open review</Button>}
+                  {link.review.retryable && <Button size="xs" variant="outline" disabled={props.busy || retryingReviews.has(link.threadId)}
+                    onClick={() => {
+                      setRetryingReviews((current) => new Set(current).add(link.threadId));
+                      void ensureNativeApi().upstreamPorts.retryPortReview({ projectId: props.projectId, threadId: link.threadId })
+                        .then(() => invalidateUpstreamPorts(queryClient))
+                        .catch((error) => toastManager.add({ type: "error", title: "Could not retry review", description: String(error) }))
+                        .finally(() => setRetryingReviews((current) => {
+                          const next = new Set(current);
+                          next.delete(link.threadId);
+                          return next;
+                        }));
+                    }}>Retry review</Button>}
+                </div>}
                 <div className="flex flex-wrap gap-2">
                   <Button size="xs" variant="outline" disabled={disabled} onClick={() => props.onDecide(equivalentFromLink(link))}>
                     Record equivalent

@@ -30,7 +30,9 @@ with a prompt that carries the topic's commits and the trailer that completes it
    `Shift+J`/`Shift+K` from the keyboard). The bar above the list shows the actions for the
    current list.
 6. Open **Ready**, select topics and press `Shift+P` (**Start port**), or click **Start port for
-   all**. Each thread opens in its own worktree on `f5/upstream-<topic>`.
+   all**. Each thread opens in its own worktree on `f5/upstream-<topic>`. **Code review after port**
+   is checked initially. Choose **Reviewer A**, **Reviewer B** and **Consolidation** models,
+   including each model's options, or clear the checkbox to start with no automated review.
 7. Merge the ledger pull request F5 opens (**Track upstream t3code changes (<date>)**) whenever
    convenient. It only touches `upstream/` and needs no line review.
 
@@ -77,6 +79,28 @@ with a prompt that carries the topic's commits and the trailer that completes it
   On a Ready topic, edit the note and click **Save scope**.
 - **Copy port prompt** puts the same prompt on the clipboard without creating a link, for a
   Feature workflow or any thread. The trailer still completes the topic once merged.
+
+## Good to know
+
+- Automated review waits for a `pr` outcome, runs two read-only reviewers and consolidates their
+  findings in a standard Code Review workflow, then queues one revision on the port thread.
+  The revision uses that thread's current model, access mode and interaction mode. Switch
+  back from plan mode before revision if you want it to apply code changes. It pushes fix-up commits to the
+  same branch on `origin`, and repeats the port outcome. This adds three review turns and one
+  revision per thread, including a grouped port.
+- Review is skipped for non-`pr` outcomes, unlinking, archived or deleted port threads, and
+  merged or closed PRs. A queued revision is canceled when skipped; a revision that already
+  started is left running. If the PR head changes before revision, **Retry review** reviews
+  the new head. Changes to the base branch alone do not require another review.
+- **Open review** opens the reviewers and consolidated report. Retry failed reviewer stages
+  inside that workflow. **Retry review** on the port handles setup or revision failures,
+  picks up a PR produced by a later turn after an earlier blocked outcome, and can revive a
+  skipped review after restoring the port thread. A completed report can be reused; an
+  unfinished archived workflow starts a fresh review. Retry keeps tracking any revision
+  that already started rather than submitting its feedback again.
+- The checkbox state and all three model choices are remembered after each start.
+  **Copy port prompt** never triggers automated review. Earlier ports and ledger PRs are
+  unaffected. Review completion never marks a topic Done: merged trailers still decide that.
 
 All shortcuts are listed in [Keybindings](../../KEYBINDINGS.md#upstream-page).
 

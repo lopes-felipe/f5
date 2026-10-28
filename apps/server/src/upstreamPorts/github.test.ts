@@ -36,6 +36,28 @@ function harness(
 
 const pr = { number: 7, html_url: "https://github.com/me/f5/pull/7", state: "open" };
 
+it.effect("maps the PR head repository, branch and SHA and the base ref", () =>
+  Effect.gen(function* () {
+    const { github } = harness(() => ({
+      status: 200,
+      body: {
+        ...pr,
+        head: { repo: { full_name: "me/f5" }, ref: "port", sha: "abc" },
+        base: { ref: "main" },
+      },
+    }));
+    assert.deepStrictEqual(yield* github.findPullRequest({ cwd: "/repo", repo: fork, number: 7 }), {
+      number: 7,
+      url: pr.html_url,
+      state: "open",
+      headRepoFullName: "me/f5",
+      headRef: "port",
+      headSha: "abc",
+      baseRef: "main",
+    });
+  }),
+);
+
 it.effect("finds and opens the ledger PR on the named repository, not the cwd's remotes", () =>
   Effect.gen(function* () {
     const { github, requests } = harness((request) =>

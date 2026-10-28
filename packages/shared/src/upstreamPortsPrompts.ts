@@ -253,11 +253,37 @@ export function buildPortPrompt(input: PortPromptInput): string {
     "   UPSTREAM-OUTCOME: equivalent <path:line>[, <path:line>...]",
     "   If it cannot apply here, end with: UPSTREAM-OUTCOME: not-applicable <one sentence>",
     "2. Otherwise implement it completely with tests, following the repository instructions (AGENTS.md), and run the required checks.",
+    portCommitSteps({
+      trailers,
+      ledgerDir: input.ledgerDir,
+      base: input.base,
+      mode: { kind: "open" },
+    }),
+  ].join("\n");
+}
+
+export function portCommitSteps(input: {
+  readonly trailers: ReadonlyArray<string>;
+  readonly ledgerDir: string;
+  readonly base: string;
+  readonly mode: { readonly kind: "open" } | { readonly kind: "update"; readonly prUrl: string };
+}): string {
+  return [
     `3. Commit on this branch. Every commit message ends with one trailer line per topic, exactly as listed below. Never edit files under ${input.ledgerDir}/.`,
-    ...trailers.map((line) => `   ${line}`),
-    `4. Push and open a pull request against ${input.base}. The PR description also ends with the same trailer lines.`,
-    "5. End with exactly: UPSTREAM-OUTCOME: pr <url>",
-    "   If you cannot finish, end with: UPSTREAM-OUTCOME: blocked <reason>",
+    ...input.trailers.map((line) => `   ${line}`),
+    ...(input.mode.kind === "open"
+      ? [
+          `4. Push and open a pull request against ${input.base}. The PR description also ends with the same trailer lines.`,
+          "5. End with exactly: UPSTREAM-OUTCOME: pr <url>",
+          "   If you cannot finish, end with: UPSTREAM-OUTCOME: blocked <reason>",
+        ]
+      : [
+          `4. Push to origin on this same branch so ${input.mode.prUrl} updates. Do not force-push, and do not open a new PR. Keep the exact trailer lines in the PR description.`,
+          "5. Check the PR state before changing anything. If it is merged or closed, change nothing and end with: UPSTREAM-OUTCOME: blocked pull request is <state>",
+          "   Otherwise, even when nothing changed, end with exactly:",
+          `   UPSTREAM-OUTCOME: pr ${input.mode.prUrl}`,
+          "   If you cannot finish, end with: UPSTREAM-OUTCOME: blocked <reason>",
+        ]),
   ].join("\n");
 }
 

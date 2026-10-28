@@ -46,28 +46,10 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../ui/dialog";
-import { normalizeWorkflowSlotModelOptions } from "./WorkflowCreateDialog";
+import { normalizeWorkflowSlotModelOptions, getSingleProviderModelOptions } from "./workflowSlots";
 import { SlotRow } from "./SlotRow";
 import { WorkflowOptionCheckbox, WorkflowOptionField, WorkflowOptions } from "./WorkflowOptions";
 import { RUNTIME_MODE_PRESENTATION } from "../chat/runtimeModePresentation";
-
-function getSingleProviderModelOptions(
-  provider: ProviderKind,
-  modelOptions: ProviderModelOptions | null | undefined,
-): ProviderModelOptions | undefined {
-  switch (provider) {
-    case "codex":
-      return modelOptions?.codex ? { codex: modelOptions.codex } : undefined;
-    case "claudeAgent":
-      return modelOptions?.claudeAgent ? { claudeAgent: modelOptions.claudeAgent } : undefined;
-    case "cursor":
-      return modelOptions?.cursor ? { cursor: modelOptions.cursor } : undefined;
-    case "opencode":
-      return modelOptions?.opencode ? { opencode: modelOptions.opencode } : undefined;
-    case "grok":
-      return undefined;
-  }
-}
 
 function resolveImplementationDefaults(workflow: PlanningWorkflow) {
   const slotProvider = workflow.merge.mergeSlot.provider;

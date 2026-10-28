@@ -7,6 +7,8 @@ import {
   type RuntimeMode,
   type ServerProvider,
   type UpstreamOverview,
+  type UpstreamPortReviewSettings,
+  type UpstreamPortReviewRequest,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
@@ -54,6 +56,9 @@ import {
 } from "../ui/select";
 import { Textarea } from "../ui/textarea";
 import { portLimitError } from "./upstreamPage.logic";
+import { getCustomModelOptionsByProvider, getProviderDispatchModelsByProvider } from "../ChatView.logic";
+import { makeWorkflowSlotBuilder } from "../workflow/workflowSlots";
+import { PortReviewOptions, portReviewDefaults } from "./PortReviewOptions";
 
 export function DeclineDialog(props: {
   readonly open: boolean;
@@ -227,6 +232,8 @@ export const selectionKey = (selection: ModelSelection | null | undefined) =>
   selection ? `${selection.instanceId}::${selection.model}` : "";
 
 export function StartPortDialog(props: {
+  readonly savedReview?: UpstreamPortReviewSettings | undefined;
+  readonly reviewSettingsLoaded?: boolean;
   readonly open: boolean;
   readonly projectId: ProjectId;
   readonly topicIds: ReadonlyArray<string>;
@@ -245,11 +252,18 @@ export function StartPortDialog(props: {
     modelSelection: ModelSelection;
     runtimeMode: RuntimeMode;
     clientRequestId: string;
+    review: UpstreamPortReviewRequest | null;
+    reviewPreference: UpstreamPortReviewSettings;
   }) => void;
 }) {
   const settings = useSettings(undefined, props.projectId);
   const project = useStore((s) => s.projects.find((p) => p.id === props.projectId));
   const providers = projectProviderSnapshots(props.providers, settings, props.projectId);
+  const reviewModels = getCustomModelOptionsByProvider(settings, providers);
+  const [reviewOptions, setReviewOptions] = useState(() => portReviewDefaults(props.savedReview, reviewModels, providers));
+  const [lockedReview, setLockedReview] = useState<{
+    review: UpstreamPortReviewRequest | null; reviewPreference: UpstreamPortReviewSettings;
+  } | null>(null);
   const isReady = (selection: ModelSelection) =>
     providers.some((p) => p.instanceId === selection.instanceId && isReadyProvider(p));
   const defaultModel =
@@ -263,6 +277,7 @@ export function StartPortDialog(props: {
   // first submit the choices are locked, so a retry repeats the same request.
   const [clientRequestId, setClientRequestId] = useState(() => randomUUID());
   const [submitted, setSubmitted] = useState(false);
+  const [reviewHydrated, setReviewHydrated] = useState(false);
   // Reset only when the dialog opens: parent re-renders pass new `providers` arrays.
   const [wasOpen, setWasOpen] = useState(false);
   if (props.open !== wasOpen) {
@@ -273,7 +288,16 @@ export function StartPortDialog(props: {
       setRuntimeMode(props.defaultRuntimeMode);
       setClientRequestId(randomUUID());
       setSubmitted(false);
+      setReviewHydrated(false);
+      setReviewOptions(portReviewDefaults(props.savedReview, reviewModels, providers));
+      setLockedReview(null);
     }
+  }
+  // Hydrate once after settings and providers arrive; query refreshes must not
+  // overwrite edits or the frozen request used by Retry.
+  if (props.open && !submitted && !reviewHydrated && props.reviewSettingsLoaded !== false) {
+    setReviewOptions(portReviewDefaults(props.savedReview, reviewModels, providers));
+    setReviewHydrated(true);
   }
   // Providers can arrive after opening; replace a choice that cannot run without overriding the user's.
   if (
@@ -291,7 +315,7 @@ export function StartPortDialog(props: {
   const untriaged = props.overview.untriagedUpstreamCount;
   return (
     <Dialog open={props.open} onOpenChange={(open) => !open && !props.busy && props.onClose()}>
-      <DialogPopup showCloseButton={!props.busy}>
+      <DialogPopup showCloseButton={!props.busy} className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>
             Start port{props.topicIds.length > 1 ? ` (${props.topicIds.length} topics)` : ""}
@@ -341,7 +365,7 @@ export function StartPortDialog(props: {
               </label>
             </fieldset>
           )}
-          <div className="space-y-1">
+          <div className="space-y-1" role="group" aria-label="Port model">
             <span className="font-medium">Model</span>
             <div className="flex flex-wrap items-center gap-2">
               <ProviderInstanceModelPicker
@@ -375,6 +399,9 @@ export function StartPortDialog(props: {
               )}
             </div>
           </div>
+          <PortReviewOptions value={reviewOptions} providers={providers} modelOptionsByProvider={reviewModels}
+            locked={locked || !reviewHydrated} onChange={setReviewOptions} />
+          {!reviewHydrated && <p role="status">Loading review preferences…</p>}
           {limitError && (
             <p role="alert" className="text-destructive-foreground">
               {limitError}
@@ -391,11 +418,38 @@ export function StartPortDialog(props: {
             Cancel
           </Button>
           <Button
-            disabled={props.busy || limitError !== null || !ready}
+            disabled={props.busy || limitError !== null || !ready || !reviewHydrated}
             onClick={() => {
-              if (!ready) return;
+              if (!ready || !reviewHydrated) return;
+              let review = lockedReview;
+              if (!review) {
+                const buildSlot = makeWorkflowSlotBuilder({
+                  providers, settings, projectId: props.projectId,
+                  dispatchModelsByProvider: getProviderDispatchModelsByProvider(settings, providers),
+                });
+                const build = (key: "reviewerA" | "reviewerB" | "consolidation") => {
+                  const slot = reviewOptions[key]!;
+                  return buildSlot(slot.provider, slot.model, slot.modelOptions);
+                };
+                const admittedReview = reviewOptions.enabled ? {
+                  reviewerA: build("reviewerA"), reviewerB: build("reviewerB"), consolidation: build("consolidation"),
+                } : null;
+                const remember = ({ provider, model, modelOptions }: NonNullable<typeof admittedReview>["reviewerA"]) =>
+                  ({ provider, model, ...(modelOptions ? { modelOptions } : {}) });
+                review = {
+                  review: admittedReview,
+                  reviewPreference: admittedReview ? {
+                    enabled: true, reviewerA: remember(admittedReview.reviewerA),
+                    reviewerB: remember(admittedReview.reviewerB), consolidation: remember(admittedReview.consolidation),
+                  } : {
+                    enabled: false, reviewerA: props.savedReview?.reviewerA ?? null,
+                    reviewerB: props.savedReview?.reviewerB ?? null, consolidation: props.savedReview?.consolidation ?? null,
+                  },
+                };
+                setLockedReview(review);
+              }
               setSubmitted(true);
-              props.onStart({ grouping, modelSelection, runtimeMode, clientRequestId });
+              props.onStart({ grouping, modelSelection, runtimeMode, clientRequestId, ...review });
             }}
           >
             {submitted ? "Retry" : "Start port"}
