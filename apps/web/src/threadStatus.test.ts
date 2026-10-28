@@ -234,6 +234,18 @@ describe("resolveThreadStatus", () => {
       }),
     ).toBe("none");
   });
+
+  it("measures a failure without an end time from its request, so a visit clears it", () => {
+    const latestTurn = { ...makeLatestTurn({ state: "error" })!, completedAt: null };
+    const statusVisitedAt = (lastVisitedAt: string) =>
+      resolveThreadStatus({
+        thread: { ...failedThread, latestTurn, lastVisitedAt },
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+      });
+    expect(statusVisitedAt("2026-03-09T09:59:00.000Z")).toBe("failed");
+    expect(statusVisitedAt("2026-03-09T10:06:00.000Z")).toBe("none");
+  });
 });
 
 describe("resolveThreadStatusPill", () => {

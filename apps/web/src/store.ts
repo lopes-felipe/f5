@@ -1154,10 +1154,15 @@ function buildThreadFromReadModel(
       ? existing.activities
       : mapActivitiesFromReadModel(thread.activities, existing?.activities ?? []);
   const error = visibleThreadSessionError(thread.id, thread.session);
+  // A thread this client has no receipt for counts as seen up to its last
+  // activity, so history doesn't light up as unread. A failed latest turn is
+  // the exception: it still needs someone, so it stays unseen.
   const lastVisitedAt =
     existing?.lastVisitedAt ??
     persistedLastVisitedAtByThreadId.get(thread.id) ??
-    thread.lastInteractionAt;
+    (thread.latestTurn?.state === "error"
+      ? thread.latestTurn.requestedAt
+      : thread.lastInteractionAt);
   const estimatedContextTokens = thread.estimatedContextTokens ?? null;
   const estimatedThinkingTokens = thread.estimatedThinkingTokens ?? null;
   const modelContextWindowTokens = thread.modelContextWindowTokens ?? null;

@@ -136,16 +136,16 @@ export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
 
 /**
  * A failed latest turn the person hasn't looked at since it ended. Unlike a
- * completion, a missing or unreadable end time still counts: the failure
- * needs someone.
+ * completion, a missing end time still counts: the failure needs someone. It
+ * is then measured from the request, so a visit still clears it.
  */
 function hasUnseenFailure(thread: ThreadStatusInput): boolean {
   if (thread.latestTurn?.state !== "error") return false;
   if (!thread.lastVisitedAt) return true;
-  const completedAt = Date.parse(thread.latestTurn.completedAt ?? "");
+  const endedAt = Date.parse(thread.latestTurn.completedAt ?? thread.latestTurn.requestedAt);
   const lastVisitedAt = Date.parse(thread.lastVisitedAt);
-  if (Number.isNaN(completedAt) || Number.isNaN(lastVisitedAt)) return true;
-  return completedAt > lastVisitedAt;
+  if (Number.isNaN(endedAt) || Number.isNaN(lastVisitedAt)) return true;
+  return endedAt > lastVisitedAt;
 }
 
 export function resolveThreadStatus(input: ResolveThreadStatusInput): ThreadStatus {
