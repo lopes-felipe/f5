@@ -11,6 +11,7 @@ import {
   type UpstreamOverview,
   type UpstreamPortsSettings,
   type UpstreamPortLinkSummary,
+  type UpstreamPortReviewSummary,
   type UpstreamStateCounts,
   type UpstreamSuggestionFilter,
   type UpstreamTopic,
@@ -24,10 +25,14 @@ import {
   type UpstreamUserImpact,
 } from "@t3tools/contracts";
 import type { InfiniteData } from "@tanstack/react-query";
+import { decisionFromOutcome } from "@t3tools/shared/upstreamPortsOutcomes";
 
 import type { UpstreamSearch } from "./upstreamSearch";
 
-export const UPSTREAM_LISTS: ReadonlyArray<{ readonly id: UpstreamTopicList; readonly label: string }> = [
+export const UPSTREAM_LISTS: ReadonlyArray<{
+  readonly id: UpstreamTopicList;
+  readonly label: string;
+}> = [
   { id: "inbox", label: "Inbox" },
   { id: "ready", label: "Ready" },
   { id: "in-progress", label: "In progress" },
@@ -49,6 +54,19 @@ export const UPSTREAM_STATE_LABELS: Readonly<Record<UpstreamTopicList, string>> 
 
 /** `85%`: confidence as a whole percentage. */
 export const formatConfidence = (value: number) => `${Math.round(value * 100)}%`;
+
+export function portReviewLabel(review: UpstreamPortReviewSummary | null | undefined): string | null {
+  if (!review) return null;
+  const suffix = review.detail ? ": " + review.detail : "";
+  switch (review.status) {
+    case "waiting": return "Code review: waits for the pull request" + suffix;
+    case "reviewing": return "Code review: in progress" + suffix;
+    case "applying": return "Code review: applying feedback" + suffix;
+    case "completed": return "Code review: revision completed" + suffix;
+    case "skipped": return "Code review: skipped" + (review.detail ? " (" + review.detail + ")" : "");
+    case "error": return "Code review failed" + suffix;
+  }
+}
 
 const SUGGESTION_VERBS: Readonly<Record<UpstreamTopicSuggestion["status"], string>> = {
   port: "Port",
@@ -200,13 +218,11 @@ export interface UpstreamView {
  */
 export function canMoveFocusAfterDecision(started: UpstreamView, current: UpstreamView): boolean {
   return (
-    started.projectId === current.projectId &&
-    started.list === current.list &&
-    started.focused === current.focused
+    started.projectId === current.projectId && started.list === current.list && started.focused === current.focused
   );
 }
 
-export function portLimitError(topicCount: number, grouping: "together" | "separately"): string | null {
+export function portLimitError(topicCount: number, grouping: "together" | "separately" | "batched"): string | null {
   if (topicCount === 0) return "Select at least one topic.";
   if (topicCount > UPSTREAM_MAX_PORT_TOPICS) return `Start at most ${UPSTREAM_MAX_PORT_TOPICS} topics at once.`;
   if (grouping === "separately" && topicCount > UPSTREAM_MAX_PORT_GROUPS)
@@ -216,18 +232,12 @@ export function portLimitError(topicCount: number, grouping: "together" | "separ
 
 /** Record equivalent from a finished port thread: its PR, plus the outcome's `path:line` evidence. */
 export function equivalentFromLink(link: UpstreamPortLinkSummary): UpstreamDecision {
-  const evidence =
-    link.outcome?.kind === "equivalent"
-      ? link.outcome.detail
-          .split(",")
-          .map((entry) => entry.trim())
-          .filter((entry) => /^[^\s:]+:[1-9][0-9]*$/u.test(entry))
-      : [];
-  return {
-    kind: "equivalent",
-    ...(link.prNumber !== null ? { f5Refs: [`#${link.prNumber}`] } : {}),
-    ...(evidence.length ? { evidence } : {}),
-  };
+  return (
+    (link.outcome?.kind === "equivalent" ? decisionFromOutcome(link.outcome, link.prNumber) : null) ?? {
+      kind: "equivalent",
+      ...(link.prNumber !== null ? { f5Refs: [`#${link.prNumber}`] } : {}),
+    }
+  );
 }
 
 /**
@@ -324,10 +334,7 @@ export function extendSelection(
 }
 
 /** The header checkbox: all loaded rows, some of them, or none. */
-export function headerCheckState(
-  ids: ReadonlyArray<string>,
-  selected: ReadonlySet<string>,
-): "all" | "some" | "none" {
+export function headerCheckState(ids: ReadonlyArray<string>, selected: ReadonlySet<string>): "all" | "some" | "none" {
   const count = ids.filter((id) => selected.has(id)).length;
   if (count === 0) return "none";
   return count === ids.length ? "all" : "some";
@@ -344,6 +351,8 @@ export type UpstreamBulkAction =
   | "equivalent"
   | "reopen"
   | "startPort"
+  | "queuePort"
+  | "dequeuePort"
   | "copyPrompt";
 
 /** The bulk bar's actions for each list, in display order. */
@@ -352,6 +361,7 @@ export function bulkActionsForList(list: UpstreamTopicList): ReadonlyArray<Upstr
     case "inbox":
       return ["accept", "port", "skip", "watch", "decline", "equivalent"];
     case "ready":
+      return ["startPort", "queuePort", "dequeuePort", "copyPrompt", "reopen", "skip"];
     case "in-progress":
       return ["startPort", "copyPrompt", "reopen", "skip"];
     case "watch":
@@ -380,7 +390,9 @@ export function adjacentList(list: UpstreamTopicList, delta: 1 | -1): UpstreamTo
  * Whether accepting the suggestion records a decision. The server refuses a
  * failed triage and a skip without a reason key (`suggestionDecision`).
  */
-export function canAcceptSuggestion(suggestion: UpstreamTopicSuggestion | undefined): suggestion is UpstreamTopicSuggestion {
+export function canAcceptSuggestion(
+  suggestion: UpstreamTopicSuggestion | undefined,
+): suggestion is UpstreamTopicSuggestion {
   return Boolean(suggestion && !suggestion.triageError && !(suggestion.status === "skip" && !suggestion.reasonKey));
 }
 
@@ -578,8 +590,7 @@ export function topicFilesNote(files: UpstreamTopicFiles): string | null {
     notes.push(
       `Only the first ${files.commits.length.toLocaleString()} of ${files.totalCommits.toLocaleString()} commits are listed.`,
     );
-  if (files.commits.some((commit) => commit.truncated))
-    notes.push("Very large commits list only their first files.");
+  if (files.commits.some((commit) => commit.truncated)) notes.push("Very large commits list only their first files.");
   return notes.length ? notes.join(" ") : null;
 }
 
@@ -647,7 +658,10 @@ export function runStatus(
   const last = overview.lastRun;
   if (!last) return { tone: "never", label: `Never run${next}` };
   if (last.status === "failed") return { tone: "failed", label: "Last run failed" };
-  return { tone: "idle", label: `Synced ${formatRelative(last.finishedAt ?? last.startedAt)}${next}` };
+  return {
+    tone: "idle",
+    label: `Synced ${formatRelative(last.finishedAt ?? last.startedAt)}${next}`,
+  };
 }
 
 /** Why Run is disabled, or `null` when it can run. */
@@ -704,10 +718,7 @@ export const SORT_LABELS: Readonly<Record<UpstreamTopicSort, string>> = {
 };
 
 /** The fields of the page's search params that filter the list. */
-type FilterSearch = Pick<
-  UpstreamSearch,
-  "q" | "suggestion" | "impact" | "area" | "question" | "conflict" | "by"
->;
+type FilterSearch = Pick<UpstreamSearch, "q" | "suggestion" | "impact" | "area" | "question" | "conflict" | "by">;
 
 /** The server filter for the page's search params. */
 export function filterFromSearch(search: FilterSearch): UpstreamTopicFilter {
@@ -763,12 +774,30 @@ export function activeFilterChips(search: FilterSearch): FilterChip[] {
         return next.length ? { ...rest, impact: next } : rest;
       },
     });
-  if (search.area) chips.push({ key: "area", label: `Area: ${search.area}`, remove: ({ area: _a, ...rest }) => rest });
+  if (search.area)
+    chips.push({
+      key: "area",
+      label: `Area: ${search.area}`,
+      remove: ({ area: _a, ...rest }) => rest,
+    });
   if (search.question)
-    chips.push({ key: "question", label: "Has question", remove: ({ question: _q, ...rest }) => rest });
+    chips.push({
+      key: "question",
+      label: "Has question",
+      remove: ({ question: _q, ...rest }) => rest,
+    });
   if (search.conflict)
-    chips.push({ key: "conflict", label: "Has conflict", remove: ({ conflict: _c, ...rest }) => rest });
-  if (search.by) chips.push({ key: "by", label: DECIDED_BY_LABELS[search.by], remove: ({ by: _b, ...rest }) => rest });
+    chips.push({
+      key: "conflict",
+      label: "Has conflict",
+      remove: ({ conflict: _c, ...rest }) => rest,
+    });
+  if (search.by)
+    chips.push({
+      key: "by",
+      label: DECIDED_BY_LABELS[search.by],
+      remove: ({ by: _b, ...rest }) => rest,
+    });
   return chips;
 }
 
@@ -776,9 +805,4 @@ export function activeFilterChips(search: FilterSearch): FilterChip[] {
 export function toggleValue<T extends string>(values: ReadonlyArray<T> | undefined, value: T): T[] {
   const current = values ?? [];
   return current.includes(value) ? current.filter((entry) => entry !== value) : [...current, value];
-}
-
-/** Start port for every Ready topic, capped at the per-start limit. */
-export function startAllReady(ids: ReadonlyArray<string>): { readonly ids: string[]; readonly capped: boolean } {
-  return { ids: ids.slice(0, UPSTREAM_MAX_PORT_TOPICS), capped: ids.length > UPSTREAM_MAX_PORT_TOPICS };
 }

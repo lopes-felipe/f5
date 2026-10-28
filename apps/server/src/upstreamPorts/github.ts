@@ -16,6 +16,10 @@ export interface LedgerPullRequest {
   readonly number: number;
   readonly url: string;
   readonly state: "open" | "closed" | "merged";
+  readonly headRepoFullName?: string;
+  readonly headRef?: string;
+  readonly headSha?: string;
+  readonly baseRef?: string;
 }
 
 export interface GitHubRepoRef {
@@ -120,6 +124,8 @@ const toPullRequest = (operation: string, value: unknown) => {
     html_url?: unknown;
     state?: unknown;
     merged_at?: unknown;
+    head?: { repo?: { full_name?: unknown } | null; ref?: unknown; sha?: unknown };
+    base?: { ref?: unknown };
   };
   if (typeof raw.number !== "number" || typeof raw.html_url !== "string")
     return Effect.fail(
@@ -133,6 +139,12 @@ const toPullRequest = (operation: string, value: unknown) => {
     number: raw.number,
     url: raw.html_url,
     state: raw.merged_at ? "merged" : raw.state === "closed" ? "closed" : "open",
+    ...(typeof raw.head?.repo?.full_name === "string"
+      ? { headRepoFullName: raw.head.repo.full_name }
+      : {}),
+    ...(typeof raw.head?.ref === "string" ? { headRef: raw.head.ref } : {}),
+    ...(typeof raw.head?.sha === "string" ? { headSha: raw.head.sha } : {}),
+    ...(typeof raw.base?.ref === "string" ? { baseRef: raw.base.ref } : {}),
   });
 };
 

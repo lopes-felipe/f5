@@ -15,6 +15,8 @@ export interface CodeReviewWorkflowServiceShape {
   readonly drain: Effect.Effect<void, WorkerAdmissionError>;
   readonly createWorkflow: (
     input: OrchestrationCreateCodeReviewWorkflowInput,
+    /** Explicit ids resume creation. A deleted id cannot be reused; mint a new id. */
+    options?: { readonly workflowId?: CodeReviewWorkflowId },
   ) => Effect.Effect<CodeReviewWorkflowId, Error>;
   readonly archiveWorkflow: (workflowId: CodeReviewWorkflowId) => Effect.Effect<void, Error>;
   readonly unarchiveWorkflow: (workflowId: CodeReviewWorkflowId) => Effect.Effect<void, Error>;

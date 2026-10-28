@@ -39,10 +39,15 @@ export default mergeConfig(
       // Real Git fixtures and SQLite cleanup take longer on Windows/NTFS.
       testTimeout: process.platform === "win32" ? 30_000 : 15_000,
       hookTimeout: process.platform === "win32" ? 30_000 : 15_000,
-      maxWorkers: Number.parseInt(
-        process.env.F5_TEST_MAX_WORKERS ?? process.env.VITEST_MAX_WORKERS ?? "8",
-        10,
-      ),
+      // Each integration fixture spawns Git, SQLite and provider processes.
+      // Keep Windows CI from running these process-heavy fixtures concurrently.
+      maxWorkers:
+        process.platform === "win32" && process.env.F5_CI_SUITE_ID === "server-integration"
+          ? 1
+          : Number.parseInt(
+              process.env.F5_TEST_MAX_WORKERS ?? process.env.VITEST_MAX_WORKERS ?? "8",
+              10,
+            ),
       execArgv: ["--no-warnings"],
       onConsoleLog() {
         return process.env.F5_TEST_LOGS === "1";

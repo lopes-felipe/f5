@@ -26,6 +26,7 @@ import { Spinner } from "../ui/spinner";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { LedgerChip } from "./PublicationBanner";
 import { UpstreamSettingsPopover } from "./UpstreamSettingsPopover";
+import { UpstreamPortQueue } from "./UpstreamPortQueue";
 import { repositoryUrl, runDisabledReason, runStatus, shortRepository } from "./upstreamPage.logic";
 
 const formatNextRun = (iso: string) =>
@@ -48,10 +49,7 @@ function RunStatusChip(props: {
           <Button
             size="xs"
             variant="ghost"
-            className={cn(
-              "text-muted-foreground",
-              status.tone === "failed" && "text-destructive-foreground",
-            )}
+            className={cn("text-muted-foreground", status.tone === "failed" && "text-destructive-foreground")}
           />
         }
       >
@@ -67,7 +65,9 @@ function RunStatusChip(props: {
       <PopoverPopup align="end" className="w-80 space-y-3 text-sm">
         {run ? (
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
-            <dt className="text-muted-foreground">{run.kind === "legacy" ? "Legacy run" : "Run"}</dt>
+            <dt className="text-muted-foreground">
+              {run.kind === "retriage" ? "Re-triage run" : run.kind === "legacy" ? "Legacy run" : "Run"}
+            </dt>
             <dd>
               {run.status} · {formatRelativeTimeLabel(run.finishedAt ?? run.startedAt)} ({run.trigger},{" "}
               {run.triage === "llm" ? "LLM" : "rules only"})
@@ -117,7 +117,9 @@ function RunStatusChip(props: {
           </p>
         )}
         {overview.policyTruncated && (
-          <p className="text-xs text-warning-foreground">upstream/policy.md is over 16 KiB; triage sees a truncated copy.</p>
+          <p className="text-xs text-warning-foreground">
+            upstream/policy.md is over 16 KiB; triage sees a truncated copy.
+          </p>
         )}
         {overview.legacyRemaining > 0 && (
           <div className="flex flex-wrap items-center gap-2">
@@ -182,8 +184,15 @@ function RunButton(props: {
         </MenuTrigger>
         <MenuPopup align="end">
           <MenuItem onClick={() => props.onRun("upstream", "rules-only")}>Run with rules only</MenuItem>
+          <MenuItem
+            disabled={overview.triageFailedCount === 0 || !overview.triageModelAvailable}
+            onClick={() => props.onRun("retriage", "llm")}
+          >
+            Re-triage failed topics ({overview.triageFailedCount})
+          </MenuItem>
           <MenuItem disabled={overview.legacyRemaining === 0} onClick={() => props.onRun("legacy", triage)}>
-            Triage legacy backlog{overview.legacyRemaining > 0 ? ` (${overview.legacyRemaining})` : ""}
+            Triage legacy backlog
+            {overview.legacyRemaining > 0 ? ` (${overview.legacyRemaining})` : ""}
           </MenuItem>
         </MenuPopup>
       </Menu>
@@ -211,10 +220,7 @@ export function UpstreamHeader(props: {
     <div className="flex flex-wrap items-center gap-2">
       <h1 className="text-lg font-semibold">Upstream</h1>
       {props.projects.length > 1 && (
-        <Select
-          value={props.projectId}
-          onValueChange={(value) => value && props.onProjectChange(value as ProjectId)}
-        >
+        <Select value={props.projectId} onValueChange={(value) => value && props.onProjectChange(value as ProjectId)}>
           <SelectTrigger size="sm" className="w-auto min-w-40" aria-label="Project">
             <SelectValue>{current?.title ?? props.projectId}</SelectValue>
           </SelectTrigger>
@@ -239,6 +245,7 @@ export function UpstreamHeader(props: {
         </a>
       )}
       <div className="ml-auto flex flex-wrap items-center gap-1.5">
+        <UpstreamPortQueue projectId={props.projectId} overview={overview} readOnly={props.readOnly} />
         <RunStatusChip overview={overview} readOnly={props.readOnly} busy={props.busy} onRun={props.onRun} />
         <LedgerChip
           publication={overview.publication}

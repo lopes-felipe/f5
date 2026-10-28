@@ -46,6 +46,9 @@ merged plan, then click **Implement**. Choose the implementation model, **Local*
 worktree**, the [access mode](../runtime-modes.md), and optionally **Code review after
 implementation**, which adds reviewers and an apply-reviews pass.
 
+[Upstream ports](upstream-ports.md) can also chain a Code Review workflow after opening a PR,
+then queue one revision with its consolidated feedback.
+
 ![Finished Feature workflow showing its phase board and the merged plan](../../assets/screenshots/workflow.png)
 
 ## Read results

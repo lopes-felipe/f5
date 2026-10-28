@@ -154,7 +154,13 @@ export class FakeAgentBridgeHost {
           detailSequence: 0,
         } as never;
       }),
-    getTurnState: ({ turnId }) => Effect.sync(() => this.turnStates.get(turnId) ?? null),
+    getTurnState: ({ turnId }) =>
+      Effect.sync(
+        () =>
+          this.turnStates.get(turnId) ??
+          this.threads.find((thread) => thread.latestTurn?.turnId === turnId)?.latestTurn?.state ??
+          null,
+      ),
     getThreadDiff: ({ fromTurnCount, toTurnCount }) =>
       Effect.succeed(`diff ${fromTurnCount ?? 0}..${toTurnCount}`),
     getQueueSnapshot: (threadId) =>

@@ -279,6 +279,23 @@ function applyCodeReviewWorkflowCommandToSnapshot(
   command: OrchestrationCommand,
 ): OrchestrationReadModel {
   switch (command.type) {
+    case "thread.create":
+      return {
+        ...snapshot,
+        threads: [
+          ...snapshot.threads,
+          makeThread({
+            id: command.threadId,
+            projectId: command.projectId,
+            title: command.title,
+            model: command.model,
+            runtimeMode: command.runtimeMode,
+            interactionMode: command.interactionMode,
+            branch: command.branch,
+            worktreePath: command.worktreePath,
+          }),
+        ],
+      };
     case "project.workflow.archive":
     case "project.workflow.unarchive":
       return applyArchiveTestCommand(snapshot, command).model;
@@ -552,6 +569,114 @@ describe("CodeReviewWorkflowService", () => {
       await harness.dispose();
     }
     harness = null;
+  });
+
+  it("serializes duplicate explicit ids and resumes a workflow without repeating reviewer turns", async () => {
+    harness = await createHarness(makeReadModel({}));
+    const input = {
+      projectId: ProjectId.makeUnsafe("project-1"),
+      title: "Review",
+      reviewPrompt: "Review the PR",
+      reviewerA: { provider: "codex" as const, model: "gpt-5-codex" },
+      reviewerB: { provider: "claudeAgent" as const, model: "claude-sonnet-4-5" },
+      consolidation: { provider: "codex" as const, model: "gpt-5-codex" },
+    };
+    const workflowId = CodeReviewWorkflowId.makeUnsafe("explicit-review");
+    const ids = await Effect.runPromise(
+      Effect.all(
+        Array.from({ length: 3 }, () => harness!.service.createWorkflow(input, { workflowId })),
+        { concurrency: "unbounded" },
+      ),
+    );
+    expect(ids).toEqual([workflowId, workflowId, workflowId]);
+    expect(
+      harness.dispatched.filter(
+        (command) => command.type === "project.code-review-workflow.create",
+      ),
+    ).toHaveLength(1);
+    expect(harness.dispatched.filter((command) => command.type === "thread.create")).toHaveLength(
+      2,
+    );
+    expect(
+      harness.dispatched.filter((command) => command.type === "thread.turn.start"),
+    ).toHaveLength(2);
+    const snapshot = harness.getSnapshot();
+    harness.setSnapshot({
+      ...snapshot,
+      codeReviewWorkflows: snapshot.codeReviewWorkflows.map((workflow) => ({
+        ...workflow,
+        deletedAt: NOW,
+      })),
+    });
+    await expect(
+      Effect.runPromise(harness.service.createWorkflow(input, { workflowId })),
+    ).rejects.toThrow("was deleted");
+  });
+
+  it.each([0, 1, 2])(
+    "repairs creation after %i reviewer threads, on explicit retry and startup",
+    async (existingCount) => {
+      const workflow = makeWorkflow();
+      const snapshot = makeReadModel({
+        workflow,
+        threads: [workflow.reviewerA, workflow.reviewerB]
+          .slice(0, existingCount)
+          .map((reviewer) => makeThread({ id: reviewer.threadId })),
+      });
+      harness = await createHarness(snapshot);
+      await Effect.runPromise(
+        harness.service.createWorkflow(
+          {
+            projectId: workflow.projectId,
+            title: workflow.title,
+            reviewPrompt: workflow.reviewPrompt,
+            reviewerA: workflow.reviewerA.slot,
+            reviewerB: workflow.reviewerB.slot,
+            consolidation: workflow.consolidation.slot,
+          },
+          { workflowId: workflow.id },
+        ),
+      );
+      expect(harness.getSnapshot().threads).toHaveLength(2);
+      expect(harness.dispatched.filter((command) => command.type === "thread.create")).toHaveLength(
+        2 - existingCount,
+      );
+      await harness.dispose();
+      harness = await createHarness(snapshot);
+      await harness.start();
+      await vi.waitFor(() => expect(harness!.getSnapshot().threads).toHaveLength(2));
+    },
+  );
+
+  it("does not recreate purged reviewer history on startup or explicit-id resume", async () => {
+    const base = makeWorkflow();
+    const workflow = {
+      ...base,
+      reviewerA: { ...base.reviewerA, status: "completed" as const },
+      reviewerB: {
+        ...base.reviewerB,
+        status: "pending" as const,
+        dispatchCommandId: CommandId.makeUnsafe("already-dispatched"),
+      },
+    };
+    harness = await createHarness(makeReadModel({ workflow, threads: [] }));
+    await Effect.runPromise(
+      harness.service.createWorkflow(
+        {
+          projectId: workflow.projectId,
+          title: workflow.title,
+          reviewPrompt: workflow.reviewPrompt,
+          reviewerA: workflow.reviewerA.slot,
+          reviewerB: workflow.reviewerB.slot,
+          consolidation: workflow.consolidation.slot,
+        },
+        { workflowId: workflow.id },
+      ),
+    );
+    await harness.start();
+    expect(harness.dispatched.filter((command) => command.type === "thread.create")).toHaveLength(
+      0,
+    );
   });
 
   it("starts v2 reviewers with unattended read-only turns", async () => {

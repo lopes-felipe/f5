@@ -391,7 +391,9 @@ export function pageRows<Row extends DerivedRow>(
   input: UpstreamListTopicsInput,
   revision: string,
   subjectsOf: SubjectsOf = NO_SUBJECTS,
-): Omit<UpstreamListTopicsResult, "topics"> & { readonly rows: ReadonlyArray<Row> } {
+): Omit<UpstreamListTopicsResult, "topics" | "contentRevision"> & {
+  readonly rows: ReadonlyArray<Row>;
+} {
   const limit = input.limit ?? UPSTREAM_LIST_DEFAULT_LIMIT;
   const signature = listSignature(input, limit);
   const filter = input.filter ?? {};

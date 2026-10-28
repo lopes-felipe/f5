@@ -29,8 +29,11 @@ with a prompt that carries the topic's commits and the trailer that completes it
 5. To decide many topics at once, tick their checkboxes (Shift-click selects a range, `x` and
    `Shift+J`/`Shift+K` from the keyboard). The bar above the list shows the actions for the
    current list.
-6. Open **Ready**, select topics and press `Shift+P` (**Start port**), or click **Start port for
-   all**. Each thread opens in its own worktree on `f5/upstream-<topic>`.
+6. Open **Ready**, select topics and press `Shift+P` (**Start port**), choose **Queue selected…**,
+   or click **Queue all matching Ready…** to include every matching topic, including unloaded
+   pages. Each thread opens in its own worktree on `f5/upstream-<topic>`.
+   **Code review after port** is checked initially. Choose **Reviewer A**, **Reviewer B** and
+   **Consolidation** models and their options, or clear the checkbox to skip automated review.
 7. Merge the ledger pull request F5 opens (**Track upstream t3code changes (<date>)**) whenever
    convenient. It only touches `upstream/` and needs no line review.
 
@@ -78,7 +81,113 @@ with a prompt that carries the topic's commits and the trailer that completes it
 - **Copy port prompt** puts the same prompt on the clipboard without creating a link, for a
   Feature workflow or any thread. The trailer still completes the topic once merged.
 
+## Good to know
+
+- Automated review waits for a `pr` outcome, runs two read-only reviewers and consolidates their
+  findings in a standard Code Review workflow, then queues one revision on the port thread.
+  The revision uses that thread's current model, access mode and interaction mode. Switch
+  back from plan mode before revision if you want it to apply code changes. It pushes fix-up commits to the
+  same branch on `origin`, and repeats the port outcome. This adds three review turns and one
+  revision per thread, including a grouped port.
+- GitHub must be connected so F5 can verify the PR's repository, branch and head commit.
+  Temporary lookup failures pause the review or revision until verification succeeds.
+- Review status says **revision completed** when that turn finishes. Its detail reports a
+  blocked outcome, plan mode or no new commits; the port outcome remains separate.
+- Review is skipped for non-`pr` outcomes, unlinking, archived or deleted port threads, and
+  merged or closed PRs. A queued revision is canceled when skipped; a revision that already
+  started is left running. If the PR head changes before revision, **Retry review** reviews
+  the new head. Changes to the base branch alone do not require another review.
+- **Open review** opens the reviewers and consolidated report. Retry failed reviewer stages
+  inside that workflow. **Retry review** on the port handles setup or revision failures,
+  picks up a PR produced by a later turn after an earlier blocked outcome, and can revive a
+  skipped review after restoring the port thread. A completed report can be reused; an
+  unfinished archived workflow starts a fresh review. Retry keeps tracking any revision
+  that already started rather than submitting its feedback again.
+- The checkbox state and all three model choices are remembered after each start.
+  **Copy port prompt** never triggers automated review. Earlier ports and ledger PRs are
+  unaffected. Review completion never marks a topic Done: merged trailers still decide that.
+
 All shortcuts are listed in [Keybindings](../../KEYBINDINGS.md#upstream-page).
+
+## Finish a large backlog
+
+Use **Re-triage failed topics (N)** in the run menu to recover failed Inbox suggestions.
+Review and accept suggestions in bulk, then open Ready, narrow the filter if needed, and
+choose **Queue all matching Ready…**. Queueing never accepts Inbox suggestions for you.
+
+The dialog previews topic and thread counts on the server. **Start now** keeps its limit of
+20 topics in 5 threads. **Add to queue** accepts any number of Ready topics. Choose one thread,
+one per topic, or **Batches of up to K related topics** (2–10, default 5). A single thread
+always has at most 20 topics.
+
+Batching joins topics that share upstream files or related-topic links first, then packs small
+groups from the same area together. Lockfiles and files touched by both at least 10 topics and
+5% of the target are ignored. Missing commits use area grouping; fetching upstream restores
+their file evidence for a new enqueue.
+
+## Port queue
+
+The queue is persistent and local to the writer profile. Closing the browser or restarting F5
+keeps its entries and submission identities. Set **Port threads at once** in Upstream settings
+(1–10, default 5). Manual port threads count toward the same project limit. Lowering the limit
+does not stop existing work. Each queued thread keeps the model and runtime chosen at enqueue.
+
+As a thread finishes, the queue refills its execution slot while earlier PRs await review or
+merge. Approval prompts, user input, post-processing and queued continuations keep the slot.
+A queue entry waits when its files overlap an active port or an unmerged port PR; later
+non-conflicting entries can proceed. **Start without waiting** overrides that entry's file
+wait, while still respecting concurrency and pauses.
+
+Click the queue chip for counts and paginated entries, thread and PR links, file waits, and
+reasons needing attention. **Pause** is separate from automatic holds for usage limits,
+provider availability, worktree isolation or writer ownership. Holds recheck automatically;
+if isolation still cannot create an agent after two minutes, that entry is rejected and
+the queue continues. Fix worktree availability and queue those topics again to retry.
+Repository contention and temporary preparation errors retain their queued entries and
+retry after a short backoff. Direct starts also reserve under the repository lock and
+may report that the repository is busy.
+Usage recovery respects the existing automatic usage-resume setting. When disabled, the
+hold asks you to resume manually and shows no automatic retry time. Recovery never undoes
+a user pause. Two consecutive port-thread errors pause the queue until you check the provider
+and choose **Resume**. **Clear queue** cancels remaining entries and leaves started threads
+running. **Remove from queue** removes selected topics without stopping started work.
+
+Queue drain does not mean topics are Done. Done comes from default-branch evidence, never
+just a PR URL or a finished thread. The panel refreshes base evidence at most every two
+minutes while review work remains, and shows the evidence time or refresh error.
+The queue history remains available after execution stops. A settled turn whose assistant
+message is still missing after two minutes finishes as needing attention.
+
+Batch prompts assess every topic individually. Already-present or inapplicable topics report
+`UPSTREAM-OUTCOME <topic-id>: equivalent <path:line>[, ...]` or
+`UPSTREAM-OUTCOME <topic-id>: not-applicable <one sentence>`, and omit that topic's trailer.
+All outcomes form one consecutive block at the end, with per-topic lines before the
+thread-level outcome. If all topics are equivalent or inapplicable, only per-topic lines remain.
+PR outcome URLs must be HTTPS GitHub pull requests in the repository identified by
+the fork's `origin` remote. A missing or non-GitHub origin prevents automatic PR URL
+validation; configure origin so the queue can recognize these outcomes.
+Credentialed HTTPS and SSH remotes are normalized before repository comparison.
+GitHub Enterprise remains unsupported. Pre-feature ports retain display compatibility
+with outcome lines followed by explanatory text, and remain excluded from automatic decisions.
+
+## Re-triage and automatic outcomes
+
+**Re-triage failed topics** requires an available triage model. It retries only Inbox topics
+with a triage error, keeps every topic's membership intact, and preserves revert-chain
+safeguards. A failed or incomplete classification stays eligible for another run. Successful
+suggestions replace stale errors; confident rule-approved skips are recorded through the
+ledger publisher.
+
+**Record equivalent / not-applicable outcomes automatically** is on by default. A completed,
+fully processed turn on its originating active port link can record validated equivalent or
+not-applicable decisions as `decidedBy: llm`. Find them with **Automatic only**. Earlier
+ports are excluded from automatic recording. Turn messages, evidence paths and fork PR URLs
+are validated; unrelated later messages do not count.
+For batches, equivalent/not-applicable decisions must name each topic explicitly. Temporary
+recording failures retry with persisted backoff, up to five attempts per turn.
+The default-branch rules must include
+`not-applicable` before that outcome can record automatically. PR outcomes still complete
+only through merged trailers; blocked or invalid outcomes need attention. PRs never auto-merge.
 
 ## States, trailers and epochs
 
@@ -155,6 +264,8 @@ published on a new branch.
 - One F5 profile on one machine writes the ledger for a repository. Other profiles see a
   read-only page with **Take over**. Writers on several machines are not supported.
 - Only GitHub upstreams are supported.
+- Downgrading after recording new suggestion operations or re-triage runs is unsupported.
+  Older builds do not understand those operation kinds.
 - The schedule and model choices are personal settings. They are never read from `f5.json`.
 
 ## Related

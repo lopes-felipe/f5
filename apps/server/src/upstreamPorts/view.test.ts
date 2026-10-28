@@ -11,6 +11,8 @@ import {
   portThreadTitle,
 } from "./admission.ts";
 import { SEED_RULES, topic } from "./testFixtures.ts";
+import { canonicalJsonHash } from "../canonicalJsonHash.ts";
+import { ledgerCommitMessage } from "./publisher.ts";
 import type { OpRecord, PortLinkRecord } from "./store.ts";
 import {
   buildTopicFiles,
@@ -387,6 +389,35 @@ describe("decisions", () => {
 });
 
 describe("admission helpers", () => {
+  it("names pure and mixed re-triage commits by their distinct topics", () => {
+    const op = (value: OpRecord["op"], seq: number): OpRecord => ({
+      opId: `op-${seq}`,
+      projectId,
+      seq,
+      op: value,
+      state: "recorded",
+      createdAt: "2026-10-22T12:00:00.000Z",
+    });
+    const suggestions = [
+      op({ kind: "suggestion", topicId: "pr-1", title: "First", summary: "" }, 1),
+      op({ kind: "suggestion", topicId: "pr-2", title: "Second", summary: "" }, 2),
+    ];
+    expect(ledgerCommitMessage(suggestions, [])).toBe(
+      "Re-triage 2 upstream topics (0 skipped automatically)",
+    );
+    const decision = op(
+      {
+        kind: "decision",
+        topicId: "pr-2",
+        fields: { status: "skip", epoch: 1, reasonKey: "maintenance", decidedBy: "llm" },
+      },
+      3,
+    );
+    expect(ledgerCommitMessage([...suggestions, decision], [])).toBe(
+      "Re-triage 2 upstream topics (1 skipped automatically)",
+    );
+  });
+
   it("hashes arguments independent of topic order", () => {
     const modelSelection = { instanceId: "claudeAgent", model: "claude-opus-5-5" } as never;
     const a = portArgsHash({
@@ -402,6 +433,23 @@ describe("admission helpers", () => {
       runtimeMode: "full-access",
     });
     expect(a).toBe(b);
+    expect(a).toBe(
+      canonicalJsonHash({
+        topicIds: ["pr-1", "pr-2"],
+        grouping: "together",
+        modelSelection,
+        runtimeMode: "full-access",
+      }),
+    );
+    expect(
+      portArgsHash({
+        topicIds: ["pr-1", "pr-2"],
+        grouping: "together",
+        modelSelection,
+        runtimeMode: "full-access",
+        batchSize: 10,
+      }),
+    ).toBe(a);
     expect(
       portArgsHash({
         topicIds: ["pr-1", "pr-2"],

@@ -31,7 +31,6 @@ this optimization are at most six minutes per Windows unit shard with at most 20
 imbalance, and at most ten minutes per required job excluding queueing. These replace
 the former 10-minute Linux/12-minute Windows targets and require hosted measurement.
 TypeScript is checked once
-
 on Linux, whose case-sensitive filesystem catches import-casing errors. TypeScript
 output is host-independent; Windows and macOS still run their native build and
 runtime checks.

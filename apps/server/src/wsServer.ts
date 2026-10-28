@@ -1,3 +1,5 @@
+import { bindSubmissionTurnIds } from "./nextTurnQueue/submissionStatus.ts";
+import { cancelQueuedSubmission } from "./nextTurnQueue/cancelSubmission.ts";
 import { makeScheduledNotificationDelivery } from "./scheduledTasks/notificationDelivery.ts";
 import { resolveTemporaryWorktreeBranch } from "./git/temporaryWorktreeBranch.ts";
 import { parseNaturalLanguageSchedule } from "./scheduledTasks/naturalLanguage.ts";
@@ -709,8 +711,10 @@ function readFilePrefix(
 
 const toTaskRouteError = (error: BotTaskError) => new RouteRequestError({ message: error.message });
 
-function stripRequestTag<T extends { _tag: string }>(body: T) {
-  return Struct.omit(body, ["_tag"]);
+type RequestBodyWithoutTag<T> = T extends { _tag: string } ? Omit<T, "_tag"> : never;
+
+function stripRequestTag<T extends { _tag: string }>(body: T): RequestBodyWithoutTag<T> {
+  return Struct.omit(body, ["_tag"]) as RequestBodyWithoutTag<T>;
 }
 
 function deriveRpcGroup(method: string): string {
@@ -2686,6 +2690,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
   yield* Effect.addFinalizer(() => Scope.close(subscriptionsScope, Exit.void));
 
+  let wakeUpstreamPorts: (threadId?: string) => Effect.Effect<void> = () => Effect.void;
+  yield* Stream.runForEach(serverSettings.streamChanges, () => wakeUpstreamPorts()).pipe(
+    Effect.forkIn(subscriptionsScope),
+  );
   yield* Stream.runForEach(keybindingsManager.streamChanges, (event) =>
     providerAdvisoryProjection.getProviders.pipe(
       Effect.bindTo("providers"),
@@ -2753,6 +2761,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         }),
       ),
       Effect.tap(() => providerUpdateAdvisor.noteRegistryChanged),
+      Effect.tap(() => wakeUpstreamPorts()),
     ),
   ).pipe(Effect.forkIn(subscriptionsScope));
   yield* Stream.runForEach(providerUpdateAdvisor.streamChanges, (advisories) =>
@@ -2906,6 +2915,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               );
           }
           yield* pushBus.publishAll(ORCHESTRATION_WS_CHANNELS.domainEvent, event);
+          if (event.type === "thread.turn-processing-quiesced" || event.type === "thread.deleted")
+            yield* wakeUpstreamPorts(event.aggregateId);
           const gitStatusInvalidation = resolveGitStatusInvalidation(event);
           if (gitStatusInvalidation.publish) {
             yield* pushBus.publishAll(WS_CHANNELS.gitStatusInvalidated, {
@@ -2919,6 +2930,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           Effect.flatMap((snapshot) =>
             pushBus.publishAll(WS_CHANNELS.nextTurnQueueUpdated, snapshot),
           ),
+          Effect.tap(() => wakeUpstreamPorts(threadId)),
           Effect.catchCause((cause) =>
             Effect.logWarning("failed to publish next-turn queue snapshot", {
               threadId,
@@ -3313,6 +3325,39 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const agentBridgeTurns = yield* makeProjectionTurnRepository.pipe(
     Effect.provideService(SqlClient.SqlClient, sql),
   );
+  const getSubmissionThreadDetails: AgentBridgeHostShape["getThreadDetails"] = (threadId) =>
+    Effect.gen(function* () {
+      const details = yield* projectionReadModelQuery.getThreadDetails({ threadId });
+      const turns = yield* agentBridgeTurns.listByThreadId({ threadId });
+      return bindSubmissionTurnIds(details, turns);
+    }).pipe(Effect.mapError(toAgentBridgeHostError));
+  const getSubmissionTurnState: AgentBridgeHostShape["getTurnState"] = (input) =>
+    agentBridgeTurns.getByTurnId(input).pipe(
+      Effect.map((turn) => (Option.isSome(turn) ? turn.value.state : null)),
+      Effect.mapError(toAgentBridgeHostError),
+    );
+  const getSubmissionQueueSnapshot: AgentBridgeHostShape["getQueueSnapshot"] = (threadId) =>
+    getNextTurnQueueSnapshot(threadId).pipe(Effect.mapError(toAgentBridgeHostError));
+  const getTurnSubmission: AgentBridgeHostShape["getSubmission"] = (submissionId) =>
+    nextTurnQueueStore
+      .getBySubmissionId(submissionId)
+      .pipe(Effect.mapError(toAgentBridgeHostError));
+  const submissionQueueChanges = Stream.unwrap(
+    awaitOrchestrationRuntimeForOptionalBackground.pipe(
+      Effect.map((runtime) =>
+        Option.isSome(runtime) ? runtime.value.nextTurnQueueDispatcher.changes : Stream.empty,
+      ),
+    ),
+  );
+  const submissionDomainEvents = Stream.unwrap(
+    awaitOrchestrationRuntimeForOptionalBackground.pipe(
+      Effect.map((runtime) =>
+        Option.isSome(runtime)
+          ? runtime.value.orchestrationEngine.streamDomainEvents
+          : Stream.empty,
+      ),
+    ),
+  );
   const agentBridgeHost: AgentBridgeHostShape = {
     readSnapshot: awaitOrchestrationRuntimeForRoute.pipe(
       Effect.flatMap(({ orchestrationEngine }) => orchestrationEngine.getReadModel()),
@@ -3322,11 +3367,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       projectionReadModelQuery
         .getThreadDetails({ threadId })
         .pipe(Effect.mapError(toAgentBridgeHostError)),
-    getTurnState: (input) =>
-      agentBridgeTurns.getByTurnId(input).pipe(
-        Effect.map((turn) => (Option.isSome(turn) ? turn.value.state : null)),
-        Effect.mapError(toAgentBridgeHostError),
-      ),
+    getSubmissionThreadDetails,
+    getTurnState: getSubmissionTurnState,
     getThreadDiff: ({ threadId, fromTurnCount, toTurnCount }) =>
       (fromTurnCount === undefined
         ? checkpointDiffQuery.getFullThreadDiff({ threadId, toTurnCount })
@@ -3335,28 +3377,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         Effect.map((result) => result.diff),
         Effect.mapError(toAgentBridgeHostError),
       ),
-    getQueueSnapshot: (threadId) =>
-      getNextTurnQueueSnapshot(threadId).pipe(Effect.mapError(toAgentBridgeHostError)),
-    getSubmission: (submissionId) =>
-      nextTurnQueueStore
-        .getBySubmissionId(submissionId)
-        .pipe(Effect.mapError(toAgentBridgeHostError)),
-    queueChanges: Stream.unwrap(
-      awaitOrchestrationRuntimeForOptionalBackground.pipe(
-        Effect.map((runtime) =>
-          Option.isSome(runtime) ? runtime.value.nextTurnQueueDispatcher.changes : Stream.empty,
-        ),
-      ),
-    ),
-    domainEvents: Stream.unwrap(
-      awaitOrchestrationRuntimeForOptionalBackground.pipe(
-        Effect.map((runtime) =>
-          Option.isSome(runtime)
-            ? runtime.value.orchestrationEngine.streamDomainEvents
-            : Stream.empty,
-        ),
-      ),
-    ),
+    getQueueSnapshot: getSubmissionQueueSnapshot,
+    getSubmission: getTurnSubmission,
+    queueChanges: submissionQueueChanges,
+    domainEvents: submissionDomainEvents,
     listProviderInstances: providerAdvisoryProjection.getProviders,
     getSettings: serverSettings.getSettings.pipe(Effect.mapError(toAgentBridgeHostError)),
     getProjectGitBranch: (cwd) =>
@@ -3509,9 +3533,39 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             }),
           getSettings: serverSettings.getSettings.pipe(Effect.mapError(asHostError)),
           listProviders: providerAdvisoryProjection.getProviders,
-          submitTurn: (body) =>
+          usageAccounts: awaitOrchestrationRuntimeForRoute.pipe(
+            Effect.flatMap((runtime) => runtime.usageService.getAccounts({ refresh: "none" })),
+          ),
+          getThreadDetails: getSubmissionThreadDetails,
+          getTurnState: getSubmissionTurnState,
+          getQueueSnapshot: getSubmissionQueueSnapshot,
+          getSubmission: getTurnSubmission,
+          queueChanges: submissionQueueChanges,
+          domainEvents: submissionDomainEvents,
+          cancelQueuedSubmission: (submissionId) =>
+            cancelQueuedSubmission(
+              nextTurnQueueStore,
+              (threadId) =>
+                awaitOrchestrationRuntimeForRoute.pipe(
+                  Effect.flatMap((runtime) => runtime.nextTurnQueueDispatcher.notify(threadId)),
+                ),
+              submissionId,
+            ).pipe(Effect.mapError(asHostError)),
+          createCodeReviewWorkflow: (input, workflowId) =>
+            awaitOrchestrationRuntimeForRoute.pipe(
+              Effect.flatMap(({ codeReviewWorkflowService }) =>
+                codeReviewWorkflowService.createWorkflow(input, { workflowId }),
+              ),
+            ),
+          archiveCodeReviewWorkflow: (workflowId) =>
+            awaitOrchestrationRuntimeForRoute.pipe(
+              Effect.flatMap(({ codeReviewWorkflowService }) =>
+                codeReviewWorkflowService.archiveWorkflow(workflowId),
+              ),
+            ),
+          submitTurn: (body, source) =>
             // A background retry must preserve any hold the user set meanwhile.
-            submitTurnSubmission(body, { submissionSource: "human", resumeQueue: false }).pipe(
+            submitTurnSubmission(body, { submissionSource: source, resumeQueue: false }).pipe(
               Effect.mapError((error) => ({
                 message: error.message,
                 ...("code" in error && typeof error.code === "string" ? { code: error.code } : {}),
@@ -3546,6 +3600,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           stateDir: serverConfig.stateDir,
         },
       });
+  if (upstreamPorts !== null)
+    wakeUpstreamPorts = (threadId) => upstreamPorts.wakePortQueue(undefined, threadId);
   if (upstreamPorts !== null)
     yield* Deferred.await(orchestrationRuntime).pipe(
       Effect.andThen(Scope.provide(upstreamPorts.start, subscriptionsScope)),
@@ -3986,9 +4042,33 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* upstreamRoute(
           (yield* requireUpstreamPorts).startPort(stripRequestTag(request.body)),
         );
+      case UPSTREAM_PORTS_WS_METHODS.previewPortGroups:
+        return yield* upstreamRoute(
+          (yield* requireUpstreamPorts).previewPortGroups(stripRequestTag(request.body)),
+        );
+      case UPSTREAM_PORTS_WS_METHODS.enqueuePort:
+        return yield* upstreamRoute(
+          (yield* requireUpstreamPorts).enqueuePort(stripRequestTag(request.body)),
+        );
+      case UPSTREAM_PORTS_WS_METHODS.getPortQueue:
+        return yield* upstreamRoute(
+          (yield* requireUpstreamPorts).getPortQueue(stripRequestTag(request.body)),
+        );
+      case UPSTREAM_PORTS_WS_METHODS.dequeuePort:
+        return yield* upstreamRoute(
+          (yield* requireUpstreamPorts).dequeuePort(stripRequestTag(request.body)),
+        );
+      case UPSTREAM_PORTS_WS_METHODS.controlPortQueue:
+        return yield* upstreamRoute(
+          (yield* requireUpstreamPorts).controlPortQueue(stripRequestTag(request.body)),
+        );
       case UPSTREAM_PORTS_WS_METHODS.unlinkPort:
         return yield* upstreamRoute(
           (yield* requireUpstreamPorts).unlinkPort(stripRequestTag(request.body)),
+        );
+      case UPSTREAM_PORTS_WS_METHODS.retryPortReview:
+        return yield* upstreamRoute(
+          (yield* requireUpstreamPorts).retryPortReview(stripRequestTag(request.body)),
         );
       case UPSTREAM_PORTS_WS_METHODS.getPortPrompt:
         return yield* upstreamRoute(
@@ -4141,17 +4221,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             ),
           );
         yield* refreshResumes();
+        yield* wakeUpstreamPorts();
         return result;
       }
       case USAGE_WS_METHODS.getAccounts: {
         const { usageService } = yield* awaitOrchestrationRuntimeForRoute;
-        return yield* usageService
-          .getAccounts(stripRequestTag(request.body))
-          .pipe(
-            Effect.mapError(
-              () => new RouteRequestError({ message: "Unable to load account usage." }),
-            ),
-          );
+        return yield* usageService.getAccounts(stripRequestTag(request.body)).pipe(
+          Effect.tap(() => wakeUpstreamPorts()),
+          Effect.mapError(
+            () => new RouteRequestError({ message: "Unable to load account usage." }),
+          ),
+        );
       }
 
       case NATIVE_OPERATION_WS_METHODS.fork: {

@@ -107,8 +107,15 @@ import {
   UpstreamResolvePublicationInput,
   UpstreamRunInput,
   UpstreamStartPortInput,
+  UpstreamPreviewPortGroupsInput,
+  UpstreamEnqueuePortInput,
+  UpstreamGetPortQueueInput,
+  UpstreamDequeuePortInput,
+  UpstreamControlPortQueueActionInput,
+  UpstreamIgnorePortConflictsInput,
   UpstreamUndoDecisionsInput,
   UpstreamUnlinkPortInput,
+  UpstreamRetryPortReviewInput,
 } from "./upstreamPorts";
 import { AGENTS_WS_METHODS, AgentsDismissInput, AgentsGetSnapshotInput } from "./backgroundWork";
 import { ProjectGetCheckedInConfigInput } from "./checkedInProjectFile";
@@ -818,7 +825,16 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.undoDecisions, UpstreamUndoDecisionsInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.run, UpstreamRunInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.startPort, UpstreamStartPortInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.previewPortGroups, UpstreamPreviewPortGroupsInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.enqueuePort, UpstreamEnqueuePortInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.getPortQueue, UpstreamGetPortQueueInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.dequeuePort, UpstreamDequeuePortInput),
+  Schema.Union([
+    tagRequestBody(UPSTREAM_PORTS_WS_METHODS.controlPortQueue, UpstreamControlPortQueueActionInput),
+    tagRequestBody(UPSTREAM_PORTS_WS_METHODS.controlPortQueue, UpstreamIgnorePortConflictsInput),
+  ]),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.unlinkPort, UpstreamUnlinkPortInput),
+  tagRequestBody(UPSTREAM_PORTS_WS_METHODS.retryPortReview, UpstreamRetryPortReviewInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.getPortPrompt, UpstreamGetPortPromptInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.resolvePublication, UpstreamResolvePublicationInput),
   tagRequestBody(UPSTREAM_PORTS_WS_METHODS.addRemote, UpstreamPortsProjectInput),
