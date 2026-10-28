@@ -3692,7 +3692,9 @@ it.layer(
               result.perTargetReclaimed.some((target) => target.path === foreignTree),
             ) ?? false,
           );
-          assert.isTrue(runGit(repo.root, "worktree", "list", "--porcelain").includes(foreignTree));
+          const registrations = yield* (yield* GitCore).listWorktrees(repo.root);
+          const canonicalTree = yield* Effect.promise(() => canonicalWorktreePath(foreignTree));
+          assert.isTrue(registrations.some((entry) => entry.canonicalPath === canonicalTree));
         }),
       ),
     60_000,
