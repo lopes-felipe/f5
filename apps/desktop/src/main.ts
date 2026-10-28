@@ -2445,6 +2445,13 @@ function zoomMainWindow(direction: AppZoomDirection): void {
   );
   if (!window || window.webContents.isDestroyed()) return;
   zoomAppContents(window.webContents, direction);
+  // Isolated origin zoom still receives the embedder's zoom through webview.
+  // Restore only this window's guests, retaining each tab's chosen factor.
+  for (const [tabId, entry] of previewTabs) {
+    if (entry.ownerWebContentsId !== window.webContents.id) continue;
+    const guest = getPreviewWebContents(tabId);
+    if (guest && !guest.isDestroyed()) guest.setZoomFactor(entry.zoomFactor);
+  }
 }
 
 function dispatchMenuAction(action: string): void {
