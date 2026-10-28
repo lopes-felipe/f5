@@ -55,8 +55,8 @@ export function portReviewLabel(review: UpstreamPortReviewSummary | null | undef
   if (!review) return null;
   const suffix = review.detail ? ": " + review.detail : "";
   switch (review.status) {
-    case "waiting": return "Code review: waits for the pull request";
-    case "reviewing": return "Code review: in progress";
+    case "waiting": return "Code review: waits for the pull request" + suffix;
+    case "reviewing": return "Code review: in progress" + suffix;
     case "applying": return "Code review: applying feedback" + suffix;
     case "completed": return "Code review: revision completed" + suffix;
     case "skipped": return "Code review: skipped" + (review.detail ? " (" + review.detail + ")" : "");

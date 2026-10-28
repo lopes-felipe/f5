@@ -54,8 +54,8 @@ import {
 it("labels each review stage independently of the port outcome", () => {
   expect(portReviewLabel(null)).toBeNull();
   for (const [status, label] of [
-    ["waiting", "Code review: waits for the pull request"],
-    ["reviewing", "Code review: in progress"],
+    ["waiting", "Code review: waits for the pull request: paused"],
+    ["reviewing", "Code review: in progress: paused"],
     ["applying", "Code review: applying feedback: paused"],
     ["completed", "Code review: revision completed: paused"],
     ["skipped", "Code review: skipped (paused)"],
