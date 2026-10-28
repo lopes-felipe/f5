@@ -131,6 +131,12 @@ it("blocks shared-root changes for another profile's archived effective workspac
         assertExclusiveProfileCheckout({ defaultStateDir: state, profile: current }, checkout),
       ).rejects.toThrow(/Another profile/);
       db.prepare("UPDATE projection_projects SET workspace_root=?").run(
+        Path.join(checkout, "nested-project"),
+      );
+      await expect(
+        assertExclusiveProfileCheckout({ defaultStateDir: state, profile: current }, checkout),
+      ).rejects.toThrow(/Another profile/);
+      db.prepare("UPDATE projection_projects SET workspace_root=?").run(
         Path.join(root, "unrelated"),
       );
       await expect(

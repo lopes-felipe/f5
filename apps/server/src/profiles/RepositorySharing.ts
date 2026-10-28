@@ -142,7 +142,7 @@ export async function assertExclusiveProfileCheckout(
       for (const row of rows) {
         if (!row.path)
           throw new Error("Other-profile checkout ownership could not be established.");
-        if ((await canonicalWorktreePath(row.path)) === target)
+        if (pathContains(target, await canonicalWorktreePath(row.path)))
           throw new WorkspaceRequiresNewWorktreeError(
             "Another profile references this checkout. Create a new worktree instead.",
           );
