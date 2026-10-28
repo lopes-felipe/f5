@@ -45,6 +45,7 @@ import { timelineScrollAnchors } from "./chat/timelineScrollAnchors";
 import { render } from "vitest-browser-react";
 
 import { type ComposerImageAttachment, useComposerDraftStore } from "../composerDraftStore";
+import { resetThreadModelOptionsSeedsForTests } from "../threadModelOptionsSeeds";
 import {
   clearAllPendingTurnDispatchArtifacts,
   usePendingTurnDispatchStore,
@@ -2242,6 +2243,7 @@ describe("ChatView timeline (full app)", () => {
     await setViewport(DEFAULT_VIEWPORT);
     localStorage.clear();
     useComposerMentionHistoryStore.setState({ entries: [] });
+    resetThreadModelOptionsSeedsForTests();
     document.body.innerHTML = "";
     wsRequests.length = 0;
     useComposerDraftStore.setState({
@@ -5590,6 +5592,77 @@ describe("ChatView timeline (full app)", () => {
         id: "reasoningEffort",
         value: "high",
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  // Upstream ports and scheduled tasks create threads on the server, so only
+  // the thread's selection knows the chosen effort.
+  async function mountThreadWithSavedLowEffort() {
+    useComposerDraftStore.getState().setPrompt(THREAD_ID, "follow up");
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-thread-effort" as MessageId,
+      targetText: "thread effort target",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) => ({
+          ...thread,
+          model: "gpt-5.4",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.4",
+            options: [{ id: "reasoningEffort", value: "low" }],
+          },
+        })),
+      },
+    });
+    await vi.waitFor(() =>
+      expect(
+        useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.modelOptions?.codex
+          ?.reasoningEffort,
+      ).toBe("low"),
+    );
+    return mounted;
+  }
+
+  async function sendAndReadCodexEffort() {
+    (await waitForSendButton()).click();
+    await vi.waitFor(() => expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(1));
+    const command = getSubmittedTurnCommand(getDispatchCommandRequests("thread.turn.start")[0]!) as
+      | {
+          modelSelection?: { options?: ReadonlyArray<{ id: string; value: unknown }> };
+          modelOptions?: { codex?: { reasoningEffort?: string } };
+        }
+      | undefined;
+    return {
+      selection: command?.modelSelection?.options?.find((option) => option.id === "reasoningEffort")
+        ?.value,
+      modelOptions: command?.modelOptions?.codex?.reasoningEffort,
+    };
+  }
+
+  it("keeps the effort of a thread created without a local draft", async () => {
+    const mounted = await mountThreadWithSavedLowEffort();
+    try {
+      expect(await sendAndReadCodexEffort()).toEqual({ selection: "low", modelOptions: "low" });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the model's default effort picked after seeding a thread's effort", async () => {
+    const mounted = await mountThreadWithSavedLowEffort();
+    try {
+      // Picking the default effort (High here) stores no options, like the Codex picker does.
+      useComposerDraftStore.getState().setModelOptions(THREAD_ID, null);
+      expect(await sendAndReadCodexEffort()).toEqual({ selection: "high", modelOptions: "high" });
+      expect(
+        useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.modelOptions ?? null,
+      ).toBeNull();
     } finally {
       await mounted.cleanup();
     }
