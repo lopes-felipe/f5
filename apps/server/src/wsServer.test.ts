@@ -3664,12 +3664,11 @@ describe("WebSocket Server", () => {
           encoding: "utf8",
         }).trim(),
       ).toBe(fork?.branch);
-      expect(
-        database
-          .prepare("SELECT runtime_payload_json FROM provider_session_runtime WHERE thread_id = ?")
-          .get(fork!.id),
-      ).toMatchObject({
-        runtime_payload_json: expect.stringContaining(fork!.worktreePath!),
+      const binding = database
+        .prepare("SELECT runtime_payload_json FROM provider_session_runtime WHERE thread_id = ?")
+        .get(fork!.id);
+      expect(JSON.parse(String(binding?.runtime_payload_json))).toMatchObject({
+        cwd: fork!.worktreePath,
       });
     } finally {
       database.close();
