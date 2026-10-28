@@ -180,7 +180,13 @@ export const makeDrainableWorker = <A, E, R>(
           }
           if (entry.key !== undefined) queuedByKey.delete(entry.key);
           active = entry;
-          yield* process(entry.item);
+          yield* Effect.suspend(() => process(entry.item)).pipe(
+            Effect.catchCause((cause) => {
+              if (Cause.hasInterruptsOnly(cause)) return Effect.void;
+              failures++;
+              return Effect.logError("background worker item failed", { worker: name }, cause);
+            }),
+          );
           yield* Effect.uninterruptible(
             Effect.gen(function* () {
               active = undefined;

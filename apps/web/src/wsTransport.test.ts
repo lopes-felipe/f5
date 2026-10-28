@@ -153,6 +153,20 @@ afterEach(() => {
 });
 
 describe("WsTransport", () => {
+  it("retries a cold start quickly, then backs off repeated failures", () => {
+    const transport = new WsTransport("ws://localhost:3020");
+    getSocket().close();
+    vi.advanceTimersByTime(499);
+    expect(sockets).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(sockets).toHaveLength(2);
+    getSocket().close();
+    vi.advanceTimersByTime(2_999);
+    expect(sockets).toHaveLength(2);
+    vi.advanceTimersByTime(1);
+    expect(sockets).toHaveLength(3);
+    transport.dispose();
+  });
   it("cancels hung authentication on its deadline and retries without stale socket creation", async () => {
     let reply!: (response: Response) => void;
     const fetcher = vi.fn(
@@ -172,7 +186,7 @@ describe("WsTransport", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(sockets).toHaveLength(0);
-    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(3_000);
     expect(fetcher).toHaveBeenCalledTimes(2);
     transport.dispose();
     expect(fetcher.mock.calls[1]![1]!.signal?.aborted).toBe(true);
@@ -200,7 +214,7 @@ describe("WsTransport", () => {
   it("expires stuck CONNECTING sockets and ignores their late open callbacks", async () => {
     const transport = new WsTransport("ws://localhost:3020"),
       old = getSocket();
-    await vi.advanceTimersByTimeAsync(10_500);
+    await vi.advanceTimersByTimeAsync(13_000);
     expect(sockets).toHaveLength(2);
     old.open();
     expect(getWsConnectionState().phase).not.toBe("connected");
@@ -451,7 +465,7 @@ describe("WsTransport", () => {
     socket.close();
     socket.close();
 
-    vi.advanceTimersByTime(500);
+    vi.advanceTimersByTime(3_000);
     expect(sockets).toHaveLength(2);
 
     vi.advanceTimersByTime(2_000);
@@ -509,8 +523,6 @@ describe("WsTransport", () => {
     window.dispatchEvent(new Event("focus"));
     await vi.advanceTimersByTimeAsync(3_000);
     expect(firstSocket.readyState).toBe(MockWebSocket.CLOSED);
-
-    await vi.advanceTimersByTimeAsync(500);
     expect(sockets).toHaveLength(2);
     const secondSocket = getSocket();
     secondSocket.open();
@@ -687,7 +699,7 @@ describe("protocol upgrades", () => {
     getSocket().open();
     getSocket().serverMessage(welcome(42));
     getSocket().close();
-    vi.advanceTimersByTime(500);
+    vi.advanceTimersByTime(3_000);
     getSocket().open();
     getSocket().serverMessage(welcome(84));
     expect(observed).toEqual([42, 84]);
@@ -700,7 +712,7 @@ describe("protocol upgrades", () => {
     expect(new URL(getSocket().url).searchParams.get("token")).toBe("secret");
     getSocket().open();
     getSocket().close();
-    vi.advanceTimersByTime(500);
+    vi.advanceTimersByTime(3_000);
     expect(new URL(getSocket().url).searchParams.get("protocol")).toBe(String(F5_PROTOCOL_VERSION));
     transport.dispose();
   });
@@ -758,7 +770,7 @@ it.each([
   expect(getSocket().url).toBe(expected.href);
   getSocket().open();
   getSocket().close();
-  vi.advanceTimersByTime(500);
+  vi.advanceTimersByTime(3_000);
   expect(getSocket().url).toBe(expected.href);
   transport.dispose();
 });

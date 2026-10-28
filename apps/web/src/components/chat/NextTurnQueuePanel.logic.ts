@@ -95,6 +95,8 @@ export function describeQueueBlockedState(
   switch (snapshot.reasonCode) {
     case "scheduled_task_wait":
       return "Waiting for scheduled execution capacity or scheduler enablement.";
+    case "scheduled_task_canceled":
+      return fallback ?? "A scheduled message was canceled.";
     case "active_turn":
       return "Waiting for the active turn to finish.";
     case "turn_starting":

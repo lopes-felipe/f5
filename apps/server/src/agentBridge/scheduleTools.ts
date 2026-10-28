@@ -8,6 +8,7 @@ import {
   ProviderInstanceId,
   ScheduledWorkspace,
   RuntimeMode,
+  ProviderInteractionMode,
   ProviderOptionSelection,
   type ScheduledTask,
   type ScheduledTaskConfiguration,
@@ -15,7 +16,7 @@ import {
 import { createModelSelection } from "@t3tools/shared/model";
 import { previewCronSchedule } from "@t3tools/shared/cronSchedule";
 import { scheduledExecutionConfiguration } from "@t3tools/shared/scheduledTasks";
-import { canonicalJsonHash } from "../canonicalJsonHash.ts";
+import { canonicalJson, canonicalJsonHash } from "../canonicalJsonHash.ts";
 import type { ScheduledTaskServiceShape, ScheduleActor } from "../scheduledTasks/Service.ts";
 import type { AgentBridgeStore } from "./AgentBridgeStore.ts";
 import type { AgentBridgeHostShape } from "./AgentBridgeHost.ts";
@@ -30,19 +31,32 @@ import {
 import { toJsonSchemaObject } from "../git/Utils.ts";
 
 const RequestId = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128));
-const Configuration = Schema.Struct({
-  name: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
-  prompt: TrimmedNonEmptyString.check(Schema.isMaxLength(32768)),
-  cron: Schema.String,
-  timezone: Schema.String,
+const Name = TrimmedNonEmptyString.check(Schema.isMaxLength(200));
+const Prompt = TrimmedNonEmptyString.check(Schema.isMaxLength(32768));
+const OptionalFields = {
   providerInstanceId: Schema.optional(Schema.String),
   model: Schema.optional(Schema.String),
   modelOptions: Schema.optional(Schema.Array(ProviderOptionSelection)),
   runtimeMode: Schema.optional(RuntimeMode),
+  interactionMode: Schema.optional(ProviderInteractionMode),
   workspace: Schema.optional(ScheduledWorkspace),
   notify: Schema.optional(Schema.Literals(["all", "failures_and_attention", "none"])),
   enabled: Schema.optional(Schema.Boolean),
   maxRuns: Schema.optional(Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)))),
+};
+const Configuration = Schema.Struct({
+  name: Name,
+  prompt: Prompt,
+  cron: Schema.String,
+  timezone: Schema.String,
+  ...OptionalFields,
+});
+const PartialConfiguration = Schema.Struct({
+  name: Schema.optional(Name),
+  prompt: Schema.optional(Prompt),
+  cron: Schema.optional(Schema.String),
+  timezone: Schema.optional(Schema.String),
+  ...OptionalFields,
 });
 const Create = Schema.Struct({
   clientRequestId: RequestId,
@@ -53,7 +67,7 @@ const Update = Schema.Struct({
   clientRequestId: RequestId,
   taskId: ScheduledTaskId,
   expectedVersion: Schema.Int,
-  configuration: Configuration,
+  configuration: PartialConfiguration,
 });
 const Delete = Schema.Struct({
   clientRequestId: RequestId,
@@ -64,6 +78,7 @@ const Run = Schema.Struct({ clientRequestId: RequestId, taskId: ScheduledTaskId 
 const List = Schema.Struct({ projectId: Schema.optional(ProjectId) });
 const History = Schema.Struct({
   taskId: ScheduledTaskId,
+  runId: Schema.optional(ScheduledTaskRunId),
   before: Schema.optional(Schema.String),
   limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),
 });
@@ -99,7 +114,8 @@ export const makeScheduleTools = (deps: {
     };
   };
   const configure = (
-    input: typeof Configuration.Type,
+    caller: AgentBridgeCaller,
+    input: typeof PartialConfiguration.Type,
     projectId: ProjectId,
     requestedAt: string,
     previous?: ScheduledTaskConfiguration,
@@ -107,6 +123,35 @@ export const makeScheduleTools = (deps: {
     Effect.gen(function* () {
       if (input.runtimeMode !== undefined && input.runtimeMode !== "approval-required")
         return yield* fail("Agent schedules require approval-required mode.");
+      if ((input.workspace ?? previous?.workspace)?.kind === "thread") {
+        // Each run posts into the user's own conversation, like send_message.
+        if (!caller.client.scopes.includes("f5.turns"))
+          return yield* new AgentBridgeToolError({
+            message:
+              "Scheduling into an existing conversation also requires permission to send messages.",
+            requiredScope: "f5.turns",
+          });
+        // A bound task always runs with its conversation's settings at admission.
+        const changed = <A>(value: A | undefined, kept: A | undefined) =>
+          value !== undefined && (!previous || canonicalJson(value) !== canonicalJson(kept));
+        if (
+          changed(input.providerInstanceId, previous?.modelSelection.instanceId) ||
+          changed(input.model, previous?.modelSelection.model) ||
+          changed(input.modelOptions, previous?.modelSelection.options) ||
+          changed(input.interactionMode, previous?.interactionMode)
+        )
+          return yield* fail(
+            "A task bound to a conversation uses that conversation's provider, model, options and mode. Omit them.",
+          );
+      }
+      const name = input.name ?? previous?.name,
+        prompt = input.prompt ?? previous?.prompt,
+        cron = input.cron ?? previous?.cron,
+        timezone = input.timezone ?? previous?.timezone;
+      if (!name || !prompt || cron === undefined || timezone === undefined)
+        return yield* fail("Name, prompt, cron and timezone are required.");
+      // An update that omits both cron and timezone keeps the stored schedule verbatim.
+      const scheduleKept = !!previous && input.cron === undefined && input.timezone === undefined;
       if (previous) {
         const kept =
           !input.providerInstanceId ||
@@ -114,11 +159,12 @@ export const makeScheduleTools = (deps: {
         const candidate: ScheduledTaskConfiguration = {
           scheduleSource: previous.scheduleSource,
           oneShotAt: previous.oneShotAt,
-          name: input.name,
-          prompt: input.prompt,
-          cron: input.cron,
-          timezone: input.timezone,
+          name,
+          prompt,
+          cron,
+          timezone,
           runtimeMode: input.runtimeMode ?? previous.runtimeMode,
+          interactionMode: input.interactionMode ?? previous.interactionMode,
           workspace: input.workspace ?? previous.workspace,
           modelSelection: createModelSelection(
             ProviderInstanceId.makeUnsafe(
@@ -144,19 +190,24 @@ export const makeScheduleTools = (deps: {
         input.providerInstanceId === previous?.modelSelection.instanceId;
       const requestedModel =
         input.model ?? (keptInstance ? previous?.modelSelection.model : undefined);
-      const { provider, model } = yield* resolveBridgeProvider(
-        yield* deps.host.listProviderInstances,
-        yield* deps.host.getSettings,
-        {
-          ...(instanceId ? { instanceId } : {}),
-          ...(requestedModel ? { model: requestedModel } : {}),
-        },
-      );
+      const selectedWorkspace = input.workspace ?? previous?.workspace;
+      // A bound task's stored model only mirrors its conversation, which the scheduler
+      // resolves on save; an obsolete stored provider must not block the update.
+      const resolved =
+        selectedWorkspace?.kind === "thread" && previous
+          ? null
+          : yield* resolveBridgeProvider(
+              yield* deps.host.listProviderInstances,
+              yield* deps.host.getSettings,
+              {
+                ...(instanceId ? { instanceId } : {}),
+                ...(requestedModel ? { model: requestedModel } : {}),
+              },
+            );
       const project = (yield* deps.host.readSnapshot).projects.find(
         (p) => p.id === projectId && p.deletedAt === null,
       );
       if (!project) return yield* fail("Project not found.");
-      const selectedWorkspace = input.workspace ?? previous?.workspace;
       const branch = selectedWorkspace
         ? null
         : yield* deps.host.getProjectGitBranch(project.workspaceRoot);
@@ -164,33 +215,51 @@ export const makeScheduleTools = (deps: {
         return yield* fail(
           "Select an explicit worktree base branch or explicitly choose projectRoot for this project.",
         );
-      const preview = yield* Effect.try({
-        try: () => previewCronSchedule(input.cron, input.timezone, new Date(requestedAt)),
-        catch: () => fail("Invalid cron expression or timezone."),
-      });
-      if (!preview.nextFireTimes.length) return yield* fail("This schedule has no future fires.");
+      const schedule =
+        scheduleKept && previous
+          ? {
+              cron: previous.cron,
+              timezone: previous.timezone,
+              scheduleSource: previous.scheduleSource,
+              oneShotAt: previous.oneShotAt,
+              maxRuns: input.maxRuns === undefined ? previous.maxRuns : input.maxRuns,
+            }
+          : yield* Effect.gen(function* () {
+              const preview = yield* Effect.try({
+                try: () => previewCronSchedule(cron, timezone, new Date(requestedAt)),
+                catch: () => fail("Invalid cron expression or timezone."),
+              });
+              if (!preview.nextFireTimes.length)
+                return yield* fail("This schedule has no future fires.");
+              return {
+                cron: preview.cron,
+                timezone: preview.timezone,
+                scheduleSource: "Agent Bridge cron",
+                oneShotAt: preview.oneShotAt,
+                maxRuns: preview.oneShotAt
+                  ? 1
+                  : input.maxRuns === undefined
+                    ? (previous?.maxRuns ?? null)
+                    : input.maxRuns,
+              };
+            });
       return {
-        name: input.name,
-        prompt: input.prompt,
-        modelSelection: createModelSelection(
-          provider.instanceId,
-          model,
-          input.modelOptions ??
-            (keptInstance && (!input.model || input.model === previous?.modelSelection.model)
-              ? previous?.modelSelection.options
-              : undefined),
-        ),
+        name,
+        prompt,
+        modelSelection: resolved
+          ? createModelSelection(
+              resolved.provider.instanceId,
+              resolved.model,
+              input.modelOptions ??
+                (keptInstance && (!input.model || input.model === previous?.modelSelection.model)
+                  ? previous?.modelSelection.options
+                  : undefined),
+            )
+          : previous!.modelSelection,
         runtimeMode: "approval-required" as const,
+        interactionMode: input.interactionMode ?? previous?.interactionMode ?? "default",
         workspace: selectedWorkspace ?? { kind: "worktree" as const, baseBranch: branch! },
-        cron: preview.cron,
-        timezone: preview.timezone,
-        scheduleSource: "Agent Bridge cron",
-        oneShotAt: preview.oneShotAt,
-        maxRuns: preview.oneShotAt
-          ? 1
-          : input.maxRuns === undefined
-            ? (previous?.maxRuns ?? null)
-            : input.maxRuns,
+        ...schedule,
         notify: input.notify ?? previous?.notify ?? "all",
         enabled: input.enabled ?? previous?.enabled ?? true,
       } satisfies ScheduledTaskConfiguration;
@@ -301,7 +370,7 @@ export const makeScheduleTools = (deps: {
   ): AgentBridgeToolDefinition => ({
     name,
     title,
-    description: `${title} in F5. Schedules run only while the local server runs. Cron and IANA timezone are required; automatic work is supervised. Mutations require an explicit f5.schedules grant.`,
+    description: `${title} in F5. Schedules run only while the local server runs. Cron and IANA timezone are required; automatic work is supervised. Mutations require an explicit f5.schedules grant.${name === "update_scheduled_task" ? " Update changes only the fields you pass." : ""}`,
     scope: read ? "f5.read" : "f5.schedules",
     inputSchema: toJsonSchemaObject(schema) as Record<string, unknown>,
     annotations: {
@@ -349,7 +418,7 @@ export const makeScheduleTools = (deps: {
               runId: crypto.randomUUID(),
               projectId: input.projectId,
               requestedAt: at,
-              configuration: yield* configure(input, input.projectId, at),
+              configuration: yield* configure(caller, input, input.projectId, at),
             };
           }),
         (r, at) =>
@@ -382,6 +451,7 @@ export const makeScheduleTools = (deps: {
               projectId: current.task.projectId,
               requestedAt: at,
               configuration: yield* configure(
+                caller,
                 input.configuration,
                 current.task.projectId,
                 at,

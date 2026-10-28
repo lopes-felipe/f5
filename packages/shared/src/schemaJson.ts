@@ -56,7 +56,11 @@ const parseLenientJsonGetter = SchemaGetter.onSome((input: string) =>
         (match, stringLiteral: string | undefined) => (stringLiteral ? match : ""),
       );
 
-      stripped = stripped.replace(/,(\s*[}\]])/g, "$1");
+      stripped = stripped.replace(
+        /("(?:[^"\\]|\\.)*")|,(\s*[}\]])/g,
+        (match, stringLiteral: string | undefined, bracket: string | undefined) =>
+          stringLiteral ? match : (bracket ?? ""),
+      );
       return Option.some(JSON.parse(stripped));
     },
     catch: (e) => new SchemaIssue.InvalidValue(Option.some(input), { message: String(e) }),

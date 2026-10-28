@@ -141,6 +141,8 @@ export interface NextTurnQueueStoreShape {
       | import("../../scheduledTasks/continuations.ts").ScheduledContinuationContext
       | undefined;
     readonly submissionSource?: "human" | "automation";
+    /** A new client message resumes a user-held queue; steering does not. */
+    readonly resumeQueue?: boolean;
     readonly submissionId: CommandId;
     readonly requestHash: string;
     readonly itemId: CommandId;
@@ -210,6 +212,8 @@ export interface NextTurnQueueStoreShape {
     readonly reasonCode?: QueueReasonCode | null | undefined;
     readonly detail?: string | null | undefined;
     readonly expectedRevision?: number | undefined;
+    /** A delayed Stop must not hold a plain human send admitted after this event. */
+    readonly interruptRequestedSequence?: number | undefined;
   }) => Effect.Effect<void, NextTurnQueueError>;
   readonly setInterruptSuppression: (input: {
     readonly threadId: ThreadId;

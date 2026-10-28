@@ -65,6 +65,7 @@ export type GitRunStackedActionInput = typeof GitRunStackedActionInput.Type;
 
 export const GitListBranchesInput = Schema.Struct({
   cwd: FilesystemPath,
+  refresh: Schema.optional(Schema.Boolean),
 });
 export type GitListBranchesInput = typeof GitListBranchesInput.Type;
 

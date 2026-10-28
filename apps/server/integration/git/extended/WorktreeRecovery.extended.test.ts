@@ -51,6 +51,7 @@ it.each(["directory", "symlink"])(
       git(repo, "worktree", "add", "-b", "feature", target);
       const other = path.join(root, "unmounted");
       git(repo, "worktree", "add", "-b", "other", other);
+      const registeredOther = fs.realpathSync(other);
       const otherAdmin = git(other, "rev-parse", "--absolute-git-dir");
       const otherIndex = fs.readFileSync(path.join(otherAdmin, "index"));
       fs.rmSync(other, { recursive: true });
@@ -69,7 +70,7 @@ it.each(["directory", "symlink"])(
           );
         }),
       );
-      expect(worktreePaths(repo)).toContain(other);
+      expect(worktreePaths(repo)).toContain(registeredOther);
       expect(fs.readFileSync(path.join(otherAdmin, "index"))).toEqual(otherIndex);
       await expect(
         run(

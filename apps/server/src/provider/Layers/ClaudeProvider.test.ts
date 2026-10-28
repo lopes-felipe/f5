@@ -1,5 +1,9 @@
 import { compareCliVersions } from "../cliVersion.ts";
 import { describe, expect, it } from "vitest";
+import { it as effectIt } from "@effect/vitest";
+import * as TestClock from "effect/testing/TestClock";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Layer, Sink, Stream } from "effect";
 import * as PlatformError from "effect/PlatformError";
@@ -23,6 +27,36 @@ import {
 } from "./ClaudeProvider.ts";
 
 const encoder = new TextEncoder();
+
+effectIt.effect.each([
+  { delay: "19 seconds", elapsed: "19 seconds", status: "ready" },
+  { delay: "1 minute", elapsed: "21 seconds", status: "error" },
+] as const)("bounds slow Claude version probes ($delay)", ({ delay, elapsed, status }) =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<void>();
+    const spawner = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) => {
+        const args = (command as unknown as { args: ReadonlyArray<string> }).args;
+        return args[0] === "--version"
+          ? Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Effect.sleep(delay)),
+              Effect.as(mockHandle({ stdout: "claude 2.1.0\n", stderr: "", code: 0 })),
+            )
+          : Effect.succeed(mockHandle({ stdout: '{"loggedIn":true}', stderr: "", code: 0 }));
+      }),
+    );
+    const fiber = yield* checkClaudeProviderStatus(claudeSettings, capabilitiesProbe).pipe(
+      Effect.provide(Layer.merge(NodeServices.layer, spawner)),
+      Effect.forkChild,
+    );
+    yield* Deferred.await(started);
+    yield* TestClock.adjust(elapsed);
+    const result = yield* Fiber.join(fiber);
+    expect(result.status).toBe(status);
+    expect(result.version).toBe(status === "ready" ? "2.1.0" : null);
+  }),
+);
 
 function mockHandle(result: { stdout: string; stderr: string; code: number }) {
   return ChildProcessSpawner.makeHandle({

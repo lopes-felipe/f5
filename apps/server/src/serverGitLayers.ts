@@ -1,4 +1,5 @@
 import { WorktreePreparationsLive } from "./persistence/Layers/WorktreePreparations.ts";
+import { ServerSettingsLive } from "./serverSettings.ts";
 import { Layer } from "effect";
 
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
@@ -14,7 +15,7 @@ import { ProjectionThreadRepositoryLive } from "./persistence/Layers/ProjectionT
 // lets checkpointing create GitServiceLive without secrets before GitCore needs it.
 export const ServerGitLive = Layer.mergeAll(
   CheckpointStoreLiveWithGitService,
-  GitCoreLive.pipe(Layer.provide(WorktreePreparationsLive)),
+  GitCoreLive.pipe(Layer.provide(WorktreePreparationsLive), Layer.provide(ServerSettingsLive)),
 ).pipe(Layer.provideMerge(GitServiceLive.pipe(Layer.provideMerge(ServerSecretStoreLive))));
 
 /** Compose the Git and checkpoint-query dependencies shared by both server runtimes. */

@@ -94,6 +94,7 @@ export const GitPreparePullRequestThreadResult = Schema.Struct({
   changeRequest: Schema.optional(ChangeRequest),
   branch: TrimmedNonEmptyStringSchema,
   worktreePath: FilesystemPath.pipe(Schema.NullOr),
+  isOnPullRequestHead: Schema.optionalKey(Schema.Boolean),
 });
 export type GitPreparePullRequestThreadResult = typeof GitPreparePullRequestThreadResult.Type;
 

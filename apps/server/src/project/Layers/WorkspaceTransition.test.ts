@@ -978,6 +978,28 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
       f.runtime.runPromise(f.transition.switchWorkspace({ ...request, branch: "changed" })),
     ).rejects.toThrow("another request");
   });
+
+  it("moves to a flat temporary branch when the t3code namespace is occupied", async () => {
+    const f = await fixture();
+    git(f.repo.root, "branch", "t3code");
+    const request = await f.request("move_to_new_worktree");
+    const result = await f.runtime.runPromise(f.transition.switchWorkspace(request));
+    expect(result.phase).toBe("completed");
+    const thread = (await f.runtime.runPromise(f.engine.getReadModel())).threads[0]!;
+    expect(thread.branch).toMatch(/^t3code-[0-9a-f]{8}$/);
+    expect(git(thread.worktreePath!, "branch", "--show-current").trim()).toBe(thread.branch);
+  });
+
+  it.each(["t3code/abcdef12", "t3code-abcdef12", "t3code/12345678-1234-4234-8234-123456789abc"])(
+    "reserves temporary branch %s for managed worktrees",
+    async (branch) => {
+      const f = await fixture();
+      const request = await f.request("move_to_new_worktree", { branch });
+      await expect(f.runtime.runPromise(f.transition.switchWorkspace(request))).rejects.toThrow(
+        "Invalid branch name",
+      );
+    },
+  );
   it("joins identical retries, commits once, and never accepts a changed payload", async () => {
     const f = await fixture();
     const target = path.join(f.config.worktreesDir, "topic");

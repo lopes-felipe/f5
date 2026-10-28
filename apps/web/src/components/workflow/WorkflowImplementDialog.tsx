@@ -74,14 +74,12 @@ function BaseBranchPicker(props: {
   const { settings } = useAppSettings();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const gitAutoRefreshIntervalMs = settings.gitStatusAutoRefreshIntervalSeconds * 1000;
   const gitAutoRefreshEnabled = settings.gitStatusAutoRefreshIntervalSeconds > 0;
 
   const branchesQuery = useQuery(
     gitBranchesQueryOptions({
       cwd: props.cwd,
       autoRefresh: gitAutoRefreshEnabled,
-      refetchIntervalMs: gitAutoRefreshIntervalMs,
     }),
   );
 

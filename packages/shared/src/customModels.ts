@@ -22,13 +22,11 @@ export function normalizeCustomModels(
       ]
     : undefined;
   const seen = new Set([...builtIns, ...(catalog?.map((model) => model.slug) ?? [])]);
-  let count = 0;
   return models.flatMap((model) => {
     const slug = provider
       ? normalizeModelSlug(customModelSlug(model), provider)
       : customModelSlug(model).trim();
-    if (!slug || seen.has(slug) || (provider && (slug.length > 256 || count >= 32))) return [];
-    count++;
+    if (!slug || seen.has(slug) || (provider && slug.length > 256)) return [];
     seen.add(slug);
     return [
       typeof model === "string"

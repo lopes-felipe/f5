@@ -251,7 +251,6 @@ export default function GitActionsControl({
     gitBranchesQueryOptions({
       cwd: gitCwd,
       autoRefresh: gitAutoRefreshEnabled,
-      refetchIntervalMs: gitAutoRefreshIntervalMs,
     }),
   );
   // Default to true while loading so we don't flash init controls.

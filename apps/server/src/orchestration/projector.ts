@@ -288,6 +288,7 @@ export function projectEvent(
             title: payload.title,
             workspaceRoot: payload.workspaceRoot,
             defaultModel: payload.defaultModel,
+            defaultModelSelection: payload.defaultModelSelection ?? null,
             defaultEnvMode: payload.defaultEnvMode,
             icon: payload.icon,
             scripts: payload.scripts,

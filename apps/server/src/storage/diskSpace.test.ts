@@ -28,6 +28,46 @@ afterEach(async () => {
 });
 
 describe("diskSpaceLevel", () => {
+  it("holds new turns for a critical custom worktree volume, including previous locations", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "f5-custom-disk-"));
+    roots.push(root);
+    const current = path.join(root, "current");
+    const previous = path.join(root, "previous");
+    await fs.mkdir(current);
+    await fs.mkdir(previous);
+    const watched = await Effect.runPromise(
+      resolveWatchedPaths({
+        stateDir: path.join(root, "state"),
+        worktreesDir: path.join(root, "default"),
+        settings: decodeSettings({
+          worktreesDirectory: current,
+          previousWorktreesDirectories: [previous, path.join(root, "unmounted")],
+        }),
+        profile: undefined,
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+    expect(watched).toContainEqual({ path: current, role: "userdata" });
+    expect(watched).toContainEqual({ path: previous, role: "userdata" });
+    expect(watched.some((entry) => entry.path.endsWith("unmounted"))).toBe(false);
+    const volumes = await inspectVolumes({
+      watched,
+      readStat: async (target) => ({
+        device: target === previous ? 2 : 1,
+        freeBytes: target === previous ? GB : 50 * GB,
+        totalBytes: 100 * GB,
+      }),
+    });
+    expect(
+      diskSpaceHoldDetail({
+        checkedAt: new Date().toISOString(),
+        level: "critical",
+        volumes,
+        reclaimable: [],
+        lowThresholdBytes: LOW_DISK_SPACE_BYTES,
+        criticalThresholdBytes: CRITICAL_DISK_SPACE_BYTES,
+      }),
+    ).not.toBeNull();
+  });
   it("warns below 10 GB and holds turns below 2 GB", () => {
     expect(LOW_DISK_SPACE_BYTES).toBe(10 * GB);
     expect(CRITICAL_DISK_SPACE_BYTES).toBe(2 * GB);

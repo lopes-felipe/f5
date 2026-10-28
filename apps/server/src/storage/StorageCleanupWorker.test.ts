@@ -8,6 +8,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ServerConfig } from "../config.ts";
+import { customWorktreesDirectory } from "../worktreesDirectoryPaths.ts";
 import { createLargeIgnoredDependencyTree } from "../git/ignoredPaths.testUtils.ts";
 import { GitCore } from "../git/Services/GitCore.ts";
 import { withWorktreeLifecycleLock } from "../project/Layers/WorktreeLifecycleCoordinator.ts";
@@ -192,17 +193,46 @@ describe("StorageCleanupWorker", { timeout: 60_000 }, () => {
       worker: typeof StorageCleanupWorker.Service;
       core: typeof GitCore.Service;
     }) => Effect.Effect<A, E, SqlClient.SqlClient>,
+    location?: "custom" | "previous" | "symlink",
   ) =>
     Effect.gen(function* () {
       const repo = yield* Effect.promise(() => makeClonedRepo("f5-cleanup-"));
       cleanups.push(repo.cleanup);
       const world = makeWorld();
+      const customRoot = path.join(path.dirname(repo.root), "custom-worktrees");
+      const linkedRoot = path.join(path.dirname(repo.root), "linked-worktrees");
+      if (location === "symlink")
+        yield* Effect.promise(async () => {
+          await fs.mkdir(customRoot, { recursive: true });
+          await fs.symlink(customRoot, linkedRoot, "dir");
+        });
+      const customSettings = location
+        ? {
+            ...settings,
+            worktreesDirectory:
+              location === "previous"
+                ? customRoot + "-new"
+                : location === "symlink"
+                  ? linkedRoot
+                  : customRoot,
+            previousWorktreesDirectories: location === "previous" ? [customRoot] : [],
+          }
+        : settings;
       const layer = StorageCleanupWorkerLive.pipe(
-        Layer.provideMerge(automationLayer(world, settings, "f5-cleanup-state-")),
+        Layer.provideMerge(automationLayer(world, customSettings, "f5-cleanup-state-")),
       );
       return yield* Effect.gen(function* () {
         const config = yield* ServerConfig;
-        const worktreePath = path.join(config.worktreesDir, "project", "feature");
+        const worktreePath = path.join(
+          location
+            ? customWorktreesDirectory(
+                location === "symlink" ? linkedRoot : customRoot,
+                config.worktreesDir,
+              )
+            : config.worktreesDir,
+          "project",
+          "feature",
+        );
         yield* Effect.promise(() => fs.mkdir(path.dirname(worktreePath), { recursive: true }));
         git(repo.root, "worktree", "add", "-q", "-b", "feature", worktreePath, "main");
         world.projects.push(project("project-1", repo.root));
@@ -220,6 +250,26 @@ describe("StorageCleanupWorker", { timeout: 60_000 }, () => {
         return yield* body({ world, root: repo.root, worktreePath, worker, core });
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.scoped);
+
+  it.each(["custom", "previous", "symlink"] as const)(
+    "cleans worktrees at a %s location",
+    async (location) => {
+      await Effect.runPromise(
+        withWorktree(
+          unchangedRule,
+          ({ worker, worktreePath }) =>
+            Effect.gen(function* () {
+              expect((yield* worker.dryRun).targets).toEqual([
+                expect.objectContaining({ action: "remove" }),
+              ]);
+              yield* worker.runOnce;
+              expect(yield* Effect.promise(() => exists(worktreePath))).toBe(false);
+            }),
+          location,
+        ),
+      );
+    },
+  );
 
   it("removes a deleted owner's clean worktree after stopping its processes", async () => {
     await Effect.runPromise(

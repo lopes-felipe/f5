@@ -1,5 +1,6 @@
 import { holdsWorktreeLifecycleLock } from "../../project/Layers/WorktreeLifecycleCoordinator.ts";
 import { ServerConfig } from "../../config.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Cause, Effect, Layer, ManagedRuntime, Metric, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -94,6 +95,51 @@ it("places generated worktrees under the configured server worktree root", async
           Layer.provide(Layer.succeed(GitService, scripted.service)),
           Layer.provideMerge(
             ServerConfig.layerTest(process.cwd(), { prefix: "f5-worktree-root-" }),
+          ),
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+});
+
+it("creates under the live custom root, preserves old roots, and rejects invalid locations before Git mutation", async () => {
+  const scripted = makeScriptedGitService((input) => ({
+    stdout: input.args[0] === "rev-parse" ? "a".repeat(40) : "",
+  }));
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const config = yield* ServerConfig;
+      const settings = yield* ServerSettingsService;
+      const core = yield* GitCore;
+      const custom = join(config.baseDir, "custom-worktrees");
+      yield* settings.updateSettings({ worktreesDirectory: custom });
+      const created = yield* core.createWorktree({
+        cwd: process.cwd(),
+        branch: "main",
+        newBranch: "custom-location",
+        path: null,
+      });
+      expect(created.worktree.path.startsWith(custom)).toBe(true);
+      expect(scripted.calls.find((call) => call.args[0] === "worktree")?.args).toContain(
+        created.worktree.path,
+      );
+      for (const invalid of ["relative/worktrees", "/"]) {
+        yield* settings.updateSettings({ worktreesDirectory: invalid });
+        const result = yield* Effect.result(
+          core.allocateWorktreePath({ cwd: process.cwd(), branch: "invalid" }),
+        );
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure")
+          expect(result.failure.detail).toContain("Settings → Storage");
+      }
+    }).pipe(
+      Effect.provide(
+        GitCoreLive.pipe(
+          Layer.provide(Layer.succeed(GitService, scripted.service)),
+          Layer.provideMerge(ServerSettingsService.layerTest()),
+          Layer.provideMerge(
+            ServerConfig.layerTest(process.cwd(), { prefix: "f5-custom-worktrees-" }),
           ),
           Layer.provide(NodeServices.layer),
         ),
@@ -604,15 +650,8 @@ describe("GitCore unit", () => {
 
   it("parses local and slash-containing remote names without pseudo refs", async () => {
     const scripted = makeScriptedGitService((input) => {
-      if (argsEqual(input, ["branch", "--no-color"])) {
-        return { stdout: "  main\n* feature/current\n" };
-      }
-      if (argsEqual(input, ["branch", "--no-color", "--remotes"])) {
-        return {
-          stdout:
-            "  team/fork/feature/current\n  team/fork/HEAD -> team/fork/main\n  origin/main\n",
-        };
-      }
+      if (argsEqual(input, ["symbolic-ref", "--quiet", "HEAD"]))
+        return { stdout: "refs/heads/feature/current\n" };
       if (argsEqual(input, ["remote"])) {
         return { stdout: "origin\nteam/fork\n" };
       }
@@ -620,7 +659,10 @@ describe("GitCore unit", () => {
         return { stdout: "refs/remotes/origin/main\n" };
       }
       if (input.args[0] === "for-each-ref") {
-        return { stdout: "feature/current\t20\nmain\t10\nteam/fork/feature/current\t30\n" };
+        return {
+          stdout:
+            "refs/heads/feature/current\t\t20\nrefs/heads/main\t\t10\nrefs/remotes/team/fork/feature/current\t\t30\nrefs/remotes/team/fork/HEAD\trefs/remotes/team/fork/main\t0\nrefs/remotes/origin/main\t\t0\n",
+        };
       }
       return {};
     });
@@ -636,11 +678,15 @@ describe("GitCore unit", () => {
       "origin/main",
     ]);
     expect(result.branches[2]).toMatchObject({ isRemote: true, remoteName: "team/fork" });
+    await Effect.runPromise(core.listBranches({ cwd: process.cwd() }));
+    expect(
+      scripted.calls.filter((call) => call.operation === "GitCore.listBranches.refs"),
+    ).toHaveLength(1);
   });
 
   it("returns a non-repository result for git's repository error", async () => {
     const scripted = makeScriptedGitService((input) =>
-      argsEqual(input, ["branch", "--no-color"])
+      input.operation === "GitCore.listBranches.refs"
         ? { code: 128, stderr: "fatal: not a git repository" }
         : {},
     );
@@ -655,10 +701,11 @@ describe("GitCore unit", () => {
 
   it("falls back to local branches when remote lookups fail", async () => {
     const scripted = makeScriptedGitService((input) => {
-      if (argsEqual(input, ["branch", "--no-color"])) {
-        return { stdout: "* main\n" };
-      }
-      if (argsEqual(input, ["branch", "--no-color", "--remotes"]) || argsEqual(input, ["remote"])) {
+      if (input.operation === "GitCore.listBranches.refs")
+        return { stdout: "refs/heads/main\t\t0\n" };
+      if (argsEqual(input, ["symbolic-ref", "--quiet", "HEAD"]))
+        return { stdout: "refs/heads/main\n" };
+      if (argsEqual(input, ["remote"])) {
         return { code: 1, stderr: "remote lookup failed" };
       }
       return {};
@@ -1002,35 +1049,49 @@ it("skips submodule initialization when the checkout has no .gitmodules", async 
   expect(scripted.calls.filter((call) => call.args.includes("submodule"))).toHaveLength(0);
 });
 
-it("preserves existing branches during forge head materialization, including races", async () => {
+it.each([true, false])(
+  "preserves existing branches during forge head materialization (already exists=%s)",
+  async (alreadyExists) => {
+    const scripted = makeScriptedGitService((input) =>
+      input.args[0] === "show-ref"
+        ? { code: alreadyExists ? 0 : 1 }
+        : input.args[0] === "branch"
+          ? { code: 128, stderr: "fatal: a branch named 'existing' already exists" }
+          : {},
+    );
+    const core = await makeCore(scripted.service);
+    const result = await Effect.runPromise(
+      core
+        .fetchRemoteBranch({
+          cwd: process.cwd(),
+          remoteName: "origin",
+          remoteBranch: "feature",
+          localBranch: "existing",
+          preserveExisting: true,
+        })
+        .pipe(Effect.result),
+    );
+    expect(result._tag).toBe(alreadyExists ? "Success" : "Failure");
+    expect(scripted.calls.find((call) => call.args[0] === "fetch")?.args.at(-1)).toBe(
+      "refs/heads/feature:refs/remotes/origin/feature",
+    );
+    expect(scripted.calls.find((call) => call.args[0] === "branch")?.args).toEqual(
+      alreadyExists ? undefined : ["branch", "--", "existing", "origin/feature"],
+    );
+    expect(scripted.calls.flatMap((call) => call.args)).not.toContain("--force");
+  },
+);
+
+it("does not fast-forward a branch that changed after PR checkout", async () => {
   const scripted = makeScriptedGitService((input) =>
-    input.args[0] === "branch"
-      ? { code: 128, stderr: "fatal: a branch named 'existing' already exists" }
-      : {},
+    input.args[0] === "symbolic-ref" ? { stdout: "other-branch\n" } : {},
   );
   const core = await makeCore(scripted.service);
   const result = await Effect.runPromise(
-    core
-      .fetchRemoteBranch({
-        cwd: process.cwd(),
-        remoteName: "origin",
-        remoteBranch: "feature",
-        localBranch: "existing",
-        preserveExisting: true,
-      })
-      .pipe(Effect.result),
+    core.fastForwardTo(process.cwd(), "a".repeat(40), "pr-branch").pipe(Effect.result),
   );
   expect(result._tag).toBe("Failure");
-  expect(scripted.calls.find((call) => call.args[0] === "fetch")?.args.at(-1)).toBe(
-    "refs/heads/feature:refs/remotes/origin/feature",
-  );
-  expect(scripted.calls.find((call) => call.args[0] === "branch")?.args).toEqual([
-    "branch",
-    "--",
-    "existing",
-    "origin/feature",
-  ]);
-  expect(scripted.calls.flatMap((call) => call.args)).not.toContain("--force");
+  expect(scripted.calls.some((call) => call.args[0] === "merge")).toBe(false);
 });
 
 it("rejects option-shaped checkout targets without running a checkout", async () => {

@@ -44,6 +44,33 @@ function provider(input: {
   };
 }
 
+it("offers and resolves all saved custom models beyond the first 32", () => {
+  const providers = [provider({ instanceId: "claude_openrouter" })];
+  const customModels = Array.from({ length: 40 }, (_, index) => "proxy/model-" + (index + 1));
+  const settings = {
+    ...settingsWithProviderInstances(),
+    providerInstances: {
+      [ProviderInstanceId.make("claude_openrouter")]: {
+        driver: ProviderDriverKind.make("claudeAgent"),
+        config: { customModels },
+      },
+    },
+  };
+  expect(
+    getAppModelOptionsForInstance(settings, deriveProviderInstanceEntries(providers)[0]!).map(
+      (model) => model.slug,
+    ),
+  ).toEqual(customModels);
+  expect(
+    resolveAppModelSelectionForInstance(
+      ProviderInstanceId.make("claude_openrouter"),
+      settings,
+      providers,
+      "proxy/model-40",
+    ),
+  ).toBe("proxy/model-40");
+});
+
 function settingsWithProviderInstances(): UnifiedSettings {
   return {
     ...DEFAULT_UNIFIED_SETTINGS,

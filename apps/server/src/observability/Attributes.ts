@@ -103,6 +103,26 @@ export function compactMetricAttributes(
   );
 }
 
+/** Bounds serialized trace strings without mutating attributes shared with other tracers. */
+export function truncateTraceAttributes(attributes: TraceAttributes): TraceAttributes {
+  const truncate = (value: unknown, limit = 500): unknown => {
+    if (typeof value === "string")
+      return value.length <= limit ? value : value.slice(0, limit) + "…[truncated]";
+    if (Array.isArray(value)) return value.map((entry) => truncate(entry));
+    if (isPlainObject(value))
+      return Object.fromEntries(
+        Object.entries(value).map(([key, entry]) => [key, truncate(entry)]),
+      );
+    return value;
+  };
+  return Object.fromEntries(
+    Object.entries(attributes).map(([key, value]) => [
+      key,
+      truncate(value, key === "db.query.text" ? 200 : 500),
+    ]),
+  );
+}
+
 export function outcomeFromExit(exit: Exit.Exit<unknown, unknown>): ObservabilityOutcome {
   if (Exit.isSuccess(exit)) {
     return "success";

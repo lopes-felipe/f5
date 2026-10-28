@@ -2,9 +2,20 @@ import { unlockThreadNotificationSound } from "../threadAttention";
 import { toastManager } from "./ui/toast";
 import "../index.css";
 
-import type { ProjectId, ThreadId } from "@t3tools/contracts";
+import {
+  SCHEDULED_TASK_TURN_SUBMITTED_ACTIVITY_KIND,
+  type ProjectId,
+  type ThreadId,
+  type TurnId,
+} from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
+
+const nativeApi = vi.hoisted(() => ({ findRunForTurn: vi.fn() }));
+vi.mock("../nativeApi", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../nativeApi")>()),
+  ensureNativeApi: () => ({ scheduledTasks: { findRunForTurn: nativeApi.findRunForTurn } }),
+}));
 
 import { StoreProvider, useStore } from "../store";
 import type { Thread } from "../types";
@@ -148,6 +159,7 @@ describe("ThreadStatusNotificationController", () => {
     setNotificationSetting(true);
     useStore.setState({ projects: [], threads: [], threadsHydrated: false });
     MockNotification.reset();
+    nativeApi.findRunForTurn.mockReset();
     hasFocus = true;
     visibilityState = "visible";
 
@@ -357,6 +369,121 @@ describe("ThreadStatusNotificationController", () => {
       toast.mockRestore();
       Object.defineProperty(navigator, "setAppBadge", { configurable: true, value: undefined });
     }
+  });
+
+  describe("scheduled runs in a conversation", () => {
+    const turnId = "turn-scheduled" as TurnId;
+    const scheduledActivity = {
+      id: "scheduled-activity:submission" as never,
+      tone: "info" as const,
+      kind: SCHEDULED_TASK_TURN_SUBMITTED_ACTIVITY_KIND,
+      summary: 'Queued by scheduled task "Daily check"',
+      payload: {},
+      turnId: null,
+      createdAt: "2026-03-10T12:00:30.000Z",
+    };
+    async function transition(overrides: Partial<Thread>) {
+      MockNotification.permission = "granted";
+      hasFocus = false;
+      visibilityState = "hidden";
+      const mounted = await mountController();
+      const base = {
+        latestTurn: {
+          turnId,
+          state: "running" as const,
+          assistantMessageId: null,
+          requestedAt: "2026-03-10T12:00:30.000Z",
+          startedAt: "2026-03-10T12:00:30.000Z",
+          completedAt: null,
+        },
+        ...overrides,
+      };
+      setStoreThread(createThread(base), true);
+      // Let the controller record the starting status before the transition.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      setStoreThread(
+        createThread({
+          ...base,
+          session: {
+            provider: "codex",
+            status: "running",
+            createdAt: "2026-03-10T12:00:00.000Z",
+            updatedAt: "2026-03-10T12:01:00.000Z",
+            orchestrationStatus: "running",
+          },
+          activities: [
+            ...(base.activities ?? []),
+            {
+              id: "activity-approval" as never,
+              tone: "approval",
+              kind: "approval.requested",
+              summary: "Needs approval",
+              payload: { requestId: "request-1", requestKind: "command" },
+              turnId,
+              createdAt: "2026-03-10T12:01:00.000Z",
+            },
+          ],
+        }),
+        true,
+      );
+      return mounted;
+    }
+
+    it("leaves a scheduled turn's notice to the scheduler", async () => {
+      nativeApi.findRunForTurn.mockResolvedValue({ runId: "run" });
+      const mounted = await transition({ activities: [scheduledActivity] });
+      try {
+        await vi.waitFor(() =>
+          expect(nativeApi.findRunForTurn).toHaveBeenCalledWith({ threadId: THREAD_ID, turnId }),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(MockNotification.instances).toHaveLength(0);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("notifies for the user's own turns in the same conversation", async () => {
+      nativeApi.findRunForTurn.mockResolvedValue({ runId: null });
+      const mounted = await transition({ activities: [scheduledActivity] });
+      try {
+        await vi.waitFor(() => expect(MockNotification.instances).toHaveLength(1));
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("keeps the notice when the run lookup fails", async () => {
+      nativeApi.findRunForTurn.mockRejectedValue(new Error("offline"));
+      const mounted = await transition({ activities: [scheduledActivity] });
+      try {
+        await vi.waitFor(() => expect(MockNotification.instances).toHaveLength(1));
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    // Background conversations load without activities, so only the server knows the turn's origin.
+    it("asks the server when the conversation's activities are not loaded", async () => {
+      nativeApi.findRunForTurn.mockResolvedValue({ runId: "run" });
+      const scheduled = await transition({ detailsLoaded: false });
+      try {
+        await vi.waitFor(() =>
+          expect(nativeApi.findRunForTurn).toHaveBeenCalledWith({ threadId: THREAD_ID, turnId }),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(MockNotification.instances).toHaveLength(0);
+      } finally {
+        await scheduled.cleanup();
+      }
+      nativeApi.findRunForTurn.mockResolvedValue({ runId: null });
+      const ordinary = await transition({ detailsLoaded: false });
+      try {
+        await vi.waitFor(() => expect(MockNotification.instances).toHaveLength(1));
+      } finally {
+        await ordinary.cleanup();
+      }
+    });
   });
 });
 
