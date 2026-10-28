@@ -1015,6 +1015,7 @@ export interface NativeApi {
     repairClaudeTranscript: (input: { threadId: ThreadId }) => Promise<{
       backupId?: string;
       restoredMessages: number;
+      quarantinedBranchMessages: number;
       status: "validated" | "repaired";
     }>;
     undoClaudeTranscriptRepair: (input: { threadId: ThreadId; backupId: string }) => Promise<void>;

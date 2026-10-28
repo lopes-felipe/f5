@@ -3,10 +3,15 @@ import { readFile, writeFile, copyFile, rename, readdir, chmod, unlink } from "n
 import { readCompleteLogLines } from "./completeLogLines.ts";
 import path from "node:path";
 import {
+  claudeTranscriptLeafHints,
+  classifyClaudeResumePoint,
+  findClaudeActiveLeaf,
   hasClaudeParentChain,
   readClaudeTranscript,
   transcriptRecord as record,
+  withClaudeTranscriptLeafHints,
 } from "../provider/claudeTranscript.ts";
+import { readClaudeResumeState } from "../provider/claudeResumeState.ts";
 
 export async function inspectClaudeResumePoint(file: string, target: string) {
   const malformed: number[] = [];
@@ -14,12 +19,94 @@ export async function inspectClaudeResumePoint(file: string, target: string) {
     skipMalformed: true,
     onMalformed: (line) => malformed.push(line),
   });
+  const state = classifyClaudeResumePoint(entries, target);
   return {
     reason:
-      malformed.length === 0 && hasClaudeParentChain(entries, target)
-        ? "eligible"
-        : "missing_resume_point",
+      state === "off_branch"
+        ? "branch_mismatch"
+        : malformed.length === 0 && state !== "missing"
+          ? "eligible"
+          : "missing_resume_point",
   } as const;
+}
+
+/** A repaired target must exist and be on, or detached from, the chain the CLI loads. */
+const isResumableClaudeTarget = (
+  entries: ReadonlyMap<string, Record<string, unknown>>,
+  target: string,
+) => {
+  const state = classifyClaudeResumePoint(entries, target);
+  return state === "active" || state === "detached";
+};
+
+/**
+ * Collect the branches that fork off the target's lineage and outrank it as the
+ * CLI's resume leaf. Each pass removes the subtree that holds the current active
+ * leaf, starting at the first entry below the fork point, until the target is on
+ * the active chain again. Turns this thread recorded are never removed.
+ */
+export function findStrayClaudeBranches(
+  entries: ReadonlyMap<string, Record<string, unknown>>,
+  target: string,
+  resumeCursor?: unknown,
+): ReadonlySet<string> {
+  const stray = new Set<string>();
+  if (classifyClaudeResumePoint(entries, target) !== "off_branch") return stray;
+  const lineage = new Set<string>();
+  for (let cursor: unknown = target; typeof cursor === "string" && !lineage.has(cursor); ) {
+    lineage.add(cursor);
+    cursor = entries.get(cursor)?.parentUuid;
+  }
+  const children = new Map<string, string[]>();
+  for (const [uuid, entry] of entries)
+    if (typeof entry.parentUuid === "string")
+      children.set(entry.parentUuid, [...(children.get(entry.parentUuid) ?? []), uuid]);
+  // Checkpoints into quarantined entries leave the file with them.
+  const hints = claudeTranscriptLeafHints(entries);
+  const remaining = new Map(entries);
+  const resync = () =>
+    withClaudeTranscriptLeafHints(
+      remaining,
+      hints && {
+        ...hints,
+        checkpoints: hints.checkpoints.filter((row) => !row.leafUuid || !stray.has(row.leafUuid)),
+      },
+    );
+  while (classifyClaudeResumePoint(resync(), target) === "off_branch") {
+    let branchRoot: string | undefined;
+    let cursor: unknown = findClaudeActiveLeaf(remaining);
+    const seen = new Set<string>();
+    while (typeof cursor === "string" && !lineage.has(cursor) && !seen.has(cursor)) {
+      seen.add(cursor);
+      branchRoot = cursor;
+      cursor = remaining.get(cursor)?.parentUuid;
+    }
+    if (typeof cursor !== "string" || !lineage.has(cursor) || branchRoot === undefined)
+      throw new Error("Could not locate where Claude's transcript forked; no changes were made.");
+    const pending = [branchRoot];
+    while (pending.length > 0) {
+      const uuid = pending.pop()!;
+      if (!remaining.delete(uuid)) continue;
+      stray.add(uuid);
+      pending.push(...(children.get(uuid) ?? []));
+    }
+  }
+  const owned = readClaudeResumeState(resumeCursor)?.turnBoundaries ?? [];
+  if (owned.some((boundary) => stray.has(boundary.assistantUuid)))
+    throw new Error(
+      "Both branches of Claude's transcript hold turns from this thread; no changes were made.",
+    );
+  return stray;
+}
+
+/** Stray records, plus `last-prompt` pointers to them, leave the main transcript. */
+function isStrayClaudeLine(line: string, stray: ReadonlySet<string>): boolean {
+  if (stray.size === 0 || !line.trim()) return false;
+  const entry = record(JSON.parse(line));
+  return (
+    stray.has(String(entry?.uuid)) ||
+    (entry?.type === "last-prompt" && stray.has(String(entry.leafUuid)))
+  );
 }
 
 const digest = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -57,10 +144,12 @@ export async function repairClaudeResumePoint(input: {
     if (parsed) throw new Error("Transcript line mapping is inconsistent; no changes were made.");
   }
   if (hasClaudeParentChain(persisted, input.target)) {
-    if (malformed.length === 0)
+    const stray = findStrayClaudeBranches(persisted, input.target, input.resumeCursor);
+    if (malformed.length === 0 && stray.size === 0)
       return {
         status: "validated" as const,
         restoredMessages: 0,
+        quarantinedBranchMessages: 0,
         resumeSessionAt: input.target,
         resumeCursor: {
           ...record(input.resumeCursor),
@@ -68,8 +157,18 @@ export async function repairClaudeResumePoint(input: {
           resumeRecoveryGeneration: randomUUID(),
         },
       };
-    const repaired = originalLines.filter((_, index) => !malformed.includes(index + 1)).join("\n");
-    return await writeTranscriptRepair(input, original, repaired, input.target, 0, malformed);
+    const repaired = originalLines
+      .filter((line, index) => !malformed.includes(index + 1) && !isStrayClaudeLine(line, stray))
+      .join("\n");
+    return await writeTranscriptRepair(
+      input,
+      original,
+      repaired,
+      input.target,
+      0,
+      malformed,
+      stray.size,
+    );
   }
   const events: Array<Record<string, unknown>> = [];
   for (const name of await readdir(input.providerLogsDir)) {
@@ -314,6 +413,7 @@ export async function repairClaudeResumePoint(input: {
     input.target,
     additions.length,
     malformed,
+    0,
   );
 }
 
@@ -335,6 +435,7 @@ async function writeTranscriptRepair(
   target: string,
   restoredMessages: number,
   quarantinedLines: number[],
+  quarantinedBranchMessages: number,
 ) {
   const backup = `${input.file}.bak-before-repair-${randomUUID()}`;
   const temporary = `${backup}.pending`;
@@ -345,6 +446,7 @@ async function writeTranscriptRepair(
     transcriptRepairBackupId: path.basename(backup),
   };
   delete (recoveredCursor as Record<string, unknown>).missingResumePoint;
+  delete (recoveredCursor as Record<string, unknown>).transcriptFork;
   let replaced = false;
   try {
     await copyFile(input.file, backup);
@@ -378,7 +480,7 @@ async function writeTranscriptRepair(
         skipMalformed: true,
         onMalformed: () => malformed++,
       });
-      verified = malformed === 0 && hasClaudeParentChain(entries, target);
+      verified = malformed === 0 && isResumableClaudeTarget(entries, target);
     } catch {
       /* Treated as a failed verification below. */
     }
@@ -398,6 +500,7 @@ async function writeTranscriptRepair(
     status: "repaired" as const,
     backupId: path.basename(backup),
     restoredMessages,
+    quarantinedBranchMessages,
     resumeSessionAt: target,
     resumeCursor: recoveredCursor,
   };

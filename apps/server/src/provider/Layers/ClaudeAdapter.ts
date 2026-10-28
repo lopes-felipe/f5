@@ -95,8 +95,11 @@ import {
   readClaudeTranscript,
   readClaudeTranscriptLines,
   readClaudeTranscriptPage,
-  selectClaudeResumePoint,
+  resolveClaudeResumePoint,
+  classifyClaudeResumePoint,
+  findClaudeActiveLeaf,
   isClaudeMissingResumeMessageError,
+  CLAUDE_TRANSCRIPT_FORKED_MESSAGE,
 } from "../claudeTranscript.ts";
 
 import * as NodeFs from "node:fs/promises";
@@ -515,6 +518,8 @@ interface ClaudeSessionContext {
   resumeCompactionDialogShown: boolean;
   resumeAttemptSessionId: string | undefined;
   resumeRejected?: boolean;
+  /** A background transcript fork check is reading the transcript. */
+  forkCheckRunning?: boolean;
   resumeConfirmed: boolean;
   /**
    * Settles once the CLI confirms the resumed conversation, or the session
@@ -4827,6 +4832,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // after it, and undo must not hide a future repair.
         delete context.recoveryMetadata.missingResumePoint;
         delete context.recoveryMetadata.transcriptRepairBackupId;
+        delete context.recoveryMetadata.transcriptFork;
         yield* updateResumeCursor(context);
       });
 
@@ -5159,6 +5165,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             if (completed && context.turnState) {
               yield* completeTurn(context, "completed", undefined, completed);
             }
+            if (state === "idle") Effect.runFork(checkTranscriptFork(context));
             yield* offerRuntimeEvent({
               ...base,
               type: "session.state.changed",
@@ -5810,6 +5817,79 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         );
       });
 
+    /** Index the session's saved transcript, for resume-point checks. */
+    const readResumeEntries = (context: ClaudeSessionContext) =>
+      Effect.tryPromise(async (signal) => {
+        const probe = {
+          claudeConfigDir: resolveClaudeConfigDir(
+            context.processEnvironment,
+            context.queryOptions.cwd,
+          ),
+          sessionId: context.resumeSessionId!,
+        };
+        return options?.readResumeTranscript
+          ? await options.readResumeTranscript(probe)
+          : await readClaudeTranscript(
+              await findClaudeTranscript(probe.claudeConfigDir, probe.sessionId, signal),
+              false,
+              { skipMalformed: true, signal },
+            );
+      });
+
+    const recordTranscriptFork = (
+      context: ClaudeSessionContext,
+      fork: { readonly target: string; readonly activeLeaf: string | undefined },
+    ) => {
+      context.recoveryMetadata.transcriptFork = {
+        target: fork.target,
+        ...(fork.activeLeaf ? { activeLeaf: fork.activeLeaf } : {}),
+      };
+    };
+
+    /**
+     * Claude can attach a queued message to a stale entry, so its newest leaf
+     * leaves the branch this thread is on and the next resume fails. Checking
+     * when the CLI goes idle reports the fork on the turn that caused it.
+     */
+    const checkTranscriptFork = (context: ClaudeSessionContext): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const target = context.turnBoundaries.at(-1)?.assistantUuid;
+        if (
+          context.forkCheckRunning ||
+          !target ||
+          !context.resumeSessionId ||
+          context.recoveryMetadata.transcriptFork?.target === target ||
+          isClaudeTranscriptUnderMaintenance(context.resumeSessionId)
+        )
+          return;
+        context.forkCheckRunning = true;
+        const entries = yield* readResumeEntries(context).pipe(
+          Effect.timeoutOption(5_000),
+          Effect.orElseSucceed(() => Option.none()),
+          Effect.ensuring(
+            Effect.sync(() => {
+              context.forkCheckRunning = false;
+            }),
+          ),
+        );
+        if (
+          Option.isNone(entries) ||
+          context.stopped ||
+          sessions.get(context.session.threadId) !== context ||
+          context.turnBoundaries.at(-1)?.assistantUuid !== target ||
+          classifyClaudeResumePoint(entries.value, target) !== "off_branch"
+        )
+          return;
+        const activeLeaf = findClaudeActiveLeaf(entries.value);
+        recordTranscriptFork(context, { target, activeLeaf });
+        yield* updateResumeCursor(context);
+        yield* emitRuntimeWarning(
+          context,
+          "Claude forked this transcript, so the next resume would fail. Use Repair transcript before continuing.",
+          { category: "provider", actionable: true, detail: { target, activeLeaf } },
+        );
+      });
+
     const runSdkStream = (context: ClaudeSessionContext): Effect.Effect<void, Error> =>
       Effect.gen(function* () {
         for (let attempt = 0; ; attempt++) {
@@ -5837,14 +5917,28 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           if (Exit.isSuccess(exit)) return;
           if (!isClaudeMissingResumeMessageError(Cause.pretty(exit.cause)))
             return yield* Effect.failCause(exit.cause);
-          yield* settleResume(context, { outcome: "failed", resumeRejected: true });
           const threadId = context.session.threadId;
+          const requested = context.queryOptions.resumeSessionAt;
+          // A saved UUID on another branch is a fork, not a missing message.
+          // Classify before settling so the waiting send reports the fork.
+          const forked = context.resumeSessionId
+            ? yield* readResumeEntries(context).pipe(
+                Effect.map((entries) =>
+                  resolveClaudeResumePoint(entries, requested, context.turnBoundaries, requested),
+                ),
+                Effect.map((selection) => (selection.kind === "forked" ? selection : undefined)),
+                Effect.orElseSucceed(() => undefined),
+              )
+            : undefined;
+          if (forked) recordTranscriptFork(context, forked);
+          yield* settleResume(context, { outcome: "failed", resumeRejected: true });
           if (context.lastAssistantUuid)
-            context.recoveryMetadata.missingResumePoint ??=
-              context.queryOptions.resumeSessionAt ?? context.lastAssistantUuid;
+            context.recoveryMetadata.missingResumePoint ??= requested ?? context.lastAssistantUuid;
           yield* updateResumeCursor(context);
           const failures = (resumeFailures.get(threadId) ?? 0) + 1;
           resumeFailures.set(threadId, failures);
+          // Resuming from an older boundary would drop turns the user saw.
+          if (forked) return yield* Effect.fail(new Error(CLAUDE_TRANSCRIPT_FORKED_MESSAGE));
           if (failures >= 3 || attempt > 0 || !context.resumeSessionId) {
             return yield* Effect.fail(
               new Error(
@@ -5857,36 +5951,24 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             Effect.gen(function* () {
               if (context.stopped || sessions.get(threadId) !== context) return;
               context.recovering = true;
-              const selected = yield* Effect.tryPromise(async () => {
-                const probe = {
-                  claudeConfigDir: resolveClaudeConfigDir(
-                    context.processEnvironment,
-                    context.queryOptions.cwd,
-                  ),
-                  sessionId: context.resumeSessionId!,
-                };
-                const entries = options?.readResumeTranscript
-                  ? await options.readResumeTranscript(probe)
-                  : await readClaudeTranscript(
-                      await findClaudeTranscript(probe.claudeConfigDir, probe.sessionId),
-                      false,
-                      { skipMalformed: true },
-                    );
-                return selectClaudeResumePoint(
-                  entries,
-                  undefined,
-                  context.turnBoundaries,
-                  context.queryOptions.resumeSessionAt,
-                );
-              }).pipe(
+              const selection = yield* readResumeEntries(context).pipe(
+                Effect.map((entries) =>
+                  resolveClaudeResumePoint(entries, requested, context.turnBoundaries, requested),
+                ),
                 Effect.mapError((cause) =>
                   toError(cause, "Cannot read Claude transcript. Use Repair transcript."),
                 ),
               );
-              if (!selected)
+              if (selection.kind === "forked") {
+                recordTranscriptFork(context, selection);
+                yield* updateResumeCursor(context);
+                return yield* Effect.fail(new Error(CLAUDE_TRANSCRIPT_FORKED_MESSAGE));
+              }
+              if (selection.kind === "none")
                 return yield* Effect.fail(
                   new Error("No valid Claude resume boundary remains. Use Repair transcript."),
                 );
+              const selected = selection.uuid;
               yield* emitRuntimeWarning(
                 context,
                 "Claude rejected the resume message. Retrying once from a saved boundary.",
@@ -6596,11 +6678,24 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               ? undefined
               : (resumeState.resumeSessionAt ?? resumeState.turnBoundaries?.at(-1)?.assistantUuid);
             if (requested && isUuid(requested)) {
-              const selected = selectClaudeResumePoint(
+              const selection = resolveClaudeResumePoint(
                 indexed.value.entries,
                 requested,
                 resumeState.turnBoundaries ?? [],
               );
+              if (selection.kind === "forked") {
+                resumeFailures.set(threadId, (resumeFailures.get(threadId) ?? 0) + 1);
+                // The CLI never started, so a queued message was not sent. It
+                // fails the same way until the transcript is repaired.
+                return yield* new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "session/start",
+                  detail: CLAUDE_TRANSCRIPT_FORKED_MESSAGE,
+                  deliveryCertainty: "not_sent",
+                  deliveryRetryable: false,
+                });
+              }
+              const selected = selection.kind === "selected" ? selection.uuid : undefined;
               if (!selected) {
                 resumeFailures.set(threadId, (resumeFailures.get(threadId) ?? 0) + 1);
                 return yield* new ProviderAdapterProcessError({
@@ -8218,6 +8313,13 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const startSession: ClaudeAdapterShape["startSession"] = (input) =>
       withThreadLock(input.threadId, startSessionUnlocked(input));
 
+    const resumeNotSentDetail = (context: ClaudeSessionContext, rejected: boolean) =>
+      context.recoveryMetadata.transcriptFork
+        ? `${CLAUDE_TRANSCRIPT_FORKED_MESSAGE} This message was not sent.`
+        : rejected
+          ? "Claude could not load the saved conversation, so this message was not sent."
+          : "Claude stopped before it loaded the saved conversation, so this message was not sent.";
+
     // Runs under the thread lock: validates the session, starts the turn and
     // queues the prompt. The resume confirmation wait happens after the lock is
     // released, so Interrupt and Stop are never blocked behind it.
@@ -8243,6 +8345,46 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               )
             : Effect.void,
         );
+        // Control requests run before the prompt is queued. If the CLI exited
+        // meanwhile, for example because it rejected the resume point, the
+        // message was not sent. Wait briefly for the resume outcome so a
+        // rejected resume is not retried before the transcript is repaired.
+        const controlRequest = (method: string, run: () => Promise<void>) =>
+          Effect.tryPromise({
+            try: run,
+            catch: (cause) => toRequestError(input.threadId, method, cause),
+          }).pipe(
+            Effect.catchIf(
+              (error) =>
+                error._tag === "ProviderAdapterSessionClosedError" ||
+                error._tag === "ProviderAdapterSessionNotFoundError",
+              (error) =>
+                Effect.gen(function* () {
+                  const settlement =
+                    context.resumeSettlement && !context.resumeConfirmed
+                      ? yield* Deferred.await(context.resumeSettlement).pipe(
+                          Effect.timeoutOption(3_000),
+                        )
+                      : Option.none();
+                  const resumeFailed =
+                    Option.isSome(settlement) && settlement.value.outcome === "failed";
+                  const rejected =
+                    context.resumeRejected === true ||
+                    (resumeFailed && settlement.value.resumeRejected);
+                  return yield* new ProviderAdapterRequestError({
+                    provider: PROVIDER,
+                    method: "turn/start",
+                    detail:
+                      resumeFailed || rejected
+                        ? resumeNotSentDetail(context, rejected)
+                        : "Claude stopped before this message was queued, so it was not sent.",
+                    deliveryCertainty: "not_sent",
+                    deliveryRetryable: !rejected,
+                    cause: error,
+                  });
+                }),
+            ),
+          );
         yield* ensureLive;
         if (
           input.workflowExecutionProfile !== undefined &&
@@ -8307,21 +8449,18 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               runtimeModelSelection.baseModel !== previousModel ||
               runtimeModelSelection.contextWindow !== previousContextWindow;
             if (shouldSetModel) {
-              yield* Effect.tryPromise({
-                try: () => context.query.setModel(runtimeModelSelection.apiModel),
-                catch: (cause) => toRequestError(input.threadId, "turn/setModel", cause),
-              });
+              yield* controlRequest("turn/setModel", () =>
+                context.query.setModel(runtimeModelSelection.apiModel),
+              );
               yield* ensureLive;
             }
-            yield* Effect.tryPromise({
-              try: () =>
-                context.query.applyFlagSettings({
-                  effortLevel: runtimeTraits.effectiveEffort ?? null,
-                  fastMode: runtimeTraits.fastMode,
-                  alwaysThinkingEnabled: runtimeTraits.thinking ?? null,
-                }),
-              catch: (cause) => toRequestError(input.threadId, "turn/applyFlagSettings", cause),
-            });
+            yield* controlRequest("turn/applyFlagSettings", () =>
+              context.query.applyFlagSettings({
+                effortLevel: runtimeTraits.effectiveEffort ?? null,
+                fastMode: runtimeTraits.fastMode,
+                alwaysThinkingEnabled: runtimeTraits.thinking ?? null,
+              }),
+            );
             yield* ensureLive;
             appliedFastMode = runtimeTraits.fastMode;
             context.session = {
@@ -8350,10 +8489,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               // An explicit default interaction mode applies the new base below.
               if (autoRecheck.setLive && input.interactionMode === undefined) {
                 const liveMode = autoRecheck.setLive;
-                yield* Effect.tryPromise({
-                  try: () => context.query.setPermissionMode(liveMode),
-                  catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
-                });
+                yield* controlRequest("turn/setPermissionMode", () =>
+                  context.query.setPermissionMode(liveMode),
+                );
                 yield* ensureLive;
                 context.configuredBase = { ...context.configuredBase, permissionMode: liveMode };
               }
@@ -8370,20 +8508,18 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // "default" restores the session's original permission mode.
         // When interactionMode is absent we leave the current mode unchanged.
         if (input.interactionMode === "plan") {
-          yield* Effect.tryPromise({
-            try: () => context.query.setPermissionMode("plan"),
-            catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
-          });
+          yield* controlRequest("turn/setPermissionMode", () =>
+            context.query.setPermissionMode("plan"),
+          );
           yield* ensureLive;
           context.configuredBase = {
             ...context.configuredBase,
             permissionMode: "plan",
           };
         } else if (input.interactionMode === "default") {
-          yield* Effect.tryPromise({
-            try: () => context.query.setPermissionMode(context.basePermissionMode ?? "default"),
-            catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
-          });
+          yield* controlRequest("turn/setPermissionMode", () =>
+            context.query.setPermissionMode(context.basePermissionMode ?? "default"),
+          );
           yield* ensureLive;
           context.configuredBase = {
             ...context.configuredBase,
@@ -8510,9 +8646,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           return yield* new ProviderAdapterRequestError({
             provider: PROVIDER,
             method: "turn/start",
-            detail: settlement.value.resumeRejected
-              ? "Claude could not load the saved conversation, so this message was not sent."
-              : "Claude stopped before it loaded the saved conversation, so this message was not sent.",
+            detail: resumeNotSentDetail(input.context, settlement.value.resumeRejected),
             deliveryCertainty: "not_sent",
             // A rejected resume fails the same way until the transcript is repaired.
             deliveryRetryable: !settlement.value.resumeRejected,

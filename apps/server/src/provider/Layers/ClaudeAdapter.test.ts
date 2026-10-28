@@ -9420,6 +9420,202 @@ describe("ClaudeAdapterLive", () => {
           assert.include(failure.payload.message, "repair started during resume recovery");
       }).pipe(Effect.provide(harness.layer));
     });
+    // `missing` is saved but sits on a branch that forks off the chain the CLI
+    // loads, because a stray entry under `saved` is the newest leaf.
+    const stray = "123e4567-e89b-42d3-a456-426614174003";
+    const linearEntries = () =>
+      new Map<string, Record<string, unknown>>([
+        [saved, { uuid: saved, parentUuid: null, timestamp: "2026-10-27T16:17:01Z" }],
+        [missing, { uuid: missing, parentUuid: saved, timestamp: "2026-10-27T16:17:02Z" }],
+      ]);
+    const forkedEntries = () =>
+      linearEntries().set(stray, {
+        uuid: stray,
+        parentUuid: saved,
+        timestamp: "2026-10-27T16:17:03Z",
+      });
+    it.effect("refuses a forked resume point at startup instead of dropping turns", () => {
+      const harness = makeHarness({ readResumeTranscript: async () => forkedEntries() });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const exit = yield* Effect.exit(
+          adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+            resumeCursor: cursor,
+          }),
+        );
+        assert.equal(exit._tag, "Failure");
+        if (exit._tag !== "Failure") return;
+        const error = Cause.squash(exit.cause);
+        assert.isTrue(Schema.is(ProviderAdapterRequestError)(error));
+        if (!Schema.is(ProviderAdapterRequestError)(error)) return;
+        assert.include(error.detail, "transcript forked");
+        assert.equal(error.deliveryCertainty, "not_sent");
+        assert.equal(error.deliveryRetryable, false);
+        assert.equal(harness.getCreateQueryInputs().length, 0);
+      }).pipe(Effect.provide(harness.layer));
+    });
+    it.effect("stops resume recovery at a fork and reports the send as not sent", () => {
+      let reads = 0;
+      const harness = makeHarness({
+        resumeConfirmationTimeoutMs: 5_000,
+        // The fork appears after startup validation, as when Claude writes it
+        // while the thread is idle.
+        readResumeTranscript: async () => (reads++ === 0 ? linearEntries() : forkedEntries()),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const observed: ProviderRuntimeEvent[] = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            observed.push(event);
+          }),
+        ).pipe(Effect.forkChild);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: cursor,
+        });
+        const send = yield* adapter
+          .sendTurn({ threadId: THREAD_ID, input: "continue", attachments: [] })
+          .pipe(Effect.exit, Effect.forkChild);
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+        harness.query.emit({
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: [`No message found with message.uuid of: ${missing}`],
+          session_id: sessionId,
+          uuid: "forked-resume-error",
+        } as unknown as SDKMessage);
+        const exit = yield* Fiber.join(send);
+        assert.equal(exit._tag, "Failure");
+        if (exit._tag !== "Failure") return;
+        const error = Cause.squash(exit.cause);
+        assert.isTrue(Schema.is(ProviderAdapterRequestError)(error));
+        if (!Schema.is(ProviderAdapterRequestError)(error)) return;
+        assert.include(error.detail, "transcript forked");
+        assert.equal(error.deliveryCertainty, "not_sent");
+        assert.equal(error.deliveryRetryable, false);
+        while (!observed.some((event) => event.type === "session.exited")) yield* Effect.yieldNow;
+        yield* TestClock.adjust("1 second");
+        assert.equal(harness.getCreateQueryInputs().length, 1);
+        assert.isFalse(
+          observed.some(
+            (event) =>
+              event.type === "runtime.warning" && event.payload.message.includes("Retrying once"),
+          ),
+        );
+        const failure = observed.find((event) => event.type === "runtime.error");
+        if (failure?.type === "runtime.error")
+          assert.include(failure.payload.message, "transcript forked");
+        else assert.fail("Expected a runtime error naming the fork");
+        const exited = observed.findLast((event) => event.type === "session.exited");
+        const exitedCursor = exited?.resumeCursor as Record<string, unknown> | undefined;
+        assert.deepEqual(exitedCursor?.transcriptFork, { target: missing, activeLeaf: stray });
+      }).pipe(Effect.provide(harness.layer));
+    });
+    it.effect("warns once when Claude forks the transcript while the thread is idle", () => {
+      let reads = 0;
+      const harness = makeHarness({
+        readResumeTranscript: async () => (reads++ === 0 ? linearEntries() : forkedEntries()),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const observed: ProviderRuntimeEvent[] = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            observed.push(event);
+          }),
+        ).pipe(Effect.forkChild);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: cursor,
+        });
+        const forkWarnings = () =>
+          observed.filter(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message.includes("Claude forked this transcript"),
+          );
+        const idle = (uuid: string) =>
+          harness.query.emit({
+            type: "system",
+            subtype: "session_state_changed",
+            state: "idle",
+            session_id: sessionId,
+            uuid,
+          } as unknown as SDKMessage);
+        idle("idle-1");
+        while (forkWarnings().length === 0)
+          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
+        const [warning] = forkWarnings();
+        if (warning?.type === "runtime.warning")
+          assert.deepEqual(warning.payload.detail, { target: missing, activeLeaf: stray });
+        idle("idle-2");
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 50)));
+        assert.equal(forkWarnings().length, 1);
+        const liveCursor = (yield* adapter.listSessions())[0]?.resumeCursor as
+          | Record<string, unknown>
+          | undefined;
+        assert.deepEqual(liveCursor?.transcriptFork, { target: missing, activeLeaf: stray });
+      }).pipe(Effect.provide(harness.layer));
+    });
+    it.effect("reports a send as not sent when Claude exits during a control request", () => {
+      const harness = makeHarness({
+        resumeConfirmationTimeoutMs: 5_000,
+        readResumeTranscript: async () => linearEntries(),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: { resume: sessionId },
+        });
+        let closeQuery!: (cause: unknown) => void;
+        harness.query.setModelWait = new Promise((_, reject) => {
+          closeQuery = reject;
+        });
+        const send = yield* adapter
+          .sendTurn({
+            threadId: THREAD_ID,
+            input: "continue",
+            model: "claude-opus-4-6",
+            attachments: [],
+          })
+          .pipe(Effect.exit, Effect.forkChild);
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+        // The SDK rejects pending control requests when the CLI exits, which can
+        // happen before the stream delivers the resume error.
+        closeQuery(new Error("Query closed before response received"));
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+        harness.query.emit({
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: [`No message found with message.uuid of: ${missing}`],
+          session_id: sessionId,
+          uuid: "control-request-resume-error",
+        } as unknown as SDKMessage);
+        const exit = yield* Fiber.join(send);
+        assert.equal(exit._tag, "Failure");
+        if (exit._tag !== "Failure") return;
+        const error = Cause.squash(exit.cause);
+        assert.isTrue(Schema.is(ProviderAdapterRequestError)(error));
+        if (!Schema.is(ProviderAdapterRequestError)(error)) return;
+        assert.equal(error.method, "turn/start");
+        assert.equal(error.deliveryCertainty, "not_sent");
+        assert.equal(error.deliveryRetryable, false);
+        assert.include(error.detail, "could not load the saved conversation");
+      }).pipe(Effect.provide(harness.layer));
+    });
     it.effect("caps repeated failed preflights and permits retry after transcript repair", () => {
       const harness = makeHarness({ readResumeTranscript: async () => new Map() });
       return Effect.gen(function* () {

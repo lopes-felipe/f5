@@ -12,10 +12,12 @@ import {
   canUndoClaudeResumeRepair,
 } from "./ClaudeTranscriptRepair.ts";
 import {
+  classifyClaudeResumePoint,
+  findClaudeActiveLeaf,
   hasClaudeParentChain,
   readClaudeTranscript,
   readClaudeTranscriptLines,
-  selectClaudeResumePoint,
+  resolveClaudeResumePoint,
   isClaudeMissingResumeMessageError,
 } from "../provider/claudeTranscript.ts";
 
@@ -58,13 +60,13 @@ describe("Claude transcript recovery", () => {
     entries.set("broken", { parentUuid: "missing" });
     entries.set("cycle", { parentUuid: "cycle" });
     expect(
-      selectClaudeResumePoint(entries, "absent", [
+      resolveClaudeResumePoint(entries, "absent", [
         { assistantUuid: "root" },
         { assistantUuid: "broken" },
         { assistantUuid: "cycle" },
       ]),
-    ).toBe("root");
-    expect(selectClaudeResumePoint(entries, "root", [], "root")).toBeUndefined();
+    ).toEqual({ kind: "selected", uuid: "root" });
+    expect(resolveClaudeResumePoint(entries, "root", [], "root")).toEqual({ kind: "none" });
     expect(isClaudeMissingResumeMessageError("No message found with message.uuid of: target")).toBe(
       true,
     );
@@ -408,5 +410,179 @@ describe("Claude transcript recovery", () => {
     expect(await recoverClaudeTranscriptCursor(input.file, result.resumeCursor)).toEqual(
       undoCursor,
     );
+  });
+});
+
+describe("Claude transcript forks", () => {
+  // Stable UUIDs, because the resume cursor only accepts UUID boundaries.
+  const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+  const root = id(1);
+  const hook1 = id(2);
+  const user2 = id(3);
+  const reply2 = id(4);
+  const hook2 = id(5);
+  const staleNote = id(6);
+  const strayReply = id(7);
+  const note = id(8);
+  const target = id(9);
+  const hookT = id(10);
+  const strayLast = id(11);
+  const boundary = id(12);
+  const at = (second: number) => `2026-10-27T16:17:${String(second).padStart(2, "0")}.000Z`;
+  const row = (uuid: string, parentUuid: string | null, type: string, second: number) => ({
+    ...envelope,
+    uuid,
+    parentUuid,
+    type,
+    timestamp: at(second),
+    message: { role: type === "assistant" ? "assistant" : "user", content: [] },
+  });
+  // The shape seen in production: two task notifications were dequeued together
+  // and one was parented to the stop-hook record of an older turn. After a
+  // compaction that kept a preserved segment, the CLI resolves the fork by the
+  // last row, which is on the stray branch, so the thread's latest turn is hidden.
+  const forked = [
+    {
+      ...row(boundary, null, "system", 0),
+      subtype: "compact_boundary",
+      compactMetadata: { preservedSegment: { headUuid: boundary, anchorUuid: boundary } },
+    },
+    row(root, boundary, "assistant", 1),
+    row(hook1, root, "system", 2),
+    row(user2, root, "user", 3),
+    row(reply2, user2, "assistant", 4),
+    row(hook2, reply2, "system", 5),
+    { type: "queue-operation", operation: "enqueue", timestamp: at(6) },
+    row(staleNote, hook1, "user", 6),
+    row(note, hook2, "user", 6),
+    row(strayReply, staleNote, "assistant", 7),
+    row(target, note, "assistant", 8),
+    row(hookT, target, "system", 9),
+    row(strayLast, strayReply, "assistant", 10),
+    { type: "last-prompt", leafUuid: strayLast },
+    { type: "last-prompt", leafUuid: hookT },
+  ];
+  const cursor = {
+    resume: "00000000-0000-4000-8000-0000000000ff",
+    resumeSessionAt: target,
+    turnBoundaries: [
+      { turnId: "turn-1", assistantUuid: root },
+      { turnId: "turn-2", assistantUuid: reply2 },
+      { turnId: "turn-3", assistantUuid: target },
+    ],
+  };
+
+  it("follows the last non-sidechain row in file order, not the newest timestamp", () => {
+    const entries = new Map<string, Record<string, unknown>>([
+      ["a", { parentUuid: null, type: "user", timestamp: at(1) }],
+      ["b", { parentUuid: "a", type: "assistant", timestamp: at(9) }],
+      ["c", { parentUuid: "a", type: "assistant", timestamp: at(2) }],
+      ["side", { parentUuid: "a", type: "assistant", isSidechain: true }],
+    ]);
+    expect(findClaudeActiveLeaf(entries)).toBe("c");
+    expect(classifyClaudeResumePoint(entries, "a")).toBe("active");
+    expect(classifyClaudeResumePoint(entries, "b")).toBe("off_branch");
+    expect(classifyClaudeResumePoint(entries, "missing")).toBe("missing");
+    entries.set("compacted", { parentUuid: null, type: "assistant" });
+    entries.set("tail", { parentUuid: "c", type: "user" });
+    expect(classifyClaudeResumePoint(entries, "compacted")).toBe("detached");
+    expect(resolveClaudeResumePoint(entries, "compacted", [])).toEqual({
+      kind: "selected",
+      uuid: "compacted",
+    });
+  });
+
+  it("follows the last-prompt checkpoint when no compaction was relinked", async () => {
+    // Observed with CLI 2.1.295: without a relinked compaction, a checkpoint on
+    // the thread's branch wins even when the stray branch was written later.
+    const uncompacted = forked
+      .slice(1)
+      .map((entry) =>
+        "uuid" in entry && entry.uuid === root ? { ...entry, parentUuid: null } : entry,
+      );
+    const entries = await readClaudeTranscript((await fixture(uncompacted)).file, false);
+    expect(findClaudeActiveLeaf(entries)).toBe(hookT);
+    expect(classifyClaudeResumePoint(entries, target)).toBe("active");
+    // A non-explicit checkpoint yields to a later row that descends from it.
+    const advanced = await readClaudeTranscript(
+      (await fixture([...uncompacted, row(id(99), hookT, "user", 11)])).file,
+      false,
+    );
+    expect(findClaudeActiveLeaf(advanced)).toBe(id(99));
+    // A checkpoint on the stray branch hides the thread's turn.
+    const stale = await readClaudeTranscript(
+      (await fixture([...uncompacted, { type: "last-prompt", leafUuid: strayLast }])).file,
+      false,
+    );
+    expect(classifyClaudeResumePoint(stale, target)).toBe("off_branch");
+  });
+
+  it("reports a fork instead of falling back past the thread's latest turn", async () => {
+    const input = await fixture(forked);
+    const entries = await readClaudeTranscript(input.file, false);
+    expect(findClaudeActiveLeaf(entries)).toBe(strayLast);
+    expect(classifyClaudeResumePoint(entries, target)).toBe("off_branch");
+    expect(classifyClaudeResumePoint(entries, root)).toBe("active");
+    const forkedSelection = { kind: "forked", target, activeLeaf: strayLast };
+    expect(resolveClaudeResumePoint(entries, target, cursor.turnBoundaries)).toEqual(
+      forkedSelection,
+    );
+    // The automatic retry excludes the rejected UUID; it must still not drop turns.
+    expect(resolveClaudeResumePoint(entries, target, cursor.turnBoundaries, target)).toEqual(
+      forkedSelection,
+    );
+  });
+
+  it("repairs a fork by quarantining the stray branch, with byte-exact undo", async () => {
+    const input = { ...(await fixture(forked)), target };
+    const original = await readFile(input.file, "utf8");
+    expect(await inspectClaudeResumePoint(input.file, target)).toEqual({
+      reason: "branch_mismatch",
+    });
+    const result = await repairClaudeResumePoint({ ...input, resumeCursor: cursor });
+    if (result.status !== "repaired") throw new Error("Expected a repaired transcript");
+    expect(result.quarantinedBranchMessages).toBe(4);
+    expect(result.restoredMessages).toBe(0);
+    expect(result.resumeCursor).toMatchObject({ resumeSessionAt: target });
+    const entries = await readClaudeTranscript(input.file);
+    for (const uuid of [hook1, staleNote, strayReply, strayLast])
+      expect(entries.has(uuid)).toBe(false);
+    expect(classifyClaudeResumePoint(entries, target)).toBe("active");
+    const repaired = await readFile(input.file, "utf8");
+    expect(repaired).toContain(`"leafUuid":"${hookT}"`);
+    expect(repaired).not.toContain(`"leafUuid":"${strayLast}"`);
+    expect(repaired).toContain('"type":"queue-operation"');
+    expect(await inspectClaudeResumePoint(input.file, target)).toEqual({ reason: "eligible" });
+    await undoClaudeResumeRepair(input.file, result.backupId, result.resumeCursor);
+    expect(await readFile(input.file, "utf8")).toBe(original);
+  });
+
+  it("refuses to quarantine a branch that holds a turn of this thread", async () => {
+    const input = { ...(await fixture(forked)), target };
+    const original = await readFile(input.file, "utf8");
+    await expect(
+      repairClaudeResumePoint({
+        ...input,
+        resumeCursor: {
+          ...cursor,
+          turnBoundaries: [
+            ...cursor.turnBoundaries,
+            { turnId: "stray", assistantUuid: strayReply },
+          ],
+        },
+      }),
+    ).rejects.toThrow("Both branches");
+    expect(await readFile(input.file, "utf8")).toBe(original);
+  });
+
+  it("still validates an intact target on the active chain without rewriting", async () => {
+    const linear = forked.filter(
+      (entry) => !("uuid" in entry) || ![staleNote, strayReply, strayLast].includes(entry.uuid),
+    );
+    const input = { ...(await fixture(linear)), target };
+    const original = await readFile(input.file, "utf8");
+    const result = await repairClaudeResumePoint({ ...input, resumeCursor: cursor });
+    expect(result).toMatchObject({ status: "validated", quarantinedBranchMessages: 0 });
+    expect(await readFile(input.file, "utf8")).toBe(original);
   });
 });

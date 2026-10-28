@@ -56,7 +56,9 @@ export function TranscriptRepairAction({
         setMessage(
           result.status === "validated"
             ? "Transcript revalidated. You can continue the thread."
-            : `Transcript repaired (${result.restoredMessages} entries restored). You can continue the thread.`,
+            : result.quarantinedBranchMessages > 0
+              ? `Removed ${result.quarantinedBranchMessages} entries from a stray branch created by Claude; undo is available. You can continue the thread.`
+              : `Transcript repaired (${result.restoredMessages} entries restored). You can continue the thread.`,
         );
       }
     } catch (error) {
