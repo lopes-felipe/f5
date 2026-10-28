@@ -42,6 +42,22 @@ export interface OutcomeCheck {
   readonly result: "preexisting" | "recorded" | "no-outcome" | "not-eligible" | "failed";
   readonly detail: string | null;
   readonly checkedAt: string;
+  readonly attempts: number;
+  readonly retryAt: string | null;
+}
+export const OUTCOME_CHECK_MAX_ATTEMPTS = 5;
+export function outcomeCheckPending(
+  check: OutcomeCheck | undefined,
+  turnId: string,
+  now: number,
+): boolean {
+  if (check?.result === "preexisting") return false;
+  if (check?.turnId !== turnId) return true;
+  return (
+    check.result === "failed" &&
+    check.attempts < OUTCOME_CHECK_MAX_ATTEMPTS &&
+    (check.retryAt === null || Date.parse(check.retryAt) <= now)
+  );
 }
 export const EMPTY_QUEUE_STATE: QueueState = {
   paused: false,
@@ -97,11 +113,10 @@ export function makeQueueStore(sql: SqlClient.SqlClient) {
     projectId: string,
   ) => sql`INSERT INTO upstream_port_queue_state(project_id,queue_version)
     VALUES (${projectId},1) ON CONFLICT(project_id) DO UPDATE SET queue_version = queue_version + 1`;
-  const listQueue = (projectId: string) =>
+  const listQueue = (projectId: string, statuses: ReadonlyArray<UpstreamPortQueueStatus> = []) =>
     sql<QueueRow>`SELECT * FROM upstream_port_queue
-    WHERE project_id = ${projectId} ORDER BY position,entry_id`.pipe(
-      Effect.map((rows) => rows.map(fromRow)),
-    );
+    WHERE project_id = ${projectId} ${statuses.length ? sql`AND ${sql.in("status", statuses)}` : sql``}
+    ORDER BY position,entry_id`.pipe(Effect.map((rows) => rows.map(fromRow)));
   const setQueueEntry = (entry: QueueRecord) =>
     sql.withTransaction(
       Effect.gen(function* () {
@@ -176,6 +191,10 @@ export function makeQueueStore(sql: SqlClient.SqlClient) {
       }),
     );
   return {
+    hasQueueHistory: (projectId: string) =>
+      sql`SELECT 1 FROM upstream_port_queue WHERE project_id = ${projectId} LIMIT 1`.pipe(
+        Effect.map((rows) => rows.length > 0),
+      ),
     listQueue,
     setQueueEntry,
     getQueueState,
@@ -231,6 +250,8 @@ export function makeQueueStore(sql: SqlClient.SqlClient) {
         result: OutcomeCheck["result"];
         detail: string | null;
         checked_at: string;
+        attempts: number;
+        retry_at: string | null;
       }>`SELECT * FROM upstream_port_outcome_checks WHERE project_id = ${projectId}`.pipe(
         Effect.map(
           (rows) =>
@@ -244,21 +265,30 @@ export function makeQueueStore(sql: SqlClient.SqlClient) {
                   result: row.result,
                   detail: row.detail,
                   checkedAt: row.checked_at,
+                  attempts: Number(row.attempts),
+                  retryAt: row.retry_at,
                 } satisfies OutcomeCheck,
               ]),
             ),
         ),
       ),
     upsertOutcomeCheck: (row: OutcomeCheck) => sql`INSERT INTO upstream_port_outcome_checks
-      (project_id,thread_id,turn_id,result,detail,checked_at)
-      VALUES (${row.projectId},${row.threadId},${row.turnId},${row.result},${row.detail},${row.checkedAt})
+      (project_id,thread_id,turn_id,result,detail,checked_at,attempts,retry_at)
+      VALUES (${row.projectId},${row.threadId},${row.turnId},${row.result},${row.detail},${row.checkedAt},${row.attempts},${row.retryAt})
       ON CONFLICT(project_id,thread_id) DO UPDATE SET turn_id = excluded.turn_id,result = excluded.result,
-      detail = excluded.detail,checked_at = excluded.checked_at`,
+      detail = excluded.detail,checked_at = excluded.checked_at,attempts = excluded.attempts,retry_at = excluded.retry_at`,
     listProjectsWithPortWork: sql<{
       project_id: string;
     }>`SELECT project_id FROM upstream_port_queue WHERE status IN ('queued','started')
       UNION SELECT project_id FROM upstream_port_groups WHERE status = 'pending'
-      UNION SELECT project_id FROM upstream_port_links WHERE state = 'active'`.pipe(
+      UNION SELECT l.project_id FROM upstream_port_links l
+      LEFT JOIN upstream_port_outcome_checks c ON c.project_id = l.project_id AND c.thread_id = l.thread_id
+      LEFT JOIN projection_threads t ON t.thread_id = l.thread_id
+      LEFT JOIN projection_turns u ON u.thread_id = t.thread_id AND u.turn_id = t.latest_turn_id
+      WHERE l.state = 'active' AND u.state = 'completed' AND u.processing_quiesced_at IS NOT NULL
+      AND u.assistant_message_id IS NOT NULL AND (c.thread_id IS NULL OR
+        (c.result != 'preexisting' AND t.latest_turn_id IS NOT NULL AND c.turn_id IS NOT t.latest_turn_id) OR
+        (c.result = 'failed' AND c.attempts < ${OUTCOME_CHECK_MAX_ATTEMPTS}))`.pipe(
       Effect.map((rows) => rows.map((row) => row.project_id)),
     ),
   };

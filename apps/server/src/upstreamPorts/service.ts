@@ -94,6 +94,7 @@ import {
 import {
   buildPortPrompt,
   parseUpstreamOutcomes,
+  parseLegacyUpstreamOutcomes,
   outcomeForTopic,
   decisionFromOutcome,
   type ParsedUpstreamOutcomes,
@@ -112,7 +113,12 @@ import { canonicalJsonHash } from "../canonicalJsonHash.ts";
 import { isProviderUsable } from "../agentBridge/threadTools.ts";
 import { hasActiveThreadTurn } from "../nextTurnQueue/gate.ts";
 import { hasFreshUsageCapacity, scheduledUsageRetryAt } from "../usage/usageGate.ts";
-import { makeQueueStore, type QueueRecord, type QueueState } from "./queueStore.ts";
+import {
+  makeQueueStore,
+  outcomeCheckPending,
+  type QueueRecord,
+  type QueueState,
+} from "./queueStore.ts";
 
 import { GitCommandError, type TextGenerationError } from "../git/Errors.ts";
 import type { StructuredJsonGenerationInput } from "../git/Services/TextGeneration.ts";
@@ -1173,6 +1179,26 @@ export function makeUpstreamPortsService(
 
     // ── Ports ──
 
+    const forkRepos = new Map<string, { value: string | null; expiresAt: number }>();
+    const forkRepoFor = (context: ProjectContext) =>
+      Effect.gen(function* () {
+        const cached = forkRepos.get(context.projectId);
+        if (cached && cached.expiresAt > now().getTime()) return cached.value;
+        const value = yield* git
+          .remoteUrl(context.cwd, "origin")
+          .pipe(Effect.orElseSucceed(() => null));
+        forkRepos.set(context.projectId, {
+          value,
+          expiresAt: now().getTime() + (value ? 120_000 : 15_000),
+        });
+        return value;
+      });
+    const projectionExpired = (turn: {
+      processingQuiescedAt?: string | null | undefined;
+      completedAt?: string | null | undefined;
+    }) =>
+      now().getTime() - Date.parse(turn.processingQuiescedAt ?? turn.completedAt ?? "") >= 120_000;
+
     /** Only the assistant message owned by the settled turn can supply an outcome. */
     const readOutcomes = (
       context: ProjectContext,
@@ -1196,16 +1222,21 @@ export function makeUpstreamPortsService(
           SELECT message_id,text FROM projection_thread_messages WHERE role = 'assistant'
           AND ${deps.sql.in("message_id", messageIds)}`
           : [];
-        const forkRepo = yield* git
-          .remoteUrl(context.cwd, "origin")
-          .pipe(Effect.orElseSucceed(() => null));
+        const forkRepo = yield* forkRepoFor(context);
+        const checks = yield* queue.getOutcomeChecks(context.projectId);
+        const byId = new Map(messages.map((message) => [message.message_id, message]));
         return new Map(
           turns.flatMap((thread) => {
-            const message = messages.find(
-              (entry) => entry.message_id === thread.latestTurn!.assistantMessageId,
-            );
+            const message = byId.get(thread.latestTurn!.assistantMessageId!);
             return message
-              ? [[thread.id as string, parseUpstreamOutcomes(message.text, { forkRepo })] as const]
+              ? [
+                  [
+                    thread.id as string,
+                    (checks.get(thread.id)?.result === "preexisting"
+                      ? parseLegacyUpstreamOutcomes
+                      : parseUpstreamOutcomes)(message.text, { forkRepo }),
+                  ] as const,
+                ]
               : [];
           }),
         );
@@ -1302,7 +1333,11 @@ export function makeUpstreamPortsService(
                 ...summaries.get(link.threadId)!,
                 epoch: link.epoch,
                 outcome: outcomes.has(link.threadId)
-                  ? outcomeForTopic(outcomes.get(link.threadId)!, row.topic.id)
+                  ? outcomeForTopic(
+                      outcomes.get(link.threadId)!,
+                      row.topic.id,
+                      active.filter((other) => other.threadId === link.threadId).length,
+                    )
                   : null,
               })),
           }),
@@ -1658,6 +1693,7 @@ export function makeUpstreamPortsService(
           legacyRemaining: 0,
           triageFailedCount: 0,
           portQueue: {
+            hasHistory: false,
             queuedTopics: 0,
             queuedThreads: 0,
             running: 0,
@@ -2275,7 +2311,7 @@ export function makeUpstreamPortsService(
             link.state === "active" &&
             snapshot.view.topicsById.get(link.topicId)?.epoch === link.epoch,
         );
-        const owned = (yield* queue.listQueue(projectId)).filter(
+        const owned = (yield* queue.listQueue(projectId, ["started"])).filter(
           (entry) =>
             entry.status === "started" &&
             entry.threadId !== null &&
@@ -2366,7 +2402,8 @@ export function makeUpstreamPortsService(
         yield* requireConfig(context);
         const snapshot = yield* currentView(context);
         const ids = resolveTarget(snapshot, input.target);
-        const keys = portFileKeys(yield* topicFileSets(context, snapshot, ids)).keysByTopic;
+        const files = yield* topicFileSets(context, snapshot, ids);
+        const keys = portFileKeys(files).keysByTopic;
         const topics = groupingTopics(snapshot, ids, keys);
         const groups = groupPortTopics(topics, input.grouping, input.batchSize);
         const skipped = queueSkips(snapshot, ids, yield* queue.listQueuedTopicIds(input.projectId));
@@ -2409,7 +2446,9 @@ export function makeUpstreamPortsService(
         }
         const snapshot = yield* currentView(context);
         const ids = resolveTarget(snapshot, input.target);
-        const keys = portFileKeys(yield* topicFileSets(context, snapshot, ids)).keysByTopic;
+        const files = yield* topicFileSets(context, snapshot, ids);
+        const keys = portFileKeys(files).keysByTopic;
+        const conflictKeys = portFileKeys(files, { dropHotPaths: false }).keysByTopic;
         const providers = yield* host.listProviders;
         if (
           !providers.some(
@@ -2468,7 +2507,7 @@ export function makeUpstreamPortsService(
                     modelSelection: input.modelSelection,
                     runtimeMode: input.runtimeMode,
                     requestId: input.clientRequestId,
-                    fileKeys: [...new Set(topicIds.flatMap((id) => keys.get(id) ?? []))],
+                    fileKeys: [...new Set(topicIds.flatMap((id) => conflictKeys.get(id) ?? []))],
                     ignoreConflicts: false,
                     status: "queued",
                     threadId: null,
@@ -2615,7 +2654,13 @@ export function makeUpstreamPortsService(
             const thread = model.threads.find((thread) => thread.id === link.threadId);
             const turn = thread?.latestTurn;
             const parsed = outcomes.get(link.threadId);
-            const outcome = parsed ? outcomeForTopic(parsed, link.topicId) : null;
+            const outcome = parsed
+              ? outcomeForTopic(
+                  parsed,
+                  link.topicId,
+                  open.filter((other) => other.threadId === link.threadId).length,
+                )
+              : null;
             return (
               thread?.archivedAt != null ||
               (turn != null &&
@@ -2666,11 +2711,10 @@ export function makeUpstreamPortsService(
           const turn = thread?.latestTurn;
           const check = checks.get(id);
           return (
-            check?.result !== "preexisting" &&
             turn?.state === "completed" &&
             turn.processingQuiescedAt != null &&
             turn.assistantMessageId != null &&
-            check?.turnId !== turn.turnId
+            outcomeCheckPending(check, turn.turnId, now().getTime())
           );
         });
         const outcomes = yield* readOutcomes(context, model, ids);
@@ -2687,11 +2731,25 @@ export function makeUpstreamPortsService(
             turn.state !== "completed" ||
             turn.processingQuiescedAt == null ||
             !turn.assistantMessageId ||
-            check?.turnId === turn.turnId
+            !outcomeCheckPending(check, turn.turnId, now().getTime())
           )
             continue;
           const parsed = outcomes.get(threadId);
-          if (!parsed) continue;
+          if (!parsed) {
+            if (projectionExpired(turn))
+              yield* queue.upsertOutcomeCheck({
+                projectId: context.projectId,
+                threadId,
+                turnId: turn.turnId,
+                result: "no-outcome",
+                detail:
+                  "The settled turn's assistant message was not projected within two minutes.",
+                checkedAt: now().toISOString(),
+                attempts: 0,
+                retryAt: null,
+              });
+            continue;
+          }
           const threadLinks = links.filter((link) => link.threadId === threadId);
           const candidates = threadLinks.filter(
             (link) =>
@@ -2725,7 +2783,7 @@ export function makeUpstreamPortsService(
                   (other) => other.threadId === threadId && other.state === "active",
                 ).length === 1;
               const decision = decisionFromOutcome(
-                outcomeForTopic(parsed, link.topicId),
+                outcomeForTopic(parsed, link.topicId, single ? 1 : 2),
                 single && !parsed.byTopic.has(link.topicId)
                   ? (summaries.get(threadId)?.prNumber ?? null)
                   : null,
@@ -2751,6 +2809,7 @@ export function makeUpstreamPortsService(
             }
             return { ops, result: ops.length };
           }).pipe(Effect.result);
+          const attempts = (check?.turnId === turn.turnId ? check.attempts : 0) + 1;
           yield* queue.upsertOutcomeCheck({
             projectId: context.projectId,
             threadId,
@@ -2765,6 +2824,13 @@ export function makeUpstreamPortsService(
                     : "no-outcome",
             detail: attempted._tag === "Failure" ? describe(attempted.failure) : null,
             checkedAt: now().toISOString(),
+            attempts,
+            retryAt:
+              attempted._tag === "Failure"
+                ? new Date(
+                    now().getTime() + Math.min(300_000, 15_000 * 2 ** (attempts - 1)),
+                  ).toISOString()
+                : null,
           });
         }
       });
@@ -2835,14 +2901,16 @@ export function makeUpstreamPortsService(
         };
         // Use a mutable local tally while keeping wire contracts readonly.
         const tally = { ...counts };
+        const rowsById = new Map(snapshot.rows.map((row) => [row.topic.id, row]));
+        const baseById = new Map(snapshot.base.ledger.topics.map((topic) => [topic.id, topic]));
         const doneOnDefaultBranch = new Set<string>();
         const all = records.map((entry) => {
           const topics = Object.keys(entry.topicEpochs).map((topicId) => {
-            const row = snapshot.rows.find((row) => row.topic.id === topicId);
+            const row = rowsById.get(topicId);
             const epoch = entry.topicEpochs[topicId]!;
             const superseded = row?.topic.epoch !== epoch;
             const result = entry.topicResults[topicId] ?? entry.result;
-            const baseTopic = snapshot.base.ledger.topics.find((topic) => topic.id === topicId);
+            const baseTopic = baseById.get(topicId);
             const onDefaultBranch =
               !superseded &&
               (snapshot.base.trailers.epochs.get(topicId)?.has(epoch) ||
@@ -2917,14 +2985,13 @@ export function makeUpstreamPortsService(
 
     const queueSummary = (context: ProjectContext, snapshot: CurrentView) =>
       Effect.gen(function* () {
-        const entries = (yield* queue.listQueue(context.projectId)).filter(
-          (entry) => entry.status === "queued",
-        );
+        const entries = yield* queue.listQueue(context.projectId, ["queued"]);
         const state = yield* queue.getQueueState(context.projectId);
         const automaticUsageRecovery =
           state.holdKind !== "usage" || (yield* host.getSettings).autoResumeUsageLimitedThreads;
         const conflicts = entries.length ? yield* openConflicts(context, snapshot) : [];
         return {
+          hasHistory: yield* queue.hasQueueHistory(context.projectId),
           queuedTopics: entries.reduce((sum, entry) => sum + entry.topicIds.length, 0),
           queuedThreads: entries.length,
           running: (yield* runningThreads(context.projectId, snapshot)).size,
@@ -2945,6 +3012,7 @@ export function makeUpstreamPortsService(
           Effect.logWarning("upstreamPorts.queue.summary.failed", { detail: describe(error) }).pipe(
             Effect.andThen(
               Effect.succeed({
+                hasHistory: false,
                 queuedTopics: 0,
                 queuedThreads: 0,
                 running: 0,
@@ -2962,9 +3030,7 @@ export function makeUpstreamPortsService(
     /** Prune departed members and their files before choosing a non-conflicting entry. */
     const refreshQueuedEntries = (context: ProjectContext, snapshot: CurrentView) =>
       Effect.gen(function* () {
-        const entries = (yield* queue.listQueue(context.projectId)).filter(
-          (entry) => entry.status === "queued",
-        );
+        const entries = yield* queue.listQueue(context.projectId, ["queued"]);
         const rows = new Map(snapshot.rows.map((row) => [row.topic.id, row]));
         const files = yield* topicFileSets(
           context,
@@ -3072,7 +3138,7 @@ export function makeUpstreamPortsService(
         let snapshot = yield* currentView(context);
         const running = yield* runningThreads(projectId, snapshot);
         const model = yield* host.readModel;
-        const entries = yield* queue.listQueue(projectId);
+        const entries = yield* queue.listQueue(projectId, ["started"]);
         const parsed = yield* readOutcomes(
           context,
           model,
@@ -3093,11 +3159,13 @@ export function makeUpstreamPortsService(
                 : thread.archivedAt
                   ? "archived"
                   : (thread.latestTurn?.state ?? "missing");
-          // Projection may lag quiescence: retain the slot until its owned message exists.
+          // Projection may lag quiescence, but a permanently missing message must not
+          // leave the progress panel executing forever after the slot was released.
           if (
             result === "completed" &&
             thread?.latestTurn?.assistantMessageId &&
-            !parsed.has(thread.id)
+            !parsed.has(thread.id) &&
+            !projectionExpired(thread.latestTurn)
           )
             continue;
           const outcomes = parsed.get(entry.threadId!);
@@ -3105,7 +3173,8 @@ export function makeUpstreamPortsService(
           for (const id of entry.topicIds)
             topicResults[id] =
               result === "completed"
-                ? ((outcomes ? outcomeForTopic(outcomes, id)?.kind : null) ?? "no-outcome")
+                ? ((outcomes ? outcomeForTopic(outcomes, id, entry.topicIds.length)?.kind : null) ??
+                  "no-outcome")
                 : result;
           yield* withPortLock(
             projectId,
@@ -3149,6 +3218,14 @@ export function makeUpstreamPortsService(
           if (changed) yield* emit(projectId, "queue-updated");
           return;
         }
+        if (
+          state.holdKind !== "usage" &&
+          state.holdUntil &&
+          Date.parse(state.holdUntil) > now().getTime()
+        ) {
+          if (changed) yield* emit(projectId, "queue-updated");
+          return;
+        }
         const globalSettings = yield* host.getSettings;
         if (state.holdKind === "usage" && !globalSettings.autoResumeUsageLimitedThreads) {
           yield* updateState({
@@ -3166,7 +3243,7 @@ export function makeUpstreamPortsService(
               (yield* runningThreads(projectId, snapshot)).size >= context.settings.portConcurrency
             )
               break;
-            const remaining = (yield* queue.listQueue(projectId)).filter(
+            const remaining = (yield* queue.listQueue(projectId, ["queued"])).filter(
               (entry) => entry.status === "queued" && !stale.has(entry.entryId),
             );
             if (!remaining.length) {
@@ -3250,6 +3327,14 @@ export function makeUpstreamPortsService(
               if (result.failure.code === "conflict") {
                 stale.add(entry.entryId);
                 continue;
+              }
+              if (result.failure.code === "busy" || result.failure.code === "internal") {
+                yield* updateState({
+                  holdKind: result.failure.code === "busy" ? "writer" : "provider",
+                  holdMessage: result.failure.message,
+                  holdUntil: new Date(now().getTime() + 30_000).toISOString(),
+                });
+                break;
               }
               if (result.failure.code === "unavailable") {
                 yield* updateState({

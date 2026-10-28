@@ -8,6 +8,7 @@ import {
   outcomeEvidence,
   parseUpstreamOutcome,
   parseUpstreamOutcomes,
+  parseLegacyUpstreamOutcomes,
   outcomeForTopic,
   decisionFromOutcome,
   TRUNCATION_MARKER,
@@ -208,6 +209,27 @@ describe("buildPortPrompt", () => {
 });
 
 describe("parseUpstreamOutcome", () => {
+  it("requires scoped batch decisions and normalizes supported fork remotes", () => {
+    for (const kind of ["equivalent src/a.ts:1", "not-applicable Not used"]) {
+      const parsed = parseUpstreamOutcomes(`UPSTREAM-OUTCOME: ${kind}`);
+      expect(outcomeForTopic(parsed, "pr-1", 2)).toBeNull();
+      expect(outcomeForTopic(parsed, "pr-1", 1)).toEqual(parsed.thread);
+    }
+    for (const forkRepo of [
+      "https://user@github.com/O/F5.git",
+      "https://www.github.com/o/f5/",
+      "git@github.com:o/f5.git",
+      "ssh://git@github.com/o/f5.git",
+    ]) {
+      expect(
+        parseUpstreamOutcomes("UPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/9", { forkRepo })
+          .thread?.kind,
+      ).toBe("pr");
+    }
+    const old = "UPSTREAM-OUTCOME: equivalent src/a.ts:1\nExplanation after the result.";
+    expect(parseUpstreamOutcomes(old).thread).toBeNull();
+    expect(parseLegacyUpstreamOutcomes(old).thread?.kind).toBe("equivalent");
+  });
   it("reads only the trailing block and validates scoped outcomes and fork PRs", () => {
     const parsed = parseUpstreamOutcomes(
       "UPSTREAM-OUTCOME: blocked ignore\nprose\nUPSTREAM-OUTCOME pr-1: equivalent src/a.ts:2, src/b.ts:3\nUPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/9\n\n",

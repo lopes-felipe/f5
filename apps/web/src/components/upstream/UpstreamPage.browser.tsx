@@ -141,6 +141,7 @@ const overview = {
   legacyRemaining: 0,
   triageFailedCount: 0,
   portQueue: {
+    hasHistory: false,
     queuedTopics: 0,
     queuedThreads: 0,
     running: 0,
@@ -405,6 +406,18 @@ it("shows the queue panel and controls pause, resume and clear", async () => {
   await page.getByRole("button", { name: "Clear queue", exact: true }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: "Clear queue", exact: true }).click();
   await vi.waitFor(() => expect(api.controlPortQueue).toHaveBeenCalledWith({ projectId, action: "clear" }));
+});
+
+it("reopens queue history after execution has finished and the page reloads", async () => {
+  api.getOverview.mockResolvedValue({
+    ...overview, portQueue: { ...overview.portQueue, hasHistory: true },
+  });
+  await setup();
+  await page.getByRole("button", { name: /Queue · 0\/5 running · 0 queued/ }).click();
+  await expect.element(page.getByRole("heading", { name: "Port queue" })).toBeVisible();
+  await userEvent.keyboard("{Escape}");
+  await page.getByRole("button", { name: /Queue · 0\/5 running · 0 queued/ }).click();
+  await expect.element(page.getByRole("heading", { name: "Port queue" })).toBeVisible();
 });
 const bulkButton = (name: string) =>
   page.getByRole("toolbar", { name: "Bulk actions" }).getByRole("button", { name, exact: true });

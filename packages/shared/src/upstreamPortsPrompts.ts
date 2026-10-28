@@ -280,6 +280,7 @@ export function buildPortPrompt(input: PortPromptInput): string {
 export {
   parseUpstreamOutcome,
   parseUpstreamOutcomes,
+  parseLegacyUpstreamOutcomes,
   outcomeForTopic,
   outcomeEvidence,
   decisionFromOutcome,

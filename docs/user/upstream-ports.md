@@ -115,6 +115,9 @@ reasons needing attention. **Pause** is separate from automatic holds for usage 
 provider availability, worktree isolation or writer ownership. Holds recheck automatically;
 if isolation still cannot create an agent after two minutes, that entry is rejected and
 the queue continues. Fix worktree availability and queue those topics again to retry.
+Repository contention and temporary preparation errors retain their queued entries and
+retry after a short backoff. Direct starts also reserve under the repository lock and
+may report that the repository is busy.
 Usage recovery respects the existing automatic usage-resume setting. When disabled, the
 hold asks you to resume manually and shows no automatic retry time. Recovery never undoes
 a user pause. Two consecutive port-thread errors pause the queue until you check the provider
@@ -124,6 +127,8 @@ running. **Remove from queue** removes selected topics without stopping started 
 Queue drain does not mean topics are Done. Done comes from default-branch evidence, never
 just a PR URL or a finished thread. The panel refreshes base evidence at most every two
 minutes while review work remains, and shows the evidence time or refresh error.
+The queue history remains available after execution stops. A settled turn whose assistant
+message is still missing after two minutes finishes as needing attention.
 
 Batch prompts assess every topic individually. Already-present or inapplicable topics report
 `UPSTREAM-OUTCOME <topic-id>: equivalent <path:line>[, ...]` or
@@ -133,6 +138,9 @@ thread-level outcome. If all topics are equivalent or inapplicable, only per-top
 PR outcome URLs must be HTTPS GitHub pull requests in the repository identified by
 the fork's `origin` remote. A missing or non-GitHub origin prevents automatic PR URL
 validation; configure origin so the queue can recognize these outcomes.
+Credentialed HTTPS and SSH remotes are normalized before repository comparison.
+GitHub Enterprise remains unsupported. Pre-feature ports retain display compatibility
+with outcome lines followed by explanatory text, and remain excluded from automatic decisions.
 
 ## Re-triage and automatic outcomes
 
@@ -146,7 +154,10 @@ ledger publisher.
 fully processed turn on its originating active port link can record validated equivalent or
 not-applicable decisions as `decidedBy: llm`. Find them with **Automatic only**. Earlier
 ports are excluded from automatic recording. Turn messages, evidence paths and fork PR URLs
-are validated; unrelated later messages do not count. The default-branch rules must include
+are validated; unrelated later messages do not count.
+For batches, equivalent/not-applicable decisions must name each topic explicitly. Temporary
+recording failures retry with persisted backoff, up to five attempts per turn.
+The default-branch rules must include
 `not-applicable` before that outcome can record automatically. PR outcomes still complete
 only through merged trailers; blocked or invalid outcomes need attention. PRs never auto-merge.
 

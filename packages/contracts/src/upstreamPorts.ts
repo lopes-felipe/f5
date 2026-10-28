@@ -379,6 +379,7 @@ export const UpstreamOverview = Schema.Struct({
   legacyRemaining: NonNegativeInt,
   triageFailedCount: NonNegativeInt,
   portQueue: Schema.Struct({
+    hasHistory: Schema.Boolean,
     queuedTopics: NonNegativeInt,
     queuedThreads: NonNegativeInt,
     running: NonNegativeInt,

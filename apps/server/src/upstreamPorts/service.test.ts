@@ -22,7 +22,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { TextGenerationError } from "../git/Errors.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { UpstreamGitHubError } from "./github.ts";
-import { makeUpstreamPortsService, type UpstreamPortsDeps } from "./service.ts";
+import { makeUpstreamPortsService, UpstreamPortsError, type UpstreamPortsDeps } from "./service.ts";
+import { makeQueueStore } from "./queueStore.ts";
 import { makeUpstreamStore } from "./store.ts";
 import {
   FakeGitHub,
@@ -232,6 +233,139 @@ const completedThread = (id: string, turnId: string, messageId: string, state = 
   }) as never;
 
 layer("upstream port queue", (it) => {
+  for (const kind of ["equivalent src/a.ts:1", "not-applicable Not used"])
+    it.effect(`does not apply an unscoped batch decision: ${kind}`, () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(2, 1);
+        yield* service.enqueuePort(queueInput(ids, "unscoped-batch"));
+        yield* service.testing.awaitIdle;
+        const first = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!;
+        fixture.host.threads = [completedThread(first.threadId!, "batch-turn", "batch-message")];
+        const sql = yield* SqlClient.SqlClient;
+        const text = `UPSTREAM-OUTCOME: ${kind}`;
+        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at)
+          VALUES ('batch-message',${first.threadId},'assistant',${text},0,'now','now')`;
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(
+          (yield* service.getPortQueue({ projectId: PROJECT_ID })).counts.needsAttention,
+          2,
+        );
+        for (const topicId of ids)
+          assert.equal(
+            (yield* service.getTopic({ projectId: PROJECT_ID, topicId })).row.state,
+            "in-progress",
+          );
+      }),
+    );
+
+  for (const code of ["busy", "internal"] as const)
+    it.effect(`retries ${code} preparation errors without dropping the rest of the queue`, () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(3, 2);
+        const original = fixture.host.host.withRepositoryLock;
+        let fail = true;
+        Object.assign(fixture.host.host, {
+          withRepositoryLock: <A, E>(
+            cwd: string,
+            mode: "user" | "background",
+            effect: Effect.Effect<A, E>,
+          ) =>
+            fail
+              ? Effect.fail(new UpstreamPortsError({ code, message: "Temporarily busy" }))
+              : original(cwd, mode, effect),
+        });
+        yield* service.enqueuePort({
+          ...queueInput(ids, "retry-preparation"),
+          grouping: "separately",
+        });
+        yield* service.testing.awaitIdle;
+        let progress = yield* service.getPortQueue({ projectId: PROJECT_ID });
+        assert.equal(progress.counts.queued, 3);
+        assert.equal(progress.counts.needsAttention, 0);
+        assert.equal(fixture.host.submissions.length, 0);
+        fail = false;
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(fixture.host.submissions.length, 0);
+        fixture.clock.now = new Date("2026-10-22T12:00:31.000Z");
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        progress = yield* service.getPortQueue({ projectId: PROJECT_ID });
+        assert.equal(progress.counts.executing, 2);
+        assert.equal(progress.counts.queued, 1);
+      }),
+    );
+
+  it.effect("retries failed automatic recording with persisted backoff and a bounded budget", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(1, 1);
+      yield* service.enqueuePort(queueInput(ids, "retry-outcome"));
+      yield* service.testing.awaitIdle;
+      const first = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!;
+      fixture.host.threads = [completedThread(first.threadId!, "retry-turn", "retry-message")];
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at)
+        VALUES ('retry-message',${first.threadId},'assistant','UPSTREAM-OUTCOME: equivalent src/a.ts:1',0,'now','now')`;
+      const original = fixture.host.host.withRepositoryLock;
+      let fail = true;
+      Object.assign(fixture.host.host, {
+        withRepositoryLock: <A, E>(
+          cwd: string,
+          mode: "user" | "background",
+          effect: Effect.Effect<A, E>,
+        ) =>
+          fail
+            ? Effect.fail(new UpstreamPortsError({ code: "busy", message: "Temporarily busy" }))
+            : original(cwd, mode, effect),
+      });
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      const queue = makeQueueStore(sql);
+      assert.equal((yield* queue.getOutcomeChecks(PROJECT_ID)).get(first.threadId!)!.attempts, 1);
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      assert.equal((yield* queue.getOutcomeChecks(PROJECT_ID)).get(first.threadId!)!.attempts, 1);
+      fail = false;
+      fixture.clock.now = new Date("2026-10-22T12:00:16.000Z");
+      const restarted = yield* fixture.make();
+      yield* restarted.testing.dispatchQueue(PROJECT_ID);
+      assert.equal(
+        (yield* restarted.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! })).row.topic.status,
+        "equivalent",
+      );
+      const check = (yield* queue.getOutcomeChecks(PROJECT_ID)).get(first.threadId!)!;
+      assert.equal(check.result, "recorded");
+      assert.equal(check.attempts, 2);
+    }),
+  );
+
+  it.effect("retains hot shared files for dispatch while excluding them from grouping", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(10, 5, () => ["shared.ts", "bun.lock"]);
+      yield* service.enqueuePort({ ...queueInput(ids, "hot-path-gating"), grouping: "separately" });
+      yield* service.testing.awaitIdle;
+      const progress = yield* service.getPortQueue({ projectId: PROJECT_ID });
+      assert.equal(fixture.host.submissions.length, 1);
+      assert.equal(progress.counts.queued, 9);
+      assert.equal(progress.entries[0]!.fileCount, 1);
+      assert.equal(progress.entries[1]!.waitingOn.length, 1);
+    }),
+  );
+
+  it.effect("finishes a settled entry when its projected message never appears", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(1, 1);
+      yield* service.enqueuePort(queueInput(ids, "missing-projection"));
+      yield* service.testing.awaitIdle;
+      const first = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!;
+      fixture.host.threads = [completedThread(first.threadId!, "missing-turn", "missing-message")];
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      assert.equal((yield* service.getPortQueue({ projectId: PROJECT_ID })).counts.executing, 1);
+      fixture.clock.now = new Date("2026-10-22T12:04:00.000Z");
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      const progress = yield* service.getPortQueue({ projectId: PROJECT_ID });
+      assert.equal(progress.counts.executing, 0);
+      assert.equal(progress.counts.needsAttention, 1);
+      assert.equal(progress.entries[0]!.topics[0]!.result, "no-outcome");
+      assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.hasHistory, true);
+    }),
+  );
   it.effect("releases overlapping files after recording a settled not-applicable outcome", () =>
     Effect.gen(function* () {
       const { fixture, service, ids } = yield* prepareQueue(2, 1, () => ["shared.ts"]);
@@ -937,56 +1071,79 @@ layer("upstream port queue", (it) => {
       }),
   );
 
-  it.effect("keeps a two-commit failed topic whole even with chunkSize one", () =>
-    Effect.gen(function* () {
-      const fixture = yield* setup({ count: 2 });
-      fixture.host.triage = (prompt) =>
-        triageAll(() => ({}))(prompt).pipe(
-          Effect.map((result) => ({
-            groups: [
-              { ...result.groups[0]!, commits: result.groups.flatMap((group) => group.commits) },
+  for (const mixed of [false, true])
+    it.effect(
+      mixed
+        ? "does not skip a multi-commit topic with mixed skip and Port results"
+        : "keeps a two-commit failed topic whole even with chunkSize one",
+      () =>
+        Effect.gen(function* () {
+          const fixture = yield* setup({ count: 2 });
+          fixture.host.triage = (prompt) =>
+            triageAll(() => ({}))(prompt).pipe(
+              Effect.map((result) => ({
+                groups: [
+                  {
+                    ...result.groups[0]!,
+                    commits: result.groups.flatMap((group) => group.commits),
+                  },
+                ],
+              })),
+            );
+          const first = yield* fixture.make();
+          yield* first.run({ projectId: PROJECT_ID, kind: "upstream", triage: "llm" });
+          yield* first.testing.awaitIdle;
+          const topic = (yield* first.listTopics({
+            projectId: PROJECT_ID,
+            list: "inbox",
+          })).topics.find((row) => row.topic.id !== "pr-1")!.topic;
+          const sql = yield* SqlClient.SqlClient;
+          yield* makeUpstreamStore(sql).recordOps(
+            PROJECT_ID,
+            [
+              {
+                opId: "failed-multi",
+                op: {
+                  kind: "suggestion",
+                  topicId: topic.id,
+                  title: topic.title,
+                  summary: topic.summary,
+                  suggestion: { ...topic.suggestion!, triageError: "bad JSON" },
+                },
+              },
             ],
-          })),
-        );
-      const first = yield* fixture.make();
-      yield* first.run({ projectId: PROJECT_ID, kind: "upstream", triage: "llm" });
-      yield* first.testing.awaitIdle;
-      const topic = (yield* first.listTopics({ projectId: PROJECT_ID, list: "inbox" })).topics.find(
-        (row) => row.topic.id !== "pr-1",
-      )!.topic;
-      const sql = yield* SqlClient.SqlClient;
-      yield* makeUpstreamStore(sql).recordOps(
-        PROJECT_ID,
-        [
-          {
-            opId: "failed-multi",
-            op: {
-              kind: "suggestion",
-              topicId: topic.id,
-              title: topic.title,
-              summary: topic.summary,
-              suggestion: { ...topic.suggestion!, triageError: "bad JSON" },
-            },
-          },
-        ],
-        fixture.clock.now.toISOString(),
-      );
-      const chunks: number[] = [];
-      fixture.host.triage = (prompt) => {
-        chunks.push([...prompt.matchAll(/^commit [0-9a-f]{40}$/gm)].length);
-        return triageAll(() => ({}))(prompt);
-      };
-      const service = yield* fixture.make(undefined, { chunkSize: 1 });
-      yield* service.run({ projectId: PROJECT_ID, kind: "retriage", triage: "llm" });
-      yield* service.testing.awaitIdle;
-      assert.deepStrictEqual(chunks, [2]);
-      assert.equal(
-        (yield* service.getTopic({ projectId: PROJECT_ID, topicId: topic.id })).members.length,
-        2,
-      );
-      assert.equal((yield* service.getOverview(PROJECT_ID)).lastRun?.status, "succeeded");
-    }),
-  );
+            fixture.clock.now.toISOString(),
+          );
+          const chunks: number[] = [];
+          fixture.host.triage = (prompt) => {
+            chunks.push([...prompt.matchAll(/^commit [0-9a-f]{40}$/gm)].length);
+            let index = 0;
+            return triageAll(() =>
+              mixed && index++ === 0
+                ? {
+                    suggestion: "skip",
+                    reasonKey: "maintenance",
+                    confidence: 0.99,
+                    reason: "No user impact",
+                  }
+                : {},
+            )(prompt);
+          };
+          const service = yield* fixture.make(undefined, { chunkSize: 1 });
+          yield* service.run({ projectId: PROJECT_ID, kind: "retriage", triage: "llm" });
+          yield* service.testing.awaitIdle;
+          assert.deepStrictEqual(chunks, [2]);
+          assert.equal(
+            (yield* service.getTopic({ projectId: PROJECT_ID, topicId: topic.id })).members.length,
+            2,
+          );
+          assert.equal((yield* service.getOverview(PROJECT_ID)).lastRun?.status, "succeeded");
+          assert.equal(
+            (yield* service.getTopic({ projectId: PROJECT_ID, topicId: topic.id })).row.state,
+            "inbox",
+          );
+        }),
+    );
 
   for (const count of [21, 201, 1531])
     it.effect(`queues all ${count} Ready topics beyond loaded pages`, () =>

@@ -525,7 +525,7 @@ export function runTriage(context: RunContext, initial: RunRecord): Effect.Effec
           const decision =
             groups.length === 1
               ? groups[0]!.decision
-              : decisions.length > 0 &&
+              : decisions.length === groups.length &&
                   decisions.every((decision) => decision.reasonKey === decisions[0]!.reasonKey)
                 ? decisions[0]!
                 : !revertChain && suggestions.length === groups.length

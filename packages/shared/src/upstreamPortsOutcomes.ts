@@ -25,6 +25,26 @@ function validEvidence(entry: string): boolean {
   );
 }
 
+function githubRepo(value: string): string | null {
+  const scp = /^[^/@]+@([^/:]+):(.+)$/u.exec(value);
+  const input = scp
+    ? `ssh://${scp[1]}/${scp[2]}`
+    : /^[^/:]+\/[^/]+$/u.test(value)
+      ? `https://github.com/${value}`
+      : value;
+  try {
+    const url = new URL(input);
+    const host = url.hostname.toLowerCase().replace(/^www\./u, "");
+    const repo = url.pathname
+      .replace(/\/$/u, "")
+      .replace(/\.git$/u, "")
+      .replace(/^\//u, "");
+    return host === "github.com" && /^[^/]+\/[^/]+$/u.test(repo) ? repo.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
 export function parseUpstreamOutcomes(
   text: string,
   options: { readonly forkRepo?: string | null } = {},
@@ -47,14 +67,10 @@ export function parseUpstreamOutcomes(
       const pr = /^https:\/\/github\.com\/([^/?#]+\/[^/?#]+)\/pull\/([1-9][0-9]*)$/u.exec(
         outcome.detail,
       );
-      const repo = options.forkRepo
-        ?.replace(/^https:\/\/github\.com\//u, "")
-        .replace(/^git@github\.com:/u, "")
-        .replace(/^ssh:\/\/git@github\.com\//u, "")
-        .replace(/\.git$/u, "")
-        .replace(/\/$/u, "");
+      const repo = options.forkRepo ? githubRepo(options.forkRepo) : null;
       valid =
-        !!pr && options.forkRepo !== null && (!repo || pr[1]!.toLowerCase() === repo.toLowerCase());
+        !!pr &&
+        (options.forkRepo === undefined || (repo !== null && pr[1]!.toLowerCase() === repo));
     } else if (outcome.kind === "equivalent") {
       valid = outcome.detail.split(",").every((entry) => validEvidence(entry.trim()));
     } else valid &&= outcome.detail.length <= 1_000;
@@ -80,9 +96,32 @@ export function parseUpstreamOutcome(text: string): UpstreamPortOutcome | null {
 export function outcomeForTopic(
   parsed: ParsedUpstreamOutcomes,
   topicId: string,
+  topicCount = 1,
 ): UpstreamPortOutcome | null {
   if (parsed.errors.has(topicId)) return null;
-  return parsed.byTopic.get(topicId) ?? parsed.thread;
+  const scoped = parsed.byTopic.get(topicId);
+  if (scoped) return scoped;
+  // A batch's PR/blocked result describes the thread; a decision must name its topic.
+  if (
+    topicCount > 1 &&
+    (parsed.thread?.kind === "equivalent" || parsed.thread?.kind === "not-applicable")
+  )
+    return null;
+  return parsed.thread;
+}
+
+/** Display compatibility only for ports excluded from automatic outcome recording. */
+export function parseLegacyUpstreamOutcomes(
+  text: string,
+  options: { readonly forkRepo?: string | null } = {},
+): ParsedUpstreamOutcomes {
+  const parsed = parseUpstreamOutcomes(text, options);
+  if (parsed.thread || parsed.byTopic.size || parsed.errors.size) return parsed;
+  const line = text
+    .replaceAll("\r\n", "\n")
+    .split("\n")
+    .findLast((line) => line.startsWith("UPSTREAM-OUTCOME: "));
+  return line ? parseUpstreamOutcomes(line, options) : parsed;
 }
 
 /** `path:line` items from an equivalent outcome. */
