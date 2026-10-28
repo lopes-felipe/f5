@@ -51784,8 +51784,8 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
-      "decidedAt": "2026-10-28T21:01:18.946Z",
-      "decidedBy": "llm",
+      "decidedAt": "2026-10-28T21:05:12.740Z",
+      "decidedBy": "user",
       "epoch": 1,
       "equivalence": {
         "evidence": [
