@@ -32855,12 +32855,14 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T20:52:48.103Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21519",
       "relatedTopics": [
         "pr-14834"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "composer"
@@ -33593,9 +33595,11 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T20:52:49.225Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21872",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "git",
@@ -33876,9 +33880,11 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
+      "decidedAt": "2026-10-28T20:52:50.110Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21924",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "settings",
@@ -59136,9 +59142,11 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T20:52:38.746Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-9870",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "timeline"
