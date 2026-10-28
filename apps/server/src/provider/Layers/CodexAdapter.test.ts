@@ -1053,6 +1053,41 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("ignores a turn start without an id before accepting an owned turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.started"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      lifecycleManager.emit("event", {
+        id: asEventId("untargeted-start"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "turn/started",
+        payload: { turn: {} },
+      } satisfies ProviderEvent);
+      lifecycleManager.emit("event", {
+        id: asEventId("owned-start"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        turnId: asTurnId("owned-turn"),
+        method: "turn/started",
+        payload: { turn: { id: "owned-turn" } },
+      } satisfies ProviderEvent);
+      const events = yield* Fiber.join(eventsFiber);
+      assert.deepEqual(
+        events.filter((event) => event.type === "turn.started").map((event) => event.turnId),
+        ["owned-turn"],
+      );
+    }),
+  );
+
   it.effect("maps completed plan items to canonical proposed-plan completion events", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;

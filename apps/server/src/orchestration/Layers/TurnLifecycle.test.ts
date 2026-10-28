@@ -342,6 +342,26 @@ suite("durable turn lifecycle", (it) => {
       }),
   );
   it.effect(
+    "never recovers a scheduled turn in a bound conversation, even while its run is live",
+    () =>
+      Effect.gen(function* () {
+        const bound = yield* seed("a-bound-conversation");
+        yield* interrupted(bound);
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO scheduled_tasks(id,project_id,definition_json,request_hash,requested_at,version,enabled,updated_at)
+        VALUES('bound-task','project:a-bound-conversation','{}','hash',${at},1,1,${at})`;
+        // Still owning and not canceled: recovery would otherwise bypass later cancellation.
+        yield* sql`INSERT INTO scheduled_task_runs(id,task_id,scheduled_for,trigger,status,state_json,snapshot_json,thread_id,owns_execution,capacity,canceled,created_at)
+        VALUES('bound-run','bound-task',${at},'manual','running','{}',${JSON.stringify({ workspace: { kind: "thread", threadId: bound } })},${bound},1,1,0,${at})`;
+        yield* sql`INSERT INTO scheduled_run_submissions(submission_id,run_id,thread_id,message_id,turn_id,kind)
+        VALUES('bound-source','bound-run',${bound},'bound-message','old-turn','initial')`;
+        yield* sql`INSERT INTO restart_turn_markers(thread_id,turn_id,marked_at,continuation_id) VALUES(${bound},'old-turn',${new Date().toISOString()},${`restart:${bound}`})`;
+        assert.deepEqual(yield* recoverRestartTurnMarkers, []);
+        assert.equal((yield* sql`SELECT * FROM restart_turn_markers`).length, 0);
+        assert.equal((yield* (yield* NextTurnQueueStore).listByThread(bound)).items.length, 0);
+      }),
+  );
+  it.effect(
     "enqueues each restart continuation once and retains ineligible markers until expiry",
     () =>
       Effect.gen(function* () {

@@ -802,6 +802,9 @@ export interface NativeApi {
     listRuns: (
       input: (typeof Scheduled.ScheduledTaskRunsInput)["Type"],
     ) => Promise<(typeof Scheduled.ScheduledTaskRunsResult)["Type"]>;
+    findRunForTurn: (
+      input: Scheduled.ScheduledFindRunForTurnInput,
+    ) => Promise<(typeof Scheduled.ScheduledFindRunForTurnResult)["Type"]>;
     previewSchedule: (
       input: (typeof Scheduled.SchedulePreviewInput)["Type"],
     ) => Promise<Scheduled.SchedulePreview>;

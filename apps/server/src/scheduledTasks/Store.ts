@@ -24,6 +24,8 @@ const notificationMessages: Readonly<Record<string, string>> = {
   project_missing: "The task project is unavailable.",
   authority_revoked: "Scheduling permission was revoked.",
   thread_removed: "The run's thread was removed.",
+  conversation_busy:
+    "The conversation stayed busy until the next scheduled time, so this run was skipped.",
   setup_failed: "Workspace preparation failed.",
   manual_pause: "Execution is paused and needs your attention.",
 };
@@ -164,7 +166,7 @@ export const makeScheduledTaskStore = Effect.gen(function* () {
     sql<{ id: string; definition_json: string }>`SELECT id,definition_json FROM scheduled_tasks t
       WHERE (${includeDeleted ? 1 : 0}=1 OR deleted_at IS NULL)
       AND NOT EXISTS(SELECT 1 FROM scheduled_task_quarantine q WHERE q.entity_kind='task' AND q.entity_id=t.id)
-      ORDER BY updated_at DESC`.pipe(
+      ORDER BY requested_at DESC, id DESC`.pipe(
       Effect.flatMap((rows) => Effect.forEach(rows, decodeTask)),
       Effect.map((rows) => rows.filter((row) => row !== null)),
       Effect.mapError(storageError),
@@ -272,7 +274,9 @@ export const makeScheduledTaskStore = Effect.gen(function* () {
             (status === "skipped" &&
               (reason === "project_missing" ||
                 reason === "provider_unavailable" ||
-                reason === "authority_revoked")))
+                reason === "authority_revoked" ||
+                reason === "thread_removed" ||
+                reason === "conversation_busy")))
         ) {
           const episode = yield* sql<{
             attention_episode: number;

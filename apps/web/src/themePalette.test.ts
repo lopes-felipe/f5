@@ -151,6 +151,18 @@ describe("derived theme tokens", () => {
 });
 
 describe("theme palette registry", () => {
+  it("keeps generated secondary and placeholder ink dimmer than entered text", () => {
+    for (const variant of ["light", "dark"] as const) {
+      for (const baseHue of [0, 60, 150, 264, 320]) {
+        const colors = generateThemeTokens({ baseHue, chroma: 0.18, contrast: 1 }, variant);
+        for (const surface of ["background", "card", "muted", "accent"] as const) {
+          const mutedContrast = wcagContrast(colors["muted-foreground"], colors[surface]);
+          expect(mutedContrast).toBeGreaterThanOrEqual(4.6);
+          expect(mutedContrast).toBeLessThan(wcagContrast(colors.foreground, colors[surface]));
+        }
+      }
+    }
+  });
   it("generates distinct light and dark OKLCH palettes", () => {
     const parameters = { baseHue: 145, chroma: 0.16, contrast: 1.1 };
     const light = generateThemeTokens(parameters, "light");

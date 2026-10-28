@@ -989,6 +989,28 @@ describe("composerDraftStore project draft thread mapping", () => {
     });
   });
 
+  it.each(["mapping", "context"] as const)(
+    "keeps worktree intent but clears project-specific paths on %s changes",
+    (method) => {
+      const store = useComposerDraftStore.getState();
+      store.setProjectDraftThreadId(projectId, threadId, {
+        branch: "local-only",
+        worktreePath: "/machine-a/worktree",
+        envMode: "worktree",
+        runSetupScript: false,
+      });
+      if (method === "mapping") store.setProjectDraftThreadId(otherProjectId, threadId);
+      else store.setDraftThreadContext(threadId, { projectId: otherProjectId });
+      expect(store.getDraftThread(threadId)).toMatchObject({
+        projectId: otherProjectId,
+        branch: null,
+        worktreePath: null,
+        envMode: "worktree",
+        runSetupScript: false,
+      });
+    },
+  );
+
   it("persists creation options without a version bump and keeps them across context changes", async () => {
     const store = useComposerDraftStore.getState();
     store.setProjectDraftThreadId(projectId, threadId, { envMode: "worktree", branch: "main" });

@@ -7,7 +7,8 @@ export interface ProviderTurnDeliveryOutcome {
   readonly deliveryId: CommandId;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
-  readonly state: "accepted" | "rejected" | "ambiguous";
+  /** `abandoned`: a scheduled run was fenced after claim; nothing was sent and nothing failed. */
+  readonly state: "accepted" | "rejected" | "ambiguous" | "abandoned";
   readonly detail: string | null;
   readonly occurredAt?: string | undefined;
   readonly usageLimit?: OrchestrationUsageLimit | undefined;

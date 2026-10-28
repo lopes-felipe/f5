@@ -3,7 +3,10 @@ import path from "node:path";
 import type { AntigravitySettings, ServerProviderModel } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { Effect } from "effect";
-import { AntigravityInstallation } from "../AntigravityInstallation.ts";
+import {
+  AntigravityInstallation,
+  AntigravityUpdateRequiredError,
+} from "../AntigravityInstallation.ts";
 import { antigravityProfileDirectory } from "../acp/AntigravityAcpSupport.ts";
 import { buildServerProvider, providerModelsFromSettings } from "../providerSnapshot.ts";
 
@@ -51,13 +54,17 @@ export const checkAntigravityProviderStatus = (
     let installed = false;
     let authenticated = false;
     let version: string | null = null;
+    let installationMessage: string | undefined;
     if (settings.enabled) {
       try {
         const executable = await new AntigravityInstallation(stateDir).resolve();
         installed = true;
         version = executable.version;
-      } catch {
-        /* Setup is explicit. */
+      } catch (error) {
+        if (error instanceof AntigravityUpdateRequiredError) {
+          version = error.installedVersion;
+          installationMessage = error.message;
+        }
       }
       if (installed) authenticated = await hasAntigravityAccount(stateDir, instanceId);
     }
@@ -74,7 +81,7 @@ export const checkAntigravityProviderStatus = (
         ...(!settings.enabled
           ? { message: "Antigravity is disabled." }
           : !installed
-            ? { message: "Install Antigravity in Settings to get started." }
+            ? { message: installationMessage ?? "Install Antigravity in Settings to get started." }
             : !authenticated
               ? { message: "Sign in to Antigravity in Settings." }
               : {}),

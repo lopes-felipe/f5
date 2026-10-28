@@ -5,7 +5,11 @@ import {
   type DrainableWorkerOptions,
 } from "@t3tools/shared/DrainableWorker";
 
-/** Internal lossless subscribers fail visibly if their worker dies/closes. */
+/**
+ * Internal lossless subscribers await bounded admission. Item failures are logged
+ * and counted in snapshot.failures; drain waits for attempts, not successful effects.
+ * Admission still fails visibly when the worker is closed or its loop dies.
+ */
 export interface BackgroundWorker<A> extends Omit<DrainableWorker<A>, "enqueue"> {
   readonly enqueue: (item: A) => Effect.Effect<void>;
 }

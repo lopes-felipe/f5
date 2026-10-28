@@ -1901,6 +1901,24 @@ routing.layer("ProviderServiceLive routing", (it) => {
       const sessions = yield* provider.listSessions();
       assert.equal(sessions.length, 1);
 
+      const directory = yield* ProviderSessionDirectory;
+      yield* directory.upsert({
+        threadId: asThreadId("historical-only"),
+        provider: "codex",
+        runtimeMode: "full-access",
+        status: "stopped",
+      });
+      const listThreadIds = vi.spyOn(directory, "listThreadIds");
+      const getBinding = vi.spyOn(directory, "getBinding");
+      try {
+        yield* provider.listSessions();
+        assert.equal(listThreadIds.mock.calls.length, 0);
+        assert.deepEqual(getBinding.mock.calls, [[session.threadId]]);
+      } finally {
+        listThreadIds.mockRestore();
+        getBinding.mockRestore();
+      }
+
       yield* provider.sendTurn({
         threadId: session.threadId,
         input: "hello",
