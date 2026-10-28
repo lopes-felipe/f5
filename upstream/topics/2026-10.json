@@ -1135,12 +1135,14 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T20:58:34.870Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-10120",
       "relatedTopics": [
         "pr-10108"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "server",
@@ -2448,9 +2450,11 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T20:58:35.069Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-11198",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "timeline",
@@ -2740,9 +2744,11 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T20:58:35.306Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-11407",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "terminal",
@@ -4746,9 +4752,11 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T20:58:35.508Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-13523",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -5519,12 +5527,14 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T20:58:35.725Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-13935",
       "relatedTopics": [
         "pr-14584"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "onboarding",
@@ -8773,12 +8783,14 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T20:58:35.944Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15454",
       "relatedTopics": [
         "pr-15069"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "panels",
@@ -11282,9 +11294,11 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T20:58:36.952Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-16291",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "sidebar"
@@ -52902,9 +52916,11 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
+      "decidedAt": "2026-10-28T20:58:33.976Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-4168",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -54733,9 +54749,11 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
+      "decidedAt": "2026-10-28T20:58:34.201Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-4985",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "server",
@@ -58593,12 +58611,14 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
+      "decidedAt": "2026-10-28T20:58:34.427Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-6675",
       "relatedTopics": [
         "pr-4622"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "server",
@@ -59375,9 +59395,11 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
+      "decidedAt": "2026-10-28T20:58:34.648Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-8006",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "timeline",
