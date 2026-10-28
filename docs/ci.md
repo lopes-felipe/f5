@@ -10,7 +10,6 @@ matrices finish every shard, and all jobs have timeouts.
 
 | Job                 | Scope                   | Work                                                                                                     | Timeout |
 | ------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------- | ------- |
-| changes             | Every run               | PR code-change filter                                                                                    | 5 min   |
 | static              | Every run               | Formatting, lint, workflow lint, types, server boot, SDK/protocol audits, release smoke, tier/port drift | 15 min  |
 | test                | Every run               | Seven workspace suites, server Git smoke, integration, extended Git matrix                               | 20 min  |
 | server-unit         | Code changes            | Two Linux unit shards, four workers each                                                                 | 15 min  |
@@ -23,19 +22,26 @@ matrices finish every shard, and all jobs have timeouts.
 | CI result           | Every run               | Aggregate verdict                                                                                        | 5 min   |
 | main-status         | Current main only       | Reconcile the `ci-main-red` issue                                                                        | 5 min   |
 
-A docs-only PR (only Markdown or `docs/**`) skips the heavy jobs. Static checks
+A docs-only PR (only Markdown or `docs/**`) skips the heavy checks. Static checks
 and workspace/Git/integration tests still run, including environment documentation
 drift tests. Main pushes, nightly runs and dispatches always run heavy jobs.
 The full macOS suite never runs on PRs. It feeds `CI result`, so release eligibility
 waits for it after each merge (with a 60-minute job timeout). Hosted timing targets for
-non-packaging PRs are at most 10 minutes on Linux and 12 minutes on Windows;
-measure these on Actions before treating them as achieved. TypeScript is checked once
+non-packaging PRs are documented under Reports and diagnostics;
+measure them on Actions before treating them as achieved. TypeScript is checked once
 on Linux, whose case-sensitive filesystem catches import-casing errors. TypeScript
 output is host-independent; Windows and macOS still run their native build and
 runtime checks.
 
+Heavy jobs classify their own changes after checkout and before setup through
+`.github/actions/changes`. There is no queued prerequisite filter job.
+Docs-only heavy jobs succeed with their install/check steps skipped; a filter
+failure fails the job. The full macOS suite retains its non-PR job condition.
+
 Only superseded PR runs are cancelled. Main commits use separate concurrency groups
 by SHA, so a later merge cannot cancel an earlier commit's release-eligibility run.
+Windows release checks also cancel superseded runs by PR number; release callers
+and manual rehearsals have independent concurrency groups and are never cancelled.
 Release preflight currently checks the exact SHA's successful main push run. The
 stricter explicit gate/attempt check and distribution workflow are deferred until
 PR #157 merges; see the existing release documentation for the current behavior.
@@ -58,7 +64,10 @@ repository activity; the maintainer checks schedule activity monthly.
 
 Use Node from `.node-version` and Bun from `packageManager` in `package.json`.
 Install with `bun install --frozen-lockfile`. The shared setup action caches Bun's
-download cache and Electron downloads, never `node_modules`, native or Turbo outputs.
+download cache and Electron downloads separately, never `node_modules`, native or Turbo outputs.
+Electron keys include its version, runner OS and architecture; changing an unrelated
+dependency does not invalidate the Electron cache. Windows retains the separate Bun
+package cache until the paired hosted setup benchmark establishes a faster default.
 Rust caches are scoped to the Windows helper and fixture. The full macOS desktop
 build steps request a 4 GiB Node heap for contract declaration generation, which
 exceeds the ARM64 runtime's default 2 GiB limit. Turbo forwards `NODE_OPTIONS` to
@@ -125,6 +134,44 @@ template literals. The composite setup action is validated by executing it on th
 hosted runners, since actionlint does not lint composite action definitions.
 
 ## Reports and diagnostics
+
+Server tests use deterministic duration-based sharding: longest files go to the
+lightest shard, unknown files use the platform median, and path ordering breaks
+ties. The two Linux/four-worker and three Windows/two-worker configurations are
+unchanged. Tests remain serial within each file with independent fixture cleanup.
+Unsharded runs retain Vitest's existing cache-aware ordering.
+The WebSocket server and workspace-transition suites each have four behavior groups
+and shared fixture factories, preserving the original test names and assertions.
+
+`apps/server/test-timings.json` contains scheduling weights, not cached test results.
+Initial weights come from successful main run 40600538442, attempt 1. The eight split
+files are explicitly marked as estimates derived from that run's assertion timings.
+After a successful main run containing the split, refresh all platform weights with:
+
+```sh
+bun scripts/refresh-ci-test-timings.ts <successful-main-run-id>
+node scripts/ci-run-timings.ts <run-id> [attempt]
+```
+
+The refresh command accepts only successful main push CI runs, downloads the latest
+attempt's reports, validates complete/unique inventories against the current checkout,
+and writes the timing file only after every platform validates. Commit that generated
+update explicitly; CI never updates tracked timing data. Timing inspection reports
+queue, setup and total job execution separately, with run attempts kept separate.
+
+The manual `CI setup benchmark` workflow runs three paired Windows samples comparing
+the historical combined cache against Electron-only caching, with at most two jobs
+running concurrently. Dispatch it with a unique `cache-suffix` for a cold sample;
+repeat that suffix on the same ref for a warm sample. It runs frozen installs and
+Electron verification in both variants and publishes the paired median total setup
+times in its summary. Retain the separate Bun cache unless three successful paired
+hosted samples demonstrate lower median setup time with Electron-only caching;
+record cold and warm results before changing the Windows default.
+
+Acceptance targets for this optimization are at most six minutes per Windows unit
+shard with at most 20% imbalance, and at most ten minutes of required-job execution
+excluding queues. These targets require hosted measurements. Preserve deliberate
+failure checks, diagnostics and docs-only filtering when validating the rollout.
 
 Test jobs set `F5_CI_REPORT_DIR` to a job-specific runner-temp directory. Vitest
 emits console output plus JSON and JUnit under encoded package/lifecycle names.
