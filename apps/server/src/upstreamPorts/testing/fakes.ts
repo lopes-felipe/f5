@@ -330,8 +330,6 @@ export class FakeHost {
   unavailableProviders = new Set<string>();
   cancelError: Error | null = null;
   private threadValues: OrchestrationReadModel["threads"][number][] = [];
-  // Annotated: an unannotated getter takes the setter's readonly type, which
-  // would forbid the in-place edits tests make.
   get threads(): OrchestrationReadModel["threads"][number][] {
     return this.threadValues;
   }
