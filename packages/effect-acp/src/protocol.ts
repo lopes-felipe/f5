@@ -116,7 +116,14 @@ function preserveZeroValuedRequestIds(
   });
 }
 
-export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(function* (
+/**
+ * First id for typed Effect RPC requests. Starts within signed int32 for SDKs that reject
+ * larger numeric ids (the Kotlin ACP SDK decodes ids as `Int`), while staying far above
+ * extension ids, which count up from 1.
+ */
+export const RPC_REQUEST_ID_START = 1n << 30n;
+
+export const makeAcpPatchedProtocol =Effect.fn("makeAcpPatchedProtocol")(function* (
   options: AcpPatchedProtocolOptions,
 ): Effect.fn.Return<AcpPatchedProtocol, never, Scope.Scope> {
   const parser = parserFactory.makeUnsafe();

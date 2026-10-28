@@ -179,7 +179,7 @@ it.effect("effect-acp agent handles core agent requests and outbound client requ
   }),
 );
 
-it.effect("effect-acp agent uses distinct ids for RPC calls and extension requests", () =>
+it.effect("effect-acp agent keeps RPC ids within int32 and apart from extension ids", () =>
   Effect.gen(function* () {
     const { stdio, input, output } = yield* makeInMemoryStdio();
     const scope = yield* Scope.make();
@@ -224,6 +224,10 @@ it.effect("effect-acp agent uses distinct ids for RPC calls and extension reques
         : yield* decodedExt(firstOutbound);
 
       assert.notEqual(permissionRequest.id, extRequest.id);
+      // Kotlin ACP SDK clients decode ids as signed int32.
+      assert.equal(Number(permissionRequest.id), 2 ** 30);
+      assert.isAtMost(Number(permissionRequest.id), 2 ** 31 - 1);
+      assert.equal(Number(extRequest.id), 1);
 
       yield* Queue.offer(
         input,
