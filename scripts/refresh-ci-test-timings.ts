@@ -10,6 +10,7 @@ import {
   serverTestPath,
 } from "./lib/ci-test-timings.ts";
 import type { TestDurations } from "./lib/ci-test-sharding.ts";
+import { latestJobExecutions, type JobExecution } from "./lib/ci-job-attempts.ts";
 
 // Explicit maintainer command only: CI never writes tracked timing data.
 const runIds = process.argv.slice(2);
@@ -55,13 +56,15 @@ for (const runId of runIds) {
     throw new Error("Timing sources must be successful main push runs of CI");
   if (shas.has(run.head_sha)) throw new Error("Sources must contain distinct main commits");
   shas.add(run.head_sha);
-  // The latest execution of each job can belong to an earlier run attempt when
-  // only failed jobs were rerun. Never borrow an older result for a rerun job.
-  const jobs = (
-    JSON.parse(gh("api", "--paginate", "--slurp", endpoint + "/jobs?filter=latest")) as {
-      jobs: { name: string; conclusion: string; run_attempt: number }[];
-    }[]
-  ).flatMap((page) => page.jobs);
+  // Passed jobs are copied into new attempts with their original timestamps.
+  // Resolve clones to the actual execution before matching artifact suffixes.
+  const jobs = latestJobExecutions(
+    (
+      JSON.parse(gh("api", "--paginate", "--slurp", endpoint + "/jobs?filter=all")) as {
+        jobs: JobExecution[];
+      }[]
+    ).flatMap((page) => page.jobs),
+  );
   const artifacts = (
     JSON.parse(gh("api", "--paginate", "--slurp", endpoint + "/artifacts")) as {
       artifacts: { name: string; expired: boolean }[];
