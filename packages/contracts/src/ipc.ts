@@ -110,6 +110,7 @@ import type {
   UpstreamTopicFiles,
   UpstreamUndoDecisionsInput,
   UpstreamUnlinkPortInput,
+  UpstreamRetryPortReviewInput,
 } from "./upstreamPorts";
 import type { PullRequestKey } from "./prHub";
 import type {
@@ -1240,6 +1241,7 @@ export interface NativeApi {
     dequeuePort: (input: UpstreamDequeuePortInput) => Promise<UpstreamRevisionResult>;
     controlPortQueue: (input: UpstreamControlPortQueueInput) => Promise<UpstreamRevisionResult>;
     unlinkPort: (input: UpstreamUnlinkPortInput) => Promise<UpstreamRevisionResult>;
+    retryPortReview: (input: UpstreamRetryPortReviewInput) => Promise<UpstreamRevisionResult>;
     getPortPrompt: (input: UpstreamGetPortPromptInput) => Promise<UpstreamGetPortPromptResult>;
     resolvePublication: (input: UpstreamResolvePublicationInput) => Promise<UpstreamRevisionResult>;
     addRemote: (input: UpstreamPortsProjectInput) => Promise<UpstreamRevisionResult>;

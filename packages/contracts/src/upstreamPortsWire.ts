@@ -8,6 +8,7 @@ import { Schema } from "effect";
 
 import { NonNegativeInt, ProjectId } from "./baseSchemas";
 import { ModelSelection } from "./orchestration";
+import { WorkflowModelSlot } from "./planningWorkflow";
 
 // ── Local-only settings ─────────────────────────────────────────────────
 
@@ -25,6 +26,21 @@ export const UpstreamSchedule = Schema.Struct({
 });
 export type UpstreamSchedule = typeof UpstreamSchedule.Type;
 
+export const UpstreamReviewerSlot = Schema.Struct({
+  provider: WorkflowModelSlot.fields.provider,
+  model: WorkflowModelSlot.fields.model,
+  modelOptions: WorkflowModelSlot.fields.modelOptions,
+});
+export type UpstreamReviewerSlot = typeof UpstreamReviewerSlot.Type;
+
+export const UpstreamPortReviewSettings = Schema.Struct({
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
+  reviewerA: Schema.NullOr(UpstreamReviewerSlot).pipe(Schema.withDecodingDefault(() => null)),
+  reviewerB: Schema.NullOr(UpstreamReviewerSlot).pipe(Schema.withDecodingDefault(() => null)),
+  consolidation: Schema.NullOr(UpstreamReviewerSlot).pipe(Schema.withDecodingDefault(() => null)),
+});
+export type UpstreamPortReviewSettings = typeof UpstreamPortReviewSettings.Type;
+
 export const UpstreamPortsSettings = Schema.Struct({
   portConcurrency: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 })).pipe(
     Schema.withDecodingDefault(() => 5),
@@ -33,6 +49,7 @@ export const UpstreamPortsSettings = Schema.Struct({
   schedule: UpstreamSchedule.pipe(Schema.withDecodingDefault(() => ({}))),
   triageModelSelection: Schema.NullOr(ModelSelection).pipe(Schema.withDecodingDefault(() => null)),
   portModelSelection: Schema.NullOr(ModelSelection).pipe(Schema.withDecodingDefault(() => null)),
+  portReview: UpstreamPortReviewSettings.pipe(Schema.withDecodingDefault(() => ({}))),
 });
 export type UpstreamPortsSettings = typeof UpstreamPortsSettings.Type;
 
@@ -55,6 +72,7 @@ export const UpstreamPortsSettingsPatch = Schema.Struct({
   ),
   triageModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   portModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  portReview: Schema.optionalKey(UpstreamPortReviewSettings),
 });
 export type UpstreamPortsSettingsPatch = typeof UpstreamPortsSettingsPatch.Type;
 
@@ -78,6 +96,7 @@ export const UPSTREAM_PORTS_WS_METHODS = {
   dequeuePort: "upstreamPorts.dequeuePort",
   controlPortQueue: "upstreamPorts.controlPortQueue",
   unlinkPort: "upstreamPorts.unlinkPort",
+  retryPortReview: "upstreamPorts.retryPortReview",
   getPortPrompt: "upstreamPorts.getPortPrompt",
   resolvePublication: "upstreamPorts.resolvePublication",
   addRemote: "upstreamPorts.addRemote",

@@ -20,6 +20,7 @@ import {
   type OrchestrationReadModel,
   type ProjectCheckedInConfig,
   type ProjectId,
+  type ThreadId,
   type ServerProvider,
   type ServerSettings,
   type TurnSubmissionResult,
@@ -45,6 +46,7 @@ import {
   type UpstreamRunResult,
   type UpstreamRunTrigger,
   type UpstreamStartPortInput,
+  type UpstreamPortReviewRequest,
   type UpstreamStartPortResult,
   type UpstreamPreviewPortGroupsInput,
   type UpstreamPreviewPortGroupsResult,
@@ -64,6 +66,10 @@ import {
   type UpstreamTopicRow,
   type UpstreamUndoDecisionsInput,
   type UpstreamUnlinkPortInput,
+  type UpstreamRetryPortReviewInput,
+  type CodeReviewWorkflowId,
+  type OrchestrationCreateCodeReviewWorkflowInput,
+  type OrchestrationEvent,
   UPSTREAM_MAX_FILES_COMMITS,
 } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -91,6 +97,13 @@ import {
   remainingLegacyShas,
   type Schema6Archive,
 } from "@t3tools/shared/upstreamPortsArchive";
+import type { TurnSubmissionStatusDeps } from "../nextTurnQueue/submissionStatus.ts";
+import { InvalidPortReviewRetry, makePortReviewReactor, portReviewSummary } from "./portReview.ts";
+import {
+  assertWorkflowStageProviderSupported,
+  LATEST_WORKFLOW_TEMPLATE_VERSION,
+  resolveWorkflowBehavior,
+} from "../orchestration/workflowBehavior.ts";
 import {
   buildPortPrompt,
   parseUpstreamOutcomes,
@@ -106,7 +119,7 @@ import {
   portFileKeys,
   type PortGroupingTopic,
 } from "@t3tools/shared/upstreamPortsGrouping";
-import { Data, Effect, Exit, Schema, Scope, Semaphore } from "effect";
+import { Data, Effect, Exit, Schema, Scope, Semaphore, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { makeBackgroundWorker } from "../backgroundWorker.ts";
 import { canonicalJsonHash } from "../canonicalJsonHash.ts";
@@ -216,7 +229,19 @@ const internal = (error: unknown) =>
     ? error
     : new UpstreamPortsError({ code: "internal", message: describe(error) });
 
-export interface UpstreamPortsHost {
+export interface UpstreamPortsHost extends TurnSubmissionStatusDeps<Error> {
+  readonly domainEvents: Stream.Stream<OrchestrationEvent>;
+  readonly queueChanges: Stream.Stream<ThreadId>;
+  readonly cancelQueuedSubmission: (
+    submissionId: CommandId,
+  ) => Effect.Effect<"canceled" | "started" | "none", Error>;
+  readonly createCodeReviewWorkflow: (
+    input: OrchestrationCreateCodeReviewWorkflowInput,
+    workflowId: CodeReviewWorkflowId,
+  ) => Effect.Effect<CodeReviewWorkflowId, Error>;
+  readonly archiveCodeReviewWorkflow: (
+    workflowId: CodeReviewWorkflowId,
+  ) => Effect.Effect<void, Error>;
   readonly usageAccounts?: Effect.Effect<ReadonlyArray<UsageAccount>, Error>;
   readonly readModel: Effect.Effect<OrchestrationReadModel, Error>;
   readonly checkedInConfig: (projectId: ProjectId) => Effect.Effect<ProjectCheckedInConfig, Error>;
@@ -224,6 +249,7 @@ export interface UpstreamPortsHost {
   readonly listProviders: Effect.Effect<ReadonlyArray<ServerProvider>>;
   readonly submitTurn: (
     body: NextTurnQueueSubmitInput,
+    source: "human" | "automation",
   ) => Effect.Effect<
     TurnSubmissionResult | null,
     { readonly message: string; readonly code?: string }
@@ -324,6 +350,9 @@ const undoKey = (fields: DecisionFields) => {
 };
 
 export interface UpstreamPortsService {
+  readonly retryPortReview: (
+    input: UpstreamRetryPortReviewInput,
+  ) => Effect.Effect<UpstreamRevisionResult, UpstreamPortsError>;
   readonly previewPortGroups: (
     input: UpstreamPreviewPortGroupsInput,
   ) => Effect.Effect<UpstreamPreviewPortGroupsResult, UpstreamPortsError>;
@@ -390,6 +419,7 @@ export interface UpstreamPortsService {
   readonly start: Effect.Effect<void, never, Scope.Scope>;
   /** Test hooks. */
   readonly testing: {
+    readonly reconcilePortReviews: Effect.Effect<void>;
     readonly dispatchQueue: (projectId: string) => Effect.Effect<void>;
     readonly schedulerTick: Effect.Effect<void>;
     readonly publishNow: (projectId: string) => Effect.Effect<void>;
@@ -1262,12 +1292,32 @@ export function makeUpstreamPortsService(
           Effect.orElseSucceed(() => []),
         );
         const out = new Map<string, Omit<UpstreamPortLinkSummary, "epoch">>();
+        const reviews = new Map(
+          (yield* store.listPortReviewsForThreads(unique).pipe(
+            Effect.tapError((error) =>
+              Effect.logWarning("Could not load port review summaries", error),
+            ),
+            Effect.orElseSucceed(() => []),
+          )).map((review) => [review.threadId, review]),
+        );
+        const workflows = new Map(
+          model?.codeReviewWorkflows.map((workflow) => [workflow.id, workflow]),
+        );
         for (const threadId of unique) {
           const thread = model?.threads.find((entry) => entry.id === threadId) ?? null;
           const pr = prs.find((entry) => entry.thread_id === threadId);
+          const review = reviews.get(threadId);
           const outcome = outcomes.get(threadId)?.thread ?? null;
           const outcomePr = outcome?.kind === "pr" ? outcome.detail : null;
           out.set(threadId, {
+            review: review
+              ? portReviewSummary(
+                  review,
+                  review.reviewWorkflowId
+                    ? workflows.get(review.reviewWorkflowId as CodeReviewWorkflowId)
+                    : null,
+                )
+              : null,
             threadId: threadId as UpstreamPortLinkSummary["threadId"],
             threadTitle: thread?.title ?? null,
             threadStatus: thread
@@ -1404,11 +1454,14 @@ export function makeUpstreamPortsService(
           admitted[0] !== undefined &&
           now().getTime() - Date.parse(admitted[0].created_at) >= 120_000;
         const outcome = yield* host
-          .submitTurn({
-            submissionId: CommandId.makeUnsafe(group.submissionId),
-            command: group.command as NextTurnQueueSubmitInput["command"],
-            intent: "auto",
-          })
+          .submitTurn(
+            {
+              submissionId: CommandId.makeUnsafe(group.submissionId),
+              command: group.command as NextTurnQueueSubmitInput["command"],
+              intent: "auto",
+            },
+            "human",
+          )
           .pipe(
             Effect.map((result) =>
               result === null
@@ -2051,6 +2104,34 @@ export function makeUpstreamPortsService(
           : [];
       });
 
+    const validatePortReview = (review: UpstreamPortReviewRequest | null | undefined) =>
+      Effect.gen(function* () {
+        if (!review) return;
+        const behavior = resolveWorkflowBehavior({
+          runKind: "codeReview",
+          templateVersion: LATEST_WORKFLOW_TEMPLATE_VERSION,
+        });
+        const availableProviders = yield* host.listProviders;
+        for (const slot of ["reviewerA", "reviewerB", "consolidation"] as const) {
+          yield* Effect.try({
+            try: () =>
+              assertWorkflowStageProviderSupported({
+                behavior,
+                stage: slot === "consolidation" ? "consolidation" : "standalone-review",
+                provider: review[slot].provider,
+              }),
+            catch: (error) =>
+              new UpstreamPortsError({ code: "invalid", message: slot + ": " + describe(error) }),
+          });
+          if (
+            !availableProviders.some(
+              (provider) => provider.enabled && provider.driver === review[slot].provider,
+            )
+          )
+            return yield* fail("invalid", slot + ": Provider unavailable");
+        }
+      });
+
     const startPortImpl = (input: UpstreamStartPortInput, queued?: QueueRecord) =>
       Effect.gen(function* () {
         const context = yield* resolveContext(input.projectId);
@@ -2069,6 +2150,7 @@ export function makeUpstreamPortsService(
             "That clientRequestId was already used with different arguments.",
           );
         if (!existing) {
+          yield* validatePortReview(input.review);
           const snapshot = yield* currentView(context);
           const rowsById = new Map(snapshot.rows.map((row) => [row.topic.id, row]));
           for (const topicId of input.topicIds) {
@@ -2235,6 +2317,13 @@ export function makeUpstreamPortsService(
                       clientRequestId: input.clientRequestId,
                       argsHash,
                       groups: built.map(({ epochs: _epochs, ...group }) => group),
+                      reviews: input.review
+                        ? built.map((group) => ({
+                            groupIndex: group.groupIndex,
+                            threadId: group.threadId,
+                            reviewers: input.review!,
+                          }))
+                        : [],
                       links: built.flatMap((group) =>
                         group.epochs.map((entry) => ({
                           ...entry,
@@ -2285,6 +2374,13 @@ export function makeUpstreamPortsService(
               : group,
           );
         yield* emit(context.projectId, "links-updated");
+        if (input.review)
+          yield* track(
+            Effect.forEach(results, (group) => portReviews.advance(group.threadId), {
+              concurrency: 4,
+              discard: true,
+            }),
+          );
         return {
           groups: results.map((group) => ({
             threadId: group.threadId as UpstreamStartPortResult["groups"][number]["threadId"],
@@ -2434,7 +2530,8 @@ export function makeUpstreamPortsService(
         const context = yield* resolveContext(input.projectId);
         yield* requireConfig(context);
         yield* requireWriter(context.cwd);
-        const argsHash = canonicalJsonHash(input);
+        const { review, ...args } = input;
+        const argsHash = canonicalJsonHash({ ...args, ...(review ? { review } : {}) });
         const replay = yield* queue.getEnqueueRequest(input.projectId, input.clientRequestId);
         if (replay) {
           if (replay.argsHash !== argsHash)
@@ -2444,6 +2541,7 @@ export function makeUpstreamPortsService(
             );
           return replay.result;
         }
+        yield* validatePortReview(review);
         const snapshot = yield* currentView(context);
         const ids = resolveTarget(snapshot, input.target);
         const files = yield* topicFileSets(context, snapshot, ids);
@@ -2506,6 +2604,7 @@ export function makeUpstreamPortsService(
                     ),
                     modelSelection: input.modelSelection,
                     runtimeMode: input.runtimeMode,
+                    review: review ?? null,
                     requestId: input.clientRequestId,
                     fileKeys: [...new Set(topicIds.flatMap((id) => conflictKeys.get(id) ?? []))],
                     ignoreConflicts: false,
@@ -3319,6 +3418,7 @@ export function makeUpstreamPortsService(
                 grouping: "together",
                 modelSelection: entry.modelSelection,
                 runtimeMode: entry.runtimeMode,
+                review: entry.review ?? null,
                 clientRequestId: `queue:${entry.entryId}`,
               },
               entry,
@@ -3446,6 +3546,7 @@ export function makeUpstreamPortsService(
           { projectId: context.projectId, topicId: input.topicId, threadId: input.threadId },
           "unlinked",
         );
+        yield* portReviews.advance(input.threadId).pipe(Effect.ignoreCause({ log: true }));
         yield* emit(context.projectId, "links-updated");
         return { revision: (yield* currentView(context)).revision };
       }).pipe(Effect.mapError(internal));
@@ -3559,7 +3660,57 @@ export function makeUpstreamPortsService(
         };
       }).pipe(Effect.mapError(internal));
 
+    const portReviews = makePortReviewReactor({
+      host,
+      store,
+      github: deps.github,
+      now,
+      mintId,
+      context: (projectId) =>
+        resolveContext(projectId).pipe(
+          Effect.map((context) => ({
+            cwd: context.cwd,
+            ledgerDir: context.config?.ledgerDir ?? "upstream",
+          })),
+        ),
+      originUrl: (cwd) => git.remoteUrl(cwd, "origin"),
+      projectedPrUrl: (threadId) =>
+        deps.sql<{ readonly url: string }>`SELECT url
+        FROM projection_thread_pull_requests WHERE thread_id = ${threadId}
+        ORDER BY updated_at DESC LIMIT 1`.pipe(Effect.map((rows) => rows[0]?.url ?? null)),
+      emit: (projectId) => emit(projectId, "ports-updated"),
+    });
+    const retryPortReview: UpstreamPortsService["retryPortReview"] = (input) =>
+      portReviews.retry(input.projectId, input.threadId).pipe(
+        Effect.mapError((error) =>
+          error instanceof InvalidPortReviewRetry
+            ? new UpstreamPortsError({ code: "invalid", message: error.message })
+            : internal(error),
+        ),
+        Effect.andThen(
+          Effect.gen(function* () {
+            const context = yield* resolveContext(input.projectId);
+            return { revision: (yield* currentView(context)).revision };
+          }),
+        ),
+      );
+
     const start: UpstreamPortsService["start"] = Effect.gen(function* () {
+      const reviewEvents = yield* portReviews.subscribe;
+      yield* reviewEvents.pipe(Effect.forkScoped);
+      yield* portReviews.reconcile.pipe(Effect.ignoreCause({ log: true }), Effect.forkScoped);
+      yield* Effect.gen(function* () {
+        while (true) {
+          yield* Effect.sleep(5_000);
+          yield* portReviews.retryPending;
+        }
+      }).pipe(Effect.forkScoped);
+      yield* Effect.gen(function* () {
+        while (true) {
+          yield* Effect.sleep(SCHEDULER_TICK_MS);
+          yield* portReviews.reconcile.pipe(Effect.ignoreCause({ log: true }));
+        }
+      }).pipe(Effect.forkScoped);
       const interrupted = yield* store
         .interruptRunningRuns(now().toISOString())
         .pipe(Effect.orElseSucceed(() => []));
@@ -3594,6 +3745,7 @@ export function makeUpstreamPortsService(
       getTopicFiles,
       run,
       startPort,
+      retryPortReview,
       previewPortGroups,
       enqueuePort,
       getPortQueue,
@@ -3607,6 +3759,7 @@ export function makeUpstreamPortsService(
       takeOverWriter,
       start,
       testing: {
+        reconcilePortReviews: portReviews.reconcile.pipe(Effect.ignoreCause({ log: true })),
         dispatchQueue: (projectId) =>
           queueWorker.enqueue(projectId).pipe(Effect.andThen(queueWorker.drain), Effect.orDie),
         schedulerTick: schedulerTick.pipe(Effect.ignoreCause({ log: true })),

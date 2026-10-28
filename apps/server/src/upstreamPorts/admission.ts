@@ -16,6 +16,7 @@ import {
   type ClientThreadTurnStartCommand,
   type ModelSelection,
   type RuntimeMode,
+  type OrchestrationThread,
   type UpstreamStartPortInput,
   type UpstreamTopic,
   type UpstreamPortGrouping,
@@ -40,7 +41,7 @@ export class AdmissionError extends Error {
 export function portArgsHash(
   input: Pick<
     UpstreamStartPortInput,
-    "topicIds" | "grouping" | "modelSelection" | "runtimeMode" | "batchSize"
+    "topicIds" | "grouping" | "modelSelection" | "runtimeMode" | "review" | "batchSize"
   >,
 ): string {
   return canonicalJsonHash({
@@ -48,6 +49,7 @@ export function portArgsHash(
     grouping: input.grouping,
     modelSelection: input.modelSelection,
     runtimeMode: input.runtimeMode,
+    ...(input.review == null ? {} : { review: input.review }),
     ...(input.grouping === "batched"
       ? { batchSize: input.batchSize ?? UPSTREAM_PORT_BATCH_SIZE_DEFAULT }
       : {}),
@@ -98,6 +100,30 @@ export function portThreadTitle(topics: ReadonlyArray<Pick<UpstreamTopic, "title
 
 export const portSubmissionId = (clientRequestId: string, groupIndex: number) =>
   `${PORT_SUBMISSION_PREFIX}${clientRequestId}:${groupIndex}`;
+
+export function buildPortRevisionCommand(input: {
+  readonly thread: OrchestrationThread;
+  readonly submissionId: string;
+  readonly prompt: string;
+  readonly createdAt: string;
+}): ClientThreadTurnStartCommand {
+  return {
+    type: "thread.turn.start",
+    commandId: CommandId.makeUnsafe(input.submissionId),
+    threadId: input.thread.id,
+    message: {
+      messageId: MessageId.makeUnsafe(input.submissionId),
+      role: "user",
+      text: input.prompt,
+      attachments: [],
+    },
+    model: input.thread.model,
+    ...(input.thread.modelSelection ? { modelSelection: input.thread.modelSelection } : {}),
+    runtimeMode: input.thread.runtimeMode,
+    interactionMode: input.thread.interactionMode,
+    createdAt: input.createdAt,
+  };
+}
 
 export function buildPortCommand(input: {
   readonly projectId: string;

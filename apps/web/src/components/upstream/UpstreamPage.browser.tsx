@@ -1,4 +1,5 @@
 import "../../index.css";
+import { readAppSettingsSnapshot } from "../../appSettings";
 import { DEFAULT_UNIFIED_SETTINGS, ProjectId, type UpstreamOverview, type UpstreamTopicRow } from "@t3tools/contracts";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -27,6 +28,7 @@ const api = vi.hoisted(() => ({
   acceptSuggestions: vi.fn(),
   undoDecisions: vi.fn(),
   run: vi.fn(),
+  retryPortReview: vi.fn(),
   previewPortGroups: vi.fn(),
   enqueuePort: vi.fn(),
   dequeuePort: vi.fn(),
@@ -39,7 +41,7 @@ vi.mock("../../nativeApi", () => ({
 }));
 // The Start port dialog reads the merged settings.
 vi.mock("../../hooks/useSettings", () => ({
-  useSettings: () => DEFAULT_UNIFIED_SETTINGS,
+  useSettings: () => ({ ...DEFAULT_UNIFIED_SETTINGS, ...readAppSettingsSnapshot() }),
   useUpdateSettings: () => ({ updateSettings: vi.fn() }),
 }));
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
@@ -284,6 +286,18 @@ async function setup(initial: UpstreamSearch = {}, firstTitle = "Topic A", withP
   return client;
 }
 
+it("opens usable review options after the project settings query fails", async () => {
+  api.getOverview.mockResolvedValue({ ...overview, counts: { ...overview.counts, ready: ROWS.length } });
+  api.listTopics.mockResolvedValue(topicsPage(ROWS.map((entry) => ({ ...entry, state: "ready" }))));
+  const client = await setup({ project: projectId, list: "ready" });
+  client.getQueryCache().find({ queryKey: projectSettingsQueryOptions(projectId).queryKey })!
+    .setState({ status: "error", error: new Error("settings unavailable"), data: undefined, fetchStatus: "idle" });
+  await page.getByRole("button", { name: "Queue all matching Ready…" }).click();
+  await expect.element(page.getByText("Loading review preferences…")).not.toBeInTheDocument();
+  await expect.element(page.getByText("Could not load saved review preferences. Check the review options before starting.")).toBeVisible();
+  await expect.element(page.getByRole("checkbox", { name: /Code review after port/ })).toBeEnabled();
+});
+
 const focusList = () => (page.getByRole("listbox", { name: "Upstream topics" }).element() as HTMLElement).focus();
 
 it("keeps loaded pages, focus, scroll and remaining selection through repeated queue refetches", async () => {
@@ -436,6 +450,25 @@ it("shows the bulk bar for a selection and applies its action to the selected ro
       decision: { kind: "watch" },
     }),
   );
+});
+
+it("shows review errors separately from port outcomes and retries the review", async () => {
+  api.retryPortReview.mockResolvedValue({ revision: "r2" });
+  api.getTopic.mockResolvedValue({
+    revision: "r1", repository: overview.config!.repository, members: [], related: [], history: [],
+    row: { ...ROWS[0]!, links: [{
+      threadId: "port-thread", threadTitle: "Port", epoch: 1, threadStatus: "completed",
+      branch: "port", prNumber: 42, prUrl: "https://github.com/o/f5/pull/42", prState: "open",
+      outcome: { kind: "pr", detail: "https://github.com/o/f5/pull/42" },
+      review: { status: "error", detail: "Provider unavailable", workflowId: "review-1", retryable: true },
+    }] },
+  });
+  await setup({ project: projectId, topic: "pr-1" });
+  await expect.element(page.getByText("Code review failed: Provider unavailable")).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Open review", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Retry review", exact: true }).click();
+  await vi.waitFor(() => expect(api.retryPortReview).toHaveBeenCalledWith({ projectId, threadId: "port-thread" }));
+  await expect.element(page.getByText("Outcome:", { exact: false })).toBeVisible();
 });
 
 it("selects a range with Shift-click", async () => {

@@ -9,6 +9,9 @@ import path from "node:path";
 import {
   DEFAULT_SERVER_SETTINGS,
   ProjectId,
+  type OrchestrationThread,
+  type CodeReviewWorkflow,
+  type OrchestrationCreateCodeReviewWorkflowInput,
   type NextTurnQueueSubmitInput,
   type ServerSettings,
   type TurnSubmissionResult,
@@ -17,7 +20,7 @@ import {
   type OrchestrationReadModel,
 } from "@t3tools/contracts";
 import { parseUpstreamTopicTrailers } from "@t3tools/shared/upstreamPorts";
-import { Effect } from "effect";
+import { Effect, Stream } from "effect";
 
 import { GitCommandError, TextGenerationError } from "../../git/Errors.ts";
 import type { CommitNumstat, FirstParentCommit, UpstreamGit } from "../git.ts";
@@ -246,6 +249,8 @@ export class FakeGitHub {
     head: string;
     body: string;
     title: string;
+    headSha?: string;
+    headRepoFullName?: string;
   }> = [];
   /** Each PR call, prefixed with the `owner/name` it targeted. */
   readonly calls: string[] = [];
@@ -255,7 +260,16 @@ export class FakeGitHub {
   private find(repo: GitHubRepoRef, match: (pr: FakeGitHub["prs"][number]) => boolean) {
     const name = `${repo.owner}/${repo.name}`;
     const pr = this.prs.findLast((entry) => entry.repo === name && match(entry));
-    return pr ? { number: pr.number, url: pr.url, state: pr.state } : null;
+    return pr
+      ? {
+          number: pr.number,
+          url: pr.url,
+          state: pr.state,
+          headRef: pr.head,
+          headRepoFullName: pr.headRepoFullName ?? pr.repo,
+          ...(pr.headSha ? { headSha: pr.headSha } : {}),
+        }
+      : null;
   }
 
   private call<A>(entry: string, run: () => A) {
@@ -313,7 +327,20 @@ export const PROJECT_ID = ProjectId.makeUnsafe("project-upstream");
 export const UPSTREAM_REPOSITORY = "https://github.com/pingdotgg/t3code";
 
 export class FakeHost {
-  threads: OrchestrationReadModel["threads"] = [];
+  unavailableProviders = new Set<string>();
+  cancelError: Error | null = null;
+  private threadValues: OrchestrationReadModel["threads"][number][] = [];
+  get threads() {
+    return this.threadValues;
+  }
+  set threads(value: OrchestrationReadModel["threads"]) {
+    this.threadValues = [...value];
+  }
+  workflows: CodeReviewWorkflow[] = [];
+  readonly reviews: { input: OrchestrationCreateCodeReviewWorkflowInput; workflowId: string }[] =
+    [];
+  readonly submissionSources: ("human" | "automation")[] = [];
+  readonly cancellations: string[] = [];
   readonly published: UpstreamPortsChanged[] = [];
   readonly submissions: NextTurnQueueSubmitInput[] = [];
   readonly commonDir = mkdtempSync(path.join(tmpdir(), "f5-upstream-common-"));
@@ -369,7 +396,7 @@ export class FakeHost {
           ],
           threads: this.threads,
           planningWorkflows: [],
-          codeReviewWorkflows: [],
+          codeReviewWorkflows: this.workflows,
           investigationWorkflows: [],
           updatedAt: "2026-10-01T00:00:00.000Z",
         }) as never,
@@ -387,19 +414,79 @@ export class FakeHost {
           }) as never,
       ),
     getSettings: Effect.sync(() => this.settings),
-    listProviders: Effect.succeed([
-      {
-        instanceId: "claudeAgent",
-        driver: "claudeAgent",
-        enabled: true,
-        installed: true,
-        status: "ready",
-        auth: { status: "authenticated" },
-        models: [{ slug: "claude-test", name: "Claude Test", isCustom: false, capabilities: null }],
-      },
-    ] as never),
-    submitTurn: (body) =>
+    listProviders: Effect.sync(
+      () =>
+        [
+          {
+            instanceId: "codex",
+            driver: "codex",
+            enabled: true,
+            installed: true,
+            status: "ready",
+            auth: { status: "authenticated" },
+            models: [],
+          },
+          {
+            instanceId: "claudeAgent",
+            driver: "claudeAgent",
+            enabled: true,
+            installed: true,
+            status: "ready",
+            auth: { status: "authenticated" },
+            models: [
+              { slug: "claude-test", name: "Claude Test", isCustom: false, capabilities: null },
+            ],
+          },
+        ].filter((provider) => !this.unavailableProviders.has(provider.driver)) as never,
+    ),
+    domainEvents: Stream.empty,
+    queueChanges: Stream.empty,
+    getThreadDetails: (threadId) =>
+      Effect.succeed({
+        threadId,
+        messages: this.threads.find((thread) => thread.id === threadId)?.messages ?? [],
+        checkpoints: [],
+        tasks: [],
+        tasksTurnId: null,
+        tasksUpdatedAt: null,
+        detailSequence: 0,
+        tasksTracking: null,
+        sessionNotes: null,
+        threadReferences: [],
+      }),
+    getTurnState: ({ turnId }) =>
+      Effect.succeed(
+        this.threads.find((thread) => thread.latestTurn?.turnId === turnId)?.latestTurn?.state ??
+          null,
+      ),
+    getQueueSnapshot: (threadId) =>
+      Effect.succeed({
+        threadId,
+        items: [],
+        paused: false,
+        blockedKind: null,
+        reasonCode: null,
+        reasonDetail: null,
+        revision: 0,
+        updatedAt: "2026-10-01T00:00:00.000Z",
+      } as never),
+    getSubmission: () => Effect.succeed(null),
+    cancelQueuedSubmission: (id) =>
+      Effect.gen({ self: this }, function* () {
+        this.cancellations.push(id);
+        if (this.cancelError) return yield* Effect.fail(this.cancelError);
+        return "canceled" as const;
+      }),
+    createCodeReviewWorkflow: (input, workflowId) =>
+      Effect.sync(() => {
+        if (!this.reviews.some((review) => review.workflowId === workflowId))
+          this.reviews.push({ input, workflowId });
+        return workflowId;
+      }),
+    archiveCodeReviewWorkflow: () => Effect.void,
+    submitTurn: (body, source) =>
       Effect.suspend(() => {
+        this.submissionSources.push(source);
         this.submissions.push(body);
         return this.submitOutcome(body);
       }),

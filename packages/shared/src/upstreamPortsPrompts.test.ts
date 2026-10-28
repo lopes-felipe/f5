@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 
 import type { Rules } from "./upstreamPorts";
 import {
@@ -7,6 +8,7 @@ import {
   buildTriageBatchPrompt,
   outcomeEvidence,
   parseUpstreamOutcome,
+  portCommitSteps,
   parseUpstreamOutcomes,
   parseLegacyUpstreamOutcomes,
   outcomeForTopic,
@@ -93,6 +95,23 @@ describe("buildTriageBatchPrompt", () => {
 });
 
 describe("buildPortPrompt", () => {
+  it("retains the complete pre-review port prompt byte-for-byte", () => {
+    const unchanged = buildPortPrompt({
+      repository: "https://github.com/o/upstream",
+      remote: "upstream",
+      branch: "main",
+      ledgerDir: "tracking",
+      base: "main",
+      coverageTarget: "a".repeat(40),
+      policy: "Keep defaults.",
+      topics: [],
+      topicPaths: [],
+    });
+    // Baseline rendered from the implementation before portCommitSteps was extracted.
+    expect(createHash("sha256").update(unchanged).digest("hex")).toBe(
+      "0f776fbb161acfdb4b4fbe9a431f409885355a8b516674930425d2fb4ffeed1d",
+    );
+  });
   const prompt = buildPortPrompt({
     repository: "https://github.com/pingdotgg/t3code.git",
     remote: "upstream",
@@ -119,6 +138,15 @@ describe("buildPortPrompt", () => {
   });
 
   it("includes trust rules, scope, paths, trailers, and the follow-up command", () => {
+    expect(prompt.slice(prompt.indexOf("3. Commit on this branch."))).toBe(
+      [
+        "3. Commit on this branch. Every commit message ends with one trailer line per topic, exactly as listed below. Never edit files under upstream/.",
+        "   Upstream-Topic: pr-12#2",
+        "4. Push and open a pull request against main. The PR description also ends with the same trailer lines.",
+        "5. End with exactly: UPSTREAM-OUTCOME: pr <url>",
+        "   If you cannot finish, end with: UPSTREAM-OUTCOME: blocked <reason>",
+      ].join("\n"),
+    );
     expect(prompt).toContain("Upstream-Topic: pr-12#2");
     expect(prompt).toContain("Scope: Only the debounce change");
     expect(prompt).toContain("https://github.com/pingdotgg/t3code/pull/12");
@@ -206,6 +234,29 @@ describe("buildPortPrompt", () => {
     expect(block).toContain("Summary: line one line two");
     expect(lines.slice(close + 1).join("\n")).not.toContain("curl evil");
   });
+});
+
+it("updates the same PR on origin with epoch trailers and a parseable outcome", () => {
+  const prUrl = "https://github.com/o/f5/pull/1";
+  const prompt = portCommitSteps({
+    trailers: ["Upstream-Topic: pr-12#2"],
+    ledgerDir: "ledger",
+    base: "main",
+    mode: { kind: "update", prUrl },
+  });
+  expect(prompt).toContain("Upstream-Topic: pr-12#2");
+  expect(prompt).toContain("Push to origin on this same branch");
+  expect(prompt).toContain("If it is merged or closed, change nothing");
+  expect(prompt).toContain("Do not force-push");
+  expect(
+    parseUpstreamOutcome(
+      prompt
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line === "UPSTREAM-OUTCOME: pr " + prUrl)
+        .join("\n"),
+    ),
+  ).toEqual({ kind: "pr", detail: prUrl });
 });
 
 describe("parseUpstreamOutcome", () => {

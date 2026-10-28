@@ -141,7 +141,8 @@ vi.mock("../../env", () => ({
 }));
 
 import { SlotRow } from "./SlotRow";
-import { WorkflowCreateDialog, normalizeWorkflowSlotModelOptions } from "./WorkflowCreateDialog";
+import { WorkflowCreateDialog } from "./WorkflowCreateDialog";
+import { normalizeWorkflowSlotModelOptions } from "./workflowSlots";
 
 const desktopBridgePathByFileName = new Map<string, string>();
 

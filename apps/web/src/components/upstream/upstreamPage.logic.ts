@@ -11,6 +11,7 @@ import {
   type UpstreamOverview,
   type UpstreamPortsSettings,
   type UpstreamPortLinkSummary,
+  type UpstreamPortReviewSummary,
   type UpstreamStateCounts,
   type UpstreamSuggestionFilter,
   type UpstreamTopic,
@@ -53,6 +54,19 @@ export const UPSTREAM_STATE_LABELS: Readonly<Record<UpstreamTopicList, string>> 
 
 /** `85%`: confidence as a whole percentage. */
 export const formatConfidence = (value: number) => `${Math.round(value * 100)}%`;
+
+export function portReviewLabel(review: UpstreamPortReviewSummary | null | undefined): string | null {
+  if (!review) return null;
+  const suffix = review.detail ? ": " + review.detail : "";
+  switch (review.status) {
+    case "waiting": return "Code review: waits for the pull request" + suffix;
+    case "reviewing": return "Code review: in progress" + suffix;
+    case "applying": return "Code review: applying feedback" + suffix;
+    case "completed": return "Code review: revision completed" + suffix;
+    case "skipped": return "Code review: skipped" + (review.detail ? " (" + review.detail + ")" : "");
+    case "error": return "Code review failed" + suffix;
+  }
+}
 
 const SUGGESTION_VERBS: Readonly<Record<UpstreamTopicSuggestion["status"], string>> = {
   port: "Port",

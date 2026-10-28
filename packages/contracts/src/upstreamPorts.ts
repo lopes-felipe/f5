@@ -1,7 +1,9 @@
 import { Schema } from "effect";
 
 import { IsoDateTime, NonNegativeInt, PositiveInt, ProjectId, ThreadId } from "./baseSchemas";
+import { CodeReviewWorkflowId } from "./codeReviewWorkflow";
 import { ModelSelection, RuntimeMode } from "./orchestration";
+import { WorkflowModelSlot } from "./planningWorkflow";
 import { UpstreamSchedule } from "./upstreamPortsWire";
 
 // ── Checked-in project configuration (`f5.json` "upstream" block) ───────
@@ -506,7 +508,27 @@ export const UpstreamPortOutcome = Schema.Struct({
 });
 export type UpstreamPortOutcome = typeof UpstreamPortOutcome.Type;
 
+export const UpstreamPortReviewStatus = Schema.Literals([
+  "waiting",
+  "reviewing",
+  "applying",
+  "completed",
+  "skipped",
+  "error",
+]);
+export type UpstreamPortReviewStatus = typeof UpstreamPortReviewStatus.Type;
+export const UpstreamPortReviewSummary = Schema.Struct({
+  status: UpstreamPortReviewStatus,
+  workflowId: Schema.NullOr(CodeReviewWorkflowId),
+  detail: Schema.NullOr(Schema.String),
+  retryable: Schema.Boolean,
+});
+export type UpstreamPortReviewSummary = typeof UpstreamPortReviewSummary.Type;
+
 export const UpstreamPortLinkSummary = Schema.Struct({
+  review: Schema.optional(Schema.NullOr(UpstreamPortReviewSummary)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   threadId: ThreadId,
   epoch: PositiveInt,
   threadTitle: Schema.NullOr(Schema.String),
@@ -729,6 +751,12 @@ export const UpstreamRunResult = Schema.Struct({
 });
 export type UpstreamRunResult = typeof UpstreamRunResult.Type;
 
+export const UpstreamPortReviewRequest = Schema.Struct({
+  reviewerA: WorkflowModelSlot,
+  reviewerB: WorkflowModelSlot,
+  consolidation: WorkflowModelSlot,
+});
+export type UpstreamPortReviewRequest = typeof UpstreamPortReviewRequest.Type;
 export const UpstreamPortGrouping = Schema.Literals(["together", "separately", "batched"]);
 export type UpstreamPortGrouping = typeof UpstreamPortGrouping.Type;
 const PortBatchSize = Schema.Int.check(
@@ -737,6 +765,7 @@ const PortBatchSize = Schema.Int.check(
 const PortRequestId = Schema.String.check(Schema.isMinLength(8), Schema.isMaxLength(128));
 
 export const UpstreamStartPortInput = Schema.Struct({
+  review: Schema.optional(Schema.NullOr(UpstreamPortReviewRequest)),
   projectId: ProjectId,
   topicIds: TopicIds(UPSTREAM_MAX_PORT_TOPICS),
   grouping: UpstreamPortGrouping,
@@ -781,6 +810,7 @@ export const UpstreamEnqueuePortInput = Schema.Struct({
   ...UpstreamPreviewPortGroupsInput.fields,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
+  review: Schema.optional(Schema.NullOr(UpstreamPortReviewRequest)),
   clientRequestId: PortRequestId,
 });
 export type UpstreamEnqueuePortInput = typeof UpstreamEnqueuePortInput.Type;
@@ -893,6 +923,12 @@ export const UpstreamUnlinkPortInput = Schema.Struct({
   threadId: ThreadId,
 });
 export type UpstreamUnlinkPortInput = typeof UpstreamUnlinkPortInput.Type;
+
+export const UpstreamRetryPortReviewInput = Schema.Struct({
+  projectId: ProjectId,
+  threadId: ThreadId,
+});
+export type UpstreamRetryPortReviewInput = typeof UpstreamRetryPortReviewInput.Type;
 
 export const UpstreamGetPortPromptInput = Schema.Struct({
   projectId: ProjectId,

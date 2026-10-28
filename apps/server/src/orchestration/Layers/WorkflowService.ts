@@ -84,8 +84,7 @@ import {
   nextWorkflowSlug,
   reviewFeedbackForPinnedTurn,
   slotLabel,
-  workflowArtifactFit,
-  WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
+  workflowPromptFitError,
 } from "../workflowSharedUtils.ts";
 import { applyWorkflowTurnCost, workflowBudgetError } from "../workflowBudget.ts";
 import {
@@ -146,29 +145,15 @@ function workflowPromptInvariant(input: {
     "estimatedContextTokens"
   > | null;
 }): OrchestrationCommandInvariantError | null {
-  if (input.prompt.length > WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT) {
-    return new OrchestrationCommandInvariantError({
-      commandType: "workflow.turn.start",
-      detail: `${input.artifactLabel} rendered prompt is ${input.prompt.length} characters; maximum is ${WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT}.`,
-    });
-  }
   const behavior = resolveWorkflowBehavior({
     runKind: "planning",
     templateId: input.workflow.templateId,
     templateVersion: input.workflow.templateVersion,
   });
-  if (!behavior.loudAuthoritativeArtifactLimit) return null;
-  const fit = workflowArtifactFit({
-    artifacts: input.artifacts,
-    targetSlot: input.targetSlot,
-    ...(input.thread ? { thread: input.thread } : {}),
+  return workflowPromptFitError({
+    ...input,
+    enforceArtifactBudget: behavior.loudAuthoritativeArtifactLimit,
   });
-  return fit.fits
-    ? null
-    : new OrchestrationCommandInvariantError({
-        commandType: "workflow.turn.start",
-        detail: `${input.artifactLabel} requires an estimated ${fit.estimatedTokens} tokens; only ${fit.availableTokens} authoritative-artifact tokens are available.`,
-      });
 }
 
 type WorkflowTitleGenerationWorkItem = {
@@ -3463,9 +3448,7 @@ export const makeWorkflowService = Effect.gen(function* () {
       }
 
       const prompt = buildImplementationRevisionPrompt({
-        requirementPrompt: workflow.requirementPrompt,
         reviews: reviewTexts,
-        targetSlot: workflow.implementation.implementationSlot,
       });
       const implementationThread = snapshot.threads.find(
         (entry) => entry.id === workflow.implementation?.threadId,

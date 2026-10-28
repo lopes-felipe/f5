@@ -47,6 +47,8 @@ import {
 } from "effect";
 
 import { canonicalJsonHash } from "../canonicalJsonHash.ts";
+import { resolveTurnSubmissionStatus } from "../nextTurnQueue/submissionStatus.ts";
+import { pendingApprovalActivities } from "../orchestration/pendingApprovals.ts";
 import type { AgentBridgeHostShape } from "./AgentBridgeHost.ts";
 import type {
   AgentBridgeClientRecord,
@@ -179,30 +181,18 @@ interface PendingApprovalSummary {
 export function pendingApprovalSummaries(
   thread: OrchestrationThread,
 ): ReadonlyArray<PendingApprovalSummary> {
-  const open = new Map<string, PendingApprovalSummary>();
-  const ordered = [...thread.activities].toSorted(
-    (left, right) =>
-      (left.sequence ?? 0) - (right.sequence ?? 0) || left.createdAt.localeCompare(right.createdAt),
-  );
-  for (const activity of ordered) {
+  return pendingApprovalActivities(thread).map((activity) => {
     const payload =
       activity.payload && typeof activity.payload === "object"
         ? (activity.payload as Record<string, unknown>)
         : null;
-    const requestId = typeof payload?.requestId === "string" ? payload.requestId : null;
-    if (!requestId) continue;
-    if (activity.kind === "approval.requested") {
-      const detail = typeof payload?.detail === "string" ? payload.detail : null;
-      open.set(requestId, {
-        requestKind: typeof payload?.requestKind === "string" ? payload.requestKind : "unknown",
-        detail: detail === null ? null : truncateUtf8(detail, SUMMARY_MAX_BYTES).text,
-        createdAt: activity.createdAt,
-      });
-    } else if (activity.kind === "approval.resolved") {
-      open.delete(requestId);
-    }
-  }
-  return [...open.values()];
+    const detail = typeof payload?.detail === "string" ? payload.detail : null;
+    return {
+      requestKind: typeof payload?.requestKind === "string" ? payload.requestKind : "unknown",
+      detail: detail === null ? null : truncateUtf8(detail, SUMMARY_MAX_BYTES).text,
+      createdAt: activity.createdAt,
+    };
+  });
 }
 
 function threadStatus(thread: OrchestrationThread): string {
@@ -714,77 +704,19 @@ export function makeThreadTools(deps: ThreadToolsDeps): ReadonlyArray<AgentBridg
           ? { ...base, status: "queued" as const }
           : yield* notFound("Thread");
       }
-      const queue = yield* host.getQueueSnapshot(thread.id).pipe(hostError);
-      const item = queue.items.find((entry) => entry.submissionId === submissionId);
-      if (item) {
-        if (queue.reasonCode === "worktree_setup")
-          return { ...base, status: "preparing-worktree" as const };
-        if (
-          item.status === "failed" ||
-          queue.blockedKind === "paused" ||
-          queue.blockedKind === "error"
-        )
-          return {
-            ...base,
-            status: "blocked" as const,
-            reason: queue.reasonDetail ?? queue.reasonCode ?? item.lastErrorDetail ?? "Blocked.",
-          };
-        return { ...base, status: "queued" as const };
-      }
-      const record = yield* host.getSubmission(CommandId.makeUnsafe(submissionId)).pipe(hostError);
-      if (record === null || record.disposition === "pending" || record.disposition === "queued")
-        return { ...base, status: "queued" as const };
-      if (
-        record.disposition === "canceled" ||
-        record.disposition === "cleared" ||
-        record.disposition === "rejected"
-      )
-        return {
-          ...base,
-          status: "rejected" as const,
-          reason: record.reasonCode ?? record.disposition,
-        };
-      // Started: follow the turn that carries the submitted message.
-      let turnId = knownTurns.get(submissionId) ?? null;
-      if (turnId === null) {
-        const details = yield* host.getThreadDetails(thread.id).pipe(hostError);
-        turnId = details.messages.find((entry) => entry.id === record.messageId)?.turnId ?? null;
-        if (turnId !== null) knownTurns.set(submissionId, turnId);
-      }
-      if (turnId === null) return { ...base, status: "running" as const };
-      const withTurn = { ...base, turnId };
-      if (thread.latestTurn?.turnId !== turnId) {
-        // A later turn has started; report how this one ended.
-        const state = yield* host.getTurnState({ threadId: thread.id, turnId }).pipe(hostError);
-        switch (state) {
-          case "completed":
-            return { ...withTurn, status: "completed" as const };
-          case "interrupted":
-            return { ...withTurn, status: "interrupted" as const };
-          case "error":
-            return { ...withTurn, status: "failed" as const };
-          default:
-            return { ...withTurn, status: "running" as const };
-        }
-      }
-      switch (thread.latestTurn.state) {
-        case "completed":
-          return { ...withTurn, status: "completed" as const };
-        case "interrupted":
-          return { ...withTurn, status: "interrupted" as const };
-        case "error":
-          return {
-            ...withTurn,
-            status: "failed" as const,
-            ...(thread.session?.lastError ? { reason: thread.session.lastError } : {}),
-          };
-        case "running":
-          if ((thread.pendingUserInputs?.length ?? 0) > 0)
-            return { ...withTurn, status: "awaiting-input" as const };
-          if (pendingApprovalSummaries(thread).length > 0)
-            return { ...withTurn, status: "awaiting-approval" as const };
-          return { ...withTurn, status: "running" as const };
-      }
+      const result = yield* resolveTurnSubmissionStatus(
+        {
+          ...host,
+          getThreadDetails: host.getSubmissionThreadDetails ?? host.getThreadDetails,
+        },
+        {
+          thread,
+          submissionId,
+          knownTurnId: knownTurns.get(submissionId),
+        },
+      ).pipe(hostError);
+      if (result.turnId) knownTurns.set(submissionId, result.turnId);
+      return { ...base, ...result };
     });
 
   const waitForSubmission = (

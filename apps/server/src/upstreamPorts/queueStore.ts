@@ -3,6 +3,7 @@ import type {
   RuntimeMode,
   UpstreamEnqueuePortResult,
   UpstreamPortQueueStatus,
+  UpstreamPortReviewRequest,
 } from "@t3tools/contracts";
 import { Effect } from "effect";
 import type * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -15,6 +16,7 @@ export interface QueueRecord {
   readonly topicEpochs: Readonly<Record<string, number>>;
   readonly modelSelection: ModelSelection;
   readonly runtimeMode: RuntimeMode;
+  readonly review?: UpstreamPortReviewRequest | null;
   readonly requestId: string;
   readonly fileKeys: ReadonlyArray<string>;
   readonly ignoreConflicts: boolean;
@@ -75,6 +77,7 @@ interface QueueRow {
   topic_epochs_json: string;
   model_selection_json: string;
   runtime_mode: RuntimeMode;
+  review_json: string | null;
   request_id: string;
   file_keys_json: string;
   ignore_conflicts: number;
@@ -95,6 +98,7 @@ const fromRow = (row: QueueRow): QueueRecord => ({
   topicEpochs: JSON.parse(row.topic_epochs_json),
   modelSelection: JSON.parse(row.model_selection_json),
   runtimeMode: row.runtime_mode,
+  review: row.review_json ? JSON.parse(row.review_json) : null,
   requestId: row.request_id,
   fileKeys: JSON.parse(row.file_keys_json),
   ignoreConflicts: !!row.ignore_conflicts,
@@ -121,10 +125,10 @@ export function makeQueueStore(sql: SqlClient.SqlClient) {
     sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`INSERT INTO upstream_port_queue
-      (project_id,entry_id,position,topic_ids_json,topic_epochs_json,model_selection_json,runtime_mode,request_id,
+      (project_id,entry_id,position,topic_ids_json,topic_epochs_json,model_selection_json,runtime_mode,review_json,request_id,
        file_keys_json,ignore_conflicts,status,thread_id,result,topic_results_json,reason,created_at,updated_at,finished_at)
       VALUES (${entry.projectId},${entry.entryId},${entry.position},${JSON.stringify(entry.topicIds)},
-       ${JSON.stringify(entry.topicEpochs)},${JSON.stringify(entry.modelSelection)},${entry.runtimeMode},${entry.requestId},
+       ${JSON.stringify(entry.topicEpochs)},${JSON.stringify(entry.modelSelection)},${entry.runtimeMode},${entry.review ? JSON.stringify(entry.review) : null},${entry.requestId},
        ${JSON.stringify(entry.fileKeys)},${entry.ignoreConflicts ? 1 : 0},${entry.status},${entry.threadId},${entry.result},
        ${JSON.stringify(entry.topicResults)},${entry.reason},${entry.createdAt},${entry.updatedAt},${entry.finishedAt})
       ON CONFLICT(project_id,entry_id) DO UPDATE SET topic_ids_json = excluded.topic_ids_json,

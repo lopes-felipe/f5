@@ -213,6 +213,7 @@ describe("serverSettings helpers", () => {
     const current = {
       ...DEFAULT_SERVER_SETTINGS,
       upstreamPorts: {
+        portReview: DEFAULT_SERVER_SETTINGS.upstreamPorts.portReview,
         portConcurrency: 5,
         autoRecordOutcomes: true,
         schedule: { mode: "daily" as const, hour: 9, weekday: 1 },
@@ -224,6 +225,7 @@ describe("serverSettings helpers", () => {
       upstreamPorts: { schedule: { mode: "weekly" } },
     });
     expect(applyServerSettingsPatch(current, patch).upstreamPorts).toEqual({
+      portReview: DEFAULT_SERVER_SETTINGS.upstreamPorts.portReview,
       portConcurrency: 5,
       autoRecordOutcomes: true,
       schedule: { mode: "weekly", hour: 9, weekday: 1 },
@@ -234,6 +236,15 @@ describe("serverSettings helpers", () => {
       applyServerSettingsPatch(current, { upstreamPorts: { triageModelSelection: null } })
         .upstreamPorts,
     ).toEqual({ ...current.upstreamPorts, triageModelSelection: null });
+    const review = {
+      enabled: false,
+      reviewerA: { provider: "codex" as const, model: "gpt-5" },
+      reviewerB: null,
+      consolidation: null,
+    };
+    expect(
+      applyServerSettingsPatch(current, { upstreamPorts: { portReview: review } }).upstreamPorts,
+    ).toEqual({ ...current.upstreamPorts, portReview: review });
   });
 
   it("replaces providerInstances maps so omitted instance fields are cleared", () => {

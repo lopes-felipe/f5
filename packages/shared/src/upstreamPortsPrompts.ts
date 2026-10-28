@@ -261,14 +261,42 @@ export function buildPortPrompt(input: PortPromptInput): string {
           "   If it cannot apply here, end with: UPSTREAM-OUTCOME: not-applicable <one sentence>",
         ]),
     "2. Otherwise implement it completely with tests, following the repository instructions (AGENTS.md), and run the required checks.",
-    input.topics.length > 1
+    portCommitSteps({
+      trailers,
+      ledgerDir: input.ledgerDir,
+      base: input.base,
+      mode: { kind: "open" },
+      grouped: input.topics.length > 1,
+    }),
+  ].join("\n");
+}
+
+export function portCommitSteps(input: {
+  readonly trailers: ReadonlyArray<string>;
+  readonly grouped?: boolean;
+  readonly ledgerDir: string;
+  readonly base: string;
+  readonly mode: { readonly kind: "open" } | { readonly kind: "update"; readonly prUrl: string };
+}): string {
+  return [
+    input.grouped
       ? `3. Commit on this branch. Every commit message ends with one trailer line per implemented topic, using the exact lines below. Omit trailers for equivalent or not-applicable topics. Never edit files under ${input.ledgerDir}/.`
       : `3. Commit on this branch. Every commit message ends with one trailer line per topic, exactly as listed below. Never edit files under ${input.ledgerDir}/.`,
-    ...trailers.map((line) => `   ${line}`),
-    `4. Push and open a pull request against ${input.base}. The PR description also ends with the same trailer lines.`,
-    "5. End with exactly: UPSTREAM-OUTCOME: pr <url>",
-    "   If you cannot finish, end with: UPSTREAM-OUTCOME: blocked <reason>",
-    ...(input.topics.length > 1
+    ...input.trailers.map((line) => `   ${line}`),
+    ...(input.mode.kind === "open"
+      ? [
+          `4. Push and open a pull request against ${input.base}. The PR description also ends with the same trailer lines.`,
+          "5. End with exactly: UPSTREAM-OUTCOME: pr <url>",
+          "   If you cannot finish, end with: UPSTREAM-OUTCOME: blocked <reason>",
+        ]
+      : [
+          `4. Push to origin on this same branch so ${input.mode.prUrl} updates. Do not force-push, and do not open a new PR. Keep the exact trailer lines in the PR description.`,
+          "5. Check the PR state before changing anything. If it is merged or closed, change nothing and end with: UPSTREAM-OUTCOME: blocked pull request is <state>",
+          "   Otherwise, even when nothing changed, end with exactly:",
+          `   UPSTREAM-OUTCOME: pr ${input.mode.prUrl}`,
+          "   If you cannot finish, end with: UPSTREAM-OUTCOME: blocked <reason>",
+        ]),
+    ...(input.grouped
       ? [
           "   Put all outcome lines in one consecutive block at the very end: per-topic lines first, then the thread-level line.",
           "   If every topic was equivalent or not-applicable, end with only the per-topic lines and omit the thread-level line.",
