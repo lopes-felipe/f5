@@ -5587,14 +5587,16 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
-      "decidedAt": "2026-10-28T20:58:35.725Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-28T21:24:19.784Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-13935",
+      "reason": "f5 has no welcome wizard or onboarding history-import step (no WelcomeWizard, welcome route, or agent session import), so there is no flow for this fix to change.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-14584"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "onboarding",
