@@ -26,6 +26,7 @@
     "tsdown.config.ts",
     "scripts",
     "integration",
+    "test-timings.json",
     "../../scripts/lib",
     "tsdown.standalone.config.ts",
     "tsdown.launcher.config.ts"
