@@ -170,9 +170,12 @@ export function useThreadActionController(input: {
       : undefined,
   );
   const queryClient = useQueryClient();
+  // The chat header also keeps this list cached for every conversation; only a scheduled
+  // conversation's host subscribes, so task changes do not re-render the others.
   const schedules = useQuery({
     ...scheduledTasksQueryOptions(),
     enabled: activeScheduledTaskId !== undefined,
+    subscribed: activeScheduledTaskId !== undefined,
   });
   const pinRevision = useStore((state) => state.pinRevision ?? 0);
   const markThreadUnread = useStore((state) => state.markThreadUnread);
