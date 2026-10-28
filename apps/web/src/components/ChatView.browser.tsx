@@ -27,6 +27,7 @@ import {
   type OrchestrationReadModel,
   type ProjectId,
   ProviderInstanceId,
+  ProviderDriverKind,
   type ServerConfig,
   ThreadId,
   TurnId,
@@ -2397,6 +2398,97 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it("runs the local usage command without an available provider", async () => {
+    useComposerDraftStore.getState().setProjectDraftThreadId(PROJECT_ID, THREAD_ID);
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      configureFixture: (next) => {
+        next.serverConfig = { ...next.serverConfig, providers: [] };
+        next.resolveWsRequest = (body) =>
+          body._tag === "usage.getAccounts" ? { type: "result", result: [] } : null;
+      },
+    });
+    try {
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "/usage-limits");
+      const send = await waitForSendButton();
+      await vi.waitFor(() => expect(send.disabled).toBe(false));
+      send.click();
+      await vi.waitFor(() =>
+        expect(wsRequests).toContainEqual(
+          expect.objectContaining({ _tag: "usage.getAccounts", refresh: "none" }),
+        ),
+      );
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "").toBe(""),
+      );
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it.each(["enabled", "disabled", "deleted"] as const)(
+    "keeps a started legacy thread on its native instance when it is %s",
+    async (availability) => {
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotForTargetUser({
+          targetMessageId: "native-instance-user" as MessageId,
+          targetText: "Existing native context",
+          fillerPairCount: 0,
+        }),
+        configureFixture: (next) => {
+          next.serverConfig = {
+            ...next.serverConfig,
+            settings: {
+              ...DEFAULT_SERVER_SETTINGS,
+              providers: {
+                ...DEFAULT_SERVER_SETTINGS.providers,
+                codex: {
+                  ...DEFAULT_SERVER_SETTINGS.providers.codex,
+                  enabled: availability === "enabled",
+                },
+              },
+              providerInstances: {
+                [ProviderInstanceId.make("codex_sibling")]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  enabled: true,
+                },
+              },
+            },
+            providers: [
+              ...(availability === "deleted"
+                ? []
+                : [createTestServerProvider("codex", { enabled: availability === "enabled" })]),
+              createTestServerProvider("codex", {
+                instanceId: ProviderInstanceId.make("codex_sibling"),
+              }),
+            ],
+          };
+        },
+      });
+      try {
+        useComposerDraftStore.getState().setPrompt(THREAD_ID, "Continue existing context");
+        const send = await waitForSendButton();
+        await vi.waitFor(() => expect(send.disabled).toBe(availability !== "enabled"));
+        if (availability !== "enabled") {
+          expect(document.body.textContent).toContain("No provider available");
+          const editor = await waitForComposerEditor();
+          editor
+            .closest("form")!
+            .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+          expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+          expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+            "Continue existing context",
+          );
+        }
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
   describe("composer redesign", () => {
     beforeEach(() => {
       serverBootstrapFixture = redesignBootstrapFixture;
@@ -2963,9 +3055,13 @@ describe("ChatView timeline (full app)", () => {
     });
   });
 
-  it.each(["Changed editor text", ""])(
+  it.each([
+    ["Changed editor text", false],
+    ["", false],
+    ["Answer after disabling providers", true],
+  ] as const)(
     "keeps a provider editor prefill editable and restores the original composer draft: %s",
-    async (answer) => {
+    async (answer, disableProviders) => {
       const snapshot = createSnapshotForTargetUser({
         targetMessageId: "editor-user" as MessageId,
         targetText: "Ask me",
@@ -2996,8 +3092,10 @@ describe("ChatView timeline (full app)", () => {
       const mounted = await mountChatView({
         viewport: DEFAULT_VIEWPORT,
         snapshot: withQuestion,
-        configureFixture: () =>
-          useComposerDraftStore.getState().setPrompt(THREAD_ID, "Keep original composer draft"),
+        configureFixture: (next) => {
+          useComposerDraftStore.getState().setPrompt(THREAD_ID, "Keep original composer draft");
+          if (disableProviders) next.serverConfig = { ...next.serverConfig, providers: [] };
+        },
       });
       try {
         const editor = await waitForComposerEditor();

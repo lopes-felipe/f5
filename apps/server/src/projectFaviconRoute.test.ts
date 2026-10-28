@@ -141,6 +141,50 @@ describe("tryHandleProjectFaviconRequest", () => {
     }
   });
 
+  it("bounds concurrent reads across many projects and releases slots after failures", async () => {
+    const projectRoot = makeTempDir("f5-favicon-budget-");
+    const authorizer = makeWorkspaceAssetAuthorizer({
+      resolveProjectWorkspaceRoot: async () => projectRoot,
+    });
+    const reader = await authorizer.forProject(PROJECT_ID);
+    const gate = Promise.withResolvers<void>();
+    let active = 0;
+    let peak = 0;
+    const readImage = vi.fn(async () => {
+      active++;
+      peak = Math.max(peak, active);
+      try {
+        await gate.promise;
+        throw new Error("missing");
+      } finally {
+        active--;
+      }
+    });
+    const readText = vi.fn(async () => {
+      throw new Error("missing");
+    });
+    const resolutions = Array.from({ length: 10 }, (_, index) =>
+      findFaviconRelativePath(
+        {
+          ...authorizer,
+          forProject: async () => ({ ...reader, readImage, readText }),
+        },
+        String(index),
+      ),
+    );
+    try {
+      await vi.waitFor(() => expect(readImage).toHaveBeenCalledTimes(32));
+      expect(active).toBe(32);
+    } finally {
+      gate.resolve();
+    }
+    expect(await Promise.all(resolutions)).toEqual(Array(10).fill(null));
+    expect(peak).toBe(32);
+    expect(active).toBe(0);
+    expect(readImage).toHaveBeenCalledTimes(220);
+    expect(readText).toHaveBeenCalledTimes(70);
+  });
+
   it("waits for a higher-ranked candidate even when a lower-ranked icon is ready", async () => {
     const projectRoot = makeTempDir("f5-favicon-rank-order-");
     fs.mkdirSync(path.join(projectRoot, "public"));

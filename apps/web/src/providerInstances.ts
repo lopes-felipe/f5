@@ -273,26 +273,26 @@ export function resolveDefaultProviderModelSelection(
   return model ? { instanceId, model } : null;
 }
 
-/** Keep started threads inside their driver and native continuation group. */
+/** Started threads keep their exact native session instance until handoff is supported. */
 export function resolveComposerProviderInstance(
   entries: ReadonlyArray<ProviderInstanceEntry>,
   input: {
     readonly candidates: ReadonlyArray<ProviderInstanceId | null | undefined>;
     readonly preferredDriver: ProviderDriverKind | undefined;
     readonly lockedDriver: ProviderDriverKind | null;
-    readonly lockedContinuationGroup?: string | undefined;
+    readonly lockedInstanceId?: ProviderInstanceId | undefined;
   },
 ): ProviderInstanceEntry | undefined {
   const compatible = entries.filter(
     (entry) =>
       (!input.lockedDriver || entry.driverKind === input.lockedDriver) &&
-      (!input.lockedContinuationGroup ||
-        entry.continuationGroupKey === input.lockedContinuationGroup),
+      (!input.lockedInstanceId || entry.instanceId === input.lockedInstanceId),
   );
   for (const id of input.candidates) {
     const requested = compatible.find((entry) => entry.instanceId === id);
     if (requested?.enabled && requested.isAvailable) return requested;
   }
+  if (input.lockedDriver) return undefined;
   return (
     resolveSelectableProviderInstanceEntry(
       compatible.filter((entry) => entry.driverKind === input.preferredDriver),

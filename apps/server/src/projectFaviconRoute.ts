@@ -148,16 +148,42 @@ function sendAssetError(res: http.ServerResponse, error: unknown): void {
   res.end(statusCode === 404 ? "Not Found" : "Invalid workspace asset");
 }
 
-// Start all probes together, but preserve rank and return without waiting on
-// lower-ranked filesystem operations. Each probe handles its own rejection.
+// Share the read budget across projects: a sidebar can request many favicons at once.
+const MAX_CONCURRENT_FAVICON_PROBES = 32;
+let activeFaviconProbes = 0;
+const waitingFaviconProbes: Array<() => void> = [];
+
+async function withFaviconProbe<A>(probe: () => Promise<A>): Promise<A> {
+  if (activeFaviconProbes < MAX_CONCURRENT_FAVICON_PROBES) {
+    activeFaviconProbes++;
+  } else {
+    await new Promise<void>((resolve) => waitingFaviconProbes.push(resolve));
+  }
+  try {
+    return await probe();
+  } finally {
+    const next = waitingFaviconProbes.shift();
+    if (next) next();
+    else activeFaviconProbes--;
+  }
+}
+
+// Probe concurrently within the shared budget, preserve rank, and return without
+// waiting on lower-ranked filesystem operations. Each probe handles its rejection.
 async function firstFaviconInOrder<A>(
   items: readonly A[],
   probe: (item: A) => Promise<string | null>,
 ): Promise<string | null> {
-  const probes = items.map(probe);
+  let foundMatch = false;
+  const probes = items.map((item) =>
+    withFaviconProbe(() => (foundMatch ? Promise.resolve(null) : probe(item))),
+  );
   for (const pending of probes) {
     const found = await pending;
-    if (found) return found;
+    if (found) {
+      foundMatch = true;
+      return found;
+    }
   }
   return null;
 }

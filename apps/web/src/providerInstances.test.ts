@@ -100,7 +100,7 @@ describe("usable provider defaults", () => {
     ).toEqual({ instanceId: claude.instanceId, model: "my-model" });
   });
 
-  it("only falls back within the locked continuation group", () => {
+  it("never silently moves a started thread to a sibling native instance", () => {
     const entries = deriveProviderInstanceEntries([
       { ...claude, enabled: false, continuation: { groupKey: "group-a" } },
       {
@@ -119,9 +119,24 @@ describe("usable provider defaults", () => {
         candidates: [claude.instanceId],
         preferredDriver: claude.driver,
         lockedDriver: claude.driver,
-        lockedContinuationGroup: "group-a",
+        lockedInstanceId: claude.instanceId,
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveComposerProviderInstance(entries, {
+        candidates: [claude.instanceId],
+        preferredDriver: claude.driver,
+        lockedDriver: null,
       })?.instanceId,
-    ).toBe("compatible");
+    ).toBe("other");
+    expect(
+      resolveComposerProviderInstance(entries, {
+        candidates: [ProviderInstanceId.make("deleted")],
+        preferredDriver: claude.driver,
+        lockedDriver: claude.driver,
+        lockedInstanceId: ProviderInstanceId.make("deleted"),
+      }),
+    ).toBeUndefined();
   });
 
   it("prefers an unprobed instance over an implicit errored default", () => {

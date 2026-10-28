@@ -72,6 +72,29 @@ describe("Antigravity explicit installation", () => {
     expect(await fs.readdir(install.directory)).toEqual([]);
     await expect(install.resolve()).rejects.toThrow("Install Antigravity");
   });
+
+  it("reports an existing release as needing an explicit update and keeps it usable during installation", async () => {
+    const download = vi.fn(async () => new Response(zip));
+    vi.stubGlobal("fetch", download);
+    const install = await setup();
+    const oldHash = "a".repeat(64);
+    const oldDirectory = path.join(install.directory, oldHash);
+    await fs.mkdir(oldDirectory, { recursive: true });
+    await fs.writeFile(
+      path.join(oldDirectory, "complete.json"),
+      JSON.stringify({ sha256: oldHash, version: "1.1.1" }),
+    );
+    await fs.writeFile(path.join(oldDirectory, "running-harness"), "still in use");
+    await expect(install.resolve()).rejects.toThrow("1.1.1 is installed. Update to test");
+    expect(download).not.toHaveBeenCalled();
+    const current = await install.install();
+    expect(current.version).toBe("test");
+    expect(await install.resolve()).toEqual(current);
+    expect(await fs.readFile(path.join(oldDirectory, "running-harness"), "utf8")).toBe(
+      "still in use",
+    );
+    expect(download).toHaveBeenCalledTimes(1);
+  });
   it("cancels a stalled download without publishing or retaining partial files", async () => {
     const controller = new AbortController();
     let started!: () => void;

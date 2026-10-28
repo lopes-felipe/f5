@@ -50,6 +50,7 @@ import { makeServerRuntimeServicesLayer } from "./serverLayers";
 
 import {
   AGENT_BRIDGE_WS_METHODS,
+  NATIVE_OPERATION_WS_METHODS,
   BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
   type WorktreeSetupSnapshot,
   DEFAULT_MODEL_BY_PROVIDER,
@@ -3556,6 +3557,124 @@ describe("WebSocket Server", () => {
     expect(response.result).toBeUndefined();
     expect(response.error?.message).toContain("exceeds current turn count");
   });
+
+  it("native fork persists and prepares the flat branch when t3code already exists", async () => {
+    const workspaceRoot = makeTempDir("f5-native-fork-repo-");
+    const stateDir = makeTempDir("f5-native-fork-state-");
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", workspaceRoot, ...args], { encoding: "utf8" }).trim();
+    git("init", "-q", "-b", "main");
+    git(
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "-q",
+      "--allow-empty",
+      "-m",
+      "initial",
+    );
+    git("branch", "t3code");
+    const nativeOperations: NonNullable<ProviderServiceShape["nativeOperations"]> = {
+      list: () => unsupportedProviderCall(),
+      inspect: () => unsupportedProviderCall(),
+      resolve: () => unsupportedProviderCall(),
+      execute: () => unsupportedProviderCall(),
+      executeWithApply: (input, apply, prepare) =>
+        Effect.gen(function* () {
+          if (prepare) yield* prepare;
+          yield* apply({ resumeCursor: { nativeThreadId: "forked-native-session" } });
+          const now = new Date().toISOString();
+          return { ...input, state: "completed" as const, createdAt: now, updatedAt: now };
+        }),
+    };
+    server = await createTestServer({
+      cwd: workspaceRoot,
+      stateDir,
+      persistenceLayer: makeSqlitePersistenceLive(path.join(stateDir, "state.sqlite")).pipe(
+        Layer.provide(NodeServices.layer),
+      ),
+      providerLayer: Layer.succeed(ProviderService, {
+        ...defaultProviderService,
+        nativeOperations,
+      }),
+    });
+    const address = server.address();
+    const [ws] = await connectAndAwaitWelcome(
+      typeof address === "object" && address !== null ? address.port : 0,
+    );
+    connections.push(ws);
+    const now = new Date().toISOString();
+    const project = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "project.create",
+      commandId: "fork-project-create",
+      projectId: "fork-project",
+      title: "Fork",
+      workspaceRoot,
+      createdAt: now,
+    });
+    expect(project.error).toBeUndefined();
+    const source = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "thread.create",
+      commandId: "fork-source-create",
+      threadId: "fork-source",
+      projectId: "fork-project",
+      title: "Source",
+      model: "gpt-5-codex",
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: "main",
+      worktreePath: null,
+      createdAt: now,
+    });
+    expect(source.error).toBeUndefined();
+    const database = new DatabaseSync(path.join(stateDir, "state.sqlite"));
+    try {
+      database
+        .prepare(
+          "INSERT INTO provider_session_runtime (thread_id, project_id, provider_name, provider_instance_id, adapter_key, runtime_mode, status, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          "fork-source",
+          "fork-project",
+          "codex",
+          "codex",
+          "codex",
+          "full-access",
+          "stopped",
+          now,
+        );
+      const operationId = "abcdef12-1234-4234-8234-123456789abc";
+      const response = await sendRequest(ws, NATIVE_OPERATION_WS_METHODS.fork, {
+        threadId: "fork-source",
+        operationId,
+        generation: 1,
+      });
+      expect(response.error).toBeUndefined();
+      expect(response.result).toMatchObject({ state: "completed" });
+      const snapshot = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
+      const fork = (snapshot.result as OrchestrationReadModel).threads.find(
+        (thread) => thread.id === `fork-${operationId}`,
+      );
+      expect(fork?.branch).toBe("t3code-abcdef12");
+      expect(fork?.worktreePath).toBeTruthy();
+      expect(
+        execFileSync("git", ["-C", fork!.worktreePath!, "branch", "--show-current"], {
+          encoding: "utf8",
+        }).trim(),
+      ).toBe(fork?.branch);
+      expect(
+        database
+          .prepare("SELECT runtime_payload_json FROM provider_session_runtime WHERE thread_id = ?")
+          .get(fork!.id),
+      ).toMatchObject({
+        runtime_payload_json: expect.stringContaining(fork!.worktreePath!),
+      });
+    } finally {
+      database.close();
+    }
+  }, 60_000);
 
   it("rejects oversized turn-start messages before dispatching orchestration events", async () => {
     server = await createTestServer({ cwd: "/test" });

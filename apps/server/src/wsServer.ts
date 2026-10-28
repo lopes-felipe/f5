@@ -1,4 +1,5 @@
 import { makeScheduledNotificationDelivery } from "./scheduledTasks/notificationDelivery.ts";
+import { resolveTemporaryWorktreeBranch } from "./git/temporaryWorktreeBranch.ts";
 import { parseNaturalLanguageSchedule } from "./scheduledTasks/naturalLanguage.ts";
 import { TURN_SUBMISSION_FAILURES } from "./TurnSubmissionError.ts";
 import { makeTurnSubmissionService } from "./TurnSubmissionService.ts";
@@ -4173,7 +4174,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         if (!/^[0-9a-f-]{36}$/i.test(input.operationId))
           return yield* new RouteRequestError({ message: "Invalid fork identifier." });
         const targetId = NativeForkThreadId.makeUnsafe(`fork-${input.operationId}`);
-        const branch = `t3code/${input.operationId.slice(0, 8)}`;
+        const branch = yield* resolveTemporaryWorktreeBranch(
+          git,
+          project.workspaceRoot,
+          `t3code/${input.operationId.slice(0, 8)}`,
+        );
         const cwd = yield* git.allocateWorktreePath({ cwd: project.workspaceRoot, branch });
         const binding = yield* providerSessionDirectory
           .getBinding(input.threadId)

@@ -1414,17 +1414,18 @@ export default memo(function ChatView({
   const selectedProviderEntry = useMemo(() => {
     const entries = deriveProviderInstanceEntries(providerStatuses);
     const lockedInstanceId =
-      activeThread?.session?.providerInstanceId ?? activeThread?.modelSelection?.instanceId;
-    const lockedContinuationGroup = hasThreadStarted
-      ? entries.find((entry) => entry.instanceId === lockedInstanceId)?.continuationGroupKey
-      : undefined;
+      activeThread?.session?.providerInstanceId ??
+      activeThread?.modelSelection?.instanceId ??
+      (lockedProvider
+        ? defaultInstanceIdForDriver(ProviderDriverKind.make(lockedProvider))
+        : undefined);
     const preferred =
       selectedProviderByThreadId ?? (isServerThread ? inferredThreadProvider : null);
     return resolveComposerProviderInstance(entries, {
-      candidates: [requestedInstanceId],
+      candidates: [hasThreadStarted ? lockedInstanceId : requestedInstanceId],
       preferredDriver: preferred ? ProviderDriverKind.make(preferred) : undefined,
       lockedDriver: lockedProvider ? ProviderDriverKind.make(lockedProvider) : null,
-      lockedContinuationGroup,
+      lockedInstanceId: hasThreadStarted ? lockedInstanceId : undefined,
     });
   }, [
     providerStatuses,
@@ -1452,7 +1453,10 @@ export default memo(function ChatView({
     [selectedThreadTitleModel],
   );
   const providerSelectionChanged =
-    requestedInstanceId !== undefined && requestedInstanceId !== selectedProviderEntry?.instanceId;
+    !hasThreadStarted &&
+    selectedProviderEntry !== undefined &&
+    requestedInstanceId !== undefined &&
+    requestedInstanceId !== selectedProviderEntry.instanceId;
   const draftModelOptions = providerSelectionChanged ? null : composerDraft.modelOptions;
   const selectedProviderDriver = ProviderDriverKind.make(selectedProvider);
   const selectedProviderInstanceId = selectedProviderEntry?.instanceId ?? NO_PROVIDER_INSTANCE_ID;
@@ -5134,7 +5138,6 @@ export default memo(function ChatView({
     onAdmitted?: () => void,
   ) => {
     e?.preventDefault();
-    if (noProviderAvailable) return;
     if (wsInteractionBlocked) {
       toastManager.add({
         type: "info",
@@ -5194,6 +5197,7 @@ export default memo(function ChatView({
       onAdvanceActivePendingUserInput();
       return;
     }
+    if (noProviderAvailable) return;
     if (
       /^\/review(?:\s|$)/.test(promptRef.current.trim()) &&
       activeThread.session?.provider === "codex" &&
@@ -7597,7 +7601,9 @@ export default memo(function ChatView({
     nativeGoal: nativeGoalControls,
   };
   const composerSendControls: ComposerSendControls = {
-    mutationsUnavailable: wsInteractionBlocked || noProviderAvailable,
+    mutationsUnavailable:
+      wsInteractionBlocked ||
+      (noProviderAvailable && !activePendingProgress && prompt.trim() !== "/usage-limits"),
     onSend,
     onInterrupt,
     phase,
