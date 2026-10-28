@@ -209,6 +209,26 @@ it("keeps Windows path backslashes that CommonMark would read as escapes", async
   expect(html.match(/chat-markdown-file-link"/g)).toHaveLength(3);
 });
 
+it("keeps backslashes that CommonMark would read as escapes in prose Windows paths", async () => {
+  const { default: ChatMarkdown } = await import("./ChatMarkdown");
+  const render = (text: string) =>
+    renderToStaticMarkup(<ChatMarkdown text={text} cwd="/repo" />)
+      .replace(/<\/?(?:p|div)\b[^>]*>/g, "")
+      .replaceAll("&quot;", '"');
+
+  expect(
+    render(String.raw`Saved to C:\Users\me\.t3\_build and (C:\.scratch) and C:/work\.config.`),
+  ).toBe(String.raw`Saved to C:\Users\me\.t3\_build and (C:\.scratch) and C:/work\.config.`);
+  // Paths render as written, so one an agent already escaped keeps its doubled backslashes.
+  expect(render(String.raw`Escaped C:\\Users\\me`)).toBe(String.raw`Escaped C:\\Users\\me`);
+  expect(render(String.raw`See C:\x and \*this\* and Note:\*that\*.`)).toBe(
+    String.raw`See C:\x and *this* and Note:*that*.`,
+  );
+  expect(render(String.raw`${"`"}C:\me\.t3${"`"} and C:\me\.t3`)).toBe(
+    String.raw`<code>C:\me\.t3</code> and C:\me\.t3`,
+  );
+});
+
 it("renders file URI links as chips but still empties unsafe schemes", async () => {
   const { default: ChatMarkdown } = await import("./ChatMarkdown");
   const html = renderToStaticMarkup(

@@ -5,7 +5,7 @@ import { ChatAssetImage } from "./ChatAssetImage";
 import { createContext, useContext } from "react";
 import { RepositoryLinks } from "../repositoryLinkContext";
 import { remarkIssueReferences } from "../lib/remarkIssueReferences";
-import { remarkKeepWindowsPathDestinations } from "../lib/remarkWindowsPathDestinations";
+import { remarkKeepWindowsPaths } from "../lib/remarkWindowsPaths";
 import { remarkGfmAlerts } from "../lib/remarkGfmAlerts";
 import { isGfmAlertType, type GfmAlertType } from "@t3tools/shared/markdownAlerts";
 import { GitHubIcon } from "./Icons";
@@ -40,6 +40,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useDiffWordWrap } from "../appSettings";
 import { openFileInEditor } from "../lib/openFileInEditor";
+import { findWorkspaceBasenameFile } from "../lib/workspaceBasename";
+import { readNativeApi } from "../nativeApi";
 import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
 import { fnv1a32 } from "../lib/diffRendering";
 import { LRUCache } from "../lib/lruCache";
@@ -58,6 +60,7 @@ import {
   collectMarkdownLinkHrefs,
   chatMarkdownUrlTransform,
   isMarkdownFileLinkLabel,
+  resolveMarkdownFileEditorTarget,
   resolveMarkdownFileLinkMeta,
   type MarkdownFileLinkMeta,
 } from "../markdown-links";
@@ -216,6 +219,7 @@ function MarkdownFileChip({
   meta,
   disambiguator,
   theme,
+  cwd,
   anchorProps,
 }: {
   /** Omitted when there is no safe URL; the chip stays keyboard-reachable. */
@@ -223,6 +227,7 @@ function MarkdownFileChip({
   meta: MarkdownFileLinkMeta;
   disambiguator: string | null;
   theme: "light" | "dark";
+  cwd: string | undefined;
   anchorProps?: React.AnchorHTMLAttributes<HTMLAnchorElement>;
 }) {
   const handleFileNavigation = useFileNavigation();
@@ -233,7 +238,10 @@ function MarkdownFileChip({
     if (handleFileNavigation(meta.targetPath)) {
       return;
     }
-    void openFileInEditor(meta.targetPath);
+    const api = readNativeApi();
+    void resolveMarkdownFileEditorTarget(meta, cwd, (name) =>
+      api && cwd ? findWorkspaceBasenameFile(api, cwd, name) : Promise.resolve(null),
+    ).then((targetPath) => openFileInEditor(targetPath));
   };
 
   return (
@@ -415,6 +423,7 @@ function MarkdownCodeBlock({
               meta={fileMeta}
               disambiguator={null}
               theme={resolvedTheme === "dark" ? "dark" : "light"}
+              cwd={cwd}
             />
           ) : filePath ? (
             <span className="chat-markdown-codeblock-path">{filePath}</span>
@@ -828,6 +837,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
             meta={meta}
             disambiguator={disambiguatorMap.get(href) ?? null}
             theme={resolvedTheme === "dark" ? "dark" : "light"}
+            cwd={cwd}
             anchorProps={props}
           />
         );
@@ -947,7 +957,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         remarkPlugins={[
           remarkGfm,
           remarkGfmAlerts,
-          remarkKeepWindowsPathDestinations,
+          remarkKeepWindowsPaths,
           [remarkIssueReferences, repositoryLinks],
         ]}
         urlTransform={chatMarkdownUrlTransform}
