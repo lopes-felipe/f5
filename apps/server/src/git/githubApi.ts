@@ -538,23 +538,41 @@ export function makeGitHubApi(
         Date.now() - (verifiedAt.get(host) ?? 0) < 60_000
       )
         return cached;
-      const verified = yield* requestCaptured({
+      let verified = yield* requestCaptured({
         cwd: input.cwd,
         host,
         token,
         method: "GET",
         endpoint: "user",
       });
-      const viewer =
+      const rateLimited =
+        verified.status === 429 ||
+        (verified.status === 403 &&
+          (verified.rateLimit.remaining === 0 || verified.rateLimit.retryAfterSeconds != null));
+      let viewer =
         typeof verified.body === "object" && verified.body !== null
           ? (verified.body as Record<string, unknown>)
           : null;
+      // Some credentials (GitHub App and restricted tokens) cannot read /user but can still
+      // read pull requests, so a plain 403 verifies the same token through the GraphQL viewer.
+      if (verified.status === 403 && !rateLimited) {
+        const graphql = yield* requestCaptured({
+          cwd: input.cwd,
+          host,
+          token,
+          method: "POST",
+          endpoint: "graphql",
+          body: { query: "query { viewer { databaseId login } }" },
+        });
+        const data = (graphql.body as { data?: { viewer?: Record<string, unknown> } } | null)?.data
+          ?.viewer;
+        if (graphql.status === 200 && graphql.graphqlErrors.length === 0 && data) {
+          verified = graphql;
+          viewer = { id: data.databaseId, login: data.login };
+        }
+      }
       if (verified.status !== 200) {
         if (verified.status === 401) rejectedCredentials.set(host, fingerprint);
-        const rateLimited =
-          verified.status === 429 ||
-          (verified.status === 403 &&
-            (verified.rateLimit.remaining === 0 || verified.rateLimit.retryAfterSeconds != null));
         return yield* Effect.fail(
           new GitHubCliError({
             operation: "credentials",

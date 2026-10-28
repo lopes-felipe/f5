@@ -2550,7 +2550,14 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       yield* runGit(repoDir, ["checkout", "main"]);
       const worktreeParent = yield* makeTempDir("pr-reused-fork-");
       const worktreePath = path.join(worktreeParent, "worktree");
-      yield* runGit(repoDir, ["worktree", "add", worktreePath, "feature/pr-reused-fork"]);
+      yield* runGit(repoDir, [
+        "worktree",
+        "add",
+        "-b",
+        "t3code/pr-83/feature/pr-reused-fork",
+        worktreePath,
+        "feature/pr-reused-fork",
+      ]);
       yield* runGit(worktreePath, ["branch", "--unset-upstream"], true);
 
       const { manager } = yield* makeManager({
@@ -2587,6 +2594,59 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       expect(
         (yield* runGit(worktreePath, ["rev-parse", "--abbrev-ref", "@{upstream}"])).stdout.trim(),
       ).toBe("fork-seed/feature/pr-reused-fork");
+    }),
+  );
+
+  it.effect("preserves the upstream of an unrelated worktree that shares the fork head name", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const originDir = yield* createBareRemote();
+      const forkDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", originDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
+      yield* runGit(repoDir, ["remote", "add", "fork-seed", forkDir]);
+      yield* runGit(repoDir, ["push", "fork-seed", "main"]);
+      yield* runGit(repoDir, ["checkout", "-b", "root-work"]);
+      const worktreeParent = yield* makeTempDir("pr-unrelated-main-");
+      const mainWorktreePath = path.join(worktreeParent, "main");
+      yield* runGit(repoDir, ["worktree", "add", mainWorktreePath, "main"]);
+
+      const { manager } = yield* makeManager({
+        ghScenario: {
+          pullRequest: {
+            number: 94,
+            title: "Fork PR from main",
+            url: "https://github.com/pingdotgg/codething-mvp/pull/94",
+            baseRefName: "main",
+            headRefName: "main",
+            state: "open",
+            isCrossRepository: true,
+            headRepositoryNameWithOwner: "octocat/codething-mvp",
+            headRepositoryOwnerLogin: "octocat",
+          },
+          repositoryCloneUrls: {
+            "octocat/codething-mvp": { url: forkDir, sshUrl: forkDir },
+          },
+        },
+      });
+
+      const result = yield* preparePullRequestThread(manager, {
+        cwd: repoDir,
+        reference: "94",
+        mode: "worktree",
+      });
+
+      expect(result.worktreePath && fs.realpathSync.native(result.worktreePath)).toBe(
+        fs.realpathSync.native(mainWorktreePath),
+      );
+      expect(
+        (yield* runGit(mainWorktreePath, [
+          "rev-parse",
+          "--abbrev-ref",
+          "@{upstream}",
+        ])).stdout.trim(),
+      ).toBe("origin/main");
     }),
   );
 

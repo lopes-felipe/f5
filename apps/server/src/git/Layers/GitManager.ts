@@ -1526,6 +1526,9 @@ export const makeGitManager = Effect.gen(function* () {
       const localPullRequestBranch =
         resolvePullRequestWorktreeLocalBranchName(pullRequestWithRemoteInfo);
 
+      // For a fork PR this also accepts a worktree on a branch that merely shares the head's bare
+      // name (a fork PR from "main" matches the user's own "main"). That checkout is somebody
+      // else's work, so it is reused as is and keeps its own tracking config.
       const findLocalHeadBranch = (cwd: string) =>
         gitCore.listBranches({ cwd }).pipe(
           Effect.map((result) => {
@@ -1558,7 +1561,8 @@ export const makeGitManager = Effect.gen(function* () {
         existingBranchBeforeFetch?.worktreePath &&
         existingBranchBeforeFetchPath !== rootWorktreePath
       ) {
-        yield* ensureExistingWorktreeUpstream(existingBranchBeforeFetch.worktreePath);
+        if (existingBranchBeforeFetch.name === localPullRequestBranch)
+          yield* ensureExistingWorktreeUpstream(existingBranchBeforeFetch.worktreePath);
         return {
           pullRequest,
           changeRequest,
@@ -1588,7 +1592,8 @@ export const makeGitManager = Effect.gen(function* () {
         existingBranchAfterFetch?.worktreePath &&
         existingBranchAfterFetchPath !== rootWorktreePath
       ) {
-        yield* ensureExistingWorktreeUpstream(existingBranchAfterFetch.worktreePath);
+        if (existingBranchAfterFetch.name === localPullRequestBranch)
+          yield* ensureExistingWorktreeUpstream(existingBranchAfterFetch.worktreePath);
         return {
           pullRequest,
           changeRequest,
