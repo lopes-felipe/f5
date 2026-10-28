@@ -1,6 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
 import { Effect } from "effect";
-import { TestClock } from "effect/testing";
 
 /** CLI fixture source that ignores SIGTERM and never exits, reporting its PID. */
 export const stalledCliSource = (pidPath: string) => `
@@ -25,7 +24,8 @@ const poll = <A>(label: string, read: () => A | undefined, tick: Effect.Effect<v
       const value = read();
       if (value !== undefined) return value;
       yield* tick;
-      yield* Effect.sleep("25 millis").pipe(TestClock.withLive);
+      // Real time regardless of the test clock: the process runs on wall time.
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 25)));
     }
     return yield* Effect.die(new Error(`Timed out waiting for ${label}`));
   });

@@ -1,5 +1,6 @@
 import { summarizeTraceFile } from "./observability/traceSummary.ts";
-import { ServerShutdown, ServerShutdownLive } from "./shutdown.ts";
+import { registerShutdown, ServerShutdown, ServerShutdownLive } from "./shutdown.ts";
+import { terminateRunningProcesses } from "./processRunner.ts";
 import { ProfileGithubAccount } from "./git/ProfileGithubAccount";
 import { makeServerSecretStore } from "./auth/Layers/ServerSecretStore";
 import * as ProfileFS from "node:fs/promises";
@@ -568,6 +569,10 @@ const makeServerProgram = (input: CliInput) =>
     }
 
     yield* withStartupPhaseTiming("server.start", start);
+    // Detached gh/git helpers would otherwise outlive the backend.
+    yield* registerShutdown("helper-processes", "producers", (deadline) =>
+      Effect.promise(() => terminateRunningProcesses(deadline)),
+    );
     const shutdown = yield* ServerShutdown;
     // This finalizer runs before the runtime layers release their resources.
     yield* Effect.addFinalizer(() => Effect.promise(() => shutdown.run()));
