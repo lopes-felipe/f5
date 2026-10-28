@@ -13,7 +13,13 @@ afterEach(() => {
   setDocumentAttentionCount(0);
 });
 it("counts attention statuses rather than running work", () => {
-  for (const status of ["pending-approval", "awaiting-input", "plan-ready", "completed"] as const)
+  for (const status of [
+    "pending-approval",
+    "awaiting-input",
+    "failed",
+    "plan-ready",
+    "completed",
+  ] as const)
     expect(needsThreadAttention(status)).toBe(true);
   for (const status of ["working", "connecting", "none"] as const)
     expect(needsThreadAttention(status)).toBe(false);

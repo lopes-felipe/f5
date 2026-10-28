@@ -6,6 +6,7 @@ import {
   LoaderIcon,
   MessageCircleIcon,
   PlayIcon,
+  XCircleIcon,
 } from "lucide-react";
 
 import type { Thread } from "./types";
@@ -22,6 +23,7 @@ export type ThreadStatus =
   | "awaiting-input"
   | "working"
   | "connecting"
+  | "failed"
   | "plan-ready"
   | "completed"
   | "none";
@@ -41,6 +43,7 @@ type ThreadStatusLabel =
   | "Working"
   | "Connecting"
   | "Completed"
+  | "Failed"
   | "Pending Approval"
   | "Awaiting Input"
   | "Plan Ready"
@@ -94,6 +97,14 @@ const THREAD_STATUS_PILL_BY_STATUS: Record<Exclude<ThreadStatus, "none">, Thread
     icon: LoaderIcon,
     pulse: true,
   },
+  failed: {
+    label: "Failed",
+    colorClass: "text-destructive-foreground",
+    dotClass: "bg-destructive",
+    chipClass: "bg-destructive/10 text-destructive-foreground ring-1 ring-destructive/20",
+    icon: XCircleIcon,
+    pulse: false,
+  },
   "plan-ready": {
     label: "Plan Ready",
     colorClass: "text-warning-foreground",
@@ -123,6 +134,20 @@ export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
   return completedAt > lastVisitedAt;
 }
 
+/**
+ * A failed latest turn the person hasn't looked at since it ended. Unlike a
+ * completion, a missing or unreadable end time still counts: the failure
+ * needs someone.
+ */
+function hasUnseenFailure(thread: ThreadStatusInput): boolean {
+  if (thread.latestTurn?.state !== "error") return false;
+  if (!thread.lastVisitedAt) return true;
+  const completedAt = Date.parse(thread.latestTurn.completedAt ?? "");
+  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
+  if (Number.isNaN(completedAt) || Number.isNaN(lastVisitedAt)) return true;
+  return completedAt > lastVisitedAt;
+}
+
 export function resolveThreadStatus(input: ResolveThreadStatusInput): ThreadStatus {
   const { hasPendingApprovals, hasPendingUserInput, thread } = input;
 
@@ -140,6 +165,10 @@ export function resolveThreadStatus(input: ResolveThreadStatusInput): ThreadStat
 
   if (thread.session?.status === "connecting") {
     return "connecting";
+  }
+
+  if (hasUnseenFailure(thread)) {
+    return "failed";
   }
 
   const hasPlanReadyPrompt =

@@ -5,6 +5,7 @@ export function needsThreadAttention(status: ThreadStatus): boolean {
   return (
     status === "pending-approval" ||
     status === "awaiting-input" ||
+    status === "failed" ||
     status === "plan-ready" ||
     status === "completed"
   );
