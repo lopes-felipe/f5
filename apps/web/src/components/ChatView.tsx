@@ -1780,7 +1780,8 @@ export default memo(function ChatView({
     if (!showFileChangeDiffsInline) {
       return;
     }
-    void queryClient.fetchQuery(
+    // Prefetch never rejects: unmounting the last observer cancels this fetch.
+    void queryClient.prefetchQuery(
       fullThreadFileChangesQueryOptions({
         threadId,
         enabled: true,
@@ -1840,7 +1841,7 @@ export default memo(function ChatView({
         queryClient.removeQueries({
           queryKey: providerQueryKeys.checkpointDiffPrefix(threadId),
         });
-        void queryClient.fetchQuery(
+        void queryClient.prefetchQuery(
           fullThreadFileChangesQueryOptions({
             threadId,
             enabled: true,
