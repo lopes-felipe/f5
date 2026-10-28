@@ -22,7 +22,7 @@ runs:
     - name: Read Electron version
       id: electron
       shell: bash
-      run: node -e 'const fs = require("node:fs"); const version = JSON.parse(fs.readFileSync("apps/desktop/package.json", "utf8")).dependencies.electron; fs.appendFileSync(process.env.GITHUB_OUTPUT, "version=" + version + "\n");'
+      run: node scripts/ci-electron-version.ts
     - name: Restore historical combined cache
       if: inputs.cache-layout == 'combined'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

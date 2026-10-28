@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
   actions: read
+concurrency:
+  group: ci-setup-benchmark-${{ inputs.cache-suffix }}
+  cancel-in-progress: false
 jobs:
   setup:
     name: setup (${{ matrix.pair }}, ${{ matrix.mode }})
@@ -19,7 +22,7 @@ jobs:
       max-parallel: 2
       matrix:
         pair: [1, 2, 3]
-        mode: [combined, electron-only]
+        mode: [combined, split, electron-only]
     defaults:
       run:
         shell: bash
@@ -31,8 +34,8 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           cache-layout: ${{ matrix.mode == 'combined' && 'combined' || 'split' }}
-          cache-bun: ${{ matrix.mode == 'combined' && 'true' || 'false' }}
-          cache-suffix: benchmark-${{ inputs.cache-suffix }}-${{ matrix.pair }}-
+          cache-bun: ${{ matrix.mode != 'electron-only' && 'true' || 'false' }}
+          cache-suffix: benchmark-${{ inputs.cache-suffix }}-${{ matrix.pair }}-${{ matrix.mode }}-
       - uses: ./.github/actions/assert-clean-worktree
   summary:
     runs-on: ubuntu-latest

@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { compareSetupPairs, jobTiming, type TimedJob } from "./ci-run-timings.ts";
+import { compareSetupPairs, jobTiming, runTimingSummary, type TimedJob } from "./ci-run-timings.ts";
 
 function job(name: string, duration: number): TimedJob {
   return {
@@ -21,6 +21,7 @@ function job(name: string, duration: number): TimedJob {
 const pairs = () =>
   [1, 2, 3].flatMap((pair) => [
     job("setup (" + pair + ", combined)", 100 + pair),
+    job("setup (" + pair + ", split)", 80 + pair),
     job("setup (" + pair + ", electron-only)", 40 + pair),
   ]);
 
@@ -33,7 +34,7 @@ it("separates queueing, setup and total execution", () => {
 });
 it("compares exactly three successful pairs using median total setup time", () => {
   expect(compareSetupPairs(pairs())).toMatchObject({
-    medianSeconds: { combined: 102, electronOnly: 42 },
+    medianSeconds: { combined: 102, split: 82, electronOnly: 42 },
     preferElectronOnly: true,
   });
   const slower = pairs().map((value) =>
@@ -49,4 +50,26 @@ it("rejects missing, duplicate, failed and unfinished benchmark pairs", () => {
     values[0]!.conclusion = conclusion;
     expect(() => compareSetupPairs(values)).toThrow("pair");
   }
+});
+it("counts cache-save time when choosing the winning layout", () => {
+  const values = pairs();
+  for (const sample of values.filter((value) => value.name.includes("electron-only"))) {
+    sample.steps.push({
+      name: "Post Run ./.github/actions/setup",
+      conclusion: "success",
+      started_at: "2026-10-28T00:08:00Z",
+      completed_at: "2026-10-28T00:10:00Z",
+    });
+  }
+  expect(jobTiming(values[2]!)).toMatchObject({ cacheSaveSeconds: 120, setupSeconds: 161 });
+  expect(compareSetupPairs(values).preferElectronOnly).toBe(false);
+});
+it("retains the timing table when a failed or missing sample prevents comparison", () => {
+  const values = pairs().slice(1);
+  values[0]!.conclusion = "failure";
+  const summary = runTimingSummary("123", "2", values, true);
+  expect(summary.valid).toBe(false);
+  expect(summary.markdown).toContain("| setup (1, split) | failure |");
+  expect(summary.markdown).toContain("attempt 2");
+  expect(summary.markdown).toContain("Benchmark comparison unavailable:");
 });

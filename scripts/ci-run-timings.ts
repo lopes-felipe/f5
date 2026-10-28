@@ -22,21 +22,32 @@ const seconds = (start: string, end: string) =>
 
 export function jobTiming(job: TimedJob) {
   const setup = job.steps.find((step) => step.name === "Run ./.github/actions/setup");
+  const post = job.steps.find((step) => step.name === "Post Run ./.github/actions/setup");
+  const cacheSaveSeconds = post?.completed_at
+    ? seconds(post.started_at, post.completed_at)
+    : post
+      ? null
+      : 0;
   return {
     name: job.name,
     result: job.conclusion,
     queueSeconds: seconds(job.created_at, job.started_at),
     executionSeconds: job.completed_at ? seconds(job.started_at, job.completed_at) : null,
+    cacheSaveSeconds,
     setupSeconds:
-      setup?.completed_at && setup.conclusion === "success"
-        ? seconds(setup.started_at, setup.completed_at)
+      setup?.completed_at && setup.conclusion === "success" && cacheSaveSeconds !== null
+        ? seconds(setup.started_at, setup.completed_at) + cacheSaveSeconds
         : null,
   };
 }
 
 export function compareSetupPairs(jobs: readonly TimedJob[]) {
-  const samples = { combined: [] as number[], "electron-only": [] as number[] };
-  for (const mode of ["combined", "electron-only"] as const) {
+  const samples = {
+    combined: [] as number[],
+    split: [] as number[],
+    "electron-only": [] as number[],
+  };
+  for (const mode of ["combined", "split", "electron-only"] as const) {
     for (const pair of [1, 2, 3]) {
       const matches = jobs.filter((job) => job.name === "setup (" + pair + ", " + mode + ")");
       const timing = matches.length === 1 ? jobTiming(matches[0]!) : undefined;
@@ -46,12 +57,69 @@ export function compareSetupPairs(jobs: readonly TimedJob[]) {
     }
   }
   const combined = median(samples.combined);
+  const split = median(samples.split);
   const electronOnly = median(samples["electron-only"]);
   return {
     samples,
-    medianSeconds: { combined, electronOnly },
-    preferElectronOnly: electronOnly < combined,
+    medianSeconds: { combined, split, electronOnly },
+    preferElectronOnly: electronOnly < combined && electronOnly < split,
   };
+}
+
+export function runTimingSummary(
+  runId: string,
+  attempt: string,
+  jobs: readonly TimedJob[],
+  benchmark: boolean,
+) {
+  const rows = jobs.filter((job) => job.conclusion !== "skipped").map(jobTiming);
+  let markdown =
+    "\nRun " +
+    runId +
+    ", attempt " +
+    attempt +
+    "\n\n| Job | Result | Queue (s) | Setup incl. cache save (s) | Cache save (s) | Execution including setup (s) |\n| --- | --- | ---: | ---: | ---: | ---: |\n" +
+    rows
+      .map(
+        (row) =>
+          "| " +
+          [
+            row.name,
+            row.result,
+            row.queueSeconds,
+            row.setupSeconds ?? "—",
+            row.cacheSaveSeconds ?? "—",
+            row.executionSeconds ?? "—",
+          ].join(" | ") +
+          " |",
+      )
+      .join("\n") +
+    "\n";
+  let valid = true;
+  if (benchmark) {
+    try {
+      const comparison = compareSetupPairs(jobs);
+      markdown +=
+        "\nMedian combined setup: " +
+        comparison.medianSeconds.combined +
+        "s; median split setup: " +
+        comparison.medianSeconds.split +
+        "s; median Electron-only setup: " +
+        comparison.medianSeconds.electronOnly +
+        "s.\n\n" +
+        (comparison.preferElectronOnly
+          ? "Electron-only setup is faster than both layouts in this sample. Compare cold and warm samples before changing the Windows default."
+          : "Electron-only setup did not beat both layouts. Retain the current default pending cold and warm measurements.") +
+        "\n";
+    } catch (error) {
+      valid = false;
+      markdown +=
+        "\nBenchmark comparison unavailable: " +
+        (error instanceof Error ? error.message : String(error)) +
+        "\n";
+    }
+  }
+  return { markdown, valid };
 }
 
 async function main() {
@@ -71,43 +139,10 @@ async function main() {
     gh("api", "--paginate", "--slurp", endpoint + "/attempts/" + attempt + "/jobs"),
   );
   const jobs = (pages as { jobs: TimedJob[] }[]).flatMap((page) => page.jobs);
-  const rows = jobs.filter((job) => job.conclusion !== "skipped").map(jobTiming);
-  let markdown =
-    "\nRun " +
-    runId +
-    ", attempt " +
-    attempt +
-    "\n\n| Job | Result | Queue (s) | Setup (s) | Execution including setup (s) |\n| --- | --- | ---: | ---: | ---: |\n" +
-    rows
-      .map(
-        (row) =>
-          "| " +
-          [
-            row.name,
-            row.result,
-            row.queueSeconds,
-            row.setupSeconds ?? "—",
-            row.executionSeconds ?? "—",
-          ].join(" | ") +
-          " |",
-      )
-      .join("\n") +
-    "\n";
-  if (benchmark) {
-    const comparison = compareSetupPairs(jobs);
-    markdown +=
-      "\nMedian combined setup: " +
-      comparison.medianSeconds.combined +
-      "s; median Electron-only setup: " +
-      comparison.medianSeconds.electronOnly +
-      "s.\n\n" +
-      (comparison.preferElectronOnly
-        ? "Electron-only setup is faster in this sample. Compare cold and warm samples before changing the Windows default."
-        : "Retain the separate Bun package cache; Electron-only setup did not win this sample.") +
-      "\n";
-  }
+  const { markdown, valid } = runTimingSummary(runId, attempt, jobs, benchmark);
   console.log(markdown);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, markdown);
+  if (!valid) process.exitCode = 1;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

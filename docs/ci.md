@@ -40,6 +40,12 @@ Heavy jobs classify their own changes after checkout and before setup through
 `.github/actions/changes`. There is no queued prerequisite filter job.
 Docs-only heavy jobs succeed with their install/check steps skipped; a filter
 failure fails the job. The full macOS suite retains its non-PR job condition.
+This trades the serial dependency for runner allocation on docs-only PRs: every
+heavy matrix job still checks out and filters on its normal hosted OS before
+skipping setup and checks. `CI result` waits for these lightweight executions,
+which can queue for macOS/Windows capacity and delay other PRs. Docs-only end-to-end
+latency has not been measured; compare queue and execution time against the prior
+topology before claiming a scheduling gain. The docs exclusions are unchanged.
 
 Only superseded PR runs are cancelled. Main commits use separate concurrency groups
 by SHA, so a later merge cannot cancel an earlier commit's release-eligibility run.
@@ -168,6 +174,34 @@ writing. macOS remains unsharded and is not a timing-source dependency. Commit t
 generated update separately and verify hosted balance before claiming the targets.
 CI never modifies tracked scheduling data or caches test results.
 
+Inspect hosted runs by queue time, total setup (including cache save), and job
+execution, keeping rerun attempts separate:
+
+```sh
+node scripts/ci-run-timings.ts <run-id> [attempt]
+```
+
+The manual `CI setup benchmark` workflow runs three Windows samples of each
+layout: historical combined cache, the shipped split Bun/Electron caches, and
+Electron-only. At most two jobs run concurrently. Use a unique `cache-suffix`
+for cold samples and repeat it on the same ref for warm samples. All nine jobs use
+frozen installs and Electron verification. Each mode has independent keys so the
+split layouts cannot warm one another within a dispatch. Runs sharing a suffix
+are serialized. A third pending dispatch can replace an older pending run under
+GitHub concurrency rules; do not queue multiple repetitions at once.
+
+The summary includes cache compression/upload post steps, queue and total job
+execution, even if a sample fails. Failed, missing, duplicate or unfinished samples
+reject the comparison. Drop the Windows Bun cache only when Electron-only has a
+lower median total setup time than both other layouts across three complete
+samples; record cold and warm results before changing the default.
+
+The new `bun-packages-` and `electron-` prefixes start cold on every OS.
+Benchmark entries share the repository cache quota and can evict production caches.
+After collecting cold and warm results, manually remove only entries whose keys
+contain that benchmark's `benchmark-<cache-suffix>-` marker using GitHub's cache
+UI. Confirm the ref and full keys first. This workflow has read-only permissions
+and performs no automatic cache deletion.
 
 Test jobs set `F5_CI_REPORT_DIR` to a job-specific runner-temp directory. Vitest
 emits console output plus JSON and JUnit under encoded package/lifecycle names.

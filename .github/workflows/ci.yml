@@ -8,7 +8,6 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-  pull-requests: read
 env:
   VITEST_MAX_WORKERS: "2"
 concurrency:
@@ -151,6 +150,9 @@ jobs:
       - uses: ./.github/actions/assert-clean-worktree
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
   server-unit:
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -200,6 +202,9 @@ jobs:
       - uses: ./.github/actions/assert-clean-worktree
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
   windows-server-unit:
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: windows-latest
     timeout-minutes: 20
     strategy:
@@ -250,6 +255,9 @@ jobs:
       - uses: ./.github/actions/assert-clean-worktree
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
   browser:
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -315,6 +323,9 @@ jobs:
       - uses: ./.github/actions/assert-clean-worktree
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
   desktop:
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -368,6 +379,9 @@ jobs:
       - uses: ./.github/actions/assert-clean-worktree
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
   windows-build:
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:
@@ -474,6 +488,9 @@ jobs:
       - uses: ./.github/actions/assert-clean-worktree
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
   macos-profiles:
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: macos-latest
     timeout-minutes: 15
     defaults:
@@ -529,6 +546,9 @@ jobs:
       - uses: ./.github/actions/assert-clean-worktree
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
   macos-descriptor-drift:
+    permissions:
+      contents: read
+      pull-requests: read
     # macos-latest is arm64: the pinned Claude CLI binary for the certified record.
     runs-on: macos-latest
     timeout-minutes: 15

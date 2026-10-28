@@ -9,12 +9,13 @@ interface Job {
   "continue-on-error"?: boolean;
   "timeout-minutes"?: number;
   concurrency?: unknown;
+  permissions?: Record<string, string>;
   strategy?: { matrix?: unknown; "fail-fast"?: boolean };
   steps?: { id?: string; uses?: string; if?: string; name?: string; run?: string }[];
 }
 const workflow = parse(
   readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
-) as { jobs: Record<string, Job> };
+) as { jobs: Record<string, Job>; permissions: Record<string, string> };
 
 export function assertWorkflowPolicy(jobs: Record<string, Job>) {
   const gated = Object.keys(jobs).filter((id) => !["ci-result", "main-status"].includes(id));
@@ -45,6 +46,7 @@ describe("CI workflow policy", () => {
   });
   it("classifies changes inside every heavy job without a scheduling prerequisite", () => {
     expect(workflow.jobs.changes).toBeUndefined();
+    expect(workflow.permissions).toEqual({ contents: "read" });
     for (const id of [
       "server-unit",
       "windows-server-unit",
@@ -55,6 +57,7 @@ describe("CI workflow policy", () => {
       "macos-descriptor-drift",
     ]) {
       const job = workflow.jobs[id]!;
+      expect(job.permissions, id).toEqual({ contents: "read", "pull-requests": "read" });
       expect(job.needs, id).toBeUndefined();
       expect(job.if, id).toBeUndefined();
       const steps = job.steps!;
@@ -104,8 +107,15 @@ describe("CI workflow policy", () => {
     expect(benchmark.jobs.setup.strategy).toEqual({
       "fail-fast": false,
       "max-parallel": 2,
-      matrix: { pair: [1, 2, 3], mode: ["combined", "electron-only"] },
+      matrix: { pair: [1, 2, 3], mode: ["combined", "split", "electron-only"] },
     });
+    expect(benchmark.concurrency.group).toBe("ci-setup-benchmark-${{ inputs.cache-suffix }}");
+    expect(benchmark.concurrency["cancel-in-progress"]).toBe(false);
+    const setup = benchmark.jobs.setup.steps.find(
+      (step: { uses?: string }) => step.uses === "./.github/actions/setup",
+    );
+    expect(setup.with["cache-bun"]).toContain("matrix.mode != 'electron-only'");
+    expect(setup.with["cache-suffix"]).toContain("matrix.mode");
     expect(benchmark.jobs.summary.needs).toBe("setup");
     expect(benchmark.jobs.summary.if).toBe("always()");
     expect(benchmark.permissions.actions).toBe("read");
