@@ -3,7 +3,9 @@ import {
   CRON_EXPRESSION_MAX_LENGTH,
   ScheduleError,
   describeSchedule,
+  fixedTimeCron,
   nextScheduleFires,
+  parseFixedTimeCron,
   normalizeCron,
   oneShotCron,
   previewCronSchedule,
@@ -112,5 +114,83 @@ describe("cron schedule contract", () => {
   it("rejects past one-shots and nonminute targets", () => {
     expect(() => oneShotCron("2026-01-01Z", "UTC", new Date("2026-02-01Z"))).toThrow();
     expect(() => oneShotCron("2027-01-01T09:00:30Z", "UTC", new Date("2026-01-01Z"))).toThrow();
+  });
+});
+describe("fixed-time cron", () => {
+  const every = [0, 1, 2, 3, 4, 5, 6];
+  it.each([
+    ["*", every],
+    ["*/1", every],
+    ["0-6", every],
+    ["1-7", every],
+    ["0-7", every],
+    ["SUN-SAT", every],
+    ["MON-SUN", every],
+    ["SUN-SUN", every],
+    ["SAT-SUN", [0, 6]],
+    ["MON,3-5", [1, 3, 4, 5]],
+    ["MON-FRI", [1, 2, 3, 4, 5]],
+    ["7", [0]],
+    ["sun,0", [0]],
+  ])("reads weekday field %s", (weekday, weekdays) => {
+    expect(parseFixedTimeCron(`0 9 * * ${weekday}`)).toEqual({ timeOfDay: "09:00", weekdays });
+  });
+  it("accepts aliases and leading zeros with their real meaning", () => {
+    expect(parseFixedTimeCron("@daily")).toEqual({ timeOfDay: "00:00", weekdays: every });
+    expect(parseFixedTimeCron("@weekly")).toEqual({ timeOfDay: "00:00", weekdays: [0] });
+    expect(parseFixedTimeCron("05 07 * * 01")).toEqual({ timeOfDay: "07:05", weekdays: [1] });
+    expect(parseFixedTimeCron(SCHEDULE_PRESETS.weekdays)).toEqual({
+      timeOfDay: "09:00",
+      weekdays: [1, 2, 3, 4, 5],
+    });
+  });
+  it.each([
+    "0 9 * * 5-1",
+    "0 9 * * */2",
+    "0 9 * * 1-5/2",
+    "0 9 * * MON#1",
+    "0 */2 * * *",
+    "0,30 9 * * *",
+    "0 9-17 * * *",
+    "0 9 1 * *",
+    "0 9 * 1 *",
+    "@hourly",
+    "@monthly",
+    "0 0 9 1 6 * 2027",
+    "not a cron",
+  ])("leaves %s to the cron editor", (cron) => {
+    expect(parseFixedTimeCron(cron)).toBeNull();
+  });
+  it.each([
+    [{ timeOfDay: "09:00", weekdays: every }, "0 9 * * *"],
+    [{ timeOfDay: "09:05", weekdays: [1, 2, 3, 4, 5] }, "5 9 * * MON-FRI"],
+    [{ timeOfDay: "00:00", weekdays: [1, 3, 4, 5] }, "0 0 * * MON,WED-FRI"],
+    [{ timeOfDay: "23:59", weekdays: [6, 0] }, "59 23 * * SUN,SAT"],
+    [{ timeOfDay: "12:30", weekdays: [2, 2] }, "30 12 * * TUE"],
+    [{ timeOfDay: "08:00", weekdays: [0, 1] }, "0 8 * * SUN-MON"],
+  ])("generates canonical cron for %j", (draft, cron) => {
+    expect(fixedTimeCron(draft)).toBe(cron);
+    expect(parseFixedTimeCron(cron)).toEqual({
+      timeOfDay: draft.timeOfDay,
+      weekdays: [...new Set(draft.weekdays)].toSorted((a, b) => a - b),
+    });
+  });
+  it.each([
+    { timeOfDay: "9:00", weekdays: [1] },
+    { timeOfDay: "24:00", weekdays: [1] },
+    { timeOfDay: "09:60", weekdays: [1] },
+    { timeOfDay: "09:00:30", weekdays: [1] },
+    { timeOfDay: "", weekdays: [1] },
+    { timeOfDay: "09:00", weekdays: [] },
+    { timeOfDay: "09:00", weekdays: [7] },
+  ])("rejects invalid draft %j", (draft) => {
+    expect(() => fixedTimeCron(draft)).toThrow(ScheduleError);
+  });
+  it("numeric, named and Sunday-endpoint forms fire at the same instants", () => {
+    const after = "2026-03-01T00:00:00Z";
+    const expected = next("0 9 * * SAT-SUN", "Europe/Berlin", after, 6);
+    for (const cron of ["0 9 * * 6,0", "0 9 * * 0,6", "0 9 * * SUN,SAT", "0 9 * * 6-7"])
+      expect(next(cron, "Europe/Berlin", after, 6)).toEqual(expected);
+    expect(next("0 9 * * *", "UTC", after, 7)).toEqual(next("0 9 * * MON-SUN", "UTC", after, 7));
   });
 });

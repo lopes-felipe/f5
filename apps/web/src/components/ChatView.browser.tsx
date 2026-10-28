@@ -1310,6 +1310,9 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
     return { entries: [], generatedAt: NOW_ISO };
   }
   if (tag === NATIVE_OPERATION_WS_METHODS.list) return [];
+  // The chat header lists the conversation's automations from the shared task list.
+  if (tag === WS_METHODS.scheduledTasksList) return { tasks: [], revision: 0 };
+  if (tag === WS_METHODS.scheduledTasksFindRunForTurn) return { runId: null };
   if (tag === WS_METHODS.nextTurnQueueSummary) {
     return { threads: [] };
   }

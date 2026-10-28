@@ -387,7 +387,7 @@ it.effect(
   "rechecks scheduled cancellation after asynchronous preparation before provider handoff",
   () =>
     Effect.gen(function* () {
-      const { store, run } = yield* setupScheduledDelivery;
+      const { store, service, run } = yield* setupScheduledDelivery;
       yield* store.sql`UPDATE scheduled_control SET ready=1 WHERE id=1`;
       acceptSend = true;
       unavailableDispatchSnapshot = true;
@@ -396,13 +396,28 @@ it.effect(
         Effect.orDie,
       );
       const worker = yield* ProviderTurnDeliveryWorker;
+      const outcomeFiber = yield* Effect.forkScoped(Stream.runHead(worker.outcomes));
+      yield* Effect.yieldNow;
       yield* worker.start;
       yield* worker.drain;
       assert.equal(state.attempt, 1);
-      assert.equal(state.state, "rejected");
       assert.equal(state.certainty, "not_sent");
       assert.equal(state.providerTurnId, null);
       assert.deepStrictEqual(acceptedTurnIds, []);
+      // A late cancellation retires only the scheduled submission: it is never a
+      // rejection that pauses the conversation's queue or reports a failed run.
+      assert.equal(state.state, "abandoned");
+      assert.equal(state.errorCode, "scheduled_run_canceled");
+      assert.equal(Option.getOrThrow(yield* Fiber.join(outcomeFiber)).state, "abandoned");
+      yield* service.reconcile;
+      const settled = (yield* store.run(run.id))!;
+      assert.equal(settled.run.status, "skipped");
+      assert.equal(settled.run.reason, "canceled");
+      assert.equal(settled.capacity, false);
+      assert.deepStrictEqual(
+        yield* store.sql`SELECT id FROM scheduled_notifications WHERE run_id=${run.id}`,
+        [],
+      );
     }).pipe(Effect.provide(testLayer.pipe(Layer.provideMerge(scheduledTestLayer)))),
 );
 

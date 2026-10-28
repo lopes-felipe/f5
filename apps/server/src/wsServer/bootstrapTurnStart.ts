@@ -16,6 +16,7 @@ import {
   type OrchestrationDispatchError,
   OrchestrationListenerCallbackError,
   OrchestrationProjectorDecodeError,
+  ThreadSettingsChangedError,
   ThreadTurnAlreadyActiveError,
   ThreadTurnNotReadyError,
 } from "../orchestration/Errors.ts";
@@ -205,6 +206,8 @@ function withAppendedCleanupDetail(
   if (Schema.is(ThreadTurnAlreadyActiveError)(error)) {
     return new ThreadTurnAlreadyActiveError({ ...error });
   }
+  if (Schema.is(ThreadSettingsChangedError)(error))
+    return new ThreadSettingsChangedError({ ...error });
   if (Schema.is(OrchestrationProjectorDecodeError)(error)) {
     return new OrchestrationProjectorDecodeError({
       ...error,

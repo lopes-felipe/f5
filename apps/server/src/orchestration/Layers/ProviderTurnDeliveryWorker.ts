@@ -135,6 +135,67 @@ const make = Effect.gen(function* () {
       });
     });
 
+  // A scheduled run fenced after claim (canceled, revoked, or a bound conversation's
+  // settings changed) is a cancellation, not a provider failure: retire only its own
+  // submission so the user's queue is never paused and no failure is reported.
+  const retireFencedScheduledDelivery = (input: {
+    readonly deliveryId: CommandId;
+    readonly commandId: CommandId;
+    readonly threadId: ProviderTurnDeliveryOutcome["threadId"];
+    readonly attemptId?: string | null | undefined;
+  }) =>
+    Option.isSome(scheduledSql) && Option.isSome(scheduledSettings)
+      ? Effect.gen(function* () {
+          const sql = scheduledSql.value;
+          const gate = yield* scheduledSendGate(
+            sql,
+            yield* scheduledSettings.value.getSettings,
+            input.commandId,
+          );
+          if (gate !== "cancel") return false;
+          const links = yield* sql<{
+            run_id: string;
+          }>`SELECT run_id FROM scheduled_run_submissions WHERE submission_id=${input.commandId}`;
+          if (!links[0]) return false;
+          const at = new Date().toISOString();
+          const retired = yield* sql.withTransaction(
+            Effect.gen(function* () {
+              const released = yield* repository.markRejected({
+                deliveryId: input.deliveryId,
+                attemptId: input.attemptId,
+                errorCode: "scheduled_run_canceled",
+                errorDetail: "Scheduled execution was canceled before delivery.",
+                certainty: "not_sent",
+                ambiguous: false,
+                occurredAt: at,
+              });
+              if (!released || !(yield* repository.markAbandoned(input.deliveryId))) return false;
+              yield* fenceScheduledRun(links[0]!.run_id, at).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              );
+              return true;
+            }),
+          );
+          if (retired)
+            yield* PubSub.publish(outcomes, {
+              deliveryId: input.deliveryId,
+              commandId: input.commandId,
+              threadId: input.threadId,
+              state: "abandoned",
+              detail: "Scheduled execution was canceled before delivery.",
+              occurredAt: at,
+            });
+          return retired;
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("failed to retire a fenced scheduled delivery", {
+              deliveryId: input.deliveryId,
+              cause: Cause.pretty(cause),
+            }).pipe(Effect.as(false)),
+          ),
+        )
+      : Effect.succeed(false);
+
   // History alone does not correlate a dispatch: even one new turn may be
   // another client's turn or a steer. Only a durable acceptance receipt proves
   // acceptance. Legacy and incomplete baselines therefore remain ambiguous.
@@ -375,6 +436,17 @@ const make = Effect.gen(function* () {
         typedDeliveryError?.message ??
         requestError?.message ??
         "The provider delivery outcome is unknown. Recheck provider history before retrying.";
+      if (
+        notSent &&
+        !rejectedLimit &&
+        (yield* retireFencedScheduledDelivery({
+          deliveryId,
+          attemptId: claimed.attemptId,
+          commandId: claimed.commandId,
+          threadId: claimed.threadId,
+        }))
+      )
+        return;
       if (
         !steering &&
         notSent &&

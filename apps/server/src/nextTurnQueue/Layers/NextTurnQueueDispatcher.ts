@@ -1,4 +1,4 @@
-import { scheduledSendGate } from "../../scheduledTasks/sendGate.ts";
+import { isBoundScheduledSubmission, scheduledSendGate } from "../../scheduledTasks/sendGate.ts";
 import { registerShutdown } from "../../shutdown.ts";
 import { makeQueueRetryScheduler } from "../retryScheduler.ts";
 import {
@@ -294,10 +294,19 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         item.scheduleReason === "usage_limit_reset"
           ? yield* store.getUsageResumeContext(item.itemId)
           : null;
-      const settings =
-        resumeContext && Option.isSome(restartSettingsOption)
+      // Unbound scheduled items keep the delivery worker's gate; only usage-limit resumes
+      // and bound items, which apply settings to the user's conversation, are gated here.
+      const boundScheduled =
+        !resumeContext && Option.isSome(sqlOption) && Option.isSome(restartSettingsOption)
+          ? yield* isBoundScheduledSubmission(sqlOption.value, item.command.commandId).pipe(
+              Effect.mapError(storageError),
+            )
+          : false;
+      const currentSettings =
+        Option.isSome(restartSettingsOption) && (resumeContext || boundScheduled)
           ? yield* restartSettingsOption.value.getSettings.pipe(Effect.mapError(storageError))
           : null;
+      const settings = resumeContext ? currentSettings : null;
       const config = resumeContext
         ? settings?.providerInstances[
             importProviderInstanceId.makeUnsafe(resumeContext.providerInstanceId)
@@ -307,14 +316,16 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         !!resumeContext?.fingerprint &&
         !!settings &&
         (!config || (yield* protectedFingerprint(config)) !== resumeContext.fingerprint);
-      if (Option.isSome(sqlOption) && settings) {
+      // A bound item must be canceled before its turn start can apply stale settings
+      // to the user's conversation.
+      if (Option.isSome(sqlOption) && currentSettings) {
         const scheduled = yield* scheduledSendGate(
           sqlOption.value,
-          settings,
+          currentSettings,
           item.command.commandId,
         ).pipe(Effect.mapError(storageError));
         if (scheduled === "cancel")
-          return { kind: "drop" as const, reasonCode: "dispatch_rejected" as const };
+          return { kind: "drop" as const, reasonCode: "scheduled_task_canceled" as const };
         if (scheduled === "wait")
           return { kind: "wait" as const, reasonCode: "scheduled_task_wait" as const };
       }
@@ -750,7 +761,11 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       const gate =
         preparedGate.kind === "ready" ? yield* readGate(item, false, true) : preparedGate;
       if (gate.kind === "drop") {
-        if (item.scheduleReason === "usage_limit_reset" && gate.reasonCode !== "thread_deleted") {
+        // A canceled scheduled item leaves the rest of the user's queue intact.
+        if (
+          gate.reasonCode === "scheduled_task_canceled" ||
+          (item.scheduleReason === "usage_limit_reset" && gate.reasonCode !== "thread_deleted")
+        ) {
           yield* store.softDelete({ itemId: item.itemId });
           yield* notify(threadId);
         } else yield* store.deleteForThread(threadId);
@@ -882,6 +897,12 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         return;
       }
 
+      // A bound scheduled turn is rejected, not allowed to restore its admitted settings.
+      const bound =
+        Option.isSome(sqlOption) &&
+        (yield* isBoundScheduledSubmission(sqlOption.value, claimed.item.command.commandId).pipe(
+          Effect.mapError(storageError),
+        ));
       const command = {
         ...claimed.item.command,
         ...(claimed.item.command.expectedTurnId
@@ -890,6 +911,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
               expectedTurnId: claimed.item.command.expectedTurnId,
             }
           : {}),
+        ...(bound ? { requireCurrentSettings: true as const } : {}),
         dispatchSource: "next-turn-queue" as const,
         createdAt: claimed.item.dispatchStartedAt ?? claimed.item.command.createdAt,
       };
@@ -923,6 +945,31 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       }
 
       const error = Cause.squash(exit.cause);
+      if (
+        error &&
+        typeof error === "object" &&
+        "_tag" in error &&
+        error._tag === "ThreadSettingsChangedError"
+      ) {
+        yield* store.releaseLease({
+          itemId: item.itemId,
+          leaseOwner,
+          notBefore: new Date().toISOString(),
+          errorCode: "scheduled_task_canceled",
+          errorDetail: "The conversation's settings changed before the scheduled message was sent.",
+          clearDispatchStartedAt: true,
+          consumeAttempt: false,
+        });
+        yield* store.softDelete({ itemId: item.itemId });
+        yield* notify(threadId);
+        yield* publishSnapshotIfChanged(threadId);
+        yield* settleWaiter(item.itemId, {
+          disposition: "rejected",
+          submissionId: item.submissionId,
+          reasonCode: "scheduled_task_canceled",
+        });
+        return;
+      }
       if (
         claimed.item.command.expectedTurnId &&
         error &&
@@ -1632,6 +1679,13 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       ),
     handleDeliveryOutcome: (outcome) =>
       Effect.gen(function* () {
+        // The worker already retired the fenced scheduled item; the rest of the queue proceeds.
+        if (outcome.state === "abandoned") {
+          yield* reconcileDeliveryPause(outcome.threadId);
+          yield* publishChanged(outcome.threadId);
+          yield* notify(outcome.threadId);
+          return;
+        }
         const item = yield* store.getByCommandId(outcome.commandId);
         if (
           outcome.state === "rejected" &&

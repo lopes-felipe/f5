@@ -7238,6 +7238,9 @@ export default memo(function ChatView({
       activeThread?.pinOrderKey,
       activeThread?.snoozedUntil,
       activeThread?.titleRegeneration,
+      // Scheduling into the conversation needs a server thread with settings.
+      activeThread?.modelSelection,
+      isServerThread,
       threadActionController.menuItemsForThread,
     ],
   );
