@@ -23447,14 +23447,16 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T20:53:02.101Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-28T23:43:49.720Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-19467",
+      "reason": "f5's Windows probe is a single `powershell.exe -NoProfile` registry read with a 3 s timeout (`packages/shared/src/windowsPath.ts`), so there are no profile-loading PowerShell candidates to share a budget.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-11275"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
