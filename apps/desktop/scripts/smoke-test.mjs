@@ -820,6 +820,10 @@ try {
     });
   page = await application.firstWindow({ timeout: 60_000 });
   page.on("pageerror", (error) => errors.push(error.stack || error.message));
+  // The window can appear before the app loads its own renderer URL; navigating
+  // first races that load ("interrupted by another navigation").
+  await page.waitForURL((url) => url.protocol === "t3:", { timeout: 60_000 });
+  await page.waitForLoadState("domcontentloaded");
   await page.goto(providerRendererUrl);
   await page.locator('[contenteditable="true"]').waitFor({ timeout: 60_000 });
   const quitHistory = await nativeRequest("terminal.open", terminalInput);
