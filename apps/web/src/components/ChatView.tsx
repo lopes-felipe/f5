@@ -1809,7 +1809,9 @@ export default memo(function ChatView({
     if (!showFileChangeDiffsInline) {
       return;
     }
-    void queryClient.fetchQuery(
+    // This background read can be cancelled when recovery unmounts the thread.
+    // Prefetch keeps failures in query state without an unhandled promise.
+    void queryClient.prefetchQuery(
       fullThreadFileChangesQueryOptions({
         threadId,
         enabled: true,
@@ -1869,7 +1871,7 @@ export default memo(function ChatView({
         queryClient.removeQueries({
           queryKey: providerQueryKeys.checkpointDiffPrefix(threadId),
         });
-        void queryClient.fetchQuery(
+        void queryClient.prefetchQuery(
           fullThreadFileChangesQueryOptions({
             threadId,
             enabled: true,

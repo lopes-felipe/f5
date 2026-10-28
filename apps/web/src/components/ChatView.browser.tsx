@@ -52,6 +52,7 @@ import {
 } from "../pendingTurnDispatchStore";
 import { parsePersistedAppSettings } from "../appSettings";
 import { appendAttachedFilesToPrompt } from "../lib/attachedFiles";
+import { orchestrationQueryKeys } from "../lib/orchestrationReactQuery";
 import { resetLiveThreadWarmSchedulerForTests } from "../lib/threadPreload";
 import {
   INLINE_TERMINAL_CONTEXT_PLACEHOLDER,
@@ -3151,6 +3152,43 @@ describe("ChatView timeline (full app)", () => {
     } finally {
       await mounted.cleanup();
     }
+  });
+
+  it("cancels background file-change reads when the thread unmounts without an unhandled rejection", async () => {
+    persistAppSettings({ showFileChangeDiffsInline: true });
+    const response = createDeferred<WsRequestResolution>();
+    const unhandled: unknown[] = [];
+    const onRejection = (event: PromiseRejectionEvent) => unhandled.push(event.reason);
+    window.addEventListener("unhandledrejection", onRejection);
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-pending-file-changes" as MessageId,
+        targetText: "Pending file changes",
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.resolveWsRequest = (body) =>
+          body._tag === ORCHESTRATION_WS_METHODS.getThreadFileChanges ? response.promise : null;
+      },
+    });
+    const queryClient = mounted.router.options.context.queryClient;
+    const queryKey = orchestrationQueryKeys.threadFileChanges(THREAD_ID);
+    try {
+      await waitForComposerEditor();
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.some((body) => body._tag === ORCHESTRATION_WS_METHODS.getThreadFileChanges),
+        ).toBe(true);
+        expect(queryClient.getQueryState(queryKey)?.fetchStatus).toBe("fetching");
+      });
+    } finally {
+      await mounted.cleanup();
+      response.resolve({ type: "result", result: createThreadFileChangesResult(THREAD_ID, []) });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      window.removeEventListener("unhandledrejection", onRejection);
+    }
+    expect(queryClient.getQueryState(queryKey)?.fetchStatus).toBe("idle");
+    expect(unhandled).toEqual([]);
   });
 
   it("renders a startup thread skeleton for deep links until the snapshot resolves", async () => {
