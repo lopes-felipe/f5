@@ -14,22 +14,6 @@ concurrency:
   group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
-  changes:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      heavy: ${{ github.event_name != 'pull_request' || steps.paths.outputs.code == 'true' }}
-    steps:
-      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
-        id: paths
-        if: github.event_name == 'pull_request'
-        with:
-          predicate-quantifier: some-with-excludes
-          filters: |
-            code: ['**', '!**/*.md', '!docs/**']
   static:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -166,10 +150,11 @@ jobs:
       - uses: ./.github/actions/assert-clean-worktree
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
   server-unit:
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: changes
-    if: needs.changes.outputs.heavy == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -183,8 +168,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/changes
+        id: changes
       - uses: ./.github/actions/setup
         id: install
+        if: steps.changes.outputs.heavy == 'true'
       - name: Set diagnostic paths
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
@@ -204,7 +192,7 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/ci-test-summary.ts server-unit-${{ matrix.shard }}
       - name: Upload test reports
-        if: always()
+        if: always() && steps.changes.outputs.heavy == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
@@ -214,10 +202,11 @@ jobs:
       - uses: ./.github/actions/assert-clean-worktree
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
   windows-server-unit:
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: windows-latest
     timeout-minutes: 20
-    needs: changes
-    if: needs.changes.outputs.heavy == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -231,8 +220,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/changes
+        id: changes
       - uses: ./.github/actions/setup
         id: install
+        if: steps.changes.outputs.heavy == 'true'
       - name: Set diagnostic paths
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
@@ -253,7 +245,7 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/ci-test-summary.ts server-unit-${{ matrix.shard }}
       - name: Upload test reports
-        if: always()
+        if: always() && steps.changes.outputs.heavy == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
@@ -263,10 +255,11 @@ jobs:
       - uses: ./.github/actions/assert-clean-worktree
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
   browser:
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: changes
-    if: needs.changes.outputs.heavy == 'true'
     defaults:
       run:
         shell: bash
@@ -274,8 +267,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/changes
+        id: changes
       - uses: ./.github/actions/setup
         id: install
+        if: steps.changes.outputs.heavy == 'true'
       - name: Set diagnostic paths
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
@@ -299,7 +295,7 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/ci-test-summary.ts browser
       - name: Upload test reports
-        if: always()
+        if: always() && steps.changes.outputs.heavy == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
@@ -307,7 +303,7 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
       - name: Stage browser diagnostics
-        if: always()
+        if: always() && steps.changes.outputs.heavy == 'true'
         env:
           ARTIFACT_SOURCE: ${{ env.F5_CI_ARTIFACT_DIR || format('{0}/ci-artifacts/{1}', runner.temp, github.job) }}
           ARTIFACT_STAGING: ${{ runner.temp }}/ci-upload/browser
@@ -317,7 +313,7 @@ jobs:
             cp -R "$ARTIFACT_SOURCE/." "$ARTIFACT_STAGING/"
           fi
       - name: Upload diagnostics
-        if: always()
+        if: always() && steps.changes.outputs.heavy == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: diagnostics-${{ github.job }}-${{ runner.os }}-${{ github.run_attempt }}
@@ -327,10 +323,11 @@ jobs:
       - uses: ./.github/actions/assert-clean-worktree
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
   desktop:
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: changes
-    if: needs.changes.outputs.heavy == 'true'
     defaults:
       run:
         shell: bash
@@ -338,8 +335,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/changes
+        id: changes
       - uses: ./.github/actions/setup
         id: install
+        if: steps.changes.outputs.heavy == 'true'
       - name: Set diagnostic paths
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
@@ -369,7 +369,7 @@ jobs:
         run: |
           bun run build:marketing
       - name: Upload diagnostics
-        if: always()
+        if: always() && steps.changes.outputs.heavy == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: diagnostics-${{ github.job }}-${{ runner.os }}-${{ github.run_attempt }}
@@ -379,10 +379,11 @@ jobs:
       - uses: ./.github/actions/assert-clean-worktree
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
   windows-build:
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: windows-latest
     timeout-minutes: 30
-    needs: changes
-    if: needs.changes.outputs.heavy == 'true'
     defaults:
       run:
         shell: bash
@@ -392,8 +393,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/changes
+        id: changes
       - uses: ./.github/actions/setup
         id: install
+        if: steps.changes.outputs.heavy == 'true'
       - name: Set diagnostic paths
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
@@ -466,7 +470,7 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/ci-test-summary.ts windows-build
       - name: Upload test reports
-        if: always()
+        if: always() && steps.changes.outputs.heavy == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
@@ -474,7 +478,7 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
       - name: Upload diagnostics
-        if: always()
+        if: always() && steps.changes.outputs.heavy == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: diagnostics-${{ github.job }}-${{ runner.os }}-${{ github.run_attempt }}
@@ -484,10 +488,11 @@ jobs:
       - uses: ./.github/actions/assert-clean-worktree
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
   macos-profiles:
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: macos-latest
     timeout-minutes: 15
-    needs: changes
-    if: needs.changes.outputs.heavy == 'true'
     defaults:
       run:
         shell: bash
@@ -495,8 +500,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/changes
+        id: changes
       - uses: ./.github/actions/setup
         id: install
+        if: steps.changes.outputs.heavy == 'true'
       - name: Set diagnostic paths
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
@@ -528,7 +536,7 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/ci-test-summary.ts macos-profiles
       - name: Upload test reports
-        if: always()
+        if: always() && steps.changes.outputs.heavy == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
@@ -538,11 +546,12 @@ jobs:
       - uses: ./.github/actions/assert-clean-worktree
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
   macos-descriptor-drift:
+    permissions:
+      contents: read
+      pull-requests: read
     # macos-latest is arm64: the pinned Claude CLI binary for the certified record.
     runs-on: macos-latest
     timeout-minutes: 15
-    needs: changes
-    if: needs.changes.outputs.heavy == 'true'
     defaults:
       run:
         shell: bash
@@ -550,8 +559,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/changes
+        id: changes
       - uses: ./.github/actions/setup
         id: install
+        if: steps.changes.outputs.heavy == 'true'
       - name: Check Claude in Chrome descriptor drift
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
@@ -670,7 +682,6 @@ jobs:
     if: always()
     needs:
       [
-        changes,
         static,
         test,
         server-unit,

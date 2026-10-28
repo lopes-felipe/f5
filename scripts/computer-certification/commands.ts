@@ -113,18 +113,24 @@ export function commandsFor(
         : []),
     ];
   }
-  // Codex Chrome and the Sky spike run through F5's proxy outside F5 and never stamp a record.
-  const codexNativeLive = (mode: "chrome" | "computer", file: string): Command => ({
+  // Codex Chrome (real turns under the configured Codex) and the Sky spike (through F5's
+  // proxy) run outside F5 and never stamp a record.
+  const codexNativeLive = (
+    mode: "chrome" | "computer",
+    file: string,
+    launch?: ProviderLaunch,
+  ): Command => ({
     executable: "bun",
     args: ["run", "--cwd", "apps/server", "test:file", file],
     check: `codex-${mode}-live`,
-    timeoutMs: 300000,
+    timeoutMs: mode === "chrome" ? 900000 : 300000,
     env: {
       F5_CODEX_NATIVE_LIVE: mode,
       [mode === "chrome" ? "F5_CODEX_CHROME_REPORT" : "F5_CODEX_COMPUTER_REPORT"]: join(
         output,
         `codex-${mode}-report.json`,
       ),
+      ...(launch ? { F5_CODEX_CHROME_HOME: launch.home, F5_CODEX_BINARY: launch.binary } : {}),
     },
   });
   if (s.runner === "builtin") {
@@ -136,8 +142,12 @@ export function commandsFor(
   if (s.runner === "chrome") {
     if (hostPlatform !== "darwin" || target.platform !== "darwin")
       return "interactive-platform-unavailable";
-    if (s.selectedProvider === "codex")
-      return [codexNativeLive("chrome", "integration/codexChromeNative.live.test.ts")];
+    if (s.selectedProvider === "codex") {
+      if (!launches.codex) return "provider-launch-not-configured";
+      return [
+        codexNativeLive("chrome", "integration/codexChromeNative.live.test.ts", launches.codex),
+      ];
+    }
     const launch = launches.claude;
     if (!launch) return "provider-launch-not-configured";
     // Real browser folders: the runner refuses to start from an F5 agent process.

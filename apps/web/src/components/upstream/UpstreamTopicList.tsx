@@ -36,7 +36,10 @@ export interface RowPointerModifiers {
 
 const rowElementId = (topicId: string) => `upstream-topic-${topicId}`;
 
-const modifiersOf =(event: React.MouseEvent) => ({ shift: event.shiftKey, mod: event.metaKey || event.ctrlKey });
+const modifiersOf = (event: React.MouseEvent) => ({
+  shift: event.shiftKey,
+  mod: event.metaKey || event.ctrlKey,
+});
 
 const eventModifiers = (event: Event | undefined): RowPointerModifiers =>
   event instanceof MouseEvent || event instanceof KeyboardEvent
@@ -48,7 +51,9 @@ function RowExtras(props: { readonly row: UpstreamTopicRow; readonly reasonLabel
   const link = row.links[0];
   if (row.state === "done" && row.doneBy) return <span>· done by {row.doneBy}</span>;
   if (row.state === "skipped") {
-    const reason = row.topic.reasonKey ? (props.reasonLabels[row.topic.reasonKey] ?? row.topic.reasonKey) : row.topic.reason;
+    const reason = row.topic.reasonKey
+      ? (props.reasonLabels[row.topic.reasonKey] ?? row.topic.reasonKey)
+      : row.topic.reason;
     return reason ? <span className="truncate">· {reason}</span> : null;
   }
   if (link)
@@ -123,6 +128,11 @@ const UpstreamTopicRowView = (props: {
       <div className="min-w-0 flex-1 space-y-0.5">
         <div className="flex items-center gap-2">
           <span className="truncate font-medium">{topic.title}</span>
+          {props.row.queued && (
+            <Badge variant="outline" size="sm">
+              Queued
+            </Badge>
+          )}
           {suggestion && props.row.state === "inbox" && (
             <Badge variant={suggestionBadgeVariant(suggestion.status)} size="sm" className="shrink-0 tabular-nums">
               {suggestionChipLabel(suggestion)}
@@ -177,10 +187,22 @@ const UpstreamTopicRowView = (props: {
               <span className="text-muted-foreground tabular-nums">{formatConfidence(suggestion.confidence)}</span>
             </Button>
           )}
-          <Button size="icon-xs" variant="outline" tabIndex={-1} aria-label="Skip" onClick={() => props.onQuickAction("skip")}>
+          <Button
+            size="icon-xs"
+            variant="outline"
+            tabIndex={-1}
+            aria-label="Skip"
+            onClick={() => props.onQuickAction("skip")}
+          >
             <SkipForwardIcon />
           </Button>
-          <Button size="icon-xs" variant="outline" tabIndex={-1} aria-label="Watch" onClick={() => props.onQuickAction("watch")}>
+          <Button
+            size="icon-xs"
+            variant="outline"
+            tabIndex={-1}
+            aria-label="Watch"
+            onClick={() => props.onQuickAction("watch")}
+          >
             <EyeIcon />
           </Button>
         </div>
@@ -234,11 +256,14 @@ export const UpstreamTopicList = forwardRef<
   const listRef = useRef<LegendListRef | null>(null);
   useImperativeHandle(ref, () => ({ focus: () => containerRef.current?.focus() }), []);
   const { rows, focusedId } = props;
+  const currentRows = useRef(rows);
+  currentRows.current = rows;
+  const focusedLoaded = focusedId !== null && rows.some((row) => row.topic.id === focusedId);
   useEffect(() => {
     if (!focusedId) return;
-    const index = rows.findIndex((row) => row.topic.id === focusedId);
+    const index = currentRows.current.findIndex((row) => row.topic.id === focusedId);
     if (index >= 0) void listRef.current?.scrollIndexIntoView({ index, animated: false });
-  }, [focusedId, rows]);
+  }, [focusedId, focusedLoaded]);
   const extraData = useMemo(
     () => [focusedId, props.selected, props.pending, props.repository, props.quickActions],
     [focusedId, props.selected, props.pending, props.repository, props.quickActions],
@@ -273,7 +298,6 @@ export const UpstreamTopicList = forwardRef<
       onQuickAction,
     ],
   );
-  const focusedLoaded = focusedId !== null && rows.some((row) => row.topic.id === focusedId);
   // The shortcuts also work from the header (after clicking select-all) and the empty state.
   return (
     <div className="flex min-h-0 flex-1 flex-col" onKeyDown={props.onKeyDown}>
@@ -303,6 +327,7 @@ export const UpstreamTopicList = forwardRef<
             getFixedItemSize={() => ROW_HEIGHT_PX}
             drawDistance={ROW_HEIGHT_PX * 20}
             recycleItems
+            maintainVisibleContentPosition={{ size: true, data: true }}
             onEndReached={() => props.hasMore && !props.loadingMore && props.onLoadMore()}
             className="min-h-0 flex-1"
           />

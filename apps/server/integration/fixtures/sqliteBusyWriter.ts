@@ -16,6 +16,9 @@ try {
       const sql = yield* SqlClient.SqlClient;
       const rows = yield* sql<{ timeout: number }>`PRAGMA busy_timeout`;
       if (rows[0]?.timeout !== 5000) throw new Error("Busy timeout missing");
+      // Match the production journal mode. Rollback mode can deadlock a waiting
+      // writer's shared lock against the parent's COMMIT on Windows.
+      yield* sql`PRAGMA journal_mode = WAL`;
       yield* sql`CREATE TABLE contention_test (value TEXT)`;
     }),
   );

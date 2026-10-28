@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   INTEGRATION_REQUIRED_ASSERTIONS,
   PROVIDER_INTEGRATION_RECORDS,
+  evidenceMismatches,
   recordCertifies,
   type ClaudeChromeRecord,
   type CodexChromeRecord,
@@ -115,16 +116,17 @@ describe("Codex record stamping", () => {
     evidenceId: "codex-evidence",
     platform: template.platform,
     arch: template.arch,
-    versions: { appMin: "26.1020.5", pluginMin: "26.1020.5" },
+    versions: { appMin: "26.1020.5", pluginMin: "26.1020.5", codexMin: "0.163.0" },
+    admission: "session",
     assertions: Object.fromEntries(
       INTEGRATION_REQUIRED_ASSERTIONS["codex-chrome"].map((name) => [name, true]),
     ),
-    toolNames: ["js", "js_reset", "other"],
+    toolNames: ["js", "js_reset", "turn_ended"],
     toolInventorySha256: "d".repeat(64),
     toolSchemas: [
       { name: "js", description: "Run JavaScript", inputSchema: schema },
       { name: "js_reset", inputSchema: { type: "object" } },
-      { name: "other", inputSchema: { type: "object" } },
+      { name: "turn_ended", inputSchema: { type: "object" } },
     ],
     sourceCommit: COMMIT,
     dirty: false,
@@ -136,36 +138,40 @@ describe("Codex record stamping", () => {
     report: codexReport,
   });
 
-  it("writes the exercised versions as floors with no ceiling", () => {
+  it("writes the exercised versions, the Codex one included, as floors with no ceiling", () => {
     expect(floor.id).toBe("codex-chrome-darwin-arm64-26.1020.5");
-    expect(floor.versions).toEqual({ appMin: "26.1020.5", pluginMin: "26.1020.5" });
+    expect(floor.versions).toEqual({
+      appMin: "26.1020.5",
+      pluginMin: "26.1020.5",
+      codexMin: "0.163.0",
+    });
     expect(floor.evidenceId).toBeUndefined();
   });
 
-  it("stamps the inventory and advertises only the allowed tools, verbatim", () => {
+  it("stamps the inventory and keeps the template's admission mode", () => {
     const stampedRecord = current(merged, floor.id) as CodexChromeRecord;
     expect(stampedRecord).toMatchObject({
       evidenceId: "codex-evidence",
       evidenceCommit: COMMIT,
+      toolNames: ["js", "js_reset", "turn_ended"],
       toolInventorySha256: "d".repeat(64),
+      identity: { admission: "session" },
     });
-    expect(stampedRecord.identity.advertisedTools).toEqual([
-      { name: "js", description: "Run JavaScript", inputSchema: schema },
-      { name: "js_reset", inputSchema: { type: "object" } },
-    ]);
     expect(recordCertifies(stampedRecord)).toBe(true);
     // The template record stays for restore.
     expect(merged.map((entry) => entry.id)).toContain(template.id);
+    // The stamped record round-trips through the stamper's own check.
+    expect(evidenceMismatches(stampedRecord, codexReport)).toEqual([]);
   });
 
-  it("refuses evidence without every allowed tool's schema", () => {
+  it("refuses evidence for another admission mode", () => {
     expect(() =>
       mergeIntegrationRecords({
         existing: [],
         record: floor,
-        report: { ...codexReport, toolSchemas: codexReport.toolSchemas!.slice(1) },
+        report: { ...codexReport, admission: "per-call" },
       }),
-    ).toThrow("no schema for the allowed tool js");
+    ).toThrow("admission");
   });
 
   it("withdraws a stamped floor without a new record", () => {

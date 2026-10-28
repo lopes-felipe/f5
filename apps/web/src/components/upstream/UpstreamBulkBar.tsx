@@ -8,7 +8,10 @@ import { UpstreamActionButton } from "./UpstreamActionButton";
 import { bulkActionsForList, headerCheckState, type UpstreamBulkAction } from "./upstreamPage.logic";
 
 const ACTIONS: Readonly<
-  Record<UpstreamBulkAction, { readonly label: string; readonly command: KeybindingCommand | null; readonly primary?: true }>
+  Record<
+    UpstreamBulkAction,
+    { readonly label: string; readonly command: KeybindingCommand | null; readonly primary?: true }
+  >
 > = {
   accept: { label: "Accept suggestions", command: "upstream.acceptSuggestion", primary: true },
   port: { label: "Mark ready", command: "upstream.port" },
@@ -18,6 +21,8 @@ const ACTIONS: Readonly<
   equivalent: { label: "Already in f5", command: "upstream.equivalent" },
   reopen: { label: "Reopen", command: "upstream.reopen" },
   startPort: { label: "Start port…", command: "upstream.startPort", primary: true },
+  queuePort: { label: "Queue selected…", command: null },
+  dequeuePort: { label: "Remove from queue", command: null },
   copyPrompt: { label: "Copy prompt", command: null },
 };
 
@@ -31,6 +36,8 @@ const WRITES = new Set<UpstreamBulkAction>([
   "equivalent",
   "reopen",
   "startPort",
+  "queuePort",
+  "dequeuePort",
 ]);
 
 /**
@@ -50,6 +57,7 @@ export function UpstreamBulkBar(props: {
   readonly selected: ReadonlySet<string>;
   /** Selected topics, including ones not loaded yet after "Select all matching". */
   readonly selectedCount: number;
+  readonly hasQueued?: boolean;
   readonly total: number;
   readonly readOnly: boolean;
   readonly busy: boolean;
@@ -82,22 +90,24 @@ export function UpstreamBulkBar(props: {
           </Button>
           {props.selectionNote}
           <div role="toolbar" aria-label="Bulk actions" className="ml-auto flex flex-wrap items-center gap-1">
-            {bulkActionsForList(props.list).map((action) => {
-              const spec = ACTIONS[action];
-              return (
-                <UpstreamActionButton
-                  key={action}
-                  size="xs"
-                  variant={spec.primary ? "default" : "outline"}
-                  label={spec.label}
-                  command={spec.command}
-                  disabled={(WRITES.has(action) && props.readOnly) || (BUSY.has(action) && props.busy)}
-                  onClick={() => props.onAction(action)}
-                >
-                  {spec.label}
-                </UpstreamActionButton>
-              );
-            })}
+            {bulkActionsForList(props.list)
+              .filter((action) => action !== "dequeuePort" || props.hasQueued)
+              .map((action) => {
+                const spec = ACTIONS[action];
+                return (
+                  <UpstreamActionButton
+                    key={action}
+                    size="xs"
+                    variant={spec.primary ? "default" : "outline"}
+                    label={spec.label}
+                    command={spec.command}
+                    disabled={(WRITES.has(action) && props.readOnly) || (BUSY.has(action) && props.busy)}
+                    onClick={() => props.onAction(action)}
+                  >
+                    {spec.label}
+                  </UpstreamActionButton>
+                );
+              })}
           </div>
         </>
       )}

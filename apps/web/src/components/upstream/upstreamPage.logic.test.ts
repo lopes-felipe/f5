@@ -25,6 +25,7 @@ import {
   moveFocus,
   portableTopicIds,
   portLimitError,
+  portReviewLabel,
   predictedState,
   preselectedSkipReason,
   promptLimitError,
@@ -33,7 +34,6 @@ import {
   runStatus,
   selectRange,
   shortRepository,
-  startAllReady,
   suggestionChipLabel,
   toggleId,
   toggleValue,
@@ -49,6 +49,18 @@ import {
   withoutFilters,
   withoutTopics,
 } from "./upstreamPage.logic";
+
+it("labels each review stage independently of the port outcome", () => {
+  expect(portReviewLabel(null)).toBeNull();
+  for (const [status, label] of [
+    ["waiting", "Code review: waits for the pull request: paused"],
+    ["reviewing", "Code review: in progress: paused"],
+    ["applying", "Code review: applying feedback: paused"],
+    ["completed", "Code review: revision completed: paused"],
+    ["skipped", "Code review: skipped (paused)"],
+    ["error", "Code review failed: paused"],
+  ] as const) expect(portReviewLabel({ status, detail: "paused", workflowId: null, retryable: false })).toBe(label);
+});
 
 const link = (outcome: { kind: "pr" | "equivalent" | "not-applicable" | "blocked"; detail: string } | null, prNumber: number | null = null) =>
   ({
@@ -67,7 +79,9 @@ describe("upstream page logic", () => {
   it("formats suggestion chips with a confidence percentage", () => {
     const base = { reason: "", userImpact: "medium", areas: [], model: "m" } as const;
     expect(suggestionChipLabel({ ...base, status: "port", confidence: 0.92 })).toBe("Port 92%");
-    expect(suggestionChipLabel({ ...base, status: "skip", reasonKey: "mobile", confidence: 0.97 })).toBe("Skip: mobile 97%");
+    expect(suggestionChipLabel({ ...base, status: "skip", reasonKey: "mobile", confidence: 0.97 })).toBe(
+      "Skip: mobile 97%",
+    );
     expect(suggestionChipLabel({ ...base, status: "skip", confidence: 0.5 })).toBe("Skip 50%");
     expect(suggestionChipLabel({ ...base, status: "equivalent", confidence: 0.7 })).toBe("Equivalent 70%");
   });
@@ -91,7 +105,10 @@ describe("upstream page logic", () => {
     const up = extendSelection(ids, down.selected, "b", -1);
     expect(up.focused).toBe("a");
     expect([...up.selected]).toEqual(["a", "b"]);
-    expect(extendSelection(ids, new Set(), null, 1)).toEqual({ focused: "a", selected: new Set(["a"]) });
+    expect(extendSelection(ids, new Set(), null, 1)).toEqual({
+      focused: "a",
+      selected: new Set(["a"]),
+    });
     expect(headerCheckState(ids, new Set())).toBe("none");
     expect(headerCheckState(ids, new Set(["a"]))).toBe("some");
     expect(headerCheckState(ids, new Set(ids))).toBe("all");
@@ -111,7 +128,17 @@ describe("upstream page logic", () => {
 
   it("predicts where a decision moves a topic, for optimistic updates", () => {
     const suggestion = (status: "port" | "skip" | "watch" | "equivalent", extra: object = {}) => ({
-      topic: { suggestion: { status, reason: "", userImpact: "low" as const, confidence: 1, areas: [], model: "m", ...extra } },
+      topic: {
+        suggestion: {
+          status,
+          reason: "",
+          userImpact: "low" as const,
+          confidence: 1,
+          areas: [],
+          model: "m",
+          ...extra,
+        },
+      },
     });
     const inbox = { state: "inbox" as const, topic: {} };
     expect(predictedState(inbox, { kind: "port" })).toBe("ready");
@@ -151,10 +178,20 @@ describe("upstream page logic", () => {
         { area: "git", count: 1 },
       ],
     };
-    const page = (topics: never[], nextCursor: string | null) => ({ revision: "r", status: "ok" as const, nextCursor, total: 3, facets, topics });
+    const page = (topics: never[], nextCursor: string | null) => ({
+      revision: "r",
+      status: "ok" as const,
+      nextCursor,
+      total: 3,
+      facets,
+      topics,
+    });
     const data = {
       pageParams: [null, "c1"],
-      pages: [page([row("a", "port", ["git"]), row("b", "port", ["terminal"])], "c1"), page([row("c", "skip", ["terminal"])], null)],
+      pages: [
+        page([row("a", "port", ["git"]), row("b", "port", ["terminal"])], "c1"),
+        page([row("c", "skip", ["terminal"])], null),
+      ],
     };
     const next = withoutTopics(data as never, new Set(["b", "c", "unloaded"]));
     expect(next?.pages.map((entry) => entry.topics.length)).toEqual([1, 0]);
@@ -222,36 +259,79 @@ describe("upstream page logic", () => {
         conflict: true,
         topic: "not a topic",
       }),
-    ).toEqual({ list: "skipped", q: "x", suggestion: ["skip"], impact: ["high", "low"], sort: "confidence", by: "llm", conflict: true });
+    ).toEqual({
+      list: "skipped",
+      q: "x",
+      suggestion: ["skip"],
+      impact: ["high", "low"],
+      sort: "confidence",
+      by: "llm",
+      conflict: true,
+    });
     expect(validateUpstreamSearch({ sort: "random", by: "nobody" })).toEqual({});
-    expect(compactUpstreamSearch({ list: "inbox", q: " ", suggestion: [], sort: "newest" })).toEqual({ sort: "newest" });
+    expect(compactUpstreamSearch({ list: "inbox", q: " ", suggestion: [], sort: "newest" })).toEqual({
+      sort: "newest",
+    });
   });
 
   it("summarizes the header state", () => {
     const relative = () => "5m ago";
     const next = () => "Tue 09:00";
-    const run = { status: "succeeded", finishedAt: "2026-10-26T10:00:00Z", startedAt: "2026-10-26T09:59:00Z", remainingCount: 0 } as never;
+    const run = {
+      status: "succeeded",
+      finishedAt: "2026-10-26T10:00:00Z",
+      startedAt: "2026-10-26T09:59:00Z",
+      remainingCount: 0,
+    } as never;
     expect(runStatus({ activeRun: null, lastRun: run, nextRunAt: "x", occurrence: null }, relative, next)).toEqual({
       tone: "idle",
       label: "Synced 5m ago · next Tue 09:00",
     });
     expect(
-      runStatus({ activeRun: { remainingCount: 40 } as never, lastRun: run, nextRunAt: null, occurrence: null }, relative, next),
+      runStatus(
+        {
+          activeRun: { remainingCount: 40 } as never,
+          lastRun: run,
+          nextRunAt: null,
+          occurrence: null,
+        },
+        relative,
+        next,
+      ),
     ).toEqual({ tone: "running", label: "Triaging… 40 left" });
-    expect(runStatus({ activeRun: null, lastRun: null, nextRunAt: null, occurrence: null }, relative, next).tone).toBe("never");
+    expect(runStatus({ activeRun: null, lastRun: null, nextRunAt: null, occurrence: null }, relative, next).tone).toBe(
+      "never",
+    );
     expect(
-      runStatus({ activeRun: null, lastRun: run, nextRunAt: null, occurrence: { status: "failed" } as never }, relative, next).tone,
+      runStatus(
+        {
+          activeRun: null,
+          lastRun: run,
+          nextRunAt: null,
+          occurrence: { status: "failed" } as never,
+        },
+        relative,
+        next,
+      ).tone,
     ).toBe("failed");
     expect(shortRepository("https://github.com/pingdotgg/t3code.git")).toBe("pingdotgg/t3code");
     const publication = { prNumber: 228, unpublishedOps: 11, pausedReason: null } as never;
     expect(ledgerChipLabel(publication)).toBe("#228 · 11 unpublished");
     expect(ledgerChipLabel({ prNumber: null, unpublishedOps: 0, pausedReason: null } as never)).toBeNull();
-    expect(runDisabledReason({ readOnly: false, busy: false, overview: { activeRun: null, remoteStatus: "ok" } })).toBeNull();
-    expect(runDisabledReason({ readOnly: false, busy: false, overview: { activeRun: null, remoteStatus: "missing" } })).toMatch(
-      /missing/u,
-    );
-    expect(startAllReady(Array.from({ length: 25 }, (_, index) => `t${index}`))).toMatchObject({ capped: true });
-    expect(startAllReady(["a"]).ids).toEqual(["a"]);
+    expect(
+      runDisabledReason({
+        readOnly: false,
+        busy: false,
+        overview: { activeRun: null, remoteStatus: "ok" },
+      }),
+    ).toBeNull();
+    expect(
+      runDisabledReason({
+        readOnly: false,
+        busy: false,
+        overview: { activeRun: null, remoteStatus: "missing" },
+      }),
+    ).toMatch(/missing/u);
     expect(decisionToastTitle({ kind: "skip", reasonKey: "docs" }, 12)).toBe("Skipped 12 topics");
     expect(decisionToastTitle("accept", 1)).toBe("Accepted suggestions for 1 topic");
   });
@@ -282,12 +362,20 @@ describe("upstream page logic", () => {
   });
 
   it("records equivalent and blocked outcomes from a port thread", () => {
-    expect(equivalentFromLink(link({ kind: "equivalent", detail: "src/a.ts:10, bad, src/b.ts:2" }, 42))).toEqual({
+    expect(equivalentFromLink(link({ kind: "equivalent", detail: "src/a.ts:10, src/b.ts:2" }, 42))).toEqual({
       kind: "equivalent",
       f5Refs: ["#42"],
       evidence: ["src/a.ts:10", "src/b.ts:2"],
     });
+    expect(equivalentFromLink(link({ kind: "equivalent", detail: "src/a.ts:10, bad" }, 42))).toEqual({
+      kind: "equivalent",
+      f5Refs: ["#42"],
+    });
     expect(equivalentFromLink(link(null))).toEqual({ kind: "equivalent" });
+    expect(equivalentFromLink(link({ kind: "not-applicable", detail: "Not used by f5" }, 42))).toEqual({
+      kind: "equivalent",
+      f5Refs: ["#42"],
+    });
     expect(watchFromBlocked(link({ kind: "blocked", detail: "needs the new API" }))).toEqual({
       kind: "watch",
       reason: "Blocked: needs the new API",
@@ -298,6 +386,9 @@ describe("upstream page logic", () => {
   it("keeps the project's other overrides when saving upstream settings", () => {
     const triage = { instanceId: "claude", model: "claude-opus-5-5" } as never;
     const current = {
+      portReview: { enabled: true, reviewerA: null, reviewerB: null, consolidation: null },
+      portConcurrency: 5,
+      autoRecordOutcomes: true,
       schedule: { mode: "daily" as const, hour: 7, weekday: 1 },
       triageModelSelection: triage,
       portModelSelection: null,
@@ -307,9 +398,7 @@ describe("upstream page logic", () => {
       enableAgentBrowserAccess: false,
       upstreamPorts: current,
     };
-    expect(
-      upstreamSettingsOverrides(overrides, current, { schedule: { ...current.schedule, hour: 9 } }),
-    ).toEqual({
+    expect(upstreamSettingsOverrides(overrides, current, { schedule: { ...current.schedule, hour: 9 } })).toEqual({
       defaultRuntimeMode: "approval-required",
       enableAgentBrowserAccess: false,
       upstreamPorts: { ...current, schedule: { mode: "daily", hour: 9, weekday: 1 } },
@@ -359,7 +448,15 @@ describe("upstream page logic", () => {
   it("preselects the suggested skip reason", () => {
     expect(
       preselectedSkipReason({
-        suggestion: { status: "skip", reasonKey: "mobile", reason: "", userImpact: "none", confidence: 1, areas: [], model: "m" },
+        suggestion: {
+          status: "skip",
+          reasonKey: "mobile",
+          reason: "",
+          userImpact: "none",
+          confidence: 1,
+          areas: [],
+          model: "m",
+        },
       }),
     ).toBe("mobile");
     expect(preselectedSkipReason({})).toBeNull();
@@ -368,7 +465,13 @@ describe("upstream page logic", () => {
 
 describe("undo, files and history", () => {
   it("keeps only undo entries that have not expired", () => {
-    const entry = (id: string, expiresAt: number) => ({ id, projectId: "p" as never, token: "t", title: "x", expiresAt });
+    const entry = (id: string, expiresAt: number) => ({
+      id,
+      projectId: "p" as never,
+      token: "t",
+      title: "x",
+      expiresAt,
+    });
     expect(liveUndoEntries([entry("old", 100), entry("new", 300)], 200).map((e) => e.id)).toEqual(["new"]);
     expect(undoToastTitle(1)).toBe("Undid the decision for 1 topic");
     expect(undoToastTitle(3)).toBe("Undid the decision for 3 topics");
@@ -384,7 +487,13 @@ describe("undo, files and history", () => {
           available: true,
           files: [
             { path: "x.ts", added: 2, deleted: 1, existsInF5: true, diffAnchor: "diff-x" },
-            { path: "logo.png", added: null, deleted: null, existsInF5: false, diffAnchor: "diff-logo" },
+            {
+              path: "logo.png",
+              added: null,
+              deleted: null,
+              existsInF5: false,
+              diffAnchor: "diff-logo",
+            },
           ],
           totalFiles: 2,
           truncated: false,
@@ -401,8 +510,22 @@ describe("undo, files and history", () => {
       totals: { files: 2, added: 5, deleted: 1, existingInF5: 1 },
     };
     expect(aggregateTopicFiles(files)).toEqual([
-      { path: "x.ts", added: 5, deleted: 1, sha: "b".repeat(40), diffAnchor: "diff-x", existsInF5: true },
-      { path: "logo.png", added: null, deleted: null, sha: "a".repeat(40), diffAnchor: "diff-logo", existsInF5: false },
+      {
+        path: "x.ts",
+        added: 5,
+        deleted: 1,
+        sha: "b".repeat(40),
+        diffAnchor: "diff-x",
+        existsInF5: true,
+      },
+      {
+        path: "logo.png",
+        added: null,
+        deleted: null,
+        sha: "a".repeat(40),
+        diffAnchor: "diff-logo",
+        existsInF5: false,
+      },
     ]);
     expect(topicFilesNote(files)).toBeNull();
     expect(topicFilesNote({ ...files, totalCommits: 63 })).toBe("Only the first 2 of 63 commits are listed.");

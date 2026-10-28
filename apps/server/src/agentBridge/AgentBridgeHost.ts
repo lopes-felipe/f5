@@ -40,6 +40,8 @@ export interface AgentBridgeHostShape {
   readonly getThreadDetails: (
     threadId: ThreadId,
   ) => Effect.Effect<OrchestrationThreadDetails, AgentBridgeHostError>;
+  /** Submission-specific projection binding; ordinary details preserve their wire shape. */
+  readonly getSubmissionThreadDetails?: AgentBridgeHostShape["getThreadDetails"];
   /** The lifecycle state of one turn, or null when F5 has no record of it. */
   readonly getTurnState: (input: {
     readonly threadId: ThreadId;

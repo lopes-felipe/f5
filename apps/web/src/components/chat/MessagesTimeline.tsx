@@ -250,6 +250,13 @@ function InlineFileChangeDiff(props: InlineFileChangeDiffProps) {
   return <Component {...props} />;
 }
 
+/**
+ * Rows playing their entrance animation. A context rather than a row-externals
+ * input: an arrival (and its expiry) re-renders only the mounted row wrappers,
+ * instead of re-describing every row of a long thread.
+ */
+const RowEnteringContext = createContext<ReadonlyMap<string, number>>(new Map());
+
 const EMPTY_WORK_GROUP_COLLAPSE_OVERRIDES: Readonly<Record<string, boolean>> = {};
 
 interface MessagesTimelineProps {
@@ -1331,13 +1338,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           newestTurnDiffId,
           expandedCommandExecutions,
           ribbonActive,
-          enteringRowIds,
         },
         committedRowExternalsRef.current,
       ),
     [
       changedFilesPresentationOverrides,
-      enteringRowIds,
       expandedCommandExecutions,
       expandedWorkGroups,
       newestTurnDiffId,
@@ -1407,7 +1412,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 row={item}
                 externals={externalsEntry.externals}
                 rowVersion={externalsEntry.version}
-                entering={externalsEntry.entering}
               />
             ) : null}
           </div>
@@ -1453,105 +1457,107 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   return (
     <TimelineRowContext.Provider value={timelineRowContext}>
-      <TooltipScrollDismissArea className="relative h-full min-h-0">
-        <LegendList<TimelineRow>
-          ref={listRef}
-          data={rows}
-          // LegendList's internal dataset tracking can miss row-shape changes
-          // during sequential live updates unless we provide an explicit version.
-          // That includes both mid-stream insertions and later layout-affecting
-          // changes like response dividers or inline file diffs becoming eligible.
-          dataVersion={legendListDataVersion}
-          keyExtractor={keyExtractor}
-          getItemType={getTimelineItemType}
-          renderItem={renderItem}
-          // LegendList caches row renders until either the backing data or
-          // extraData changes, so closure-only UI state must flow through here.
-          extraData={legendListExtraData}
-          estimatedItemSize={90}
-          drawDistance={336}
-          // Keep LegendList's bootstrap "start at end" behavior for the initial
-          // mount only. Leaving this enabled on later data updates causes the web
-          // implementation to re-arm its initial-scroll logic and jump away from
-          // historical file-change rows during optimistic sends.
-          initialScrollAtEnd={initialScrollAtEndEnabled}
-          {...(restoredAnchor && !restoredAnchor.atEnd
-            ? rows.some((row) => row.id === restoredAnchor.rowId)
-              ? {
-                  initialScrollIndex: {
-                    index: rows.findIndex((row) => row.id === restoredAnchor.rowId),
-                    viewPosition: 0,
-                    viewOffset: restoredAnchor.top,
-                  },
-                }
-              : { initialScrollOffset: restoredAnchor.scroll }
-            : {})}
-          // Do not auto-pin on raw data appends. When the user is looking at a
-          // historical file-change diff near the tail of the thread, a new user
-          // turn and its first assistant progress messages should preserve that
-          // viewport instead of snapping to the latest row. We still keep
-          // size/layout-based pinning so streaming growth at the tail continues to
-          // follow when the user is already at the end.
-          maintainScrollAtEnd={
-            liveFollowEnabled ? { on: { itemLayout: true, layout: true } } : false
-          }
-          maintainScrollAtEndThreshold={atEndThreshold}
-          // Stabilize the visible window both when rows resize and when a new user
-          // turn appends data. Without `data: true`, historical work rows can drop
-          // out of the rendered window during live chat updates even though the
-          // row data itself is still present.
-          maintainVisibleContentPosition={{ size: true, data: true }}
-          onScroll={handleScroll}
-          onItemSizeChanged={handleItemSizeChanged}
-          onViewableItemsChanged={handleViewableItemsChanged}
-          // Stable hook for browser tests
-          // queries — the LegendList's overflow container has inline styles that
-          // make class-based selectors fragile.
-          data-slot="messages-scroll-container"
-          className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5"
-          ListHeaderComponent={
-            <>
-              <div className="h-3 sm:h-4" />
-              {listHeaderContent}
-            </>
-          }
-          // Reserves room for the floating composer dock so the last row
-          // scrolls fully clear of it.
-          ListFooterComponent={
-            <ComposerDockSpacer className="h-[calc(var(--composer-dock-height,0px)+0.75rem)] sm:h-[calc(var(--composer-dock-height,0px)+1rem)]" />
-          }
-        />
-        {/* Outside the virtualized list so scrolling and cell recycling never unmount it. */}
-        {ribbonOrigin && isWorking ? (
-          <LiveWorkingRibbon
-            startedAt={activeTurnStartedAt}
-            origin={ribbonOrigin}
-            onRelease={handleRibbonRelease}
-            onOrphanedFocus={restoreRibbonFocus}
+      <RowEnteringContext value={enteringRowIds}>
+        <TooltipScrollDismissArea className="relative h-full min-h-0">
+          <LegendList<TimelineRow>
+            ref={listRef}
+            data={rows}
+            // LegendList's internal dataset tracking can miss row-shape changes
+            // during sequential live updates unless we provide an explicit version.
+            // That includes both mid-stream insertions and later layout-affecting
+            // changes like response dividers or inline file diffs becoming eligible.
+            dataVersion={legendListDataVersion}
+            keyExtractor={keyExtractor}
+            getItemType={getTimelineItemType}
+            renderItem={renderItem}
+            // LegendList caches row renders until either the backing data or
+            // extraData changes, so closure-only UI state must flow through here.
+            extraData={legendListExtraData}
+            estimatedItemSize={90}
+            drawDistance={336}
+            // Keep LegendList's bootstrap "start at end" behavior for the initial
+            // mount only. Leaving this enabled on later data updates causes the web
+            // implementation to re-arm its initial-scroll logic and jump away from
+            // historical file-change rows during optimistic sends.
+            initialScrollAtEnd={initialScrollAtEndEnabled}
+            {...(restoredAnchor && !restoredAnchor.atEnd
+              ? rows.some((row) => row.id === restoredAnchor.rowId)
+                ? {
+                    initialScrollIndex: {
+                      index: rows.findIndex((row) => row.id === restoredAnchor.rowId),
+                      viewPosition: 0,
+                      viewOffset: restoredAnchor.top,
+                    },
+                  }
+                : { initialScrollOffset: restoredAnchor.scroll }
+              : {})}
+            // Do not auto-pin on raw data appends. When the user is looking at a
+            // historical file-change diff near the tail of the thread, a new user
+            // turn and its first assistant progress messages should preserve that
+            // viewport instead of snapping to the latest row. We still keep
+            // size/layout-based pinning so streaming growth at the tail continues to
+            // follow when the user is already at the end.
+            maintainScrollAtEnd={
+              liveFollowEnabled ? { on: { itemLayout: true, layout: true } } : false
+            }
+            maintainScrollAtEndThreshold={atEndThreshold}
+            // Stabilize the visible window both when rows resize and when a new user
+            // turn appends data. Without `data: true`, historical work rows can drop
+            // out of the rendered window during live chat updates even though the
+            // row data itself is still present.
+            maintainVisibleContentPosition={{ size: true, data: true }}
+            onScroll={handleScroll}
+            onItemSizeChanged={handleItemSizeChanged}
+            onViewableItemsChanged={handleViewableItemsChanged}
+            // Stable hook for browser tests
+            // queries — the LegendList's overflow container has inline styles that
+            // make class-based selectors fragile.
+            data-slot="messages-scroll-container"
+            className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5"
+            ListHeaderComponent={
+              <>
+                <div className="h-3 sm:h-4" />
+                {listHeaderContent}
+              </>
+            }
+            // Reserves room for the floating composer dock so the last row
+            // scrolls fully clear of it.
+            ListFooterComponent={
+              <ComposerDockSpacer className="h-[calc(var(--composer-dock-height,0px)+0.75rem)] sm:h-[calc(var(--composer-dock-height,0px)+1rem)]" />
+            }
           />
-        ) : null}
-        {minimapRowIndices.length > 1 ? (
-          <TimelineMinimap
-            rows={rows}
-            markerRowIndices={minimapRowIndices}
-            activeRowIndex={activeMinimapRowIndex}
-            hasUnloadedHistory={hasOlderHistory}
-            onNavigate={(rowIndex) => navigateToRow(rowIndex, 0.3)}
-            onWheel={forwardOverlayWheel}
-          />
-        ) : null}
-        {turnRailItems.length >= TIMELINE_TURN_RAIL_MIN_ITEMS ? (
-          <TimelineTurnRail
-            items={turnRailItems}
-            hasPersistentGutter={turnRailHasPersistentGutter}
-            hitStripWidth={turnRailHitStripWidth}
-            activeTickIndex={turnRailActiveTickIndex}
-            onSelect={selectNavigationTurn}
-            onWheel={forwardOverlayWheel}
-          />
-        ) : null}
-        {navigationControl}
-      </TooltipScrollDismissArea>
+          {/* Outside the virtualized list so scrolling and cell recycling never unmount it. */}
+          {ribbonOrigin && isWorking ? (
+            <LiveWorkingRibbon
+              startedAt={activeTurnStartedAt}
+              origin={ribbonOrigin}
+              onRelease={handleRibbonRelease}
+              onOrphanedFocus={restoreRibbonFocus}
+            />
+          ) : null}
+          {minimapRowIndices.length > 1 ? (
+            <TimelineMinimap
+              rows={rows}
+              markerRowIndices={minimapRowIndices}
+              activeRowIndex={activeMinimapRowIndex}
+              hasUnloadedHistory={hasOlderHistory}
+              onNavigate={(rowIndex) => navigateToRow(rowIndex, 0.3)}
+              onWheel={forwardOverlayWheel}
+            />
+          ) : null}
+          {turnRailItems.length >= TIMELINE_TURN_RAIL_MIN_ITEMS ? (
+            <TimelineTurnRail
+              items={turnRailItems}
+              hasPersistentGutter={turnRailHasPersistentGutter}
+              hitStripWidth={turnRailHitStripWidth}
+              activeTickIndex={turnRailActiveTickIndex}
+              onSelect={selectNavigationTurn}
+              onWheel={forwardOverlayWheel}
+            />
+          ) : null}
+          {navigationControl}
+        </TooltipScrollDismissArea>
+      </RowEnteringContext>
     </TimelineRowContext.Provider>
   );
 });
@@ -1717,16 +1723,15 @@ function RevertStatusPill({ label }: { label: string }) {
 // internally, so the ResizeObserver shim is no longer needed.
 const TimelineRowWrapper = memo(function TimelineRowWrapper({
   row,
-  entering,
   testRenderCountProps,
   children,
 }: {
   row: TimelineRow;
-  /** A freshly appended row: rises in (a transform, so list measurement is unaffected). */
-  entering: boolean;
   testRenderCountProps?: { "data-render-count": number } | undefined;
   children: ReactNode;
 }) {
+  // A freshly appended row rises in (a transform, so list measurement is unaffected).
+  const entering = useContext(RowEnteringContext).has(row.id);
   const find = useContext(ThreadFindContext);
   const element = useRef<HTMLDivElement>(null);
   const active = find?.entryId === row.id;
@@ -3922,16 +3927,11 @@ const TimelineRowView = memo(function TimelineRowView(props: {
   row: TimelineRow;
   externals: TimelineRowExternals;
   rowVersion: string;
-  entering?: boolean;
 }) {
   "use memo";
   const testRenderCountProps = useTestRenderCountProps();
   return (
-    <TimelineRowWrapper
-      row={props.row}
-      entering={props.entering ?? false}
-      testRenderCountProps={testRenderCountProps}
-    >
+    <TimelineRowWrapper row={props.row} testRenderCountProps={testRenderCountProps}>
       <SurfaceErrorBoundary
         name="timeline-row"
         resetKeys={[props.row, props.rowVersion]}
@@ -4864,15 +4864,12 @@ export interface TimelineRowExternalsInputs {
   newestTurnDiffId: TurnId | null;
   expandedCommandExecutions: Readonly<Record<string, boolean>>;
   ribbonActive: boolean;
-  /** Rows playing their entrance animation (see advanceRowArrivals). */
-  enteringRowIds?: { has(rowId: string): boolean };
 }
 
 export interface TimelineRowExternalsEntry {
   /** Covers exactly the external inputs the row reads. */
   readonly version: string;
   readonly externals: TimelineRowExternals;
-  readonly entering: boolean;
 }
 
 function describeTimelineRowExternals(
@@ -5013,13 +5010,10 @@ export function buildTimelineRowExternals(
   }
   for (const [index, row] of rows.entries()) {
     const described = describeTimelineRowExternals(row, inputs, index > latestTurnStart);
-    const entering = inputs.enteringRowIds?.has(row.id) ?? false;
-    const version = entering ? `${described.version}:entering` : described.version;
+    const { version } = described;
     const cached = previous.get(row.id);
     const entry =
-      cached && cached.version === version
-        ? cached
-        : { version, externals: described.build(), entering };
+      cached && cached.version === version ? cached : { version, externals: described.build() };
     if (entry !== cached) changed = true;
     next.set(row.id, entry);
   }

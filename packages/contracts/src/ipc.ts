@@ -97,11 +97,20 @@ import type {
   UpstreamRunInput,
   UpstreamRunResult,
   UpstreamStartPortInput,
+  UpstreamPreviewPortGroupsInput,
+  UpstreamPreviewPortGroupsResult,
+  UpstreamEnqueuePortInput,
+  UpstreamEnqueuePortResult,
+  UpstreamGetPortQueueInput,
+  UpstreamGetPortQueueResult,
+  UpstreamDequeuePortInput,
+  UpstreamControlPortQueueInput,
   UpstreamStartPortResult,
   UpstreamTopicDetail,
   UpstreamTopicFiles,
   UpstreamUndoDecisionsInput,
   UpstreamUnlinkPortInput,
+  UpstreamRetryPortReviewInput,
 } from "./upstreamPorts";
 import type { PullRequestKey } from "./prHub";
 import type {
@@ -1224,7 +1233,15 @@ export interface NativeApi {
     undoDecisions: (input: UpstreamUndoDecisionsInput) => Promise<UpstreamDecideResult>;
     run: (input: UpstreamRunInput) => Promise<UpstreamRunResult>;
     startPort: (input: UpstreamStartPortInput) => Promise<UpstreamStartPortResult>;
+    previewPortGroups: (
+      input: UpstreamPreviewPortGroupsInput,
+    ) => Promise<UpstreamPreviewPortGroupsResult>;
+    enqueuePort: (input: UpstreamEnqueuePortInput) => Promise<UpstreamEnqueuePortResult>;
+    getPortQueue: (input: UpstreamGetPortQueueInput) => Promise<UpstreamGetPortQueueResult>;
+    dequeuePort: (input: UpstreamDequeuePortInput) => Promise<UpstreamRevisionResult>;
+    controlPortQueue: (input: UpstreamControlPortQueueInput) => Promise<UpstreamRevisionResult>;
     unlinkPort: (input: UpstreamUnlinkPortInput) => Promise<UpstreamRevisionResult>;
+    retryPortReview: (input: UpstreamRetryPortReviewInput) => Promise<UpstreamRevisionResult>;
     getPortPrompt: (input: UpstreamGetPortPromptInput) => Promise<UpstreamGetPortPromptResult>;
     resolvePublication: (input: UpstreamResolvePublicationInput) => Promise<UpstreamRevisionResult>;
     addRemote: (input: UpstreamPortsProjectInput) => Promise<UpstreamRevisionResult>;

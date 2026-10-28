@@ -22,6 +22,37 @@ import {
 } from "./ws";
 
 const decodeWebSocketRequest = Schema.decodeUnknownEffect(WebSocketRequest);
+it("requires an entry for the conflict override while allowing project queue controls", () => {
+  const decode = Schema.decodeUnknownSync(WebSocketRequest);
+  for (const action of ["pause", "resume", "clear"])
+    assert.doesNotThrow(() =>
+      decode({
+        id: "queue",
+        body: { _tag: "upstreamPorts.controlPortQueue", projectId: "project", action },
+      }),
+    );
+  assert.doesNotThrow(() =>
+    decode({
+      id: "queue",
+      body: {
+        _tag: "upstreamPorts.controlPortQueue",
+        projectId: "project",
+        action: "ignore-conflicts",
+        entryId: "entry",
+      },
+    }),
+  );
+  assert.throws(() =>
+    decode({
+      id: "queue",
+      body: {
+        _tag: "upstreamPorts.controlPortQueue",
+        projectId: "project",
+        action: "ignore-conflicts",
+      },
+    }),
+  );
+});
 const decodeWsResponse = Schema.decodeUnknownEffect(WsResponse);
 const decodeServerValidateHarnessesResult = Schema.decodeUnknownEffect(
   ServerValidateHarnessesResult,

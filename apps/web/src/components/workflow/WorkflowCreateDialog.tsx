@@ -1,9 +1,4 @@
-import type { ModelCapabilities } from "@t3tools/contracts";
 import { ProviderDriverKind } from "@t3tools/contracts";
-import {
-  normalizeClaudeModelOptions,
-  resolveCodexDispatchModelOptions,
-} from "@t3tools/shared/model";
 import { getWorkflowModelCapabilities } from "../../providerModels";
 import { Select, SelectTrigger, SelectValue, SelectPopup, SelectItem } from "../ui/select";
 import {
@@ -35,7 +30,7 @@ import type {
 } from "@t3tools/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { getDefaultModel, normalizeModelSlug } from "@t3tools/shared/model";
+import { normalizeModelSlug } from "@t3tools/shared/model";
 
 import { resolveThreadTitleModel, useAppSettings } from "../../appSettings";
 import { isElectron } from "../../env";
@@ -68,15 +63,14 @@ import {
   WORKFLOW_TYPE_TOGGLE_CLASS,
   type WorkflowTypeValue,
 } from "../../lib/workflowType";
-import {
-  getModelPreferences,
-  recordModelSelection,
-  type WorkflowCreatePreferenceSlot,
-  useModelPreferencesStore,
-} from "../../modelPreferencesStore";
+import { recordModelSelection, useModelPreferencesStore } from "../../modelPreferencesStore";
 import { readNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
-import { resolveProviderOptionsForDispatch } from "../../providerOptionsForDispatch";
+import {
+  getWorkflowSlotDefaults,
+  normalizeWorkflowSlotModelOptions,
+  makeWorkflowSlotBuilder,
+} from "./workflowSlots";
 import { basenameOfPath } from "../../vscode-icons";
 import {
   createCachedAbsolutePathComparisonNormalizer,
@@ -123,75 +117,6 @@ const WORKFLOW_TYPE_CARD_PRESSED_BORDER_CLASS: Record<WorkflowTypeValue, string>
   investigation: "data-pressed:border-warning/50",
   document: "data-pressed:border-attention/50",
 };
-
-export function normalizeWorkflowSlotModelOptions(
-  provider: ProviderKind,
-  model: string,
-  modelOptions: ProviderModelOptions | undefined,
-  capabilities?: ModelCapabilities | null,
-): ProviderModelOptions | undefined {
-  if (provider === "codex") {
-    // Saved slots carry the effort the picker showed, default included, so the
-    // server never fills in a default the user did not see.
-    const codex = resolveCodexDispatchModelOptions(model, modelOptions?.codex, capabilities);
-    return codex ? { codex } : undefined;
-  }
-  if (provider === "claudeAgent") {
-    const claudeAgent = normalizeClaudeModelOptions(model, modelOptions?.claudeAgent, capabilities);
-    return claudeAgent ? { claudeAgent } : undefined;
-  }
-  return getSingleProviderModelOptions(provider, modelOptions);
-}
-
-function getSingleProviderModelOptions(
-  provider: ProviderKind,
-  modelOptions: ProviderModelOptions | null | undefined,
-): ProviderModelOptions | undefined {
-  switch (provider) {
-    case "codex":
-      return modelOptions?.codex ? { codex: modelOptions.codex } : undefined;
-    case "claudeAgent":
-      return modelOptions?.claudeAgent ? { claudeAgent: modelOptions.claudeAgent } : undefined;
-    case "cursor":
-      return modelOptions?.cursor ? { cursor: modelOptions.cursor } : undefined;
-    case "opencode":
-      return modelOptions?.opencode ? { opencode: modelOptions.opencode } : undefined;
-    case "grok":
-      return undefined;
-  }
-}
-
-function getWorkflowSlotDefaults(
-  slot: WorkflowCreatePreferenceSlot,
-  fallbackProvider: ProviderKind,
-  modelOptionsByProvider: Record<
-    ProviderKind,
-    ReadonlyArray<{ readonly slug: string; readonly name: string }>
-  >,
-  providers: Parameters<typeof resolveComposerPickerModel>[0]["providers"],
-): {
-  provider: ProviderKind;
-  model: string;
-  modelOptions: ProviderModelOptions | undefined;
-} {
-  const preferences = getModelPreferences();
-  const provider = preferences.lastWorkflowProviderBySlot[slot] ?? fallbackProvider;
-  const preferredModel = preferences.lastModelByProvider[provider] ?? getDefaultModel(provider);
-  const model = resolveComposerPickerModel({
-    provider,
-    rawModel: preferredModel,
-    pickerOptions: modelOptionsByProvider[provider],
-    providers: providers ?? null,
-  });
-  return {
-    provider,
-    model,
-    modelOptions:
-      normalizeModelSlug(preferredModel, provider) === model
-        ? getSingleProviderModelOptions(provider, preferences.lastModelOptions)
-        : undefined,
-  };
-}
 
 interface WorkflowCreateDialogProps {
   open: boolean;
@@ -695,39 +620,12 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
         requirementPrompt,
         attachedFilePathsSnapshot,
       );
-      const providerOptionsCache = new Map<ProviderKind, WorkflowModelSlot["providerOptions"]>();
-      const buildSlot = (
-        provider: ProviderKind,
-        model: ModelSlug,
-        rawModelOptions: ProviderModelOptions | undefined,
-      ): WorkflowModelSlot => {
-        const modelOptions = normalizeWorkflowSlotModelOptions(
-          provider,
-          model,
-          rawModelOptions,
-          getWorkflowModelCapabilities(
-            serverConfigQuery.data?.providers ?? [],
-            ProviderDriverKind.make(provider),
-            model,
-          ),
-        );
-        let providerOptions = providerOptionsCache.get(provider);
-        if (!providerOptionsCache.has(provider)) {
-          providerOptions = resolveProviderOptionsForDispatch({
-            settings,
-            provider,
-            projectId: props.projectId,
-            availableModels: dispatchModelsByProvider[provider],
-          });
-          providerOptionsCache.set(provider, providerOptions);
-        }
-        return {
-          provider,
-          model,
-          ...(modelOptions ? { modelOptions } : {}),
-          ...(providerOptions ? { providerOptions } : {}),
-        };
-      };
+      const buildSlot = makeWorkflowSlotBuilder({
+        providers: serverConfigQuery.data?.providers ?? [],
+        settings,
+        projectId: props.projectId,
+        dispatchModelsByProvider,
+      });
       const branchASlot = buildSlot(branchAProvider, branchASelection, branchAModelOptions);
       const branchBSlot = buildSlot(branchBProvider, branchBSelection, branchBModelOptions);
       const mergeSlot = buildSlot(mergeProvider, mergeSelection, mergeModelOptions);

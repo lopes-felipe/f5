@@ -1,0 +1,55 @@
+name: CI setup benchmark
+on:
+  workflow_dispatch:
+    inputs:
+      cache-suffix:
+        description: Unique suffix for cold caches; repeat it on the same ref for warm caches
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: ci-setup-benchmark-${{ inputs.cache-suffix }}
+  cancel-in-progress: false
+jobs:
+  setup:
+    name: setup (${{ matrix.pair }}, ${{ matrix.mode }})
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        pair: [1, 2, 3]
+        mode: [combined, split, electron-only]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache-layout: ${{ matrix.mode == 'combined' && 'combined' || 'split' }}
+          cache-bun: ${{ matrix.mode != 'electron-only' && 'true' || 'false' }}
+          cache-suffix: benchmark-${{ inputs.cache-suffix }}-${{ matrix.pair }}-${{ matrix.mode }}-
+      - uses: ./.github/actions/assert-clean-worktree
+  summary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: setup
+    if: always()
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - name: Compare paired setup timings
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci-run-timings.ts --benchmark "$GITHUB_RUN_ID"

@@ -9,11 +9,13 @@ interface Job {
   "continue-on-error"?: boolean;
   "timeout-minutes"?: number;
   concurrency?: unknown;
+  permissions?: Record<string, string>;
   strategy?: { matrix?: unknown; "fail-fast"?: boolean };
+  steps?: { id?: string; uses?: string; if?: string; name?: string; run?: string }[];
 }
 const workflow = parse(
   readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
-) as { jobs: Record<string, Job> };
+) as { jobs: Record<string, Job>; permissions: Record<string, string> };
 
 export function assertWorkflowPolicy(jobs: Record<string, Job>) {
   const gated = Object.keys(jobs).filter((id) => !["ci-result", "main-status"].includes(id));
@@ -29,6 +31,8 @@ export function assertWorkflowPolicy(jobs: Record<string, Job>) {
 describe("CI workflow policy", () => {
   it("gates every job and bounds all jobs and matrices", () => assertWorkflowPolicy(workflow.jobs));
   it("has a report inventory for every configured server unit shard", () => {
+    expect(workflow.jobs["server-unit"]!.strategy!.matrix).toEqual({ shard: [1, 2] });
+    expect(workflow.jobs["windows-server-unit"]!.strategy!.matrix).toEqual({ shard: [1, 2, 3] });
     for (const job of ["server-unit", "windows-server-unit"]) {
       const matrix = workflow.jobs[job]!.strategy!.matrix as { shard: number[] };
       for (const shard of matrix.shard) {
@@ -39,6 +43,110 @@ describe("CI workflow policy", () => {
   });
   it("keeps the notifier outside concurrency groups that can cancel push runs", () => {
     expect(workflow.jobs["main-status"]!.concurrency).toBeUndefined();
+  });
+  it("classifies changes inside every heavy job without a scheduling prerequisite", () => {
+    expect(workflow.jobs.changes).toBeUndefined();
+    expect(workflow.permissions).toEqual({ contents: "read" });
+    for (const id of [
+      "server-unit",
+      "windows-server-unit",
+      "browser",
+      "desktop",
+      "windows-build",
+      "macos-profiles",
+      "macos-descriptor-drift",
+    ]) {
+      const job = workflow.jobs[id]!;
+      expect(job.permissions, id).toEqual({ contents: "read", "pull-requests": "read" });
+      expect(job.needs, id).toBeUndefined();
+      expect(job.if, id).toBeUndefined();
+      const steps = job.steps!;
+      const changes = steps.findIndex((step) => step.uses === "./.github/actions/changes");
+      const install = steps.findIndex((step) => step.id === "install");
+      expect(changes, id).toBeGreaterThan(-1);
+      expect(install, id).toBeGreaterThan(changes);
+      expect(steps[install]!.if, id).toBe("steps.changes.outputs.heavy == 'true'");
+      for (const step of steps.slice(install + 1)) {
+        // Failed tests must not hide later suites, summaries, diagnostics or uploads.
+        expect(step.if, id + "/" + (step.name ?? step.uses)).toMatch(
+          /!cancelled\(\).*steps\.install\.outcome == 'success'|always\(\).*steps\.changes\.outputs\.heavy == 'true'/,
+        );
+      }
+    }
+  });
+  it("retains the exact docs-only filter and bypasses it for main/nightly/manual runs", () => {
+    const action = parse(
+      readFileSync(new URL("../.github/actions/changes/action.yml", import.meta.url), "utf8"),
+    );
+    expect(action.outputs.heavy.value).toBe(
+      "${{ github.event_name != 'pull_request' || steps.paths.outputs.code == 'true' }}",
+    );
+    const filter = action.runs.steps[0];
+    expect(filter.if).toBe("github.event_name == 'pull_request'");
+    expect(filter.with["predicate-quantifier"]).toBe("some-with-excludes");
+    expect(parse(filter.with.filters)).toEqual({ code: ["**", "!**/*.md", "!docs/**"] });
+  });
+  it("cancels obsolete packaging PRs without cancelling release rehearsals", () => {
+    const release = parse(
+      readFileSync(
+        new URL("../.github/workflows/windows-release-checks.yml", import.meta.url),
+        "utf8",
+      ),
+    );
+    expect(release.concurrency["cancel-in-progress"]).toBe(
+      "${{ github.event_name == 'pull_request' }}",
+    );
+    expect(release.concurrency.group).toContain("github.event.pull_request.number");
+    expect(release.concurrency.group).toContain("github.run_id");
+  });
+  it("keeps cache benchmarking manual, bounded and complete", () => {
+    const benchmark = parse(
+      readFileSync(new URL("../.github/workflows/ci-setup-benchmark.yml", import.meta.url), "utf8"),
+    );
+    expect(Object.keys(benchmark.on)).toEqual(["workflow_dispatch"]);
+    expect(benchmark.jobs.setup.strategy).toEqual({
+      "fail-fast": false,
+      "max-parallel": 2,
+      matrix: { pair: [1, 2, 3], mode: ["combined", "split", "electron-only"] },
+    });
+    expect(benchmark.concurrency.group).toBe("ci-setup-benchmark-${{ inputs.cache-suffix }}");
+    expect(benchmark.concurrency["cancel-in-progress"]).toBe(false);
+    const setup = benchmark.jobs.setup.steps.find(
+      (step: { uses?: string }) => step.uses === "./.github/actions/setup",
+    );
+    expect(setup.with["cache-bun"]).toContain("matrix.mode != 'electron-only'");
+    expect(setup.with["cache-suffix"]).toContain("matrix.mode");
+    expect(benchmark.jobs.summary.needs).toBe("setup");
+    expect(benchmark.jobs.summary.if).toBe("always()");
+    expect(benchmark.permissions.actions).toBe("read");
+    for (const job of Object.values(benchmark.jobs) as Job[])
+      expect(job["timeout-minutes"]).toBeGreaterThan(0);
+  });
+  it("keeps frozen installs and Electron verification with independently versioned caches", () => {
+    const action = parse(
+      readFileSync(new URL("../.github/actions/setup/action.yml", import.meta.url), "utf8"),
+    );
+    expect(action.inputs["cache-bun"].default).toBe("true");
+    expect(action.inputs["cache-layout"].default).toBe("split");
+    const steps = action.runs.steps as {
+      name?: string;
+      run?: string;
+      with?: { path: string; key: string };
+    }[];
+    expect(steps.find((step) => step.name === "Install dependencies")!.run).toBe(
+      "bun install --frozen-lockfile",
+    );
+    expect(steps.find((step) => step.name === "Verify Electron installation")!.run).toContain(
+      "fs.existsSync(resolved)",
+    );
+    const electron = steps.find((step) => step.name === "Restore Electron downloads")!.with!;
+    expect(electron.key).toContain("steps.electron.outputs.version");
+    expect(electron.key).toContain("runner.os");
+    expect(electron.key).toContain("runner.arch");
+    expect(electron.path).not.toContain(".bun");
+    expect(steps.find((step) => step.name === "Restore Bun packages")!.with!.path).toBe(
+      "~/.bun/install/cache",
+    );
   });
   it("rejects a job missing from CI result", () => {
     const jobs = structuredClone(workflow.jobs);

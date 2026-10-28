@@ -105,12 +105,23 @@ describe("certification inventory and coverage", () => {
 
   it("runs the provider-native live checks only on a Mac and keeps Claude's built-in gated", () => {
     const target = { repo: "/repo", platform: "darwin" as const };
-    const launch = { claude: { home: "/private/claude", binary: "/cli/claude" } };
+    const launch = {
+      claude: { home: "/private/claude", binary: "/cli/claude" },
+      codex: { home: "/private/codex", binary: "/cli/codex" },
+    };
     const env = (key: string) => {
       const commands = commandsFor(scenario(key), target, "/out", launch, "darwin");
       return Array.isArray(commands) ? commands[0]?.env : commands;
     };
-    expect(env("chrome.codex")).toMatchObject({ F5_CODEX_NATIVE_LIVE: "chrome" });
+    // Codex Chrome runs real turns under the configured, logged-in Codex.
+    expect(env("chrome.codex")).toMatchObject({
+      F5_CODEX_NATIVE_LIVE: "chrome",
+      F5_CODEX_CHROME_HOME: "/private/codex",
+      F5_CODEX_BINARY: "/cli/codex",
+    });
+    expect(
+      commandsFor(scenario("chrome.codex"), target, "/out", { claude: launch.claude }, "darwin"),
+    ).toBe("provider-launch-not-configured");
     expect(env("builtin.codex")).toMatchObject({ F5_CODEX_NATIVE_LIVE: "computer" });
     expect(env("chrome.claude")).toMatchObject({ F5_CLAUDE_CHROME_LIVE: "1" });
     expect(env("builtin.claude")).toBe("supported-launch-consent-veto-unavailable");

@@ -1,4 +1,4 @@
-import { useCallback, useState, type MouseEvent } from "react";
+import { memo, useCallback, useState, type MouseEvent } from "react";
 import { cn } from "../../lib/utils";
 import {
   resolveTimelineTurnRailHeightStyle,
@@ -12,7 +12,9 @@ function timelineTurnRailEventTargetsPreview(target: EventTarget): boolean {
   return target instanceof Element && target.closest("[data-turn-rail-preview]") !== null;
 }
 
-export function TimelineTurnRail(props: {
+// Memoized: a long thread has one tick per turn, and the timeline re-renders on
+// every scroll and stream update while these props rarely change.
+export const TimelineTurnRail = memo(function TimelineTurnRail(props: {
   items: ReadonlyArray<TimelineTurnRailItem>;
   hasPersistentGutter: boolean;
   hitStripWidth: number;
@@ -196,4 +198,4 @@ export function TimelineTurnRail(props: {
       </div>
     </div>
   );
-}
+});

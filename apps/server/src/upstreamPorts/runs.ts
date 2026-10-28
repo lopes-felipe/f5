@@ -9,6 +9,7 @@ import {
   type UpstreamMembershipCommit,
   type UpstreamProjectConfig,
   type UpstreamTopicState,
+  type UpstreamTopic,
 } from "@t3tools/contracts";
 import {
   addDays,
@@ -50,6 +51,9 @@ import {
   type ChunkCommit,
   type PriorCommit,
   type TriageCall,
+  type GroupDecision,
+  mergeSuggestions,
+  autoDecision,
 } from "./triage.ts";
 import type { DerivedRow, LedgerView } from "./view.ts";
 
@@ -72,6 +76,7 @@ export interface ViewSnapshot {
 }
 
 export interface RunContext {
+  readonly recordRetriage?: (entries: ReadonlyArray<RetriageEntry>) => Effect.Effect<void, Error>;
   readonly cwd: string;
   readonly config: UpstreamProjectConfig;
   readonly baseBranch: string;
@@ -157,8 +162,153 @@ const withChunkRetry = <A>(effect: Effect.Effect<A, GitCommandError>) =>
   );
 
 interface ChunkPlan {
+  readonly topics?: ReadonlyArray<UpstreamTopic>;
   readonly load: Effect.Effect<ReadonlyArray<FirstParentCommit>, RunFailure>;
   readonly source: CommitSource;
+}
+
+export interface RetriageEntry {
+  readonly topicId: string;
+  readonly epoch: number;
+  readonly title: string;
+  readonly summary: string;
+  readonly suggestion: UpstreamTopic["suggestion"] | null;
+  readonly decision: GroupDecision | null;
+}
+
+/** Both entrypoints share chunk evidence, revert safeguards and run budgets. */
+export const runRetriage = (context: RunContext, initial: RunRecord): Effect.Effect<RunRecord> =>
+  runTriage(context, { ...initial, kind: "retriage" });
+
+export function buildChunkCommits(
+  context: RunContext,
+  initial: Pick<RunRecord, "kind" | "projectId">,
+  source: CommitSource,
+  chunkCommits: ReadonlyArray<FirstParentCommit>,
+  snapshot: ViewSnapshot,
+  forkPaths: ReadonlySet<string>,
+  warnings: { prBodies: boolean },
+) {
+  return Effect.gen(function* () {
+    const { cwd, git } = context;
+    const shas = chunkCommits.map((commit) => commit.sha);
+    const archiveEntries = context.archive ? archiveEntriesBySha(context.archive) : new Map();
+    const [numstat, patches] = yield* Effect.all([
+      git.streamNumstat(cwd, source).pipe(withChunkRetry),
+      git.streamPatches(cwd, source).pipe(withChunkRetry),
+    ]);
+    const prs = [
+      ...new Set(
+        chunkCommits
+          .map((commit) => prNumberFromSubject(commit.subject))
+          .filter((pr): pr is number => pr !== null),
+      ),
+    ];
+    let bodies = new Map<number, string>();
+    if (context.triage && prs.length) {
+      if (context.prBodies) {
+        bodies = yield* context.prBodies(prs).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("upstreamPorts.run.prBodies.failed", {
+              detail: describe(error),
+            }).pipe(Effect.as(new Map<number, string>())),
+          ),
+        );
+      } else if (!warnings.prBodies) {
+        warnings.prBodies = true;
+        yield* Effect.logWarning("upstreamPorts.run.prBodies.unavailable", {
+          projectId: initial.projectId,
+        });
+      }
+    }
+    const commits: ChunkCommit[] = chunkCommits.map((commit) => {
+      const stat = numstat.get(commit.sha);
+      const pr = prNumberFromSubject(commit.subject);
+      const entry = archiveEntries.get(commit.sha);
+      const hints = [
+        ...(entry?.plannedWorkstream
+          ? [`earlier catch-up planned workstream: ${entry.plannedWorkstream}`]
+          : []),
+        ...(entry?.reason ? [`earlier catch-up note: ${truncateText(entry.reason, 300)}`] : []),
+      ];
+      const files = (stat?.files ?? [])
+        .filter(
+          (file) =>
+            !context.rules.ignoredPathPrefixes.some((prefix) => file.path.startsWith(prefix)),
+        )
+        .map((file) => ({ ...file, existsInFork: forkPaths.has(file.path) }));
+      return {
+        sha: commit.sha,
+        subject: initial.kind === "legacy" && entry ? entry.subject : commit.subject,
+        body: commit.body,
+        pr,
+        paths: stat?.paths ?? [],
+        digest: {
+          sha: commit.sha,
+          subject: commit.subject,
+          pr,
+          parentCount: commit.parents.length,
+          files,
+          totalFiles: stat?.totalFiles ?? 0,
+          excerpt: patches.get(commit.sha) ?? "",
+          prBody:
+            pr !== null && bodies.has(pr)
+              ? truncateText(bodies.get(pr)!, TRIAGE_MAX_PR_BODY_CHARS)
+              : null,
+          hints,
+        },
+      };
+    });
+
+    // Revert targets outside the chunk.
+    const inChunk = new Set(shas);
+    const memberTopic = new Map<string, string>();
+    for (const [topicId, members] of snapshot.view.members)
+      for (const member of members) memberTopic.set(member.sha, topicId);
+    const external = [
+      ...new Set(
+        commits
+          .map((commit) => findRevertTarget(commit.body))
+          .filter(
+            (sha): sha is string =>
+              sha !== null &&
+              !inChunk.has(sha) &&
+              (memberTopic.has(sha) || archiveEntries.has(sha)),
+          ),
+      ),
+    ];
+    const externalStat = external.length
+      ? yield* git
+          .streamNumstat(cwd, { kind: "shas", shas: external })
+          .pipe(Effect.orElseSucceed(() => new Map()))
+      : new Map();
+    const rowsById = new Map(snapshot.rows.map((row) => [row.topic.id, row]));
+    const prior = new Map<string, PriorCommit>();
+    for (const sha of external) {
+      const paths = externalStat.get(sha)?.paths ?? null;
+      const topicId = memberTopic.get(sha);
+      const row = topicId ? rowsById.get(topicId) : undefined;
+      if (row)
+        prior.set(sha, {
+          kind: "topic",
+          topicId: row.topic.id,
+          state: row.state,
+          status: row.topic.status,
+          paths,
+        });
+      else {
+        const entry = archiveEntries.get(sha);
+        if (entry)
+          prior.set(sha, {
+            kind: "archive",
+            disposition: entry.disposition,
+            subject: entry.subject,
+            paths,
+          });
+      }
+    }
+    return { commits, prior };
+  });
 }
 
 export function runTriage(context: RunContext, initial: RunRecord): Effect.Effect<RunRecord> {
@@ -182,7 +332,7 @@ export function runTriage(context: RunContext, initial: RunRecord): Effect.Effec
     const baseRef = `refs/remotes/origin/${context.baseBranch}`;
 
     // 2. Fetch and anchor.
-    if (initial.kind === "upstream")
+    if (initial.kind !== "legacy")
       yield* git.fetchBranch(cwd, config.remote, config.branch).pipe(withChunkRetry);
     const head =
       initial.kind === "upstream" ? yield* git.revParse(cwd, remoteRef).pipe(withChunkRetry) : null;
@@ -225,6 +375,40 @@ export function runTriage(context: RunContext, initial: RunRecord): Effect.Effec
       }
       remainingAfter = all.length;
       yield* update({ targetSha: head, remainingCount: all.length });
+    } else if (initial.kind === "retriage") {
+      const targets = snapshot.rows
+        .filter(
+          (row) =>
+            row.state === "inbox" &&
+            row.topic.status === "inbox" &&
+            row.topic.suggestion?.triageError,
+        )
+        .toSorted((a, b) => a.topic.createdAt.localeCompare(b.topic.createdAt))
+        .map((row) => row.topic);
+      chunks = [];
+      let topics: UpstreamTopic[] = [];
+      let shas: string[] = [];
+      const flush = () => {
+        if (!topics.length) return;
+        const next = shas;
+        chunks.push({
+          topics,
+          source: { kind: "shas", shas: next },
+          load: git.commitsBySha(cwd, next).pipe(withChunkRetry),
+        });
+        topics = [];
+        shas = [];
+      };
+      for (const topic of targets) {
+        const members = (snapshot.view.members.get(topic.id) ?? []).map((member) => member.sha);
+        if (shas.length + members.length > limits.chunkSize) flush();
+        topics.push(topic);
+        shas.push(...members);
+        if (shas.length >= limits.chunkSize) flush();
+      }
+      flush();
+      remainingAfter = targets.length;
+      yield* update({ remainingCount: targets.length });
     } else {
       if (!context.archive)
         return yield* runFailure("no-archive", "There is no archive to triage.");
@@ -251,7 +435,7 @@ export function runTriage(context: RunContext, initial: RunRecord): Effect.Effec
       initial.kind === "legacy"
         ? yield* git.reachableSet(cwd, baseRef).pipe(Effect.orElseSucceed(() => new Set<string>()))
         : new Set<string>();
-    let prBodiesWarned = false;
+    const warnings = { prBodies: false };
     const circuit = { consecutiveFailures: 0 };
 
     for (const chunk of chunks) {
@@ -262,120 +446,15 @@ export function runTriage(context: RunContext, initial: RunRecord): Effect.Effec
         break;
       const chunkCommits = yield* chunk.load;
       const shas = chunkCommits.map((commit) => commit.sha);
-      const [numstat, patches] = yield* Effect.all([
-        git.streamNumstat(cwd, chunk.source).pipe(withChunkRetry),
-        git.streamPatches(cwd, chunk.source).pipe(withChunkRetry),
-      ]);
-      const prs = [
-        ...new Set(
-          chunkCommits
-            .map((commit) => prNumberFromSubject(commit.subject))
-            .filter((pr): pr is number => pr !== null),
-        ),
-      ];
-      let bodies = new Map<number, string>();
-      if (context.triage && prs.length) {
-        if (context.prBodies) {
-          bodies = yield* context.prBodies(prs).pipe(
-            Effect.catch((error) =>
-              Effect.logWarning("upstreamPorts.run.prBodies.failed", {
-                detail: describe(error),
-              }).pipe(Effect.as(new Map<number, string>())),
-            ),
-          );
-        } else if (!prBodiesWarned) {
-          prBodiesWarned = true;
-          yield* Effect.logWarning("upstreamPorts.run.prBodies.unavailable", {
-            projectId: initial.projectId,
-          });
-        }
-      }
-      const commits: ChunkCommit[] = chunkCommits.map((commit) => {
-        const stat = numstat.get(commit.sha);
-        const pr = prNumberFromSubject(commit.subject);
-        const entry = archiveEntries.get(commit.sha);
-        const hints = [
-          ...(entry?.plannedWorkstream
-            ? [`earlier catch-up planned workstream: ${entry.plannedWorkstream}`]
-            : []),
-          ...(entry?.reason ? [`earlier catch-up note: ${truncateText(entry.reason, 300)}`] : []),
-        ];
-        const files = (stat?.files ?? [])
-          .filter(
-            (file) =>
-              !context.rules.ignoredPathPrefixes.some((prefix) => file.path.startsWith(prefix)),
-          )
-          .map((file) => ({ ...file, existsInFork: forkPaths.has(file.path) }));
-        return {
-          sha: commit.sha,
-          subject: initial.kind === "legacy" && entry ? entry.subject : commit.subject,
-          body: commit.body,
-          pr,
-          paths: stat?.paths ?? [],
-          digest: {
-            sha: commit.sha,
-            subject: commit.subject,
-            pr,
-            parentCount: commit.parents.length,
-            files,
-            totalFiles: stat?.totalFiles ?? 0,
-            excerpt: patches.get(commit.sha) ?? "",
-            prBody:
-              pr !== null && bodies.has(pr)
-                ? truncateText(bodies.get(pr)!, TRIAGE_MAX_PR_BODY_CHARS)
-                : null,
-            hints,
-          },
-        };
-      });
-
-      // Revert targets outside the chunk.
-      const inChunk = new Set(shas);
-      const memberTopic = new Map<string, string>();
-      for (const [topicId, members] of snapshot.view.members)
-        for (const member of members) memberTopic.set(member.sha, topicId);
-      const external = [
-        ...new Set(
-          commits
-            .map((commit) => findRevertTarget(commit.body))
-            .filter(
-              (sha): sha is string =>
-                sha !== null &&
-                !inChunk.has(sha) &&
-                (memberTopic.has(sha) || archiveEntries.has(sha)),
-            ),
-        ),
-      ];
-      const externalStat = external.length
-        ? yield* git
-            .streamNumstat(cwd, { kind: "shas", shas: external })
-            .pipe(Effect.orElseSucceed(() => new Map()))
-        : new Map();
-      const rowsById = new Map(snapshot.rows.map((row) => [row.topic.id, row]));
-      const prior = new Map<string, PriorCommit>();
-      for (const sha of external) {
-        const paths = externalStat.get(sha)?.paths ?? null;
-        const topicId = memberTopic.get(sha);
-        const row = topicId ? rowsById.get(topicId) : undefined;
-        if (row)
-          prior.set(sha, {
-            kind: "topic",
-            topicId: row.topic.id,
-            state: row.state,
-            status: row.topic.status,
-            paths,
-          });
-        else {
-          const entry = archiveEntries.get(sha);
-          if (entry)
-            prior.set(sha, {
-              kind: "archive",
-              disposition: entry.disposition,
-              subject: entry.subject,
-              paths,
-            });
-        }
-      }
+      const { commits, prior } = yield* buildChunkCommits(
+        context,
+        initial,
+        chunk.source,
+        chunkCommits,
+        snapshot,
+        forkPaths,
+        warnings,
+      );
 
       const presetGroups =
         initial.kind === "legacy" && context.archive
@@ -393,12 +472,15 @@ export function runTriage(context: RunContext, initial: RunRecord): Effect.Effec
       const triaged = yield* triageChunk({
         repository: config.repository,
         policy: context.policy,
-        rules: context.rules,
+        rules: {
+          ...context.rules,
+          reasonKeys: context.rules.reasonKeys.filter((key) => key !== "not-applicable"),
+        },
         model: context.model,
         commits,
         prior,
         openTopics: openTopicRows(snapshot.rows, context.today()),
-        attachable: attachableTopics(snapshot.rows),
+        attachable: initial.kind === "retriage" ? new Set() : attachableTopics(snapshot.rows),
         presetGroups,
         triage: context.triage,
         circuit,
@@ -414,6 +496,69 @@ export function runTriage(context: RunContext, initial: RunRecord): Effect.Effec
           runFailure("provider-unavailable", error.detail),
         ),
       );
+
+      if (initial.kind === "retriage") {
+        const entries: RetriageEntry[] = [];
+        for (const topic of chunk.topics ?? []) {
+          const shas = new Set(
+            (snapshot.view.members.get(topic.id) ?? []).map((member) => member.sha),
+          );
+          const groups = triaged.groups.filter((group) =>
+            group.commits.some((sha) => shas.has(sha)),
+          );
+          if (
+            groups.length === 0 ||
+            [...shas].some((sha) => !groups.some((group) => group.commits.includes(sha))) ||
+            groups.some(
+              (group) => group.suggestion?.triageError || (!group.suggestion && !group.decision),
+            )
+          )
+            continue;
+          const suggestions = groups.flatMap((group) =>
+            group.suggestion ? [group.suggestion] : [],
+          );
+          const suggestion = suggestions.length
+            ? suggestions.slice(1).reduce(mergeSuggestions, suggestions[0]!)
+            : null;
+          const decisions = groups.flatMap((group) => (group.decision ? [group.decision] : []));
+          const revertChain = groups.some((group) => group.revertChain);
+          const decision =
+            groups.length === 1
+              ? groups[0]!.decision
+              : decisions.length === groups.length &&
+                  decisions.every((decision) => decision.reasonKey === decisions[0]!.reasonKey)
+                ? decisions[0]!
+                : !revertChain && suggestions.length === groups.length
+                  ? autoDecision({ suggestion, revertChain: false }, context.rules)
+                  : null;
+          const ownGroup =
+            groups.length === 1 && groups[0]!.commits.every((sha) => shas.has(sha))
+              ? groups[0]
+              : null;
+          entries.push({
+            topicId: topic.id,
+            epoch: topic.epoch,
+            title: ownGroup?.title ?? topic.title,
+            summary: ownGroup?.summary ?? topic.summary,
+            suggestion,
+            decision,
+          });
+        }
+        if (!context.recordRetriage)
+          return yield* runFailure("record", "Re-triage recording is unavailable.");
+        yield* context
+          .recordRetriage(entries)
+          .pipe(Effect.mapError((error) => runFailure("record", describe(error))));
+        remainingAfter -= entries.length;
+        yield* update({
+          commitCount: run.commitCount + shas.length,
+          inboxCount: run.inboxCount + entries.filter((entry) => !entry.decision).length,
+          autoDecidedCount: run.autoDecidedCount + entries.filter((entry) => entry.decision).length,
+          llmCalls: run.llmCalls + triaged.llmCalls,
+          remainingCount: remainingAfter,
+        });
+        continue;
+      }
 
       // 8. Record against the current view.
       snapshot = yield* context.currentView.pipe(
@@ -490,6 +635,18 @@ export function runTriage(context: RunContext, initial: RunRecord): Effect.Effec
         yield* Effect.logWarning("upstreamPorts.run.policyTruncated", {
           projectId: initial.projectId,
         });
+    }
+    if (initial.kind === "retriage") {
+      const fresh = yield* context.currentView.pipe(
+        Effect.mapError((error) => runFailure("base", describe(error))),
+      );
+      remainingAfter = fresh.rows.filter(
+        (row) =>
+          row.state === "inbox" &&
+          row.topic.status === "inbox" &&
+          row.topic.suggestion?.triageError,
+      ).length;
+      yield* update({ remainingCount: remainingAfter });
     }
     return remainingAfter > 0 ? "partial" : "succeeded";
   });

@@ -14,6 +14,7 @@ import {
   type OrchestrationEvent,
 } from "@t3tools/contracts";
 import { Cause, Effect, Layer, Scope, Stream } from "effect";
+import { makeOperationGate } from "../../provider/operationGate.ts";
 import { makeBackgroundWorker } from "../../backgroundWorker.ts";
 
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
@@ -1017,11 +1018,31 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       );
     });
 
+  const ensureReviewerThreads = (workflow: CodeReviewWorkflow, snapshot: OrchestrationReadModel) =>
+    Effect.forEach(
+      [workflow.reviewerA, workflow.reviewerB],
+      (reviewer) =>
+        reviewer.status !== "pending" ||
+        reviewer.dispatchCommandId ||
+        snapshot.threads.some((thread) => thread.id === reviewer.threadId)
+          ? Effect.void
+          : createReviewerThread({
+              orchestrationEngine,
+              workflow,
+              reviewer,
+              threadId: reviewer.threadId,
+              title: reviewer.label,
+              createdAt: workflow.createdAt,
+            }),
+      { discard: true },
+    );
+
   const reconcileStuckWorkflow = (workflow: CodeReviewWorkflow, snapshot: OrchestrationReadModel) =>
     Effect.gen(function* () {
       if (isDeletedWorkflow(workflow)) {
         return;
       }
+      if (!isArchivedWorkflow(workflow)) yield* ensureReviewerThreads(workflow, snapshot);
       const updatedAt = new Date().toISOString();
       let reconciledWorkflow = workflow;
 
@@ -1436,7 +1457,38 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
     ),
   );
 
-  const createWorkflow: CodeReviewWorkflowServiceShape["createWorkflow"] = (rawInput) =>
+  const withCreationLock = makeOperationGate<CodeReviewWorkflowId>();
+  const createWorkflow: CodeReviewWorkflowServiceShape["createWorkflow"] = (rawInput, options) => {
+    const id = options?.workflowId;
+    const create = Effect.gen(function* () {
+      if (id) {
+        const snapshot = yield* orchestrationEngine.getReadModel();
+        const existing = snapshot.codeReviewWorkflows.find((workflow) => workflow.id === id);
+        if (existing) {
+          if (isDeletedWorkflow(existing))
+            return yield* Effect.fail(new Error("Code review workflow " + id + " was deleted."));
+          if (!isArchivedWorkflow(existing)) {
+            yield* ensureReviewerThreads(existing, snapshot);
+            yield* startPendingReviewers(existing, new Date().toISOString());
+          }
+          return id;
+        }
+      }
+      return yield* createNewWorkflow(rawInput, id);
+    });
+    if (!id)
+      return create.pipe(
+        Effect.mapError((error) => (error instanceof Error ? error : new Error(String(error)))),
+      );
+    return withCreationLock(id, create).pipe(
+      Effect.mapError((error) => new Error(error instanceof Error ? error.message : String(error))),
+    );
+  };
+
+  const createNewWorkflow = (
+    rawInput: Parameters<CodeReviewWorkflowServiceShape["createWorkflow"]>[0],
+    id?: CodeReviewWorkflowId,
+  ) =>
     Effect.gen(function* () {
       const providers = yield* getWorkflowProviders;
       const input = {
@@ -1488,7 +1540,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
           .map((workflow) => workflow.slug),
       );
       const now = new Date().toISOString();
-      const workflowId = CodeReviewWorkflowId.makeUnsafe(crypto.randomUUID());
+      const workflowId = id ?? CodeReviewWorkflowId.makeUnsafe(crypto.randomUUID());
       const reviewThreadIdA = ThreadId.makeUnsafe(crypto.randomUUID());
       const reviewThreadIdB = ThreadId.makeUnsafe(crypto.randomUUID());
       const titleSourceText = input.branch

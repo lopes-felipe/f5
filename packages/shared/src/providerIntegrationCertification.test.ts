@@ -2,10 +2,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   INTEGRATION_ACCEPTANCE_CHECKS,
+  CODEX_CHROME_DRAIN_TOOL,
   INTEGRATION_REQUIRED_ASSERTIONS,
   PROVIDER_INTEGRATION_RECORDS,
   acceptanceMismatches,
   certifiedIntegrationRecord,
+  codexParentIdentifierAllowed,
   integrationTemplateRecord,
   newestRecordsFirst,
   evidenceMismatches,
@@ -32,6 +34,15 @@ const certified: ClaudeChromeRecord = {
 };
 
 describe("provider integration certification records", () => {
+  it("accepts only OpenAI's Codex signing identifiers as node_repl's parent", () => {
+    expect(codexParentIdentifierAllowed("codex")).toBe(true);
+    expect(codexParentIdentifierAllowed("com.openai.codex.cli")).toBe(true);
+    // The ChatGPT app itself and look-alikes are not a Codex parent.
+    expect(codexParentIdentifierAllowed("com.openai.codex")).toBe(false);
+    expect(codexParentIdentifierAllowed("codex-evil")).toBe(false);
+    expect(codexParentIdentifierAllowed("node")).toBe(false);
+  });
+
   it("has unique record ids", () => {
     expect(new Set(allRecords.map((record) => record.id)).size).toBe(allRecords.length);
   });
@@ -64,30 +75,33 @@ describe("provider integration certification records", () => {
     expect(recordCertifies({ ...certified, withdrawn: "SDK 0.3.296" })).toBe(false);
   });
 
-  it("certifies a Codex Chrome record only when the proxy could actually use it", () => {
+  it("certifies a Codex Chrome record only when the session could actually use it", () => {
     const codex = PROVIDER_INTEGRATION_RECORDS["codex-chrome"][0]!;
-    const schema = { type: "object" };
     const complete: CodexChromeRecord = {
       ...codex,
+      versions: { appMin: "26.1016.62342", pluginMin: "26.1016.62342", codexMin: "0.163.0" },
       evidenceId: "evidence-2",
       evidenceCommit: "c".repeat(40),
-      toolNames: [...codex.identity.allowedTools],
+      toolNames: [...codex.identity.allowedTools, CODEX_CHROME_DRAIN_TOOL],
       toolInventorySha256: "d".repeat(64),
-      identity: {
-        ...codex.identity,
-        advertisedTools: codex.identity.allowedTools.map((name) => ({ name, inputSchema: schema })),
-      },
+      identity: { ...codex.identity, admission: "session" },
     };
     expect(recordCertifies(complete)).toBe(true);
-    // Names without the digest or the advertised definitions: every call would be denied.
+    // Without the digest, Codex's inventory can't be verified.
     const { toolInventorySha256: _inventory, ...noDigest } = complete;
     expect(recordCertifies(noDigest)).toBe(false);
+    // The drain hook is part of the inventory the session verifies.
+    expect(recordCertifies({ ...complete, toolNames: [...codex.identity.allowedTools] })).toBe(
+      false,
+    );
+    // Without a Codex floor, any Codex build would run it.
+    expect(recordCertifies({ ...complete, versions: { appMin: "1", pluginMin: "1" } })).toBe(false);
+    // This build runs session admission only.
     expect(
-      recordCertifies({
-        ...complete,
-        identity: { ...complete.identity, advertisedTools: [{ name: "js", inputSchema: schema }] },
-      }),
-    ).toBe(codex.identity.allowedTools.every((name) => name === "js"));
+      recordCertifies({ ...complete, identity: { ...complete.identity, admission: "per-call" } }),
+    ).toBe(false);
+    const { admission: _admission, ...noAdmission } = complete.identity;
+    expect(recordCertifies({ ...complete, identity: noAdmission })).toBe(false);
   });
 
   it("picks the highest certified floor at or below the installed version", () => {
@@ -95,15 +109,12 @@ describe("provider integration certification records", () => {
     const floor = (appMin: string, inventory: string): CodexChromeRecord => ({
       ...codex,
       id: `codex-chrome-darwin-arm64-${appMin}`,
-      versions: { appMin, pluginMin: appMin },
+      versions: { appMin, pluginMin: appMin, codexMin: "0.163.0" },
       evidenceId: `evidence-${appMin}`,
       evidenceCommit: "c".repeat(40),
-      toolNames: [...codex.identity.allowedTools],
+      toolNames: [...codex.identity.allowedTools, CODEX_CHROME_DRAIN_TOOL],
       toolInventorySha256: inventory.repeat(64),
-      identity: {
-        ...codex.identity,
-        advertisedTools: codex.identity.allowedTools.map((name) => ({ name, inputSchema: {} })),
-      },
+      identity: { ...codex.identity, admission: "session" },
     });
     // Id order ("26.1020…" < "26.999…") is not version order.
     const older = floor("26.999.1", "a");
@@ -213,20 +224,16 @@ describe("provider integration certification records", () => {
     );
   });
 
-  it("requires the advertised Codex tools to be exactly the observed ones", () => {
+  it("requires Codex Chrome evidence for the record's admission mode and Codex floor", () => {
     const codex = PROVIDER_INTEGRATION_RECORDS["codex-chrome"][0]!;
-    const schemas = codex.identity.allowedTools.map((name) => ({
-      name,
-      description: `Run ${name}`,
-      inputSchema: { type: "object" },
-    }));
     const record: CodexChromeRecord = {
       ...codex,
+      versions: { appMin: "26.1016.62342", pluginMin: "26.1016.62342", codexMin: "0.163.0" },
       evidenceId: "evidence-3",
       evidenceCommit: "c".repeat(40),
-      toolNames: codex.identity.allowedTools.map((name) => name),
+      toolNames: [...codex.identity.allowedTools, CODEX_CHROME_DRAIN_TOOL],
       toolInventorySha256: "d".repeat(64),
-      identity: { ...codex.identity, advertisedTools: schemas },
+      identity: { ...codex.identity, admission: "session" },
     };
     const report: IntegrationEvidenceReport = {
       integration: "codex-chrome",
@@ -234,27 +241,32 @@ describe("provider integration certification records", () => {
       platform: record.platform,
       arch: record.arch,
       versions: { ...record.versions },
+      admission: "session",
       assertions: Object.fromEntries(
         INTEGRATION_REQUIRED_ASSERTIONS["codex-chrome"].map((name) => [name, true]),
       ),
       toolNames: record.toolNames!,
       toolInventorySha256: "d".repeat(64),
-      toolSchemas: schemas,
       sourceCommit: "c".repeat(40),
       dirty: false,
     };
     expect(evidenceMismatches(record, report)).toEqual([]);
-    // A hand-edited description, shown before consent, no longer matches the evidence.
-    const edited = schemas.map((tool, index) =>
-      index ? tool : { ...tool, description: "Totally safe" },
-    );
+    const { admission: _admission, ...withoutAdmission } = report;
+    expect(evidenceMismatches(record, withoutAdmission)).toEqual(["admission"]);
     expect(
-      evidenceMismatches(
-        { ...record, identity: { ...record.identity, advertisedTools: edited } },
-        report,
-      ),
-    ).toEqual(["advertisedTools"]);
-    expect(evidenceMismatches(record, { ...report, toolSchemas: [] })).toEqual(["advertisedTools"]);
+      evidenceMismatches(record, {
+        ...report,
+        versions: { ...report.versions, codexMin: "0.162.1" },
+      }),
+    ).toEqual(["versions.codexMin"]);
+    // Session admission is certified by stopping on policy-off, and by the parent check.
+    for (const assertion of ["policy-off-kills", "codex-parent-verified"])
+      expect(
+        evidenceMismatches(record, {
+          ...report,
+          assertions: { ...report.assertions, [assertion]: false },
+        }),
+      ).toEqual([`assertion ${assertion}`]);
   });
 
   it("accepts a release only for its exact artifact, records and passed checks", () => {

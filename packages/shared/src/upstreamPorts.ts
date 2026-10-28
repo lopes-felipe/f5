@@ -766,6 +766,13 @@ export type DecisionFields = Pick<UpstreamTopic, "status" | "epoch"> &
 
 export type UpstreamLedgerOp =
   | {
+      readonly kind: "suggestion";
+      readonly topicId: string;
+      readonly title: string;
+      readonly summary: string;
+      readonly suggestion?: UpstreamTopic["suggestion"];
+    }
+  | {
       readonly kind: "interval";
       readonly file: IntervalFile;
       readonly topics: ReadonlyArray<UpstreamTopic>;
@@ -796,6 +803,17 @@ export function applyDecisionFields(topic: UpstreamTopic, fields: DecisionFields
 
 /** True when the op's effect is already in the ledger, compared by content. */
 export function opEffectPresent(ledger: UpstreamLedger, op: UpstreamLedgerOp): boolean {
+  if (op.kind === "suggestion") {
+    const topic = ledger.topics.find((candidate) => candidate.id === op.topicId);
+    return (
+      topic !== undefined &&
+      canonicalJson({
+        title: topic.title,
+        summary: topic.summary,
+        suggestion: topic.suggestion,
+      }) === canonicalJson({ title: op.title, summary: op.summary, suggestion: op.suggestion })
+    );
+  }
   if (op.kind === "decision") {
     const topic = ledger.topics.find((candidate) => candidate.id === op.topicId);
     return (
@@ -826,6 +844,21 @@ export function applyOps(base: UpstreamLedger, ops: ReadonlyArray<UpstreamLedger
   for (const op of ops) {
     const current = { intervals, legacy, topics: [...topics.values()] };
     if (opEffectPresent(current, op)) continue;
+    if (op.kind === "suggestion") {
+      const topic = topics.get(op.topicId);
+      if (!topic) {
+        conflicts.push(`suggestion for unknown topic ${op.topicId}`);
+        continue;
+      }
+      const { suggestion: _old, ...rest } = topic;
+      topics.set(op.topicId, {
+        ...rest,
+        title: op.title,
+        summary: op.summary,
+        ...(op.suggestion ? { suggestion: op.suggestion } : {}),
+      });
+      continue;
+    }
     if (op.kind === "decision") {
       const topic = topics.get(op.topicId);
       if (!topic) {

@@ -20,7 +20,8 @@
       ],
       "hostIdentifier": "extension-host",
       "mcpServerName": "node_repl",
-      "allowedTools": ["js", "js_reset"]
+      "allowedTools": ["js", "js_reset"],
+      "admission": "session"
     },
     "browsers": [
       {

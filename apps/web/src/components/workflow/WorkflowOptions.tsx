@@ -39,6 +39,7 @@ export function WorkflowOptions(props: {
 
 /** A labelled checkbox with a one-line explanation. */
 export function WorkflowOptionCheckbox(props: {
+  readonly disabled?: boolean;
   readonly checked: boolean;
   readonly onCheckedChange: (checked: boolean) => void;
   readonly label: string;
@@ -47,6 +48,7 @@ export function WorkflowOptionCheckbox(props: {
   return (
     <label className="flex items-start gap-2.5">
       <Checkbox
+        disabled={props.disabled}
         checked={props.checked}
         onCheckedChange={(checked) => props.onCheckedChange(checked === true)}
         className="mt-0.5"

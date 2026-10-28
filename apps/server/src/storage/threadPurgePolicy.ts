@@ -100,11 +100,31 @@ export const threadPurgePolicy: Readonly<
     kind: "retain",
     reason: "Start-port idempotency receipts must survive thread deletion.",
   },
+  upstream_port_queue: {
+    kind: "retain",
+    reason: "Queue ownership, submission identities and progress history survive thread purge.",
+  },
+  upstream_port_outcome_checks: {
+    kind: "retain",
+    reason: "Outcome checks fence preexisting ports and prevent replay after thread purge.",
+  },
   upstream_port_links: { kind: "explicit" },
+  upstream_port_reviews: { kind: "explicit" },
+  attachment_uploads: {
+    kind: "retain",
+    reason: "Draft uploads expire independently; attachment cleanup owns their files and leases.",
+  },
+  bot_tasks: {
+    kind: "retain",
+    reason:
+      "Task board records have an independent lifecycle; source threads are optional context.",
+  },
 };
 
 /** Static SQL handlers; schema introspection must never determine what gets deleted. */
 export const threadPurgeHandlers = {
+  upstream_port_reviews: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
+    sql`DELETE FROM upstream_port_reviews WHERE port_thread_id = ${threadId} RETURNING rowid`,
   native_history_retired_turns: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
     sql`DELETE FROM native_history_retired_turns WHERE rowid IN (SELECT rowid FROM native_history_retired_turns WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
   checkpoint_diff_blobs: (sql: SqlClient.SqlClient, threadId: ThreadId) =>

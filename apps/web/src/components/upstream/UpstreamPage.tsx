@@ -1,5 +1,5 @@
 import {
-  UPSTREAM_MAX_PORT_TOPICS,
+  type UpstreamPortQueueTarget,
   type ProjectId,
   type UpstreamDecideResult,
   type UpstreamDecision,
@@ -47,6 +47,7 @@ import { UpstreamConfigEmptyState } from "./UpstreamConfigEmptyState";
 import { UpstreamHeader } from "./UpstreamHeader";
 import { UpstreamListEmpty } from "./UpstreamListEmpty";
 import { UpstreamTopicDetail } from "./UpstreamTopicDetail";
+import { useSaveUpstreamSettings } from "./useSaveUpstreamSettings";
 import {
   UpstreamTopicList,
   UpstreamTopicListSkeleton,
@@ -79,7 +80,6 @@ import {
   reconcileFocus,
   runDisabledReason,
   selectRange,
-  startAllReady,
   toggleId,
   topicCount,
   topicStates,
@@ -105,7 +105,7 @@ const EMPTY_SET: ReadonlySet<string> = new Set();
 function describeRun(run: UpstreamOverview["lastRun"]): string | null {
   if (!run) return null;
   const parts = [
-    `${run.kind === "legacy" ? "Legacy run" : "Last run"} ${run.status}`,
+    `${run.kind === "retriage" ? "Re-triage run" : run.kind === "legacy" ? "Legacy run" : "Last run"} ${run.status}`,
     formatRelativeTimeLabel(run.finishedAt ?? run.startedAt),
     `${run.commitCount} commits`,
     `${run.inboxCount} to review`,
@@ -144,6 +144,7 @@ export function UpstreamPage(props: {
   const projectsQuery = useQuery(upstreamProjectsQueryOptions());
   const projects = projectsQuery.data?.projects ?? [];
   const projectId = props.search.project ?? projects[0]?.projectId ?? null;
+  const { save: saveUpstreamSettings } = useSaveUpstreamSettings(projectId);
   const list = props.search.list ?? "inbox";
   const sort = props.search.sort ?? null;
   // Keyed by value: the router hands back new arrays for unchanged filters.
@@ -179,7 +180,9 @@ export function UpstreamPage(props: {
 
   useEffect(() => {
     if (projectId && hasStaleTopicPages(topicsQuery.data))
-      void queryClient.resetQueries({ queryKey: upstreamPortsQueryKeys.topics(projectId, list, filter, sort) });
+      void queryClient.resetQueries({
+        queryKey: upstreamPortsQueryKeys.topics(projectId, list, filter, sort),
+      });
   }, [topicsQuery.data, projectId, list, filter, sort, queryClient]);
 
   const [selected, setSelected] = useState<ReadonlySet<string>>(EMPTY_SET);
@@ -195,6 +198,15 @@ export function UpstreamPage(props: {
   /** The view a selection belongs to; set while rendering, before the effect that clears the selection. */
   const scopeRef = useRef("");
   scopeRef.current = JSON.stringify([projectId, list, filterKey, sort]);
+  const previousLoaded = useRef({ scope: scopeRef.current, ids });
+  useEffect(() => {
+    const previous = previousLoaded.current;
+    previousLoaded.current = { scope: scopeRef.current, ids };
+    if (previous.scope !== scopeRef.current) return;
+    const current = new Set(ids);
+    const departed = new Set(previous.ids.filter((id) => !current.has(id)));
+    if (departed.size) setSelected((selection) => new Set([...selection].filter((id) => !departed.has(id))));
+  }, [ids]);
   const [selectingAll, setSelectingAll] = useState(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   /** Topics with a decision in flight: dimmed, and skipped by further actions. */
@@ -204,9 +216,18 @@ export function UpstreamPage(props: {
   /** Runs, publication, Start port and the other non-decision actions in flight; a count, since they can overlap. */
   const [busyCount, setBusyCount] = useState(0);
   const busy = busyCount > 0;
-  const [skipDialog, setSkipDialog] = useState<{ ids: string[]; preselected: string | null; reason?: string } | null>(null);
+  const [skipDialog, setSkipDialog] = useState<{
+    ids: string[];
+    preselected: string | null;
+    reason?: string;
+  } | null>(null);
   const [declineIds, setDeclineIds] = useState<string[] | null>(null);
-  const [portRequest, setPortRequest] = useState<{ ids: string[]; note: string | null } | null>(null);
+  const [portRequest, setPortRequest] = useState<{
+    ids: string[];
+    note: string | null;
+    target?: UpstreamPortQueueTarget;
+    queueInitially?: boolean;
+  } | null>(null);
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const listRef = useRef<UpstreamTopicListHandle | null>(null);
   const lastIndex = useRef(0);
@@ -265,13 +286,51 @@ export function UpstreamPage(props: {
   useEffect(clearSelection, [projectId, list, filterKey, sort, clearSelection]);
   // "All matching" was read at one revision; once the list changes it may no longer match.
   // Decisions in flight move the revision themselves, and settle the selection when they end.
-  const revision = firstPage?.revision ?? null;
+  const revision = firstPage?.contentRevision ?? null;
   const revisionRef = useRef(revision);
   revisionRef.current = revision;
   useEffect(() => {
     if (matching?.revision && pending.size === 0 && revision !== null && revision !== matching.revision)
       clearSelection();
   }, [matching, revision, pending, clearSelection]);
+
+  const previousListRevision = useRef({ scope: "", revision: null as string | null, content: null as string | null });
+  useEffect(() => {
+    const exact = firstPage?.revision ?? null;
+    const previous = previousListRevision.current;
+    const scope = scopeRef.current;
+    previousListRevision.current = { scope, revision: exact, content: revision };
+    if (
+      !projectId ||
+      !matching ||
+      previous.scope !== scope ||
+      previous.content !== revision ||
+      previous.revision === exact ||
+      exact === null
+    )
+      return;
+    // Links can move selected topics on unloaded pages out of Ready. Keep the
+    // other IDs selected without resetting the list's pages or scroll position.
+    const epoch = selectionEpoch.current;
+    void ensureNativeApi()
+      .upstreamPorts.listTopicIds({
+        projectId,
+        list,
+        ...(Object.keys(filter).length ? { filter } : {}),
+        ...(sort ? { sort } : {}),
+      })
+      .then((result) => {
+        if (
+          selectionEpoch.current !== epoch ||
+          scopeRef.current !== scope ||
+          result.contentRevision !== revisionRef.current
+        )
+          return;
+        const remaining = new Set(result.topicIds);
+        setSelected((current) => new Set([...current].filter((id) => remaining.has(id))));
+      })
+      .catch(() => {});
+  }, [firstPage?.revision, revision, projectId, matching, list, filter, sort]);
 
   const readOnly = overview ? !overview.writer.managedByThisProfile && overview.writer.claimed : false;
   /**
@@ -280,9 +339,7 @@ export function UpstreamPage(props: {
    */
   const targets = useCallback(
     () =>
-      (matching ? [...selected] : actionTargets(ids, selected, focused)).filter(
-        (id) => !pendingRef.current.has(id),
-      ),
+      (matching ? [...selected] : actionTargets(ids, selected, focused)).filter((id) => !pendingRef.current.has(id)),
     [matching, selected, ids, focused],
   );
   const selectedVisible = useMemo(() => new Set(ids.filter((id) => selected.has(id))), [ids, selected]);
@@ -307,19 +364,22 @@ export function UpstreamPage(props: {
       });
       if (!current()) return;
       // The loaded pages may predate the ledger; reload them so the selection is not dropped as stale at once.
-      if (result.revision !== revisionRef.current) {
+      if (result.contentRevision !== revisionRef.current) {
         const refreshed = await topicsQuery.refetch();
         if (!current()) return;
-        if (refreshed.data?.pages[0]?.revision !== result.revision) {
+        if (refreshed.data?.pages[0]?.contentRevision !== result.contentRevision) {
           toastManager.add({ type: "info", title: "The list changed while selecting. Try again." });
           return;
         }
       }
       selectionEpoch.current += 1;
       setSelected(new Set(result.topicIds));
-      setMatching({ revision: result.revision });
+      setMatching({ revision: result.contentRevision });
       if (result.truncated)
-        toastManager.add({ type: "warning", title: `Only the first ${result.topicIds.length.toLocaleString()} topics were selected.` });
+        toastManager.add({
+          type: "warning",
+          title: `Only the first ${result.topicIds.length.toLocaleString()} topics were selected.`,
+        });
     } catch (error) {
       toastManager.add({
         type: "error",
@@ -336,7 +396,11 @@ export function UpstreamPage(props: {
     try {
       return await action();
     } catch (error) {
-      toastManager.add({ type: "error", title, description: error instanceof Error ? error.message : String(error) });
+      toastManager.add({
+        type: "error",
+        title,
+        description: error instanceof Error ? error.message : String(error),
+      });
       return undefined;
     } finally {
       setBusyCount((count) => count - 1);
@@ -374,7 +438,8 @@ export function UpstreamPage(props: {
     const order = ids;
     const started = viewRef.current;
     const decidedSet = new Set(decided);
-    const allMatching = matching !== null && [...selected].every((id) => decidedSet.has(id) || pendingRef.current.has(id));
+    const allMatching =
+      matching !== null && [...selected].every((id) => decidedSet.has(id) || pendingRef.current.has(id));
     const epoch = selectionEpoch.current;
     const rowsById = new Map(rows.map((row) => [row.topic.id, row]));
     const moves = decided.flatMap((id) => {
@@ -405,8 +470,17 @@ export function UpstreamPage(props: {
       for (const batch of decisionBatches(decided)) {
         const join: { undoToken?: string } = undoToken ? { undoToken } : {};
         const result: UpstreamDecideResult = await (decision === "accept"
-          ? ensureNativeApi().upstreamPorts.acceptSuggestions({ projectId, topicIds: batch as never, ...join })
-          : ensureNativeApi().upstreamPorts.decide({ projectId, topicIds: batch as never, decision, ...join }));
+          ? ensureNativeApi().upstreamPorts.acceptSuggestions({
+              projectId,
+              topicIds: batch as never,
+              ...join,
+            })
+          : ensureNativeApi().upstreamPorts.decide({
+              projectId,
+              topicIds: batch as never,
+              decision,
+              ...join,
+            }));
         for (const id of result.updated) recorded.add(id);
         for (const id of [...result.updated, ...result.unchanged]) settled.add(id);
         undoToken = result.undoToken ?? undoToken;
@@ -446,7 +520,8 @@ export function UpstreamPage(props: {
       toastManager.add({
         type: "error",
         title: "Decision failed",
-        description: recorded.size > 0 ? `${recorded.size} of ${decided.length} topics were recorded. ${detail}` : detail,
+        description:
+          recorded.size > 0 ? `${recorded.size} of ${decided.length} topics were recorded. ${detail}` : detail,
       });
     }
     if (stillHere && selectionEpoch.current === epoch) {
@@ -465,7 +540,10 @@ export function UpstreamPage(props: {
         });
     }
     if (unchanged > 0 && decision === "accept")
-      toastManager.add({ type: "info", title: `${unchanged} topic(s) had no suggestion to accept` });
+      toastManager.add({
+        type: "info",
+        title: `${unchanged} topic(s) had no suggestion to accept`,
+      });
     await invalidateUpstreamPorts(queryClient);
     // Return to the list for the next decision, unless the user moved on or is typing.
     if (stillHere && !isEditableTarget(document.activeElement) && !isDialogTarget(document.activeElement))
@@ -531,7 +609,9 @@ export function UpstreamPage(props: {
   };
 
   const undoLatest = () => {
-    const entry = liveUndoEntries(undoStack.current, Date.now()).findLast((candidate) => candidate.projectId === projectId);
+    const entry = liveUndoEntries(undoStack.current, Date.now()).findLast(
+      (candidate) => candidate.projectId === projectId,
+    );
     if (entry) void undo(entry);
     else toastManager.add({ type: "info", title: "Nothing to undo" });
   };
@@ -539,7 +619,11 @@ export function UpstreamPage(props: {
   const openSkip = (topicIds: string[], reason?: string) => {
     if (topicIds.length === 0) return;
     const first = rows.find((row) => row.topic.id === topicIds[0]);
-    setSkipDialog({ ids: topicIds, preselected: first ? preselectedSkipReason(first.topic) : null, ...(reason ? { reason } : {}) });
+    setSkipDialog({
+      ids: topicIds,
+      preselected: first ? preselectedSkipReason(first.topic) : null,
+      ...(reason ? { reason } : {}),
+    });
   };
 
   const runNow = (kind: UpstreamRunKind, triage: UpstreamRunTriage) => {
@@ -603,7 +687,10 @@ export function UpstreamPage(props: {
       return;
     }
     void withBusy("Could not copy the port prompt", async () => {
-      const { prompt } = await ensureNativeApi().upstreamPorts.getPortPrompt({ projectId, topicIds: topicIds as never });
+      const { prompt } = await ensureNativeApi().upstreamPorts.getPortPrompt({
+        projectId,
+        topicIds: topicIds as never,
+      });
       await writeTextToClipboard(prompt);
       toastManager.add({ type: "success", title: "Port prompt copied" });
     });
@@ -613,7 +700,10 @@ export function UpstreamPage(props: {
   const openStartPort = (topicIds: string[], note: string | null = null) => {
     const portable = portableTopicIds(stateOf, topicIds);
     if (portable.length === 0) {
-      toastManager.add({ type: "warning", title: "Only Ready or In progress topics can be ported." });
+      toastManager.add({
+        type: "warning",
+        title: "Only Ready or In progress topics can be ported.",
+      });
       return;
     }
     if (portable.length < topicIds.length)
@@ -634,7 +724,11 @@ export function UpstreamPage(props: {
       confirmLabel: "Unlink",
       onConfirm: () =>
         void withBusy("Could not unlink", async () => {
-          await ensureNativeApi().upstreamPorts.unlinkPort({ projectId, topicId: topicId as never, threadId: link.threadId });
+          await ensureNativeApi().upstreamPorts.unlinkPort({
+            projectId,
+            topicId: topicId as never,
+            threadId: link.threadId,
+          });
           await invalidateUpstreamPorts(queryClient);
         }),
     });
@@ -668,7 +762,12 @@ export function UpstreamPage(props: {
   };
 
   /** One-key decisions reach every topic of "Select all matching"; ask first when that goes past the loaded rows. */
-  const decideSeen = (topicIds: string[], decision: UpstreamDecision | "accept", title: string, confirmLabel: string) => {
+  const decideSeen = (
+    topicIds: string[],
+    decision: UpstreamDecision | "accept",
+    title: string,
+    confirmLabel: string,
+  ) => {
     const unseen = unloadedCount(topicIds);
     if (unseen === 0) {
       void applyDecision(topicIds, decision);
@@ -702,6 +801,18 @@ export function UpstreamPage(props: {
         return reopen(topicIds);
       case "startPort":
         return openStartPort(topicIds);
+      case "queuePort":
+        return setPortRequest({
+          ids: topicIds,
+          note: null,
+          target: { kind: "ids", topicIds },
+          queueInitially: true,
+        });
+      case "dequeuePort":
+        return void withBusy("Could not remove topics from the queue", async () => {
+          if (projectId) await ensureNativeApi().upstreamPorts.dequeuePort({ projectId, topicIds });
+          await invalidateUpstreamPorts(queryClient);
+        });
       case "copyPrompt":
         return copyPrompt(topicIds);
     }
@@ -866,7 +977,6 @@ export function UpstreamPage(props: {
   const defaultRuntimeMode = projectSettings.data?.settings.defaultRuntimeMode ?? "full-access";
   const runTriage: UpstreamRunTriage = overview.triageModelAvailable ? "llm" : "rules-only";
   const runBlocked = runDisabledReason({ readOnly, busy, overview }) !== null;
-  const readyIds = list === "ready" ? portableTopicIds(stateOf, ids) : [];
 
   return (
     <main className="flex h-full min-h-0 flex-col">
@@ -905,13 +1015,14 @@ export function UpstreamPage(props: {
             list === "ready"
               ? {
                   count: overview.counts.ready,
-                  disabled: busy || readOnly || readyIds.length === 0,
+                  disabled: busy || readOnly || total === 0,
                   onStart: () => {
-                    const all = startAllReady(readyIds);
-                    openStartPort(
-                      all.ids,
-                      all.capped ? `Only the first ${UPSTREAM_MAX_PORT_TOPICS} Ready topics are used.` : null,
-                    );
+                    setPortRequest({
+                      ids: [],
+                      note: null,
+                      target: { kind: "all-ready", filter, ...(sort ? { sort } : {}) },
+                      queueInitially: true,
+                    });
                   },
                 }
               : null
@@ -948,6 +1059,7 @@ export function UpstreamPage(props: {
                   ids={ids}
                   selected={selectedVisible}
                   selectedCount={matching ? selected.size : selectedVisible.size}
+                  hasQueued={rows.some((row) => row.queued && selected.has(row.topic.id))}
                   total={total}
                   readOnly={readOnly}
                   busy={busy}
@@ -1067,9 +1179,14 @@ export function UpstreamPage(props: {
         open={portRequest !== null}
         projectId={projectId}
         topicIds={portRequest?.ids ?? []}
+        {...(portRequest?.target ? { target: portRequest.target } : {})}
+        queueInitially={portRequest?.queueInitially ?? false}
         note={portRequest?.note ?? null}
         providers={providers}
         savedModel={projectSettings.data?.settings.upstreamPorts?.portModelSelection ?? null}
+        savedReview={projectSettings.data?.settings.upstreamPorts?.portReview}
+        reviewSettingsLoaded={!projectSettings.isPending && Boolean(serverConfig.data)}
+        reviewSettingsError={projectSettings.isError && !projectSettings.data}
         defaultRuntimeMode={defaultRuntimeMode}
         overview={overview}
         busy={busy}
@@ -1079,13 +1196,38 @@ export function UpstreamPage(props: {
           runNow("upstream", runTriage);
         }}
         onStart={(input) => {
+          const { when, reviewPreference, ...args } = input;
           const topicIds = portRequest?.ids ?? [];
           void withBusy("Could not start the port", async () => {
+            const saveReviewPreference = async () => {
+              try {
+                await saveUpstreamSettings({ portReview: reviewPreference });
+              } catch (error) {
+                toastManager.add({ type: "warning", title: "Port submitted, but review preferences could not be saved", description: String(error) });
+              }
+            };
+            if (when === "queue") {
+              const result = await ensureNativeApi().upstreamPorts.enqueuePort({
+                projectId,
+                target: portRequest?.target ?? { kind: "ids", topicIds },
+                ...args,
+              });
+              await saveReviewPreference();
+              setPortRequest(null);
+              toastManager.add({
+                type: "success",
+                title: `Queued ${result.queuedTopicIds.length} topics in ${result.queuedThreads} threads`,
+                ...(result.skipped.length ? { description: `${result.skipped.length} topics left out.` } : {}),
+              });
+              await invalidateUpstreamPorts(queryClient);
+              return;
+            }
             const result = await ensureNativeApi().upstreamPorts.startPort({
               projectId,
               topicIds: topicIds as never,
-              ...input,
+              ...args,
             });
+            await saveReviewPreference();
             setPortRequest(null);
             const rejected = result.groups.filter((group) => group.status === "rejected");
             const pendingGroups = result.groups.filter((group) => group.status === "pending");

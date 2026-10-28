@@ -5,6 +5,7 @@ import {
   type UpstreamListTopicsResult,
   type UpstreamTopicList,
   type UpstreamTopicSort,
+  type UpstreamPortsChanged,
 } from "@t3tools/contracts";
 import {
   infiniteQueryOptions,
@@ -24,6 +25,7 @@ export const upstreamPortsQueryKeys = {
   all: ["upstreamPorts"] as const,
   projects: () => ["upstreamPorts", "projects"] as const,
   overview: (projectId: ProjectId) => ["upstreamPorts", "overview", projectId] as const,
+  queue: (projectId: ProjectId) => ["upstreamPorts", "queue", projectId] as const,
   /** Every filter and sort of one list; optimistic updates edit them together. */
   list: (projectId: ProjectId, list: UpstreamTopicList) =>
     ["upstreamPorts", "topics", projectId, list] as const,
@@ -112,8 +114,10 @@ export function hasStaleTopicPages(
   data: InfiniteData<UpstreamListTopicsResult> | undefined,
 ): boolean {
   if (!data || data.pages.length === 0) return false;
-  const revision = data.pages[0]!.revision;
-  return data.pages.some((page) => page.status === "cursor_stale" || page.revision !== revision);
+  const revision = data.pages[0]!.contentRevision;
+  return data.pages.some(
+    (page) => page.status === "cursor_stale" || page.contentRevision !== revision,
+  );
 }
 
 /** `files` also refetches changed files: for Refresh, reconnects and server-side changes, not decisions. */
@@ -141,11 +145,36 @@ export function useUpstreamPortsInvalidation() {
   useEffect(() => {
     const api = readNativeApi();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const schedule = () => {
+    const pending = new Map<ProjectId, number>();
+    let refreshAll = false;
+    const schedule = (payload?: UpstreamPortsChanged) => {
+      if (payload)
+        pending.set(
+          payload.projectId,
+          Math.max(
+            pending.get(payload.projectId) ?? 0,
+            payload.reason === "queue-updated" ? 0 : payload.reason === "links-updated" ? 1 : 2,
+          ),
+        );
+      else refreshAll = true;
       if (timer) return;
       timer = setTimeout(() => {
         timer = undefined;
-        void invalidateUpstreamPorts(queryClient, { files: true });
+        if (refreshAll) void invalidateUpstreamPorts(queryClient, { files: true });
+        else
+          for (const [projectId, level] of pending) {
+            void queryClient.invalidateQueries({
+              predicate: (query) =>
+                query.queryKey[0] === "upstreamPorts" &&
+                ((query.queryKey[2] === projectId &&
+                  (level > 0 || query.queryKey[1] !== "topic")) ||
+                  (level === 2 && query.queryKey[1] === "projects")),
+            });
+            if (level === 2)
+              void queryClient.invalidateQueries({ queryKey: ["upstreamPortsFiles", projectId] });
+          }
+        pending.clear();
+        refreshAll = false;
       }, 150);
     };
     const unsubscribeChanged = api?.upstreamPorts?.onChanged(schedule) ?? (() => {});
