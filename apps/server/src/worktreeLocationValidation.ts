@@ -5,11 +5,7 @@ import { canonicalWorktreePath } from "./git/worktreePaths.ts";
 import { resolveWorktreesDirectory, customWorktreesDirectory } from "./worktreesDirectoryPaths.ts";
 import { projectRoots } from "./profiles/RepositorySharing.ts";
 import type { ServerConfigShape } from "./config.ts";
-
-const contains = (parent: string, child: string) => {
-  const relative = Path.relative(parent, child);
-  return relative === "" || (!relative.startsWith("..") && !Path.isAbsolute(relative));
-};
+import { pathContains } from "./project/Layers/WorktreeLifecycleCoordinator.ts";
 
 export async function validateWorktreeLocation(setting: string, config: ServerConfigShape) {
   if (!setting) return;
@@ -28,7 +24,7 @@ export async function validateWorktreeLocation(setting: string, config: ServerCo
     ...(await projectRoots(config.stateDir)),
   ]) {
     const protectedRoot = await canonicalWorktreePath(protectedPath);
-    if (contains(canonical, protectedRoot) || contains(protectedRoot, canonical))
+    if (pathContains(canonical, protectedRoot) || pathContains(protectedRoot, canonical))
       throw new Error("Worktree location must be separate from F5 app data and project checkouts.");
   }
 }
