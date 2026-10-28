@@ -1,5 +1,6 @@
 import { AGENT_BRIDGE_ACTIVATION_VERSION } from "@t3tools/contracts";
 import { validateManagedHome } from "./profiles/providerIsolation";
+import { validateWorktreeLocation, unusedWorktreeLocation } from "./worktreeLocationValidation.ts";
 import { assertAccountEnvironmentOverrides } from "./providerProcessEnv";
 /**
  * ServerSettings - Server-authoritative settings service.
@@ -151,6 +152,8 @@ export interface ServerSettingsShape {
   readonly updateSettings: (
     patch: ServerSettingsPatch,
   ) => Effect.Effect<ServerSettings, ServerSettingsError>;
+  /** Internal: remember a location only after Git has created a checkout there. */
+  readonly recordWorktreeLocation?: (directory: string) => Effect.Effect<void, ServerSettingsError>;
 
   readonly migrateClientSetting: (
     input: MigrateClientSettingInput,
@@ -194,6 +197,13 @@ export class ServerSettingsService extends ServiceMap.Service<
           start: Effect.void,
           ready: Effect.void,
           getSettings: Ref.get(currentSettingsRef),
+          recordWorktreeLocation: (directory) =>
+            Ref.update(currentSettingsRef, (current) => ({
+              ...current,
+              previousWorktreesDirectories: [
+                ...new Set([...current.previousWorktreesDirectories, directory]),
+              ],
+            })),
           migrateClientSetting: ({ key, value }) =>
             Ref.modify(
               currentSettingsRef,
@@ -408,6 +418,10 @@ const makeServerSettings = Effect.gen(function* () {
   });
 
   const getSettingsFromCache = Cache.get(settingsCache, cacheKey);
+  // Call under writeSemaphore: watcher delivery may lag behind an external edit.
+  const reloadSettingsForWrite = Cache.invalidate(settingsCache, cacheKey).pipe(
+    Effect.andThen(getSettingsFromCache),
+  );
 
   const toSettingsError = (detail: string, cause: unknown) =>
     new ServerSettingsError({
@@ -718,7 +732,7 @@ const makeServerSettings = Effect.gen(function* () {
     migrateClientSetting: ({ key, value }) =>
       writeSemaphore.withPermits(1)(
         Effect.gen(function* () {
-          const current = yield* getSettingsFromCache;
+          const current = yield* reloadSettingsForWrite;
           if (current.clientSettingMigrations[key])
             return { applied: false, currentValue: current[key] };
           const next = {
@@ -737,6 +751,21 @@ const makeServerSettings = Effect.gen(function* () {
             }),
           );
           return { applied: true, currentValue: value };
+        }),
+      ),
+    recordWorktreeLocation: (directory) =>
+      writeSemaphore.withPermits(1)(
+        Effect.gen(function* () {
+          if (!directory) return;
+          const current = yield* reloadSettingsForWrite;
+          if (current.previousWorktreesDirectories.includes(directory)) return;
+          yield* publishSettings(
+            {
+              ...current,
+              previousWorktreesDirectories: [...current.previousWorktreesDirectories, directory],
+            },
+            [],
+          );
         }),
       ),
     updateSettings: (patch) =>
@@ -787,11 +816,59 @@ const makeServerSettings = Effect.gen(function* () {
                 }),
             });
           }
-          const current = yield* getSettingsFromCache;
+          const current = yield* reloadSettingsForWrite;
+          const previousLocations =
+            patch.worktreesDirectory !== undefined &&
+            current.worktreesDirectory &&
+            current.worktreesDirectory !== patch.worktreesDirectory
+              ? [...new Set([...current.previousWorktreesDirectories, current.worktreesDirectory])]
+              : current.previousWorktreesDirectories;
+          if (patch.worktreesDirectory !== undefined)
+            yield* Effect.tryPromise({
+              try: () => validateWorktreeLocation(patch.worktreesDirectory!, serverConfig),
+              catch: (cause) =>
+                new ServerSettingsError({ settingsPath, detail: String(cause), cause }),
+            }).pipe(
+              Effect.timeoutOption("5 seconds"),
+              Effect.flatMap((validated) =>
+                Option.isSome(validated)
+                  ? Effect.void
+                  : Effect.fail(
+                      new ServerSettingsError({
+                        settingsPath,
+                        detail: "Timed out while checking the worktree location.",
+                      }),
+                    ),
+              ),
+            );
+          const retainedLocations = yield* Effect.filter(
+            previousLocations,
+            (directory) =>
+              Effect.promise(() =>
+                unusedWorktreeLocation(
+                  directory,
+                  serverConfig.worktreesDir,
+                  serverConfig.stateDir,
+                  !current.previousWorktreesDirectories.includes(directory),
+                ),
+              ).pipe(
+                Effect.timeoutOption("500 millis"),
+                Effect.map((unused) => Option.isNone(unused) || !unused.value),
+              ),
+            { concurrency: 4 },
+          ).pipe(
+            Effect.timeoutOption("2 seconds"),
+            Effect.map((retained) =>
+              Option.isSome(retained) ? retained.value : previousLocations,
+            ),
+          );
           // Apply explicit replacements/removals before resolving references. This lets a
           // user repair a missing secret, while unchanged references still fail closed.
           const patched = yield* materializeProviderEnvironmentSecrets(
-            applyServerSettingsPatch(current, patch),
+            applyServerSettingsPatch(
+              { ...current, previousWorktreesDirectories: retainedLocations },
+              patch,
+            ),
           );
           const prepared = yield* prepareProviderEnvironmentSecrets(current, patched);
           const next = yield* Schema.decodeEffect(ServerSettings)({

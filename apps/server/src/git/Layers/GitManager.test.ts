@@ -537,14 +537,133 @@ describe("GitManager unit", () => {
     expect(git.calls.checkoutBranch).toHaveLength(1);
   });
 
-  it.each(["feature/test", "main"])(
-    "preserves an existing local %s branch when a PR head differs",
-    async (branch) => {
+  it("preserves an existing branch without tracking when the provider has no head OID", async () => {
+    const { manager, git } = await makeManager({
+      gitHub: {
+        pullRequest: {
+          number: 42,
+          title: "PR",
+          url: "https://github.com/t3tools/f5/pull/42",
+          baseRefName: "main",
+          headRefName: "feature/test",
+          headRefOid: null,
+        },
+      },
+      gitCore: {
+        statusDetails: () => Effect.succeed(cleanStatus),
+        listLocalBranchNames: () => Effect.succeed(["feature/test"]),
+        readDefaultBranch: () => Effect.succeed("main"),
+        resolveCommit: () => Effect.succeed("b".repeat(40)),
+      },
+    });
+    const result = await Effect.runPromise(
+      manager.preparePullRequestThread({ cwd, reference: "42", mode: "local" }),
+    );
+    expect(result.isOnPullRequestHead).toBe(false);
+    expect(git.calls.checkoutBranch).toHaveLength(1);
+    expect(git.calls.fastForwardTo).toHaveLength(0);
+    expect(git.calls.setBranchUpstream).toHaveLength(0);
+    expect(git.calls.fetchRemoteBranch).toHaveLength(0);
+  });
+
+  it.each(["default", "tracking", "commit"])(
+    "does not fall back to fetching when PR branch safety metadata fails (%s)",
+    async (failedRead) => {
+      const failure = Effect.fail(
+        new GitCommandError({
+          operation: "read",
+          cwd,
+          command: "git config",
+          detail: "metadata unavailable",
+        }),
+      );
+      const { manager, git } = await makeManager({
+        gitCore: {
+          statusDetails: () => Effect.succeed(cleanStatus),
+          listLocalBranchNames: () => Effect.succeed(["feature/test"]),
+          resolveCommit: () => (failedRead === "commit" ? failure : Effect.succeed("b".repeat(40))),
+          readDefaultBranch: () => (failedRead === "default" ? failure : Effect.succeed("main")),
+          readConfigValue: (_cwd, key) =>
+            key === "branch.feature/test.remote" && failedRead === "tracking"
+              ? failure
+              : Effect.succeed(null),
+        },
+        gitHub: {
+          pullRequest: {
+            number: 42,
+            title: "PR",
+            url: "https://github.com/t3tools/f5/pull/42",
+            baseRefName: "main",
+            headRefName: "feature/test",
+            headRefOid: "a".repeat(40),
+          },
+        },
+      });
+      await expect(
+        Effect.runPromise(
+          manager.preparePullRequestThread({ cwd, reference: "42", mode: "local" }),
+        ),
+      ).rejects.toThrow("metadata unavailable");
+      expect(git.calls.fetchPullRequestBranch).toHaveLength(0);
+      expect(git.calls.fetchRemoteBranch).toHaveLength(0);
+      expect(git.calls.checkoutBranch).toHaveLength(0);
+      expect(git.calls.fastForwardTo).toHaveLength(0);
+    },
+  );
+
+  it.each([false, true])(
+    "confirms a local checkout only after a successful fast-forward (%s)",
+    async (fails) => {
+      const head = "a".repeat(40);
+      const { manager, git } = await makeManager({
+        gitCore: {
+          statusDetails: () => Effect.succeed(cleanStatus),
+          resolveCommit: () => Effect.succeed(head),
+          fastForwardTo: () =>
+            fails
+              ? Effect.fail(
+                  new GitCommandError({
+                    operation: "merge",
+                    cwd,
+                    command: "git merge --ff-only",
+                    detail: "local commits diverged",
+                  }),
+                )
+              : Effect.void,
+        },
+        gitHub: {
+          pullRequest: {
+            number: 42,
+            title: "PR",
+            url: "https://github.com/t3tools/f5/pull/42",
+            baseRefName: "main",
+            headRefName: "feature/test",
+            headRefOid: head,
+          },
+        },
+      });
+      const result = await Effect.runPromise(
+        manager.preparePullRequestThread({ cwd, reference: "42", mode: "local" }),
+      );
+      expect(result.isOnPullRequestHead).toBe(!fails);
+      expect(git.calls.fastForwardTo).toEqual([[cwd, head, "feature/test"]]);
+    },
+  );
+
+  it.each([
+    { branch: "feature/test", isCrossRepository: true, defaultBranch: "main" },
+    { branch: "main", isCrossRepository: true, defaultBranch: "main" },
+    { branch: "main", isCrossRepository: false, defaultBranch: "main" },
+    { branch: "release", isCrossRepository: false, defaultBranch: "release" },
+  ])(
+    "preserves a colliding local PR branch (%j)",
+    async ({ branch, isCrossRepository, defaultBranch }) => {
       const { manager, git, github } = await makeManager({
         gitCore: {
           statusDetails: () => Effect.succeed(cleanStatus),
           listLocalBranchNames: () => Effect.succeed([branch]),
-          resolveCommit: () => Effect.succeed("local-unpushed-commit"),
+          readDefaultBranch: () => Effect.succeed(defaultBranch),
+          resolveCommit: () => Effect.succeed("b".repeat(40)),
         },
         gitHub: {
           pullRequest: {
@@ -553,8 +672,8 @@ describe("GitManager unit", () => {
             url: "https://github.com/t3tools/f5/pull/42",
             baseRefName: "main",
             headRefName: branch,
-            headRefOid: "updated-remote-commit",
-            isCrossRepository: true,
+            headRefOid: "a".repeat(40),
+            isCrossRepository,
             headRepositoryNameWithOwner: "contributor/f5",
             headRepositoryOwnerLogin: "contributor",
           },
@@ -564,10 +683,91 @@ describe("GitManager unit", () => {
         Effect.runPromise(
           manager.preparePullRequestThread({ cwd, reference: "42", mode: "local" }),
         ),
-      ).rejects.toThrow("contains a different commit");
+      ).rejects.toThrow("collides with a pull request head");
       expect(git.calls.checkoutBranch).toHaveLength(0);
       expect(git.calls.fetchRemoteBranch).toHaveLength(0);
+      expect(git.calls.fastForwardTo).toHaveLength(0);
+      expect(git.calls.setBranchUpstream).toHaveLength(0);
       expect(github.calls).not.toContain("checkoutPullRequest:42");
+    },
+  );
+
+  it("confirms an unambiguous abbreviated provider head", async () => {
+    const head = "a".repeat(40);
+    const { manager, git } = await makeManager({
+      gitCore: {
+        statusDetails: () => Effect.succeed(cleanStatus),
+        resolveCommit: () => Effect.succeed(head),
+        listLocalBranchNames: () => Effect.succeed(["feature/test"]),
+      },
+      gitHub: {
+        pullRequest: {
+          number: 42,
+          title: "PR",
+          url: "https://github.com/t3tools/f5/pull/42",
+          baseRefName: "main",
+          headRefName: "feature/test",
+          headRefOid: head.slice(0, 12),
+        },
+      },
+    });
+    const result = await Effect.runPromise(
+      manager.preparePullRequestThread({ cwd, reference: "42", mode: "local" }),
+    );
+    expect(result.isOnPullRequestHead).toBe(true);
+    expect(git.calls.fastForwardTo).toEqual([[cwd, head, "feature/test"]]);
+    expect(git.calls.fetchRemoteBranch).toHaveLength(0);
+    expect(git.calls.fetchPullRequestBranch).toHaveLength(0);
+  });
+
+  it.each([true, false])(
+    "refreshes an existing PR branch only with matching tracking (%s)",
+    async (tracksHead) => {
+      const head = "a".repeat(40);
+      let advanced = false;
+      const { manager, git } = await makeManager({
+        gitCore: {
+          statusDetails: () => Effect.succeed(cleanStatus),
+          listLocalBranchNames: () => Effect.succeed(["feature/test"]),
+          readDefaultBranch: () => Effect.succeed("main"),
+          readConfigValue: (_cwd, key) =>
+            Effect.succeed(
+              key === "branch.feature/test.remote"
+                ? tracksHead
+                  ? "origin"
+                  : "other"
+                : key === "branch.feature/test.merge"
+                  ? "refs/heads/feature/test"
+                  : null,
+            ),
+          resolveCommit: (_cwd, ref) =>
+            Effect.succeed(ref === head || advanced ? head : "b".repeat(40)),
+          fastForwardTo: () =>
+            Effect.sync(() => {
+              advanced = true;
+            }),
+        },
+        gitHub: {
+          pullRequest: {
+            number: 42,
+            title: "PR",
+            url: "https://github.com/t3tools/f5/pull/42",
+            baseRefName: "main",
+            headRefName: "feature/test",
+            headRefOid: head,
+          },
+        },
+      });
+      const checkout = Effect.runPromise(
+        manager.preparePullRequestThread({ cwd, reference: "42", mode: "local" }),
+      );
+      if (tracksHead) expect((await checkout).isOnPullRequestHead).toBe(true);
+      else {
+        await expect(checkout).rejects.toThrow("does not track");
+        expect(git.calls.checkoutBranch).toHaveLength(0);
+        expect(git.calls.fastForwardTo).toHaveLength(0);
+      }
+      expect(git.calls.setBranchUpstream).toHaveLength(0);
     },
   );
 

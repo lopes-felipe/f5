@@ -911,6 +911,7 @@ export function createWsNativeApi(): NativeApi {
       setEnabled: requestMethod(WS_METHODS.scheduledTasksSetEnabled),
       runNow: requestMethod(WS_METHODS.scheduledTasksRunNow),
       listRuns: requestMethod(WS_METHODS.scheduledTasksListRuns),
+      findRunForTurn: requestMethod(WS_METHODS.scheduledTasksFindRunForTurn),
       previewSchedule: requestMethod(WS_METHODS.scheduledTasksPreviewSchedule),
       resolveRun: requestMethod(WS_METHODS.scheduledTasksResolveRun),
       claimNotifications: requestMethod(WS_METHODS.scheduledTasksClaimNotifications),

@@ -1,18 +1,31 @@
 import { Schema } from "effect";
 import { IsoDateTime, ProjectId, ThreadId, TurnId, TrimmedNonEmptyString } from "./baseSchemas";
-import { ModelSelection, RuntimeMode } from "./orchestration";
+import {
+  DEFAULT_PROVIDER_INTERACTION_MODE,
+  ModelSelection,
+  ProviderInteractionMode,
+  RuntimeMode,
+} from "./orchestration";
 
 export { ScheduledTaskId, ScheduledTaskRunId, ScheduledOrigin } from "./baseSchemas";
 import { ScheduledTaskId, ScheduledTaskRunId } from "./baseSchemas";
 export const ScheduledWorkspace = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("worktree"), baseBranch: TrimmedNonEmptyString }),
   Schema.Struct({ kind: Schema.Literal("projectRoot") }),
+  /** Runs are sent into this existing conversation when it is idle, with its live settings. */
+  Schema.Struct({ kind: Schema.Literal("thread"), threadId: ThreadId }),
 ]);
+export type ScheduledWorkspace = typeof ScheduledWorkspace.Type;
+/** Activity appended to a bound conversation when a scheduled task sends its prompt. */
+export const SCHEDULED_TASK_TURN_SUBMITTED_ACTIVITY_KIND = "scheduled-task.turn-submitted";
 export const ScheduledTaskConfiguration = Schema.Struct({
   name: TrimmedNonEmptyString,
   prompt: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode.pipe(
+    Schema.withDecodingDefault(() => DEFAULT_PROVIDER_INTERACTION_MODE),
+  ),
   workspace: ScheduledWorkspace,
   cron: TrimmedNonEmptyString,
   timezone: TrimmedNonEmptyString,
@@ -51,6 +64,7 @@ export const ScheduledTask = Schema.Struct({
         "project_missing",
         "invalid_schedule",
         "invalid_state",
+        "thread_unavailable",
       ]),
     ),
   ),
@@ -81,6 +95,7 @@ export const ScheduledRunReason = Schema.Literals([
   "delivery_failed",
   "setup_failed",
   "thread_removed",
+  "conversation_busy",
   "interrupted",
   "approval",
   "user_input",
@@ -164,6 +179,11 @@ export const ScheduledTaskRunsInput = Schema.Struct({
   limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),
 });
 export type ScheduledTaskRunsInput = typeof ScheduledTaskRunsInput.Type;
+export const ScheduledFindRunForTurnInput = Schema.Struct({ threadId: ThreadId, turnId: TurnId });
+export type ScheduledFindRunForTurnInput = typeof ScheduledFindRunForTurnInput.Type;
+export const ScheduledFindRunForTurnResult = Schema.Struct({
+  runId: Schema.NullOr(ScheduledTaskRunId),
+});
 export const ScheduledTaskSaveResult = Schema.Struct({
   task: ScheduledTask,
   warnings: Schema.Array(Schema.String),
@@ -220,6 +240,7 @@ export const SCHEDULED_TASK_WS_METHODS = {
   setEnabled: "scheduledTasks.setEnabled",
   runNow: "scheduledTasks.runNow",
   listRuns: "scheduledTasks.listRuns",
+  findRunForTurn: "scheduledTasks.findRunForTurn",
   previewSchedule: "scheduledTasks.previewSchedule",
   resolveRun: "scheduledTasks.resolveRun",
   claimNotifications: "scheduledTasks.claimNotifications",

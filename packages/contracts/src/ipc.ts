@@ -802,6 +802,9 @@ export interface NativeApi {
     listRuns: (
       input: (typeof Scheduled.ScheduledTaskRunsInput)["Type"],
     ) => Promise<(typeof Scheduled.ScheduledTaskRunsResult)["Type"]>;
+    findRunForTurn: (
+      input: Scheduled.ScheduledFindRunForTurnInput,
+    ) => Promise<(typeof Scheduled.ScheduledFindRunForTurnResult)["Type"]>;
     previewSchedule: (
       input: (typeof Scheduled.SchedulePreviewInput)["Type"],
     ) => Promise<Scheduled.SchedulePreview>;
@@ -1015,6 +1018,8 @@ export interface NativeApi {
     repairClaudeTranscript: (input: { threadId: ThreadId }) => Promise<{
       backupId?: string;
       restoredMessages: number;
+      quarantinedBranchMessages: number;
+      quarantinedMalformedLines: number;
       status: "validated" | "repaired";
     }>;
     undoClaudeTranscriptRepair: (input: { threadId: ThreadId; backupId: string }) => Promise<void>;

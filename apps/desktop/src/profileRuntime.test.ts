@@ -227,6 +227,31 @@ it("reopens a stopped profile without stranding either retained window", async (
 });
 
 describe("backend restart budget", () => {
+  it("reports a startup timeout once and reports recovery when that generation becomes ready", async () => {
+    vi.useFakeTimers();
+    let ready = false;
+    const onReady = vi.fn(),
+      onStartupTimeout = vi.fn();
+    const cancel = monitorBackendHealth({
+      isCurrent: () => true,
+      checkReady: async () => ready,
+      onReady,
+      onStartupTimeout,
+      onSustainedHealth: () => {},
+      startupTimeoutMs: 2_000,
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(onStartupTimeout).toHaveBeenCalledOnce();
+      expect(onReady).not.toHaveBeenCalled();
+      ready = true;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(onReady).toHaveBeenCalledOnce();
+    } finally {
+      cancel();
+      vi.useRealTimers();
+    }
+  });
   const crash = (state: { restartAttempt: number }) => planBackendRestart(state);
 
   it("stops a rapid crash loop after six restarts with exponential backoff", () => {

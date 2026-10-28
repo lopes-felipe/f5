@@ -120,6 +120,7 @@ function ChatRouteLayout() {
     <SidebarProvider
       defaultOpen
       keyboardShortcut
+      className="bg-sidebar"
       data-thread-sidebar-layout="true"
       style={{ "--sidebar-width": `${initialThreadSidebarWidth}px` } as CSSProperties}
     >

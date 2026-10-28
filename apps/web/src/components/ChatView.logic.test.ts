@@ -5,6 +5,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ThreadId,
+  type ModelSelection,
   type ProjectSkill,
   type ProviderKind,
   type ServerProvider,
@@ -28,6 +29,7 @@ import {
   resolveClaudeSubagentModel,
   resolveComposerNativeSlashCommands,
   resolveComposerPickerModel,
+  resolveThreadModelOptionsSeed,
   resolveAttachedFileReferencePaths,
   rewriteComposerRuntimeSkillInvocationForSend,
   shouldRenderTimelineContent,
@@ -260,6 +262,113 @@ describe("resolveComposerPickerModel", () => {
         providers,
       }),
     ).toBe("claude-opus-4-8");
+  });
+});
+
+describe("resolveThreadModelOptionsSeed", () => {
+  const codexInstance = defaultInstanceIdForDriver(ProviderDriverKind.make("codex"));
+  const threadSelection = {
+    instanceId: codexInstance,
+    model: "gpt-5.4",
+    options: [{ id: "reasoningEffort", value: "high" }],
+  } as ModelSelection;
+  const high = { codex: { reasoningEffort: "high" } } as const;
+  const base = {
+    draftModelOptions: null,
+    selectedModel: "gpt-5.4",
+    threadSelection,
+    selectedInstanceId: codexInstance,
+    selectedProvider: "codex" as const,
+    previous: undefined,
+  };
+  const seeded = resolveThreadModelOptionsSeed(base)!;
+
+  it("seeds an empty draft from the thread's selection", () => {
+    expect(seeded.seed).toEqual(high);
+    expect(seeded.record.options).toEqual(high);
+  });
+
+  it("keeps a draft the user already set", () => {
+    const next = resolveThreadModelOptionsSeed({
+      ...base,
+      draftModelOptions: { codex: { reasoningEffort: "low" } },
+    });
+    expect(next?.seed).toBeNull();
+    expect(next?.record.options).toBeNull();
+  });
+
+  it("does not reseed a selection it already reconciled", () => {
+    // Picking the model's default effort clears the draft back to null.
+    expect(resolveThreadModelOptionsSeed({ ...base, previous: seeded.record })).toBeNull();
+  });
+
+  it("follows a new selection only while the draft still holds the previous seed", () => {
+    const medium = {
+      ...threadSelection,
+      options: [{ id: "reasoningEffort", value: "medium" }],
+    } as ModelSelection;
+    expect(
+      resolveThreadModelOptionsSeed({
+        ...base,
+        draftModelOptions: high,
+        threadSelection: medium,
+        previous: seeded.record,
+      })?.seed,
+    ).toEqual({ codex: { reasoningEffort: "medium" } });
+    expect(
+      resolveThreadModelOptionsSeed({
+        ...base,
+        draftModelOptions: null,
+        threadSelection: medium,
+        previous: seeded.record,
+      })?.seed,
+    ).toBeNull();
+  });
+
+  it("ignores another instance or model, or a selection without options", () => {
+    expect(resolveThreadModelOptionsSeed({ ...base, selectedInstanceId: "codex-work" })).toBeNull();
+    expect(resolveThreadModelOptionsSeed({ ...base, selectedModel: "gpt-5.4-mini" })).toBeNull();
+    expect(
+      resolveThreadModelOptionsSeed({
+        ...base,
+        threadSelection: { instanceId: codexInstance, model: "gpt-5.4" } as ModelSelection,
+      }),
+    ).toBeNull();
+    expect(resolveThreadModelOptionsSeed({ ...base, threadSelection: undefined })).toBeNull();
+  });
+
+  it("seeds Claude and OpenCode traits", () => {
+    const claudeInstance = defaultInstanceIdForDriver(ProviderDriverKind.make("claudeAgent"));
+    expect(
+      resolveThreadModelOptionsSeed({
+        ...base,
+        selectedModel: "claude-opus-4-6",
+        selectedInstanceId: claudeInstance,
+        selectedProvider: "claudeAgent",
+        threadSelection: {
+          instanceId: claudeInstance,
+          model: "claude-opus-4-6",
+          options: [
+            { id: "effort", value: "max" },
+            { id: "thinking", value: false },
+          ],
+        } as ModelSelection,
+      })?.seed,
+    ).toEqual({ claudeAgent: { effort: "max", thinking: false } });
+    const openCodeInstance = defaultInstanceIdForDriver(ProviderDriverKind.make("opencode"));
+    expect(
+      resolveThreadModelOptionsSeed({
+        ...base,
+        selectedModel: "openai/gpt-5",
+        selectedInstanceId: openCodeInstance,
+        selectedProvider: "opencode",
+        threadSelection: {
+          instanceId: openCodeInstance,
+          model: "openai/gpt-5",
+          options: [{ id: "variant", value: "high" }],
+        } as ModelSelection,
+      })?.seed,
+    ).toEqual({ opencode: { variant: "high" } });
   });
 });
 

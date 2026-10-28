@@ -251,6 +251,9 @@ function makeWorkingTreePatch(
           [
             "diff",
             "--binary",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
             "--src-prefix=a/",
             "--dst-prefix=b/",
             "--full-index",
@@ -348,6 +351,9 @@ export function getReviewPreviewDiff(
       [
         "diff",
         "--binary",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
         "--src-prefix=a/",
         "--dst-prefix=b/",
         "--full-index",

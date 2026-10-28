@@ -162,6 +162,7 @@ export function makeAcpNativeLoggers(input: {
   readonly provider: ProviderKind;
   readonly threadId: ThreadId;
   readonly redactForLog?: (payload: unknown) => unknown;
+  readonly verboseProtocolLogging?: boolean;
 }): Pick<AcpSessionRuntimeOptions, "requestLogger" | "protocolLogging" | "logWritersRedact"> {
   return {
     logWritersRedact: true,
@@ -173,7 +174,8 @@ export function makeAcpNativeLoggers(input: {
         kind: "request",
         payload: (input.redactForLog ?? redactAcpLogPayload)(formatRequestLogPayload(event)),
       }),
-    ...(input.nativeEventLogger
+    ...(input.nativeEventLogger &&
+    (input.verboseProtocolLogging ?? process.env.F5_ACP_PROTOCOL_LOGGING === "1")
       ? {
           protocolLogging: {
             logIncoming: true,

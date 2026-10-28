@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -6,7 +6,9 @@ import {
   type ScheduledTask,
   type ScheduledTaskId,
   type ProjectId,
+  type ThreadId,
 } from "@t3tools/contracts";
+import { NativeSelect } from "../ui/select";
 import { describeSchedule } from "@t3tools/shared/cronSchedule";
 import { ensureNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
@@ -27,30 +29,80 @@ function scheduleSummary(task: ScheduledTask) {
     return `${task.cron} (${task.timezone})`;
   }
 }
+const disabledReasonLabels: Record<NonNullable<ScheduledTask["disabledReason"]>, string> = {
+  authority_revoked: "Scheduling permission was revoked",
+  project_missing: "Project unavailable",
+  invalid_schedule: "Invalid schedule",
+  invalid_state: "Stored data needs recovery",
+  thread_unavailable: "Conversation archived or deleted",
+};
+type Editing =
+  | { kind: "edit"; task: ScheduledTask }
+  | { kind: "new"; projectId: ProjectId; boundThreadId?: ThreadId };
 export function ScheduledPage({
+  projectFilter,
   selectedTaskId,
   editTaskId,
+  newTaskThreadId,
+  onProjectFilterChange,
   onEditRequestHandled,
+  onThreadRequestHandled,
 }: {
+  /** Shows only this project's tasks. Lookups always use the full list. */
+  projectFilter?: ProjectId;
   selectedTaskId?: ScheduledTaskId;
   editTaskId?: ScheduledTaskId;
+  /** Opens a new task bound to this conversation. */
+  newTaskThreadId?: ThreadId;
+  onProjectFilterChange?: (projectId: ProjectId | undefined) => void;
   onEditRequestHandled?: () => void;
+  onThreadRequestHandled?: () => void;
 }) {
   const client = useQueryClient();
   const projects = useStore((s) => s.projects);
-  const [projectId, setProjectId] = useState<ProjectId | undefined>(projects[0]?.id);
-  const [editing, setEditing] = useState<ScheduledTask | "new" | null>(null);
+  const requestedThreadProjectId = useStore((s) =>
+    newTaskThreadId ? s.threads.find((t) => t.id === newTaskThreadId)?.projectId : undefined,
+  );
+  const threadsHydrated = useStore((s) => s.threadsHydrated);
+  const [editing, setEditing] = useState<Editing | null>(null);
   const [history, setHistory] = useState<ScheduledTaskId | undefined>(selectedTaskId);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const list = useQuery(scheduledTasksQueryOptions());
+  const filterProject = projectFilter ? projects.find((p) => p.id === projectFilter) : undefined;
+  const unknownFilter = !!projectFilter && !filterProject;
+  const visible = useMemo(
+    () =>
+      projectFilter
+        ? (list.data?.tasks ?? []).filter((entry) => entry.task.projectId === projectFilter)
+        : (list.data?.tasks ?? []),
+    [list.data, projectFilter],
+  );
+  const counts = useMemo(() => {
+    const result = new Map<string, number>();
+    for (const { task } of list.data?.tasks ?? [])
+      result.set(task.projectId, (result.get(task.projectId) ?? 0) + 1);
+    return result;
+  }, [list.data]);
   useEffect(() => setHistory(selectedTaskId), [selectedTaskId]);
   useEffect(() => {
     if (!editTaskId || !list.data) return;
     const task = list.data.tasks.find((entry) => entry.task.id === editTaskId)?.task;
-    if (task) setEditing(task);
+    if (task) setEditing({ kind: "edit", task });
     onEditRequestHandled?.();
   }, [editTaskId, list.data, onEditRequestHandled]);
+  useEffect(() => {
+    if (!newTaskThreadId || !threadsHydrated) return;
+    if (requestedThreadProjectId)
+      setEditing({
+        kind: "new",
+        projectId: requestedThreadProjectId,
+        boundThreadId: newTaskThreadId,
+      });
+    else setError("That conversation is no longer available.");
+    onThreadRequestHandled?.();
+  }, [newTaskThreadId, threadsHydrated, requestedThreadProjectId, onThreadRequestHandled]);
+  const creationProjectId = filterProject?.id ?? (unknownFilter ? undefined : projects[0]?.id);
   const permission = useNotificationPermissionState();
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
@@ -72,14 +124,14 @@ export function ScheduledPage({
         <div>
           <h1 className="text-xl font-semibold">Scheduled tasks</h1>
           <p className="text-sm text-muted-foreground">
-            Local agent runs in a new conversation each time. F5 must be running.
+            Local agent runs in a new conversation each time, or in a conversation you choose. F5
+            must be running.
           </p>
         </div>
         <Button
-          disabled={!projects.length || busy}
+          disabled={!creationProjectId || busy}
           onClick={() => {
-            setProjectId(projectId ?? projects[0]?.id);
-            setEditing("new");
+            if (creationProjectId) setEditing({ kind: "new", projectId: creationProjectId });
           }}
         >
           New task
@@ -160,11 +212,44 @@ export function ScheduledPage({
         )}
       </SettingsCard>
       {error && <p role="alert">{error}</p>}
+      <label className="flex items-center gap-2 text-sm">
+        Project
+        <NativeSelect
+          aria-label="Project filter"
+          className="w-auto"
+          value={projectFilter ?? ""}
+          onChange={(e) =>
+            onProjectFilterChange?.(e.target.value ? (e.target.value as ProjectId) : undefined)
+          }
+        >
+          <option value="">All projects ({list.data?.tasks.length ?? 0})</option>
+          {projects.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name} ({counts.get(p.id) ?? 0})
+            </option>
+          ))}
+          {unknownFilter && <option value={projectFilter}>Unknown project</option>}
+        </NativeSelect>
+      </label>
+      {unknownFilter &&
+        (threadsHydrated ? (
+          <div role="status" className="flex items-center gap-2 text-sm">
+            This project is no longer available.
+            <Button size="sm" variant="outline" onClick={() => onProjectFilterChange?.(undefined)}>
+              Show all projects
+            </Button>
+          </div>
+        ) : (
+          <p role="status">Loading projects…</p>
+        ))}
       {list.isError && <p role="alert">Unable to load scheduled tasks. {list.error.message}</p>}
       {list.isPending && <p role="status">Loading tasks…</p>}
       {list.data?.tasks.length === 0 && <p>No scheduled tasks yet.</p>}
+      {!!list.data?.tasks.length && projectFilter && !unknownFilter && visible.length === 0 && (
+        <p>No scheduled tasks in this project.</p>
+      )}
       <div className="space-y-3">
-        {list.data?.tasks.map(({ task, latestRun, activeRun }) => (
+        {visible.map(({ task, latestRun, activeRun }) => (
           <article key={task.id} className="rounded-lg border p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -173,6 +258,14 @@ export function ScheduledPage({
                   {projects.find((p) => p.id === task.projectId)?.name ?? "Missing project"} ·{" "}
                   {scheduleSummary(task)}
                 </p>
+                {task.workspace.kind === "thread" && (
+                  <BoundConversationLabel threadId={task.workspace.threadId} />
+                )}
+                {!task.enabled && task.disabledReason && (
+                  <p className="text-sm text-muted-foreground">
+                    Disabled: {disabledReasonLabels[task.disabledReason]}
+                  </p>
+                )}
                 <p className="text-sm">
                   Next:{" "}
                   {task.nextRunAt ? new Date(task.nextRunAt).toLocaleString() : "No next fire"}
@@ -224,7 +317,11 @@ export function ScheduledPage({
               >
                 Run now
               </Button>
-              <Button size="sm" variant="outline" onClick={() => setEditing(task)}>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setEditing({ kind: "edit", task })}
+              >
                 Edit
               </Button>
               <Button
@@ -267,18 +364,42 @@ export function ScheduledPage({
             <RunHistory taskId={selectedTaskId} />
           </div>
         )}
-      {editing && (editing !== "new" || projectId) && (
+      {editing && (
+        // The draft owns its project, so switching projects never remounts it.
         <ScheduledTaskDialog
-          key={`${editing === "new" ? "new" : editing.id}:${projectId}`}
-          projectId={editing === "new" ? projectId! : editing.projectId}
-          {...(editing === "new" ? { onProjectChange: setProjectId } : { task: editing })}
+          key={editing.kind === "new" ? `new:${editing.boundThreadId ?? ""}` : editing.task.id}
+          projectId={editing.kind === "new" ? editing.projectId : editing.task.projectId}
+          {...(editing.kind === "edit"
+            ? { task: editing.task }
+            : editing.boundThreadId
+              ? { boundThreadId: editing.boundThreadId }
+              : { allowProjectChange: true })}
           onClose={() => setEditing(null)}
-          onSaved={() => {
+          onSaved={(savedProjectId) => {
             void client.invalidateQueries({ queryKey: scheduledQueryKey });
+            if (projectFilter && savedProjectId !== projectFilter)
+              onProjectFilterChange?.(savedProjectId);
           }}
         />
       )}
     </main>
+  );
+}
+function BoundConversationLabel({ threadId }: { threadId: ThreadId }) {
+  const thread = useStore((s) => s.threads.find((t) => t.id === threadId && !t.archivedAt));
+  return (
+    <p className="text-sm">
+      {thread ? (
+        <>
+          Conversation:{" "}
+          <Link className="underline" to="/$threadId" params={{ threadId }}>
+            {thread.title}
+          </Link>
+        </>
+      ) : (
+        "Conversation removed"
+      )}
+    </p>
   );
 }
 function RunHistory({ taskId }: { taskId: ScheduledTaskId }) {

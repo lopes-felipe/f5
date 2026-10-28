@@ -1,4 +1,5 @@
 import { defaultUrlTransform } from "react-markdown";
+import { isNetworkPath, workspaceRelativeFilePath } from "@t3tools/shared/path";
 
 import { formatWorkspaceRelativePath } from "./filePathDisplay";
 import { resolvePathLinkTarget, splitPathAndPosition } from "./terminal-links";
@@ -89,6 +90,8 @@ export function resolveMarkdownFileLinkTarget(
   const decodedHash = safeDecodeLocalPath(source.hash.trim());
 
   if (decodedPath.length === 0) return null;
+  if (isNetworkPath(decodedPath) && workspaceRelativeFilePath(decodedPath, cwd) === null)
+    return null;
   if (
     !WINDOWS_DRIVE_PATH_PATTERN.test(decodedPath) &&
     !WINDOWS_UNC_PATH_PATTERN.test(decodedPath) &&

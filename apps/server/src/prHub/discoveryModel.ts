@@ -1,4 +1,5 @@
 import { GITHUB_FORGE_CAPABILITIES } from "../sourceControl/ForgeSourceControlProvider.ts";
+import { canQueueGitHubAutoMerge } from "@t3tools/shared/forgeCapabilities";
 import {
   PR_HUB_BRANCH_REQUIREMENTS_FIELDS,
   unknownMergeRequirements,
@@ -115,6 +116,7 @@ export interface RefreshStateRow {
 }
 
 export interface NormalizedPr {
+  readonly autoMergeAllowed?: boolean;
   readonly allowedMergeMethods?: TrackedPullRequest["allowedMergeMethods"];
   readonly mergeRequirements?: TrackedPullRequest["mergeRequirements"];
   readonly reasonEvidence?: Record<string, { id: string; url: string }[]>;
@@ -700,10 +702,13 @@ export function buildTrackedPullRequest(
     forgeCapabilities: {
       ...GITHUB_FORGE_CAPABILITIES,
       actions: GITHUB_FORGE_CAPABILITIES.actions.filter((action) =>
-        ["ready", "draft", "close", "reopen", "update-branch", "delete-branch"].includes(action)
-          ? pr.mergePermission === "allowed" ||
-            pr.author?.toLowerCase() === viewerLogin.toLowerCase()
-          : pr.mergePermission === "allowed",
+        action === "enable-auto-merge"
+          ? pr.mergePermission === "allowed" &&
+            canQueueGitHubAutoMerge(pr.autoMergeAllowed, pr.mergeStateStatus)
+          : ["ready", "draft", "close", "reopen", "update-branch", "delete-branch"].includes(action)
+            ? pr.mergePermission === "allowed" ||
+              pr.author?.toLowerCase() === viewerLogin.toLowerCase()
+            : pr.mergePermission === "allowed",
       ),
       reviewers: {
         request: pr.mergePermission === "allowed",
@@ -846,6 +851,7 @@ export function normalizeGraphqlPr(input: {
     reviewDecision: normalizeReviewDecision(input.node.reviewDecision),
     mergeable: normalizeMergeable(input.node.mergeable),
     mergeStateStatus: stringValue(input.node.mergeStateStatus)?.toUpperCase() ?? "UNKNOWN",
+    autoMergeAllowed: repositoryNode?.autoMergeAllowed === true,
     mergeRequirements:
       (input.node.prHubMergeRequirements as TrackedPullRequest["mergeRequirements"]) ??
       unknownMergeRequirements(),
@@ -1072,7 +1078,7 @@ fragment PrFields on PullRequest {
   deletions
   changedFiles
   author { login }
-  repository { nameWithOwner isPrivate isArchived viewerPermission squashMergeAllowed mergeCommitAllowed rebaseMergeAllowed }
+  repository { nameWithOwner isPrivate isArchived viewerPermission squashMergeAllowed mergeCommitAllowed rebaseMergeAllowed autoMergeAllowed }
   ${PR_HUB_BRANCH_REQUIREMENTS_FIELDS}
   labels(first:10){ nodes { name } }
   assignees(first:10){ nodes { login } }

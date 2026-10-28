@@ -1981,38 +1981,43 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
       <div ref={viewportContainerRef} className="relative min-h-0 flex-1 overflow-auto bg-muted/20">
         {sessions.length > 0 && webviewConfig ? (
           <div className="flex min-h-full min-w-full items-center justify-center">
-            {sessions.map((session) => {
-              const isActive = session.tabId === activeSession?.tabId;
-              const requested = requestedViewportByTabId[session.tabId] ?? null;
-              const dimensions = requested
-                ? clampPreviewViewport({ requested, bounds: viewportBounds })
-                : null;
-              return (
-                <PreviewBrowserWebview
-                  key={session.tabId}
-                  session={session}
-                  visible={isActive}
-                  config={webviewConfig}
-                  desktopPreview={desktopPreview}
-                  dimensions={dimensions}
-                  hiddenDimensions={requested ?? viewportBounds}
-                  onStatus={reportWebviewStatus}
-                  isAgentTab={() => automationOwnedTabs.current.has(session.tabId)}
-                  applyNavigationPolicy={applyNavigationPolicy}
-                  overlay={
-                    isActive ? (
-                      <PreviewAgentOverlay
-                        threadId={threadId}
-                        zoomFactor={desktopStateByTabId[session.tabId]?.zoomFactor ?? 1}
-                        paused={agentPaused}
-                        onTakeOver={() => setAgentPaused(true)}
-                        onResume={() => setAgentPaused(false)}
-                      />
-                    ) : null
-                  }
-                />
-              );
-            })}
+            {/* Moving a webview destroys its Electron guest. Keep DOM order independent of tab order. */}
+            {sessions
+              .toSorted((left, right) =>
+                left.tabId < right.tabId ? -1 : left.tabId > right.tabId ? 1 : 0,
+              )
+              .map((session) => {
+                const isActive = session.tabId === activeSession?.tabId;
+                const requested = requestedViewportByTabId[session.tabId] ?? null;
+                const dimensions = requested
+                  ? clampPreviewViewport({ requested, bounds: viewportBounds })
+                  : null;
+                return (
+                  <PreviewBrowserWebview
+                    key={session.tabId}
+                    session={session}
+                    visible={isActive}
+                    config={webviewConfig}
+                    desktopPreview={desktopPreview}
+                    dimensions={dimensions}
+                    hiddenDimensions={requested ?? viewportBounds}
+                    onStatus={reportWebviewStatus}
+                    isAgentTab={() => automationOwnedTabs.current.has(session.tabId)}
+                    applyNavigationPolicy={applyNavigationPolicy}
+                    overlay={
+                      isActive ? (
+                        <PreviewAgentOverlay
+                          threadId={threadId}
+                          zoomFactor={desktopStateByTabId[session.tabId]?.zoomFactor ?? 1}
+                          paused={agentPaused}
+                          onTakeOver={() => setAgentPaused(true)}
+                          onResume={() => setAgentPaused(false)}
+                        />
+                      ) : null
+                    }
+                  />
+                );
+              })}
             {activeSession && activeViewport ? (
               <button
                 type="button"

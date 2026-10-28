@@ -17,6 +17,8 @@ anywhere in the app.
 ## Good to know
 
 - `mod+b` toggles the sidebar, except while a terminal or dialog has focus.
+- In the desktop app, `mod+w` closes the focused terminal or active right-panel tab. When
+  nothing remains to close, it does nothing; it never closes the window.
 - `mod+shift+n` opens a new workflow.
 - `mod+enter` scrolls to the bottom of the chat; it doesn't send. In a dialog it runs the primary
   action.

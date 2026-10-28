@@ -1,4 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { timelineIsAtEnd } from "./MessagesTimeline.logic";
+
+it("rearms following only in the last forty pixels, independently of viewport height", () => {
+  expect(timelineIsAtEnd({ contentLength: 5_000, scrollLength: 2_000, scroll: 2_970 })).toBe(true);
+  expect(timelineIsAtEnd({ contentLength: 5_000, scrollLength: 2_000, scroll: 2_900 })).toBe(false);
+  expect(timelineIsAtEnd({ contentLength: 500, scrollLength: 1_000, scroll: 0 })).toBe(true);
+});
 import {
   buildTimelineEntryRowIndexMap,
   computeMessageDurationStart,

@@ -1,4 +1,4 @@
-import { Cron } from "croner";
+import { Cron, CronPattern } from "croner";
 import cronstrue from "cronstrue";
 
 export class ScheduleError extends Error {
@@ -226,6 +226,68 @@ export function previewCronSchedule(cronInput: string, zone: string, after = new
     nextFireTimes,
     oneShotAt: cron.split(" ").length === 7 ? (nextFireTimes[0] ?? null) : null,
   };
+}
+/** A daily wall-clock time on selected weekdays (0 = Sunday … 6 = Saturday). */
+export interface FixedTimeCronDraft {
+  readonly timeOfDay: string;
+  readonly weekdays: readonly number[];
+}
+const WEEKDAY_NAMES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"] as const;
+const weekdayToken = `(?:\\d+|${WEEKDAY_NAMES.join("|")})`;
+const weekdayField = new RegExp(
+  `^(?:\\*|\\*/1|${weekdayToken}(?:-${weekdayToken})?(?:,${weekdayToken}(?:-${weekdayToken})?)*)$`,
+);
+/** Returns the fixed-time form of a recurring cron, or null when it needs the cron editor. */
+export function parseFixedTimeCron(cronInput: string): FixedTimeCronDraft | null {
+  let cron: string;
+  try {
+    cron = normalizeCron(cronInput);
+  } catch {
+    return null;
+  }
+  const fields = cron.split(" ");
+  if (fields.length !== 5) return null;
+  const [minute, hour, day, month, weekday] = fields as [string, string, string, string, string];
+  if (!/^\d+$/.test(minute) || !/^\d+$/.test(hour) || day !== "*" || month !== "*") return null;
+  if (!weekdayField.test(weekday)) return null;
+  let pattern: CronPattern;
+  try {
+    pattern = new CronPattern(cron, "UTC");
+  } catch {
+    return null;
+  }
+  const weekdays = pattern.dayOfWeek.flatMap((value, index) => (value ? [index % 7] : []));
+  const minuteValue = Number(minute),
+    hourValue = Number(hour);
+  if (!weekdays.length || hourValue > 23 || minuteValue > 59) return null;
+  return {
+    timeOfDay: `${String(hourValue).padStart(2, "0")}:${String(minuteValue).padStart(2, "0")}`,
+    weekdays: [...new Set(weekdays)].toSorted((a, b) => a - b),
+  };
+}
+/** Canonical cron for a fixed-time draft: unpadded time, `*` for every day, named Sunday-first ranges. */
+export function fixedTimeCron(draft: FixedTimeCronDraft): string {
+  const time = /^(\d{2}):(\d{2})$/.exec(draft.timeOfDay);
+  const hour = Number(time?.[1]),
+    minute = Number(time?.[2]);
+  if (!time || hour > 23 || minute > 59) throw new ScheduleError("Enter a time as HH:MM.");
+  const days = [...new Set(draft.weekdays)].toSorted((a, b) => a - b);
+  if (!days.length) throw new ScheduleError("Select at least one day.");
+  if (days.some((day) => !Number.isInteger(day) || day < 0 || day > 6))
+    throw new ScheduleError("Weekdays must be between Sunday (0) and Saturday (6).");
+  if (days.length === 7) return `${minute} ${hour} * * *`;
+  const runs: Array<[number, number]> = [];
+  for (const day of days) {
+    const last = runs.at(-1);
+    if (last && last[1] === day - 1) last[1] = day;
+    else runs.push([day, day]);
+  }
+  const weekdays = runs
+    .map(([from, to]) =>
+      from === to ? WEEKDAY_NAMES[from]! : `${WEEKDAY_NAMES[from]!}-${WEEKDAY_NAMES[to]!}`,
+    )
+    .join(",");
+  return `${minute} ${hour} * * ${weekdays}`;
 }
 export function oneShotCron(instant: string, timezone: string, after = new Date()): string {
   const date = new Date(instant);

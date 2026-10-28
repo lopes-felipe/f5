@@ -114,8 +114,8 @@ export function UserInputQuestionStep({
   // so selecting option 1 on question A and immediately navigating to
   // question B doesn't fire the advance callback against B's context.
   useEffect(() => {
-    if (autoAdvanceQuestionIdRef.current !== question.id) clearAutoAdvance();
-  }, [clearAutoAdvance, question.id]);
+    if (disabled || autoAdvanceQuestionIdRef.current !== question.id) clearAutoAdvance();
+  }, [clearAutoAdvance, disabled, question.id]);
 
   const selectOptionAndAutoAdvance = useCallback(
     (optionLabel: string) => {

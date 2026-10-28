@@ -1,4 +1,5 @@
 import { assertNotOtherProfileManagedCheckout } from "../profiles/RepositorySharing.ts";
+import { readManagedWorktreesDirectories } from "../worktreesDirectory.ts";
 import { Effect } from "effect";
 import type { ServerConfigShape } from "../config.ts";
 import type { GitCoreShape } from "../git/Services/GitCore.ts";
@@ -19,10 +20,13 @@ export const inspectAttachableWorkspace = (
     const [target, root, managed, repository] = yield* Effect.all([
       canonicalWorkspace(path),
       canonicalWorkspace(projectCwd),
-      canonicalWorkspace(config.worktreesDir),
+      readManagedWorktreesDirectories(config.worktreesDir),
       git.resolveCommonDir(projectCwd).pipe(Effect.flatMap(canonicalWorkspace)),
     ]);
-    if (target !== root && (target === managed || !pathContains(managed, target)))
+    if (
+      target !== root &&
+      !managed.some((directory) => target !== directory && pathContains(directory, target))
+    )
       return yield* Effect.fail(
         new Error(
           "Only the project checkout and this profile's managed worktrees can be attached.",

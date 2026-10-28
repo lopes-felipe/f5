@@ -321,6 +321,7 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
     thread,
   );
   let expectedHostPort: number | null = null;
+  const runLog = Effect.runPromiseWith(yield* Effect.services<never>());
 
   const server = http.createServer((request, response) => {
     void (async () => {
@@ -345,6 +346,11 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
       }
       const token = readBearerToken(request);
       if (!token || sessionsByToken.get(token)?.catalog !== catalog) {
+        await runLog(
+          Effect.logWarning("rejected MCP request with an unusable credential", {
+            reason: token ? "unknown_revoked_or_wrong_catalog" : "missing_bearer_token",
+          }),
+        );
         response.setHeader("www-authenticate", "Bearer");
         writeJson(response, 401, { error: "invalid_mcp_credential" });
         return;
@@ -363,6 +369,7 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
 
       const scope = sessionsByToken.get(token);
       if (!scope) {
+        await runLog(Effect.logWarning("rejected MCP request with a revoked credential"));
         writeJson(response, 401, { error: "invalid_mcp_credential" });
         return;
       }

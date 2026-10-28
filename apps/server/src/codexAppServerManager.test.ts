@@ -1000,6 +1000,46 @@ describe("startSession", () => {
 });
 
 describe("sendTurn", () => {
+  it.each(["ready", "error"])("replaces a leftover turn id from a %s session", async (status) => {
+    const { manager, context, sendRequest, updateSession } = createSendTurnHarness();
+    updateSession.mockRestore();
+    context.session.status = status;
+    context.session.activeTurnId = TurnId.makeUnsafe("turn_dead");
+    sendRequest.mockResolvedValueOnce({ turn: { id: "turn_live" } });
+    await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "retry" });
+    expect(context.session.activeTurnId).toBe("turn_live");
+    await manager.interruptTurn(asThreadId("thread_1"), context.session.activeTurnId);
+    expect(sendRequest).toHaveBeenLastCalledWith(context, "turn/interrupt", {
+      threadId: "thread_1",
+      turnId: "turn_live",
+    });
+  });
+
+  it("Stop interrupts the running turn after a queued follow-up is accepted", async () => {
+    const { manager, context, sendRequest, updateSession } = createSendTurnHarness();
+    updateSession.mockRestore();
+    sendRequest.mockImplementation(async (_context, method, params) => {
+      if (method === "turn/start") {
+        return { turn: { id: context.session.activeTurnId ? "turn_queued" : "turn_running" } };
+      }
+      if (method === "turn/interrupt") {
+        expect(params).toEqual({ threadId: "thread_1", turnId: "turn_running" });
+        return {};
+      }
+      throw new Error("Unexpected method: " + method);
+    });
+    const first = await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "work" });
+    expect(first.turnId).toBe("turn_running");
+    const queued = await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "next" });
+    expect(queued.turnId).toBe("turn_queued");
+    expect(context.session.activeTurnId).toBe("turn_running");
+    await manager.interruptTurn(asThreadId("thread_1"), first.turnId);
+    expect(sendRequest).toHaveBeenLastCalledWith(context, "turn/interrupt", {
+      threadId: "thread_1",
+      turnId: "turn_running",
+    });
+  });
+
   it("steers the active native turn without starting another turn", async () => {
     const { manager, context, sendRequest } = createSendTurnHarness();
     context.session.activeTurnId = TurnId.makeUnsafe("turn_busy");

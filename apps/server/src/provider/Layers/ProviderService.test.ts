@@ -1,4 +1,5 @@
 import { backgroundWorkSessionIdentity } from "../backgroundWorkIdentity.ts";
+import { readIncompleteHistory } from "../runtimePayload.ts";
 import { ProviderSessionDirectoryPersistenceError } from "../Errors.ts";
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { ServerShutdown, ShutdownRegistry } from "../../shutdown.ts";
@@ -1900,6 +1901,24 @@ routing.layer("ProviderServiceLive routing", (it) => {
       const sessions = yield* provider.listSessions();
       assert.equal(sessions.length, 1);
 
+      const directory = yield* ProviderSessionDirectory;
+      yield* directory.upsert({
+        threadId: asThreadId("historical-only"),
+        provider: "codex",
+        runtimeMode: "full-access",
+        status: "stopped",
+      });
+      const listThreadIds = vi.spyOn(directory, "listThreadIds");
+      const getBinding = vi.spyOn(directory, "getBinding");
+      try {
+        yield* provider.listSessions();
+        assert.equal(listThreadIds.mock.calls.length, 0);
+        assert.deepEqual(getBinding.mock.calls, [[session.threadId]]);
+      } finally {
+        listThreadIds.mockRestore();
+        getBinding.mockRestore();
+      }
+
       yield* provider.sendTurn({
         threadId: session.threadId,
         input: "hello",
@@ -2392,6 +2411,49 @@ routing.layer("ProviderServiceLive routing", (it) => {
           assert.equal(runtimePayload.lastError, null);
           assert.equal(runtimePayload.lastRuntimeEvent, "provider.sendTurn");
         }
+      }
+    }),
+  );
+
+  it.effect("persists the running native turn after accepting a queued follow-up", () =>
+    Effect.gen(function* () {
+      const service = yield* ProviderService;
+      const repository = yield* ProviderSessionRuntimeRepository;
+      const threadId = asThreadId("queued-stop");
+      yield* service.startSession(threadId, {
+        threadId,
+        provider: "codex",
+        runtimeMode: "full-access",
+      });
+      const running = asTurnId("running-native-turn");
+      const queued = asTurnId("queued-native-turn");
+      const originalList = routing.codex.listSessions.getMockImplementation()!;
+      const originalSend = routing.codex.sendTurn.getMockImplementation()!;
+      try {
+        routing.codex.listSessions.mockImplementation(() =>
+          originalList().pipe(
+            Effect.map((sessions) =>
+              sessions.map((session) =>
+                session.threadId === threadId
+                  ? { ...session, status: "running" as const, activeTurnId: running }
+                  : session,
+              ),
+            ),
+          ),
+        );
+        routing.codex.sendTurn.mockReturnValueOnce(Effect.succeed({ threadId, turnId: running }));
+        routing.codex.sendTurn.mockReturnValueOnce(Effect.succeed({ threadId, turnId: queued }));
+        yield* service.sendTurn({ threadId, input: "work" });
+        const accepted = yield* service.sendTurn({ threadId, input: "follow-up" });
+        assert.equal(accepted.turnId, queued);
+        const row = yield* repository.getByThreadId({ threadId });
+        assert(Option.isSome(row));
+        assert.equal((row.value.runtimePayload as { activeTurnId: string }).activeTurnId, running);
+        yield* service.interruptTurn({ threadId, turnId: running });
+        assert.deepEqual(routing.codex.interruptTurn.mock.lastCall, [threadId, running]);
+      } finally {
+        routing.codex.listSessions.mockImplementation(originalList);
+        routing.codex.sendTurn.mockImplementation(originalSend);
       }
     }),
   );
@@ -4366,6 +4428,132 @@ it.live(
     }).pipe(Effect.provide(layer), Effect.scoped);
   },
 );
+
+it.effect(
+  "stops the matching live turn after ingestion failure and preserves its conversation",
+  () => {
+    const adapter = makeFakeCodexAdapter();
+    const layer = makeProviderServiceLayerForAdapters(new Map([["codex", adapter.adapter]]));
+    return Effect.gen(function* () {
+      const service = yield* ProviderService;
+      const directory = yield* ProviderSessionDirectory;
+      const threadId = asThreadId("failed-ingestion");
+      const started = yield* service.startSession(threadId, {
+        threadId,
+        provider: "codex",
+        runtimeMode: "full-access",
+        cwd: process.cwd(),
+      });
+      const activeTurnId = asTurnId("failed-ingestion-turn");
+      adapter.listSessions.mockReturnValue(
+        Effect.succeed([{ ...started, activeTurnId, status: "running" }]),
+      );
+      const event: ProviderRuntimeEvent = {
+        type: "runtime.error",
+        provider: "codex",
+        threadId,
+        turnId: activeTurnId,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        sessionGeneration: started.capabilities!.generation,
+        eventId: asEventId("lost-output"),
+        createdAt: new Date().toISOString(),
+        payload: { message: "disk full" },
+      };
+      // A late event must not interrupt the current turn.
+      yield* service.requireHistoryReconciliation!({ ...event, turnId: asTurnId("old-turn") });
+      yield* service.requireHistoryReconciliation!({ ...event, turnId: undefined });
+      yield* Effect.yieldNow;
+      assert.equal(adapter.interruptTurn.mock.calls.length, 0);
+      yield* service.requireHistoryReconciliation!(event);
+      while (adapter.interruptTurn.mock.calls.length === 0) yield* Effect.yieldNow;
+      assert.deepEqual(adapter.interruptTurn.mock.calls, [[threadId, activeTurnId]]);
+      assert.equal(adapter.stopSession.mock.calls.length, 0);
+      const binding = Option.getOrUndefined(yield* directory.getBinding(threadId))!;
+      assert.deepEqual(binding.resumeCursor, started.resumeCursor);
+      const result = yield* service
+        .sendTurn({ threadId, input: "continue", attachments: [] })
+        .pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      assert.equal(adapter.sendTurn.mock.calls.length, 0);
+      adapter.interruptTurn.mockReturnValue(
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: "codex",
+            method: "interrupt",
+            detail: "native stream failed",
+          }),
+        ),
+      );
+      yield* service.requireHistoryReconciliation!(event);
+      while (adapter.stopSession.mock.calls.length === 0) yield* Effect.yieldNow;
+      assert.equal(adapter.stopSession.mock.calls.length, 1);
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+it.effect("fences history without waiting for a held thread lock or blocking other threads", () => {
+  const adapter = makeFakeCodexAdapter();
+  const layer = makeProviderServiceLayerForAdapters(new Map([["codex", adapter.adapter]]));
+  return Effect.gen(function* () {
+    const service = yield* ProviderService;
+    const directory = yield* ProviderSessionDirectory;
+    const threadId = asThreadId("locked-ingestion");
+    const started = yield* service.startSession(threadId, {
+      threadId,
+      provider: "codex",
+      runtimeMode: "full-access",
+      cwd: process.cwd(),
+    });
+    const activeTurnId = asTurnId("locked-turn");
+    adapter.listSessions.mockReturnValue(Effect.succeed([{ ...started, activeTurnId }]));
+    const locked = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const holder = yield* withProviderThreadAccess(
+      threadId,
+      Deferred.succeed(locked, undefined).pipe(Effect.andThen(Deferred.await(release))),
+    ).pipe(Effect.forkScoped);
+    yield* Deferred.await(locked);
+    yield* service.requireHistoryReconciliation!({
+      type: "runtime.error",
+      provider: "codex",
+      threadId,
+      turnId: activeTurnId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      sessionGeneration: started.capabilities!.generation,
+      eventId: asEventId("locked-output"),
+      createdAt: new Date().toISOString(),
+      payload: { message: "disk full" },
+    });
+    const binding = Option.getOrUndefined(yield* directory.getBinding(threadId))!;
+    assert.equal(readIncompleteHistory(binding.runtimePayload)?.eventId, "locked-output");
+    assert.equal(adapter.interruptTurn.mock.calls.length, 0);
+    const other = asThreadId("unrelated-ingestion");
+    yield* service.startSession(other, {
+      threadId: other,
+      provider: "codex",
+      runtimeMode: "full-access",
+    });
+    const received = yield* service.streamEvents.pipe(
+      Stream.filter((event) => event.eventId === asEventId("unrelated-output")),
+      Stream.runHead,
+      Effect.forkScoped,
+    );
+    yield* Effect.yieldNow;
+    adapter.emit({
+      type: "runtime.error",
+      provider: "codex",
+      threadId: other,
+      eventId: asEventId("unrelated-output"),
+      createdAt: new Date().toISOString(),
+      payload: { message: "unrelated event" },
+    });
+    assert.isTrue(Option.isSome(yield* Fiber.join(received)));
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(holder);
+    while (adapter.interruptTurn.mock.calls.length === 0) yield* Effect.yieldNow;
+    assert.deepEqual(adapter.interruptTurn.mock.calls, [[threadId, activeTurnId]]);
+  }).pipe(Effect.provide(layer), Effect.scoped);
+});
 
 it.effect(
   "refuses turns with durable incomplete history until the matching recovery is acknowledged",

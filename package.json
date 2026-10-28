@@ -35,7 +35,7 @@
     "build:marketing": "node node_modules/turbo/bin/turbo run build --filter=@t3tools/marketing",
     "build:desktop": "node scripts/check-dependencies.ts --install && node node_modules/turbo/bin/turbo run build --filter=@t3tools/desktop --filter=t3",
     "check:dependencies": "node scripts/check-dependencies.ts",
-    "postinstall": "node scripts/check-dependencies.ts --record-install",
+    "postinstall": "node apps/desktop/node_modules/electron/install.js && node scripts/check-dependencies.ts --record-install",
     "repair:stuck-turns": "bun apps/server/scripts/repair-stuck-turns.ts",
     "typecheck": "node node_modules/turbo/bin/turbo run typecheck",
     "lint": "node node_modules/oxlint/bin/oxlint --report-unused-disable-directives",

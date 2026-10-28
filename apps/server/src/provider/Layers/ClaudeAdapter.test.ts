@@ -6514,6 +6514,77 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  for (const windowStatus of ["allowed", "rejected", "absent", "assistant", "http"] as const) {
+    it.effect(
+      "classifies Claude blocking_limit with " + windowStatus + " rate-limit evidence",
+      () => {
+        const harness = makeHarness();
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+          });
+          yield* adapter.sendTurn({ threadId: THREAD_ID, input: "Continue.", attachments: [] });
+          if (windowStatus === "allowed" || windowStatus === "rejected")
+            harness.query.emit({
+              type: "rate_limit_event",
+              rate_limit_info: {
+                status: windowStatus,
+                rateLimitType: "five_hour",
+                resetsAt: 1790607600,
+              },
+              uuid: "context-window-limit",
+              session_id: "context-window",
+            } as unknown as SDKMessage);
+          if (windowStatus === "assistant")
+            harness.query.emit({
+              type: "assistant",
+              error: "rate_limit",
+              uuid: "context-rate-error",
+              session_id: "context-window",
+              parent_tool_use_id: null,
+              message: { id: "context-rate-error", role: "assistant", content: [], usage: {} },
+            } as unknown as SDKMessage);
+          harness.query.emit({
+            type: "result",
+            subtype: "success",
+            is_error: windowStatus !== "absent",
+            terminal_reason: "blocking_limit",
+            ...(windowStatus === "http" ? { api_error_status: 429 } : {}),
+            result: "Prompt is too long",
+            session_id: "context-window",
+            uuid: "context-window-result",
+            usage: {},
+            modelUsage: {},
+          } as unknown as SDKMessage);
+          const completed = yield* adapter.streamEvents.pipe(
+            Stream.filter((event) => event.type === "turn.completed"),
+            Stream.runHead,
+          );
+          assert.equal(completed._tag, "Some");
+          if (completed._tag !== "Some" || completed.value.type !== "turn.completed") return;
+          assert.equal(completed.value.payload.state, "failed");
+          if (
+            windowStatus === "rejected" ||
+            windowStatus === "assistant" ||
+            windowStatus === "http"
+          ) {
+            assert.equal(completed.value.payload.usageLimit?.evidence, "typed");
+            assert.match(completed.value.payload.errorMessage ?? "", /usage limit reached/);
+          } else {
+            assert.equal(completed.value.payload.usageLimit, undefined);
+            assert.match(
+              completed.value.payload.errorMessage ?? "",
+              /context window.*\/compact.*new thread/,
+            );
+          }
+        }).pipe(Effect.provide(harness.layer));
+      },
+    );
+  }
+
   for (const scenario of [
     "blocked",
     "recovered",
@@ -6707,50 +6778,70 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("schedules a resume from a gateway's wrapped rate-limit cooldown", () => {
-    const harness = makeHarness();
-    return Effect.gen(function* () {
-      const adapter = yield* ClaudeAdapter;
-      yield* adapter.startSession({
-        threadId: THREAD_ID,
-        provider: "claudeAgent",
-        runtimeMode: "full-access",
-      });
-      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
-      harness.query.emit({
-        type: "result",
-        subtype: "success",
-        is_error: true,
-        terminal_reason: "api_error",
-        api_error_status: 503,
-        result:
-          'API Error: 503 [claude/claude-opus-5-5] [429]: {"type":"error","error":{"type":"rate_limit_error","message":"Please try again later."}} (reset after 4m 6s).',
-        session_id: "gateway-session",
-        uuid: "gateway-result",
-        usage: {},
-        modelUsage: {},
-      } as unknown as SDKMessage);
-      const events = Array.from(
-        yield* adapter.streamEvents.pipe(
-          Stream.takeUntil((event) => event.type === "turn.completed"),
-          Stream.runCollect,
-        ),
-      );
-      const completed = events.find((event) => event.type === "turn.completed");
-      assert.equal(completed?.type === "turn.completed" && completed.payload.state, "failed");
-      const usageLimit =
-        completed?.type === "turn.completed" ? completed.payload.usageLimit : undefined;
-      assert.equal(usageLimit?.resetSource, "message");
-      assert.closeTo(
-        Date.parse(usageLimit?.resetsAt ?? "") - Date.parse(completed?.createdAt ?? ""),
-        246_000,
-        1_000,
-      );
-    }).pipe(
-      Effect.provideService(Random.Random, makeDeterministicRandomService()),
-      Effect.provide(harness.layer),
+  for (const assistantRateLimit of [false, true]) {
+    it.effect(
+      "schedules a resume from a gateway's wrapped cooldown (assistant rate limit: " +
+        assistantRateLimit +
+        ")",
+      () => {
+        const harness = makeHarness();
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+          });
+          yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+          if (assistantRateLimit)
+            harness.query.emit({
+              type: "assistant",
+              error: "rate_limit",
+              uuid: "gateway-assistant",
+              session_id: "gateway-session",
+              parent_tool_use_id: null,
+              message: { id: "gateway-assistant", role: "assistant", content: [], usage: {} },
+            } as unknown as SDKMessage);
+          harness.query.emit({
+            type: "result",
+            subtype: "success",
+            is_error: true,
+            terminal_reason: "api_error",
+            api_error_status: 503,
+            result:
+              'API Error: 503 [claude/claude-opus-5-5] [429]: {"type":"error","error":{"type":"rate_limit_error","message":"Please try again later."}} (reset after 4m 6s).',
+            session_id: "gateway-session",
+            uuid: "gateway-result",
+            usage: {},
+            modelUsage: {},
+          } as unknown as SDKMessage);
+          const events = Array.from(
+            yield* adapter.streamEvents.pipe(
+              Stream.takeUntil((event) => event.type === "turn.completed"),
+              Stream.runCollect,
+            ),
+          );
+          const completed = events.find((event) => event.type === "turn.completed");
+          assert.equal(completed?.type === "turn.completed" && completed.payload.state, "failed");
+          const usageLimit =
+            completed?.type === "turn.completed" ? completed.payload.usageLimit : undefined;
+          assert.equal(usageLimit?.resetSource, "message");
+          assert.notMatch(
+            completed?.type === "turn.completed" ? (completed.payload.errorMessage ?? "") : "",
+            /Claude usage limit reached/,
+          );
+          assert.closeTo(
+            Date.parse(usageLimit?.resetsAt ?? "") - Date.parse(completed?.createdAt ?? ""),
+            246_000,
+            1_000,
+          );
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+        );
+      },
     );
-  });
+  }
 
   for (const originalError of [undefined, "usage limit reached"] as const) {
     it.effect(
@@ -9329,6 +9420,377 @@ describe("ClaudeAdapterLive", () => {
           assert.include(failure.payload.message, "repair started during resume recovery");
       }).pipe(Effect.provide(harness.layer));
     });
+    // `missing` is saved but sits on a branch that forks off the chain the CLI
+    // loads, because a stray entry under `saved` is the newest leaf.
+    const stray = "123e4567-e89b-42d3-a456-426614174003";
+    const linearEntries = () =>
+      new Map<string, Record<string, unknown>>([
+        [saved, { uuid: saved, parentUuid: null, type: "assistant" }],
+        [missing, { uuid: missing, parentUuid: saved, type: "assistant" }],
+      ]);
+    const forkedEntries = () =>
+      linearEntries().set(stray, { uuid: stray, parentUuid: saved, type: "assistant" });
+    // Only dequeued task notifications have forked a transcript.
+    const notify = (harness: ReturnType<typeof makeHarness>) =>
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-fork-check",
+        status: "completed",
+        session_id: sessionId,
+        uuid: "task-fork-check-notification",
+      } as unknown as SDKMessage);
+    it.effect("lets the CLI decide when the resume point looks forked at startup", () => {
+      const harness = makeHarness({ readResumeTranscript: async () => forkedEntries() });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: cursor,
+        });
+        // The loader model can disagree with the CLI, so it never blocks the start.
+        assert.equal(harness.getCreateQueryInputs().length, 1);
+        assert.equal(harness.getLastCreateQueryInput()?.options.resumeSessionAt, missing);
+      }).pipe(Effect.provide(harness.layer));
+    });
+    it.effect("stops resume recovery at a fork and reports the send as not sent", () => {
+      let reads = 0;
+      const harness = makeHarness({
+        resumeConfirmationTimeoutMs: 5_000,
+        // The fork appears after startup validation, as when Claude writes it
+        // while the thread is idle.
+        readResumeTranscript: async () => (reads++ === 0 ? linearEntries() : forkedEntries()),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const observed: ProviderRuntimeEvent[] = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            observed.push(event);
+          }),
+        ).pipe(Effect.forkChild);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: cursor,
+        });
+        const send = yield* adapter
+          .sendTurn({ threadId: THREAD_ID, input: "continue", attachments: [] })
+          .pipe(Effect.exit, Effect.forkChild);
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+        harness.query.emit({
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: [`No message found with message.uuid of: ${missing}`],
+          session_id: sessionId,
+          uuid: "forked-resume-error",
+        } as unknown as SDKMessage);
+        const exit = yield* Fiber.join(send);
+        assert.equal(exit._tag, "Failure");
+        if (exit._tag !== "Failure") return;
+        const error = Cause.squash(exit.cause);
+        assert.isTrue(Schema.is(ProviderAdapterRequestError)(error));
+        if (!Schema.is(ProviderAdapterRequestError)(error)) return;
+        assert.include(error.detail, "transcript forked");
+        assert.equal(error.deliveryCertainty, "not_sent");
+        assert.equal(error.deliveryRetryable, false);
+        while (!observed.some((event) => event.type === "session.exited")) yield* Effect.yieldNow;
+        yield* TestClock.adjust("1 second");
+        assert.equal(harness.getCreateQueryInputs().length, 1);
+        assert.isFalse(
+          observed.some(
+            (event) =>
+              event.type === "runtime.warning" && event.payload.message.includes("Retrying once"),
+          ),
+        );
+        const failure = observed.find((event) => event.type === "runtime.error");
+        if (failure?.type === "runtime.error")
+          assert.include(failure.payload.message, "transcript forked");
+        else assert.fail("Expected a runtime error naming the fork");
+        const exited = observed.findLast((event) => event.type === "session.exited");
+        const exitedCursor = exited?.resumeCursor as Record<string, unknown> | undefined;
+        assert.deepEqual(exitedCursor?.transcriptFork, { target: missing, activeLeaf: stray });
+      }).pipe(Effect.provide(harness.layer));
+    });
+    it.effect("warns once when Claude forks the transcript while the thread is idle", () => {
+      let reads = 0;
+      const harness = makeHarness({
+        readResumeTranscript: async () => (reads++ === 0 ? linearEntries() : forkedEntries()),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const observed: ProviderRuntimeEvent[] = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            observed.push(event);
+          }),
+        ).pipe(Effect.forkChild);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: cursor,
+        });
+        const forkWarnings = () =>
+          observed.filter(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message.includes("Claude forked this transcript"),
+          );
+        const idle = (uuid: string) =>
+          harness.query.emit({
+            type: "system",
+            subtype: "session_state_changed",
+            state: "idle",
+            session_id: sessionId,
+            uuid,
+          } as unknown as SDKMessage);
+        notify(harness);
+        idle("idle-1");
+        while (forkWarnings().length === 0)
+          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
+        const [warning] = forkWarnings();
+        if (warning?.type === "runtime.warning")
+          assert.deepEqual(warning.payload.detail, { target: missing, activeLeaf: stray });
+        notify(harness);
+        idle("idle-2");
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 50)));
+        assert.equal(forkWarnings().length, 1);
+        const liveCursor = (yield* adapter.listSessions())[0]?.resumeCursor as
+          | Record<string, unknown>
+          | undefined;
+        assert.deepEqual(liveCursor?.transcriptFork, { target: missing, activeLeaf: stray });
+      }).pipe(Effect.provide(harness.layer));
+    });
+    it.effect("does not read the transcript when idle without task notifications", () => {
+      let reads = 0;
+      const harness = makeHarness({
+        readResumeTranscript: async () => (reads++, forkedEntries()),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: cursor,
+        });
+        harness.query.emit({
+          type: "system",
+          subtype: "session_state_changed",
+          state: "idle",
+          session_id: sessionId,
+          uuid: "idle-without-notification",
+        } as unknown as SDKMessage);
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 50)));
+        assert.equal(reads, 1);
+      }).pipe(Effect.provide(harness.layer));
+    });
+    // History before a compaction is a separate root, not a fork.
+    const compactedEntries = () =>
+      new Map<string, Record<string, unknown>>([
+        [stray, { uuid: stray, parentUuid: null, type: "assistant" }],
+        [
+          "compact",
+          { uuid: "compact", parentUuid: null, type: "system", subtype: "compact_boundary" },
+        ],
+        [saved, { uuid: saved, parentUuid: "compact", type: "assistant" }],
+        [missing, { uuid: missing, parentUuid: saved, type: "assistant" }],
+      ]);
+    for (const [name, entries] of [
+      ["a transcript without branches", linearEntries],
+      ["history detached before a compaction", compactedEntries],
+    ] as const)
+      it.effect(`does not warn about a fork for ${name}`, () => {
+        let reads = 0;
+        const harness = makeHarness({ readResumeTranscript: async () => (reads++, entries()) });
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          const observed: ProviderRuntimeEvent[] = [];
+          yield* Stream.runForEach(adapter.streamEvents, (event) =>
+            Effect.sync(() => {
+              observed.push(event);
+            }),
+          ).pipe(Effect.forkChild);
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+            resumeCursor: cursor,
+          });
+          notify(harness);
+          harness.query.emit({
+            type: "system",
+            subtype: "session_state_changed",
+            state: "idle",
+            session_id: sessionId,
+            uuid: `idle-${name}`,
+          } as unknown as SDKMessage);
+          while (reads < 2)
+            yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
+          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+          assert.isFalse(
+            observed.some(
+              (event) =>
+                event.type === "runtime.warning" &&
+                event.payload.message.includes("Claude forked this transcript"),
+            ),
+          );
+        }).pipe(Effect.provide(harness.layer));
+      });
+    const controlRequests = [
+      {
+        method: "setModel",
+        turn: { model: "claude-opus-4-6" },
+        hold: (query: FakeClaudeQuery, wait: Promise<void>) => {
+          query.setModelWait = wait;
+        },
+      },
+      {
+        method: "applyFlagSettings",
+        turn: { model: "claude-opus-4-6" },
+        hold: (query: FakeClaudeQuery, wait: Promise<void>) => {
+          query.applyFlagSettingsWait = wait;
+        },
+      },
+      {
+        method: "setPermissionMode",
+        turn: { interactionMode: "plan" as const },
+        hold: (query: FakeClaudeQuery, wait: Promise<void>) => {
+          query.setPermissionModeWait = wait;
+        },
+      },
+    ];
+    for (const control of controlRequests)
+      it.effect(`reports a send as not sent when Claude exits during ${control.method}`, () => {
+        const harness = makeHarness({
+          resumeConfirmationTimeoutMs: 5_000,
+          readResumeTranscript: async () => linearEntries(),
+        });
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+            resumeCursor: { resume: sessionId },
+          });
+          let closeQuery!: (cause: unknown) => void;
+          control.hold(
+            harness.query,
+            new Promise((_, reject) => {
+              closeQuery = reject;
+            }),
+          );
+          const send = yield* adapter
+            .sendTurn({
+              threadId: THREAD_ID,
+              input: "continue",
+              ...control.turn,
+              attachments: [],
+            })
+            .pipe(Effect.exit, Effect.forkChild);
+          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+          // The SDK rejects pending control requests when the CLI exits, which can
+          // happen before the stream delivers the resume error.
+          closeQuery(new Error("Query closed before response received"));
+          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+          harness.query.emit({
+            type: "result",
+            subtype: "error_during_execution",
+            is_error: true,
+            errors: [`No message found with message.uuid of: ${missing}`],
+            session_id: sessionId,
+            uuid: "control-request-resume-error",
+          } as unknown as SDKMessage);
+          const exit = yield* Fiber.join(send);
+          assert.equal(exit._tag, "Failure");
+          if (exit._tag !== "Failure") return;
+          const error = Cause.squash(exit.cause);
+          assert.isTrue(Schema.is(ProviderAdapterRequestError)(error));
+          if (!Schema.is(ProviderAdapterRequestError)(error)) return;
+          assert.equal(error.method, "turn/start");
+          assert.equal(error.deliveryCertainty, "not_sent");
+          assert.equal(error.deliveryRetryable, false);
+          assert.include(error.detail, "could not load the saved conversation");
+        }).pipe(Effect.provide(harness.layer));
+      });
+    it.effect("keeps a control request failure while Claude is still running", () => {
+      const harness = makeHarness({ readResumeTranscript: async () => linearEntries() });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: { resume: sessionId },
+        });
+        const failure = Promise.reject(new Error("model claude-x not found"));
+        failure.catch(() => {});
+        harness.query.setModelWait = failure;
+        const exit = yield* Effect.exit(
+          adapter.sendTurn({
+            threadId: THREAD_ID,
+            input: "continue",
+            model: "claude-opus-4-6",
+            attachments: [],
+          }),
+        );
+        assert.equal(exit._tag, "Failure");
+        if (exit._tag !== "Failure") return;
+        // A deterministic failure must not become a retryable "not sent".
+        const error = Cause.squash(exit.cause);
+        assert.isFalse(
+          Schema.is(ProviderAdapterRequestError)(error) && error.deliveryCertainty === "not_sent",
+        );
+      }).pipe(Effect.provide(harness.layer));
+    });
+    it.effect("does not block Stop while a send waits for the resume outcome", () => {
+      const harness = makeHarness({
+        resumeConfirmationTimeoutMs: 5_000,
+        readResumeTranscript: async () => linearEntries(),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: { resume: sessionId },
+        });
+        let closeQuery!: (cause: unknown) => void;
+        harness.query.setModelWait = new Promise((_, reject) => {
+          closeQuery = reject;
+        });
+        const send = yield* adapter
+          .sendTurn({
+            threadId: THREAD_ID,
+            input: "continue",
+            model: "claude-opus-4-6",
+            attachments: [],
+          })
+          .pipe(Effect.exit, Effect.forkChild);
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+        closeQuery(new Error("Query closed before response received"));
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+        // The send now waits up to 3 seconds of test time for the resume
+        // outcome. Stop must not queue behind that wait.
+        const stopped = yield* Effect.raceFirst(
+          adapter.stopSession(THREAD_ID).pipe(Effect.as("stopped")),
+          Effect.promise(
+            () => new Promise<string>((resolve) => setTimeout(() => resolve("blocked"), 1_000)),
+          ),
+        );
+        assert.equal(stopped, "stopped");
+        yield* TestClock.adjust("5 seconds");
+        const exit = yield* Fiber.join(send);
+        assert.equal(exit._tag, "Failure");
+      }).pipe(Effect.provide(harness.layer));
+    });
     it.effect("caps repeated failed preflights and permits retry after transcript repair", () => {
       const harness = makeHarness({ readResumeTranscript: async () => new Map() });
       return Effect.gen(function* () {
@@ -9387,7 +9849,7 @@ describe("ClaudeAdapterLive", () => {
       configDir: string,
       projectDir: string,
       sessionId: string,
-      contents = '{"type":"system"}\n',
+      contents = '{"type":"user","message":{"role":"user","content":"hello"}}\n',
     ) => {
       const dir = path.join(configDir, "projects", projectDir);
       mkdirSync(dir, { recursive: true });
@@ -9455,6 +9917,10 @@ describe("ClaudeAdapterLive", () => {
             "-Users-me-project",
             probeSessionId,
             [
+              '{"type":"last-prompt","lastPrompt":"hello"}',
+              '{"type":"atis-latch","atis":""}',
+              '{"type":"cost-state","totalCostUSD":0}',
+              '{"type":"system","subtype":"init"}',
               '{"type":"queue-operation","operation":"enqueue"}',
               '{"type":"summary","summary":"x"}',
               '{"type":"file-history-snapshot","snapshot":{}}',
@@ -11920,6 +12386,111 @@ describe("ClaudeAdapterLive", () => {
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );
+  });
+
+  it.effect.each([
+    ["full-access", "Write"],
+    ["auto", "Write"],
+    ["auto-accept-edits", "Write"],
+    ["approval-required", "Write"],
+    ["full-access", "Bash"],
+    ["full-access", "mcp__preview__navigate"],
+  ] as const)("asks before a plan-mode callback in %s mode for %s", ([runtimeMode, toolName]) => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const events: ProviderRuntimeEvent[] = [];
+      const observer = yield* adapter.streamEvents.pipe(
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            events.push(event);
+          }),
+        ),
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "plan",
+        attachments: [],
+        interactionMode: "plan",
+      });
+      const canUseTool = harness.getLastCreateQueryInput()!.options.canUseTool!;
+      const result = canUseTool(
+        toolName,
+        toolName === "Bash"
+          ? { command: "bun run test" }
+          : toolName.startsWith("mcp__")
+            ? { url: "http://localhost:3000" }
+            : { file_path: "/repo/a.ts", content: "work" },
+        {
+          signal: new AbortController().signal,
+          toolUseID: "plan-write",
+          requestId: "plan-write",
+        },
+      );
+      while (!events.some((event) => event.type === "request.opened")) yield* Effect.yieldNow;
+      const opened = events.find((event) => event.type === "request.opened")!;
+      if (opened.type !== "request.opened") return;
+      yield* adapter.respondToRequest(
+        THREAD_ID,
+        ApprovalRequestId.makeUnsafe(opened.requestId!),
+        "decline",
+      );
+      assert.equal((yield* Effect.promise(() => result))?.behavior, "deny");
+      yield* Fiber.interrupt(observer);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect.each(["Write", "Bash", "mcp__preview__navigate"])(
+    "denies plan-mode %s immediately when approvals are disabled",
+    (toolName) => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          runtimeMode: "full-access",
+          approvalPolicy: "never",
+        });
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "plan",
+          attachments: [],
+          interactionMode: "plan",
+        });
+        const result = yield* Effect.promise(() =>
+          harness.getLastCreateQueryInput()!.options.canUseTool!(
+            toolName,
+            toolName === "Bash"
+              ? { command: "bun run test" }
+              : toolName.startsWith("mcp__")
+                ? { url: "http://localhost:3000" }
+                : { file_path: "/repo/a.ts" },
+            {
+              signal: new AbortController().signal,
+              toolUseID: "plan-write",
+              requestId: "plan-write",
+            },
+          ),
+        );
+        assert.equal(result?.behavior, "deny");
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect("passes auto tool search as flag settings rather than only process env", () => {
+    const harness = makeHarness({ processEnvironment: { ENABLE_TOOL_SEARCH: "auto" } });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode: "full-access" });
+      assert.deepEqual(
+        (harness.getLastCreateQueryInput()!.options.settings as { env: unknown }).env,
+        {
+          ENABLE_TOOL_SEARCH: "true",
+        },
+      );
+    }).pipe(Effect.provide(harness.layer));
   });
 
   it.effect("routes AskUserQuestion through user-input flow even in full-access mode", () => {

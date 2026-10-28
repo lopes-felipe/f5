@@ -3,7 +3,12 @@ import { afterEach, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { DEFAULT_UNIFIED_SETTINGS, ProjectId, type ScheduledTask } from "@t3tools/contracts";
+import {
+  DEFAULT_UNIFIED_SETTINGS,
+  ProjectId,
+  ThreadId,
+  type ScheduledTask,
+} from "@t3tools/contracts";
 import { CRON_EXPRESSION_MAX_LENGTH } from "@t3tools/shared/cronSchedule";
 import { ScheduledTaskDialog } from "./ScheduledTaskDialog";
 import { createTestServerProvider } from "../../testServerProvider";
@@ -29,24 +34,44 @@ afterEach(async () => {
   vi.clearAllMocks();
   vi.restoreAllMocks();
 });
-async function setup(task?: ScheduledTask) {
-  const id = ProjectId.makeUnsafe("project");
+const project = (id: string, cwd: string) => ({
+  id: ProjectId.makeUnsafe(id),
+  name: id === "project" ? "Project" : "Other",
+  cwd,
+  model: "gpt-5.6-sol",
+  defaultModel: "gpt-5.6-sol",
+  createdAt: "2026-01-01T00:00:00Z",
+  expanded: true,
+  scripts: [],
+  memories: [],
+  skills: [],
+});
+const conversation = ThreadId.makeUnsafe("conversation");
+function seedConversation(overrides: Record<string, unknown> = {}) {
   useStore.setState({
-    projects: [
+    threads: [
       {
-        id,
-        name: "Project",
-        cwd: "/repo",
-        model: "gpt-5.6-sol",
-        defaultModel: "gpt-5.6-sol",
-        createdAt: "2026-01-01T00:00:00Z",
-        expanded: true,
-        scripts: [],
-        memories: [],
-        skills: [],
+        id: conversation,
+        projectId: ProjectId.makeUnsafe("project"),
+        title: "Release notes",
+        modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
+        runtimeMode: "full-access",
+        interactionMode: "plan",
+        ...overrides,
       },
-    ],
+    ] as never,
   });
+}
+async function setup(
+  task?: ScheduledTask,
+  options: {
+    boundThreadId?: ThreadId;
+    allowProjectChange?: boolean;
+    configure?: (client: QueryClient) => void;
+  } = {},
+) {
+  const id = ProjectId.makeUnsafe("project");
+  useStore.setState({ projects: [project("project", "/repo"), project("other", "/other")] });
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity } },
   });
@@ -65,12 +90,15 @@ async function setup(task?: ScheduledTask) {
   client.setQueryData<unknown>(projectSettingsQueryOptions(id).queryKey, {
     settings: DEFAULT_UNIFIED_SETTINGS,
   });
+  options.configure?.(client);
   active = await render(
     <QueryClientProvider client={client}>
       <TooltipProvider>
         <ScheduledTaskDialog
           projectId={id}
           {...(task ? { task } : {})}
+          {...(options.boundThreadId ? { boundThreadId: options.boundThreadId } : {})}
+          {...(options.allowProjectChange ? { allowProjectChange: true } : {})}
           onClose={() => {}}
           onSaved={() => {}}
         />
@@ -78,6 +106,43 @@ async function setup(task?: ScheduledTask) {
     </QueryClientProvider>,
   );
   await expect.element(page.getByRole("textbox", { name: "Task name" })).toHaveFocus();
+}
+function storedTask(overrides: Partial<Record<keyof ScheduledTask, unknown>> = {}) {
+  return {
+    id: "stored",
+    projectId: "project",
+    name: "Stored",
+    prompt: "Check",
+    modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
+    runtimeMode: "approval-required",
+    interactionMode: "default",
+    workspace: { kind: "projectRoot" },
+    cron: "0 9 * * *",
+    timezone: "UTC",
+    scheduleSource: "0 9 * * *",
+    maxRuns: null,
+    oneShotAt: null,
+    notify: "all",
+    enabled: true,
+    version: 3,
+    createdBy: "user",
+    authority: { kind: "user" },
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+    nextRunAt: null,
+    lastRunAt: null,
+    runsConsumed: 0,
+    ...overrides,
+  } as ScheduledTask;
+}
+const format = () => page.getByRole("combobox", { name: "Schedule format" });
+const time = () => page.getByLabelText(/^Time \(/);
+const day = (name: string) => page.getByRole("button", { name, exact: true });
+async function saveNamed(name = "Task") {
+  await page.getByRole("textbox", { name: "Task name" }).fill(name);
+  await page.getByTestId("composer-editor").fill("Check");
+  await expect.element(page.getByRole("button", { name: "Save task" })).toBeEnabled();
+  await page.getByRole("button", { name: "Save task" }).click();
 }
 function paste(expression: string, field = "Minute") {
   const clipboardData = new DataTransfer();
@@ -88,7 +153,7 @@ function paste(expression: string, field = "Minute") {
     .dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData }));
 }
 
-it("defaults to project root and presets, and shows the schedule without a preview action", async () => {
+it("defaults to project root and a fixed time, and shows the schedule without a preview action", async () => {
   mocks.create.mockResolvedValue({ warnings: [] });
   await setup();
   await expect
@@ -100,11 +165,17 @@ it("defaults to project root and presets, and shows the schedule without a previ
   expect(workspace.options[0]?.value).toBe("projectRoot");
   await expect
     .element(page.getByRole("combobox", { name: "Schedule format" }))
-    .toHaveValue("preset");
+    .toHaveValue("fixed");
   const format = page
     .getByRole("combobox", { name: "Schedule format" })
     .element() as HTMLSelectElement;
-  expect(Array.from(format.options, (option) => option.text)).toEqual(["Preset", "Cron"]);
+  expect(Array.from(format.options, (option) => option.text)).toEqual(["Fixed time", "Cron"]);
+  const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  await expect.element(page.getByLabelText(`Time (${browserZone})`)).toHaveValue("09:00");
+  for (const name of ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"])
+    await expect
+      .element(page.getByRole("button", { name, exact: true }))
+      .toHaveAttribute("aria-pressed", "true");
   const timezone = page.getByRole("textbox", { name: "Timezone" }).element();
   const notify = page.getByRole("combobox", { name: "Notification policy" }).element();
   expect(timezone.compareDocumentPosition(notify) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -332,6 +403,7 @@ it("saves metadata on an expired one-shot without changing or reconverting its t
     prompt: "Check",
     modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
     runtimeMode: "approval-required",
+    interactionMode: "default",
     workspace: { kind: "projectRoot" },
     cron: "0 0 15 1 1 * 2020",
     timezone: "UTC",
@@ -377,4 +449,243 @@ it("timestamps create requests when saving rather than when the dialog opens", a
   await page.getByRole("button", { name: "Save task" }).click();
   await vi.waitFor(() => expect(mocks.create).toHaveBeenCalled());
   expect(mocks.create.mock.calls[0]![0].requestedAt).toBe(new Date(savedAt).toISOString());
+});
+
+it("edits a fixed time with day toggles and the task's timezone", async () => {
+  mocks.create.mockResolvedValue({ warnings: [] });
+  await setup();
+  await page.getByRole("textbox", { name: "Timezone" }).fill("Asia/Tokyo");
+  await expect.element(page.getByLabelText("Time (Asia/Tokyo)")).toHaveValue("09:00");
+  await day("Saturday").click();
+  await day("Sunday").click();
+  await expect.element(day("Sunday")).toHaveAttribute("aria-pressed", "false");
+  await day("Monday").click();
+  await expect.element(day("Monday")).toHaveFocus();
+  await userEvent.keyboard("{ArrowRight}");
+  await expect.element(day("Tuesday")).toHaveFocus();
+  // Clearing the time keeps the rest of the draft.
+  await page.getByRole("textbox", { name: "Task name" }).fill("Weekdays");
+  await time().fill("");
+  await expect.element(page.getByRole("button", { name: "Save task" })).toBeDisabled();
+  await expect.element(page.getByRole("alert")).toHaveTextContent("Enter a time as HH:MM.");
+  await expect.element(page.getByRole("textbox", { name: "Task name" })).toHaveValue("Weekdays");
+  await time().fill("07:30");
+  await day("Monday").click();
+  await page.getByTestId("composer-editor").fill("Check");
+  await expect
+    .element(page.getByText("07:30 AM, Monday through Friday", { exact: false }))
+    .toBeVisible();
+  await page.getByRole("button", { name: "Save task" }).click();
+  expect(mocks.create).toHaveBeenCalledWith(
+    expect.objectContaining({
+      configuration: expect.objectContaining({
+        name: "Weekdays",
+        cron: "30 7 * * MON-FRI",
+        scheduleSource: "30 7 * * MON-FRI",
+        timezone: "Asia/Tokyo",
+      }),
+    }),
+  );
+});
+
+it("keeps the last selected day and rejects times with seconds", async () => {
+  await setup();
+  for (const name of ["Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"])
+    await day(name).click();
+  await day("Monday").click();
+  await expect.element(day("Monday")).toHaveAttribute("aria-pressed", "true");
+  await time().fill("09:00:30");
+  await expect.element(page.getByRole("button", { name: "Save task" })).toBeDisabled();
+});
+
+it("converts between fixed time and cron in both directions", async () => {
+  mocks.create.mockResolvedValue({ warnings: [] });
+  await setup();
+  await time().fill("07:30");
+  await format().selectOptions("cron");
+  await expect
+    .element(page.getByRole("textbox", { name: "Minute", exact: true }))
+    .toHaveValue("30");
+  await expect.element(page.getByRole("textbox", { name: "Hour", exact: true })).toHaveValue("7");
+  paste("15 18 * * SAT,SUN");
+  await format().selectOptions("fixed");
+  await expect.element(time()).toHaveValue("18:15");
+  await expect.element(day("Saturday")).toHaveAttribute("aria-pressed", "true");
+  await expect.element(day("Monday")).toHaveAttribute("aria-pressed", "false");
+  await saveNamed();
+  expect(mocks.create).toHaveBeenCalledWith(
+    expect.objectContaining({
+      configuration: expect.objectContaining({ cron: "15 18 * * SUN,SAT" }),
+    }),
+  );
+});
+
+it("asks before replacing a cron that a fixed time cannot show", async () => {
+  mocks.create.mockResolvedValue({ warnings: [] });
+  await setup();
+  await format().selectOptions("cron");
+  paste("*/15 * * * *");
+  await format().selectOptions("fixed");
+  const replace = page.getByRole("group", { name: "Replace schedule" });
+  await expect.element(replace).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Save task" })).toBeDisabled();
+  await replace.getByRole("button", { name: "Cancel" }).click();
+  await expect.element(format()).toHaveValue("cron");
+  await expect
+    .element(page.getByRole("textbox", { name: "Minute", exact: true }))
+    .toHaveValue("*/15");
+  await format().selectOptions("fixed");
+  await page.getByRole("button", { name: "Replace with daily at 09:00" }).click();
+  await expect.element(time()).toHaveValue("09:00");
+  await saveNamed();
+  expect(mocks.create).toHaveBeenCalledWith(
+    expect.objectContaining({ configuration: expect.objectContaining({ cron: "0 9 * * *" }) }),
+  );
+});
+
+it("turns a one-time task recurring only after the replacement is accepted", async () => {
+  const task = storedTask({
+    cron: "0 0 15 1 1 * 2099",
+    scheduleSource: "once",
+    maxRuns: 1,
+    oneShotAt: "2099-01-01T15:00:00.000Z",
+  });
+  mocks.update.mockResolvedValue({ task, warnings: [] });
+  await setup(task);
+  await expect.element(format()).toHaveValue("cron");
+  await format().selectOptions("fixed");
+  await expect
+    .element(page.getByRole("group", { name: "Replace schedule" }))
+    .toHaveTextContent("one-time schedule");
+  await page.getByRole("button", { name: "Replace with daily at 09:00" }).click();
+  await expect.element(page.getByRole("button", { name: "Save task" })).toBeEnabled();
+  await page.getByRole("button", { name: "Save task" }).click();
+  expect(mocks.update).toHaveBeenCalledWith(
+    expect.objectContaining({
+      configuration: expect.objectContaining({ cron: "0 9 * * *", oneShotAt: null, maxRuns: null }),
+    }),
+  );
+});
+
+it("renames an agent-authored task without rewriting its schedule or execution", async () => {
+  const task = storedTask({
+    cron: "0 9 * * 1-5",
+    scheduleSource: "Agent Bridge cron",
+    runtimeMode: "approval-required",
+    interactionMode: "plan",
+    createdBy: "agent",
+    authority: { kind: "agent", clientId: "client", grantGeneration: 2 },
+  });
+  mocks.update.mockResolvedValue({ task, warnings: [] });
+  await setup(task);
+  await expect.element(format()).toHaveValue("fixed");
+  await expect.element(day("Saturday")).toHaveAttribute("aria-pressed", "false");
+  await page.getByRole("textbox", { name: "Task name" }).fill("Renamed");
+  await expect.element(page.getByRole("button", { name: "Save task" })).toBeEnabled();
+  await page.getByRole("button", { name: "Save task" }).click();
+  const { name, ...rest } = mocks.update.mock.calls[0]![0].configuration;
+  expect(name).toBe("Renamed");
+  const { name: _name, ...expected } = {
+    name: task.name,
+    prompt: task.prompt,
+    modelSelection: task.modelSelection,
+    runtimeMode: task.runtimeMode,
+    interactionMode: task.interactionMode,
+    workspace: task.workspace,
+    cron: task.cron,
+    timezone: task.timezone,
+    scheduleSource: task.scheduleSource,
+    maxRuns: task.maxRuns,
+    oneShotAt: task.oneShotAt,
+    notify: task.notify,
+    enabled: task.enabled,
+  };
+  expect(JSON.stringify(rest, Object.keys(expected).toSorted())).toBe(
+    JSON.stringify(expected, Object.keys(expected).toSorted()),
+  );
+});
+
+it("saves the interaction mode and shows a stored one", async () => {
+  mocks.create.mockResolvedValue({ warnings: [] });
+  await setup();
+  await expect
+    .element(page.getByRole("combobox", { name: "Interaction mode" }))
+    .toHaveValue("default");
+  await page.getByRole("combobox", { name: "Interaction mode" }).selectOptions("plan");
+  await saveNamed();
+  expect(mocks.create).toHaveBeenCalledWith(
+    expect.objectContaining({
+      configuration: expect.objectContaining({ interactionMode: "plan" }),
+    }),
+  );
+  await active?.unmount();
+  await setup(storedTask({ interactionMode: "plan" }));
+  await expect
+    .element(page.getByRole("combobox", { name: "Interaction mode" }))
+    .toHaveValue("plan");
+});
+
+it("uses the conversation's settings in thread mode and the project's after leaving it", async () => {
+  mocks.create.mockResolvedValue({ warnings: [] });
+  seedConversation();
+  await setup(undefined, { boundThreadId: conversation });
+  await expect.element(page.getByRole("combobox", { name: "Workspace" })).toHaveValue("thread");
+  await expect
+    .element(page.getByRole("option", { name: "Conversation: Release notes" }))
+    .toBeInTheDocument();
+  await expect.element(page.getByText("use its current model, mode and access")).toBeVisible();
+  await expect
+    .element(page.getByRole("combobox", { name: "Interaction mode" }))
+    .not.toBeInTheDocument();
+  await page.getByRole("combobox", { name: "Workspace" }).selectOptions("projectRoot");
+  // Leaving the conversation re-seeds from project defaults, not the conversation.
+  await expect
+    .element(page.getByRole("combobox", { name: "Interaction mode" }))
+    .toHaveValue("default");
+  await page.getByRole("combobox", { name: "Workspace" }).selectOptions("thread");
+  await saveNamed();
+  expect(mocks.create).toHaveBeenCalledWith(
+    expect.objectContaining({
+      configuration: expect.objectContaining({
+        workspace: { kind: "thread", threadId: conversation },
+        modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
+        runtimeMode: "full-access",
+        interactionMode: "plan",
+      }),
+    }),
+  );
+});
+
+it("blocks thread mode until the conversation has a model", async () => {
+  seedConversation({ modelSelection: null });
+  await setup(undefined, { boundThreadId: conversation });
+  await page.getByRole("textbox", { name: "Task name" }).fill("Task");
+  await page.getByTestId("composer-editor").fill("Check");
+  await expect
+    .element(page.getByText("Send a message in this conversation before scheduling into it."))
+    .toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Save task" })).toBeDisabled();
+});
+
+it("keeps the draft across project changes and blocks Save while settings fail to load", async () => {
+  await setup(undefined, {
+    allowProjectChange: true,
+    configure: (client) =>
+      client.setQueryData<unknown>(
+        gitBranchesQueryOptions({ cwd: "/other", autoRefresh: false }).queryKey,
+        { branches: [], isRepo: true, hasOriginRemote: false },
+      ),
+  });
+  await page.getByRole("textbox", { name: "Task name" }).fill("Moving");
+  await page.getByTestId("composer-editor").fill("Check");
+  await time().fill("07:30");
+  await page.getByRole("combobox", { name: "Project" }).selectOptions("other");
+  await expect
+    .element(page.getByText("Unable to load this project's settings.", { exact: false }))
+    .toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Save task" })).toBeDisabled();
+  await expect.element(page.getByRole("textbox", { name: "Task name" })).toHaveValue("Moving");
+  await expect.element(time()).toHaveValue("07:30");
+  await page.getByRole("combobox", { name: "Project" }).selectOptions("project");
+  await expect.element(page.getByRole("button", { name: "Save task" })).toBeEnabled();
 });

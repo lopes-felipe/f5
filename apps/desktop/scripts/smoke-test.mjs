@@ -143,7 +143,7 @@ try {
         message.text().replace(/token=[^&\s']+/gu, "token=REDACTED"),
       );
   });
-  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("pageerror", (error) => errors.push(error.stack || error.message));
   // Positive evidence: bundled renderer and its authenticated server connection both work.
   await page
     .getByRole("button", { name: "Add your first project", exact: true })
@@ -395,8 +395,47 @@ try {
       session.fromPartition(partition).webRequest.onCompleted(null);
     }
   }, previewConfig.partition);
-  await page.evaluate(() => document.getElementById("smoke-untrusted-guest")?.remove());
   if (guestStatus !== 401) throw new Error(`Guest received backend authorization (${guestStatus})`);
+  const zoomGuestId = await page.evaluate(async () => {
+    const guest = document.getElementById("smoke-untrusted-guest");
+    await window.desktopBridge.preview.createTab("smoke-zoom", { zoomFactor: 1.25, muted: true });
+    const id = guest.getWebContentsId();
+    await window.desktopBridge.preview.registerWebview("smoke-zoom", id);
+    guest.focus();
+    return id;
+  });
+  await application.evaluate(async ({ BrowserWindow, Menu, webContents }, guestId) => {
+    const guest = webContents.fromId(guestId);
+    const owner = BrowserWindow.fromWebContents(guest.hostWebContents);
+    if (owner.webContents.getZoomMode() !== "isolated" || guest.getZoomMode() !== "isolated")
+      throw new Error("App and preview contents must use independent zoom");
+    const findItem = (label, items = Menu.getApplicationMenu().items) => {
+      for (const item of items) {
+        if (item.label === label) return item;
+        if (item.submenu) {
+          const found = findItem(label, item.submenu.items);
+          if (found) return found;
+        }
+      }
+    };
+    const before = owner.webContents.getZoomLevel();
+    guest.focus();
+    findItem("Zoom In").click();
+    // Check after Chromium has propagated the embedder's zoom to its guests.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    if (owner.webContents.getZoomLevel() !== before + 0.5)
+      throw new Error("View zoom did not target the app while the preview had focus");
+    if (Math.abs(guest.getZoomFactor() - 1.25) > 0.001)
+      throw new Error("View zoom overwrote the preview's chosen zoom");
+    findItem("Actual Size").click();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    if (owner.webContents.getZoomLevel() !== 0 || Math.abs(guest.getZoomFactor() - 1.25) > 0.001)
+      throw new Error("Resetting app zoom changed the preview zoom");
+  }, zoomGuestId);
+  await page.evaluate(async () => {
+    await window.desktopBridge.preview.closeTab("smoke-zoom");
+    document.getElementById("smoke-untrusted-guest")?.remove();
+  });
 
   const workspace = join(directory, "workspace");
   mkdirSync(workspace);
@@ -622,7 +661,7 @@ try {
     const reopened = application.waitForEvent("window");
     await application.evaluate(({ app }) => app.emit("activate"));
     page = await reopened;
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", (error) => errors.push(error.stack || error.message));
     await waitForRecovery(beforeActivate);
     await page.goto(retainedRendererUrl);
     await page.locator('[contenteditable="true"]').waitFor({ timeout: 60_000 });
@@ -744,7 +783,7 @@ try {
   // Inject through Electron so this exercises before-input-event on a non-app renderer.
   // CDP keyboard events do not consistently reach that native hook on macOS.
   const pressQuit = (taps = 1) =>
-    application.evaluate(async ({ BrowserWindow }, count) => {
+    application.evaluate(({ BrowserWindow }, count) => {
       const popup = BrowserWindow.getAllWindows().find(
         (window) => window.getTitle() === "Quit smoke popup",
       );
@@ -754,7 +793,6 @@ try {
       const modifiers = process.platform === "darwin" ? ["meta"] : ["control"];
       for (let tap = 0; tap < count; tap++) {
         popup.webContents.sendInputEvent({ type: "keyDown", keyCode: "Q", modifiers });
-        await new Promise((resolve) => setTimeout(resolve, 40));
         if (!popup.isDestroyed())
           popup.webContents.sendInputEvent({ type: "keyUp", keyCode: "Q", modifiers });
       }
@@ -762,9 +800,9 @@ try {
   await pressQuit();
   await new Promise((resolve) => setTimeout(resolve, 650));
   if (electronProcess.exitCode !== null) throw new Error("A single quit tap closed the app");
-  const closed = application.waitForEvent("close", { timeout: 10000 });
-  // Keep the two native taps in one main-process evaluation: two CDP
-  // round trips under streaming load can exceed the 500 ms gesture window.
+  const closed = application.waitForEvent("close", { timeout: 30_000 });
+  // Dispatch both native taps in one synchronous main-process turn: a timer
+  // between them can exceed the 500 ms gesture window under streaming load.
   await pressQuit(2);
   await closed;
   // Reopen the same isolated profile after a real app quit with a live PTY.
@@ -781,7 +819,7 @@ try {
       output = (output + chunk.toString()).slice(-65_536);
     });
   page = await application.firstWindow({ timeout: 60_000 });
-  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("pageerror", (error) => errors.push(error.stack || error.message));
   await page.goto(providerRendererUrl);
   await page.locator('[contenteditable="true"]').waitFor({ timeout: 60_000 });
   const quitHistory = await nativeRequest("terminal.open", terminalInput);

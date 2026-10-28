@@ -1,4 +1,5 @@
 import { makeScheduledNotificationDelivery } from "./scheduledTasks/notificationDelivery.ts";
+import { resolveTemporaryWorktreeBranch } from "./git/temporaryWorktreeBranch.ts";
 import { parseNaturalLanguageSchedule } from "./scheduledTasks/naturalLanguage.ts";
 import { TURN_SUBMISSION_FAILURES } from "./TurnSubmissionError.ts";
 import { makeTurnSubmissionService } from "./TurnSubmissionService.ts";
@@ -3509,7 +3510,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           getSettings: serverSettings.getSettings.pipe(Effect.mapError(asHostError)),
           listProviders: providerAdvisoryProjection.getProviders,
           submitTurn: (body) =>
-            submitTurnSubmission(body, { submissionSource: "human" }).pipe(
+            // A background retry must preserve any hold the user set meanwhile.
+            submitTurnSubmission(body, { submissionSource: "human", resumeQueue: false }).pipe(
               Effect.mapError((error) => ({
                 message: error.message,
                 ...("code" in error && typeof error.code === "string" ? { code: error.code } : {}),
@@ -4172,7 +4174,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         if (!/^[0-9a-f-]{36}$/i.test(input.operationId))
           return yield* new RouteRequestError({ message: "Invalid fork identifier." });
         const targetId = NativeForkThreadId.makeUnsafe(`fork-${input.operationId}`);
-        const branch = `t3code/${input.operationId.slice(0, 8)}`;
+        const branch = yield* resolveTemporaryWorktreeBranch(
+          git,
+          project.workspaceRoot,
+          `t3code/${input.operationId.slice(0, 8)}`,
+        );
         const cwd = yield* git.allocateWorktreePath({ cwd: project.workspaceRoot, branch });
         const binding = yield* providerSessionDirectory
           .getBinding(input.threadId)
@@ -6728,6 +6734,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case WS_METHODS.scheduledTasksListRuns:
         return yield* scheduledTasks
           .listRuns(stripRequestTag(request.body), userScheduleActor)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      case WS_METHODS.scheduledTasksFindRunForTurn:
+        return yield* scheduledTasks
+          .findRunForTurn(stripRequestTag(request.body), userScheduleActor)
           .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
       case WS_METHODS.scheduledTasksPreviewSchedule:
         return yield* scheduledTasks

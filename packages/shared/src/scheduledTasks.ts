@@ -5,6 +5,7 @@ export function scheduledExecutionConfiguration(value: ScheduledTaskConfiguratio
     prompt: value.prompt,
     modelSelection: value.modelSelection,
     runtimeMode: value.runtimeMode,
+    interactionMode: value.interactionMode,
     workspace: value.workspace,
     cron: value.cron,
     timezone: value.timezone,

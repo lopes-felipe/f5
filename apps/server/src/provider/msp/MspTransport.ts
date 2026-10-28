@@ -15,7 +15,7 @@ import type { DuplexTransport } from "@muse-code/sdk";
 import { Cause, Effect, Exit, Fiber, Option, Queue, Scope, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { resolveInvocationEffect } from "../../spawn/resolveCommand.ts";
+import { resolveMuseInvocation } from "./MusePaths.ts";
 
 export const MSP_FRAME_LIMIT_BYTES = 8 * 1024 * 1024;
 export const MSP_OUTBOUND_QUEUE_FRAMES = 1_024;
@@ -137,11 +137,11 @@ export const makeMspTransport = Effect.fn("makeMspTransport")(function* (
       ? budget
       : Math.min(budget, Math.max(0, shutdown.deadline - Date.now()));
   const scope = yield* Scope.Scope;
-  const invocation = yield* resolveInvocationEffect(
+  const invocation = yield* resolveMuseInvocation(
     options.binaryPath,
     [...options.args],
     options.environment,
-    { cwd: options.cwd },
+    options.cwd,
   );
   const handle = yield* spawner.spawn(
     ChildProcess.make(invocation.file, [...invocation.args], {

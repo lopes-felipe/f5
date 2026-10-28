@@ -1,6 +1,17 @@
 import { expect, it } from "vitest";
 import { ProjectId, ThreadId } from "@t3tools/contracts";
 import { resolveChatAssetTarget } from "./chatAssetTarget";
+it.each([
+  "//attacker/share/a.png",
+  String.raw`\\attacker\share\a.png`,
+  String.raw`/\attacker/share/a.png`,
+  "%5C%5Cattacker%5Cshare%5Ca.png",
+  "file://attacker/share/a.png",
+])("does not authorize foreign network media: %s", (src) => {
+  expect(
+    resolveChatAssetTarget(src, "/repo", [{ id: ProjectId.make("root"), cwd: "/repo" }], []),
+  ).toBeUndefined();
+});
 it("resolves relative and file URLs under the most specific root", () => {
   const projects = [
     { id: ProjectId.makeUnsafe("root"), cwd: "/repo" },

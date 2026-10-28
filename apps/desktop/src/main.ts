@@ -1,4 +1,21 @@
+import "./stdioErrors";
 import { registerHtmlPreviewIpc } from "./htmlPreview";
+import {
+  appZoomMenu,
+  selectAppZoomWindow,
+  zoomAppContents,
+  type AppZoomDirection,
+} from "./appZoom";
+import { desktopCloseWindowItem, desktopWindowMenu, selectAppMenuWindow } from "./windowMenu";
+import {
+  BackendOutputTail,
+  STARTUP_FAILURE_RESTART_ATTEMPTS,
+  STARTUP_RECOVERY_RELEASES_URL,
+  resolveStartupRecoveryOffer,
+  startupRecoveryAction,
+  startupRecoveryHtml,
+  type BackendStartupFailure,
+} from "./startupRecovery";
 import {
   createEmbeddedFrameNavigationGuard,
   installAppFramePermissionPolicy,
@@ -95,11 +112,13 @@ import * as Crypto from "node:crypto";
 import * as FS from "node:fs";
 import * as OS from "node:os";
 import * as Path from "node:path";
+import { releasePreviewCaptures } from "./preview/capture";
 
 import {
   app,
   BrowserWindow,
   clipboard,
+  ClipboardItem,
   dialog,
   ipcMain,
   globalShortcut,
@@ -277,6 +296,10 @@ interface BackendRuntime {
   /** Cancels the current process generation's sustained-health monitor. */
   cancelHealthMonitor: (() => void) | null;
   stopped: boolean;
+  outputTail: BackendOutputTail;
+  startupReady: boolean;
+  recoveryWindow: BrowserWindow | null;
+  startupFailure: BackendStartupFailure | null;
 }
 const makeBackendRuntime = (profile: ProfileRecord): BackendRuntime => ({
   profile,
@@ -288,6 +311,10 @@ const makeBackendRuntime = (profile: ProfileRecord): BackendRuntime => ({
   restartTimer: null,
   cancelHealthMonitor: null,
   stopped: false,
+  outputTail: new BackendOutputTail(),
+  startupReady: false,
+  recoveryWindow: null,
+  startupFailure: null,
 });
 const defaultBackend = makeBackendRuntime(desktopDefaultProfile(STATE_DIR));
 const backends = new Map<string, BackendRuntime>([[defaultBackend.profile.id, defaultBackend]]);
@@ -1067,6 +1094,7 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
     );
     entry.enforcePopupPolicy = popups.enforcePolicy;
   }
+  guest.setZoomMode("isolated");
   guest.setZoomFactor(entry.zoomFactor);
   guest.setAudioMuted(entry.muted ?? false);
   installGuestControls(guest);
@@ -1291,6 +1319,7 @@ function closePreviewTab(tabId: string): void {
   entry.faviconAbortController = null;
   const guest = getPreviewWebContents(tabId);
   void previewRuntime.discardRecordingsForTab(tabId);
+  if (guest) releasePreviewCaptures(guest);
   forgetPreviewRecordingOwners((ownership) => ownership.scopedTabId === tabId);
   if (guest && !guest.isDestroyed()) {
     guest.close();
@@ -2169,11 +2198,12 @@ function initializeDesktopLogging(): void {
   }
 }
 
-function captureBackendOutput(child: ChildProcess.ChildProcess, profileSlug: string): void {
-  if (backendLogSink === null) return;
+function captureBackendOutput(child: ChildProcess.ChildProcess, runtime: BackendRuntime): void {
+  const tail = runtime.outputTail;
   const writeChunk = (stream: "stdout" | "stderr") => (chunk: unknown) => {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf8");
-    backendLogSink?.write(Buffer.concat([Buffer.from(`[${profileSlug}] `), buffer]));
+    tail.append(stream, buffer);
+    backendLogSink?.write(Buffer.concat([Buffer.from(`[${runtime.profile.slug}] `), buffer]));
     if (!app.isPackaged) process[stream].write(buffer);
   };
   child.stdout?.on("data", writeChunk("stdout"));
@@ -2403,9 +2433,34 @@ function registerDesktopProtocol(profileSession = electronSession.defaultSession
   registeredDesktopSessions.add(profileSession);
 }
 
+function zoomMainWindow(direction: AppZoomDirection): void {
+  const window = selectAppZoomWindow(
+    BrowserWindow.getFocusedWindow(),
+    mainWindow,
+    BrowserWindow.getAllWindows(),
+    (candidate) => !candidate.isDestroyed() && profileByWebContentsId.has(candidate.webContents.id),
+    (candidate) =>
+      !candidate.isDestroyed() &&
+      [...backends.values()].some((runtime) => runtime.recoveryWindow === candidate),
+  );
+  if (!window || window.webContents.isDestroyed()) return;
+  zoomAppContents(window.webContents, direction);
+  // Isolated origin zoom still receives the embedder's zoom through webview.
+  // Restore only this window's guests, retaining each tab's chosen factor.
+  for (const [tabId, entry] of previewTabs) {
+    if (entry.ownerWebContentsId !== window.webContents.id) continue;
+    const guest = getPreviewWebContents(tabId);
+    if (guest && !guest.isDestroyed()) guest.setZoomFactor(entry.zoomFactor);
+  }
+}
+
 function dispatchMenuAction(action: string): void {
-  const existingWindow =
-    BrowserWindow.getFocusedWindow() ?? mainWindow ?? BrowserWindow.getAllWindows()[0];
+  const existingWindow = selectAppMenuWindow(
+    BrowserWindow.getFocusedWindow(),
+    mainWindow,
+    BrowserWindow.getAllWindows(),
+    (window) => !window.isDestroyed() && profileByWebContentsId.has(window.webContents.id),
+  );
   const targetWindow = existingWindow ?? createWindow();
   if (!existingWindow) {
     mainWindow = targetWindow;
@@ -2560,7 +2615,7 @@ function configureApplicationMenu(): void {
               },
               { type: "separator" as const },
             ]),
-        ...(process.platform === "darwin" ? [{ role: "close" as const }] : []),
+        ...(process.platform === "darwin" ? [desktopCloseWindowItem()] : []),
       ],
     },
     { role: "editMenu" },
@@ -2571,15 +2626,12 @@ function configureApplicationMenu(): void {
         { role: "forceReload" },
         { role: "toggleDevTools" },
         { type: "separator" },
-        { role: "resetZoom" },
-        { role: "zoomIn", accelerator: "CmdOrCtrl+=" },
-        { role: "zoomIn", accelerator: "CmdOrCtrl+Plus", visible: false },
-        { role: "zoomOut" },
+        ...appZoomMenu(zoomMainWindow),
         { type: "separator" },
         { role: "togglefullscreen" },
       ],
     },
-    { role: "windowMenu" },
+    desktopWindowMenu(process.platform),
     {
       role: "help",
       submenu: [
@@ -2680,6 +2732,7 @@ function emitUpdateState(): void {
 function setUpdateState(patch: Partial<DesktopUpdateState>): void {
   updateState = { ...updateState, ...patch };
   emitUpdateState();
+  for (const runtime of backends.values()) renderStartupRecovery(runtime);
 }
 
 let updateController: ReturnType<typeof createUpdateController> | null = null;
@@ -2959,17 +3012,125 @@ function configureBackendRequestAuthentication(runtime: BackendRuntime = default
   );
 }
 
+let lastStartedVersion: string | null | undefined;
+let failedRecoveryInstallVersion: string | null = null;
+const recoveryHtmlByRuntime = new WeakMap<BackendRuntime, string>();
+function startupRecoveryOffer() {
+  if (lastStartedVersion === undefined) {
+    try {
+      lastStartedVersion =
+        FS.readFileSync(Path.join(STATE_DIR, "desktop-last-started-version"), "utf8").trim() ||
+        null;
+    } catch {
+      lastStartedVersion = null;
+    }
+  }
+  if (updateState.errorContext === "install")
+    failedRecoveryInstallVersion = updateState.downloadedVersion;
+  return resolveStartupRecoveryOffer(updateState, lastStartedVersion, failedRecoveryInstallVersion);
+}
+
+function renderStartupRecovery(runtime: BackendRuntime): void {
+  const window = runtime.recoveryWindow;
+  if (!window || window.isDestroyed() || !runtime.startupFailure || isQuitting) return;
+  const html = startupRecoveryHtml({
+    version: app.getVersion(),
+    profile: runtime.profile.name,
+    failure: runtime.startupFailure,
+    offer: startupRecoveryOffer(),
+    logDir: LOG_DIR,
+  });
+  if (recoveryHtmlByRuntime.get(runtime) === html) return;
+  recoveryHtmlByRuntime.set(runtime, html);
+  void window.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html)).catch((error) => {
+    recoveryHtmlByRuntime.delete(runtime);
+    console.error("[desktop] Could not render startup recovery", error);
+  });
+}
+
+function showStartupRecovery(runtime: BackendRuntime, reason: string): void {
+  if (isQuitting) return;
+  // Keep the diagnostic from the run that first failed; restart output is reset per run.
+  runtime.startupFailure ??= { reason, output: runtime.outputTail.value };
+  if (!runtime.recoveryWindow || runtime.recoveryWindow.isDestroyed()) {
+    const window = new BrowserWindow({
+      width: 760,
+      height: 600,
+      show: false,
+      title: "F5 could not start",
+      autoHideMenuBar: true,
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        zoomMode: "isolated",
+      },
+    });
+    runtime.recoveryWindow = window;
+    recoveryHtmlByRuntime.delete(runtime);
+    window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    let actionPending = false;
+    window.webContents.on("will-navigate", (event, url) => {
+      event.preventDefault();
+      if (actionPending) return;
+      const action = startupRecoveryAction(url);
+      actionPending = true;
+      void (async () => {
+        const offer = startupRecoveryOffer();
+        if (action === "quit") app.quit();
+        else if (action === "retry") {
+          await stopBackendAndWaitForExit(5_000, runtime);
+          await openProfile(runtime.profile.id);
+        } else if (action === "copy")
+          clipboard.writeText(
+            "F5 " +
+              app.getVersion() +
+              "\n" +
+              runtime.profile.name +
+              "\n" +
+              runtime.startupFailure?.reason +
+              "\n" +
+              runtime.startupFailure?.output +
+              "\nLogs: " +
+              LOG_DIR,
+          );
+        else if (action === "download")
+          await shell.openExternal(
+            STARTUP_RECOVERY_RELEASES_URL +
+              (offer.kind === "download" && offer.version
+                ? "/tag/v" + encodeURIComponent(offer.version)
+                : ""),
+          );
+        else if (action === "update" && offer.kind === "update") {
+          if (updateState.status !== "downloaded") await downloadAvailableUpdate();
+          if (updateState.status === "downloaded") await installDownloadedUpdate();
+        }
+      })()
+        .catch((error) => console.error("[desktop] Startup recovery action failed", error))
+        .finally(() => {
+          actionPending = false;
+          renderStartupRecovery(runtime);
+        });
+    });
+    window.once("ready-to-show", () => window.show());
+    window.on("closed", () => {
+      if (runtime.recoveryWindow === window) runtime.recoveryWindow = null;
+    });
+    void checkForUpdates("startup-recovery");
+  } else runtime.recoveryWindow.show();
+  renderStartupRecovery(runtime);
+}
+
 function scheduleBackendRestart(reason: string, runtime: BackendRuntime = defaultBackend): void {
   if (isQuitting || runtime.stopped || runtime.restartTimer) return;
   const plan = planBackendRestart(runtime);
   if (plan.kind === "stop") {
     runtime.stopped = true;
-    dialog.showErrorBox(
-      "F5 profile failed to start",
-      `${runtime.profile.name}: ${reason}. Stop and reopen this profile after fixing the startup error.`,
-    );
+    showStartupRecovery(runtime, reason);
     return;
   }
+  if (!runtime.startupReady && runtime.restartAttempt >= STARTUP_FAILURE_RESTART_ATTEMPTS)
+    showStartupRecovery(runtime, "The server could not start (" + reason + ").");
 
   const delayMs = plan.delayMs;
   console.error(`[desktop] backend exited unexpectedly (${reason}); restarting in ${delayMs}ms`);
@@ -2990,7 +3151,8 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
   }
 
   const backendIncarnation = Crypto.randomUUID();
-  const captureBackendLogs = backendLogSink !== null;
+  runtime.outputTail = new BackendOutputTail();
+  runtime.startupReady = false;
   const isolated = isolatedBackendCommand(
     process.platform,
     process.execPath,
@@ -3007,9 +3169,7 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
       F5_DESKTOP_COMPUTER_HOST: "ipc",
       F5_DESKTOP_BACKEND_INCARNATION: backendIncarnation,
     },
-    stdio: captureBackendLogs
-      ? ["ignore", "pipe", "pipe", "ipc"]
-      : ["inherit", "inherit", "inherit", "ipc"],
+    stdio: ["ignore", "pipe", "pipe", "ipc"],
   });
   runtime.backendProcess = child;
   computerSystem?.channel.register(runtime.profile.id, backendIncarnation, child);
@@ -3021,7 +3181,32 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
       runtime.backendProcess === child &&
       isProfileBackendRunning(runtime),
     checkReady: () => checkBackendReady(runtime),
+    onReady: () => {
+      runtime.startupReady = true;
+      runtime.startupFailure = null;
+      if (
+        runtime.recoveryWindow &&
+        !BrowserWindow.getAllWindows().some(
+          (window) => profileByWebContentsId.get(window.webContents.id) === runtime.profile.id,
+        )
+      ) {
+        const restored = createWindow(null, runtime);
+        mainWindow ??= restored;
+      }
+      runtime.recoveryWindow?.close();
+      runtime.recoveryWindow = null;
+    },
+    onStartupTimeout: () =>
+      showStartupRecovery(runtime, "The server started but did not become ready in time."),
     onSustainedHealth: () => {
+      if (runtime === defaultBackend) {
+        try {
+          FS.writeFileSync(Path.join(STATE_DIR, "desktop-last-started-version"), app.getVersion());
+          lastStartedVersion = app.getVersion();
+        } catch (error) {
+          console.warn("[desktop] Could not save last started version", error);
+        }
+      }
       if (runtime.restartAttempt > 0) {
         console.info(
           `[desktop] backend healthy for ${BACKEND_HEALTHY_RESET_MS}ms; resetting restart budget`,
@@ -3040,7 +3225,7 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
     "START",
     `pid=${child.pid ?? "unknown"} port=${runtime.backendPort} cwd=${resolveBackendCwd()}`,
   );
-  captureBackendOutput(child, runtime.profile.slug);
+  captureBackendOutput(child, runtime);
 
   child.on("error", (error) => {
     if (runtime.backendProcess === child) {
@@ -3074,7 +3259,7 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
       } catch {
         /* Startup may have failed before the diagnostic could be written. */
       }
-      dialog.showErrorBox(`Unable to start ${runtime.profile.name}`, message);
+      showStartupRecovery(runtime, message);
       return;
     }
     const reason = `code=${code ?? "null"} signal=${signal ?? "null"}`;
@@ -3253,13 +3438,13 @@ async function openProfileOnce(profileId: string): Promise<boolean> {
     (record) => record.id === profileId && record.status === "ready",
   );
   if (!profile) throw new Error("Profile is unknown or not ready.");
-  const existingWindow = BrowserWindow.getAllWindows().find(
-    (window) => profileByWebContentsId.get(window.webContents.id) === profileId,
-  );
   const runtime = backends.get(profileId) ?? makeBackendRuntime(profile);
   backends.set(profileId, runtime);
   await ensureBackendRunning(runtime);
   if (isQuitting) return false;
+  const existingWindow = BrowserWindow.getAllWindows().find(
+    (window) => profileByWebContentsId.get(window.webContents.id) === profileId,
+  );
   if (existingWindow && !existingWindow.isDestroyed()) {
     if (existingWindow.isMinimized()) existingWindow.restore();
     existingWindow.show();
@@ -3317,6 +3502,11 @@ function reopenTargetProfileId(): string {
 function reopenApplication(): void {
   if (!app.isReady() || isQuitting) return;
   const profileId = reopenTargetProfileId();
+  const runtime = backends.get(profileId);
+  if (runtime?.startupFailure && !runtime.startupReady) {
+    showStartupRecovery(runtime, runtime.startupFailure.reason);
+    return;
+  }
   void openProfile(profileId).catch((error) => {
     writeDesktopLogHeader(
       `profile reopen failed profile=${profileId}: ${formatErrorMessage(error)}`,
@@ -3533,7 +3723,7 @@ function registerIpcHandlers(): void {
     if (source !== "clipboard" && source !== "selection")
       throw new Error("Invalid clipboard source.");
     if (source === "selection" && process.platform !== "linux") return "";
-    return clipboard.readText(source);
+    return (source === "selection" ? clipboard.selection : clipboard).readText();
   });
 
   ipcMain.removeHandler(COPY_IMAGE_CHANNEL);
@@ -3543,7 +3733,9 @@ function registerIpcHandlers(): void {
     if (image.isEmpty()) {
       throw new Error("F5 could not decode the image for copying.");
     }
-    clipboard.writeImage(image);
+    await clipboard.write([
+      new ClipboardItem({ "image/png": new Blob([new Uint8Array(image.toPNG())]) }),
+    ]);
   });
 
   ipcMain.removeHandler(DOWNLOAD_IMAGE_CHANNEL);
@@ -3985,6 +4177,7 @@ function createWindow(
       nodeIntegration: false,
       sandbox: true,
       webviewTag: true,
+      zoomMode: "isolated",
     },
   });
 
@@ -4018,6 +4211,7 @@ function createWindow(
     webPreferences.disableHtmlFullscreenWindowResize = true;
     // Agent-driven previews may be hidden or headless; keep timers and rendering running.
     webPreferences.backgroundThrottling = false;
+    webPreferences.zoomMode = "isolated";
     webPreferences.sandbox = true;
     webPreferences.nodeIntegration = false;
     webPreferences.nodeIntegrationInSubFrames = false;
@@ -4208,8 +4402,12 @@ async function bootstrap(): Promise<void> {
   await shellEnvironmentReady;
   writeDesktopLogHeader("bootstrap shell environment ready");
   if (!isQuitting) {
-    await ensureBackendRunning(defaultBackend);
-    writeDesktopLogHeader("bootstrap backend ready");
+    try {
+      await ensureBackendRunning(defaultBackend);
+      writeDesktopLogHeader("bootstrap backend ready");
+    } catch (error) {
+      if (!isQuitting) showStartupRecovery(defaultBackend, formatErrorMessage(error));
+    }
   }
 }
 

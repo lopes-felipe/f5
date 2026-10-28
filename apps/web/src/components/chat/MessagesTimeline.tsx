@@ -115,6 +115,8 @@ import {
   advanceRowArrivals,
   type RowArrivalState,
   type TimelineTurnRailItem,
+  timelineIsAtEnd,
+  TIMELINE_AT_END_PX,
 } from "./MessagesTimeline.logic";
 import { TimelineTurnRail } from "./TimelineTurnRail";
 import { createPortal } from "react-dom";
@@ -247,8 +249,6 @@ function InlineFileChangeDiff(props: InlineFileChangeDiffProps) {
   if (!Component) throw loadInlineFileChangeDiff();
   return <Component {...props} />;
 }
-
-const LEGEND_LIST_IS_AT_END_THRESHOLD = 0.1;
 
 const EMPTY_WORK_GROUP_COLLAPSE_OVERRIDES: Readonly<Record<string, boolean>> = {};
 
@@ -517,6 +517,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     Readonly<Record<string, ChangedFilesPresentation>>
   >({});
   const isAtEndRef = useRef(restoredAnchor?.atEnd ?? true);
+  const [liveFollowEnabled, setLiveFollowEnabled] = useState(restoredAnchor?.atEnd ?? true);
+  const liveFollowEnabledRef = useRef(restoredAnchor?.atEnd ?? true);
+  const [atEndThreshold, setAtEndThreshold] = useState(0);
+  const manualScrollGenerationRef = useRef(0);
   const newestTurnDiffId = useMemo(
     () =>
       [...turnDiffSummaryByAssistantMessageId.values()].toSorted((left, right) =>
@@ -524,18 +528,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       )[0]?.turnId ?? null,
     [turnDiffSummaryByAssistantMessageId],
   );
-
-  useEffect(() => {
-    if (!initialScrollAtEndEnabled) {
-      return;
-    }
-    const frame = window.requestAnimationFrame(() => {
-      setInitialScrollAtEndEnabled(false);
-    });
-    return () => {
-      window.cancelAnimationFrame(frame);
-    };
-  }, [initialScrollAtEndEnabled]);
 
   const rowCacheRef = useRef<TimelineRowCache | null>(null);
   rowCacheRef.current ??= createTimelineRowCache();
@@ -600,6 +592,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [enteringRowIds]);
 
   const rowCount = rows.length;
+  useEffect(() => {
+    // The empty pane has no list. Keep its initial measured end target armed
+    // until LegendList actually mounts, including after loading a thread.
+    if (rowCount === 0) {
+      setInitialScrollAtEndEnabled(isAtEndRef.current);
+      return;
+    }
+    if (!initialScrollAtEndEnabled) return;
+    const frame = window.requestAnimationFrame(() => setInitialScrollAtEndEnabled(false));
+    return () => window.cancelAnimationFrame(frame);
+  }, [initialScrollAtEndEnabled, rowCount]);
   const lastRowId = rowCount > 0 ? (rows[rowCount - 1]?.id ?? null) : null;
   const entryRowIndexMap = useMemo(
     () =>
@@ -718,11 +721,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const [turnRailHasPersistentGutter, setTurnRailHasPersistentGutter] = useState(false);
   const [turnRailHitStripWidth, setTurnRailHitStripWidth] = useState(0);
 
-  // Upstream fix 33dadb5a:
-  // once a brand-new thread receives its first message, LegendList's
-  // `initialScrollAtEnd` has already latched. Keep tracking the tail signature
-  // so we can explicitly pin again whenever the rendered tail advances while
-  // the user was already following the end of the list.
+  // Follow later tail advances while the user is at the end. A newly mounted
+  // list keeps LegendList's measured initial end target.
   const previousTailSignatureRef = useRef<{
     rowCount: number;
     lastRowId: string | null;
@@ -747,15 +747,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     // scroll events from the old position before this passive effect runs.
     const followRequested = followedTailNonceRef.current !== followNextTailNonce;
     followedTailNonceRef.current = followNextTailNonce;
-    const shouldAutoFollow = followRequested || (didAdvanceTail && isAtEndRef.current);
+    const shouldAutoFollow =
+      followRequested || (didAdvanceTail && isAtEndRef.current && liveFollowEnabledRef.current);
     if (!shouldAutoFollow) {
       return;
     }
 
     let frame = 0;
     let cancelled = false;
+    const scrollGeneration = manualScrollGenerationRef.current;
     const scrollToEndWhenReady = () => {
-      if (cancelled) {
+      if (cancelled || manualScrollGenerationRef.current !== scrollGeneration) {
         return;
       }
       const list = listRef.current;
@@ -764,9 +766,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         return;
       }
       isAtEndRef.current = true;
-      // A submitted turn can be thousands of virtual rows away. Jump to its
-      // measured tail instead of animating through estimated intermediate rows.
-      list.scrollToEnd?.({ animated: !followRequested });
+      liveFollowEnabledRef.current = true;
+      setLiveFollowEnabled(true);
+      // The first nonempty render mounts LegendList. Its initialScrollAtEnd
+      // uses measured heights; scrollToEnd would replace it with an estimate.
+      // Explicit sends jump directly to the tail even across a long history.
+      if (followRequested || previousTailSignature.rowCount > 0) {
+        list.scrollToEnd?.({ animated: !followRequested });
+      }
       onIsAtEndChange(true);
     };
     frame = window.requestAnimationFrame(scrollToEndWhenReady);
@@ -786,25 +793,34 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     if (followNextTailNonceRef.current === followNextTailNonce) return;
     followNextTailNonceRef.current = followNextTailNonce;
     isAtEndRef.current = true;
+    liveFollowEnabledRef.current = true;
+    setLiveFollowEnabled(true);
   }, [followNextTailNonce]);
 
-  const syncIsAtEndFromListState = useCallback(() => {
-    const state = listRef.current?.getState?.();
-    if (state) {
-      // LegendList's public `isAtEnd` flag can lag behind passive layout
-      // changes, but its exposed scroll metrics stay current.
-      const distanceFromEnd = state.contentLength - state.scroll - state.scrollLength;
-      const isAtEnd =
-        state.contentLength < state.scrollLength ||
-        distanceFromEnd < state.scrollLength * LEGEND_LIST_IS_AT_END_THRESHOLD;
-      isAtEndRef.current = isAtEnd;
-      onIsAtEndChange(isAtEnd);
-    }
-  }, [listRef, onIsAtEndChange]);
+  const syncIsAtEndFromListState = useCallback(
+    (allowRearm = false) => {
+      const state = listRef.current?.getState?.();
+      if (state) {
+        // LegendList's public `isAtEnd` flag can lag behind passive layout
+        // changes, but its exposed scroll metrics stay current.
+        const isAtEnd = state.contentLength < state.scrollLength || timelineIsAtEnd(state);
+        if (allowRearm || state.contentLength <= state.scrollLength) {
+          liveFollowEnabledRef.current = isAtEnd;
+          setLiveFollowEnabled(isAtEnd);
+        }
+        // Content growth can briefly outrun LegendList's layout correction.
+        // Only scrolling changes the reader's intent to follow.
+        isAtEndRef.current = isAtEnd || liveFollowEnabledRef.current;
+        onIsAtEndChange(isAtEndRef.current);
+      }
+    },
+    [listRef, onIsAtEndChange],
+  );
 
   const measureTurnRailGutter = useCallback(() => {
     const node = listRef.current?.getScrollableNode?.();
     if (!(node instanceof HTMLElement)) return;
+    setAtEndThreshold(node.clientHeight > 0 ? TIMELINE_AT_END_PX / node.clientHeight : 0);
     // Measure rendered geometry so scrollbars, responsive padding, and zoom
     // cannot make the hit target overlap the content column.
     const column = node.querySelector<HTMLElement>('[data-timeline-root="true"]');
@@ -862,6 +878,38 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       cleanups.push(state.listen("footerSize", scheduleSyncIsAtEnd));
 
       const scrollableNode = list.getScrollableNode?.();
+      if (scrollableNode instanceof HTMLElement) {
+        const cancelFollow = () => {
+          if (scrollableNode.scrollHeight <= scrollableNode.clientHeight) return;
+          manualScrollGenerationRef.current++;
+          isAtEndRef.current = false;
+          liveFollowEnabledRef.current = false;
+          setLiveFollowEnabled(false);
+        };
+        const wheel = (event: WheelEvent) => {
+          if (event.deltaY < 0) cancelFollow();
+        };
+        const keydown = (event: KeyboardEvent) => {
+          if (["PageUp", "Home", "ArrowUp"].includes(event.key)) cancelFollow();
+        };
+        const pointerdown = (event: PointerEvent) => {
+          if (event.target === scrollableNode) cancelFollow();
+        };
+        const touchmove = () => {
+          const state = list.getState?.();
+          if (state && !timelineIsAtEnd(state)) cancelFollow();
+        };
+        scrollableNode.addEventListener("wheel", wheel, { passive: true });
+        scrollableNode.addEventListener("keydown", keydown);
+        scrollableNode.addEventListener("pointerdown", pointerdown, { passive: true });
+        scrollableNode.addEventListener("touchmove", touchmove, { passive: true });
+        cleanups.push(() => {
+          scrollableNode.removeEventListener("wheel", wheel);
+          scrollableNode.removeEventListener("keydown", keydown);
+          scrollableNode.removeEventListener("pointerdown", pointerdown);
+          scrollableNode.removeEventListener("touchmove", touchmove);
+        });
+      }
       if (typeof ResizeObserver !== "undefined" && scrollableNode instanceof HTMLElement) {
         resizeObserver = new ResizeObserver(() => {
           scheduleSyncIsAtEnd();
@@ -908,7 +956,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [threadId, hasMessages, listRef]);
 
   const handleScroll = useCallback(() => {
-    syncIsAtEndFromListState();
+    syncIsAtEndFromListState(true);
     if (!isAtEndRef.current && pendingViewableRowIndexRef.current <= 3) requestOlderHistory();
   }, [requestOlderHistory, syncIsAtEndFromListState]);
 
@@ -1394,6 +1442,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           // changes like response dividers or inline file diffs becoming eligible.
           dataVersion={legendListDataVersion}
           keyExtractor={keyExtractor}
+          getItemType={getTimelineItemType}
           renderItem={renderItem}
           // LegendList caches row renders until either the backing data or
           // extraData changes, so closure-only UI state must flow through here.
@@ -1422,8 +1471,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           // viewport instead of snapping to the latest row. We still keep
           // size/layout-based pinning so streaming growth at the tail continues to
           // follow when the user is already at the end.
-          maintainScrollAtEnd={{ on: { itemLayout: true, layout: true } }}
-          maintainScrollAtEndThreshold={LEGEND_LIST_IS_AT_END_THRESHOLD}
+          maintainScrollAtEnd={
+            liveFollowEnabled ? { on: { itemLayout: true, layout: true } } : false
+          }
+          maintainScrollAtEndThreshold={atEndThreshold}
           // Stabilize the visible window both when rows resize and when a new user
           // turn appends data. Without `data: true`, historical work rows can drop
           // out of the rendered window during live chat updates even though the
@@ -1716,6 +1767,16 @@ const TimelineRowWrapper = memo(function TimelineRowWrapper({
 });
 
 type TimelineEntry = ReturnType<typeof deriveTimelineEntries>[number];
+// Each type has its own measured size average in LegendList. Keep very long
+// replies out of the short-reply average to bound synchronous measurement churn.
+// Streaming rows intentionally move buckets as they grow; freezing their type
+// would let a long live reply inflate the short-reply average again.
+function getTimelineItemType(row: TimelineRow): string {
+  if (row.kind !== "message") return row.kind;
+  const bucket = Math.max(0, Math.floor(Math.log2(row.message.text.length / 1000)));
+  return `message:${row.message.role}:${bucket}`;
+}
+
 type TimelineMessage = Extract<TimelineEntry, { kind: "message" }>["message"];
 type TimelineProposedPlan = Extract<TimelineEntry, { kind: "proposed-plan" }>["proposedPlan"];
 type TimelineWorkEntry = Extract<TimelineEntry, { kind: "work" }>["entry"];
@@ -1726,7 +1787,9 @@ function shouldRenderWorkEntryAsStandaloneRow(
   options: { settingsExpandMcpToolCalls: boolean },
 ): boolean {
   return (
-    !!entry.htmlRender || (entry.itemType === "mcp_tool_call" && options.settingsExpandMcpToolCalls)
+    entry.activityKind === "user-input.resolved" ||
+    !!entry.htmlRender ||
+    (entry.itemType === "mcp_tool_call" && options.settingsExpandMcpToolCalls)
   );
 }
 
@@ -3927,7 +3990,9 @@ function WorkGroupRowContent(props: {
   if (!logEntries.length) return <div className="min-w-0 space-y-2">{appRows}</div>;
   const standaloneExpandedMcpEntry =
     row.groupedEntries.length === 1 &&
-    (row.groupedEntries[0]?.htmlRender || row.groupedEntries[0]?.mcpApp)
+    (row.groupedEntries[0]?.htmlRender ||
+      row.groupedEntries[0]?.mcpApp ||
+      row.groupedEntries[0]?.activityKind === "user-input.resolved")
       ? row.groupedEntries[0]
       : resolveStandaloneExpandedMcpWorkEntry(row.groupedEntries, {
           settingsExpandMcpToolCalls: expandMcpToolCalls,

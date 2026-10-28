@@ -1,5 +1,6 @@
 import { ScheduledOriginBadge } from "../scheduled/ScheduledOriginBadge";
 import { ThreadSettlementControl } from "../thread/ThreadSettlementControl";
+import { ThreadAutomationsButton } from "../scheduled/ThreadAutomationsButton";
 import { ThreadPrLinks } from "../prHub/ThreadPrLinks";
 import {
   type EditorId,
@@ -355,6 +356,7 @@ export const ChatHeader = memo(function ChatHeader({
         {isServerThread ? (
           <>
             <ThreadPrLinks threadId={activeThreadId} />
+            <ThreadAutomationsButton threadId={activeThreadId} />
             <ThreadSettlementControl threadId={activeThreadId} />
           </>
         ) : null}

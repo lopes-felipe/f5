@@ -1,4 +1,7 @@
 import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { readManagedWorktreesDirectories } from "../../worktreesDirectory.ts";
+import { isTemporaryWorktreeBranch } from "@t3tools/shared/worktree";
+import { resolveTemporaryWorktreeBranch } from "../../git/temporaryWorktreeBranch.ts";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { setupProjectScript } from "@t3tools/shared/projectScripts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -892,7 +895,7 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
           );
         let branch = input.branch;
         if (branch) {
-          if (!(yield* git.isValidBranchName(branch)) || /^t3code\/[0-9a-f]{8}$/i.test(branch))
+          if (!(yield* git.isValidBranchName(branch)) || isTemporaryWorktreeBranch(branch))
             return yield* Effect.fail(new Error("Invalid branch name."));
           if (yield* git.branchExists(project.workspaceRoot, branch))
             return yield* Effect.fail(new Error(`Branch '${branch}' already exists.`));
@@ -929,6 +932,7 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
               )
             : `t3code/${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
         }
+        branch = yield* resolveTemporaryWorktreeBranch(git, project.workspaceRoot, branch);
         target = {
           path: yield* canonicalWorkspace(
             yield* git.allocateWorktreePath({ cwd: project.workspaceRoot, branch }),
@@ -961,7 +965,7 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
             ? thread.branch
             : `t3code/${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
         baseRef = base!;
-        const managed = yield* canonicalWorkspace(config.worktreesDir);
+        const managed = yield* readManagedWorktreesDirectories(config.worktreesDir);
         const missing = yield* Effect.tryPromise({
           try: async () => {
             try {
@@ -976,7 +980,7 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
         });
         target = {
           path:
-            missing && sourcePath !== managed && pathContains(managed, sourcePath)
+            missing && managed.some((root) => sourcePath !== root && pathContains(root, sourcePath))
               ? sourcePath
               : yield* git.allocateWorktreePath({ cwd: project.workspaceRoot, branch }),
           repository,
