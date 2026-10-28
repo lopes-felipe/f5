@@ -1021,9 +1021,14 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
   const notify = (threadId: ThreadId) =>
     Effect.sync(() => retries.cancel(threadId)).pipe(Effect.andThen(enqueueDirect(threadId)));
 
-  const pauseForEvent = (threadId: ThreadId, reasonCode: QueueReasonCode, detail: string) =>
+  const pauseForEvent = (
+    threadId: ThreadId,
+    reasonCode: QueueReasonCode,
+    detail: string,
+    interruptRequestedSequence?: number,
+  ) =>
     store
-      .setPaused({ threadId, paused: true, reasonCode, detail })
+      .setPaused({ threadId, paused: true, reasonCode, detail, interruptRequestedSequence })
       .pipe(Effect.andThen(notify(threadId)));
 
   const cancelUnsentResume = (threadId: ThreadId) =>
@@ -1126,6 +1131,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
               threadId,
               "turn_interrupted",
               "Queue paused because the active turn was interrupted.",
+              event.sequence,
             );
           }
           return;
