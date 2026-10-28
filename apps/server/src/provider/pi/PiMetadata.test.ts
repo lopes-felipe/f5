@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import { Effect } from "effect";
 import { expect, it } from "vitest";
-import { probePiCatalog } from "./PiMetadata.ts";
+import { PI_CATALOG_PROBE_TIMEOUT_MS, probePiCatalog } from "./PiMetadata.ts";
 import { makePiTextGeneration, runPiMetadataPrompt } from "../../git/Layers/PiTextGeneration.ts";
 import { PiRpcError } from "./PiRpc.ts";
 import { fixture, run } from "./PiMetadata.testkit.ts";
@@ -21,6 +21,9 @@ it("probes in a disposable workspace with extensions, tools and inherited MCP cr
     expect(spawn.privateEnvironment).toBe(false);
     await expect(stat(String(spawn.cwd))).rejects.toThrow();
   }));
+it("gives a cold Pi start 30 seconds to answer catalog discovery", () => {
+  expect(PI_CATALOG_PROBE_TIMEOUT_MS).toBe(30_000);
+});
 it("fails a broken catalog read instead of replacing a usable catalog with an empty one", async () =>
   fixture(async (settings, environment) => {
     const result = await run(

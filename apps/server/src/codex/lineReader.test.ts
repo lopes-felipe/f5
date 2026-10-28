@@ -33,3 +33,25 @@ it("explicit cancellation discards an unfinished frame without publishing it", (
   expect(lines).toEqual([]);
   source.destroy();
 });
+it("reports a line over the byte cap once and stops reading instead of buffering it", () => {
+  const source = new PassThrough();
+  const reader = new ProviderLineReader(source, 8);
+  const events: string[] = [];
+  reader.on("line", (line) => events.push(line));
+  reader.on("overflow", (error) => events.push(`overflow: ${error.message}`));
+  reader.on("close", () => events.push("closed"));
+  // "é" is two UTF-8 bytes, so eight characters split across chunks exceed eight bytes.
+  source.write("ok\nééé");
+  source.write("é");
+  expect(events).toEqual(["ok"]);
+  source.write("é\n");
+  source.write("late\n");
+  source.end();
+  expect(events).toEqual([
+    "ok",
+    "overflow: Provider stdout line exceeds the 8 byte limit",
+    "closed",
+  ]);
+  expect(source.listenerCount("data")).toBe(0);
+  source.destroy();
+});

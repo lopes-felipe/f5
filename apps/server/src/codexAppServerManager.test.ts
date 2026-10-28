@@ -29,6 +29,7 @@ import {
   codexOneOffPoolKey,
   codexRequestTimeoutMs,
   CodexAppServerManager,
+  CODEX_MAX_INCOMING_MESSAGE_BYTES,
   CodexJsonRpcError,
   classifyCodexStderrLine,
   isRecoverableThreadResumeError,
@@ -4218,6 +4219,51 @@ it("drains replaced provider sources without closing their replacement", () => {
   expect(errors.mock.calls.every((call) => call[1] === "process/stderr")).toBe(true);
   expect(lifecycle).toHaveBeenCalledTimes(1);
   expect(internal.sessions.get("replaced")).toBe(replacement);
+});
+it("ends the session when codex app-server sends a message over the size cap", () => {
+  const manager = new CodexAppServerManager();
+  const output = Object.assign(new EventEmitter(), { close: vi.fn(), finish: vi.fn() });
+  const child = Object.assign(new EventEmitter(), {
+    stderr: new EventEmitter(),
+    killed: false,
+    exitCode: null,
+    signalCode: null,
+    pid: undefined,
+    kill: vi.fn(() => true),
+  });
+  const writerClose = vi.fn();
+  const context = {
+    session: { threadId: "oversized" },
+    stopping: false,
+    output,
+    child,
+    writer: { close: writerClose },
+    pending: new Map(),
+    pendingApprovals: new Map(),
+    pendingUserInputs: new Map(),
+    nativeRequestCorrelations: new Map(),
+  };
+  const internal = manager as unknown as {
+    sessions: Map<string, unknown>;
+    attachProcessListeners: (context: unknown) => void;
+    updateSession: (...args: unknown[]) => void;
+    emitErrorEvent: (...args: unknown[]) => void;
+    emitLifecycleEvent: (...args: unknown[]) => void;
+  };
+  const updates = vi.spyOn(internal, "updateSession").mockImplementation(() => {});
+  const errors = vi.spyOn(internal, "emitErrorEvent").mockImplementation(() => {});
+  const lifecycle = vi.spyOn(internal, "emitLifecycleEvent").mockImplementation(() => {});
+  internal.sessions.set("oversized", context);
+  internal.attachProcessListeners(context);
+  output.emit("overflow", new Error("Provider stdout line exceeds the limit"));
+  output.emit("close");
+  child.stderr.emit("close");
+  const message = `codex app-server sent a message larger than ${CODEX_MAX_INCOMING_MESSAGE_BYTES} bytes; the session was ended.`;
+  expect(updates).toHaveBeenCalledWith(context, { status: "error", lastError: message });
+  expect(errors).toHaveBeenCalledWith(context, "process/error", message);
+  expect(writerClose).toHaveBeenCalledWith(new Error(message));
+  expect(lifecycle).toHaveBeenCalledWith(context, "session/exited", message, undefined);
+  expect(internal.sessions.has("oversized")).toBe(false);
 });
 describe("Release 4 native operations", () => {
   const input = (kind: "compact" | "review") => ({

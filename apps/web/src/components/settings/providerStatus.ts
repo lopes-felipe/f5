@@ -1,4 +1,5 @@
 import type { ServerProvider, ServerProviderUpdateCommand } from "@t3tools/contracts";
+import { stripTerminalControls } from "./accountLoginOutput";
 
 /**
  * Visual treatment for each server-reported provider status. Centralized so
@@ -175,9 +176,26 @@ export function getProviderUpdateResultMessage(
       return `Installed v${result.currentVersion ?? "unknown"}, expected v${latest ?? "the requested release"}.`;
     case "unverified":
       return "The update finished, but F5 couldn't confirm the new version. Check the provider status.";
-    case "failed":
-      return `Update failed (${result.timedOut ? "timed out" : result.exitCode === null ? "could not start" : `exit ${result.exitCode}`}).`;
+    case "failed": {
+      const summary = `Update failed (${result.timedOut ? "timed out" : result.exitCode === null ? "could not start" : `exit ${result.exitCode}`})`;
+      const reason = result.timedOut ? null : lastUpdateOutputLine(result.output);
+      return reason ? `${summary}: ${reason}` : `${summary}.`;
+    }
   }
+}
+
+const UPDATE_REASON_MAX_LENGTH = 240;
+
+// Updaters print their reason last, usually on stderr, which the server appends after stdout.
+function lastUpdateOutputLine(output: string): string | null {
+  const line = stripTerminalControls(output)
+    .split(/\r\n|\r|\n/)
+    .map((candidate) => candidate.replace(/\s+/g, " ").trim())
+    .findLast(Boolean);
+  if (!line) return null;
+  return line.length <= UPDATE_REASON_MAX_LENGTH
+    ? line
+    : `${line.slice(0, UPDATE_REASON_MAX_LENGTH - 1)}…`;
 }
 
 export function hasProviderUpdateNotification(

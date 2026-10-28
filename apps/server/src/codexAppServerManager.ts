@@ -355,6 +355,8 @@ export interface CodexThreadSnapshot {
 }
 
 const CODEX_JSON_RPC_TIMEOUT_MS = 20_000;
+/** One JSONL message is bounded before it is joined and parsed, so a runaway line cannot exhaust the heap. */
+export const CODEX_MAX_INCOMING_MESSAGE_BYTES = 128 * 1024 * 1024;
 export const CODEX_THREAD_OPEN_TIMEOUT_MS = 60_000;
 /** Internal event methods for private MCP form/URL requests (value-free payloads). */
 export const CODEX_ELICITATION_OPENED_METHOD = "f5/elicitation/opened";
@@ -1277,7 +1279,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         env: childEnvironment,
         stdio: ["pipe", "pipe", "pipe"],
       });
-      const output = new ProviderLineReader(child.stdout);
+      const output = new ProviderLineReader(child.stdout, CODEX_MAX_INCOMING_MESSAGE_BYTES);
       const writer = createJsonRpcStdinWriter({
         stdin: child.stdin,
         closedMessage: "Cannot write to codex app-server stdin.",
@@ -3250,6 +3252,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       this.sourceDrains.delete(drained.promise);
       drained.resolve();
       context.output.off("line", onLine);
+      context.output.off("overflow", onOutputOverflow);
       context.output.off("close", onStdoutClose);
       context.child.stderr.off("data", onStderr);
       context.child.stderr.off("end", onStderrClose);
@@ -3314,7 +3317,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       finish();
       context.child.off("error", onError);
     };
+    // The reader stops at the cap; the session cannot resynchronize mid-message, so it ends.
+    const onOutputOverflow = () => {
+      const message = `codex app-server sent a message larger than ${CODEX_MAX_INCOMING_MESSAGE_BYTES} bytes; the session was ended.`;
+      onError(new Error(message));
+      if (!context.child.killed) killChildTree(context.child);
+    };
     context.beginDrain = beginDrain;
+    context.output.on("overflow", onOutputOverflow);
     context.output.on("line", onLine);
     context.output.on("close", onStdoutClose);
     context.child.stderr.on("data", onStderr);

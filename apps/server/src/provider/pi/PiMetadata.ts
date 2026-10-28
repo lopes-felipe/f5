@@ -9,6 +9,9 @@ import { parsePiDiscoveredModels } from "./discovery.ts";
 import { buildPiRpcLaunch, resolvePiLaunchArgs } from "./launch.ts";
 import { makePiRpcConnection, PiRpcError, type PiRpcConnection } from "./PiRpc.ts";
 
+/** A cold Pi start can take longer than 15 seconds before it answers catalog requests. */
+export const PI_CATALOG_PROBE_TIMEOUT_MS = 30_000;
+
 export interface PiLaunchSettings {
   readonly binaryPath: string;
   readonly launchArgs: string;
@@ -61,4 +64,4 @@ export const probePiCatalog = (settings: PiLaunchSettings, environment: NodeJS.P
       yield* connection.events.pipe(Stream.runDrain, Effect.ignore, Effect.forkScoped);
       return yield* readPiCatalog(connection);
     }),
-  ).pipe(Effect.timeout("15 seconds"));
+  ).pipe(Effect.timeout(PI_CATALOG_PROBE_TIMEOUT_MS));
