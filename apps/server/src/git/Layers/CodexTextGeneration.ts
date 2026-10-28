@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { Effect, FileSystem, Layer, Option, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { resolveInvocationEffect } from "../../spawn/resolveCommand.ts";
+import { terminateOnRelease } from "../../spawn/terminateOnRelease.ts";
 
 import {
   type CodexSettings,
@@ -308,12 +309,14 @@ export const makeCodexTextGeneration = (
           input.environment,
           { cwd: input.cwd },
         );
-        const child = yield* commandSpawner.spawn(
-          ChildProcess.make(invocation.file, [...invocation.args], {
-            cwd: input.cwd,
-            env: input.environment,
-          }),
-        );
+        const child = yield* commandSpawner
+          .spawn(
+            ChildProcess.make(invocation.file, [...invocation.args], {
+              cwd: input.cwd,
+              env: input.environment,
+            }),
+          )
+          .pipe(Effect.tap(terminateOnRelease), Effect.uninterruptible);
         const [stdout, exitCode] = yield* Effect.all(
           [child.stdout.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
           { concurrency: "unbounded" },
@@ -459,13 +462,13 @@ export const makeCodexTextGeneration = (
             },
           });
 
-          const child = yield* commandSpawner
-            .spawn(command)
-            .pipe(
-              Effect.mapError((cause) =>
-                normalizeCodexError(operation, cause, "Failed to spawn Codex CLI process"),
-              ),
-            );
+          const child = yield* commandSpawner.spawn(command).pipe(
+            Effect.mapError((cause) =>
+              normalizeCodexError(operation, cause, "Failed to spawn Codex CLI process"),
+            ),
+            Effect.tap(terminateOnRelease),
+            Effect.uninterruptible,
+          );
 
           const [stdout, stderr, exitCode] = yield* Effect.all(
             [

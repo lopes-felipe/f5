@@ -1,4 +1,8 @@
-import { type ChildProcess as ChildProcessHandle, spawn } from "node:child_process";
+import {
+  type ChildProcess as ChildProcessHandle,
+  type ChildProcessWithoutNullStreams,
+  spawn,
+} from "node:child_process";
 import { killProcessTree } from "@t3tools/shared/processTree";
 import { ensureWindowsPathHydrated } from "@t3tools/shared/windowsPath";
 
@@ -163,12 +167,20 @@ export async function runProcess(
     : environment;
 
   return new Promise<ProcessRunResult>((resolve, reject) => {
-    const child = spawn(invocation.file, [...invocation.args], {
-      cwd: options.cwd,
-      env: spawnEnvironment,
-      stdio: "pipe",
-      detached: process.platform !== "win32",
-    });
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawn(invocation.file, [...invocation.args], {
+        cwd: options.cwd,
+        env: spawnEnvironment,
+        stdio: "pipe",
+        detached: process.platform !== "win32",
+      });
+    } catch (error) {
+      // Node throws some spawn failures synchronously, e.g. ENOTDIR when a
+      // PATH entry or cwd component is a file. Report them like async ones.
+      reject(normalizeSpawnError(command, args, error));
+      return;
+    }
 
     let stdout = "";
     let stderr = "";

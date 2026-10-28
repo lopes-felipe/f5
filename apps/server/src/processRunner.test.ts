@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -13,6 +13,22 @@ describe("runProcess", () => {
     });
     expect(result.stdout.trim()).toBe("explicit");
   });
+
+  it.skipIf(process.platform === "win32")(
+    "reports a synchronous ENOTDIR spawn failure as a spawn error",
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "f5-process-runner-enotdir-"));
+      try {
+        const file = join(dir, "not-a-directory");
+        writeFileSync(file, "");
+        await expect(
+          runProcess("f5-missing-command", ["--version"], { env: { PATH: file } }),
+        ).rejects.toThrow("Failed to run f5-missing-command --version: spawn ENOTDIR");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("fails when output exceeds max buffer in default mode", async () => {
     await expect(
