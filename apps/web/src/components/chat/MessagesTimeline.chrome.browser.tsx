@@ -158,7 +158,7 @@ describe("assistant message actions", () => {
     }
   });
 
-  it("never folds the latest assistant message and folds it once a newer one arrives", async () => {
+  it("keeps the latest turn's blocks open and folds them once the user starts a new turn", async () => {
     const first = makeAssistantEntry("fold-first", longCode(40), 1);
     const { host, screen, api } = await renderHarness({
       initialEntries: [makeUserEntry("fold-user", "Question", 0), first],
@@ -176,9 +176,19 @@ describe("assistant message actions", () => {
       const codeBlock = host.querySelector(
         '[data-timeline-row-id="fold-first"] .chat-markdown-codeblock',
       );
+      // A newer assistant row in the same turn (text, tool call, text) does
+      // not fold a block the reader may still be reading.
+      const midTurn = makeAssistantEntry("fold-mid-turn", "More text", 1.5);
+      api().setEntries([makeUserEntry("fold-user", "Question", 0), first, midTurn]);
+      await vi.waitFor(() =>
+        expect(host.querySelector('[data-timeline-row-id="fold-mid-turn"]')).not.toBeNull(),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(folded("fold-first")).toBe(false);
       api().setEntries([
         makeUserEntry("fold-user", "Question", 0),
         first,
+        midTurn,
         makeUserEntry("fold-user-2", "Again", 2),
         makeAssistantEntry("fold-second", longCode(40), 3),
       ]);
@@ -193,7 +203,7 @@ describe("assistant message actions", () => {
     }
   });
 
-  it("re-renders only the new row and the previous latest assistant row on append", async () => {
+  it("re-renders only the new row on an in-turn append, and the old turn's replies on a new turn", async () => {
     const user = makeUserEntry("rc-user", "Question", 0);
     const older = makeAssistantEntry("rc-older", "Older answer", 1);
     const latest = makeAssistantEntry("rc-latest", "Latest answer", 2);
@@ -211,10 +221,24 @@ describe("assistant message actions", () => {
         older: renderCount("rc-older"),
         latest: renderCount("rc-latest"),
       };
-      api().setEntries([user, older, latest, makeAssistantEntry("rc-new", "New answer", 3)]);
+      const appended = makeAssistantEntry("rc-new", "New answer", 3);
+      api().setEntries([user, older, latest, appended]);
       await vi.waitFor(() => expect(renderCount("rc-new")).toBeDefined());
       expect(renderCount("rc-user")).toBe(before.user);
       expect(renderCount("rc-older")).toBe(before.older);
+      expect(renderCount("rc-latest")).toBe(before.latest);
+
+      // A new user turn moves the earlier replies out of the latest turn (their
+      // blocks may now fold); the user row itself is untouched.
+      api().setEntries([
+        user,
+        older,
+        latest,
+        appended,
+        makeUserEntry("rc-user-2", "Next question", 4),
+      ]);
+      await vi.waitFor(() => expect(renderCount("rc-user-2")).toBeDefined());
+      expect(renderCount("rc-user")).toBe(before.user);
       expect(Number(renderCount("rc-latest"))).toBeGreaterThan(Number(before.latest));
     } finally {
       await screen.unmount();

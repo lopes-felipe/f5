@@ -232,6 +232,103 @@ describe("useTimelineNavigation", () => {
     }
   });
 
+  it("clears a failed find jump when its request is withdrawn, so Retry does nothing", async () => {
+    const loadAround = vi.fn(() => Promise.reject(new Error("socket closed")));
+    const { screen, api } = await renderHarness({
+      initialEntries: conversation(10),
+      navigation: { loadAround },
+    });
+    try {
+      const findRequest = api().navigate("missing-find-target", { placeRange: true });
+      await vi.waitFor(() => expect(api().navigationStatus()).toBe("failed"));
+      // Closing find (or changing its query) withdraws the request.
+      api().cancelNavigationRequest(findRequest);
+      await vi.waitFor(() => expect(api().navigationStatus()).toBe("idle"));
+      api().retryNavigation();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(loadAround).toHaveBeenCalledTimes(1);
+      expect(api().navigationStatus()).toBe("idle");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("keeps a jump that landed through another load when its own load later fails", async () => {
+    const older = conversation(2, "older", 0);
+    const newer = conversation(20);
+    let rejectLoad!: (error: Error) => void;
+    let loadSignal: AbortSignal | null = null;
+    const loadAround = vi.fn(
+      (_entryId: string, _kind: string, signal: AbortSignal) =>
+        new Promise<void>((_resolve, reject) => {
+          loadSignal = signal;
+          rejectLoad = reject;
+        }),
+    );
+    const rendered = await renderHarness({ initialEntries: newer, navigation: { loadAround } });
+    try {
+      rendered.api().navigate("older-user-0");
+      await vi.waitFor(() => expect(loadAround).toHaveBeenCalledTimes(1));
+      // An older-history backfill commits the target first.
+      rendered.api().setEntries([...older, ...newer]);
+      await vi.waitFor(() => expect(isRowInView(rendered.host, "older-user-0")).toBe(true));
+      await vi.waitFor(() => expect(rendered.api().navigationStatus()).toBe("idle"));
+      // The placed jump abandons its now-redundant load...
+      await vi.waitFor(() => expect(loadSignal?.aborted).toBe(true));
+      // ...and that load's late failure is not reported.
+      rejectLoad(new Error("socket closed"));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(rendered.api().navigationStatus()).toBe("idle");
+      expect(isRowInView(rendered.host, "older-user-0")).toBe(true);
+    } finally {
+      await rendered.screen.unmount();
+    }
+  });
+
+  it("goes straight to a match inside an already rendered long message", async () => {
+    const long = makeAssistantEntry(
+      "long-answer",
+      `First needle.\n\n${"Filler paragraph.\n\n".repeat(80)}Second needle.\n\n${"Tail.\n\n".repeat(5)}`,
+      200,
+    );
+    const { screen, api, scroller } = await renderHarness({
+      initialEntries: [...conversation(3), long],
+      navigation: { loadAround: () => Promise.resolve() },
+    });
+    const activeTop = () => {
+      const range = [...(CSS.highlights.get("f5-thread-find-active") ?? [])][0] as
+        | Range
+        | undefined;
+      return range
+        ? range.getBoundingClientRect().top - scroller().getBoundingClientRect().top
+        : null;
+    };
+    try {
+      api().navigateToFind({ entryId: "long-answer", query: "needle", occurrence: 0 });
+      await vi.waitFor(() => {
+        expect(activeTop()).not.toBeNull();
+        expect(activeTop()!).toBeGreaterThanOrEqual(0);
+        expect(activeTop()!).toBeLessThan(scroller().clientHeight * 0.5);
+      });
+      // Next within the same row: no snap back to the row's top on the way.
+      const tops: number[] = [];
+      const onScroll = () => tops.push(scroller().scrollTop);
+      scroller().addEventListener("scroll", onScroll);
+      const before = scroller().scrollTop;
+      api().navigateToFind({ entryId: "long-answer", query: "needle", occurrence: 1 });
+      await vi.waitFor(() => {
+        const range = [...(CSS.highlights.get("f5-thread-find-active") ?? [])][0] as Range;
+        expect(range.startContainer.textContent).toContain("Second needle");
+        expect(activeTop()!).toBeGreaterThanOrEqual(0);
+        expect(activeTop()!).toBeLessThan(scroller().clientHeight * 0.5);
+      });
+      scroller().removeEventListener("scroll", onScroll);
+      expect(tops.every((top) => top >= before - 1)).toBe(true);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("cancels a pending jump on manual scrolling and on a thread change", async () => {
     const signals: AbortSignal[] = [];
     const loadAround = vi.fn(

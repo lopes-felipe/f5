@@ -63,7 +63,9 @@ export function threadFindRanges(root: HTMLElement, query: string, occurrence = 
   };
   visit(root);
   flush();
-  return { ranges, selected: selected ?? ranges[0] };
+  // `exact` is false when `occurrence` is not rendered (yet) and the first
+  // match stands in for it.
+  return { ranges, selected: selected ?? ranges[0], exact: selected !== undefined };
 }
 
 /**
@@ -71,7 +73,7 @@ export function threadFindRanges(root: HTMLElement, query: string, occurrence = 
  * scrolls: placing the match is the navigation owner's job, done once per request.
  */
 export function highlightThreadFind(root: HTMLElement, query: string, occurrence: number) {
-  const { ranges, selected } = threadFindRanges(root, query, occurrence);
+  const { ranges, selected, exact } = threadFindRanges(root, query, occurrence);
   const matches = typeof Highlight !== "undefined" ? new Highlight(...ranges) : undefined;
   const active =
     typeof Highlight !== "undefined" ? new Highlight(...(selected ? [selected] : [])) : undefined;
@@ -81,6 +83,8 @@ export function highlightThreadFind(root: HTMLElement, query: string, occurrence
   }
   return {
     selected: selected ?? null,
+    /** Whether `selected` is the requested occurrence, not a stand-in. */
+    exact,
     clear: () => {
       if (typeof CSS !== "undefined" && CSS.highlights) {
         if (CSS.highlights.get("f5-thread-find") === matches)

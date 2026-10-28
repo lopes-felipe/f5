@@ -973,6 +973,7 @@ export default memo(function ChatView({
   );
   const legendListRef = useRef<LegendListRef | null>(null);
   const timelineEntryRowIndexMapRef = useRef<ReadonlyMap<string, number> | null>(null);
+  const timelineLeaveEndRef = useRef<(() => void) | null>(null);
   const isAtEndRef = useRef(true);
 
   const onSendRef = useRef<
@@ -1067,7 +1068,10 @@ export default memo(function ChatView({
     entryRowIndexMapRef: timelineEntryRowIndexMapRef,
     loadAround: (entryId, anchorKind, signal) =>
       loadThreadHistoryAroundMessage(threadId, entryId as MessageId, anchorKind, signal),
-    onLeaveEnd: () => onIsAtEndChange(false),
+    onLeaveEnd: () => {
+      timelineLeaveEndRef.current?.();
+      onIsAtEndChange(false);
+    },
     followNextTailNonce,
   });
   const navigateTimeline = timelineNavigation.navigate;
@@ -7964,6 +7968,7 @@ export default memo(function ChatView({
                       liveActivity={liveActivity}
                       listRef={legendListRef}
                       entryRowIndexMapRef={timelineEntryRowIndexMapRef}
+                      leaveEndRef={timelineLeaveEndRef}
                       onIsAtEndChange={onIsAtEndChange}
                       followNextTailNonce={followNextTailNonce}
                       hasOlderHistory={hasOlderTimelineHistory}

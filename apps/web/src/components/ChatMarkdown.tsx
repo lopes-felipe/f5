@@ -74,6 +74,7 @@ import {
   codeBlockFilePath,
   codeBlockLanguageLabel,
   codeLineCount,
+  fileUrlHref,
 } from "../lib/codeBlockPresentation";
 import { toastManager } from "./ui/toast";
 
@@ -208,18 +209,6 @@ function hastCodeFenceInfo(node: ExtraProps["node"]): { lang: string | null; met
     lang: languageClass ? languageClass.slice("language-".length) : null,
     meta: typeof meta === "string" ? meta : null,
   };
-}
-
-/**
- * A `file://` URL for an absolute path, so cmd/ctrl- or middle-click on a chip
- * built from a code fence path never opens `<app-origin>/relative/path` (a 404).
- * Relative paths (no workspace to resolve against) get no URL.
- */
-function fileUrlHref(path: string): string | undefined {
-  const normalized = path.replace(/\\/g, "/");
-  if (normalized.startsWith("/")) return `file://${encodeURI(normalized)}`;
-  if (/^[a-z]:\//i.test(normalized)) return `file:///${encodeURI(normalized)}`;
-  return undefined;
 }
 
 function MarkdownFileChip({

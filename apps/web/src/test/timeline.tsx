@@ -245,6 +245,7 @@ export function TimelineHarness(
     props.onListRefChange?.(listRef.current);
   });
   const entryRowIndexMapRef = useRef<ReadonlyMap<string, number> | null>(null);
+  const leaveEndRef = useRef<(() => void) | null>(null);
   const [navigationHost, setNavigationHost] = useState<HTMLElement | null>(null);
   const navigation = useTimelineNavigation({
     threadId: threadId ?? null,
@@ -252,7 +253,10 @@ export function TimelineHarness(
     entryRowIndexMapRef,
     loadAround: (entryId, anchorKind, signal) =>
       props.navigation?.loadAround(entryId, anchorKind, signal) ?? Promise.resolve(),
-    onLeaveEnd: () => props.onIsAtEndChangeSpy(false),
+    onLeaveEnd: () => {
+      leaveEndRef.current?.();
+      props.onIsAtEndChangeSpy(false);
+    },
     followNextTailNonce,
   });
   const navigationStatusRef = useRef(navigation.status);
@@ -267,6 +271,7 @@ export function TimelineHarness(
         navigationHost,
         onOpenThreadFind: props.navigation.onOpenThreadFind,
         entryRowIndexMapRef,
+        leaveEndRef,
       }
     : {};
 

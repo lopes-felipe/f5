@@ -87,14 +87,23 @@ export function useTimelineNavigation(input: {
     options: TimelineNavigateOptions;
   } | null>(null);
   const nextRequestIdRef = useRef(0);
+  /** The request whose failure the current failed/unavailable status reports. */
+  const statusOwnerRef = useRef<number | null>(null);
 
+  /**
+   * Ends `pending` for good. Its in-flight history load is aborted too: once
+   * the target landed (or the jump was given up), a late anchored page must not
+   * shift the rows the reader is now looking at.
+   */
   const settle = useCallback(
     (pending: PendingNavigation, next: TimelineNavigationStatus) => {
       if (pendingRef.current !== pending) return;
       pendingRef.current = null;
+      pending.controller.abort();
       pending.detachInput();
       if (pending.timer !== null) window.clearTimeout(pending.timer);
       if (pending.frame !== null) window.cancelAnimationFrame(pending.frame);
+      statusOwnerRef.current = next === "idle" ? null : pending.id;
       setState({ threadId, status: next });
     },
     [threadId],
@@ -104,10 +113,10 @@ export function useTimelineNavigation(input: {
   const cancel = useCallback(() => {
     const pending = pendingRef.current;
     if (pending) {
-      pending.controller.abort();
       settle(pending, "idle");
       return;
     }
+    statusOwnerRef.current = null;
     setState((current) =>
       current.threadId === threadId && current.status === "idle"
         ? current
@@ -147,6 +156,24 @@ export function useTimelineNavigation(input: {
       if (pending.timer !== null) window.clearTimeout(pending.timer);
       pending.timer = null;
       callbacksRef.current.onLeaveEnd();
+      const node = listRef.current?.getScrollableNode?.();
+      if (
+        pending.options.placeRange &&
+        node instanceof HTMLElement &&
+        node.querySelector(`[data-timeline-row-id="${CSS.escape(pending.entryId)}"]`)
+      ) {
+        // The row is already rendered (Next/Previous within one message): go
+        // straight to the match instead of first snapping to the row's top.
+        setState({ threadId, status: "idle" });
+        pending.stage = "awaiting-range";
+        if (pending.range) placeRange(pending);
+        else
+          pending.timer = window.setTimeout(
+            () => placeRange(pending),
+            TIMELINE_NAVIGATION_SETTLE_MS,
+          );
+        return true;
+      }
       const animated = pending.options.animated ?? false;
       const scrollToTarget = () => {
         const current = entryRowIndexMapRef.current?.get(pending.entryId) ?? index;
@@ -169,10 +196,8 @@ export function useTimelineNavigation(input: {
           placeRange(pending);
           return;
         }
-        pending.timer = window.setTimeout(
-          () => settle(pending, "idle"),
-          TIMELINE_NAVIGATION_SETTLE_MS,
-        );
+        // The exact occurrence never rendered: place the best live highlight.
+        pending.timer = window.setTimeout(() => placeRange(pending), TIMELINE_NAVIGATION_SETTLE_MS);
       };
       if (animated) {
         finish();
@@ -263,7 +288,9 @@ export function useTimelineNavigation(input: {
           if (!pending.controller.signal.aborted) waitForRowMap();
         })
         .catch((error: unknown) => {
-          if (pending.controller.signal.aborted) return;
+          // A target that already landed some other way (an older-history
+          // backfill committed it) is not a failed jump.
+          if (pending.controller.signal.aborted || pending.stage !== "resolving") return;
           settle(
             pending,
             error instanceof TimelineAnchorUnavailableError ? "unavailable" : "failed",
@@ -284,10 +311,17 @@ export function useTimelineNavigation(input: {
     return { previousId: last.id, id: navigate(last.entryId, last.options) };
   }, [navigate]);
 
-  /** Cancels request `id` if it is still the pending one; newer requests are left alone. */
+  /**
+   * Withdraws request `id` (a closed find, or a replaced query): aborts it if it
+   * is still pending, or clears the failure it reported so neither the banner
+   * nor Retry outlives it. Newer requests are left alone.
+   */
   const cancelRequest = useCallback(
     (id: number) => {
-      if (pendingRef.current?.id === id) cancel();
+      if (pendingRef.current?.id === id || statusOwnerRef.current === id) cancel();
+      if (lastRequestRef.current?.id === id && pendingRef.current === null) {
+        lastRequestRef.current = null;
+      }
     },
     [cancel],
   );

@@ -61,7 +61,9 @@ export function codeBlockLanguageLabel(normalized: string): string {
 
 /**
  * The path in a ```` ```ts:src/a.ts ```` info string. A path with spaces splits
- * into fence meta, which shows no path rather than half of one.
+ * into fence meta, which shows no path rather than half of one. Only a
+ * path-like token (with `/` or `.`) counts: ```` ```js:example ```` is a title
+ * attribute, not a file.
  */
 export function codeBlockFilePath(
   lang: string | null | undefined,
@@ -71,7 +73,24 @@ export function codeBlockFilePath(
   const separator = lang.indexOf(":");
   if (separator === -1) return null;
   const path = lang.slice(separator + 1);
-  return path.length > 0 && path.length <= MAX_CODE_BLOCK_FILE_PATH_LENGTH ? path : null;
+  return path.length > 0 && path.length <= MAX_CODE_BLOCK_FILE_PATH_LENGTH && /[/\\.]/.test(path)
+    ? path
+    : null;
+}
+
+/**
+ * A `file://` URL for an absolute path, so cmd/ctrl- or middle-click on a chip
+ * built from a code fence path never opens `<app-origin>/relative/path` (a 404).
+ * Each segment is encoded, so `#` and `?` stay part of the path. Relative paths
+ * (no workspace to resolve against) get no URL.
+ */
+export function fileUrlHref(path: string): string | undefined {
+  const normalized = path.replace(/\\/g, "/");
+  const drive = /^[a-z]:\//i.exec(normalized)?.[0];
+  if (!normalized.startsWith("/") && !drive) return undefined;
+  const rest = drive ? normalized.slice(drive.length) : normalized.slice(1);
+  const encoded = rest.split("/").map(encodeURIComponent).join("/");
+  return drive ? `file:///${drive}${encoded}` : `file:///${encoded}`;
 }
 
 /** Source lines, ignoring the single trailing newline a fence body carries. */

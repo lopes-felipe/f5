@@ -355,6 +355,11 @@ interface MessagesTimelineProps {
    * owner. Omitted scrolls to the row directly.
    */
   onNavigateToEntry?: ((entryId: string, position: number) => void) | undefined;
+  /**
+   * Filled with the timeline's own "the reader left the end" step, so a jump
+   * owned elsewhere stops tail-following in the same frame it scrolls.
+   */
+  leaveEndRef?: MutableRefObject<(() => void) | null> | undefined;
   /** Runs after each committed change of the entry-to-row map. */
   onEntryRowIndexMapCommit?: (() => void) | undefined;
   /** Header element the "Conversation navigation" control portals into. */
@@ -475,6 +480,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onWorkingRibbonFocusLost,
   onQuoteAssistantMessage,
   onNavigateToEntry,
+  leaveEndRef,
   onEntryRowIndexMapCommit,
   navigationHost = null,
   onOpenThreadFind,
@@ -1004,9 +1010,24 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [],
   );
 
+  // A jump away from the end: stop following the tail now, and drop any
+  // follow scroll already queued for the next frame.
+  const leaveEnd = useCallback(() => {
+    manualScrollGenerationRef.current++;
+    isAtEndRef.current = false;
+    liveFollowEnabledRef.current = false;
+    setLiveFollowEnabled(false);
+  }, []);
+  useLayoutEffect(() => {
+    if (!leaveEndRef) return;
+    leaveEndRef.current = leaveEnd;
+    return () => {
+      if (leaveEndRef.current === leaveEnd) leaveEndRef.current = null;
+    };
+  }, [leaveEnd, leaveEndRef]);
   const navigateToTimelineRow = useCallback(
     (rowIndex: number, viewPosition: number) => {
-      isAtEndRef.current = false;
+      leaveEnd();
       onIsAtEndChange(false);
       void listRef.current?.scrollToIndex({
         index: rowIndex,
@@ -1014,7 +1035,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         viewPosition,
       });
     },
-    [listRef, onIsAtEndChange],
+    [leaveEnd, listRef, onIsAtEndChange],
   );
   // Rail, minimap, popover and revert jumps go through the navigation owner
   // by row id, so they cancel pending find placement like any other jump.
@@ -1724,7 +1745,12 @@ const TimelineRowWrapper = memo(function TimelineRowWrapper({
           clear();
           const highlight = highlightThreadFind(root, find.query, find.occurrence);
           clear = highlight.clear;
-          if (reported || !highlight.selected || find.requestId == null) return;
+          // Only the requested occurrence is reported; a stand-in (the first
+          // match, while a later block is still rendering) would place the
+          // wrong text, and the report happens once.
+          if (reported || !highlight.exact || !highlight.selected || find.requestId == null) {
+            return;
+          }
           reported = true;
           find.onSelectedRange?.(find.requestId, highlight.selected);
         });
@@ -3784,7 +3810,8 @@ type TimelineRowExternals =
       presentationOverride: ChangedFilesPresentation | undefined;
       isNewest: boolean;
       /** The last assistant message in the timeline: its code blocks never fold. */
-      isLatestAssistantMessage: boolean;
+      /** Part of the latest turn, whose code blocks never fold. */
+      inLatestTurn: boolean;
     }
   | { kind: "command"; expanded: boolean }
   | { kind: "working"; ribbonActive: boolean }
@@ -4331,8 +4358,9 @@ function AssistantMessageRowContent(props: {
             textRevision={messageTextRevision(row.message)}
             cwd={markdownCwd}
             isStreaming={Boolean(row.message.streaming)}
-            // The block the user just watched stream stays open.
-            foldCodeBlocks={!row.message.streaming && !externals.isLatestAssistantMessage}
+            // Blocks of the turn the user is reading stay open; they fold once
+            // the user starts a new turn.
+            foldCodeBlocks={!row.message.streaming && !externals.inLatestTurn}
             showStreamingCaret
           />
         </div>
@@ -4850,7 +4878,8 @@ export interface TimelineRowExternalsEntry {
 function describeTimelineRowExternals(
   row: TimelineRow,
   inputs: TimelineRowExternalsInputs,
-  latestAssistantRowId: string | null,
+  /** The row comes after the thread's last user message. */
+  inLatestTurn: boolean,
 ): { version: string; build: () => TimelineRowExternals } {
   switch (row.kind) {
     case "work": {
@@ -4927,21 +4956,20 @@ function describeTimelineRowExternals(
           : undefined;
         const isNewest =
           turnSummary !== undefined && turnSummary.turnId === inputs.newestTurnDiffId;
-        const isLatestAssistantMessage = row.id === latestAssistantRowId;
         return {
           version: [
             "assistant",
             timelineObjectVersion(turnSummary),
             presentationOverride ?? "",
             isNewest ? "newest" : "older",
-            isLatestAssistantMessage ? "latest" : "earlier",
+            inLatestTurn ? "latest-turn" : "earlier-turn",
           ].join(":"),
           build: () => ({
             kind: "assistant-message",
             turnSummary,
             presentationOverride,
             isNewest,
-            isLatestAssistantMessage,
+            inLatestTurn,
           }),
         };
       }
@@ -4972,16 +5000,19 @@ export function buildTimelineRowExternals(
 ): ReadonlyMap<string, TimelineRowExternalsEntry> {
   const next = new Map<string, TimelineRowExternalsEntry>();
   let changed = rows.length !== previous.size;
-  let latestAssistantRowId: string | null = null;
+  // The latest turn starts after the last user message. Its code blocks stay
+  // open: an agent's text, tool call, text sequence must not fold a block the
+  // reader may still be reading.
+  let latestTurnStart = -1;
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const row = rows[index]!;
-    if (row.kind === "message" && row.message.role === "assistant") {
-      latestAssistantRowId = row.id;
+    if (row.kind === "message" && row.message.role === "user") {
+      latestTurnStart = index;
       break;
     }
   }
-  for (const row of rows) {
-    const described = describeTimelineRowExternals(row, inputs, latestAssistantRowId);
+  for (const [index, row] of rows.entries()) {
+    const described = describeTimelineRowExternals(row, inputs, index > latestTurnStart);
     const entering = inputs.enteringRowIds?.has(row.id) ?? false;
     const version = entering ? `${described.version}:entering` : described.version;
     const cached = previous.get(row.id);
