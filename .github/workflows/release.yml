@@ -78,6 +78,9 @@ jobs:
         if: runner.os == 'Windows'
       - run: bun install --frozen-lockfile
       - name: Build application bundles without signing credentials
+        env:
+          # The contracts declaration build exceeds Node's ~2 GB default heap on macOS Intel runners.
+          NODE_OPTIONS: --max-old-space-size=6144
         run: |
           node scripts/update-release-package-versions.ts "$VERSION"
           bun run build:desktop
