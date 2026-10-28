@@ -7,7 +7,10 @@ import {
   type RuntimeMode,
   type ServerProvider,
   type UpstreamOverview,
+  type UpstreamPortGrouping,
+  type UpstreamPortQueueTarget,
 } from "@t3tools/contracts";
+import { useQuery } from "@tanstack/react-query";
 import { createModelSelection } from "@t3tools/shared/model";
 import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
 import { useEffect, useState } from "react";
@@ -16,11 +19,7 @@ import { useSettings } from "../../hooks/useSettings";
 import { getModelPreferences } from "../../modelPreferencesStore";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
 import { useStore } from "../../store";
-import {
-  isReadyProvider,
-  pickedModelSelection,
-  resolveNewThreadModelSelection,
-} from "../chat/newThreadModelSelection";
+import { isReadyProvider, pickedModelSelection, resolveNewThreadModelSelection } from "../chat/newThreadModelSelection";
 import { ProviderInstanceModelPicker } from "../chat/ProviderInstanceModelPicker";
 import { RuntimeModePicker } from "../chat/RuntimeModePicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
@@ -34,14 +33,7 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
-import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogPopup,
-  DialogTitle,
-} from "../ui/dialog";
+import { Dialog, DialogDescription, DialogFooter, DialogHeader, DialogPopup, DialogTitle } from "../ui/dialog";
 import { randomUUID } from "../../lib/utils";
 import {
   Select,
@@ -54,6 +46,7 @@ import {
 } from "../ui/select";
 import { Textarea } from "../ui/textarea";
 import { portLimitError } from "./upstreamPage.logic";
+import { ensureNativeApi } from "../../nativeApi";
 
 export function DeclineDialog(props: {
   readonly open: boolean;
@@ -230,6 +223,8 @@ export function StartPortDialog(props: {
   readonly open: boolean;
   readonly projectId: ProjectId;
   readonly topicIds: ReadonlyArray<string>;
+  readonly target?: UpstreamPortQueueTarget;
+  readonly queueInitially?: boolean;
   readonly providers: ReadonlyArray<ServerProvider>;
   /** The project's saved port model; otherwise the dialog starts on the new-thread default. */
   readonly savedModel: ModelSelection | null;
@@ -241,7 +236,9 @@ export function StartPortDialog(props: {
   /** Shown above the choices, e.g. when Start port for all was capped. */
   readonly note?: string | null;
   readonly onStart: (input: {
-    grouping: "together" | "separately";
+    grouping: UpstreamPortGrouping;
+    batchSize: number;
+    when: "now" | "queue";
     modelSelection: ModelSelection;
     runtimeMode: RuntimeMode;
     clientRequestId: string;
@@ -255,8 +252,16 @@ export function StartPortDialog(props: {
   const defaultModel =
     props.savedModel && isReady(props.savedModel)
       ? props.savedModel
-      : resolveNewThreadModelSelection({ project, settings, providers, preferences: getModelPreferences() });
-  const [grouping, setGrouping] = useState<"together" | "separately">("together");
+      : resolveNewThreadModelSelection({
+          project,
+          settings,
+          providers,
+          preferences: getModelPreferences(),
+        });
+  const large = props.topicIds.length > UPSTREAM_MAX_PORT_TOPICS || props.target?.kind === "all-ready";
+  const [grouping, setGrouping] = useState<UpstreamPortGrouping>("together");
+  const [batchSize, setBatchSize] = useState(5);
+  const [when, setWhen] = useState<"now" | "queue">("now");
   const [modelSelection, setModelSelection] = useState<ModelSelection>(defaultModel);
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>(props.defaultRuntimeMode);
   // One id per dialog open, reused on retry so the server deduplicates. After the
@@ -268,7 +273,9 @@ export function StartPortDialog(props: {
   if (props.open !== wasOpen) {
     setWasOpen(props.open);
     if (props.open) {
-      setGrouping("together");
+      setGrouping(large ? "batched" : "together");
+      setBatchSize(5);
+      setWhen(large || props.queueInitially ? "queue" : "now");
       setModelSelection(defaultModel);
       setRuntimeMode(props.defaultRuntimeMode);
       setClientRequestId(randomUUID());
@@ -283,7 +290,37 @@ export function StartPortDialog(props: {
     selectionKey(defaultModel) !== selectionKey(modelSelection)
   )
     setModelSelection(defaultModel);
-  const limitError = portLimitError(props.topicIds.length, grouping);
+  const target = props.target ?? { kind: "ids" as const, topicIds: props.topicIds };
+  const previewKey = JSON.stringify([props.projectId, target, grouping, batchSize]);
+  const [debouncedKey, setDebouncedKey] = useState(previewKey);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedKey(previewKey), 200);
+    return () => clearTimeout(timer);
+  }, [previewKey]);
+  const preview = useQuery({
+    queryKey: ["upstreamPortsPreview", debouncedKey],
+    queryFn: () => {
+      const [projectId, target, grouping, batchSize] = JSON.parse(debouncedKey);
+      return ensureNativeApi().upstreamPorts.previewPortGroups({
+        projectId,
+        target,
+        grouping,
+        batchSize,
+      });
+    },
+    enabled: props.open && (target.kind === "all-ready" || target.topicIds.length > 0),
+  });
+  const calculating = previewKey !== debouncedKey || preview.isPending || preview.isFetching;
+  const count = preview.data?.topicCount ?? props.topicIds.length;
+  const limitError =
+    when === "now"
+      ? (portLimitError(count, grouping) ??
+        ((preview.data?.threadCount ?? 0) > 5
+          ? "Start at most 5 threads at once. Add these topics to the queue."
+          : null))
+      : grouping === "together" && count > 20
+        ? "One thread can contain at most 20 topics. Choose batches."
+        : null;
   const ready = isReady(modelSelection);
   const provider = providers.find((p) => p.instanceId === modelSelection.instanceId);
   const driver = provider?.driver ?? ProviderDriverKind.make("codex");
@@ -293,12 +330,11 @@ export function StartPortDialog(props: {
     <Dialog open={props.open} onOpenChange={(open) => !open && !props.busy && props.onClose()}>
       <DialogPopup showCloseButton={!props.busy}>
         <DialogHeader>
-          <DialogTitle>
-            Start port{props.topicIds.length > 1 ? ` (${props.topicIds.length} topics)` : ""}
-          </DialogTitle>
+          <DialogTitle>Start port{props.topicIds.length > 1 ? ` (${props.topicIds.length} topics)` : ""}</DialogTitle>
           <DialogDescription>
-            Each thread gets its own worktree and branch. Up to {UPSTREAM_MAX_PORT_TOPICS} topics and 5 threads per
-            start.
+            Start now runs up to 20 topics in up to 5 threads. The queue takes any number and runs{" "}
+            {props.overview.portQueue.concurrency} threads at a time, refilling as threads finish. Queued threads use
+            the model chosen here, and a thread waiting for your approval keeps its slot.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3 px-6 text-sm">
@@ -308,7 +344,10 @@ export function StartPortDialog(props: {
             </p>
           )}
           {untriaged > 0 && (
-            <div role="status" className="flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/8 p-2">
+            <div
+              role="status"
+              className="flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/8 p-2"
+            >
               <span>
                 {untriaged} newer upstream commit{untriaged === 1 ? " is" : "s are"} not triaged yet; they may contain
                 follow-ups or reverts.
@@ -318,13 +357,24 @@ export function StartPortDialog(props: {
               </Button>
             </div>
           )}
-          {props.topicIds.length > 1 && (
+          <fieldset className="space-y-1">
+            <legend className="font-medium">When</legend>
+            <label className="flex items-center gap-2">
+              <input type="radio" disabled={locked || large} checked={when === "now"} onChange={() => setWhen("now")} />
+              Start now
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="radio" disabled={locked} checked={when === "queue"} onChange={() => setWhen("queue")} />
+              Add to queue
+            </label>
+          </fieldset>
+          {(props.topicIds.length > 1 || target.kind === "all-ready") && (
             <fieldset className="space-y-1">
               <legend className="font-medium">Grouping</legend>
               <label className="flex items-center gap-2">
                 <input
                   type="radio"
-                  disabled={locked}
+                  disabled={locked || count > 20}
                   checked={grouping === "together"}
                   onChange={() => setGrouping("together")}
                 />
@@ -339,8 +389,55 @@ export function StartPortDialog(props: {
                 />
                 One thread per topic
               </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  disabled={locked}
+                  checked={grouping === "batched"}
+                  onChange={() => setGrouping("batched")}
+                />
+                Batches of up to
+                <select
+                  aria-label="Topics per batch"
+                  disabled={locked}
+                  value={batchSize}
+                  onChange={(event) => {
+                    setBatchSize(Number(event.target.value));
+                    setGrouping("batched");
+                  }}
+                >
+                  {Array.from({ length: 9 }, (_, i) => i + 2).map((size) => (
+                    <option key={size} value={size}>
+                      {size}
+                    </option>
+                  ))}
+                </select>
+                related topics
+              </label>
+              <p className="text-xs text-muted-foreground">
+                Topics that change the same files share a thread; the rest are grouped by area.
+              </p>
             </fieldset>
           )}
+          <p role="status">
+            {calculating
+              ? "Calculating…"
+              : preview.data
+                ? `${count} topics → ${preview.data.threadCount} threads (${preview.data.fileLinkedThreads} share files)`
+                : null}
+          </p>
+          {preview.data && preview.data.skipped.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              {preview.data.skipped.length} will be left out (not Ready or already queued).
+            </p>
+          )}
+          {!!preview.data?.filesUnknown && (
+            <p className="text-xs text-warning-foreground">
+              {preview.data.filesUnknown} topics have commits missing locally and are grouped by area only; fetch the
+              upstream remote to fix.
+            </p>
+          )}
+          {preview.error && <p role="alert">{String(preview.error)}</p>}
           <div className="space-y-1">
             <span className="font-medium">Model</span>
             <div className="flex flex-wrap items-center gap-2">
@@ -382,7 +479,8 @@ export function StartPortDialog(props: {
           )}
           {submitted && !props.busy && (
             <p role="status" className="text-muted-foreground">
-              Retry repeats the same request, so threads that already started are not created twice. Close and reopen to change the choices.
+              Retry repeats the same request, so threads that already started are not created twice. Close and reopen to
+              change the choices.
             </p>
           )}
         </div>
@@ -391,14 +489,29 @@ export function StartPortDialog(props: {
             Cancel
           </Button>
           <Button
-            disabled={props.busy || limitError !== null || !ready}
+            disabled={
+              props.busy ||
+              (!submitted &&
+                (calculating ||
+                  preview.isError ||
+                  limitError !== null ||
+                  !ready ||
+                  (when === "queue" && !preview.data?.queueable)))
+            }
             onClick={() => {
               if (!ready) return;
               setSubmitted(true);
-              props.onStart({ grouping, modelSelection, runtimeMode, clientRequestId });
+              props.onStart({
+                grouping,
+                batchSize,
+                when,
+                modelSelection,
+                runtimeMode,
+                clientRequestId,
+              });
             }}
           >
-            {submitted ? "Retry" : "Start port"}
+            {submitted ? "Retry" : when === "queue" ? "Add to queue" : "Start port"}
           </Button>
         </DialogFooter>
       </DialogPopup>

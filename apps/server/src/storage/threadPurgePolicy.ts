@@ -100,6 +100,14 @@ export const threadPurgePolicy: Readonly<
     kind: "retain",
     reason: "Start-port idempotency receipts must survive thread deletion.",
   },
+  upstream_port_queue: {
+    kind: "retain",
+    reason: "Queue ownership, submission identities and progress history survive thread purge.",
+  },
+  upstream_port_outcome_checks: {
+    kind: "retain",
+    reason: "Outcome checks fence preexisting ports and prevent replay after thread purge.",
+  },
   upstream_port_links: { kind: "explicit" },
 };
 

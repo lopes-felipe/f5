@@ -28,6 +28,7 @@ import {
   type LegacyBatchFile,
   type Rules,
   type UpstreamLedger,
+  type UpstreamLedgerOp,
 } from "./upstreamPorts";
 
 const sha = (seed: string | number) => String(seed).padStart(40, "0").slice(-40);
@@ -486,6 +487,40 @@ describe("parseUpstreamTopicTrailers", () => {
 });
 
 describe("applyOps and opEffectPresent", () => {
+  it("replaces only suggestion fields, removes stale errors and replays canonically", () => {
+    const ledger = baseLedger();
+    const original = ledger.topics.find((topic) => topic.id === "pr-1")!;
+    const op: UpstreamLedgerOp = {
+      kind: "suggestion",
+      topicId: "pr-1",
+      title: "Retriaged",
+      summary: "New summary",
+      suggestion: {
+        status: "port",
+        reason: "Useful",
+        confidence: 0.9,
+        userImpact: "high",
+        areas: [],
+        model: "test",
+      },
+    };
+    const changed = applyOps(ledger, [op]).ledger;
+    expect(changed.topics.find((topic) => topic.id === "pr-1")).toEqual({
+      ...original,
+      title: op.title,
+      summary: op.summary,
+      suggestion: op.suggestion,
+    });
+    expect(opEffectPresent(changed, op)).toBe(true);
+    expect(applyOps(changed, [op]).ledger).toEqual(changed);
+    const removed = applyOps(changed, [
+      { kind: "suggestion", topicId: "pr-1", title: op.title, summary: op.summary },
+    ]).ledger;
+    expect(removed.topics.find((topic) => topic.id === "pr-1")!.suggestion).toBeUndefined();
+    expect(applyOps(ledger, [{ ...op, topicId: "pr-999" }]).conflicts).toEqual([
+      "suggestion for unknown topic pr-999",
+    ]);
+  });
   it("marks a decision merged by content equality (squash-style)", () => {
     const ledger = baseLedger();
     const decided = {

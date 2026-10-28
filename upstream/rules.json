@@ -42,6 +42,7 @@
     ".repos/"
   ],
   "reasonKeys": [
+    "not-applicable",
     "mobile",
     "relay-cloud",
     "multi-environment",
@@ -53,6 +54,7 @@
     "declined-by-policy"
   ],
   "reasonLabels": {
+    "not-applicable": "Not applicable to f5",
     "declined-by-policy": "Declined by f5 product policy",
     "devices": "Devices and simulators only",
     "maintenance": "No user-visible behavior change",
