@@ -3289,6 +3289,20 @@ it.effect(
       assert.deepEqual(servers().node_repl, { type: "stdio", command: "mine" });
       assert.equal(broker.requestChromeSession.mock.calls.length, 2);
 
+      // An automation's session never waits on a consent dialog nobody can answer.
+      const unattended = yield* adapter.startSession({
+        threadId: asThreadId("scheduled"),
+        runtimeMode: "full-access",
+        unattended: true,
+      });
+      assert.equal(servers().node_repl, undefined);
+      assert.equal(broker.requestChromeSession.mock.calls.length, 2);
+      // Its fingerprint differs, so a person's next turn restarts it with Chrome.
+      assert.equal(
+        unattended.chromeConfigurationFingerprint,
+        codexChromeIntegration.codexChromeFingerprint(false),
+      );
+
       eligibility.mockClear();
       yield* adapter.startSession({
         threadId: asThreadId("workflow"),

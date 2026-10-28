@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Schema } from "effect";
 
-import { CodexMcpServerEntry, McpServerDefinition, McpServerWriteDefinition } from "./mcpServer";
+import { McpServerDefinition, McpServerWriteDefinition } from "./mcpServer";
 
 const decodeMcpServerDefinition = Schema.decodeUnknownSync(McpServerDefinition);
 
@@ -95,23 +95,6 @@ describe("McpServerDefinition", () => {
         url: "https://example.test/mcp",
         oauthCallbackUrl: "http://[unterminated",
       }),
-    ).toThrow();
-  });
-});
-
-describe("CodexMcpServerEntry", () => {
-  const decode = Schema.decodeUnknownSync(CodexMcpServerEntry);
-
-  it("accepts Codex's per-server tool approval modes", () => {
-    for (const mode of ["auto", "prompt", "approve"] as const)
-      expect(
-        decode({ type: "stdio", command: "node_repl", default_tools_approval_mode: mode }),
-      ).toMatchObject({ default_tools_approval_mode: mode });
-  });
-
-  it("rejects an unknown tool approval mode", () => {
-    expect(() =>
-      decode({ type: "stdio", command: "node_repl", default_tools_approval_mode: "never" }),
     ).toThrow();
   });
 });

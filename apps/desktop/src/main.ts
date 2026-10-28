@@ -549,7 +549,7 @@ function initializeComputerSystem(): void {
       builtinCertified: () =>
         isIntegrationCertified("codex-computer", process.platform, process.arch),
       supervisor,
-      verifyAdoption: (parent, executable) => verifyCodexChromeAdoption(parent, executable),
+      verifyAdoption: (parentPid, runtimePid) => verifyCodexChromeAdoption(parentPid, runtimePid),
       changed: () => {
         if (!syncKillChord()) throw new Error("The computer-control kill shortcut is unavailable.");
       },

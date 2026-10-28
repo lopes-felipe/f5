@@ -612,7 +612,9 @@ export class ComputerAutomationBrokerRuntime {
   }
   /**
    * Main adopts a process the provider started (Codex's `node_repl`): it verifies it and
-   * its parent, then supervises it like a registered child. Answers what main registered.
+   * its parent, then supervises it like a registered child. Answers what main registered,
+   * or the registration that already supervises it for this session (its own token).
+   * A timeout doesn't mean main gave up: the caller still stops `launchToken`.
    */
   async adoptIntegrationProcess(
     adoption: Omit<ChromeProcessAdoption, "profileId" | "backendIncarnation">,
@@ -631,16 +633,24 @@ export class ComputerAutomationBrokerRuntime {
       false,
     );
     const registration = Schema.decodeUnknownOption(ChromeProcessRegistration)(result);
-    if (Option.isNone(registration) || registration.value.launchToken !== adoption.launchToken)
+    if (
+      Option.isNone(registration) ||
+      registration.value.threadId !== adoption.threadId ||
+      registration.value.sessionGeneration !== adoption.sessionGeneration ||
+      registration.value.integration !== adoption.integration
+    )
       throw new ComputerControlError({
         _tag: "Execution",
         message: "The desktop answered the adoption with something else.",
       });
     return registration.value;
   }
-  /** Main stops an adopted process; the backend can't signal what it didn't start. */
-  stopIntegrationProcess(launchToken: string): void {
-    this.host.send({ type: "chromeProcessStop", launchToken });
+  /**
+   * Main stops an adopted process; the backend can't signal what it didn't start.
+   * `release` (idle) lets the runtime exit gracefully; anything else stops it at once.
+   */
+  stopIntegrationProcess(launchToken: string, reason?: "release" | "unresponsive"): void {
+    this.host.send({ type: "chromeProcessStop", launchToken, ...(reason ? { reason } : {}) });
   }
   /** Called with each binding whose provider-native Chrome policy is off after a refresh. */
   onChromeDisabled(listener: (threadId: string, generation: string) => void): () => void {

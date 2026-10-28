@@ -49,8 +49,8 @@ export class ComputerHostChannel {
       builtinCertified?: () => boolean;
       changed?: (holder: ChromeLeaseHolder | null) => void;
       supervisor?: ChromeProcessSupervisor;
-      /** Signature check for an adopted process and its parent; returns why it fails. */
-      verifyAdoption?: (parent: string, executable: string) => Promise<string | undefined>;
+      /** Signature check for an adopted process and its parent, by PID; returns why it fails. */
+      verifyAdoption?: (parentPid: number, runtimePid: number) => Promise<string | undefined>;
     },
     private readonly grants = new ComputerGrantAuthority(
       process.platform === "win32" ? "win32" : "darwin",
@@ -485,7 +485,7 @@ export class ComputerHostChannel {
               registration.launchToken === message.launchToken &&
               registration.profileId === profileId &&
               registration.backendIncarnation === incarnation,
-            "unresponsive",
+            message.reason ?? "unresponsive",
           );
           break;
         case "chromeProcessExited":

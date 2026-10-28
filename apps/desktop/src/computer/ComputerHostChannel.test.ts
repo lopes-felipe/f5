@@ -14,7 +14,7 @@ function setup(
       notice: import("@t3tools/contracts").DesktopScheduledNotification,
     ) => boolean;
     supervisor?: ChromeProcessSupervisor;
-    verifyAdoption?: (parent: string, executable: string) => Promise<string | undefined>;
+    verifyAdoption?: (parentPid: number, runtimePid: number) => Promise<string | undefined>;
   } = {},
 ) {
   const { notification, supervisor, verifyAdoption } = options;
@@ -256,12 +256,57 @@ describe("private computer host channel", () => {
     await vi.waitFor(() =>
       expect(response("adopt")).toMatchObject({ result: { pid: 70, pgid: 70 } }),
     );
-    expect(verifyAdoption).toHaveBeenCalledWith("/bin/codex", NODE_REPL);
+    expect(verifyAdoption).toHaveBeenCalledWith(60, 70);
     // Another incarnation's token stops nothing; the backend's own does.
     h.process.emit("message", { type: "chromeProcessStop", launchToken: "other" });
     expect(killGroup).not.toHaveBeenCalled();
     h.process.emit("message", { type: "chromeProcessStop", launchToken: "adopted" });
     await vi.waitFor(() => expect(killGroup).toHaveBeenCalledWith(70, "SIGTERM"));
+  });
+  it("gives an idle or turned-off runtime the graceful stop", async () => {
+    const NODE_REPL = "/node_repl";
+    const timers: Array<{ run: () => void; ms: number }> = [];
+    const killGroup = vi.fn();
+    const io: ChromeProcessIo = {
+      snapshot: async () => [
+        { pid: 50, ppid: 1, pgid: 50, startTime: 0, zombie: false, command: "/bin/server" },
+        { pid: 60, ppid: 50, pgid: 60, startTime: 0, zombie: false, command: "codex" },
+        { pid: 70, ppid: 60, pgid: 70, startTime: 1_000, zombie: false, command: NODE_REPL },
+      ],
+      killGroup,
+      setTimeout: (run, ms) => {
+        timers.push({ run, ms });
+        return timers.length;
+      },
+      clearTimeout: () => {},
+      now: () => 0,
+    };
+    const supervisor = new ChromeProcessSupervisor({ io });
+    const h = setup(true, undefined, { supervisor, verifyAdoption: async () => undefined });
+    h.hello();
+    h.process.emit("message", {
+      type: "chromeProcessAdopt",
+      requestId: "adopt",
+      adoption: {
+        profileId: "profile",
+        backendIncarnation: "incarnation",
+        threadId: "thread",
+        sessionGeneration: "s",
+        launchToken: "adopted",
+        integration: "codex-chrome",
+        parentPid: 60,
+        executable: NODE_REPL,
+      },
+    });
+    await vi.waitFor(() => expect(supervisor.registrations()).toHaveLength(1));
+    h.process.emit("message", {
+      type: "chromeProcessStop",
+      launchToken: "adopted",
+      reason: "release",
+    });
+    // The graceful window comes first: nothing is signalled yet.
+    await vi.waitFor(() => expect(timers.some((timer) => timer.ms === 2_000)).toBe(true));
+    expect(killGroup).not.toHaveBeenCalled();
   });
   it("refuses adoption while Codex Chrome is uncertified", async () => {
     const supervisor = new ChromeProcessSupervisor();

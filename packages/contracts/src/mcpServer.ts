@@ -122,8 +122,6 @@ const CodexMcpServerCommonFields = {
   tool_timeout_sec: Schema.optional(NonNegativeInt),
   enabled_tools: Schema.optional(McpStringArray),
   disabled_tools: Schema.optional(McpStringArray),
-  /** Codex's approval for this server's tools; `prompt` asks the client before each call. */
-  default_tools_approval_mode: Schema.optional(Schema.Literals(["auto", "prompt", "approve"])),
   scopes: Schema.optional(McpStringArray),
   oauth: Schema.optional(
     Schema.Struct({

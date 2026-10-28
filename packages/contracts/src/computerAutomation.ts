@@ -713,7 +713,12 @@ export const DesktopComputerHostMessage = Schema.Union([
     adoption: ChromeProcessAdoption,
   }),
   // The backend can't signal a process it didn't start; main stops it for the backend.
-  Schema.Struct({ type: Schema.Literal("chromeProcessStop"), launchToken: Id }),
+  // `release` (idle, turned off) allows the graceful window; anything else stops at once.
+  Schema.Struct({
+    type: Schema.Literal("chromeProcessStop"),
+    launchToken: Id,
+    reason: Schema.optional(Schema.Literals(["release", "unresponsive"])),
+  }),
   // Built-in (provider-native) computer use holds the shared foreground lease per call.
   Schema.Struct({
     type: Schema.Literals(["builtinLeaseAcquire", "builtinLeaseValidate", "builtinLeaseRelease"]),

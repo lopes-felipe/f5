@@ -173,7 +173,6 @@ describe("Codex Chrome eligibility", () => {
       args: [],
       enabledTools: [...record.identity.allowedTools, certification.CODEX_CHROME_DRAIN_TOOL],
     });
-    expect(server).not.toHaveProperty("defaultToolsApprovalMode");
     expect(server.type === "stdio" && server.env).toMatchObject({
       PATH: "/usr/bin",
       CODEX_HOME: "/isolated",

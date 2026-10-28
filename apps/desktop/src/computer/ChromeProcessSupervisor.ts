@@ -266,50 +266,57 @@ export class ChromeProcessSupervisor {
   /**
    * Adopts a process the provider started rather than the backend (Codex's `node_repl`):
    * the only live child of `parentPid` running `executable`, where the parent descends from
-   * the registering backend. `verify` checks both executables' signatures and returns why
-   * they fail. Once candidates are known, any failure stops all of them: each is a verified
-   * descendant of the backend that F5 couldn't supervise.
+   * the registering backend. `verify` checks both running processes' signatures by PID and
+   * returns why they fail. The listing is read first, so every refusal (recovery, a stopped
+   * generation, a duplicate token included) stops every candidate: each is a descendant of
+   * the backend that F5 couldn't supervise. A candidate this session already supervises is
+   * returned as is, so a repeated adoption never stops a supervised runtime.
    */
   async adopt(
     adoption: ChromeProcessAdoption,
     ancestorPid: number,
-    verify: (parent: string, executable: string) => Promise<string | undefined>,
+    verify: (parentPid: number, runtimePid: number) => Promise<string | undefined>,
   ): Promise<ChromeProcessRegistration> {
-    if (this.recoveryRequired())
-      throw new Error("A previous browser-control process has not exited yet.");
     const { parentPid, executable, ...identity } = adoption;
-    if (this.invalidated(identity.profileId, identity.threadId, identity.sessionGeneration))
-      throw new Error("Computer control was stopped for this session. Resume it first.");
     const token = identity.launchToken;
-    if (this.entries.has(token) || this.pending.has(token))
-      throw new Error("Duplicate launch token.");
+    const duplicate = this.entries.has(token) || this.pending.has(token);
     // A stop while `ps` and the signatures are read must still reach the adopted process.
     // The provisional registration is never signalled; it only records that stop.
     const pending: {
       readonly registration: ChromeProcessRegistration;
       stoppedBy?: ChromeStopReason;
     } = { registration: { ...identity, pid: parentPid, pgid: parentPid, startTime: 0 } };
-    this.pending.set(token, pending);
+    if (!duplicate) this.pending.set(token, pending);
     let candidates: ChromeProcessRow[] = [];
     let registration: ChromeProcessRegistration;
     try {
       const rows = await this.io.snapshot();
       if (!rows) throw new Error("The process listing could not be read.");
       const parent = rows.find((row) => row.pid === parentPid);
-      if (!parent?.command || parent.zombie || !descendsFrom(rows, parentPid, ancestorPid))
+      if (!parent || parent.zombie || !descendsFrom(rows, parentPid, ancestorPid))
         throw new Error("The provider process could not be verified.");
       candidates = rows.filter(
         (row) => row.ppid === parentPid && !row.zombie && row.command === executable,
       );
+      const supervised = this.supervisedCandidate(identity, candidates);
+      if (supervised) {
+        candidates = [];
+        return supervised;
+      }
+      if (duplicate) throw new Error("Duplicate launch token.");
+      if (this.recoveryRequired())
+        throw new Error("A previous browser-control process has not exited yet.");
+      if (this.invalidated(identity.profileId, identity.threadId, identity.sessionGeneration))
+        throw new Error("Computer control was stopped for this session. Resume it first.");
       if (candidates.length !== 1)
         throw new Error(
           candidates.length
             ? "The provider started more than one browser runtime."
             : "The provider's browser runtime isn't running.",
         );
-      const failure = await verify(parent.command, executable);
-      if (failure) throw new Error(failure);
       const leader = candidates[0]!;
+      const failure = await verify(parentPid, leader.pid);
+      if (failure) throw new Error(failure);
       if (leader.startTime === undefined)
         throw new Error("The browser runtime could not be verified.");
       if (leader.pgid !== leader.pid)
@@ -323,20 +330,71 @@ export class ChromeProcessSupervisor {
         startTime: leader.startTime,
       };
     } catch (error) {
-      for (const candidate of candidates) this.io.kill?.(candidate.pid, "SIGKILL");
+      await this.killUnsupervised(candidates);
       throw error;
     } finally {
-      this.pending.delete(token);
+      if (!duplicate) this.pending.delete(token);
     }
     // Registration re-reads `ps`: same start time, group and ancestry, and a stop that lands
     // meanwhile still reaches it. A refused registration leaves nothing unsupervised.
     try {
       await this.register(registration, ancestorPid);
     } catch (error) {
-      if (!this.entries.has(token)) this.io.kill?.(registration.pid, "SIGKILL");
+      if (!this.entries.has(token))
+        await this.killUnsupervised([{ ...registration, ppid: parentPid, zombie: false }]);
       throw error;
     }
     return registration;
+  }
+
+  /** The live registration of this session that already supervises the only candidate. */
+  private supervisedCandidate(
+    identity: Omit<ChromeProcessAdoption, "parentPid" | "executable">,
+    candidates: ReadonlyArray<ChromeProcessRow>,
+  ): ChromeProcessRegistration | undefined {
+    if (candidates.length !== 1) return undefined;
+    const candidate = candidates[0]!;
+    return [...this.entries.values()].find(
+      (entry) =>
+        !entry.exited &&
+        entry.registration.pid === candidate.pid &&
+        entry.observedStart === candidate.startTime &&
+        entry.registration.profileId === identity.profileId &&
+        entry.registration.backendIncarnation === identity.backendIncarnation &&
+        entry.registration.threadId === identity.threadId &&
+        entry.registration.sessionGeneration === identity.sessionGeneration &&
+        entry.registration.integration === identity.integration,
+    )?.registration;
+  }
+
+  /**
+   * SIGKILLs refused candidates. Each is re-read first and never signalled once its PID
+   * belongs to a different process. A group leader's whole group is signalled while any
+   * member remains (the kernel doesn't reuse a PID while its group exists); any other
+   * candidate only itself. Signals repeat in the background until nothing is left.
+   */
+  private async killUnsupervised(
+    candidates: ReadonlyArray<ChromeProcessRow>,
+    attempt = 0,
+  ): Promise<void> {
+    const targets = candidates.filter((candidate) => candidate.startTime !== undefined);
+    if (targets.length === 0 || attempt >= 5) return;
+    const rows = await this.io.snapshot();
+    const remaining = !rows
+      ? targets
+      : targets.filter((target) => {
+          const current = rows.find((row) => row.pid === target.pid && !row.zombie);
+          if (current && current.startTime !== target.startTime) return false;
+          if (target.pgid !== target.pid) {
+            if (current) this.io.kill?.(target.pid, "SIGKILL");
+            return current !== undefined;
+          }
+          if (!rows.some((row) => row.pgid === target.pid && !row.zombie)) return false;
+          this.io.killGroup(target.pid, "SIGKILL");
+          return true;
+        });
+    if (remaining.length > 0)
+      this.io.setTimeout(() => void this.killUnsupervised(remaining, attempt + 1), POLL_MS);
   }
 
   registrations(filter: (registration: ChromeProcessRegistration) => boolean = () => true) {

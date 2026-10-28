@@ -527,12 +527,15 @@ describe("adopting a provider-started process", () => {
         h.processes.delete(pid);
       },
     };
-    const verified: Array<[string, string]> = [];
-    const verify = async (parent: string, executable: string) => {
-      verified.push([parent, executable]);
+    const verified: Array<[number, number]> = [];
+    const verify = async (parentPid: number, runtimePid: number) => {
+      verified.push([parentPid, runtimePid]);
       return undefined;
     };
-    return { h, io, kills, verified, verify };
+    // Groups SIGKILLed after a refusal.
+    const groupKills = () =>
+      h.signals.filter(([, signal]) => signal === "SIGKILL").map(([pgid]) => pgid);
+    return { h, io, kills, verified, verify, groupKills };
   };
 
   it("reads the executable after the start time, spaces included", () => {
@@ -562,11 +565,33 @@ describe("adopting a provider-started process", () => {
       startTime: 1_000,
       launchToken: "adopted",
     });
-    expect(t.verified).toEqual([[CODEX, NODE_REPL]]);
+    // Both by PID: `ps` names a parent found on PATH only by its `argv[0]`.
+    expect(t.verified).toEqual([[60, 70]]);
     expect(supervisor.registrations().map((entry) => entry.pid)).toEqual([70]);
     supervisor.stop((entry) => entry.launchToken === "adopted", "unresponsive");
     await t.h.advance(0);
     expect(t.h.signals).toContainEqual([70, "SIGTERM"]);
+  });
+
+  it("adopts under a parent that `ps` lists by its bare argv[0]", async () => {
+    const t = setup();
+    t.h.processes.set(60, { ...t.h.processes.get(60)!, command: "codex" });
+    const supervisor = new ChromeProcessSupervisor({ io: t.io });
+    await expect(supervisor.adopt(adoption, BACKEND, t.verify)).resolves.toMatchObject({
+      pid: 70,
+    });
+    expect(t.verified).toEqual([[60, 70]]);
+  });
+
+  it("returns the runtime this session already supervises without stopping it", async () => {
+    const t = setup();
+    const supervisor = new ChromeProcessSupervisor({ io: t.io });
+    await supervisor.adopt(adoption, BACKEND, t.verify);
+    await expect(
+      supervisor.adopt({ ...adoption, launchToken: "again" }, BACKEND, t.verify),
+    ).resolves.toMatchObject({ launchToken: "adopted", pid: 70 });
+    expect(t.groupKills()).toEqual([]);
+    expect(supervisor.registrations().map((entry) => entry.launchToken)).toEqual(["adopted"]);
   });
 
   it("refuses when the runtime isn't running or runs another executable", async () => {
@@ -575,6 +600,7 @@ describe("adopting a provider-started process", () => {
     const supervisor = new ChromeProcessSupervisor({ io: t.io });
     await expect(supervisor.adopt(adoption, BACKEND, t.verify)).rejects.toThrow("isn't running");
     expect(t.kills).toEqual([]);
+    expect(t.groupKills()).toEqual([]);
     expect(supervisor.registrations()).toEqual([]);
   });
 
@@ -583,17 +609,53 @@ describe("adopting a provider-started process", () => {
     t.h.processes.set(71, { ...t.h.processes.get(70)!, pgid: 71 });
     const supervisor = new ChromeProcessSupervisor({ io: t.io });
     await expect(supervisor.adopt(adoption, BACKEND, t.verify)).rejects.toThrow("more than one");
-    expect(t.kills.sort()).toEqual([70, 71]);
+    expect(t.groupKills().sort()).toEqual([70, 71]);
   });
 
-  it("refuses and stops the runtime when a signature fails", async () => {
+  it("refuses and stops the runtime's whole group when a signature fails", async () => {
     const t = setup();
+    // A worker the runtime started, in its group.
+    t.h.processes.set(80, { ppid: 70, pgid: 70, startTime: 2_000, zombie: false });
     const supervisor = new ChromeProcessSupervisor({ io: t.io });
     await expect(
       supervisor.adopt(adoption, BACKEND, async () => "F5's Codex isn't an OpenAI-signed build."),
     ).rejects.toThrow("OpenAI-signed");
-    expect(t.kills).toEqual([70]);
+    expect(t.groupKills()).toEqual([70]);
+    expect(t.h.processes.has(80)).toBe(false);
     expect(supervisor.registrations()).toEqual([]);
+  });
+
+  it("keeps signalling a refused group until no member remains", async () => {
+    const t = setup();
+    t.h.state.ignoreSignals = true;
+    const supervisor = new ChromeProcessSupervisor({ io: t.io });
+    await expect(supervisor.adopt(adoption, BACKEND, async () => "refused")).rejects.toThrow(
+      "refused",
+    );
+    expect(t.groupKills()).toEqual([70]);
+    t.h.state.ignoreSignals = false;
+    await t.h.advance(250);
+    expect(t.groupKills()).toEqual([70, 70]);
+    await t.h.advance(1_000);
+    expect(t.groupKills()).toEqual([70, 70]);
+  });
+
+  it("stops the runtime on refusals made before it is verified", async () => {
+    for (const refusal of ["recovery", "invalidated", "duplicate"] as const) {
+      const t = setup();
+      const supervisor = new ChromeProcessSupervisor({ io: t.io });
+      if (refusal === "invalidated")
+        (
+          supervisor as unknown as { invalidatedGenerations: Set<string> }
+        ).invalidatedGenerations.add("p\0t\0g");
+      if (refusal === "recovery")
+        (supervisor as unknown as { recovery: unknown[] }).recovery.push({});
+      if (refusal === "duplicate")
+        (supervisor as unknown as { pending: Map<string, unknown> }).pending.set("adopted", {});
+      await expect(supervisor.adopt(adoption, BACKEND, t.verify)).rejects.toThrow();
+      expect(t.groupKills()).toEqual([70]);
+      expect(t.verified).toEqual([]);
+    }
   });
 
   it("never touches a provider the backend didn't start", async () => {
@@ -604,10 +666,11 @@ describe("adopting a provider-started process", () => {
       "could not be verified",
     );
     expect(t.kills).toEqual([]);
+    expect(t.groupKills()).toEqual([]);
     expect(t.verified).toEqual([]);
   });
 
-  it("refuses a runtime that doesn't lead its own process group", async () => {
+  it("refuses a runtime that doesn't lead its own process group and stops only it", async () => {
     const t = setup();
     t.h.processes.set(70, { ...t.h.processes.get(70)!, pgid: 60 });
     const supervisor = new ChromeProcessSupervisor({ io: t.io });
@@ -615,9 +678,10 @@ describe("adopting a provider-started process", () => {
       "own process group",
     );
     expect(t.kills).toEqual([70]);
+    expect(t.groupKills()).toEqual([]);
   });
 
-  it("refuses a process replaced between the listing and its registration", async () => {
+  it("never signals a PID reused between the listing and its registration", async () => {
     const t = setup();
     const supervisor = new ChromeProcessSupervisor({ io: t.io });
     // The PID is reused with another start time while the signatures are verified.
@@ -629,7 +693,9 @@ describe("adopting a provider-started process", () => {
       "could not be verified",
     );
     expect(supervisor.registrations()).toEqual([]);
-    expect(t.kills).toEqual([70]);
+    expect(t.kills).toEqual([]);
+    expect(t.groupKills()).toEqual([]);
+    expect(t.h.processes.has(70)).toBe(true);
   });
 
   it("stops the runtime when ⌃⌘Esc lands during adoption", async () => {
@@ -640,8 +706,19 @@ describe("adopting a provider-started process", () => {
       return undefined;
     };
     await expect(supervisor.adopt(adoption, BACKEND, verify)).rejects.toThrow("stopped");
-    expect(t.kills).toEqual([70]);
+    expect(t.groupKills()).toEqual([70]);
     expect(supervisor.invalidated("p", "t", "g")).toBe(true);
-    await expect(supervisor.adopt(adoption, BACKEND, t.verify)).rejects.toThrow("Resume");
+    // A runtime the provider starts again is stopped too, without being verified.
+    t.h.processes.set(72, {
+      ppid: 60,
+      pgid: 72,
+      startTime: 3_000,
+      zombie: false,
+      command: NODE_REPL,
+    });
+    await expect(
+      supervisor.adopt({ ...adoption, launchToken: "next" }, BACKEND, t.verify),
+    ).rejects.toThrow("Resume");
+    expect(t.groupKills()).toEqual([70, 72]);
   });
 });

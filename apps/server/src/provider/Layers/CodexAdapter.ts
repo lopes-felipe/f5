@@ -1200,7 +1200,8 @@ export function observeCodexChrome(
 ): void {
   const payload = asObject(event.payload);
   if (event.method === "mcpServer/startupStatus/updated") {
-    if (asString(payload?.name) !== CODEX_CHROME_SERVER_NAME) return;
+    // The manager reads either key; so does this.
+    if ((asString(payload?.name) ?? asString(payload?.server)) !== CODEX_CHROME_SERVER_NAME) return;
     const status = asString(payload?.status);
     const error = asString(payload?.error);
     if (status) session.startupStatus(status, error);
@@ -2724,17 +2725,25 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           serverConfig.mode === "desktop" &&
           !input.workflowExecutionProfile &&
           !isSyntheticOneOffThreadId(input.threadId);
+        // A session an automation starts gets no Chrome (consent needs a person); its
+        // fingerprint says so, and the next person's turn restarts it with Chrome.
         if (chromeInteractive)
           chromeFingerprints.set(
             input.threadId,
-            codexChromeFingerprint(computerPolicy.codexChrome),
+            codexChromeFingerprint(computerPolicy.codexChrome && !input.unattended),
           );
         if (computerPolicy.codexChrome && chromeInteractive && chromeBroker) {
           const entry: NonNullable<ReturnType<typeof chromeSessions.get>> = {
             state: { state: "unavailable" },
           };
           chromeSessions.set(input.threadId, entry);
-          if (baseProviderMcpServers?.[CODEX_CHROME_SERVER_NAME])
+          if (input.unattended)
+            entry.state = {
+              state: "unavailable",
+              detail:
+                "Not started for a scheduled run. Chrome control starts with your next message.",
+            };
+          else if (baseProviderMcpServers?.[CODEX_CHROME_SERVER_NAME])
             entry.state = {
               state: "unavailable",
               detail: `An MCP server named "${CODEX_CHROME_SERVER_NAME}" is configured. Rename it to use Codex Chrome control.`,
@@ -3041,10 +3050,13 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         return yield* Effect.tryPromise({
           try: async () => {
             // A new turn restarts Chrome's runtime if it was stopped while idle or paused,
-            // and waits (bounded) until main supervises it, so the model never reaches an
-            // unsupervised one. Steering joins a turn that already has it.
-            if (!input.expectedTurnId)
-              await chromeSessions.get(input.threadId)?.session?.beforeTurn();
+            // and waits (bounded) until main supervises it; one that isn't supervised by
+            // then is stopped, so the model never reaches an unsupervised runtime.
+            // Steering joins a turn that already has it.
+            const chrome = input.expectedTurnId
+              ? undefined
+              : chromeSessions.get(input.threadId)?.session;
+            await chrome?.beforeTurn();
             const managerInput = {
               threadId: input.threadId,
               ...(input.expectedTurnId ? { expectedTurnId: input.expectedTurnId } : {}),
@@ -3065,7 +3077,13 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 : {}),
               ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
             };
-            return manager.sendTurn(managerInput);
+            try {
+              return await manager.sendTurn(managerInput);
+            } catch (error) {
+              // No turn started, so none will end: let the idle stop run again.
+              chrome?.turnAborted();
+              throw error;
+            }
           },
           catch: (cause) => toRequestError(input.threadId, "turn/start", cause),
         }).pipe(

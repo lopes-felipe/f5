@@ -58,6 +58,13 @@ export const SUPPORTED_CODEX_CHROME_ADMISSION: CodexChromeAdmission = "session";
  */
 export const CODEX_CHROME_DRAIN_TOOL = "turn_ended";
 /**
+ * Codex's `node_repl` is stopped this long after a turn ends with no new one. Restarting
+ * it reloads the session's whole MCP config (`config/mcpServer/reload` takes no server),
+ * which restarts the user's own MCP servers too, so the window is far longer than a pause
+ * between messages.
+ */
+export const CODEX_CHROME_IDLE_MS = 10 * 60_000;
+/**
  * Signing identifiers ChatGPT's Chrome host accepts for `node_repl`'s parent (with the
  * record's team): its only connection check is that a signed Codex started the runtime.
  */
@@ -453,7 +460,7 @@ export const INTEGRATION_ACCEPTANCE_CHECKS: Readonly<
     { id: "open-tab-read-title", label: "Codex opens a tab and reads its title" },
     { id: "pause-stops", label: "Pause stops background work Codex started in Chrome", auto: true },
     { id: "emergency-stop", label: "⌃⌘Esc stops Codex's node_repl", auto: true },
-    { id: "idle-stop", label: "Codex's node_repl is gone after 60 s idle", auto: true },
+    { id: "idle-stop", label: "Codex's node_repl is gone 10 min after a turn ends", auto: true },
     {
       id: "registrations-unchanged",
       label: "Registrations are byte-identical before and after",

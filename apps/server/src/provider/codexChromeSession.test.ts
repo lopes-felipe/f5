@@ -5,6 +5,7 @@ import { toolInventorySha256 } from "../mcp/IntegrationProxyCatalog";
 import {
   CODEX_CHROME_IDLE_MS,
   CODEX_CHROME_INVENTORY_CHANGED,
+  CODEX_CHROME_START_TIMED_OUT,
   CODEX_CHROME_STOPPED_IDLE,
   CODEX_CHROME_STOPPED_OFF,
   CODEX_CHROME_STOPPED_PAUSED,
@@ -51,7 +52,12 @@ function harness(overrides: Partial<CodexChromeSessionDeps> = {}) {
     pause,
     generation: vi.fn(() => generation),
     chromeRecoveryRequired: vi.fn(() => false),
-    adoptIntegrationProcess: vi.fn(async () => ({}) as never),
+    // Main answers with what it registered: here, always the request's own token.
+    adoptIntegrationProcess: vi.fn(
+      async (adoption: { launchToken: string }): Promise<{ launchToken: string }> => ({
+        launchToken: adoption.launchToken,
+      }),
+    ),
     stopIntegrationProcess: vi.fn(),
     onChromeDisabled: (listener: (threadId: string, generation: string) => void) => {
       disabled.add(listener);
@@ -99,6 +105,7 @@ function harness(overrides: Partial<CodexChromeSessionDeps> = {}) {
     policy,
     states,
     lastToken,
+    stopped: () => broker.stopIntegrationProcess.mock.calls.map((call) => call[0] as string),
     setGeneration: (next: string) => {
       generation = next;
     },
@@ -150,18 +157,56 @@ describe("CodexChromeSession", () => {
     });
     await ready(h);
     const token = h.lastToken();
-    expect(h.broker.stopIntegrationProcess).toHaveBeenCalledWith(token);
+    expect(h.stopped()).toContainEqual(token);
     expect(h.broker.host.correlated).not.toHaveBeenCalled();
     expect(h.session.state).toBe("unavailable");
     expect(h.states.at(-1)).toEqual(["unavailable", CODEX_CHROME_INVENTORY_CHANGED]);
   });
 
-  it("reports a failed adoption, which main already stopped", async () => {
+  it("reports a failed adoption and still stops its token and sweeps the runtime", async () => {
     const h = harness();
-    h.broker.adoptIntegrationProcess.mockRejectedValue(new Error("More than one node_repl."));
+    // A timeout says nothing about what main did: it may still adopt the runtime.
+    h.broker.adoptIntegrationProcess.mockRejectedValue(new Error("Timed out."));
     await ready(h);
-    expect(h.broker.stopIntegrationProcess).not.toHaveBeenCalled();
-    expect(h.states.at(-1)).toEqual(["unavailable", "More than one node_repl."]);
+    const requested = (
+      h.broker.adoptIntegrationProcess.mock.calls[0] as unknown as [{ launchToken: string }]
+    )[0].launchToken;
+    expect(h.stopped()).toContainEqual(requested);
+    // The sweep asks main to adopt whatever runs, so main stops it either way.
+    expect(h.broker.adoptIntegrationProcess).toHaveBeenCalledTimes(2);
+    expect(h.session.adopted).toBeUndefined();
+    expect(h.states.at(-1)).toEqual(["unavailable", "Timed out."]);
+  });
+
+  it("stops the runtime for the turn when it isn't supervised in time", async () => {
+    const h = harness({ startWaitMs: 5 });
+    // Main never answers the adoption.
+    h.broker.adoptIntegrationProcess.mockImplementationOnce(() => new Promise(() => {}));
+    h.session.startupStatus("ready");
+    await h.session.beforeTurn();
+    expect(h.session.state).toBe("stopped");
+    expect(h.states.at(-1)).toEqual(["pending", CODEX_CHROME_START_TIMED_OUT]);
+    const pending = (
+      h.broker.adoptIntegrationProcess.mock.calls[0] as unknown as [{ launchToken: string }]
+    )[0].launchToken;
+    // The late adoption is stopped, and whatever Codex runs is swept.
+    expect(h.stopped()).toContainEqual(pending);
+    await flush();
+    expect(h.broker.adoptIntegrationProcess).toHaveBeenCalledTimes(2);
+    expect(h.stopped()).toContainEqual(h.lastToken());
+    expect(h.broker.host.correlated).not.toHaveBeenCalled();
+  });
+
+  it("stops the runtime for the turn when Codex never reports it", async () => {
+    const h = harness({ startWaitMs: 5 });
+    await h.session.beforeTurn();
+    expect(h.session.state).toBe("stopped");
+    expect(h.states.at(-1)).toEqual(["pending", CODEX_CHROME_START_TIMED_OUT]);
+    // A runtime Codex reports later is stopped, not adopted.
+    h.session.startupStatus("ready");
+    await flush();
+    expect(h.stopped()).toContainEqual(h.lastToken());
+    expect(h.session.state).toBe("stopped");
   });
 
   it("reports Codex's own startup failure", () => {
@@ -183,7 +228,11 @@ describe("CodexChromeSession", () => {
       if (trigger === "pause") h.pause.set("thread-1", true);
       else if (trigger === "off") h.disable();
       else h.idle();
-      expect(h.broker.stopIntegrationProcess).toHaveBeenCalledWith(token);
+      // Only the idle stop is graceful; pause and turning it off stop at once.
+      expect(h.broker.stopIntegrationProcess).toHaveBeenCalledWith(
+        token,
+        trigger === "idle" ? "release" : undefined,
+      );
       expect(h.broker.host.send).toHaveBeenCalledWith(
         expect.objectContaining({ type: "chromeLeaseRelease" }),
       );
@@ -191,6 +240,34 @@ describe("CodexChromeSession", () => {
       expect(h.session.adopted).toBeUndefined();
       expect(h.states.at(-1)).toEqual([state, detail]);
     }
+  });
+
+  it("never idle-stops during a turn, however long before its first call", async () => {
+    const h = harness();
+    const turn = h.session.beforeTurn();
+    // Adoption finishes while the turn waits for it.
+    await ready(h);
+    await turn;
+    expect(h.session.state).toBe("ready");
+    expect(h.idleArmed()).toBe(false);
+    h.session.toolActivity();
+    expect(h.idleArmed()).toBe(false);
+    h.session.turnEnded("turn-1");
+    expect(h.idleArmed()).toBe(true);
+    // A turn that never started arms it too.
+    await h.session.beforeTurn();
+    expect(h.idleArmed()).toBe(false);
+    h.session.turnAborted();
+    expect(h.idleArmed()).toBe(true);
+  });
+
+  it("stops a supervised runtime that Codex reports failed", async () => {
+    const h = harness();
+    await ready(h);
+    const token = h.lastToken();
+    h.session.startupStatus("cancelled");
+    expect(h.stopped()).toContainEqual(token);
+    expect(h.session.state).toBe("stopped");
   });
 
   it("ignores pauses and policy changes for other threads and generations", async () => {
@@ -241,7 +318,7 @@ describe("CodexChromeSession", () => {
     const h = harness();
     h.policy.enabled = false;
     await ready(h);
-    expect(h.broker.stopIntegrationProcess).toHaveBeenCalledWith(h.lastToken());
+    expect(h.stopped()).toContainEqual(h.lastToken());
     expect(h.broker.host.correlated).not.toHaveBeenCalled();
     expect(h.states.at(-1)).toEqual(["off", CODEX_CHROME_STOPPED_OFF]);
   });
@@ -260,7 +337,7 @@ describe("CodexChromeSession", () => {
     h.pause.set("thread-1", true);
     finish?.();
     await flush();
-    expect(h.broker.stopIntegrationProcess).toHaveBeenCalledWith(h.lastToken());
+    expect(h.stopped()).toContainEqual(h.lastToken());
     expect(h.broker.host.correlated).not.toHaveBeenCalled();
     expect(h.session.state).toBe("stopped");
   });
@@ -273,28 +350,50 @@ describe("CodexChromeSession", () => {
     h.session.startupStatus("ready");
     await flush();
     expect(h.broker.adoptIntegrationProcess).toHaveBeenCalledTimes(2);
-    expect(h.broker.stopIntegrationProcess).toHaveBeenCalledWith(h.lastToken());
+    expect(h.stopped()).toContainEqual(h.lastToken());
     expect(h.session.state).toBe("stopped");
   });
 
-  it("adopts afresh a runtime Codex replaced on its own", async () => {
+  it("adopts and verifies a runtime Codex replaced on its own, under the same lease", async () => {
     const h = harness();
     await ready(h);
     const first = h.lastToken();
+    const states = h.states.length;
     h.session.startupStatus("ready");
     await flush();
-    expect(h.broker.stopIntegrationProcess).toHaveBeenCalledWith(first);
-    expect(h.broker.host.send).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "chromeLeaseRelease" }),
-    );
     expect(h.broker.adoptIntegrationProcess).toHaveBeenCalledTimes(2);
-    expect(h.lastToken()).not.toBe(first);
+    const second = h.lastToken();
+    expect(second).not.toBe(first);
+    expect(h.stopped()).toEqual([first]);
+    expect(h.session.adopted).toBe(second);
     expect(h.codex.listServer).toHaveBeenCalledTimes(2);
+    expect(h.broker.host.send).not.toHaveBeenCalled();
     expect(h.session.state).toBe("ready");
-    expect(h.states.slice(-2)).toEqual([
-      ["pending", undefined],
-      ["connected", undefined],
-    ]);
+    expect(h.states.length).toBe(states);
+  });
+
+  it("changes nothing when Codex repeats ready for the supervised runtime", async () => {
+    const h = harness();
+    await ready(h);
+    const first = h.lastToken();
+    // Main answers with the registration that already supervises it.
+    h.broker.adoptIntegrationProcess.mockResolvedValueOnce({ launchToken: first });
+    h.session.startupStatus("ready");
+    await flush();
+    expect(h.stopped()).toEqual([]);
+    expect(h.session.adopted).toBe(first);
+    expect(h.codex.listServer).toHaveBeenCalledTimes(1);
+    expect(h.session.state).toBe("ready");
+  });
+
+  it("stops a replacement whose tools differ from the record", async () => {
+    const h = harness();
+    await ready(h);
+    h.codex.listServer.mockResolvedValue({ tools: { js: tools.js } });
+    h.session.startupStatus("ready");
+    await flush();
+    expect(h.stopped()).toContainEqual(h.lastToken());
+    expect(h.states.at(-1)).toEqual(["unavailable", CODEX_CHROME_INVENTORY_CHANGED]);
   });
 
   it("drains each ended turn once through turn_ended and then arms the idle stop", async () => {
@@ -321,7 +420,7 @@ describe("CodexChromeSession", () => {
     h.session.dispose();
     h.pause.set("thread-1", true);
     expect(h.broker.stopIntegrationProcess).toHaveBeenCalledTimes(1);
-    expect(h.broker.stopIntegrationProcess).toHaveBeenCalledWith(token);
+    expect(h.stopped()).toContainEqual(token);
     expect(h.session.state).toBe("disposed");
   });
 

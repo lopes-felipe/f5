@@ -751,14 +751,23 @@ access, so F5 controls the session's runtime, not single calls (`identity.admiss
 (`apps/server/src/provider/codexChromeSession.ts`) does it:
 
 - the user consents once per session generation (consent kind `chrome-session`) before
-  the MCP config that starts `node_repl` is built; declining leaves the entry out;
+  the MCP config that starts `node_repl` is built; declining leaves the entry out. A
+  session an automation starts (a scheduled run's turn) asks nothing and gets no
+  `node_repl`; the next person's turn restarts it with Chrome, and an automation's turn
+  never restarts a session for Chrome;
 - when Codex reports `node_repl` ready (`mcpServer/startupStatus/updated`), the server
-  asks main to adopt it (`chromeProcessAdopt`). Main takes one `ps` snapshot and requires
-  exactly one live child of the session's Codex process running the verified
-  `node_repl`, leading its own process group, under a parent that descends from the
-  backend and is signed by team `2DC432GLL2` as `codex` or `com.openai.codex.*`; then it
-  registers the group as it would a spawned child. Any refusal kills the candidates, and
-  a stop that arrives during adoption is kept;
+  asks main to adopt it (`chromeProcessAdopt`), naming the launch token first so a stop
+  reaches a runtime main adopts after the request timed out. Main takes one `ps` snapshot
+  and requires exactly one live child of the session's Codex process running the
+  verified `node_repl`, leading its own process group, under a parent that descends from
+  the backend. `codesign` then checks both running processes by PID (`ps` reports
+  `argv[0]`, a bare `codex` when it was found on PATH): `node_repl` and a parent signed
+  by team `2DC432GLL2` as `codex` or `com.openai.codex.*`. Then main registers the group
+  as it would a spawned child. The listing comes first, so every refusal (recovery
+  required, a generation ⌃⌘Esc stopped, a duplicate token included) SIGKILLs every
+  candidate's group, re-checking start times first so a reused PID is never signalled. A
+  stop that arrives during adoption is kept, and a runtime this session already
+  supervises is returned unchanged;
 - the app, plugin, `node_repl`, helper and registrations are inspected again and must
   match the snapshot taken at session start, and the inventory Codex lists
   (`mcpServerStatus/list`) must have exactly the enabled names and hash to the record's
@@ -767,17 +776,24 @@ access, so F5 controls the session's runtime, not single calls (`identity.admiss
   acquired and held for the runtime's life, because `node_repl` keeps state and Node
   timers a call started outlive it. Only then is Chrome `connected`; any failure stops
   the runtime through main and reports the reason;
-- the first turn waits (up to 20 s) for that adoption.
+- a turn waits up to 20 s for that adoption. A runtime still not supervised then is
+  stopped for the turn (and swept through main), so the model never reaches an
+  unverified, unleased runtime; the next turn starts it again.
 
-Pause (and ⌃⌘Esc, which pauses), turning the integration off and 60 s after a turn ends
-without another stop the runtime: main signals its process group (`SIGTERM`, then `SIGKILL` after
-1 s) and releases the lease once the group is gone. Spike D showed this stops everything:
+Pause (and ⌃⌘Esc, which pauses) and turning the integration off stop the runtime at once:
+main signals its process group (`SIGTERM`, then `SIGKILL` after 1 s) and releases the
+lease once the group is gone. Ten minutes after a turn ends with no new one
+(`CODEX_CHROME_IDLE_MS`; never during a turn, however long before its first call) the
+runtime gets the graceful `release` stop instead. The window is long because a restart
+runs `config/mcpServer/reload`, which takes no server name and reloads the session's
+whole MCP config, the user's own servers included. Spike D showed a stop ends everything:
 Chrome commands work only inside a running call, a call in flight fails with "Transport
-closed", and Node timers stop with the process. The next turn re-checks the gates, runs
-`config/mcpServer/reload` (Codex starts a new `node_repl`) and adopts and verifies the new
-process before the turn starts. A `node_repl` Codex reports ready while the session is
-stopped is adopted only to be stopped; one Codex replaces while it runs (any MCP reload)
-releases the old lease and is adopted and verified afresh. When a turn completes or is interrupted, F5 calls
+closed", and Node timers stop with the process. The next turn re-checks the gates,
+reloads (Codex starts a new `node_repl`) and adopts and verifies the new process before
+the turn starts. A `node_repl` Codex reports ready while the session is stopped is
+adopted only to be stopped; one Codex replaces while it runs (any MCP reload) is adopted
+and verified under the lease already held, and a repeated `ready` for the supervised
+process changes nothing. When a turn completes or is interrupted, F5 calls
 `turn_ended` (`{hook_event_name: "Stop", session_id, turn_id}`) through
 `mcpServer/tool/call`, once per turn, so the runtime releases that turn's browser session.
 The `node_repl` source and output are fully masked in F5's activity. A user MCP server
@@ -803,7 +819,8 @@ peer's audit token: it only serves a `node_repl` whose parent is signed by team
 `2DC432GLL2` as `codex` or `com.openai.codex.*`. A probe of the two live host sockets
 showed an F5-started `node_repl` being accepted and then disconnected within 7–14 ms,
 with no answer to `ping`. The redesign has Codex start `node_repl` itself, as a stdio MCP
-server. The spike tested it with `default_tools_approval_mode = "prompt"`, planning for F5
+server. The spike tested it with `default_tools_approval_mode = "prompt"` (set only in
+the spike harness, not in F5's MCP contract), planning for F5
 to keep control in three ways:
 
 - it answers Codex's approval request for each call;

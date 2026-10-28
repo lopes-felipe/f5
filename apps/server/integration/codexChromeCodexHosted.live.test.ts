@@ -233,7 +233,11 @@ await tab.close();`;
       throw new Error(`Spike D does not answer ${method}.`);
     };
 
-    const entry: CodexMcpServerEntry = {
+    // Codex's per-server approval mode is only exercised here, so it stays out of the
+    // shared contract; the entry is written to Codex's config as is.
+    const entry: CodexMcpServerEntry & {
+      readonly default_tools_approval_mode: "prompt";
+    } = {
       type: "stdio",
       command: installation.nodeRepl,
       args: [],

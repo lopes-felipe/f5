@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { AgentCapabilityState } from "@t3tools/contracts";
-import { CODEX_CHROME_DRAIN_TOOL } from "@t3tools/shared/providerIntegrationCertification";
+import {
+  CODEX_CHROME_DRAIN_TOOL,
+  CODEX_CHROME_IDLE_MS,
+} from "@t3tools/shared/providerIntegrationCertification";
 import type { ComputerAutomationBrokerRuntime } from "../computer/ComputerAutomationBroker";
 import {
   codexChromeInstallationUnchanged,
@@ -10,9 +13,8 @@ import {
 } from "../computer/codexNativeIntegrations";
 import { toolInventorySha256, type IntegrationTool } from "../mcp/IntegrationProxyCatalog";
 
-/** Codex's `node_repl` is stopped after this long without a turn or a call. */
-export const CODEX_CHROME_IDLE_MS = 60_000;
-/** How long the next turn waits for a stopped runtime to restart before going ahead. */
+export { CODEX_CHROME_IDLE_MS };
+/** How long a turn waits for its runtime to be supervised before stopping it for the turn. */
 export const CODEX_CHROME_RESTART_WAIT_MS = 20_000;
 /** Lease and adoption replies from desktop main. */
 const HOST_TIMEOUT_MS = 5_000;
@@ -22,6 +24,8 @@ export const CODEX_CHROME_STOPPED_IDLE =
 export const CODEX_CHROME_STOPPED_PAUSED =
   "Paused. Chrome control restarts with your next message after you resume.";
 export const CODEX_CHROME_STOPPED_OFF = "Turned off for this thread.";
+export const CODEX_CHROME_START_TIMED_OUT =
+  "Chrome control didn't start in time, so it's off for this message. It restarts with your next message.";
 export const CODEX_CHROME_INVENTORY_CHANGED =
   "The ChatGPT browser runtime's tools changed since F5 certified them. Update F5.";
 
@@ -66,6 +70,8 @@ export interface CodexChromeSessionDeps {
   readonly stateChanged: (state: AgentCapabilityState, detail?: string) => void;
   readonly inspect?: typeof inspectCodexChrome;
   readonly registrationsUnchanged?: (installation: CodexChromeInstallation) => Promise<boolean>;
+  /** Overrides `CODEX_CHROME_RESTART_WAIT_MS` (tests). */
+  readonly startWaitMs?: number;
   readonly setTimeout?: (run: () => void, ms: number) => unknown;
   readonly clearTimeout?: (handle: unknown) => void;
 }
@@ -100,17 +106,23 @@ export function listedTools(row: unknown): IntegrationTool[] | undefined {
  * consent was given before the session's MCP config was built, desktop main adopts the
  * process Codex started and alone signals it, the inventory Codex lists must match the
  * record, and the Chrome lease is held for the runtime's life. Pause, ⌃⌘Esc (via pause),
- * turning the integration off, a new session generation and 60 s idle stop the process;
- * the next turn reloads Codex's MCP config, which starts a new one, and adoption runs again.
+ * turning the integration off, a new session generation and `CODEX_CHROME_IDLE_MS` after
+ * a turn ends stop the process; the next turn reloads Codex's MCP config, which starts a
+ * new one, and adoption runs again. A runtime that isn't supervised when a turn starts is
+ * stopped rather than left reachable.
  */
 export class CodexChromeSession {
   private phase: "starting" | "ready" | "stopped" | "unavailable" | "disposed" = "starting";
   /** Bumped by every stop, so an adoption that finishes after one is undone. */
   private epoch = 0;
+  /** Set before main is asked to adopt, so a stop reaches a runtime main adopts late. */
   private launchToken: string | undefined;
   private leaseHeld = false;
   private idleTimer: unknown;
+  /** Between `beforeTurn` and the turn's end: the runtime is never idle-stopped then. */
+  private turnActive = false;
   private adoption: Promise<void> | undefined;
+  private readoption: Promise<void> | undefined;
   /** Resolves `beforeTurn`'s wait once the pending start settles. */
   private settleStart: (() => void) | undefined;
   private drained = new Set<string>();
@@ -139,24 +151,27 @@ export class CodexChromeSession {
 
   /** `mcpServer/startupStatus/updated` for `node_repl`. */
   startupStatus(status: string, error?: string): void {
-    if (status === "ready" && (this.phase === "stopped" || this.phase === "unavailable")) {
+    const ready = status === "ready";
+    const failed = status === "failed" || status === "cancelled";
+    if (this.phase === "stopped" || this.phase === "unavailable" || this.phase === "disposed") {
       // A runtime a restart started after its stop: never leave it running unsupervised.
-      void this.reap();
+      if (ready) void this.reap();
       return;
     }
-    if (this.phase === "ready" && (status === "ready" || status === "failed")) {
-      // Codex replaced the runtime (an MCP reload F5 didn't start): the adopted process
-      // and its lease are gone with it, so the new one is adopted and verified afresh.
-      this.epoch += 1;
-      this.clearIdle();
-      this.release();
-      this.phase = "starting";
-      this.adoption = undefined;
-      this.deps.stateChanged("pending");
+    if (this.phase === "ready") {
+      // Codex restarted it (an MCP reload F5 didn't start) or repeated itself: main returns
+      // the supervised runtime unchanged, or adopts and verifies the new one.
+      if (ready) this.readoption ??= this.readopt().finally(() => (this.readoption = undefined));
+      else if (failed)
+        this.stop(
+          "pending",
+          error?.trim() ||
+            "Codex stopped the ChatGPT browser runtime. It restarts with your next message.",
+        );
+      return;
     }
-    if (this.phase !== "starting") return;
-    if (status === "ready") this.adoption ??= this.adopt().finally(() => this.settleStart?.());
-    else if (status === "failed" || status === "cancelled")
+    if (ready) this.adoption ??= this.adopt().finally(() => this.settleStart?.());
+    else if (failed)
       this.fail(error?.trim() || "Codex couldn't start the ChatGPT browser runtime.");
   }
 
@@ -167,13 +182,16 @@ export class CodexChromeSession {
 
   /**
    * Before each turn: a runtime stopped while idle or paused is started again (when its
-   * gates allow it) and adopted before the model can reach it, within a bounded wait.
+   * gates allow it) and adopted before the model can reach it, within a bounded wait. One
+   * that isn't supervised by then is stopped for this turn; the next one starts it again.
    */
   async beforeTurn(): Promise<void> {
     this.clearIdle();
+    this.turnActive = true;
     if (this.phase === "starting") {
       // The first turn can start before Codex reports the runtime; wait for its adoption.
       await this.bounded(this.adoption ?? this.startSettled());
+      if (this.phase === "starting") this.startTimedOut();
       return;
     }
     if (this.phase !== "stopped") return;
@@ -195,6 +213,13 @@ export class CodexChromeSession {
       return;
     }
     await this.bounded(settled);
+    if (this.phase === "starting") this.startTimedOut();
+  }
+
+  /** `beforeTurn` ran but no turn started: nothing will end it. */
+  turnAborted(): void {
+    this.turnActive = false;
+    this.armIdle();
   }
 
   /**
@@ -202,6 +227,7 @@ export class CodexChromeSession {
    * browser session for that turn is released, then start the idle stop.
    */
   turnEnded(turnId: string): void {
+    this.turnActive = false;
     if (this.phase === "ready" && !this.drained.has(turnId)) {
       this.drained.add(turnId);
       if (this.drained.size > 64) this.drained = new Set([turnId]);
@@ -233,22 +259,25 @@ export class CodexChromeSession {
     const parentPid = deps.codex.pid();
     if (!parentPid) return this.fail("Codex's process isn't running.");
     const launchToken = randomUUID();
+    // Every stop from here on names this token, so it reaches the runtime even if main
+    // adopts it after this request gave up.
+    this.launchToken = launchToken;
+    let registration: { readonly launchToken: string };
     try {
-      await deps.broker.adoptIntegrationProcess({
-        threadId: deps.threadId,
-        sessionGeneration: deps.generation,
-        launchToken,
-        integration: "codex-chrome",
-        parentPid,
-        executable: deps.installation.nodeRepl,
-      });
+      registration = await this.requestAdoption(parentPid, launchToken);
     } catch (error) {
-      // Main stopped every candidate it could verify; nothing runs unsupervised.
+      // Main stops what it refuses, but a timeout or a lost reply says nothing: stop this
+      // token in case main still adopts it, and sweep whatever Codex started.
+      if (this.launchToken === launchToken) {
+        deps.broker.stopIntegrationProcess(launchToken);
+        this.launchToken = undefined;
+      }
+      void this.reap();
       if (this.epoch === epoch) this.fail(message(error));
       return;
     }
     // Supervised from here on: every exit path below releases through main.
-    this.launchToken = launchToken;
+    if (this.launchToken === launchToken) this.launchToken = registration.launchToken;
     if (this.epoch !== epoch) return this.release();
     const refusal = await this.verify();
     if (this.epoch !== epoch) return this.release();
@@ -273,25 +302,68 @@ export class CodexChromeSession {
     this.armIdle();
   }
 
-  /** Adopts a runtime only to have main stop it; main kills what it can't adopt. */
-  private async reap(): Promise<void> {
+  /**
+   * Codex reported `node_repl` ready while it was supervised. Main answers with the
+   * supervised registration when it's the same process, which changes nothing; a new
+   * process (the old one went with Codex's restart) is verified before the session keeps
+   * it, under the lease it already holds.
+   */
+  private async readopt(): Promise<void> {
+    const epoch = this.epoch;
     const { deps } = this;
     const parentPid = deps.codex.pid();
-    if (!parentPid) return;
+    if (!parentPid) return this.fail("Codex's process isn't running.");
+    const previous = this.launchToken;
     const launchToken = randomUUID();
+    let registration: { readonly launchToken: string };
     try {
-      await deps.broker.adoptIntegrationProcess({
-        threadId: deps.threadId,
-        sessionGeneration: deps.generation,
-        launchToken,
-        integration: "codex-chrome",
-        parentPid,
-        executable: deps.installation.nodeRepl,
-      });
-    } catch {
+      registration = await this.requestAdoption(parentPid, launchToken);
+    } catch (error) {
+      deps.broker.stopIntegrationProcess(launchToken);
+      void this.reap();
+      if (this.epoch === epoch) this.fail(message(error));
       return;
     }
-    deps.broker.stopIntegrationProcess(launchToken);
+    if (registration.launchToken === previous) return;
+    if (this.epoch !== epoch) return deps.broker.stopIntegrationProcess(registration.launchToken);
+    if (previous) deps.broker.stopIntegrationProcess(previous);
+    this.launchToken = registration.launchToken;
+    const refusal = await this.verify();
+    if (this.epoch !== epoch) return;
+    if (refusal) return this.fail(refusal);
+    const gate = await this.gate();
+    if (this.epoch !== epoch) return;
+    if (gate) return this.stop(gate.state, gate.detail);
+  }
+
+  /** Adopts a runtime only to have main stop it; main kills what it refuses. */
+  private async reap(): Promise<void> {
+    const parentPid = this.deps.codex.pid();
+    if (!parentPid) return;
+    try {
+      const registration = await this.requestAdoption(parentPid, randomUUID());
+      this.deps.broker.stopIntegrationProcess(registration.launchToken);
+    } catch {
+      // Refused, so main stopped it, or nothing is running.
+    }
+  }
+
+  private requestAdoption(parentPid: number, launchToken: string) {
+    const { deps } = this;
+    return deps.broker.adoptIntegrationProcess({
+      threadId: deps.threadId,
+      sessionGeneration: deps.generation,
+      launchToken,
+      integration: "codex-chrome",
+      parentPid,
+      executable: deps.installation.nodeRepl,
+    });
+  }
+
+  /** No supervised runtime when the turn starts: stop whatever Codex has running. */
+  private startTimedOut(): void {
+    this.stop("pending", CODEX_CHROME_START_TIMED_OUT);
+    void this.reap();
   }
 
   /** Static checks: recovery, the installation, the registrations and the inventory. */
@@ -343,11 +415,15 @@ export class CodexChromeSession {
   }
 
   /** Stops the runtime; the next turn may start it again. */
-  private stop(state: AgentCapabilityState, detail: string): void {
+  private stop(
+    state: AgentCapabilityState,
+    detail: string,
+    reason?: "release" | "unresponsive",
+  ): void {
     if (this.phase === "disposed" || this.phase === "unavailable") return;
     this.epoch += 1;
     this.clearIdle();
-    this.release();
+    this.release(reason);
     this.phase = "stopped";
     this.deps.stateChanged(state, detail);
   }
@@ -362,10 +438,10 @@ export class CodexChromeSession {
     this.deps.stateChanged("unavailable", reason);
   }
 
-  private release(): void {
+  private release(reason?: "release" | "unresponsive"): void {
     this.settleStart?.();
     const { broker } = this.deps;
-    if (this.launchToken) broker.stopIntegrationProcess(this.launchToken);
+    if (this.launchToken) broker.stopIntegrationProcess(this.launchToken, reason);
     this.launchToken = undefined;
     // Main keeps the lease until the stopped group is gone.
     if (this.leaseHeld)
@@ -386,13 +462,15 @@ export class CodexChromeSession {
     };
   }
 
+  /** Starts the idle stop, only between turns: a turn can go long before its first call. */
   private armIdle(): void {
     this.clearIdle();
-    if (this.phase !== "ready") return;
+    if (this.phase !== "ready" || this.turnActive) return;
     const set = this.deps.setTimeout ?? ((run, ms) => setTimeout(run, ms));
     this.idleTimer = set(() => {
       this.idleTimer = undefined;
-      this.stop("pending", CODEX_CHROME_STOPPED_IDLE);
+      // Nothing is running a call, so the runtime gets the graceful stop.
+      this.stop("pending", CODEX_CHROME_STOPPED_IDLE, "release");
     }, CODEX_CHROME_IDLE_MS);
   }
 
@@ -421,7 +499,7 @@ export class CodexChromeSession {
     await Promise.race([
       work,
       new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, CODEX_CHROME_RESTART_WAIT_MS);
+        timer = setTimeout(resolve, this.deps.startWaitMs ?? CODEX_CHROME_RESTART_WAIT_MS);
       }),
     ]);
     if (timer) clearTimeout(timer);

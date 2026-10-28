@@ -110,8 +110,9 @@ describe.skipIf(!optedIn)("Codex Chrome live certification", () => {
     };
     const installed = await inspectCodexChrome({ userHome, record: floorless });
     if (!installed.available) throw new Error(installed.reason);
+    const binaryPath = process.env.F5_CODEX_BINARY ?? "codex";
     const codex = await inspectCodexBinary({
-      binaryPath: process.env.F5_CODEX_BINARY ?? "codex",
+      binaryPath,
       processEnvironment: process.env,
       cwd: process.cwd(),
     });
@@ -180,24 +181,32 @@ nodeRepl.write("finished");`;
           (row) => row.ppid === adoption.parentPid,
         );
         const parent = rows.find((row) => row.pid === adoption.parentPid);
-        const signature = parent
-          ? await readCodeSignature(parent.command, { teamId: template.identity.teamId })
-          : undefined;
         const candidate = children.length === 1 ? children[0]! : undefined;
+        // By PID, as main checks: `ps` lists a Codex found on PATH by its bare argv[0].
+        const teamId = template.identity.teamId;
+        const signature = parent
+          ? await readCodeSignature(String(adoption.parentPid), { teamId })
+          : undefined;
+        const runtime = candidate
+          ? await readCodeSignature(String(candidate.pid), { teamId, identifier: "node_repl" })
+          : undefined;
         const verified =
           candidate !== undefined &&
           candidate.pgid === candidate.pid &&
+          runtime?.ok === true &&
           signature?.ok === true &&
           codexParentIdentifierAllowed(signature.identifier);
         adoptions.push({
           candidates: children.length,
           parentExecutable: parent?.command,
           parentIdentifier: signature?.ok ? signature.identifier : undefined,
+          runtimeSigned: runtime?.ok === true,
           ownProcessGroup: candidate ? candidate.pgid === candidate.pid : undefined,
           verified,
         });
         if (!verified) {
-          for (const row of children) if (alive(row.pid)) process.kill(row.pid, "SIGKILL");
+          for (const row of children)
+            if (alive(row.pid)) process.kill(row.pgid === row.pid ? -row.pid : row.pid, "SIGKILL");
           throw new Error("Couldn't verify the node_repl Codex started.");
         }
         supervised.set(adoption.launchToken, { pid: candidate.pid, pgid: candidate.pgid });
@@ -246,7 +255,8 @@ nodeRepl.write("finished");`;
       mcpServers: { [SERVER]: entry },
       disablePlugins: true,
     });
-    const child = spawn(codex.path, [...command.argv], {
+    // Launched the way F5 launches it: by the configured name, found on PATH.
+    const child = spawn(binaryPath, [...command.argv], {
       cwd: workdir,
       env: environment,
       stdio: ["pipe", "pipe", "pipe"],
