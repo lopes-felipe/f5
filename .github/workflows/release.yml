@@ -145,7 +145,12 @@ jobs:
           hdiutil attach "release-artifacts/F5-$VERSION-$ARCH.dmg" -mountpoint "$mount" -nobrowse
           trap 'hdiutil detach "$mount"' EXIT
           codesign --verify --deep --strict "$mount/F5.app"
-          xcrun stapler validate "$mount/F5.app"
+          # Validation fetches the ticket from Apple, so retry transient network failures.
+          for attempt in 1 2 3 4 5; do
+            xcrun stapler validate "$mount/F5.app" && break
+            [[ "$attempt" -lt 5 ]] || exit 1
+            sleep $((attempt * 15))
+          done
           spctl -a -vvv -t execute "$mount/F5.app" 2>&1 | tee "$RUNNER_TEMP/spctl.txt"
           grep -q 'Notarized Developer ID' "$RUNNER_TEMP/spctl.txt"
       - name: Separate Intel manifest
