@@ -16856,11 +16856,20 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-28T20:58:24.485Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-28T21:01:18.947Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/mcp/PreviewAutomationBroker.ts:704"
+        ],
+        "f5Refs": [
+          "c38f7c532c756d8f23455342b5d4f0cd280df5c8"
+        ]
+      },
       "id": "pr-18146",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "preview browser",
@@ -16880,11 +16889,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-28T20:58:24.801Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-28T21:01:18.947Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-18147",
-      "status": "port",
+      "reason": "f5 has no server-side headless ServerBrowser with an idle agent-tab sweep; its preview tabs are desktop webviews and the only idle timer unpins hidden agent previews.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview-browser"
@@ -30293,11 +30304,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-28T20:58:29.202Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-28T21:01:18.947Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-20994",
-      "status": "port",
+      "reason": "f5 has no Playwright-backed ServerBrowser that intercepts filechooser; desktop preview file inputs already use Electron's native OS picker.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview browser"
@@ -50974,11 +50987,21 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
-      "decidedAt": "2026-10-28T20:58:09.298Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-28T21:01:18.946Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/desktop/src/preview/previewPermissions.ts:29",
+          "apps/desktop/src/preview/previewPermissions.ts:73"
+        ],
+        "f5Refs": [
+          "c38f7c532c756d8f23455342b5d4f0cd280df5c8"
+        ]
+      },
       "id": "pr-26173",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "preview-browser",
