@@ -651,6 +651,8 @@ const make = Effect.gen(function* () {
       readonly providerOptions?: ProviderStartOptions;
       readonly workflowExecutionProfile?: WorkflowTurnExecutionProfile;
       readonly keepWorkflowExecutionProfile?: boolean;
+      /** For an automation's turn: a new session asks no consent, and none restarts for one. */
+      readonly unattended?: boolean;
     },
   ) {
     return yield* Effect.gen(function* () {
@@ -925,6 +927,7 @@ const make = Effect.gen(function* () {
                 ? { providerOptions: effectiveStartConfig.providerOptions }
                 : {}),
             ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
+            ...(options?.unattended ? { unattended: true } : {}),
             runtimeMode: desiredRuntimeMode,
           };
           yield* requireDeliverableThread(threadId);
@@ -995,7 +998,10 @@ const make = Effect.gen(function* () {
         previousComputerSelection !== computerSelection;
       if (computerSelection !== undefined) computerSelections.set(threadId, computerSelection);
       else computerSelections.delete(threadId);
+      // A Chrome change waits for a person's turn: an automation's turn never restarts a
+      // session for it (and a session it starts has no Chrome, until a person's turn).
       const shouldRestartForChromeLaunchChange =
+        !options?.unattended &&
         activeSession?.chromeConfigurationFingerprint !== undefined &&
         ((activeSession.provider === "claudeAgent" &&
           activeSession.chromeConfigurationFingerprint !==
@@ -1337,6 +1343,7 @@ const make = Effect.gen(function* () {
       ...(input.workflowExecutionProfile !== undefined
         ? { workflowExecutionProfile: input.workflowExecutionProfile }
         : {}),
+      ...(input.submissionSource === "automation" ? { unattended: true } : {}),
     });
     const normalizedInput = toNonEmptyProviderInput(input.messageText);
     const normalizedAttachments = input.attachments ?? [];

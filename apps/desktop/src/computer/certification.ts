@@ -1,6 +1,40 @@
 import type { ComputerAutomationBackendStatus, ComputerBackgroundStatus } from "@t3tools/contracts";
-import { isIntegrationCertified } from "@t3tools/shared/providerIntegrationCertification";
+import { readCodeSignature, type CodeSignatureResult } from "@t3tools/shared/codeSignature";
+import {
+  certifiedIntegrationRecord,
+  codexParentIdentifierAllowed,
+  isIntegrationCertified,
+} from "@t3tools/shared/providerIntegrationCertification";
 import { release } from "node:os";
+
+/**
+ * Main's own check before adopting Codex's `node_repl`: the running runtime is ChatGPT's
+ * signed `node_repl`, and its running parent a signed OpenAI Codex, both under the
+ * certified record's team. `codesign` reads each process's own image by PID, never a path
+ * from `ps` (which reports `argv[0]`, for example a bare `codex` found on PATH). The
+ * backend only names the processes; it never supplies the requirement.
+ */
+export async function verifyCodexChromeAdoption(
+  parentPid: number,
+  runtimePid: number,
+  verify: (
+    pid: number,
+    requirement: { readonly teamId: string; readonly identifier?: string },
+  ) => Promise<CodeSignatureResult> = (pid, requirement) =>
+    readCodeSignature(String(pid), requirement),
+  platform: string = process.platform,
+  arch: string = process.arch,
+): Promise<string | undefined> {
+  const record = certifiedIntegrationRecord("codex-chrome", platform, arch);
+  if (!record) return "Codex Chrome control isn't certified.";
+  const teamId = record.identity.teamId;
+  const runtime = await verify(runtimePid, { teamId, identifier: "node_repl" });
+  if (!runtime.ok) return "The ChatGPT app's browser runtime signature could not be verified.";
+  const codex = await verify(parentPid, { teamId });
+  if (!codex.ok || !codexParentIdentifierAllowed(codex.identifier))
+    return "F5's Codex isn't an OpenAI-signed build.";
+  return undefined;
+}
 
 /** Only signed, installed certification runs may open these gates. */
 export const COMPUTER_CONTROL_CERTIFIED = { darwin: false, win32: false } as const;

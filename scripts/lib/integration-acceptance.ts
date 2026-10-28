@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import {
+  CODEX_CHROME_IDLE_MS,
   INTEGRATION_ACCEPTANCE_CHECKS,
   type ProviderIntegrationRecord,
 } from "@t3tools/shared/providerIntegrationCertification";
@@ -203,8 +204,8 @@ export async function runAcceptanceChecklist(
         matcher,
         io,
         "Run one Codex Chrome call and let it finish.",
-        "Leave the thread idle from now on. Confirm when the call has finished.",
-        60_000 + 20_000,
+        "Leave the thread idle from now on. Confirm when the turn has finished.",
+        CODEX_CHROME_IDLE_MS + 20_000,
       );
       observations["idle-stop"] = result.observation;
       return result.passed;
@@ -213,7 +214,8 @@ export async function runAcceptanceChecklist(
       const marker = `accept-${io.now()}`;
       const url = `${context.fixture.origin}/marker/${marker}`;
       io.say(
-        `In a Codex thread with Chrome control on, send:\n  Use js to open a new Chrome tab, then start a setInterval every 250 ms that navigates that tab to ${url}?n=<a counter>, and reply STARTED.`,
+        // Chrome commands only work inside a running call, so the work runs in one call.
+        `In a Codex thread with Chrome control on, send:\n  In one js call, open a new Chrome tab and navigate it to ${url}?n=<a counter> every 250 ms for 5 minutes, then reply DONE.`,
       );
       const runningBy = io.now() + 180_000;
       while (

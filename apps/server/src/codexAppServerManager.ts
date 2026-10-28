@@ -2997,6 +2997,46 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     return result;
   }
 
+  /** The live session's `codex app-server` process id, the parent of its stdio MCP servers. */
+  codexProcessId(threadId: ThreadId): number | undefined {
+    const context = this.sessions.get(threadId);
+    return context && this.isLiveContext(context) ? context.child.pid : undefined;
+  }
+
+  /** Codex's own thread id for the session (its turn metadata's `session_id`). */
+  providerThreadId(threadId: ThreadId): string | undefined {
+    const context = this.sessions.get(threadId);
+    return context ? readResumeCursorThreadId(context.session.resumeCursor) : undefined;
+  }
+
+  /**
+   * F5's own call to one of the session's MCP tools, outside the model's turn. Codex only
+   * allows tools in the server's `enabled_tools`; `meta` becomes the call's `_meta`.
+   */
+  async callMcpServerTool(
+    threadId: ThreadId,
+    server: string,
+    tool: string,
+    args: Record<string, unknown>,
+    meta: Record<string, unknown>,
+    timeoutMs = 10_000,
+  ): Promise<unknown> {
+    const context = this.requireSession(threadId);
+    if (!this.isLiveContext(context)) throw new Error("The session isn't running.");
+    return this.sendRequest(
+      context,
+      "mcpServer/tool/call",
+      {
+        threadId: this.nativeThreadId(context),
+        server,
+        tool,
+        arguments: args,
+        ...(Object.keys(meta).length ? { _meta: meta } : {}),
+      },
+      timeoutMs,
+    );
+  }
+
   async readMcpAppResource(
     threadId: ThreadId,
     server: string,

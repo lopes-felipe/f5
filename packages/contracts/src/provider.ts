@@ -87,6 +87,8 @@ export const ProviderSessionStartInput = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
   workflowExecutionProfile: Schema.optional(WorkflowTurnExecutionProfile),
+  /** Started for an automation's turn: nobody is there to answer a consent dialog. */
+  unattended: Schema.optional(Schema.Boolean),
   resumeCursor: Schema.optional(Schema.Unknown),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
