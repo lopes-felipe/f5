@@ -102,7 +102,7 @@ function isHorizontalRuleLine(content: string): boolean {
   return /^ {0,3}(?:([-*_])(?:\s*\1){2,})\s*$/.test(content);
 }
 
-function matchFence(
+export function matchFence(
   content: string,
 ): { readonly marker: "`" | "~"; readonly length: number } | null {
   const match = content.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
@@ -126,7 +126,7 @@ function matchFence(
   };
 }
 
-function isFenceClosingLine(
+export function isFenceClosingLine(
   content: string,
   fence: { readonly marker: "`" | "~"; readonly length: number },
 ): boolean {

@@ -27,6 +27,7 @@ import {
   resolveTimelineTurnRailInteractiveWidth,
   resolveTimelineTurnRailTopPercent,
   sampleTimelineMinimapRowIndices,
+  TURN_RAIL_PREVIEW_DISPLAY_CHARS,
 } from "./MessagesTimeline.logic";
 import { appendAttachedFilesToPrompt } from "../../lib/attachedFiles";
 import { appendTerminalContextsToPrompt } from "../../lib/terminalContext";
@@ -292,9 +293,51 @@ describe("timeline turn rail", () => {
       { id: "u2", kind: "message", message: { role: "user", text: "Second" } },
     ]);
     expect(items).toEqual([
-      { id: "u1", rowIndex: 0, userText: "First question", assistantText: "Final answer" },
-      { id: "u2", rowIndex: 4, userText: "Second", assistantText: null },
+      {
+        id: "u1",
+        rowIndex: 0,
+        createdAt: null,
+        userText: "First question",
+        assistantText: "Final answer",
+      },
+      { id: "u2", rowIndex: 4, createdAt: null, userText: "Second", assistantText: null },
     ]);
+  });
+
+  it("bounds previews and carries each turn's creation time", () => {
+    const longAnswer = `${"word ".repeat(2_000)}TAIL_BEYOND_THE_SOURCE_LIMIT`;
+    const [item] = deriveTimelineTurnRailItems([
+      {
+        id: "u1",
+        kind: "message",
+        createdAt: "2026-03-04T12:00:00.000Z",
+        message: { role: "user", text: "Question" },
+      },
+      { id: "a1", kind: "message", message: { role: "assistant", text: longAnswer } },
+    ]);
+    expect(item?.createdAt).toBe("2026-03-04T12:00:00.000Z");
+    expect(item?.assistantText?.length).toBe(TURN_RAIL_PREVIEW_DISPLAY_CHARS);
+    expect(item?.assistantText?.endsWith("…")).toBe(true);
+    expect(item?.assistantText).not.toContain("TAIL_BEYOND");
+  });
+
+  it("reuses previews for unchanged messages", () => {
+    let reads = 0;
+    const message = {
+      role: "assistant" as const,
+      get text() {
+        reads += 1;
+        return "Cached answer";
+      },
+    };
+    const rows = [
+      { id: "u1", kind: "message", message: { role: "user" as const, text: "Q" } },
+      { id: "a1", kind: "message", message },
+    ];
+    deriveTimelineTurnRailItems(rows);
+    const afterFirst = reads;
+    expect(deriveTimelineTurnRailItems(rows)[0]?.assistantText).toBe("Cached answer");
+    expect(reads).toBe(afterFirst);
   });
 
   it("strips terminal dumps and falls back through file and attachment names", () => {

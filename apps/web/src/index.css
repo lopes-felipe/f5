@@ -639,9 +639,50 @@ label:has(> select#reasoning-effort) select {
 }
 
 .chat-markdown blockquote {
-  border-left: 2px solid var(--border);
+  border-left: 3px solid var(--border);
   padding-left: 0.8rem;
   color: var(--muted-foreground);
+}
+
+/* GFM alerts (`> [!NOTE]`), rendered by the blockquote component. */
+.chat-markdown .chat-markdown-alert {
+  --chat-markdown-alert-color: var(--info);
+  --chat-markdown-alert-foreground: var(--info-foreground);
+  margin: 0.65rem 0;
+  border-inline-start: 3px solid var(--chat-markdown-alert-color);
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--chat-markdown-alert-color) 8%, transparent);
+  padding: 0.55rem 0.8rem;
+}
+.chat-markdown .chat-markdown-alert[data-alert="tip"] {
+  --chat-markdown-alert-color: var(--success);
+  --chat-markdown-alert-foreground: var(--success-foreground);
+}
+.chat-markdown .chat-markdown-alert[data-alert="important"] {
+  --chat-markdown-alert-color: var(--attention);
+  --chat-markdown-alert-foreground: var(--attention-foreground);
+}
+.chat-markdown .chat-markdown-alert[data-alert="warning"] {
+  --chat-markdown-alert-color: var(--warning);
+  --chat-markdown-alert-foreground: var(--warning-foreground);
+}
+.chat-markdown .chat-markdown-alert[data-alert="caution"] {
+  --chat-markdown-alert-color: var(--destructive);
+  --chat-markdown-alert-foreground: var(--destructive-foreground);
+}
+.chat-markdown .chat-markdown-alert-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.25rem;
+  color: var(--chat-markdown-alert-foreground);
+  font-weight: 600;
+}
+.chat-markdown .chat-markdown-alert > :nth-child(2) {
+  margin-top: 0;
+}
+.chat-markdown .chat-markdown-alert > :last-child {
+  margin-bottom: 0;
 }
 
 .chat-markdown hr {
@@ -656,7 +697,14 @@ label:has(> select#reasoning-effort) select {
   background: var(--muted);
   padding: 0.1rem 0.35rem;
   color: var(--foreground);
-  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
+.chat-markdown {
+  /* Code metrics shared by the pre rules and the folded height. */
+  --code-line-height: 1.3125rem;
+  --code-pad-block: 0.8rem;
 }
 
 .chat-markdown pre {
@@ -665,49 +713,130 @@ label:has(> select#reasoning-effort) select {
   border: 1px solid var(--border);
   border-radius: 0.75rem;
   background: var(--muted);
-  padding: 0.8rem 0.9rem;
+  padding: var(--code-pad-block) 0.9rem;
+  line-height: var(--code-line-height);
 }
 
 .chat-markdown pre code {
   border: none;
   background: transparent;
   padding: 0;
-  line-height: 1.5;
+  line-height: var(--code-line-height);
   font-size: 0.875rem;
 }
 
+/* One frame for every code block: the header, the code and the fold footer sit inside it. */
 .chat-markdown .chat-markdown-codeblock {
-  --chat-markdown-codeblock-copy-button-space: 1.5rem;
   position: relative;
   margin: 0.65rem 0;
-}
-
-.chat-markdown .chat-markdown-codeblock pre {
-  margin: 0;
-  padding-right: calc(0.9rem + var(--chat-markdown-codeblock-copy-button-space));
-}
-
-.chat-markdown .chat-markdown-codeblock-runnable {
-  overflow: hidden;
+  overflow: clip;
   border: 1px solid var(--border);
   border-radius: 0.75rem;
   background: var(--muted);
 }
 
-.chat-markdown .chat-markdown-codeblock-runnable pre {
+.chat-markdown .chat-markdown-codeblock pre {
+  margin: 0;
   border: 0;
   border-radius: 0;
-  padding-right: 0.9rem;
 }
 
 .chat-markdown .chat-markdown-codeblock-header {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.375rem 0.5rem 0.375rem 0.9rem;
+  min-height: 2rem;
+  padding: 0.25rem 0.5rem 0.25rem 0.9rem;
   border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--muted) 55%, var(--card));
   color: var(--muted-foreground);
   font-size: 0.75rem;
+}
+
+.chat-markdown .chat-markdown-codeblock-title {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.chat-markdown .chat-markdown-codeblock-language {
+  flex-shrink: 0;
+  font-weight: 500;
+}
+
+.chat-markdown .chat-markdown-codeblock-path {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-markdown .chat-markdown-codeblock-header a.chat-markdown-file-link {
+  min-width: 0;
+}
+
+.chat-markdown .chat-markdown-codeblock-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 1.5rem;
+  width: 1.5rem;
+  flex-shrink: 0;
+  border-radius: 0.375rem;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition:
+    color 120ms ease,
+    background-color 120ms ease;
+}
+
+.chat-markdown .chat-markdown-codeblock-copy:hover {
+  background: color-mix(in srgb, var(--foreground) 8%, transparent);
+  color: var(--foreground);
+}
+
+.chat-markdown .chat-markdown-codeblock-copy:focus-visible,
+.chat-markdown .chat-markdown-codeblock-fold-toggle:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+/* Long settled blocks show their first lines above a fade until expanded. */
+.chat-markdown .chat-markdown-codeblock[data-folded="true"] pre {
+  max-height: calc(18 * var(--code-line-height) + 2 * var(--code-pad-block));
+  overflow-y: hidden;
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 3.5rem), transparent);
+}
+
+.chat-markdown .chat-markdown-codeblock-footer {
+  display: flex;
+  justify-content: center;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--muted) 55%, var(--card));
+}
+
+.chat-markdown .chat-markdown-codeblock-fold-toggle {
+  width: 100%;
+  padding: 0.3rem 0.75rem;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.chat-markdown .chat-markdown-codeblock-fold-toggle:hover {
+  color: var(--foreground);
+}
+
+/* Thread find never leaves a match behind a fold. */
+[data-thread-find-active="true"] .chat-markdown-codeblock[data-folded="true"] pre {
+  max-height: none;
+  mask-image: none;
+}
+[data-thread-find-active="true"]
+  .chat-markdown-codeblock[data-folded="true"]
+  .chat-markdown-codeblock-footer {
+  display: none;
 }
 
 .chat-markdown .chat-markdown-codeblock-wrap pre,
@@ -746,14 +875,6 @@ label:has(> select#reasoning-effort) select {
   pointer-events: auto;
 }
 
-.chat-markdown .chat-markdown-copy-button-inline {
-  position: static;
-  flex-shrink: 0;
-  margin-left: auto;
-  opacity: 1;
-  pointer-events: auto;
-}
-
 .chat-markdown .chat-markdown-copy-button:hover {
   color: var(--foreground);
   border-color: color-mix(in srgb, var(--border) 70%, var(--foreground));
@@ -766,6 +887,13 @@ label:has(> select#reasoning-effort) select {
 .chat-markdown .chat-markdown-table-container {
   max-width: 100%;
   overflow-x: auto;
+  margin: 0.65rem 0;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+}
+
+.chat-markdown .chat-markdown-table-container table {
+  margin: 0;
 }
 
 /* The global scrollbar rule only sizes vertical bars; keep horizontal ones thin
@@ -800,11 +928,107 @@ label:has(> select#reasoning-effort) select {
   border-collapse: collapse;
 }
 
+/* The container draws the outer frame; cells keep only the inner hairlines. */
 .chat-markdown th,
 .chat-markdown td {
   border: 1px solid var(--border);
-  padding: 0.35rem 0.45rem;
+  padding: 0.35rem 0.6rem;
   text-align: left;
+}
+
+.chat-markdown tr > :first-child {
+  border-inline-start: 0;
+}
+
+.chat-markdown tr > :last-child {
+  border-inline-end: 0;
+}
+
+.chat-markdown thead tr:first-child > *,
+.chat-markdown table > tbody:first-child > tr:first-child > * {
+  border-top: 0;
+}
+
+.chat-markdown tbody tr:last-child > * {
+  border-bottom: 0;
+}
+
+.chat-markdown th {
+  background: var(--muted);
+  font-weight: 600;
+}
+
+.chat-markdown tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--muted) 35%, transparent);
+}
+
+.chat-markdown td {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Code markup in user bubbles (userMessageMarkup.ts). */
+.user-message-inline-code {
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: color-mix(in srgb, var(--background) 60%, transparent);
+  padding: 0.05rem 0.3rem;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
+.user-message-codeblock {
+  margin: 0.4rem 0;
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--background) 60%, transparent);
+  padding: 0.55rem 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+/* Streaming caret, after the last text block only (never code, tables or alerts). */
+@keyframes chat-markdown-caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.chat-markdown[data-streaming="true"]
+  > :is(p, h1, h2, h3, h4, h5, h6, .chat-markdown-raw):last-child::after,
+.chat-markdown[data-streaming="true"]
+  > :is(ul, ol):last-child
+  > li:last-child:not(:has(> p))::after,
+.chat-markdown[data-streaming="true"]
+  > :is(ul, ol):last-child
+  > li:last-child
+  > p:last-child::after {
+  content: "";
+  display: inline-block;
+  width: 0.45em;
+  height: 1em;
+  margin-inline-start: 0.15em;
+  vertical-align: text-bottom;
+  border-radius: 1px;
+  background: var(--primary);
+  animation: chat-markdown-caret-blink 1s steps(1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-markdown[data-streaming="true"]
+    > :is(p, h1, h2, h3, h4, h5, h6, .chat-markdown-raw):last-child::after,
+  .chat-markdown[data-streaming="true"]
+    > :is(ul, ol):last-child
+    > li:last-child:not(:has(> p))::after,
+  .chat-markdown[data-streaming="true"]
+    > :is(ul, ol):last-child
+    > li:last-child
+    > p:last-child::after {
+    animation: none;
+  }
 }
 
 @keyframes ultrathink-rainbow {
@@ -937,7 +1161,7 @@ label:has(> select#reasoning-effort) select {
    transition instead of jumping to the cap; the collapsed editor sets no
    max-height, which would snap and cancel the transition. */
 [data-composer-redesign] [data-testid="composer-editor"] {
-  height: calc-size(auto, min(size, 200px));
+  height: calc-size(auto, min(size, var(--composer-editor-max-height, 200px)));
 }
 /* Clipped in both directions: while expanding, the tray grows from zero under
    contents already at full size. The margin keeps focus rings visible. */

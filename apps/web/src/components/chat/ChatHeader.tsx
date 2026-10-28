@@ -100,6 +100,11 @@ interface ChatHeaderProps {
   onToggleAgents: () => void;
   onTogglePreview: () => void;
   onToggleDiff: () => void;
+  /**
+   * Receives the stable element the timeline portals its "Conversation
+   * navigation" control into, so turn data never flows through header props.
+   */
+  navigationHostRef?: ((node: HTMLElement | null) => void) | undefined;
 }
 
 interface PanelToggleSpec {
@@ -165,6 +170,7 @@ export const ChatHeader = memo(function ChatHeader({
   onToggleAgents,
   onTogglePreview,
   onToggleDiff,
+  navigationHostRef,
 }: ChatHeaderProps) {
   "use memo";
   const [renamingThreadId, setRenamingThreadId] = useState<ThreadId | null>(null);
@@ -380,6 +386,9 @@ export const ChatHeader = memo(function ChatHeader({
         ) : null}
       </nav>
       <div className="flex shrink-0 items-center justify-end gap-2">
+        {navigationHostRef ? (
+          <span ref={navigationHostRef} className="contents" data-conversation-navigation-host />
+        ) : null}
         {activeProjectScripts && (
           <ProjectScriptsControl
             scripts={activeProjectScripts}

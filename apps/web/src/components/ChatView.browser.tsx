@@ -44,6 +44,7 @@ import type {} from "@vitest/browser-playwright"; // Types cdp() as a Playwright
 import { cdp, page, userEvent } from "vitest/browser";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { timelineScrollAnchors } from "./chat/timelineScrollAnchors";
+import { toastManager } from "./ui/toast";
 import { render } from "vitest-browser-react";
 
 import { type ComposerImageAttachment, useComposerDraftStore } from "../composerDraftStore";
@@ -72,7 +73,11 @@ import { getRouter } from "../router";
 import { useStore } from "../store";
 import { createTestServerProvider } from "../testServerProvider";
 import { createPlanningWorkflow, createDocumentReaderPass } from "../test/workflowFixtures";
-import { workspaceIdentityForRoot, writeFileTreeDragMention } from "./fileTreeDragMention";
+import {
+  F5_FILE_MENTION_MIME,
+  workspaceIdentityForRoot,
+  writeFileTreeDragMention,
+} from "./fileTreeDragMention";
 import { createComposerMention } from "../composer-editor-mentions";
 import { useComposerMentionHistoryStore } from "../composerMentionHistoryStore";
 import { requestComposerFocus, useComposerFocusRequestStore } from "../composerFocusRequestStore";
@@ -5492,7 +5497,7 @@ describe("ChatView timeline (full app)", () => {
       await waitForPressedInteractionMode("Agent");
       const initialComposerShell = await waitForComposerShell();
       expect(initialComposerShell.className).toContain("border-border");
-      expect(initialComposerShell.className).toContain("focus-within:border-ring/60");
+      expect(initialComposerShell.className).toContain("focus-within:border-ring");
       expect(initialComposerShell.className).not.toContain("border-warning/40");
 
       window.dispatchEvent(
@@ -5523,7 +5528,7 @@ describe("ChatView timeline (full app)", () => {
           await waitForPressedInteractionMode("Plan");
           const composerShell = await waitForComposerShell();
           expect(composerShell.className).toContain("border-warning/40");
-          expect(composerShell.className).toContain("focus-within:border-warning/60");
+          expect(composerShell.className).toContain("focus-within:border-warning/70");
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -5542,7 +5547,7 @@ describe("ChatView timeline (full app)", () => {
           await waitForPressedInteractionMode("Agent");
           const composerShell = await waitForComposerShell();
           expect(composerShell.className).toContain("border-border");
-          expect(composerShell.className).toContain("focus-within:border-ring/60");
+          expect(composerShell.className).toContain("focus-within:border-ring");
           expect(composerShell.className).not.toContain("border-warning/40");
         },
         { timeout: 8_000, interval: 16 },
@@ -9154,6 +9159,407 @@ describe("ChatView timeline (full app)", () => {
       }
     },
   );
+
+  describe.each([
+    { redesign: false, name: "classic dock" },
+    { redesign: true, name: "redesign dock" },
+  ])("expandable composer ($name)", ({ redesign }) => {
+    const MULTILINE_DRAFT = "First line\nSecond line\nThird line\nFourth line";
+
+    beforeEach(() => {
+      serverBootstrapFixture = redesign ? redesignBootstrapFixture : baseServerBootstrapFixture;
+      setServerBootstrap(serverBootstrapFixture);
+    });
+
+    async function mountComposer(options: {
+      prompt?: string;
+      viewport?: ViewportSpec;
+      fillerPairCount?: number;
+      configureFixture?: (fixture: TestFixture) => void;
+      sessionStatus?: "running";
+    }) {
+      if (options.prompt !== undefined)
+        useComposerDraftStore.getState().setPrompt(THREAD_ID, options.prompt);
+      const mounted = await mountChatView({
+        viewport: options.viewport ?? DEFAULT_VIEWPORT,
+        snapshot: createSnapshotForTargetUser({
+          targetMessageId: "expand-target" as MessageId,
+          targetText: "Expand target",
+          ...(options.fillerPairCount ? { fillerPairCount: options.fillerPairCount } : {}),
+          ...(options.sessionStatus ? { sessionStatus: options.sessionStatus } : {}),
+        }),
+        ...(options.configureFixture ? { configureFixture: options.configureFixture } : {}),
+      });
+      const editor = await waitForComposerEditor();
+      const form = editor.closest("form")!;
+      return { mounted, editor, form };
+    }
+
+    const toggle = () => document.querySelector<HTMLButtonElement>("[data-composer-expand-toggle]");
+
+    it("offers the toggle at three line breaks and expands to the measured budget", async () => {
+      const { mounted, editor, form } = await mountComposer({ prompt: "One\nTwo" });
+      try {
+        await waitForLayout();
+        expect(toggle()).toBeNull();
+        useComposerDraftStore.getState().setPrompt(THREAD_ID, MULTILINE_DRAFT);
+        await vi.waitFor(() => expect(toggle()).not.toBeNull());
+        const host = form.closest<HTMLElement>("[data-composer-dock-host]")!;
+        const dock = form.closest<HTMLElement>('[data-slot="composer-dock"]')!;
+        const stack = dock.firstElementChild as HTMLElement;
+        // The whole dock stack (tray and branch line included) fits half the
+        // host and the dock's own cap.
+        const dockCap = getComputedStyle(dock).maxHeight;
+        const room = Math.min(
+          host.clientHeight * 0.5,
+          dockCap.endsWith("px") ? Number.parseFloat(dockCap) : Number.POSITIVE_INFINITY,
+        );
+        const budget =
+          Math.floor(Math.min(576, room - (stack.offsetHeight - editor.offsetHeight)) / 8) * 8;
+        expect(toggle()!.getAttribute("aria-controls")).toBe(editor.id);
+        await page.elementLocator(toggle()!).click();
+        await vi.waitFor(() => expect(form.getAttribute("data-composer-expanded")).toBe("true"));
+        expect(getComputedStyle(editor).maxHeight).toBe(`${budget}px`);
+        expect(toggle()!.getAttribute("aria-label")).toBe("Shrink editor");
+        expect(toggle()!.getAttribute("aria-expanded")).toBe("true");
+        expect(dock.getBoundingClientRect().height).toBeLessThanOrEqual(host.clientHeight);
+        // Filling the expanded editor never turns the dock into a scroll surface.
+        useComposerDraftStore
+          .getState()
+          .setPrompt(THREAD_ID, Array.from({ length: 80 }, (_, i) => `Line ${i}`).join("\n"));
+        await waitForLayout();
+        expect(dock.scrollHeight).toBeLessThanOrEqual(dock.clientHeight + 1);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("hides the toggle when a short window leaves no room", async () => {
+      const { mounted, form } = await mountComposer({
+        prompt: MULTILINE_DRAFT,
+        viewport: { name: "short", width: 960, height: 500 },
+      });
+      try {
+        await waitForLayout();
+        expect(toggle()).toBeNull();
+        const host = form.closest<HTMLElement>("[data-composer-dock-host]")!;
+        const dock = form.closest<HTMLElement>('[data-slot="composer-dock"]')!;
+        expect(dock.getBoundingClientRect().height).toBeLessThanOrEqual(host.clientHeight);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("shrinks when the draft is cleared", async () => {
+      const { mounted, form } = await mountComposer({ prompt: MULTILINE_DRAFT });
+      try {
+        await vi.waitFor(() => expect(toggle()).not.toBeNull());
+        await page.elementLocator(toggle()!).click();
+        await vi.waitFor(() => expect(form.getAttribute("data-composer-expanded")).toBe("true"));
+        useComposerDraftStore.getState().setPrompt(THREAD_ID, "");
+        await vi.waitFor(() => expect(form.hasAttribute("data-composer-expanded")).toBe(false));
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("keeps a backward selection and the editor scroll across click and keyboard toggles", async () => {
+      const lines = Array.from({ length: 60 }, (_, index) => `Draft line ${index}`).join("\n");
+      const { mounted, editor, form } = await mountComposer({ prompt: lines });
+      try {
+        await vi.waitFor(() => expect(toggle()).not.toBeNull());
+        editor.focus();
+        const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+        walker.nextNode();
+        const text = walker.nextNode() ?? walker.currentNode;
+        const selection = window.getSelection()!;
+        selection.setBaseAndExtent(text, 8, text, 2);
+        editor.scrollTop = 120;
+        await waitForLayout();
+        const before = {
+          anchor: selection.anchorOffset,
+          focus: selection.focusOffset,
+          text: selection.toString(),
+        };
+
+        await page.elementLocator(toggle()!).click();
+        await vi.waitFor(() => expect(form.getAttribute("data-composer-expanded")).toBe("true"));
+        await waitForLayout();
+        expect(document.activeElement).toBe(editor);
+        expect(selection.anchorOffset).toBe(before.anchor);
+        expect(selection.focusOffset).toBe(before.focus);
+        expect(selection.toString()).toBe(before.text);
+        expect(editor.scrollTop).toBe(120);
+
+        toggle()!.focus();
+        await userEvent.keyboard("{Enter}");
+        await vi.waitFor(() => expect(form.hasAttribute("data-composer-expanded")).toBe(false));
+        await waitForLayout();
+        expect(document.activeElement).toBe(editor);
+        expect(selection.toString()).toBe(before.text);
+        expect(selection.anchorOffset).toBe(before.anchor);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("keeps the historical reading position when expanding", async () => {
+      const { mounted, form } = await mountComposer({
+        prompt: MULTILINE_DRAFT,
+        fillerPairCount: 40,
+      });
+      try {
+        const timeline = await waitForElement(
+          () => document.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]'),
+          "Timeline missing",
+        );
+        await vi.waitFor(() =>
+          expect(timeline.scrollHeight).toBeGreaterThan(timeline.clientHeight + 400),
+        );
+        timeline.scrollTop = (timeline.scrollHeight - timeline.clientHeight) / 2;
+        timeline.dispatchEvent(new Event("scroll"));
+        await waitForLayout();
+        const anchor = Array.from(
+          timeline.querySelectorAll<HTMLElement>("[data-timeline-row-id]"),
+        ).find((row) => row.getBoundingClientRect().top >= timeline.getBoundingClientRect().top)!;
+        const anchorTop = anchor.getBoundingClientRect().top;
+        await vi.waitFor(() => expect(toggle()).not.toBeNull());
+        await page.elementLocator(toggle()!).click();
+        await vi.waitFor(() => expect(form.getAttribute("data-composer-expanded")).toBe("true"));
+        await waitForLayout();
+        expect(Math.abs(anchor.getBoundingClientRect().top - anchorTop)).toBeLessThanOrEqual(2);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("lets Escape shrink the editor before a bare thread.stop binding can fire", async () => {
+      const { mounted, editor, form } = await mountComposer({
+        prompt: MULTILINE_DRAFT,
+        sessionStatus: "running",
+        configureFixture: (nextFixture) => {
+          nextFixture.serverConfig = {
+            ...nextFixture.serverConfig,
+            keybindings: [
+              {
+                ...createModKeybinding("thread.stop", "escape"),
+                shortcut: {
+                  ...createModKeybinding("thread.stop", "escape").shortcut,
+                  modKey: false,
+                },
+              },
+            ],
+          };
+        },
+      });
+      try {
+        await vi.waitFor(() => expect(toggle()).not.toBeNull());
+        await page.elementLocator(toggle()!).click();
+        await vi.waitFor(() => expect(form.getAttribute("data-composer-expanded")).toBe("true"));
+        editor.focus();
+        editor.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+        editor.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Escape",
+            bubbles: true,
+            cancelable: true,
+            isComposing: true,
+          }),
+        );
+        editor.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+        await waitForLayout();
+        expect(form.getAttribute("data-composer-expanded")).toBe("true");
+
+        await userEvent.keyboard("{Escape}");
+        await vi.waitFor(() => expect(form.hasAttribute("data-composer-expanded")).toBe(false));
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(getDispatchCommandRequests("thread.turn.interrupt")).toHaveLength(0);
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+          MULTILINE_DRAFT,
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("shows a drop overlay and announces it while files are dragged over", async () => {
+      const { mounted } = await mountComposer({});
+      try {
+        const shell = await waitForComposerShell();
+        const transfer = new DataTransfer();
+        transfer.items.add(new File(["x"], "notes.txt", { type: "text/plain" }));
+        shell.dispatchEvent(
+          new DragEvent("dragenter", { bubbles: true, cancelable: true, dataTransfer: transfer }),
+        );
+        await vi.waitFor(() =>
+          expect(document.querySelector("[data-composer-drop-overlay]")).not.toBeNull(),
+        );
+        const overlay = document.querySelector<HTMLElement>("[data-composer-drop-overlay]")!;
+        expect(overlay.getAttribute("aria-hidden")).toBe("true");
+        expect(getComputedStyle(overlay).pointerEvents).toBe("none");
+        expect(
+          Array.from(shell.querySelectorAll('[role="status"]')).some(
+            (status) => status.textContent === "Drop files to attach",
+          ),
+        ).toBe(true);
+        shell.dispatchEvent(
+          new DragEvent("dragleave", { bubbles: true, cancelable: true, dataTransfer: transfer }),
+        );
+        await vi.waitFor(() =>
+          expect(document.querySelector("[data-composer-drop-overlay]")).toBeNull(),
+        );
+
+        // A file-tree drag inserts a mention, so it must not promise an attachment.
+        const mentionTransfer = new DataTransfer();
+        mentionTransfer.setData(F5_FILE_MENTION_MIME, "{}");
+        shell.dispatchEvent(
+          new DragEvent("dragenter", {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: mentionTransfer,
+          }),
+        );
+        await vi.waitFor(() =>
+          expect(
+            document.querySelector("[data-composer-drop-overlay]")?.getAttribute("data-drop-kind"),
+          ).toBe("reference"),
+        );
+        expect(document.querySelector("[data-composer-drop-overlay]")?.textContent).toBe(
+          "Drop to mention",
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("shows six attachments behind a disclosure and opens it for a warning", async () => {
+      const paths = Array.from({ length: 8 }, (_, index) => `/repo/project/file-${index}.ts`);
+      useComposerDraftStore.getState().setFilePaths(THREAD_ID, paths);
+      const { mounted } = await mountComposer({});
+      const image = createComposerImageAttachment({ id: "huge-image", name: "huge.svg" });
+      try {
+        const chips = () =>
+          document.querySelectorAll('[data-composer-attachment-tray] button[aria-label^="Remove"]');
+        await vi.waitFor(() => expect(chips()).toHaveLength(6));
+        const disclosure = page.getByRole("button", { name: "Show all 8 attachments" });
+        await disclosure.click();
+        await vi.waitFor(() => expect(chips()).toHaveLength(8));
+        await page.getByRole("button", { name: "Show fewer attachments" }).click();
+        await vi.waitFor(() => expect(chips()).toHaveLength(6));
+
+        useComposerDraftStore
+          .getState()
+          .addImage(THREAD_ID, { ...image, sizeBytes: Number.MAX_SAFE_INTEGER });
+        await vi.waitFor(() => expect(chips()).toHaveLength(9));
+        expect(document.body.textContent).not.toContain("Show all 9 attachments");
+      } finally {
+        URL.revokeObjectURL(image.previewUrl);
+        await mounted.cleanup();
+      }
+    });
+  });
+
+  describe("Quote in reply", () => {
+    async function openQuoteMenu() {
+      const row = await vi.waitFor(() => {
+        const node = document.querySelector<HTMLElement>(
+          '[data-message-id="msg-assistant-rich-target"]',
+        );
+        expect(node).not.toBeNull();
+        return node!;
+      });
+      row.scrollIntoView({ block: "center" });
+      const trigger = row.querySelector<HTMLButtonElement>('button[aria-label="Message actions"]');
+      expect(trigger).not.toBeNull();
+      trigger!.click();
+      await page.getByRole("menuitem", { name: "Quote in reply" }).click();
+    }
+
+    it("quotes a whole assistant message into the composer without sending", async () => {
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotWithRichAssistantTarget(),
+      });
+      try {
+        await openQuoteMenu();
+        await vi.waitFor(() =>
+          expect(
+            useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "",
+          ).toContain("> ## 9. UX Patterns Worth Porting (MEDIUM VALUE)"),
+        );
+        expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("shows the limit error and inserts nothing when the quote would exceed the limit", async () => {
+      const toast = vi.spyOn(toastManager, "add");
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotWithRichAssistantTarget(),
+      });
+      try {
+        setServerBootstrap({
+          ...serverBootstrapFixture,
+          sendLimits: { ...serverBootstrapFixture.sendLimits, maxInputChars: 10 },
+        });
+        await openQuoteMenu();
+        await vi.waitFor(() =>
+          expect(toast).toHaveBeenCalledWith(
+            expect.objectContaining({
+              type: "error",
+              title: "This quote would exceed the message limit.",
+            }),
+          ),
+        );
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "").toBe("");
+      } finally {
+        toast.mockRestore();
+        await mounted.cleanup();
+      }
+    });
+
+    it("reports a quote the composer cannot take", async () => {
+      const toast = vi.spyOn(toastManager, "add");
+      const snapshot = createSnapshotWithRichAssistantTarget();
+      const question = createThreadActivity({
+        id: "menu-quote-question",
+        createdAt: isoAt(201),
+        kind: "user-input.requested",
+        summary: "Question",
+        payload: {
+          requestId: "menu-quote-request",
+          questions: [
+            {
+              id: "choice",
+              header: "Choice",
+              question: "Which choice?",
+              options: [{ label: "Original answer", description: "Keep it" }],
+            },
+          ],
+        },
+      });
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: {
+          ...snapshot,
+          threads: snapshot.threads.map((thread) => ({ ...thread, activities: [question] })),
+        },
+      });
+      try {
+        await openQuoteMenu();
+        await vi.waitFor(() =>
+          expect(toast).toHaveBeenCalledWith(
+            expect.objectContaining({ type: "error", title: "Could not quote this message" }),
+          ),
+        );
+      } finally {
+        toast.mockRestore();
+        await mounted.cleanup();
+      }
+    });
+  });
 
   describe("render isolation", () => {
     const OTHER_THREAD_ID = "thread-render-isolation-other" as ThreadId;

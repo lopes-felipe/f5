@@ -423,6 +423,10 @@
       "types": "./src/threadFindText.ts",
       "import": "./src/threadFindText.ts"
     },
+    "./markdownAlerts": {
+      "types": "./src/markdownAlerts.ts",
+      "import": "./src/markdownAlerts.ts"
+    },
     "./utf8Lines": {
       "types": "./src/utf8Lines.ts",
       "import": "./src/utf8Lines.ts"

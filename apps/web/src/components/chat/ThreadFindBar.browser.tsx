@@ -58,6 +58,25 @@ it("offers retry for search and navigation failures", async () => {
   await page.getByRole("button", { name: "Retry" }).click();
   await expect.element(page.getByRole("status")).toHaveTextContent("2 of 2");
 });
+it("reselects a single match on Next and aborts the previous request", async () => {
+  api.searchThread.mockImplementation(async () => ({ ...result(), totalMatches: 1 }));
+  const signals: AbortSignal[] = [];
+  const onMatch = vi.fn(async (_match: unknown, signal: AbortSignal) => {
+    signals.push(signal);
+  });
+  const screen = await render(
+    <ThreadFindBar threadId={threadId} onMatch={onMatch} onClose={() => {}} />,
+  );
+  await page.getByRole("textbox", { name: "Find in thread" }).fill("matched");
+  await expect.element(page.getByRole("status")).toHaveTextContent("1 of 1");
+  await vi.waitFor(() => expect(onMatch).toHaveBeenCalledTimes(1));
+  await page.getByRole("button", { name: "Next match" }).click();
+  await vi.waitFor(() => expect(onMatch).toHaveBeenCalledTimes(2));
+  expect(signals[0]?.aborted).toBe(true);
+  await screen.unmount();
+  // Closing aborts the latest request, which cancels its pending jump.
+  expect(signals[1]?.aborted).toBe(true);
+});
 it("ignores responses for a replaced query", async () => {
   let resolveOld!: (value: ThreadSearchResult) => void;
   api.searchThread.mockImplementationOnce(

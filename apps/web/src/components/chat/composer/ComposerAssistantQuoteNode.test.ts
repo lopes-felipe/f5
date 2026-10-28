@@ -3,6 +3,7 @@ import { expect, it } from "vitest";
 import {
   ComposerAssistantQuoteNode,
   $createAssistantQuoteNode,
+  assistantQuoteLimitError,
   serializeAssistantQuote,
 } from "./ComposerAssistantQuoteNode";
 
@@ -32,4 +33,17 @@ it("round-trips quote metadata through Lexical while keeping plain draft text us
   expect(JSON.stringify(json)).toContain('"messageId":"assistant-1"');
   const restored = editor.parseEditorState(json);
   restored.read(() => expect($getRoot().getTextContent()).toBe("> **quoted**\n\nExplain"));
+});
+
+it("rejects a quote that would push the draft over the limit", () => {
+  const quote = { messageId: "a", text: "abc", comment: "" };
+  // "> abc" plus the blank line that separates it from the draft.
+  const quoteLength = serializeAssistantQuote(quote).length + 2;
+  expect(assistantQuoteLimitError(10, quote, 10 + quoteLength)).toBeNull();
+  expect(assistantQuoteLimitError(11, quote, 10 + quoteLength)).toBe(
+    "This quote would exceed the message limit.",
+  );
+  expect(assistantQuoteLimitError(0, quote, 0)).toBe(
+    "Waiting for server capabilities. Reconnect before adding a quote.",
+  );
 });

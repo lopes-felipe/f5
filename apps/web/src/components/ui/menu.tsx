@@ -1,6 +1,6 @@
 "use client";
 
-import { usePopupFocus } from "./popupFocus";
+import { usePopupFocus, usePopupOwnerAttributes } from "./popupFocus";
 
 import { Menu as MenuPrimitive } from "@base-ui/react/menu";
 import { ChevronRightIcon } from "lucide-react";
@@ -50,6 +50,7 @@ function MenuPopup({
   anchor?: MenuPrimitive.Positioner.Props["anchor"];
 }) {
   const finalFocus = usePopupFocus();
+  const ownerAttributes = usePopupOwnerAttributes();
   return (
     <MenuPrimitive.Portal>
       <MenuPrimitive.Positioner
@@ -68,6 +69,7 @@ function MenuPopup({
             className,
           )}
           data-slot="menu-popup"
+          {...ownerAttributes}
           {...props}
         >
           <div className="max-h-(--available-height) w-full overflow-y-auto p-1">{children}</div>

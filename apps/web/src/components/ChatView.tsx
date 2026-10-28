@@ -58,6 +58,10 @@ import { ensureComposerUpload, persistComposerAttachment } from "../composerDraf
 import { defaultDraftRuntimeMode } from "../lib/draftSettingsDefaults";
 import { RepositoryLinks, repositoryLinksForThread } from "../repositoryLinkContext";
 import { AssistantQuoteToolbar } from "./chat/AssistantQuoteToolbar";
+import {
+  assistantQuoteLimitError,
+  type AssistantQuote,
+} from "./chat/composer/ComposerAssistantQuoteNode";
 import { isDocumentWorkflow } from "@t3tools/shared/documentWorkflow";
 import { shouldScrollTimeline } from "./chat/timelineScrollTarget";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
@@ -350,7 +354,9 @@ import { NewerMessageHistoryControl } from "./chat/NewerMessageHistoryControl";
 import { ChatHeader } from "./chat/ChatHeader";
 import { ChatStatusAnnouncer, deriveChatStatusOutcome } from "./chat/ChatStatusAnnouncer";
 import { useComposerFocusRequestStore } from "../composerFocusRequestStore";
-import { JumpToLatestButton } from "./chat/JumpToLatestButton";
+import { JumpToLatestButton, timelineTailSnapshot } from "./chat/JumpToLatestButton";
+import { TimelineNavigationStatusBanner } from "./chat/TimelineNavigationStatus";
+import { useTimelineNavigation } from "./chat/useTimelineNavigation";
 import { ComposerDock, ComposerDockColumn } from "./chat/composer/ComposerDock";
 import { COMPOSER_TRAY_PANEL_CLASS_NAME, ComposerTray } from "./chat/composer/ComposerTray";
 import { ThreadNoticeStack, type ThreadNotice } from "./chat/ThreadNoticeStack";
@@ -760,9 +766,9 @@ export default memo(function ChatView({
   const [findSelection, setFindSelection] = useState<{
     threadId: ThreadId;
     match: ThreadFindMatch;
+    requestId: number | null;
   } | null>(null);
   const findMatch = findSelection?.threadId === threadId ? findSelection.match : null;
-  const focusTimelineEntryId = findMatch?.entryId ?? routeFocusTimelineEntryId;
   useEffect(() => {
     const open = (event: Event) => {
       if ((event as CustomEvent<ThreadId>).detail === threadId) setFindOpenThreadId(threadId);
@@ -850,6 +856,8 @@ export default memo(function ChatView({
   const {
     isDragOverComposer,
     setIsDragOverComposer,
+    composerDropKind,
+    setComposerDropKind,
     isComposerFooterCompact,
     setIsComposerFooterCompact,
     isModelPickerOpen,
@@ -965,6 +973,7 @@ export default memo(function ChatView({
   );
   const legendListRef = useRef<LegendListRef | null>(null);
   const timelineEntryRowIndexMapRef = useRef<ReadonlyMap<string, number> | null>(null);
+  const timelineLeaveEndRef = useRef<(() => void) | null>(null);
   const isAtEndRef = useRef(true);
 
   const onSendRef = useRef<
@@ -1053,6 +1062,54 @@ export default memo(function ChatView({
       showScrollDebouncer.current?.maybeExecute();
     }
   }, []);
+  const timelineNavigation = useTimelineNavigation({
+    threadId,
+    listRef: legendListRef,
+    entryRowIndexMapRef: timelineEntryRowIndexMapRef,
+    loadAround: (entryId, anchorKind, signal) =>
+      loadThreadHistoryAroundMessage(threadId, entryId as MessageId, anchorKind, signal),
+    onLeaveEnd: () => {
+      timelineLeaveEndRef.current?.();
+      onIsAtEndChange(false);
+    },
+    followNextTailNonce,
+  });
+  const navigateTimeline = timelineNavigation.navigate;
+  const cancelTimelineNavigation = timelineNavigation.cancel;
+  const cancelTimelineRequest = timelineNavigation.cancelRequest;
+  const retryNavigationRequest = timelineNavigation.retry;
+  // The navigation request serving the current find match. A retry moves it to
+  // the new request id, so the match row's range report is still accepted.
+  const findTicketRef = useRef<{ id: number } | null>(null);
+  const cancelFindNavigation = useCallback(() => {
+    const ticket = findTicketRef.current;
+    if (ticket) cancelTimelineRequest(ticket.id);
+  }, [cancelTimelineRequest]);
+  const retryTimelineNavigation = useCallback(() => {
+    const retried = retryNavigationRequest();
+    if (!retried) return;
+    const ticket = findTicketRef.current;
+    if (ticket?.id !== retried.previousId) return;
+    ticket.id = retried.id;
+    setFindSelection((current) =>
+      current?.requestId === retried.previousId ? { ...current, requestId: retried.id } : current,
+    );
+  }, [retryNavigationRequest]);
+  // Jumps that are not a find result take over from the active match; the
+  // find query stays, so Previous/Next pick it back up.
+  const navigateToTimelineEntry = useCallback(
+    (entryId: string, position: number) => {
+      setFindSelection(null);
+      navigateTimeline(entryId, { position });
+    },
+    [navigateTimeline],
+  );
+  const jumpToLatest = useCallback(() => {
+    cancelTimelineNavigation();
+    setFindSelection(null);
+    scrollToEnd(true);
+  }, [cancelTimelineNavigation, scrollToEnd]);
+  const [navigationHost, setNavigationHost] = useState<HTMLElement | null>(null);
 
   const terminalState = useTerminalStateStore((state) =>
     selectThreadTerminalState(state.terminalStateByThreadId, threadId),
@@ -2489,67 +2546,28 @@ export default memo(function ChatView({
       workLogEntries,
     ],
   );
-  const lastFocusedTimelineEntryIdRef = useRef<string | null>(null);
-  const attemptedTimelineAnchorLoadRef = useRef<string | null>(null);
+  // A route focus request (deep link, search result) is one navigation, issued
+  // once the thread details are loaded and the timeline had a frame to mount.
+  const routeFocusRequestedRef = useRef<string | null>(null);
+  const routeFocusReady = Boolean(activeThread?.detailsLoaded);
   useEffect(() => {
-    if (!focusTimelineEntryId || lastFocusedTimelineEntryIdRef.current === focusTimelineEntryId) {
+    if (
+      !routeFocusReady ||
+      !routeFocusTimelineEntryId ||
+      routeFocusRequestedRef.current === routeFocusTimelineEntryId
+    ) {
       return;
     }
-    const controller = new AbortController();
-    let followUpFrame: number | null = null;
-    const scrollToFocusedEntry = () => {
-      const index = timelineEntryRowIndexMapRef.current?.get(focusTimelineEntryId);
-      if (index === undefined) return false;
-      onIsAtEndChange(false);
-      void legendListRef.current?.scrollToIndex({
-        index,
-        animated: !findMatch,
-        viewPosition: 0.3,
-      });
-      lastFocusedTimelineEntryIdRef.current = focusTimelineEntryId;
-      return true;
-    };
     const frame = window.requestAnimationFrame(() => {
-      if (scrollToFocusedEntry()) return;
-      if (
-        activeThread?.detailsLoaded &&
-        attemptedTimelineAnchorLoadRef.current !== focusTimelineEntryId
-      ) {
-        attemptedTimelineAnchorLoadRef.current = focusTimelineEntryId;
-        void loadThreadHistoryAroundMessage(
-          activeThread.id,
-          focusTimelineEntryId as MessageId,
-          focusTimelineEntryKind,
-          controller.signal,
-        )
-          .then(() => {
-            if (!controller.signal.aborted) {
-              followUpFrame = window.requestAnimationFrame(() => {
-                scrollToFocusedEntry();
-              });
-            }
-          })
-          .catch((error) => {
-            if (!controller.signal.aborted) {
-              console.warn("Failed to load timeline history around the selected entry.", error);
-              attemptedTimelineAnchorLoadRef.current = null;
-            }
-          });
-      }
+      routeFocusRequestedRef.current = routeFocusTimelineEntryId;
+      navigateTimeline(routeFocusTimelineEntryId, {
+        anchorKind: focusTimelineEntryKind,
+        position: 0.3,
+        animated: true,
+      });
     });
-    return () => {
-      controller.abort();
-      window.cancelAnimationFrame(frame);
-      if (followUpFrame !== null) window.cancelAnimationFrame(followUpFrame);
-    };
-  }, [
-    activeThread?.detailsLoaded,
-    activeThread?.id,
-    focusTimelineEntryId,
-    findMatch,
-    focusTimelineEntryKind,
-    onIsAtEndChange,
-  ]);
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusTimelineEntryKind, navigateTimeline, routeFocusReady, routeFocusTimelineEntryId]);
   const shouldRenderTimeline = shouldRenderTimelineContent({
     detailsLoaded: activeThread?.detailsLoaded ?? false,
     hasRenderableMessage: timelineMessages.length > 0,
@@ -2624,6 +2642,25 @@ export default memo(function ChatView({
         </>
       ),
     [historyStage, historyThreadId, queryClient],
+  );
+  const retryOlderTimelineHistory = useCallback(() => {
+    if (historyThreadId !== null) void retryThreadHistoryBackfill(queryClient, historyThreadId);
+  }, [historyThreadId, queryClient]);
+  const openThreadFind = useCallback(() => setFindOpenThreadId(threadId), [threadId]);
+  const findRequestId = findSelection?.threadId === threadId ? findSelection.requestId : null;
+  const handleFindSelectedRange = timelineNavigation.handleSelectedRange;
+  const threadFindValue = useMemo(
+    () =>
+      findMatch
+        ? {
+            entryId: findMatch.entryId,
+            query: findMatch.query,
+            occurrence: findMatch.occurrence,
+            requestId: findRequestId,
+            onSelectedRange: handleFindSelectedRange,
+          }
+        : null,
+    [findMatch, findRequestId, handleFindSelectedRange],
   );
   const turnDiffSummaryByAssistantMessageId = useMemo(() => {
     const byMessageId = new Map<MessageId, TurnDiffSummary>();
@@ -4529,7 +4566,7 @@ export default memo(function ChatView({
       if (showScrollToBottom) {
         event.preventDefault();
         event.stopPropagation();
-        scrollToEnd(true);
+        jumpToLatest();
         return;
       }
 
@@ -4562,7 +4599,7 @@ export default memo(function ChatView({
     navigate,
     phase,
     toggleInteractionMode,
-    scrollToEnd,
+    jumpToLatest,
     showScrollToBottom,
     settings.sendShortcut,
     terminalState.terminalOpen,
@@ -4783,6 +4820,7 @@ export default memo(function ChatView({
     }
     event.preventDefault();
     dragDepthRef.current += 1;
+    setComposerDropKind("files");
     setIsDragOverComposer(true);
   };
 
@@ -4792,6 +4830,7 @@ export default memo(function ChatView({
     }
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
+    setComposerDropKind("files");
     setIsDragOverComposer(true);
   };
 
@@ -4823,12 +4862,15 @@ export default memo(function ChatView({
   };
 
   const onComposerFileMentionDragEnterCapture = (event: React.DragEvent<HTMLDivElement>) => {
-    if (claimFileTreeMentionDrag(event)) setIsDragOverComposer(true);
+    if (!claimFileTreeMentionDrag(event)) return;
+    setComposerDropKind("reference");
+    setIsDragOverComposer(true);
   };
 
   const onComposerFileMentionDragOverCapture = (event: React.DragEvent<HTMLDivElement>) => {
     if (!claimFileTreeMentionDrag(event)) return;
     event.dataTransfer.dropEffect = "copy";
+    setComposerDropKind("reference");
     setIsDragOverComposer(true);
   };
 
@@ -7304,6 +7346,72 @@ export default memo(function ChatView({
     });
   }, [activeWorkflow, navigate]);
 
+  /** Shared by the selection quote toolbar and the message menu's "Quote in reply". */
+  const insertAssistantQuote = async (
+    quote: AssistantQuote,
+    send: boolean,
+  ): Promise<{ inserted: boolean; error?: string; limitError?: boolean }> => {
+    if (activePendingProgress)
+      return {
+        inserted: false,
+        error: "Finish the pending question before quoting into chat.",
+      };
+    if (
+      isConnecting ||
+      sendInFlightRef.current ||
+      hasPendingTurnDispatch ||
+      pendingComposerImageImportCount > 0
+    )
+      return {
+        inserted: false,
+        error: "Wait for the connection, current send, or image import before adding this quote.",
+      };
+    const editor = composerEditorRef.current;
+    if (!editor) return { inserted: false };
+    const limitError = assistantQuoteLimitError(
+      editor.readSnapshot().value.length,
+      quote,
+      isConnecting ? 0 : getServerSendLimits().maxInputChars,
+    );
+    if (limitError) return { inserted: false, error: limitError, limitError: true };
+    editor.insertAssistantQuote(quote);
+    if (send) {
+      promptRef.current = editor.readSnapshot().value;
+      let admitted = false;
+      await onSend(undefined, "auto", () => {
+        admitted = true;
+      });
+      if (!admitted)
+        return {
+          inserted: true,
+          error:
+            "Quote added to the composer, but sending was not confirmed. Review the draft or pending send before trying again.",
+        };
+    }
+    return { inserted: true };
+  };
+  const insertAssistantQuoteRef = useRef(insertAssistantQuote);
+  useLayoutEffect(() => {
+    insertAssistantQuoteRef.current = insertAssistantQuote;
+  });
+  const onQuoteAssistantMessage = useCallback((messageId: MessageId, text: string) => {
+    const quote: AssistantQuote = { messageId, text, comment: "" };
+    void insertAssistantQuoteRef.current(quote, false).then(
+      (result) => {
+        if (result.inserted && !result.error) {
+          composerEditorRef.current?.focusAtEnd();
+          return;
+        }
+        toastManager.add({
+          type: "error",
+          title: result.limitError && result.error ? result.error : "Could not quote this message",
+          ...(!result.limitError && result.error ? { description: result.error } : {}),
+        });
+      },
+      () => toastManager.add({ type: "error", title: "Could not quote this message" }),
+    );
+  }, []);
+
   // Empty state: no active thread
   if (!activeThread) {
     return (
@@ -7645,6 +7753,7 @@ export default memo(function ChatView({
     },
     onComposerPaste,
     isDragOverComposer,
+    composerDropKind,
     onComposerFileMentionDragEnterCapture,
     onComposerFileMentionDragOverCapture,
     onComposerFileMentionDragLeaveCapture,
@@ -7686,46 +7795,13 @@ export default memo(function ChatView({
             key={activeThread.id}
             currentLength={prompt.length}
             maxLength={isConnecting ? 0 : getServerSendLimits().maxInputChars}
-            onInsert={async (quote, send) => {
-              if (activePendingProgress)
-                return {
-                  inserted: false,
-                  error: "Finish the pending question before quoting into chat.",
-                };
-              if (
-                isConnecting ||
-                sendInFlightRef.current ||
-                hasPendingTurnDispatch ||
-                pendingComposerImageImportCount > 0
-              )
-                return {
-                  inserted: false,
-                  error:
-                    "Wait for the connection, current send, or image import before adding this quote.",
-                };
-              const editor = composerEditorRef.current;
-              if (!editor) return { inserted: false };
-              editor.insertAssistantQuote(quote);
-              if (send) {
-                promptRef.current = editor.readSnapshot().value;
-                let admitted = false;
-                await onSend(undefined, "auto", () => {
-                  admitted = true;
-                });
-                if (!admitted)
-                  return {
-                    inserted: true,
-                    error:
-                      "Quote added to the composer, but sending was not confirmed. Review the draft or pending send before trying again.",
-                  };
-              }
-              return { inserted: true };
-            }}
+            onInsert={insertAssistantQuote}
           />
           {/* Top bar */}
           <AppTitlebar className={isElectron ? undefined : "sm:px-4"}>
             <ChatHeaderWithPanelState
               panelThreadId={threadId}
+              navigationHostRef={setNavigationHost}
               isServerThread={isServerThread}
               activeThreadId={activeThread.id}
               activeThreadTitle={activeThread.title}
@@ -7799,21 +7875,31 @@ export default memo(function ChatView({
               key={activeThread.id}
               threadId={activeThread.id}
               onMatch={async (match, signal) => {
-                if (
-                  match?.kind === "message" &&
-                  !timelineEntryRowIndexMapRef.current?.has(match.entryId)
-                )
-                  await loadThreadHistoryAroundMessage(
-                    activeThread.id,
-                    MessageId.makeUnsafe(match.entryId),
-                    "message",
-                    signal,
-                  );
                 if (signal.aborted) return;
-                lastFocusedTimelineEntryIdRef.current = null;
-                setFindSelection(match ? { threadId: activeThread.id, match } : null);
+                if (!match) {
+                  cancelFindNavigation();
+                  setFindSelection(null);
+                  return;
+                }
+                // A plan result is injected into the timeline first, so it is
+                // awaited in the row map rather than loaded as history.
+                const ticket = {
+                  id: navigateTimeline(match.entryId, {
+                    load: match.kind === "message",
+                    position: 0.3,
+                    placeRange: true,
+                  }),
+                };
+                findTicketRef.current = ticket;
+                // The search is aborted when the query or index changes or the
+                // bar closes; its jump (or that jump's retry) must not land later.
+                signal.addEventListener("abort", () => cancelTimelineRequest(ticket.id), {
+                  once: true,
+                });
+                setFindSelection({ threadId: activeThread.id, match, requestId: ticket.id });
               }}
               onClose={() => {
+                cancelFindNavigation();
                 setFindOpenThreadId(null);
                 setFindSelection(null);
                 focusComposer();
@@ -7872,7 +7958,7 @@ export default memo(function ChatView({
                   }
                 />
                 {shouldRenderTimeline ? (
-                  <ThreadFindContext value={findMatch}>
+                  <ThreadFindContext value={threadFindValue}>
                     <MessagesTimeline
                       key={activeThread.id}
                       threadId={activeThread.id}
@@ -7882,6 +7968,7 @@ export default memo(function ChatView({
                       liveActivity={liveActivity}
                       listRef={legendListRef}
                       entryRowIndexMapRef={timelineEntryRowIndexMapRef}
+                      leaveEndRef={timelineLeaveEndRef}
                       onIsAtEndChange={onIsAtEndChange}
                       followNextTailNonce={followNextTailNonce}
                       hasOlderHistory={hasOlderTimelineHistory}
@@ -7931,7 +8018,13 @@ export default memo(function ChatView({
                       onToggleAllDirectories={onToggleAllDirectories}
                       chatDiffContext={chatDiffContext}
                       onWorkingRibbonFocusLost={scheduleComposerFocus}
+                      onQuoteAssistantMessage={onQuoteAssistantMessage}
                       listHeaderContent={timelineListHeaderContent}
+                      onNavigateToEntry={navigateToTimelineEntry}
+                      onEntryRowIndexMapCommit={timelineNavigation.handleRowMapCommit}
+                      navigationHost={navigationHost}
+                      onOpenThreadFind={isServerThread ? openThreadFind : undefined}
+                      onRetryOlderHistory={retryOlderTimelineHistory}
                     />
                   </ThreadFindContext>
                 ) : (
@@ -7941,11 +8034,16 @@ export default memo(function ChatView({
                 {/* scroll to bottom pill — shown when user has scrolled away from the bottom */}
                 {showScrollToBottom && (
                   <JumpToLatestButton
-                    lastRowId={timelineEntries.at(-1)?.id ?? null}
+                    tail={timelineTailSnapshot(timelineEntries.at(-1))}
                     shortcutLabel={scrollToBottomShortcutLabel ?? null}
-                    onJump={() => scrollToEnd(true)}
+                    onJump={jumpToLatest}
                   />
                 )}
+                <TimelineNavigationStatusBanner
+                  status={timelineNavigation.status}
+                  onRetry={retryTimelineNavigation}
+                  onDismiss={cancelTimelineNavigation}
+                />
 
                 {/* Composer dock: tray, composer and branch line float over the timeline end */}
                 <ComposerDock redesign={composerRedesign}>

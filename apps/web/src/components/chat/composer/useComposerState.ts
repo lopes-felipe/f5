@@ -12,6 +12,7 @@ import type { ComposerCommandItem } from "../ComposerCommandMenu";
 /** Transient editor state; remains mounted when navigating between thread drafts. */
 export function useComposerState(prompt: string, mentions: readonly ComposerMention[]) {
   const [isDragOverComposer, setIsDragOverComposer] = useState(false);
+  const [composerDropKind, setComposerDropKind] = useState<"files" | "reference">("files");
   const [isComposerFooterCompact, setIsComposerFooterCompact] = useState(false);
   const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
   const [composerCursor, setComposerCursor] = useState(() =>
@@ -32,6 +33,8 @@ export function useComposerState(prompt: string, mentions: readonly ComposerMent
   return {
     isDragOverComposer,
     setIsDragOverComposer,
+    composerDropKind,
+    setComposerDropKind,
     isComposerFooterCompact,
     setIsComposerFooterCompact,
     isModelPickerOpen,

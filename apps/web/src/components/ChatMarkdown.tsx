@@ -2,13 +2,24 @@ import { suffixSince, type TextRevision } from "../lib/streamingTextRevision";
 import { useOpenLink } from "../hooks/useOpenLink";
 import { PrLinkPreview } from "./prHub/PrLinkPreview";
 import { ChatAssetImage } from "./ChatAssetImage";
-import { useContext } from "react";
+import { createContext, useContext } from "react";
 import { RepositoryLinks } from "../repositoryLinkContext";
 import { remarkIssueReferences } from "../lib/remarkIssueReferences";
 import { remarkKeepWindowsPathDestinations } from "../lib/remarkWindowsPathDestinations";
+import { remarkGfmAlerts } from "../lib/remarkGfmAlerts";
+import { isGfmAlertType, type GfmAlertType } from "@t3tools/shared/markdownAlerts";
 import { GitHubIcon } from "./Icons";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
-import { CheckIcon, CopyIcon } from "lucide-react";
+import {
+  CheckIcon,
+  CopyIcon,
+  InfoIcon,
+  LightbulbIcon,
+  MessageSquareWarningIcon,
+  OctagonAlertIcon,
+  TriangleAlertIcon,
+  type LucideIcon,
+} from "lucide-react";
 import React, {
   Children,
   Suspense,
@@ -23,7 +34,8 @@ import React, {
   useState,
   type ReactNode,
 } from "react";
-import type { Components } from "react-markdown";
+import { flushSync } from "react-dom";
+import type { Components, ExtraProps } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useDiffWordWrap } from "../appSettings";
@@ -56,6 +68,15 @@ import { SurfaceErrorBoundary } from "./ui/SurfaceErrorBoundary";
 import { MermaidDiagram } from "./chat/MermaidDiagram";
 import { useTerminalCommand } from "../terminalCommandContext";
 import { hasClosedCodeFence, runnableShellCode } from "../lib/shellCodeBlock";
+import {
+  CODE_BLOCK_FOLD_MIN_LINES,
+  CODE_BLOCK_LINE_COUNT_MIN_LINES,
+  codeBlockFilePath,
+  codeBlockLanguageLabel,
+  codeLineCount,
+  fileUrlHref,
+} from "../lib/codeBlockPresentation";
+import { toastManager } from "./ui/toast";
 
 /**
  * `default` renders trusted assistant output. `external-bot` renders content an
@@ -70,6 +91,10 @@ interface ChatMarkdownProps {
   cwd: string | undefined;
   isStreaming?: boolean;
   policy?: ChatMarkdownPolicy;
+  /** Folds long settled code blocks behind "Show all N lines". */
+  foldCodeBlocks?: boolean;
+  /** Shows a blinking caret after the streaming text. */
+  showStreamingCaret?: boolean;
 }
 
 type MarkdownRenderMode = "settled" | "streaming-lite";
@@ -166,25 +191,106 @@ function getHighlighterPromise(language: string): Promise<MarkdownHighlighter> {
   return promise;
 }
 
-function MarkdownCodeBlock({
-  code,
-  command,
-  children,
+/** The fence info string, read from the hast `code` element under a `pre`. */
+function hastCodeFenceInfo(node: ExtraProps["node"]): { lang: string | null; meta: string | null } {
+  const code = node?.children.find((child) => child.type === "element" && child.tagName === "code");
+  if (!code || code.type !== "element") return { lang: null, meta: null };
+  const className = code.properties.className;
+  const classes = Array.isArray(className)
+    ? className
+    : typeof className === "string"
+      ? className.split(/\s+/)
+      : [];
+  const languageClass = classes.find(
+    (value): value is string => typeof value === "string" && value.startsWith("language-"),
+  );
+  const meta = (code.data as { meta?: unknown } | undefined)?.meta;
+  return {
+    lang: languageClass ? languageClass.slice("language-".length) : null,
+    meta: typeof meta === "string" ? meta : null,
+  };
+}
+
+function MarkdownFileChip({
+  href,
+  meta,
+  disambiguator,
+  theme,
+  anchorProps,
 }: {
-  code: string;
-  command?: string | null;
-  children: ReactNode;
+  /** Omitted when there is no safe URL; the chip stays keyboard-reachable. */
+  href: string | undefined;
+  meta: MarkdownFileLinkMeta;
+  disambiguator: string | null;
+  theme: "light" | "dark";
+  anchorProps?: React.AnchorHTMLAttributes<HTMLAnchorElement>;
 }) {
-  const runCommand = useTerminalCommand();
-  const [running, setRunning] = useState(false);
-  const runningRef = useRef(false);
-  const [runError, setRunError] = useState(false);
-  const wordWrap = useDiffWordWrap();
+  const handleFileNavigation = useFileNavigation();
+  const positionSuffix = meta.line ? `:${meta.line}${meta.column ? `:${meta.column}` : ""}` : "";
+  const handleClick = (event: React.MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (handleFileNavigation(meta.targetPath)) {
+      return;
+    }
+    void openFileInEditor(meta.targetPath);
+  };
+
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <a
+              {...anchorProps}
+              // Keep the original href (typically a `file://` URI) so
+              // cmd/ctrl-click or middle-click falls back to the
+              // browser's default file-URL handling rather than
+              // navigating inside the SPA to `<app-origin>/Users/…`
+              // and hitting a 404. The rewritten form is only useful
+              // for tooltip display, which `TooltipPopup` already
+              // handles below.
+              href={href}
+              {...(href === undefined
+                ? {
+                    role: "link",
+                    tabIndex: 0,
+                    onKeyDown: (event: React.KeyboardEvent<HTMLAnchorElement>) => {
+                      if (event.key === "Enter") event.currentTarget.click();
+                    },
+                  }
+                : {})}
+              className="chat-markdown-file-link"
+              onClick={handleClick}
+            />
+          }
+        >
+          <VscodeEntryIcon
+            pathValue={meta.filePath}
+            kind={inferEntryKindFromPath(meta.filePath)}
+            theme={theme}
+            className="chat-markdown-file-link-icon"
+          />
+          <span className="chat-markdown-file-link-label">{meta.basename}</span>
+          {meta.line ? (
+            <span className="chat-markdown-file-link-position">{positionSuffix}</span>
+          ) : null}
+          {disambiguator ? (
+            <span className="chat-markdown-file-link-disambiguator">{disambiguator}</span>
+          ) : null}
+        </TooltipTrigger>
+        <TooltipPopup>{`${meta.displayPath}${positionSuffix}`}</TooltipPopup>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+function useCodeCopy(code: string) {
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleCopy = useCallback(() => {
-    void writeTextToClipboard(code)
-      .then(() => {
+    void writeTextToClipboard(code).then(
+      () => {
         if (copiedTimerRef.current != null) {
           clearTimeout(copiedTimerRef.current);
         }
@@ -193,8 +299,16 @@ function MarkdownCodeBlock({
           setCopied(false);
           copiedTimerRef.current = null;
         }, 1200);
-      })
-      .catch(() => undefined);
+      },
+      (error: unknown) => {
+        toastManager.add({
+          type: "error",
+          title: "Could not copy code",
+          description:
+            error instanceof Error ? error.message : "An unexpected clipboard error occurred.",
+        });
+      },
+    );
   }, [code]);
 
   useEffect(
@@ -206,27 +320,107 @@ function MarkdownCodeBlock({
     },
     [],
   );
+  return { copied, handleCopy };
+}
+
+/**
+ * The frame around a fenced code block. `default` adds a header with the
+ * language, an optional file path, the Run action, a line count and Copy;
+ * `bare` (Mermaid) keeps the diagram's own controls and a hover Copy.
+ */
+/**
+ * Whether long code blocks fold. Provided by context, not baked into the
+ * renderer map: a message stops being the latest when a newer one arrives, and
+ * that flip must not give every renderer a new identity (which would remount
+ * highlighted code, Mermaid diagrams and block state).
+ */
+const CodeBlockFoldContext = createContext(false);
+
+function MarkdownCodeBlock({
+  code,
+  command,
+  language = "text",
+  filePath = null,
+  cwd,
+  lineCount,
+  variant = "default",
+  children,
+}: {
+  code: string;
+  command?: string | null;
+  /** Normalized fence language. */
+  language?: string;
+  filePath?: string | null;
+  cwd?: string | undefined;
+  /** Omitted while streaming: the header then shows only the language and Copy. */
+  lineCount?: number;
+  variant?: "default" | "bare";
+  children: ReactNode;
+}) {
+  const foldable = useContext(CodeBlockFoldContext);
+  const runCommand = useTerminalCommand();
+  const [running, setRunning] = useState(false);
+  const runningRef = useRef(false);
+  const [runError, setRunError] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const wordWrap = useDiffWordWrap();
+  const { resolvedTheme } = useTheme();
+  const { copied, handleCopy } = useCodeCopy(code);
 
   const runnable = Boolean(runCommand && command);
-  const copyButton = (
-    <button
-      type="button"
-      className={`chat-markdown-copy-button${runnable ? " chat-markdown-copy-button-inline" : ""}`}
-      onClick={handleCopy}
-      title={copied ? "Copied" : "Copy code"}
-      aria-label={copied ? "Copied" : "Copy code"}
-    >
-      {copied ? <CheckIcon className="size-3" /> : <CopyIcon className="size-3" />}
-    </button>
-  );
+  const copyLabel = copied ? "Copied" : "Copy code";
+  const copyIcon = copied ? <CheckIcon className="size-3" /> : <CopyIcon className="size-3" />;
+  const wrapperClassName = `chat-markdown-codeblock${wordWrap ? " chat-markdown-codeblock-wrap" : ""}${runnable ? " chat-markdown-codeblock-runnable" : ""}`;
+
+  if (variant === "bare") {
+    return (
+      <div
+        className={`${wrapperClassName} chat-markdown-codeblock-bare`}
+        data-word-wrap={wordWrap ? "true" : "false"}
+      >
+        <button
+          type="button"
+          className="chat-markdown-copy-button"
+          onClick={handleCopy}
+          title={copyLabel}
+          aria-label={copyLabel}
+        >
+          {copyIcon}
+        </button>
+        {children}
+      </div>
+    );
+  }
+
+  const folds = foldable && lineCount !== undefined && lineCount > CODE_BLOCK_FOLD_MIN_LINES;
+  const folded = folds && !expanded;
+  const fileMeta = filePath ? resolveMarkdownFileLinkMeta(filePath, cwd) : null;
 
   return (
     <div
-      className={`chat-markdown-codeblock${wordWrap ? " chat-markdown-codeblock-wrap" : ""}${runnable ? " chat-markdown-codeblock-runnable" : ""}`}
+      ref={wrapperRef}
+      className={wrapperClassName}
       data-word-wrap={wordWrap ? "true" : "false"}
+      data-folded={folded ? "true" : undefined}
     >
-      {runCommand && command ? (
-        <div className="chat-markdown-codeblock-header">
+      <div className="chat-markdown-codeblock-header">
+        <span className="chat-markdown-codeblock-title" data-thread-find-ignore>
+          <span className="chat-markdown-codeblock-language">
+            {codeBlockLanguageLabel(language)}
+          </span>
+          {filePath && fileMeta ? (
+            <MarkdownFileChip
+              href={fileUrlHref(fileMeta.filePath)}
+              meta={fileMeta}
+              disambiguator={null}
+              theme={resolvedTheme === "dark" ? "dark" : "light"}
+            />
+          ) : filePath ? (
+            <span className="chat-markdown-codeblock-path">{filePath}</span>
+          ) : null}
+        </span>
+        {runCommand && command ? (
           <button
             type="button"
             disabled={running}
@@ -246,13 +440,51 @@ function MarkdownCodeBlock({
           >
             Run in terminal
           </button>
-          {runError ? <span role="status">Could not run command. Try again.</span> : null}
-          {copyButton}
+        ) : null}
+        {runCommand && command && runError ? (
+          <span role="status" data-thread-find-ignore>
+            Could not run command. Try again.
+          </span>
+        ) : null}
+        <div className="ms-auto flex shrink-0 items-center gap-2">
+          {lineCount !== undefined && lineCount >= CODE_BLOCK_LINE_COUNT_MIN_LINES ? (
+            <span className="tabular-nums" data-thread-find-ignore>
+              {lineCount} lines
+            </span>
+          ) : null}
+          <button
+            type="button"
+            className="chat-markdown-codeblock-copy"
+            onClick={handleCopy}
+            title={copyLabel}
+            aria-label={copyLabel}
+          >
+            {copyIcon}
+          </button>
         </div>
-      ) : (
-        copyButton
-      )}
+      </div>
       {children}
+      {folds ? (
+        <div className="chat-markdown-codeblock-footer">
+          <button
+            type="button"
+            className="chat-markdown-codeblock-fold-toggle"
+            aria-expanded={expanded}
+            data-scroll-anchor-ignore
+            onClick={() => {
+              if (expanded) {
+                // Commit the collapse first, so the block is measured at its folded height.
+                flushSync(() => setExpanded(false));
+                wrapperRef.current?.scrollIntoView({ block: "nearest" });
+              } else {
+                setExpanded(true);
+              }
+            }}
+          >
+            {expanded ? "Collapse" : `Show all ${lineCount} lines`}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -415,7 +647,7 @@ function WorkerHighlightedCode({
     >
       {!requested ? (
         <div className="flex items-center gap-2 px-3 pt-2 text-xs text-muted-foreground">
-          <span>Large block shown as plain text.</span>
+          <span data-thread-find-ignore>Large block shown as plain text.</span>
           <button
             type="button"
             className="underline underline-offset-2 hover:text-foreground"
@@ -471,9 +703,16 @@ function buildDisambiguatorMap(text: string, cwd: string | undefined): Map<strin
 
 const EMPTY_DISAMBIGUATOR_MAP: ReadonlyMap<string, string | null> = new Map();
 
-const MarkdownContainer = memo(function MarkdownContainer(props: { children: ReactNode }) {
+const MarkdownContainer = memo(function MarkdownContainer(props: {
+  children: ReactNode;
+  /** Marks the container for the streaming caret. */
+  streaming?: boolean;
+}) {
   return (
-    <div className="chat-markdown w-full min-w-0 leading-relaxed text-foreground">
+    <div
+      className="chat-markdown w-full min-w-0 leading-relaxed text-foreground"
+      data-streaming={props.streaming ? "true" : undefined}
+    >
       {props.children}
     </div>
   );
@@ -481,36 +720,43 @@ const MarkdownContainer = memo(function MarkdownContainer(props: { children: Rea
 
 const RawMarkdownText = memo(function RawMarkdownText(props: { text: string }) {
   return props.text.length > 0 ? (
-    <div className="whitespace-pre-wrap wrap-break-word">{props.text}</div>
+    <div className="chat-markdown-raw whitespace-pre-wrap wrap-break-word">{props.text}</div>
   ) : null;
 });
 
 const LightweightMarkdownPreview = memo(function LightweightMarkdownPreview(props: {
   text: string;
+  streaming?: boolean;
 }) {
   return (
-    <MarkdownContainer>
+    <MarkdownContainer streaming={props.streaming ?? false}>
       <RawMarkdownText text={props.text} />
     </MarkdownContainer>
   );
 });
 
+const GFM_ALERT_PRESENTATION: Readonly<
+  Record<GfmAlertType, { readonly title: string; readonly icon: LucideIcon }>
+> = {
+  note: { title: "Note", icon: InfoIcon },
+  tip: { title: "Tip", icon: LightbulbIcon },
+  important: { title: "Important", icon: MessageSquareWarningIcon },
+  warning: { title: "Warning", icon: TriangleAlertIcon },
+  caution: { title: "Caution", icon: OctagonAlertIcon },
+};
+
 const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
   text: string;
   cwd: string | undefined;
   mode: MarkdownRenderMode;
+  foldCodeBlocks?: boolean;
 }) {
   const openLink = useOpenLink();
   const repositoryLinks = useContext(RepositoryLinks);
-  const { text, cwd, mode } = props;
+  const { text, cwd, mode, foldCodeBlocks = false } = props;
   const wordWrap = useDiffWordWrap();
   const { resolvedTheme } = useTheme();
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
-  const handleFileNavigation = useFileNavigation();
-  const handleFileNavigationRef = useRef(handleFileNavigation);
-  useEffect(() => {
-    handleFileNavigationRef.current = handleFileNavigation;
-  }, [handleFileNavigation]);
   // The disambiguator map is an O(N·K) scan over the whole message, so we
   // skip it for empty text and reconcile once content is present. Absence of
   // an entry is fine — chips render correctly without a parent-dir suffix.
@@ -576,57 +822,14 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
           );
         }
 
-        const disambiguator = disambiguatorMap.get(href) ?? null;
-        const positionSuffix = meta.line
-          ? `:${meta.line}${meta.column ? `:${meta.column}` : ""}`
-          : "";
-        const tooltipText = `${meta.displayPath}${positionSuffix}`;
-        const handleClick = (event: React.MouseEvent<HTMLAnchorElement>) => {
-          event.preventDefault();
-          event.stopPropagation();
-          if (handleFileNavigationRef.current(meta.targetPath)) {
-            return;
-          }
-          void openFileInEditor(meta.targetPath);
-        };
-
         const chip = (
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <a
-                    {...props}
-                    // Keep the original href (typically a `file://` URI) so
-                    // cmd/ctrl-click or middle-click falls back to the
-                    // browser's default file-URL handling rather than
-                    // navigating inside the SPA to `<app-origin>/Users/…`
-                    // and hitting a 404. The rewritten form is only useful
-                    // for tooltip display, which `TooltipPopup` already
-                    // handles below.
-                    href={href}
-                    className="chat-markdown-file-link"
-                    onClick={handleClick}
-                  />
-                }
-              >
-                <VscodeEntryIcon
-                  pathValue={meta.filePath}
-                  kind={inferEntryKindFromPath(meta.filePath)}
-                  theme={resolvedTheme === "dark" ? "dark" : "light"}
-                  className="chat-markdown-file-link-icon"
-                />
-                <span className="chat-markdown-file-link-label">{meta.basename}</span>
-                {meta.line ? (
-                  <span className="chat-markdown-file-link-position">{positionSuffix}</span>
-                ) : null}
-                {disambiguator ? (
-                  <span className="chat-markdown-file-link-disambiguator">{disambiguator}</span>
-                ) : null}
-              </TooltipTrigger>
-              <TooltipPopup>{tooltipText}</TooltipPopup>
-            </Tooltip>
-          </TooltipProvider>
+          <MarkdownFileChip
+            href={href}
+            meta={meta}
+            disambiguator={disambiguatorMap.get(href) ?? null}
+            theme={resolvedTheme === "dark" ? "dark" : "light"}
+            anchorProps={props}
+          />
         );
         // `[validates the input](src/a.ts:12)` keeps its prose next to the chip.
         return isMarkdownFileLinkLabel(nodeToPlainText(children), meta) ? (
@@ -643,17 +846,18 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
           return <pre {...props}>{children}</pre>;
         }
 
+        const language = extractFenceLanguage(codeBlock.className);
         if (mode === "streaming-lite") {
           return (
-            <MarkdownCodeBlock code={codeBlock.code}>
+            <MarkdownCodeBlock code={codeBlock.code} language={language}>
               <pre {...props}>{children}</pre>
             </MarkdownCodeBlock>
           );
         }
 
-        if (extractFenceLanguage(codeBlock.className) === "mermaid") {
+        if (language === "mermaid") {
           return (
-            <MarkdownCodeBlock code={codeBlock.code}>
+            <MarkdownCodeBlock code={codeBlock.code} variant="bare">
               <MermaidDiagram
                 source={codeBlock.code}
                 theme={resolvedTheme}
@@ -663,12 +867,17 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
           );
         }
 
+        const fenceInfo = hastCodeFenceInfo(node);
         return (
           <MarkdownCodeBlock
             code={codeBlock.code}
+            language={language}
+            filePath={codeBlockFilePath(fenceInfo.lang, fenceInfo.meta)}
+            cwd={cwd}
+            lineCount={codeLineCount(codeBlock.code)}
             command={
               hasClosedCodeFence(text, node?.position?.start.offset, node?.position?.end.offset)
-                ? runnableShellCode(extractFenceLanguage(codeBlock.className), codeBlock.code)
+                ? runnableShellCode(language, codeBlock.code)
                 : null
             }
           >
@@ -704,6 +913,20 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
           </ol>
         );
       },
+      blockquote({ node, children, ...props }) {
+        const alertType = node?.properties.dataAlert;
+        if (!isGfmAlertType(alertType)) return <blockquote {...props}>{children}</blockquote>;
+        const { title, icon: Icon } = GFM_ALERT_PRESENTATION[alertType];
+        return (
+          <div role="note" className="chat-markdown-alert" data-alert={alertType}>
+            <div className="chat-markdown-alert-title" data-thread-find-ignore>
+              <Icon aria-hidden="true" className="size-4 shrink-0" />
+              <span>{title}</span>
+            </div>
+            {children}
+          </div>
+        );
+      },
       table({ node: _node, children, ...props }) {
         return (
           <div
@@ -719,17 +942,20 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
   );
 
   return (
-    <ReactMarkdown
-      remarkPlugins={[
-        remarkGfm,
-        remarkKeepWindowsPathDestinations,
-        [remarkIssueReferences, repositoryLinks],
-      ]}
-      urlTransform={chatMarkdownUrlTransform}
-      components={markdownComponents}
-    >
-      {text}
-    </ReactMarkdown>
+    <CodeBlockFoldContext value={foldCodeBlocks}>
+      <ReactMarkdown
+        remarkPlugins={[
+          remarkGfm,
+          remarkGfmAlerts,
+          remarkKeepWindowsPathDestinations,
+          [remarkIssueReferences, repositoryLinks],
+        ]}
+        urlTransform={chatMarkdownUrlTransform}
+        components={markdownComponents}
+      >
+        {text}
+      </ReactMarkdown>
+    </CodeBlockFoldContext>
   );
 });
 
@@ -737,11 +963,17 @@ const RenderedMarkdown = memo(function RenderedMarkdown(props: {
   text: string;
   cwd: string | undefined;
   mode?: MarkdownRenderMode;
+  foldCodeBlocks?: boolean;
 }) {
-  const { text, cwd, mode = "settled" } = props;
+  const { text, cwd, mode = "settled", foldCodeBlocks = false } = props;
   return (
     <MarkdownContainer>
-      <RenderedMarkdownFragment text={text} cwd={cwd} mode={mode} />
+      <RenderedMarkdownFragment
+        text={text}
+        cwd={cwd}
+        mode={mode}
+        foldCodeBlocks={mode === "settled" && foldCodeBlocks}
+      />
     </MarkdownContainer>
   );
 });
@@ -957,6 +1189,8 @@ function ChatMarkdown({
   cwd,
   isStreaming = false,
   policy = "default",
+  foldCodeBlocks = false,
+  showStreamingCaret = false,
 }: ChatMarkdownProps) {
   if (policy === "external-bot") return <ExternalBotMarkdown text={text} />;
   return (
@@ -965,16 +1199,25 @@ function ChatMarkdown({
       textRevision={textRevision}
       cwd={cwd}
       isStreaming={isStreaming}
+      foldCodeBlocks={foldCodeBlocks}
+      showStreamingCaret={showStreamingCaret}
     />
   );
 }
 
-function TrustedChatMarkdown({ text, textRevision, cwd, isStreaming = false }: ChatMarkdownProps) {
+function TrustedChatMarkdown({
+  text,
+  textRevision,
+  cwd,
+  isStreaming = false,
+  foldCodeBlocks = false,
+  showStreamingCaret = false,
+}: ChatMarkdownProps) {
   const streamingState = useStreamingMarkdownState(text, isStreaming, textRevision);
 
   if (streamingState) {
     if (streamingState.fallbackToRawMessage) {
-      return <LightweightMarkdownPreview text={text} />;
+      return <LightweightMarkdownPreview text={text} streaming={showStreamingCaret} />;
     }
 
     const shouldRenderRawActiveBlock = shouldRenderActiveBlockAsRawPreview(
@@ -983,7 +1226,7 @@ function TrustedChatMarkdown({ text, textRevision, cwd, isStreaming = false }: C
     );
 
     return (
-      <MarkdownContainer>
+      <MarkdownContainer streaming={showStreamingCaret}>
         <SealedMarkdownBlocks blocks={streamingState.committedState.sealedBlocks} cwd={cwd} />
         {streamingState.liveActiveText.length > 0 ? (
           shouldRenderRawActiveBlock ? (
@@ -1000,7 +1243,7 @@ function TrustedChatMarkdown({ text, textRevision, cwd, isStreaming = false }: C
     );
   }
 
-  return <RenderedMarkdown text={text} cwd={cwd} mode="settled" />;
+  return <RenderedMarkdown text={text} cwd={cwd} mode="settled" foldCodeBlocks={foldCodeBlocks} />;
 }
 
 export default memo(ChatMarkdown);

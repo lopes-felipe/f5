@@ -113,7 +113,8 @@ it("keeps the choices and request id across parent re-renders and a retry", asyn
   active = await render(harness);
   await page.getByRole("radio", { name: "One thread per topic" }).click();
   await page.getByRole("group", { name: "Port model", exact: true }).getByRole("button", { name: /Claude Sonnet 4.6/ }).click();
-  await page.getByText("Claude Opus 4.6", { exact: true }).click();
+  // The picker row, by its full name: other controls can also show the bare model name.
+  await page.getByRole("button", { name: /^Claude Opus 4\.6 Claude · claude-opus-4-6/ }).click();
   await active.rerender(harness);
   await expect.element(page.getByRole("radio", { name: "One thread per topic" })).toBeChecked();
   await expect.element(page.getByRole("group", { name: "Port model", exact: true }).getByRole("button", { name: /Claude Opus 4.6/ })).toBeInTheDocument();

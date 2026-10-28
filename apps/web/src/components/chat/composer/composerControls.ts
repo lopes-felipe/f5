@@ -164,6 +164,8 @@ export interface ComposerAttachments {
   onAttachFiles: (files: File[]) => void;
   onComposerPaste: (event: React.ClipboardEvent<HTMLElement>) => void;
   isDragOverComposer: boolean;
+  /** What a drop would do: attach files, or insert a file-tree / PR reference. */
+  composerDropKind: "files" | "reference";
   onComposerFileMentionDragEnterCapture: (event: React.DragEvent<HTMLDivElement>) => void;
   onComposerFileMentionDragOverCapture: (event: React.DragEvent<HTMLDivElement>) => void;
   onComposerFileMentionDragLeaveCapture: (event: React.DragEvent<HTMLDivElement>) => void;

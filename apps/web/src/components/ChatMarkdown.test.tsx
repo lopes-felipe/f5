@@ -235,3 +235,118 @@ it("marks image-only links so they render without an underline", async () => {
   expect(html.match(/data-markdown-image-link="true"/g)).toHaveLength(1);
   expect(html).toMatch(/<a data-markdown-image-link="true" href="https:\/\/example\.com\/ci"/);
 });
+
+describe("ChatMarkdown code block header and fold", () => {
+  const fence = (lines: number, info = "ts") =>
+    `\`\`\`${info}\n${Array.from({ length: lines }, (_, index) => `line ${index + 1}`).join("\n")}\n\`\`\``;
+  const settled = (text: string, props: { foldCodeBlocks?: boolean } = {}) =>
+    renderToStaticMarkup(<ChatMarkdown text={text} cwd="/tmp/project" {...props} />);
+
+  it("renders a header with the language label, line count and Copy on settled blocks", () => {
+    const html = settled(fence(12));
+    expect(html).toContain("chat-markdown-codeblock-header");
+    expect(html).toContain('<span class="chat-markdown-codeblock-language">TypeScript</span>');
+    expect(html).toContain("12 lines");
+    expect(html).toContain('aria-label="Copy code"');
+    expect(html).toMatch(/class="chat-markdown-codeblock-title" data-thread-find-ignore/);
+  });
+
+  it("hides the line count below ten lines and labels an untagged fence as Text", () => {
+    const html = settled("```\nplain\n```");
+    expect(html).toContain('<span class="chat-markdown-codeblock-language">Text</span>');
+    expect(html).not.toMatch(/\d+ lines/);
+  });
+
+  it("gives a closed fence a label-only header while streaming", () => {
+    const html = renderToStaticMarkup(
+      <ChatMarkdown text={`${fence(40)}\n\nStill typing`} cwd="/tmp/project" isStreaming />,
+    );
+    expect(html).toContain('<span class="chat-markdown-codeblock-language">TypeScript</span>');
+    expect(html).not.toContain("40 lines");
+    expect(html).not.toContain("data-folded");
+  });
+
+  it("keeps Mermaid bare, without a header", () => {
+    const html = settled("```mermaid\nflowchart LR\n A --> B\n```");
+    expect(html).toContain("chat-markdown-codeblock-bare");
+    expect(html).not.toContain("chat-markdown-codeblock-header");
+  });
+
+  it("folds more than 30 lines only when folding is enabled", () => {
+    expect(settled(fence(30), { foldCodeBlocks: true })).not.toContain("data-folded");
+    const folded = settled(fence(31), { foldCodeBlocks: true });
+    expect(folded).toContain('data-folded="true"');
+    expect(folded).toContain("Show all 31 lines");
+    expect(folded).toContain('aria-expanded="false"');
+    expect(settled(fence(31))).not.toContain("data-folded");
+    expect(
+      renderToStaticMarkup(
+        <ChatMarkdown text={fence(31)} cwd="/tmp/project" isStreaming foldCodeBlocks />,
+      ),
+    ).not.toContain("data-folded");
+  });
+
+  it("shows a fence file path as a chip, and nothing for a path split into meta", () => {
+    const chip = settled(fence(2, "ts:src/a.ts"));
+    expect(chip).toContain("chat-markdown-file-link");
+    expect(chip).toContain('chat-markdown-file-link-label">a.ts<');
+    const split = settled(fence(2, "ts:src/my file.ts"));
+    expect(split).not.toContain("chat-markdown-file-link");
+    expect(split).not.toContain("chat-markdown-codeblock-path");
+  });
+});
+
+describe("ChatMarkdown GFM alerts", () => {
+  const html = (text: string) =>
+    renderToStaticMarkup(<ChatMarkdown text={text} cwd="/tmp/project" />);
+
+  it.each([
+    ["NOTE", "note", "Note"],
+    ["TIP", "tip", "Tip"],
+    ["IMPORTANT", "important", "Important"],
+    ["WARNING", "warning", "Warning"],
+    ["caution", "caution", "Caution"],
+  ])("renders [!%s] as a %s callout", (marker, type, title) => {
+    const markup = html(`> [!${marker}]\n> Body text`);
+    expect(markup).toContain(`role="note" class="chat-markdown-alert" data-alert="${type}"`);
+    expect(markup).toContain(`<span>${title}</span>`);
+    expect(markup).toContain("<p>Body text</p>");
+    expect(markup).not.toContain("[!");
+    expect(markup).not.toContain("<blockquote");
+  });
+
+  it("drops a hard break after the marker and a marker-only paragraph", () => {
+    expect(html("> [!NOTE]  \n> Body")).toContain("<p>Body</p>");
+    const markerOnly = html("> [!TIP]\n>\n> Body");
+    expect(markerOnly).toContain('data-alert="tip"');
+    expect(markerOnly.match(/<p>/g)).toHaveLength(1);
+  });
+
+  it.each([
+    ["an unknown type", "> [!FOO]\n> Body"],
+    ["a mid-paragraph marker", "> Before [!NOTE]\n> Body"],
+    ["a marker with no body", "> [!NOTE]"],
+    ["a nested quote", "> > [!NOTE]\n> > Body"],
+  ])("leaves %s as a plain blockquote", (_label, text) => {
+    const markup = html(text);
+    expect(markup).toContain("<blockquote>");
+    expect(markup).not.toContain("chat-markdown-alert");
+  });
+});
+
+describe("ChatMarkdown streaming caret", () => {
+  it("marks the container only when the caret is requested", () => {
+    const text = "Streaming paragraph";
+    expect(
+      renderToStaticMarkup(
+        <ChatMarkdown text={text} cwd="/tmp/project" isStreaming showStreamingCaret />,
+      ),
+    ).toContain('data-streaming="true"');
+    expect(
+      renderToStaticMarkup(<ChatMarkdown text={text} cwd="/tmp/project" isStreaming />),
+    ).not.toContain("data-streaming");
+    expect(
+      renderToStaticMarkup(<ChatMarkdown text={text} cwd="/tmp/project" showStreamingCaret />),
+    ).not.toContain("data-streaming");
+  });
+});

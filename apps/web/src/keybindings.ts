@@ -116,12 +116,31 @@ function isWorkingRibbonKey(event: ShortcutEventLike): boolean {
   return Boolean(document.activeElement?.closest?.(WORKING_RIBBON_STAGE_SELECTOR));
 }
 
+/**
+ * Marks an expanded composer form and the popups it owns (they render in a
+ * portal, outside the form).
+ */
+export const EXPANDED_COMPOSER_ATTRIBUTE = "data-composer-expanded";
+const EXPANDED_COMPOSER_SELECTOR = `[${EXPANDED_COMPOSER_ATTRIBUTE}="true"]`;
+
+/**
+ * A bare Escape inside an expanded composer belongs to the composer (close a
+ * popup, dismiss suggestions, then shrink the editor), so a bare binding such
+ * as `escape` for `thread.stop` cannot fire under it.
+ */
+export function isExpandedComposerEscape(event: ShortcutEventLike): boolean {
+  if (event.key !== "Escape" && event.key.toLowerCase() !== "escape") return false;
+  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return false;
+  if (typeof document === "undefined") return false;
+  return Boolean(document.activeElement?.closest?.(EXPANDED_COMPOSER_SELECTOR));
+}
+
 export function resolveShortcutBinding(
   event: ShortcutEventLike,
   keybindings: ResolvedKeybindingsConfig,
   options?: ShortcutMatchOptions,
 ): ResolvedKeybindingRule | null {
-  if (isWorkingRibbonKey(event)) return null;
+  if (isWorkingRibbonKey(event) || isExpandedComposerEscape(event)) return null;
   const platform = resolvePlatform(options);
   const context = resolveContext(options);
 

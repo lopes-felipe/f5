@@ -1,34 +1,15 @@
 import { memo } from "react";
-import { CheckIcon, CopyIcon, EllipsisIcon } from "lucide-react";
+import { EllipsisIcon, QuoteIcon } from "lucide-react";
 
-import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
-import { toastManager } from "../ui/toast";
 
+/** Secondary actions for a settled assistant message; Copy sits inline beside it. */
 export const AssistantMessageActions = memo(function AssistantMessageActions({
-  rawText,
+  onQuote,
 }: {
-  rawText: string;
+  onQuote: () => void;
 }) {
-  const isDisabled = rawText.length === 0;
-  const { copyToClipboard, isCopied } = useCopyToClipboard({
-    onCopy: () => {
-      toastManager.add({
-        type: "success",
-        title: "Raw markdown copied",
-      });
-    },
-    onError: (error) => {
-      toastManager.add({
-        type: "error",
-        title: "Could not copy raw markdown",
-        description:
-          error instanceof Error ? error.message : "An unexpected clipboard error occurred.",
-      });
-    },
-  });
-
   return (
     <Menu>
       <MenuTrigger
@@ -36,7 +17,7 @@ export const AssistantMessageActions = memo(function AssistantMessageActions({
           <Button
             type="button"
             size="icon-xs"
-            variant="outline"
+            variant="ghost"
             title="Message actions"
             aria-label="Message actions"
           />
@@ -44,10 +25,10 @@ export const AssistantMessageActions = memo(function AssistantMessageActions({
       >
         <EllipsisIcon aria-hidden="true" className="size-3.5" />
       </MenuTrigger>
-      <MenuPopup side="bottom" align="start">
-        <MenuItem onClick={() => copyToClipboard(rawText)} disabled={isDisabled}>
-          {isCopied ? <CheckIcon className="text-success" /> : <CopyIcon />}
-          {isCopied ? "Copied" : "Copy raw markdown"}
+      <MenuPopup side="bottom" align="end">
+        <MenuItem onClick={onQuote}>
+          <QuoteIcon />
+          Quote in reply
         </MenuItem>
       </MenuPopup>
     </Menu>

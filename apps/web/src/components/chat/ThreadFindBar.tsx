@@ -1,7 +1,9 @@
 import type { ThreadId, ThreadSearchResult } from "@t3tools/contracts";
+import { ChevronDownIcon, ChevronUpIcon, SearchIcon, XIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ensureNativeApi } from "../../nativeApi";
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
 
 export type ThreadFindMatch = NonNullable<ThreadSearchResult["match"]> & { query: string };
 export function ThreadFindBar({
@@ -57,15 +59,19 @@ export function ThreadFindBar({
       window.clearTimeout(timer);
     };
   }, [threadId, query, index, retry]);
+  // Each Previous/Next is a fresh request, even when the index is unchanged
+  // (a single match the reader navigated away from must be selectable again).
   const move = (delta: number) => {
     if (!result?.totalMatches) return;
     setIndex((result.activeIndex + delta + result.totalMatches) % result.totalMatches);
+    setRetry((value) => value + 1);
   };
   return (
     <div
       role="search"
       aria-label="Find in thread"
-      className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2"
+      className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-background px-3 py-1.5"
+      data-thread-find-ignore
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           event.preventDefault();
@@ -79,8 +85,10 @@ export function ThreadFindBar({
         }
       }}
     >
-      <input
+      <SearchIcon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
+      <Input
         ref={input}
+        size="sm"
         aria-label="Find in thread"
         placeholder="Find messages and plans…"
         maxLength={512}
@@ -89,9 +97,9 @@ export function ThreadFindBar({
           setQuery(event.target.value);
           setIndex(0);
         }}
-        className="min-w-32 flex-1 rounded border border-border bg-background px-2 py-1 text-sm"
+        className="min-w-32 flex-1"
       />
-      <span role="status" className="text-xs text-muted-foreground">
+      <span role="status" className="text-xs text-muted-foreground tabular-nums">
         {pending
           ? "Searching…"
           : failed
@@ -101,31 +109,41 @@ export function ThreadFindBar({
               : ""}
       </span>
       {failed ? (
-        <Button size="sm" variant="ghost" onClick={() => setRetry((value) => value + 1)}>
+        <Button size="xs" variant="outline" onClick={() => setRetry((value) => value + 1)}>
           Retry
         </Button>
       ) : null}
-      <Button
-        size="sm"
-        variant="ghost"
-        aria-label="Previous match"
-        disabled={!result?.totalMatches || pending}
-        onClick={() => move(-1)}
-      >
-        ↑
-      </Button>
-      <Button
-        size="sm"
-        variant="ghost"
-        aria-label="Next match"
-        disabled={!result?.totalMatches || pending}
-        onClick={() => move(1)}
-      >
-        ↓
-      </Button>
-      <Button size="sm" variant="ghost" aria-label="Close find" onClick={onClose}>
-        ×
-      </Button>
+      <div className="flex items-center gap-0.5">
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          aria-label="Previous match"
+          title="Previous match (Shift+Enter)"
+          disabled={!result?.totalMatches || pending}
+          onClick={() => move(-1)}
+        >
+          <ChevronUpIcon aria-hidden="true" />
+        </Button>
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          aria-label="Next match"
+          title="Next match (Enter)"
+          disabled={!result?.totalMatches || pending}
+          onClick={() => move(1)}
+        >
+          <ChevronDownIcon aria-hidden="true" />
+        </Button>
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          aria-label="Close find"
+          title="Close (Escape)"
+          onClick={onClose}
+        >
+          <XIcon aria-hidden="true" />
+        </Button>
+      </div>
       {result?.match ? (
         <p
           className="basis-full truncate text-xs text-muted-foreground"
