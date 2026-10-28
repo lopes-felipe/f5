@@ -445,7 +445,9 @@ describe("Claude transcript forks", () => {
     {
       ...row(boundary, null, "system", 0),
       subtype: "compact_boundary",
-      compactMetadata: { preservedSegment: { headUuid: boundary, anchorUuid: boundary } },
+      compactMetadata: {
+        preservedSegment: { headUuid: root, tailUuid: root, anchorUuid: boundary },
+      },
     },
     row(root, boundary, "assistant", 1),
     row(hook1, root, "system", 2),
@@ -501,7 +503,8 @@ describe("Claude transcript forks", () => {
         "uuid" in entry && entry.uuid === root ? { ...entry, parentUuid: null } : entry,
       );
     const entries = await readClaudeTranscript((await fixture(uncompacted)).file, false);
-    expect(findClaudeActiveLeaf(entries)).toBe(hookT);
+    // The CLI resumes from the message above the checkpointed stop-hook record.
+    expect(findClaudeActiveLeaf(entries)).toBe(target);
     expect(classifyClaudeResumePoint(entries, target)).toBe("active");
     // A non-explicit checkpoint yields to a later row that descends from it.
     const advanced = await readClaudeTranscript(
@@ -552,6 +555,13 @@ describe("Claude transcript forks", () => {
     expect(repaired).toContain(`"leafUuid":"${hookT}"`);
     expect(repaired).not.toContain(`"leafUuid":"${strayLast}"`);
     expect(repaired).toContain('"type":"queue-operation"');
+    expect(result.quarantinedMalformedLines).toBe(0);
+    // The model is told that replies on the removed branch left its context.
+    const message = entries.get(target)?.message as
+      | { content: Array<{ text?: string }> }
+      | undefined;
+    const content = message?.content ?? [];
+    expect(content.at(-1)?.text).toContain("separate branch of this conversation");
     expect(await inspectClaudeResumePoint(input.file, target)).toEqual({ reason: "eligible" });
     await undoClaudeResumeRepair(input.file, result.backupId, result.resumeCursor);
     expect(await readFile(input.file, "utf8")).toBe(original);
@@ -584,5 +594,148 @@ describe("Claude transcript forks", () => {
     const result = await repairClaudeResumePoint({ ...input, resumeCursor: cursor });
     expect(result).toMatchObject({ status: "validated", quarantinedBranchMessages: 0 });
     expect(await readFile(input.file, "utf8")).toBe(original);
+  });
+
+  // Each layout below was checked against the bundled CLI 2.1.295 with
+  // --resume-session-at, and the expected verdicts are the CLI's.
+  const earlier = id(20);
+  const prompt = id(21);
+  const side = id(22);
+  const linear = [row(root, null, "user", 1), row(earlier, root, "assistant", 2)];
+  const repairLayout = async (rows: unknown[]) => {
+    const input = { ...(await fixture(rows)), target };
+    const result = await repairClaudeResumePoint({
+      ...input,
+      resumeCursor: { ...cursor, turnBoundaries: [{ turnId: "turn-3", assistantUuid: target }] },
+    });
+    const entries = await readClaudeTranscript(input.file, false);
+    return { result, entries, text: await readFile(input.file, "utf8") };
+  };
+
+  it("lets a later message override an explicit checkpoint", async () => {
+    const rows = [
+      ...linear,
+      { type: "last-prompt", leafUuid: earlier, explicit: true },
+      row(prompt, earlier, "user", 3),
+      row(target, prompt, "assistant", 4),
+    ];
+    const entries = await readClaudeTranscript((await fixture(rows)).file, false);
+    expect(findClaudeActiveLeaf(entries)).toBe(target);
+    expect(classifyClaudeResumePoint(entries, target)).toBe("active");
+    expect((await repairLayout(rows)).result.status).toBe("validated");
+  });
+
+  it("removes an explicit checkpoint that pins an earlier turn", async () => {
+    const rows = [
+      ...linear,
+      row(prompt, earlier, "user", 3),
+      row(target, prompt, "assistant", 4),
+      { type: "last-prompt", leafUuid: earlier, explicit: true },
+    ];
+    const entries = await readClaudeTranscript((await fixture(rows)).file, false);
+    expect(findClaudeActiveLeaf(entries)).toBe(earlier);
+    expect(classifyClaudeResumePoint(entries, target)).toBe("off_branch");
+    const repaired = await repairLayout(rows);
+    expect(repaired.result).toMatchObject({ status: "repaired", quarantinedBranchMessages: 0 });
+    expect(repaired.text).not.toContain('"last-prompt"');
+    expect(classifyClaudeResumePoint(repaired.entries, target)).toBe("active");
+  });
+
+  it("removes a checkpoint before the target and a later row off its lineage", async () => {
+    const rows = [
+      ...linear,
+      row(prompt, earlier, "user", 3),
+      row(target, prompt, "assistant", 4),
+      { type: "last-prompt", leafUuid: earlier },
+      row(side, root, "system", 5),
+    ];
+    const entries = await readClaudeTranscript((await fixture(rows)).file, false);
+    expect(classifyClaudeResumePoint(entries, target)).toBe("off_branch");
+    const repaired = await repairLayout(rows);
+    expect(repaired.result).toMatchObject({ status: "repaired", quarantinedBranchMessages: 1 });
+    expect(repaired.entries.has(side)).toBe(false);
+    expect(classifyClaudeResumePoint(repaired.entries, target)).toBe("active");
+  });
+
+  it("skips progress records the CLI does not load", async () => {
+    const progress = { ...row(side, root, "progress", 3), data: { type: "bash_progress" } };
+    const trailing = [row(root, null, "user", 1), row(target, root, "assistant", 2), progress];
+    const entries = await readClaudeTranscript((await fixture(trailing)).file, false);
+    expect(findClaudeActiveLeaf(entries)).toBe(target);
+    expect(classifyClaudeResumePoint(entries, target)).toBe("active");
+    expect((await repairLayout(trailing)).result.status).toBe("validated");
+    // A row under a progress record is loaded under that record's parent.
+    const forwarded = [
+      row(root, null, "user", 1),
+      { ...progress, timestamp: at(2) },
+      row(earlier, side, "assistant", 3),
+      row(prompt, root, "user", 4),
+      row(target, prompt, "assistant", 5),
+    ];
+    const view = await readClaudeTranscript((await fixture(forwarded)).file, false);
+    expect(classifyClaudeResumePoint(view, earlier)).toBe("off_branch");
+    expect(classifyClaudeResumePoint(view, target)).toBe("active");
+  });
+
+  // Before the compaction: root, earlier, then the preserved prompt and reply.
+  const old = id(30);
+  const kept = id(31);
+  const summary = id(32);
+  const compactedRows = [
+    row(root, null, "user", 1),
+    row(earlier, root, "assistant", 2),
+    row(old, earlier, "user", 3),
+    row(kept, old, "assistant", 4),
+    {
+      ...row(boundary, null, "system", 5),
+      subtype: "compact_boundary",
+      compactMetadata: { preservedSegment: { headUuid: old, tailUuid: kept, anchorUuid: summary } },
+    },
+    { ...row(summary, boundary, "user", 6), isCompactSummary: true },
+    row(prompt, kept, "user", 7),
+    row(target, prompt, "assistant", 8),
+  ];
+
+  it("follows parents the CLI relinks across a preserved compaction", async () => {
+    // The notification's parent is dropped with the history before the
+    // compaction, so the CLI moves it under the preserved tail, beside the target.
+    const rows = [
+      ...compactedRows,
+      row(staleNote, earlier, "user", 9),
+      row(strayReply, staleNote, "assistant", 10),
+    ];
+    const entries = await readClaudeTranscript((await fixture(rows)).file, false);
+    expect(findClaudeActiveLeaf(entries)).toBe(strayReply);
+    expect(classifyClaudeResumePoint(entries, target)).toBe("off_branch");
+    // History before the compaction is no longer loaded; it stays selectable.
+    expect(classifyClaudeResumePoint(entries, earlier)).toBe("detached");
+    const repaired = await repairLayout(rows);
+    expect(repaired.result).toMatchObject({ status: "repaired", quarantinedBranchMessages: 2 });
+    expect(classifyClaudeResumePoint(repaired.entries, target)).toBe("active");
+  });
+
+  it("picks among several relinked leaves by checkpoint, or the only leaf", async () => {
+    const branches = [
+      ...compactedRows,
+      row(staleNote, kept, "user", 9),
+      row(strayReply, staleNote, "assistant", 10),
+    ];
+    for (const explicit of [true, false]) {
+      const rows = [...branches, { type: "last-prompt", leafUuid: target, explicit }];
+      const entries = await readClaudeTranscript((await fixture(rows)).file, false);
+      expect(findClaudeActiveLeaf(entries)).toBe(target);
+    }
+    // A checkpoint on a stop-hook record is not a leaf message, so the last row wins.
+    const hooked = [...branches.slice(0, 8), row(hookT, target, "system", 9), ...branches.slice(8)];
+    const hookedEntries = await readClaudeTranscript(
+      (await fixture([...hooked, { type: "last-prompt", leafUuid: hookT }])).file,
+      false,
+    );
+    expect(findClaudeActiveLeaf(hookedEntries)).toBe(strayReply);
+    const single = await readClaudeTranscript(
+      (await fixture([...compactedRows, row(hookT, target, "system", 9)])).file,
+      false,
+    );
+    expect(findClaudeActiveLeaf(single)).toBe(target);
   });
 });

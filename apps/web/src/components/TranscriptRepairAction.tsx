@@ -53,12 +53,19 @@ export function TranscriptRepairAction({
         const result = await api.server.repairClaudeTranscript({ threadId });
         setBackupId(result.backupId);
         setCanRepair(false);
+        const changes = [
+          result.restoredMessages > 0 ? `restored ${result.restoredMessages} entries` : "",
+          result.quarantinedBranchMessages > 0
+            ? `removed ${result.quarantinedBranchMessages} entries from a stray branch created by Claude`
+            : "",
+          result.quarantinedMalformedLines > 0
+            ? `set aside ${result.quarantinedMalformedLines} unreadable lines`
+            : "",
+        ].filter(Boolean);
         setMessage(
           result.status === "validated"
             ? "Transcript revalidated. You can continue the thread."
-            : result.quarantinedBranchMessages > 0
-              ? `Removed ${result.quarantinedBranchMessages} entries from a stray branch created by Claude; undo is available. You can continue the thread.`
-              : `Transcript repaired (${result.restoredMessages} entries restored). You can continue the thread.`,
+            : `Transcript repaired${changes.length ? `: ${changes.join("; ")}` : ""}. Undo is available. You can continue the thread.`,
         );
       }
     } catch (error) {

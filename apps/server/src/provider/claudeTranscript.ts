@@ -2,6 +2,13 @@ import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { Utf8Lines } from "@t3tools/shared/utf8Lines";
+import {
+  buildClaudeTranscriptView,
+  ClaudeTranscriptLoader,
+  type ClaudeTranscriptView,
+} from "./claudeTranscriptLoader.ts";
+
+export { buildClaudeTranscriptView, type ClaudeTranscriptView };
 
 /** Read object-shaped JSON without accepting arrays as transcript envelopes. */
 export function transcriptRecord(value: unknown): Record<string, unknown> | undefined {
@@ -37,28 +44,23 @@ export async function findClaudeTranscript(
   return matches[0]!;
 }
 
+const views = new WeakMap<ReadonlyMap<string, unknown>, ClaudeTranscriptView>();
+
 /**
- * Transcript records without a UUID that decide which branch the CLI resumes.
- * Kept beside the index so existing callers keep a plain UUID map.
+ * How the CLI loads this transcript. Indexes from readClaudeTranscript carry
+ * the view built from every record in file order. Other maps are read as rows
+ * in insertion order, without checkpoints.
  */
-export interface ClaudeTranscriptLeafHints {
-  /** `last-prompt` checkpoints in file order. */
-  readonly checkpoints: ReadonlyArray<{
-    readonly leafUuid: string | null;
-    readonly explicit: boolean;
-  }>;
-  /** A compaction kept a preserved segment, which the CLI relinks on load. */
-  readonly relinked: boolean;
-}
-const leafHints = new WeakMap<ReadonlyMap<string, unknown>, ClaudeTranscriptLeafHints>();
-export const claudeTranscriptLeafHints = (entries: ReadonlyMap<string, unknown>) =>
-  leafHints.get(entries);
-export function withClaudeTranscriptLeafHints<T extends ReadonlyMap<string, unknown>>(
-  entries: T,
-  hints: ClaudeTranscriptLeafHints | undefined,
-): T {
-  if (hints) leafHints.set(entries, hints);
-  return entries;
+export function claudeTranscriptView(
+  entries: ReadonlyMap<string, Record<string, unknown>>,
+): ClaudeTranscriptView {
+  return (
+    views.get(entries) ??
+    buildClaudeTranscriptView(
+      [...entries].map(([uuid, entry]) => ({ ...entry, uuid })),
+      true,
+    )
+  );
 }
 
 /** Stream a UUID index; repair may quarantine malformed records reported by line number. */
@@ -68,8 +70,7 @@ export async function readClaudeTranscript(
   options?: { skipMalformed?: boolean; onMalformed?: (line: number) => void; signal?: AbortSignal },
 ) {
   const entries = new Map<string, Record<string, unknown>>();
-  const checkpoints: Array<{ leafUuid: string | null; explicit: boolean }> = [];
-  let relinked = false;
+  const loader = new ClaudeTranscriptLoader();
   let malformedTail = false;
   let lineNumber = 0;
   for await (const line of readClaudeTranscriptLines(file, options?.signal)) {
@@ -87,15 +88,7 @@ export async function readClaudeTranscript(
       malformedTail = !options?.skipMalformed;
       continue;
     }
-    if (
-      entry?.type === "last-prompt" &&
-      (typeof entry.leafUuid === "string" || entry.leafUuid === null)
-    )
-      checkpoints.push({ leafUuid: entry.leafUuid, explicit: entry.explicit === true });
-    if (entry?.type === "system" && entry.subtype === "compact_boundary") {
-      const metadata = transcriptRecord(entry.compactMetadata);
-      if (metadata?.preservedMessages || metadata?.preservedSegment) relinked = true;
-    }
+    loader.add(entry);
     if (typeof entry?.uuid === "string")
       entries.set(
         entry.uuid,
@@ -109,7 +102,8 @@ export async function readClaudeTranscript(
             },
       );
   }
-  return withClaudeTranscriptLeafHints(entries, { checkpoints, relinked });
+  views.set(entries, loader.finish());
+  return entries;
 }
 
 /**
@@ -150,107 +144,13 @@ export function hasClaudeParentChain(
   return cursor === null;
 }
 
-const isClaudeMessage = (entry: Record<string, unknown> | undefined) =>
-  entry?.type === "user" || entry?.type === "assistant";
-
-function descendsFrom(
-  entries: ReadonlyMap<string, Record<string, unknown>>,
-  uuid: string,
-  ancestor: string,
-): boolean {
-  const seen = new Set<string>();
-  let cursor: unknown = entries.get(uuid)?.parentUuid;
-  while (typeof cursor === "string" && !seen.has(cursor)) {
-    if (cursor === ancestor) return true;
-    seen.add(cursor);
-    cursor = entries.get(cursor)?.parentUuid;
-  }
-  return false;
-}
-
 /**
- * The record whose parent chain the CLI loads on resume. It looks for
+ * The message whose parent chain the CLI loads on resume. It looks for
  * `resumeSessionAt` on that chain only, so a UUID on another branch is "not
- * found" even though it is saved. Mirrors the CLI 2.1.295 loader:
- * - Without a relinked compaction, or with an explicit checkpoint, it follows
- *   the last `last-prompt` checkpoint, or the last row when that row descends
- *   from a non-explicit checkpoint. With no checkpoint it takes the last row.
- * - Otherwise, when several branches end in a message, it follows the
- *   checkpoint only if that is one of those messages and the last row does not
- *   descend from it, else the last row.
- * "Last row" is file order, not timestamp: concurrent writes interleave branches.
+ * found" even though it is saved. See claudeTranscriptLoader.ts for the rules.
  */
-export function findClaudeActiveLeaf(
-  entries: ReadonlyMap<string, Record<string, unknown>>,
-): string | undefined {
-  const hints = claudeTranscriptLeafHints(entries);
-  let checkpoint: string | undefined;
-  let explicit = false;
-  for (const row of hints?.checkpoints ?? []) {
-    if (row.leafUuid) {
-      explicit = row.explicit || (explicit && row.leafUuid === checkpoint);
-      checkpoint = row.leafUuid;
-    } else if (row.explicit) {
-      checkpoint = undefined;
-      explicit = false;
-    }
-  }
-  let lastRow: string | undefined;
-  for (const [uuid, entry] of entries) if (entry.isSidechain !== true) lastRow = uuid;
-  const present = checkpoint && entries.has(checkpoint) ? checkpoint : undefined;
-  if (!hints?.relinked || (explicit && present && entries.get(present)?.isSidechain !== true)) {
-    if (
-      present &&
-      !explicit &&
-      lastRow &&
-      lastRow !== present &&
-      descendsFrom(entries, lastRow, present)
-    )
-      return lastRow;
-    return present ?? (hints?.relinked ? undefined : lastRow);
-  }
-  const parents = new Set<unknown>();
-  const messageParents = new Set<unknown>();
-  for (const entry of entries.values()) {
-    parents.add(entry.parentUuid);
-    if (isClaudeMessage(entry)) messageParents.add(entry.parentUuid);
-  }
-  const leafMessages = new Set<string>();
-  for (const [uuid, entry] of entries) {
-    if (parents.has(uuid)) continue;
-    const seen = new Set<string>();
-    let cursor: string | undefined = uuid;
-    let current: Record<string, unknown> | undefined = entry;
-    while (cursor && current && !seen.has(cursor)) {
-      seen.add(cursor);
-      if (isClaudeMessage(current)) {
-        if (!messageParents.has(cursor)) leafMessages.add(cursor);
-        break;
-      }
-      cursor = typeof current.parentUuid === "string" ? current.parentUuid : undefined;
-      current = cursor ? entries.get(cursor) : undefined;
-    }
-  }
-  if (leafMessages.size === 1) return [...leafMessages][0];
-  return present &&
-    leafMessages.has(present) &&
-    (explicit || !lastRow || !descendsFrom(entries, lastRow, present))
-    ? present
-    : lastRow;
-}
-
-/** UUIDs on the active leaf's parent chain, which is what the CLI loads on resume. */
-export function claudeActiveChain(
-  entries: ReadonlyMap<string, Record<string, unknown>>,
-): ReadonlySet<string> {
-  const chain = new Set<string>();
-  let cursor: unknown = findClaudeActiveLeaf(entries);
-  while (typeof cursor === "string" && !chain.has(cursor) && entries.has(cursor)) {
-    chain.add(cursor);
-    cursor = entries.get(cursor)!.parentUuid;
-  }
-  return chain;
-}
+export const findClaudeActiveLeaf = (entries: ReadonlyMap<string, Record<string, unknown>>) =>
+  claudeTranscriptView(entries).leaf;
 
 /**
  * - active: the CLI will find it.
@@ -265,14 +165,17 @@ export type ClaudeResumePointState = "active" | "off_branch" | "detached" | "mis
 export function classifyClaudeResumePoint(
   entries: ReadonlyMap<string, Record<string, unknown>>,
   uuid: string,
-  activeChain: ReadonlySet<string> = claudeActiveChain(entries),
+  view: ClaudeTranscriptView = claudeTranscriptView(entries),
 ): ClaudeResumePointState {
   if (!hasClaudeParentChain(entries, uuid)) return "missing";
-  if (activeChain.has(uuid)) return "active";
-  let cursor: unknown = entries.get(uuid)!.parentUuid;
-  while (typeof cursor === "string") {
-    if (activeChain.has(cursor)) return "off_branch";
-    cursor = entries.get(cursor)?.parentUuid;
+  if (view.chain.has(uuid)) return "active";
+  // Parents as loaded: the CLI skips progress records and relinks compactions.
+  const seen = new Set<string>();
+  for (let cursor = view.parents.get(uuid); typeof cursor === "string"; ) {
+    if (view.chain.has(cursor)) return "off_branch";
+    if (seen.has(cursor)) break;
+    seen.add(cursor);
+    cursor = view.parents.get(cursor);
   }
   return "detached";
 }
@@ -293,13 +196,12 @@ export function resolveClaudeResumePoint(
   boundaries: ReadonlyArray<{ assistantUuid: string }>,
   excluded?: string,
 ): ClaudeResumePointSelection {
-  const activeChain = claudeActiveChain(entries);
+  const view = claudeTranscriptView(entries);
   const candidates = [target, ...boundaries.toReversed().map((boundary) => boundary.assistantUuid)];
   for (const uuid of new Set(candidates)) {
     if (typeof uuid !== "string") continue;
-    const state = classifyClaudeResumePoint(entries, uuid, activeChain);
-    if (state === "off_branch")
-      return { kind: "forked", target: uuid, activeLeaf: findClaudeActiveLeaf(entries) };
+    const state = classifyClaudeResumePoint(entries, uuid, view);
+    if (state === "off_branch") return { kind: "forked", target: uuid, activeLeaf: view.leaf };
     if (uuid === excluded || state === "missing") continue;
     return { kind: "selected", uuid };
   }

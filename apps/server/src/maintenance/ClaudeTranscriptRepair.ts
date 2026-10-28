@@ -3,13 +3,11 @@ import { readFile, writeFile, copyFile, rename, readdir, chmod, unlink } from "n
 import { readCompleteLogLines } from "./completeLogLines.ts";
 import path from "node:path";
 import {
-  claudeTranscriptLeafHints,
+  buildClaudeTranscriptView,
   classifyClaudeResumePoint,
-  findClaudeActiveLeaf,
   hasClaudeParentChain,
   readClaudeTranscript,
   transcriptRecord as record,
-  withClaudeTranscriptLeafHints,
 } from "../provider/claudeTranscript.ts";
 import { readClaudeResumeState } from "../provider/claudeResumeState.ts";
 
@@ -39,79 +37,123 @@ const isResumableClaudeTarget = (
   return state === "active" || state === "detached";
 };
 
+const uuidOf = (value: unknown) => {
+  const uuid = record(value)?.uuid;
+  return typeof uuid === "string" ? uuid : undefined;
+};
+
 /**
- * Collect the branches that fork off the target's lineage and outrank it as the
- * CLI's resume leaf. Each pass removes the subtree that holds the current active
- * leaf, starting at the first entry below the fork point, until the target is on
- * the active chain again. Turns this thread recorded are never removed.
+ * Find the records that make the CLI resume somewhere other than the target,
+ * by record index. Each pass follows the CLI's leaf choice back to where it
+ * leaves the target's lineage. A stray branch there is removed with the
+ * checkpoints that point into it. When the choice starts on the lineage, an
+ * older checkpoint pinned it, so that checkpoint is removed. Turns this thread
+ * recorded are never removed.
  */
-export function findStrayClaudeBranches(
-  entries: ReadonlyMap<string, Record<string, unknown>>,
+export function findStrayClaudeRecords(
+  records: ReadonlyArray<unknown>,
   target: string,
   resumeCursor?: unknown,
-): ReadonlySet<string> {
-  const stray = new Set<string>();
-  if (classifyClaudeResumePoint(entries, target) !== "off_branch") return stray;
-  const lineage = new Set<string>();
-  for (let cursor: unknown = target; typeof cursor === "string" && !lineage.has(cursor); ) {
-    lineage.add(cursor);
-    cursor = entries.get(cursor)?.parentUuid;
-  }
-  const children = new Map<string, string[]>();
-  for (const [uuid, entry] of entries)
-    if (typeof entry.parentUuid === "string")
-      children.set(entry.parentUuid, [...(children.get(entry.parentUuid) ?? []), uuid]);
-  // Checkpoints into quarantined entries leave the file with them.
-  const hints = claudeTranscriptLeafHints(entries);
-  const remaining = new Map(entries);
-  const resync = () =>
-    withClaudeTranscriptLeafHints(
-      remaining,
-      hints && {
-        ...hints,
-        checkpoints: hints.checkpoints.filter((row) => !row.leafUuid || !stray.has(row.leafUuid)),
-      },
-    );
-  while (classifyClaudeResumePoint(resync(), target) === "off_branch") {
+): ReadonlySet<number> {
+  const dropped = new Set<number>();
+  const rawChildren = new Map<string, number[]>();
+  records.forEach((value, index) => {
+    const parent = record(value)?.parentUuid;
+    if (typeof parent === "string" && uuidOf(value))
+      rawChildren.set(parent, [...(rawChildren.get(parent) ?? []), index]);
+  });
+  const indexes = new Map<string, number[]>();
+  records.forEach((value, index) => {
+    const uuid = uuidOf(value);
+    if (uuid) indexes.set(uuid, [...(indexes.get(uuid) ?? []), index]);
+  });
+  const dropRecords = (predicate: (entry: Record<string, unknown>) => boolean) =>
+    records.forEach((value, index) => {
+      const entry = record(value);
+      if (entry && predicate(entry)) dropped.add(index);
+    });
+  for (let pass = 0; ; pass++) {
+    const remaining = records.filter((_, index) => !dropped.has(index));
+    const view = buildClaudeTranscriptView(remaining);
+    const entries = new Map<string, Record<string, unknown>>();
+    for (const value of remaining) {
+      const uuid = uuidOf(value);
+      if (uuid) entries.set(uuid, record(value)!);
+    }
+    if (classifyClaudeResumePoint(entries, target, view) !== "off_branch") break;
+    if (pass >= 64)
+      throw new Error("Could not separate Claude's transcript branches; no changes were made.");
+    const lineage = new Set<string>();
+    for (let cursor: string | null | undefined = target; cursor && !lineage.has(cursor); ) {
+      lineage.add(cursor);
+      cursor = view.parents.get(cursor);
+    }
     let branchRoot: string | undefined;
-    let cursor: unknown = findClaudeActiveLeaf(remaining);
+    let cursor: string | null | undefined = view.start;
     const seen = new Set<string>();
-    while (typeof cursor === "string" && !lineage.has(cursor) && !seen.has(cursor)) {
+    while (cursor && !lineage.has(cursor) && !seen.has(cursor)) {
       seen.add(cursor);
       branchRoot = cursor;
-      cursor = remaining.get(cursor)?.parentUuid;
+      cursor = view.parents.get(cursor);
     }
-    if (typeof cursor !== "string" || !lineage.has(cursor) || branchRoot === undefined)
+    if (branchRoot !== undefined && cursor && lineage.has(cursor)) {
+      const children = new Map<string, string[]>();
+      for (const [uuid, parent] of view.parents)
+        if (parent !== null) children.set(parent, [...(children.get(parent) ?? []), uuid]);
+      const stray = new Set<string>();
+      const pending = [branchRoot];
+      while (pending.length > 0) {
+        const uuid = pending.pop()!;
+        if (stray.has(uuid)) continue;
+        stray.add(uuid);
+        pending.push(...(children.get(uuid) ?? []));
+        // Records the CLI does not load, such as progress, go with their parent.
+        for (const index of rawChildren.get(uuid) ?? []) {
+          const child = uuidOf(records[index])!;
+          if (!view.parents.has(child)) pending.push(child);
+        }
+      }
+      for (const uuid of stray) for (const index of indexes.get(uuid) ?? []) dropped.add(index);
+      dropRecords((entry) => entry.type === "last-prompt" && stray.has(String(entry.leafUuid)));
+    } else if (view.pickedCheckpoint && view.checkpoint) {
+      const pinned = view.checkpoint;
+      dropRecords((entry) => entry.type === "last-prompt" && entry.leafUuid === pinned);
+    } else
       throw new Error("Could not locate where Claude's transcript forked; no changes were made.");
-    const pending = [branchRoot];
-    while (pending.length > 0) {
-      const uuid = pending.pop()!;
-      if (!remaining.delete(uuid)) continue;
-      stray.add(uuid);
-      pending.push(...(children.get(uuid) ?? []));
-    }
   }
   const owned = readClaudeResumeState(resumeCursor)?.turnBoundaries ?? [];
-  if (owned.some((boundary) => stray.has(boundary.assistantUuid)))
+  if (
+    owned.some((boundary) =>
+      (indexes.get(boundary.assistantUuid) ?? []).some((index) => dropped.has(index)),
+    )
+  )
     throw new Error(
-      "Both branches of Claude's transcript hold turns from this thread; no changes were made.",
+      "Both branches of Claude's transcript hold turns from this thread, so repair cannot choose one. No changes were made. Start a new thread to continue.",
     );
-  return stray;
-}
-
-/** Stray records, plus `last-prompt` pointers to them, leave the main transcript. */
-function isStrayClaudeLine(line: string, stray: ReadonlySet<string>): boolean {
-  if (stray.size === 0 || !line.trim()) return false;
-  const entry = record(JSON.parse(line));
-  return (
-    stray.has(String(entry?.uuid)) ||
-    (entry?.type === "last-prompt" && stray.has(String(entry.leafUuid)))
-  );
+  return dropped;
 }
 
 const digest = (text: string) => createHash("sha256").update(text).digest("hex");
 const note =
   "[Transcript repair] The previous attempt was interrupted. Unsaved tool output and incomplete tool calls were lost; verify the work and redo those steps.";
+const branchNote =
+  "[Transcript repair] Claude answered a background notification on a separate branch of this conversation, and that branch was removed. Its replies are no longer in context; check task output again if you need it.";
+
+/** Add the branch note to the target's text, unless that would follow a tool call. */
+function withBranchNote(entry: Record<string, unknown>): string | undefined {
+  const message = record(entry.message);
+  const content = message?.content;
+  if (
+    !message ||
+    !Array.isArray(content) ||
+    content.some((block) => record(block)?.type === "tool_use")
+  )
+    return undefined;
+  return JSON.stringify({
+    ...entry,
+    message: { ...message, content: [...content, { type: "text", text: branchNote }] },
+  });
+}
 
 export async function repairClaudeResumePoint(input: {
   file: string;
@@ -144,12 +186,16 @@ export async function repairClaudeResumePoint(input: {
     if (parsed) throw new Error("Transcript line mapping is inconsistent; no changes were made.");
   }
   if (hasClaudeParentChain(persisted, input.target)) {
-    const stray = findStrayClaudeBranches(persisted, input.target, input.resumeCursor);
+    const parsed = originalLines.map((line, index) =>
+      malformed.includes(index + 1) || !line.trim() ? undefined : (JSON.parse(line) as unknown),
+    );
+    const stray = findStrayClaudeRecords(parsed, input.target, input.resumeCursor);
     if (malformed.length === 0 && stray.size === 0)
       return {
         status: "validated" as const,
         restoredMessages: 0,
         quarantinedBranchMessages: 0,
+        quarantinedMalformedLines: 0,
         resumeSessionAt: input.target,
         resumeCursor: {
           ...record(input.resumeCursor),
@@ -157,8 +203,15 @@ export async function repairClaudeResumePoint(input: {
           resumeRecoveryGeneration: randomUUID(),
         },
       };
+    // The removed branch can hold replies the user saw, so the model is told.
+    const strayRows = [...stray].filter((index) => uuidOf(parsed[index])).length;
+    const noted =
+      strayRows > 0 ? parsed.findLastIndex((value) => uuidOf(value) === input.target) : -1;
     const repaired = originalLines
-      .filter((line, index) => !malformed.includes(index + 1) && !isStrayClaudeLine(line, stray))
+      .flatMap((line, index) => {
+        if (malformed.includes(index + 1) || stray.has(index)) return [];
+        return index === noted ? [withBranchNote(record(parsed[index])!) ?? line] : [line];
+      })
       .join("\n");
     return await writeTranscriptRepair(
       input,
@@ -167,7 +220,7 @@ export async function repairClaudeResumePoint(input: {
       input.target,
       0,
       malformed,
-      stray.size,
+      strayRows,
     );
   }
   const events: Array<Record<string, unknown>> = [];
@@ -501,6 +554,7 @@ async function writeTranscriptRepair(
     backupId: path.basename(backup),
     restoredMessages,
     quarantinedBranchMessages,
+    quarantinedMalformedLines: quarantinedLines.length,
     resumeSessionAt: target,
     resumeCursor: recoveredCursor,
   };

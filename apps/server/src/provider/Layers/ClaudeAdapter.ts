@@ -97,7 +97,7 @@ import {
   readClaudeTranscriptPage,
   resolveClaudeResumePoint,
   classifyClaudeResumePoint,
-  findClaudeActiveLeaf,
+  claudeTranscriptView,
   isClaudeMissingResumeMessageError,
   CLAUDE_TRANSCRIPT_FORKED_MESSAGE,
 } from "../claudeTranscript.ts";
@@ -518,8 +518,11 @@ interface ClaudeSessionContext {
   resumeCompactionDialogShown: boolean;
   resumeAttemptSessionId: string | undefined;
   resumeRejected?: boolean;
-  /** A background transcript fork check is reading the transcript. */
+  /** A background transcript fork check, interrupted when the session stops. */
+  forkCheckFiber?: Fiber.Fiber<void>;
   forkCheckRunning?: boolean;
+  /** Task notifications seen since the last fork check; only they fork the transcript. */
+  taskNotificationsSinceForkCheck?: number;
   resumeConfirmed: boolean;
   /**
    * Settles once the CLI confirms the resumed conversation, or the session
@@ -2188,6 +2191,18 @@ function toSessionError(
     });
   }
   return undefined;
+}
+
+/** The SDK's error for a control request the CLI process ended before answering. */
+const isClaudeQueryClosedError = (cause: unknown) =>
+  toMessage(cause, "").startsWith("Query closed before ");
+
+/** A control request failed because the CLI ended before the prompt was queued. */
+class ClaudeQueryEndedBeforePrompt {
+  constructor(
+    readonly context: ClaudeSessionContext,
+    readonly cause: unknown,
+  ) {}
 }
 
 function toRequestError(threadId: ThreadId, method: string, cause: unknown): ProviderAdapterError {
@@ -5165,7 +5180,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             if (completed && context.turnState) {
               yield* completeTurn(context, "completed", undefined, completed);
             }
-            if (state === "idle") Effect.runFork(checkTranscriptFork(context));
+            if (state === "idle") yield* startTranscriptForkCheck(context);
             yield* offerRuntimeEvent({
               ...base,
               type: "session.state.changed",
@@ -5383,6 +5398,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             });
             return;
           case "task_notification":
+            context.taskNotificationsSinceForkCheck =
+              (context.taskNotificationsSinceForkCheck ?? 0) + 1;
             if (
               typeof asUnknownRecord(message)?.run_id === "string" &&
               context.nativeTaskRuns.get(message.task_id) &&
@@ -5849,44 +5866,62 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     /**
      * Claude can attach a queued message to a stale entry, so its newest leaf
      * leaves the branch this thread is on and the next resume fails. Checking
-     * when the CLI goes idle reports the fork on the turn that caused it.
+     * when the CLI goes idle reports the fork on the turn that caused it. Only
+     * dequeued task notifications have caused it, so other turns skip the read.
      */
-    const checkTranscriptFork = (context: ClaudeSessionContext): Effect.Effect<void> =>
+    const checkTranscriptFork = (
+      context: ClaudeSessionContext,
+      target: string,
+    ): Effect.Effect<void> =>
       Effect.gen(function* () {
-        const target = context.turnBoundaries.at(-1)?.assistantUuid;
-        if (
-          context.forkCheckRunning ||
-          !target ||
-          !context.resumeSessionId ||
-          context.recoveryMetadata.transcriptFork?.target === target ||
-          isClaudeTranscriptUnderMaintenance(context.resumeSessionId)
-        )
-          return;
-        context.forkCheckRunning = true;
         const entries = yield* readResumeEntries(context).pipe(
           Effect.timeoutOption(5_000),
           Effect.orElseSucceed(() => Option.none()),
-          Effect.ensuring(
-            Effect.sync(() => {
-              context.forkCheckRunning = false;
-            }),
-          ),
         );
         if (
           Option.isNone(entries) ||
           context.stopped ||
           sessions.get(context.session.threadId) !== context ||
-          context.turnBoundaries.at(-1)?.assistantUuid !== target ||
-          classifyClaudeResumePoint(entries.value, target) !== "off_branch"
+          context.turnBoundaries.at(-1)?.assistantUuid !== target
         )
           return;
-        const activeLeaf = findClaudeActiveLeaf(entries.value);
+        const view = claudeTranscriptView(entries.value);
+        if (classifyClaudeResumePoint(entries.value, target, view) !== "off_branch") return;
+        const activeLeaf = view.leaf;
         recordTranscriptFork(context, { target, activeLeaf });
         yield* updateResumeCursor(context);
         yield* emitRuntimeWarning(
           context,
           "Claude forked this transcript, so the next resume would fail. Use Repair transcript before continuing.",
           { category: "provider", actionable: true, detail: { target, activeLeaf } },
+        );
+      });
+
+    const startTranscriptForkCheck = (context: ClaudeSessionContext) =>
+      Effect.gen(function* () {
+        const target = context.turnBoundaries.at(-1)?.assistantUuid;
+        if (
+          context.forkCheckRunning ||
+          !context.taskNotificationsSinceForkCheck ||
+          !target ||
+          !context.resumeSessionId ||
+          context.recoveryMetadata.transcriptFork?.target === target ||
+          isClaudeTranscriptUnderMaintenance(context.resumeSessionId)
+        )
+          return;
+        context.taskNotificationsSinceForkCheck = 0;
+        context.forkCheckRunning = true;
+        // Scoped to the adapter and interrupted on stop, so a slow read never
+        // outlives the session.
+        context.forkCheckFiber = yield* Effect.forkIn(
+          checkTranscriptFork(context, target).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                context.forkCheckRunning = false;
+              }),
+            ),
+          ),
+          adapterScope,
         );
       });
 
@@ -6220,6 +6255,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         context.stopped = true;
         if (context.mcpStatusFiber) yield* Fiber.interrupt(context.mcpStatusFiber);
+        if (context.forkCheckFiber) yield* Fiber.interrupt(context.forkCheckFiber);
         // Stop input immediately; retain provenance until final tool events are queued safely.
         if (context.turnState) context.computerEndTurn?.(context.turnState.turnId);
         for (const stop of context.nativeTaskStops.values()) {
@@ -6683,19 +6719,20 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 requested,
                 resumeState.turnBoundaries ?? [],
               );
-              if (selection.kind === "forked") {
-                resumeFailures.set(threadId, (resumeFailures.get(threadId) ?? 0) + 1);
-                // The CLI never started, so a queued message was not sent. It
-                // fails the same way until the transcript is repaired.
-                return yield* new ProviderAdapterRequestError({
-                  provider: PROVIDER,
-                  method: "session/start",
-                  detail: CLAUDE_TRANSCRIPT_FORKED_MESSAGE,
-                  deliveryCertainty: "not_sent",
-                  deliveryRetryable: false,
+              // The loader model can lag the CLI, so only the CLI's own
+              // rejection fails the resume. runSdkStream then reports the fork.
+              if (selection.kind === "forked")
+                yield* Effect.logWarning("Claude transcript looks forked at the resume point", {
+                  threadId,
+                  target: selection.target,
+                  activeLeaf: selection.activeLeaf,
                 });
-              }
-              const selected = selection.kind === "selected" ? selection.uuid : undefined;
+              const selected =
+                selection.kind === "selected"
+                  ? selection.uuid
+                  : selection.kind === "forked"
+                    ? selection.target
+                    : undefined;
               if (!selected) {
                 resumeFailures.set(threadId, (resumeFailures.get(threadId) ?? 0) + 1);
                 return yield* new ProviderAdapterProcessError({
@@ -8347,44 +8384,16 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         );
         // Control requests run before the prompt is queued. If the CLI exited
         // meanwhile, for example because it rejected the resume point, the
-        // message was not sent. Wait briefly for the resume outcome so a
-        // rejected resume is not retried before the transcript is repaired.
+        // message was not sent. sendTurn classifies that after the lock is
+        // released. Other failures, such as an unknown model, keep their error.
         const controlRequest = (method: string, run: () => Promise<void>) =>
           Effect.tryPromise({
             try: run,
-            catch: (cause) => toRequestError(input.threadId, method, cause),
-          }).pipe(
-            Effect.catchIf(
-              (error) =>
-                error._tag === "ProviderAdapterSessionClosedError" ||
-                error._tag === "ProviderAdapterSessionNotFoundError",
-              (error) =>
-                Effect.gen(function* () {
-                  const settlement =
-                    context.resumeSettlement && !context.resumeConfirmed
-                      ? yield* Deferred.await(context.resumeSettlement).pipe(
-                          Effect.timeoutOption(3_000),
-                        )
-                      : Option.none();
-                  const resumeFailed =
-                    Option.isSome(settlement) && settlement.value.outcome === "failed";
-                  const rejected =
-                    context.resumeRejected === true ||
-                    (resumeFailed && settlement.value.resumeRejected);
-                  return yield* new ProviderAdapterRequestError({
-                    provider: PROVIDER,
-                    method: "turn/start",
-                    detail:
-                      resumeFailed || rejected
-                        ? resumeNotSentDetail(context, rejected)
-                        : "Claude stopped before this message was queued, so it was not sent.",
-                    deliveryCertainty: "not_sent",
-                    deliveryRetryable: !rejected,
-                    cause: error,
-                  });
-                }),
-            ),
-          );
+            catch: (cause) =>
+              context.stopped || isClaudeQueryClosedError(cause)
+                ? new ClaudeQueryEndedBeforePrompt(context, cause)
+                : toRequestError(input.threadId, method, cause),
+          });
         yield* ensureLive;
         if (
           input.workflowExecutionProfile !== undefined &&
@@ -8660,9 +8669,40 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           });
       });
 
+    // Wait briefly for the resume outcome so a rejected resume is not retried
+    // before the transcript is repaired.
+    const reportQueryEnded = (ended: ClaudeQueryEndedBeforePrompt) =>
+      Effect.gen(function* () {
+        const { context } = ended;
+        const settlement =
+          context.resumeSettlement && !context.resumeConfirmed
+            ? yield* Deferred.await(context.resumeSettlement).pipe(Effect.timeoutOption(3_000))
+            : Option.none();
+        const resumeFailed = Option.isSome(settlement) && settlement.value.outcome === "failed";
+        const rejected =
+          context.resumeRejected === true || (resumeFailed && settlement.value.resumeRejected);
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "turn/start",
+          detail:
+            resumeFailed || rejected
+              ? resumeNotSentDetail(context, rejected)
+              : "Claude stopped before this message was queued, so it was not sent.",
+          deliveryCertainty: "not_sent",
+          deliveryRetryable: !rejected,
+          cause: ended.cause,
+        });
+      });
+
     const sendTurn: ClaudeAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
-        const queued = yield* withThreadLock(input.threadId, queueTurnUnlocked(input));
+        const queued = yield* withThreadLock(input.threadId, queueTurnUnlocked(input)).pipe(
+          Effect.catchIf(
+            (error): error is ClaudeQueryEndedBeforePrompt =>
+              error instanceof ClaudeQueryEndedBeforePrompt,
+            reportQueryEnded,
+          ),
+        );
         if (queued.resumeSettlement)
           yield* awaitResumeConfirmation({
             context: queued.context,

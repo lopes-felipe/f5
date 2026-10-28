@@ -178,6 +178,7 @@ export function runClaudeTranscriptMaintenance(input: MaintenanceInput, backupId
           ...("backupId" in result ? { backupId: result.backupId } : {}),
           restoredMessages: result.restoredMessages,
           quarantinedBranchMessages: result.quarantinedBranchMessages,
+          quarantinedMalformedLines: result.quarantinedMalformedLines,
           status: result.status,
         };
       }).pipe(Effect.ensuring(Effect.sync(release)));
