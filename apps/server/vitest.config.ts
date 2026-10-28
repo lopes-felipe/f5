@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { defineConfig, mergeConfig } from "vitest/config";
 
 import baseConfig from "../../vitest.config";
+import { DurationSequencer } from "./scripts/ciTestSequencer.ts";
+import { CiDurationReporter } from "./scripts/ciDurationReporter.ts";
 
 // Provider/profile isolation and injected Git configuration belong to the running
 // app, not its tests. Delete inherited values before Vitest snapshots its env.
@@ -18,6 +20,10 @@ export default mergeConfig(
   baseConfig,
   defineConfig({
     test: {
+      ...(process.env.F5_CI_REPORT_DIR && process.env.F5_CI_SUITE_ID?.startsWith("server-unit")
+        ? { reporters: [new CiDurationReporter()] }
+        : {}),
+      sequence: { sequencer: DurationSequencer },
       // Tests opt into host settings explicitly. Default production behavior must
       // not make fixtures depend on Windows autocrlf or a developer's gh login.
       env: {
