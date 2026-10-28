@@ -3,6 +3,9 @@ import type { WebContents } from "electron";
 export function installGuestControls(guest: WebContents): void {
   guest.setIgnoreMenuShortcuts(true);
   guest.on("before-input-event", (event, input) => {
+    // Electron's global focused-web-contents lookup can name another guest in
+    // the same window. A focused frame distinguishes typing from agent input.
+    if (!guest.isFocused() || guest.focusedFrame === null) return;
     if (input.type !== "keyDown" || !(input.control || input.meta) || input.alt) return;
     const key = input.key.toLowerCase();
     const action =

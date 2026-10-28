@@ -81,7 +81,7 @@ export function makeTurnSubmissionService(deps: TurnSubmissionDependencies) {
   } = deps;
   return (
     body: NextTurnQueueSubmitInput,
-    options: { readonly submissionSource: SubmissionSource },
+    options: { readonly submissionSource: SubmissionSource; readonly resumeQueue?: boolean },
   ) =>
     Effect.gen(function* () {
       const requestHash = canonicalRequestHash(body.command);
@@ -274,6 +274,10 @@ export function makeTurnSubmissionService(deps: TurnSubmissionDependencies) {
           itemId,
           command: queuedCommand,
           submissionSource: options.submissionSource,
+          resumeQueue:
+            options.submissionSource === "human" &&
+            body.intent === "auto" &&
+            options.resumeQueue !== false,
           supersedeUsageResume: body.intent !== "queue-tail",
           atHead: body.intent === "queue-head" || body.intent === "steer",
         })

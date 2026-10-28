@@ -411,6 +411,10 @@ import { UsageLimitNotice } from "./chat/UsageLimitNotice";
 import { resolveUsageLimitNotice } from "./chat/UsageLimitNotice.logic";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import { dismissThreadSessionError } from "../threadErrorDismissals";
+import {
+  getThreadModelOptionsSeed,
+  recordThreadModelOptionsSeed,
+} from "../threadModelOptionsSeeds";
 import { PendingSendRecoveryBanner } from "./chat/PendingSendRecoveryBanner";
 
 import {
@@ -441,6 +445,7 @@ import {
   revokeBlobPreviewUrl,
   revokeComposerImagePreviewUrls,
   revokeUserMessagePreviewUrls,
+  resolveThreadModelOptionsSeed,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { ThreadDetailsLoadingState } from "./StartupLoadingState";
@@ -1522,6 +1527,30 @@ export default memo(function ChatView({
     selectedProviderDriver,
     selectedProviderPickerOptions,
   ]);
+  const threadModelSelection = serverThread?.modelSelection;
+  useEffect(() => {
+    if (workflowThreadSlot) return;
+    const next = resolveThreadModelOptionsSeed({
+      draftModelOptions: composerDraft.modelOptions,
+      selectedModel,
+      threadSelection: threadModelSelection,
+      selectedInstanceId: selectedProviderInstanceId,
+      selectedProvider,
+      previous: getThreadModelOptionsSeed(threadId),
+    });
+    if (!next) return;
+    recordThreadModelOptionsSeed(threadId, next.record);
+    if (next.seed) setComposerDraftModelOptions(threadId, next.seed);
+  }, [
+    composerDraft.modelOptions,
+    selectedModel,
+    selectedProvider,
+    selectedProviderInstanceId,
+    setComposerDraftModelOptions,
+    threadId,
+    threadModelSelection,
+    workflowThreadSlot,
+  ]);
   const selectedProviderModelOptions = useMemo(
     () => providerModelOptionsToSelections(selectedProvider, draftModelOptions),
     [draftModelOptions, selectedProvider],
@@ -1805,7 +1834,9 @@ export default memo(function ChatView({
     if (!showFileChangeDiffsInline) {
       return;
     }
-    void queryClient.fetchQuery(
+    // This background read can be cancelled when recovery unmounts the thread.
+    // Prefetch keeps failures in query state without an unhandled promise.
+    void queryClient.prefetchQuery(
       fullThreadFileChangesQueryOptions({
         threadId,
         enabled: true,
@@ -1865,7 +1896,7 @@ export default memo(function ChatView({
         queryClient.removeQueries({
           queryKey: providerQueryKeys.checkpointDiffPrefix(threadId),
         });
-        void queryClient.fetchQuery(
+        void queryClient.prefetchQuery(
           fullThreadFileChangesQueryOptions({
             threadId,
             enabled: true,
