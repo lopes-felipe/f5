@@ -8897,14 +8897,16 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
-      "decidedAt": "2026-10-28T20:58:35.944Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-28T21:25:22.102Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-15454",
+      "reason": "f5 has no panel-variant floating workspace popover, and its popovers already share the dialogs' z-50 layer, so a dialog opened from one is never covered.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-15069"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "panels",
