@@ -48927,9 +48927,11 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T20:58:07.142Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25700",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "git",
@@ -50896,9 +50898,11 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T20:58:09.298Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26173",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "preview-browser",
@@ -50960,9 +50964,11 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T20:58:11.533Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26176",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "pr-hub",
@@ -51046,9 +51052,11 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T20:58:11.898Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26182",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -51091,9 +51099,11 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T20:58:10.081Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26184",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -51156,9 +51166,11 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T20:58:13.514Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26188",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -51585,9 +51597,11 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
+      "decidedAt": "2026-10-28T20:58:08.234Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26286",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
