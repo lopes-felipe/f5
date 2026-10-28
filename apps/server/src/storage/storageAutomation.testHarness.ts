@@ -18,6 +18,7 @@ import type {
 import { Effect, Layer, Option, Scope, Stream } from "effect";
 
 import { ServerConfig } from "../config.ts";
+import { ProfileRegistryStore } from "../profiles/ProfileRegistryStore.ts";
 import { GitCoreTestLive as GitCoreLive, WorktreePreparationsTestLive } from "../git/testLayers.ts";
 import { GitServiceLive } from "../git/Layers/GitService.ts";
 import { NextTurnQueueStore } from "../nextTurnQueue/Services/NextTurnQueueStore.ts";
@@ -310,7 +311,16 @@ export function automationLayer(
     ServerSettingsService.layerTest(isolatedSettings as never),
     SqlitePersistenceMemory,
   ).pipe(
-    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix })),
+    Layer.provideMerge(
+      Layer.effect(
+        ServerConfig,
+        Effect.gen(function* () {
+          const config = yield* ServerConfig;
+          yield* Effect.promise(() => new ProfileRegistryStore(config.defaultStateDir!).init());
+          return config;
+        }),
+      ).pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix }))),
+    ),
     Layer.provideMerge(NodeServices.layer),
   );
 }

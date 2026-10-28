@@ -1631,7 +1631,7 @@ function composerTransitions(form: HTMLElement): CSSTransition[] {
     .filter((animation): animation is CSSTransition => animation instanceof CSSTransition);
 }
 
-/** Resumes any seeked transitions and waits until all of them have settled. */
+/** Waits until the composer's transitions have settled. */
 async function waitForComposerTransitions(form: HTMLElement): Promise<void> {
   await nextFrame();
   await Promise.all(
@@ -1644,14 +1644,15 @@ async function waitForComposerTransitions(form: HTMLElement): Promise<void> {
 }
 
 /**
- * Holds the composer's transitions at a fraction of their duration, then waits
- * until that frame's observers (the dock's end pin) have run. Deterministic
+ * Seeks the composer's transitions while CDP holds the animation clock, then waits
+ * until that frame's observers (the dock's end pin) have run.
  * The transition must still exist: callers inspecting an early frame should
  * hold the animation clock before triggering a change on a slow runner.
  */
 async function seekComposerTransitions(form: HTMLElement, fraction: number): Promise<void> {
   for (const transition of composerTransitions(form)) {
-    transition.pause();
+    // Keep playState running: production uses it to clip the resizing editor,
+    // and a queued transitionrun must not observe an artificially paused state.
     transition.currentTime = Number(transition.effect!.getComputedTiming().duration) * fraction;
   }
   await nextFrame();
@@ -2768,7 +2769,7 @@ describe("ChatView timeline (full app)", () => {
         await cdp().send("Animation.setPlaybackRate", { playbackRate: 0 });
         editor.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
         await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("false"));
-        // Let transitionrun mark the running animation before seeking pauses it.
+        // Let transitionrun mark the running animation before seeking it.
         await vi.waitFor(() => expect(form.hasAttribute("data-composer-resizing")).toBe(true));
         await seekComposerTransitions(form, 0.05);
         // Animating toward the uncapped draft height would already be clamped at 200px.
@@ -2896,7 +2897,8 @@ describe("ChatView timeline (full app)", () => {
         expect(form.dataset.composerCollapsed).toBe("false");
         window.getSelection()!.removeAllRanges();
         wheel(-12);
-        await waitForLayout();
+        // Both deltas must belong to the same 120 ms gesture, including on
+        // loaded CI runners where waiting for layout can exceed that interval.
         expect(form.dataset.composerCollapsed).toBe("false");
         wheel(-12);
         await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));

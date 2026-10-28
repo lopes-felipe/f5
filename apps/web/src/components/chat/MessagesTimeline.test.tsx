@@ -230,6 +230,87 @@ function preloadThreadFileChange(input: {
 }
 
 describe("MessagesTimeline", () => {
+  it("keeps answered questions visible outside collapsed work from previous turns", async () => {
+    const { MessagesTimeline, buildTimelineRows, createTimelineRowCache } =
+      await import("./MessagesTimeline");
+    const createdAt = "2026-03-17T19:12:28.000Z";
+    const work = (id: string, activityKind?: string): TimelineEntry => ({
+      id,
+      kind: "work",
+      createdAt,
+      entry: {
+        id,
+        createdAt,
+        tone: "info",
+        label: id,
+        ...(activityKind ? { activityKind } : {}),
+        ...(activityKind === "user-input.resolved" ? { detail: "The private one" } : {}),
+      },
+    });
+    const timelineEntries: TimelineEntry[] = [
+      work("before"),
+      work("Which repository?", "user-input.resolved"),
+      work("after"),
+      {
+        id: "new-turn",
+        kind: "message",
+        createdAt,
+        message: {
+          id: MessageId.makeUnsafe("new-turn"),
+          role: "user",
+          text: "Continue",
+          createdAt,
+          streaming: false,
+        },
+      },
+    ];
+    const rows = buildTimelineRows({
+      timelineEntries,
+      completionDividerBeforeEntryId: null,
+      completionSummary: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      liveActivity: null,
+      expandMcpToolCalls: false,
+      cache: createTimelineRowCache(),
+    });
+    expect(
+      rows
+        .filter((row) => row.kind === "work")
+        .map((row) => row.groupedEntries.map((entry) => entry.id)),
+    ).toEqual([["before"], ["Which repository?"], ["after"]]);
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        hasMessages
+        isWorking={false}
+        activeTurnStartedAt={null}
+        listRef={{ current: null }}
+        onIsAtEndChange={() => {}}
+        timelineEntries={timelineEntries}
+        completionDividerBeforeEntryId={null}
+        completionSummary={null}
+        turnDiffSummaryByAssistantMessageId={new Map()}
+        turnDiffSummaryByTurnId={new Map()}
+        expandedWorkGroups={{}}
+        onToggleWorkGroup={() => {}}
+        onOpenTurnDiff={() => {}}
+        revertTurnCountByUserMessageId={new Map()}
+        onRevertUserMessage={() => {}}
+        isRevertingCheckpoint={false}
+        onImageExpand={() => {}}
+        markdownCwd={undefined}
+        resolvedTheme="light"
+        timestampFormat="locale"
+        workspaceRoot={undefined}
+        expandedCommandExecutions={{}}
+        onToggleCommandExecution={() => {}}
+        allDirectoriesExpanded
+        onToggleAllDirectories={() => {}}
+      />,
+    );
+    expect(markup).toContain("Which repository?");
+    expect(markup).toContain("The private one");
+  });
   it("labels the working row with the live activity, not the last finished tool", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const createdAt = "2026-03-17T19:12:28.000Z";

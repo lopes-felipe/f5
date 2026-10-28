@@ -1616,7 +1616,9 @@ function shouldRenderWorkEntryAsStandaloneRow(
   options: { settingsExpandMcpToolCalls: boolean },
 ): boolean {
   return (
-    !!entry.htmlRender || (entry.itemType === "mcp_tool_call" && options.settingsExpandMcpToolCalls)
+    entry.activityKind === "user-input.resolved" ||
+    !!entry.htmlRender ||
+    (entry.itemType === "mcp_tool_call" && options.settingsExpandMcpToolCalls)
   );
 }
 
@@ -3717,7 +3719,9 @@ function WorkGroupRowContent(props: {
   if (!logEntries.length) return <div className="min-w-0 space-y-2">{appRows}</div>;
   const standaloneExpandedMcpEntry =
     row.groupedEntries.length === 1 &&
-    (row.groupedEntries[0]?.htmlRender || row.groupedEntries[0]?.mcpApp)
+    (row.groupedEntries[0]?.htmlRender ||
+      row.groupedEntries[0]?.mcpApp ||
+      row.groupedEntries[0]?.activityKind === "user-input.resolved")
       ? row.groupedEntries[0]
       : resolveStandaloneExpandedMcpWorkEntry(row.groupedEntries, {
           settingsExpandMcpToolCalls: expandMcpToolCalls,

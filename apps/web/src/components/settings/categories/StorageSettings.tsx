@@ -43,6 +43,7 @@ import { toastManager } from "../../ui/toast";
 export { STORAGE_SETTINGS_DESCRIPTORS } from "./StorageSettings.descriptors";
 import { getServerHttpOrigin } from "../../../lib/serverHttpOrigin";
 import { StorageAutomationSettings } from "../StorageAutomationSettings";
+import { WorktreeLocationSettings } from "../WorktreeLocationSettings";
 import {
   StorageActionConfirmDialog,
   type StorageConfirmAction,
@@ -1445,6 +1446,7 @@ export function StorageSettings() {
         </>
       ) : null}
 
+      <WorktreeLocationSettings />
       <StorageAutomationSettings />
       <section
         className="rounded-xl border border-border bg-card p-5"

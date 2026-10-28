@@ -1,5 +1,6 @@
 import { holdsWorktreeLifecycleLock } from "../../project/Layers/WorktreeLifecycleCoordinator.ts";
 import { ServerConfig } from "../../config.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Cause, Effect, Layer, ManagedRuntime, Metric, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -94,6 +95,51 @@ it("places generated worktrees under the configured server worktree root", async
           Layer.provide(Layer.succeed(GitService, scripted.service)),
           Layer.provideMerge(
             ServerConfig.layerTest(process.cwd(), { prefix: "f5-worktree-root-" }),
+          ),
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+});
+
+it("creates under the live custom root, preserves old roots, and rejects invalid locations before Git mutation", async () => {
+  const scripted = makeScriptedGitService((input) => ({
+    stdout: input.args[0] === "rev-parse" ? "a".repeat(40) : "",
+  }));
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const config = yield* ServerConfig;
+      const settings = yield* ServerSettingsService;
+      const core = yield* GitCore;
+      const custom = join(config.baseDir, "custom-worktrees");
+      yield* settings.updateSettings({ worktreesDirectory: custom });
+      const created = yield* core.createWorktree({
+        cwd: process.cwd(),
+        branch: "main",
+        newBranch: "custom-location",
+        path: null,
+      });
+      expect(created.worktree.path.startsWith(custom)).toBe(true);
+      expect(scripted.calls.find((call) => call.args[0] === "worktree")?.args).toContain(
+        created.worktree.path,
+      );
+      for (const invalid of ["relative/worktrees", "/"]) {
+        yield* settings.updateSettings({ worktreesDirectory: invalid });
+        const result = yield* Effect.result(
+          core.allocateWorktreePath({ cwd: process.cwd(), branch: "invalid" }),
+        );
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure")
+          expect(result.failure.detail).toContain("Settings → Storage");
+      }
+    }).pipe(
+      Effect.provide(
+        GitCoreLive.pipe(
+          Layer.provide(Layer.succeed(GitService, scripted.service)),
+          Layer.provideMerge(ServerSettingsService.layerTest()),
+          Layer.provideMerge(
+            ServerConfig.layerTest(process.cwd(), { prefix: "f5-custom-worktrees-" }),
           ),
           Layer.provide(NodeServices.layer),
         ),

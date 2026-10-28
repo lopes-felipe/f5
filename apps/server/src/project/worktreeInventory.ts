@@ -1,4 +1,5 @@
 import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { readManagedWorktreesDirectories } from "../worktreesDirectory.ts";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import path from "node:path";
 
@@ -39,7 +40,7 @@ export const listWorktreeInventory = (
       });
     const canonical = (path: string) =>
       Effect.tryPromise({ try: () => canonicalWorktreePath(path), catch: asError });
-    const managedRoot = yield* canonical(config.worktreesDir);
+    const managedRoots = yield* readManagedWorktreesDirectories(config.worktreesDir);
     const otherRoots = yield* Effect.tryPromise({
       try: () => readOtherProfileManagedRoots(config),
       catch: asError,
@@ -148,7 +149,9 @@ export const listWorktreeInventory = (
                     ? "otherProfile"
                     : canonicalPath === root
                       ? "projectCheckout"
-                      : canonicalPath !== managedRoot && pathContains(managedRoot, canonicalPath)
+                      : managedRoots.some(
+                            (root) => canonicalPath !== root && pathContains(root, canonicalPath),
+                          )
                         ? "managed"
                         : "external";
                   const displayPath = path.normalize(entry.path);
