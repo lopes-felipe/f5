@@ -48,6 +48,7 @@ import {
 
 import { canonicalJsonHash } from "../canonicalJsonHash.ts";
 import { resolveTurnSubmissionStatus } from "../nextTurnQueue/submissionStatus.ts";
+import { pendingApprovalActivities } from "../orchestration/pendingApprovals.ts";
 import type { AgentBridgeHostShape } from "./AgentBridgeHost.ts";
 import type {
   AgentBridgeClientRecord,
@@ -180,30 +181,18 @@ interface PendingApprovalSummary {
 export function pendingApprovalSummaries(
   thread: OrchestrationThread,
 ): ReadonlyArray<PendingApprovalSummary> {
-  const open = new Map<string, PendingApprovalSummary>();
-  const ordered = [...thread.activities].toSorted(
-    (left, right) =>
-      (left.sequence ?? 0) - (right.sequence ?? 0) || left.createdAt.localeCompare(right.createdAt),
-  );
-  for (const activity of ordered) {
+  return pendingApprovalActivities(thread).map((activity) => {
     const payload =
       activity.payload && typeof activity.payload === "object"
         ? (activity.payload as Record<string, unknown>)
         : null;
-    const requestId = typeof payload?.requestId === "string" ? payload.requestId : null;
-    if (!requestId) continue;
-    if (activity.kind === "approval.requested") {
-      const detail = typeof payload?.detail === "string" ? payload.detail : null;
-      open.set(requestId, {
-        requestKind: typeof payload?.requestKind === "string" ? payload.requestKind : "unknown",
-        detail: detail === null ? null : truncateUtf8(detail, SUMMARY_MAX_BYTES).text,
-        createdAt: activity.createdAt,
-      });
-    } else if (activity.kind === "approval.resolved") {
-      open.delete(requestId);
-    }
-  }
-  return [...open.values()];
+    const detail = typeof payload?.detail === "string" ? payload.detail : null;
+    return {
+      requestKind: typeof payload?.requestKind === "string" ? payload.requestKind : "unknown",
+      detail: detail === null ? null : truncateUtf8(detail, SUMMARY_MAX_BYTES).text,
+      createdAt: activity.createdAt,
+    };
+  });
 }
 
 function threadStatus(thread: OrchestrationThread): string {

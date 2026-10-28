@@ -29,6 +29,7 @@ export function normalizeWorkflowSlotModelOptions(
   capabilities?: ModelCapabilities | null,
 ): ProviderModelOptions | undefined {
   if (provider === "codex") {
+    // Store the effort turn/start can execute; unsupported choices walk down to a supported effort.
     const codex = resolveCodexDispatchModelOptions(model, modelOptions?.codex, capabilities);
     return codex ? { codex } : undefined;
   }

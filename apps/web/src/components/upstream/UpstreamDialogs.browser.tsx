@@ -192,6 +192,7 @@ it("sends each review slot's selection, freezes it for retry, and keeps workflow
   for (const name of ["Reviewer A", "Consolidation"]) {
     await page.getByRole("group", { name, exact: true }).getByRole("button", { name: /Claude Sonnet 4.6/ }).click();
     await page.getByRole("option", { name: "Claude Opus 4.6", exact: true }).click();
+    await expect.element(page.getByRole("listbox")).not.toBeInTheDocument();
   }
   expect(getModelPreferences()).toEqual(preferences);
   await page.getByRole("button", { name: "Start port" }).click();
@@ -218,8 +219,27 @@ it("falls back only the unavailable saved review slot", async () => {
   active = await render(<Harness providers={() => [claude()]} savedModel={sonnet} savedReview={saved} onStart={onStart} />);
   await page.getByRole("button", { name: "Start port" }).click();
   expect(onStart.mock.calls[0]![0].review).toMatchObject({
-    reviewerA: { provider: "codex" },
+    reviewerA: { provider: "claudeAgent" },
     reviewerB: { provider: "claudeAgent", model: "claude-opus-4-6" },
     consolidation: { provider: "claudeAgent", model: "claude-sonnet-4-6" },
   });
+});
+
+it("uses the sole enabled provider for all default review slots", async () => {
+  const onStart = vi.fn<(input: StartInput) => void>();
+  active = await render(<Harness providers={() => [claude()]} savedModel={sonnet} onStart={onStart} />);
+  await page.getByRole("button", { name: "Start port" }).click();
+  const review = onStart.mock.calls[0]![0].review!;
+  for (const slot of [review.reviewerA, review.reviewerB, review.consolidation])
+    expect(slot.provider).toBe("claudeAgent");
+});
+
+it("requires turning off review when only an unsupported review provider is enabled", async () => {
+  const grok = createTestServerProvider("grok", { models: [model("grok-code", "Grok Code")] });
+  active = await render(<Harness providers={() => [grok]}
+    savedModel={{ instanceId: grok.instanceId, model: "grok-code" } as ModelSelection} onStart={() => {}} />);
+  await expect.element(page.getByRole("alert")).toHaveTextContent("choose an enabled provider that supports code review");
+  await expect.element(page.getByRole("button", { name: "Start port" })).toBeDisabled();
+  await page.getByRole("checkbox", { name: /Code review after port/ }).click();
+  await expect.element(page.getByRole("button", { name: "Start port" })).toBeEnabled();
 });

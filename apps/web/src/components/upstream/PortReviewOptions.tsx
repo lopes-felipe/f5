@@ -1,4 +1,4 @@
-import { ProviderDriverKind, type ServerProvider, type UpstreamPortReviewSettings } from "@t3tools/contracts";
+import { isKnownProviderKind, ProviderDriverKind, type ProviderKind, type ServerProvider, type UpstreamPortReviewSettings } from "@t3tools/contracts";
 import { getWorkflowModelCapabilities } from "../../providerModels";
 import { SlotRow } from "../workflow/SlotRow";
 import { WorkflowOptionCheckbox } from "../workflow/WorkflowOptions";
@@ -7,14 +7,35 @@ import { getWorkflowSlotDefaults, normalizeWorkflowSlotModelOptions, resolveSave
 type ModelOptionsByProvider = Parameters<typeof getWorkflowSlotDefaults>[2];
 
 export function portReviewDefaults(saved: UpstreamPortReviewSettings | undefined, models: ModelOptionsByProvider, providers: ReadonlyArray<ServerProvider>): UpstreamPortReviewSettings {
-  const defaults = (key: "reviewerA" | "reviewerB" | "consolidation", slot: "branchA" | "branchB" | "merge", provider: "codex" | "claudeAgent") =>
-    resolveSavedWorkflowSlot(saved?.[key], models, providers) ?? getWorkflowSlotDefaults(slot, provider, models, providers);
+  const available = providers.filter((provider) =>
+    provider.enabled && isKnownProviderKind(provider.driver) && provider.driver !== "grok");
+  const defaults = (key: "reviewerA" | "reviewerB" | "consolidation", slot: "branchA" | "branchB" | "merge", provider: "codex" | "claudeAgent") => {
+    const preferred = resolveSavedWorkflowSlot(saved?.[key], models, available) ??
+      resolveSavedWorkflowSlot(getWorkflowSlotDefaults(slot, provider, models, available), models, available);
+    if (preferred) return preferred;
+    const fallback = available[0];
+    return fallback && isKnownProviderKind(fallback.driver)
+      ? resolveSavedWorkflowSlot({ provider: fallback.driver, model: models[fallback.driver as ProviderKind][0]?.slug ?? "" }, models, available)
+      : null;
+  };
   return {
     enabled: saved?.enabled ?? true,
     reviewerA: defaults("reviewerA", "branchA", "codex"),
     reviewerB: defaults("reviewerB", "branchB", "claudeAgent"),
     consolidation: defaults("consolidation", "merge", "codex"),
   };
+}
+
+export function portReviewOptionsError(value: UpstreamPortReviewSettings, providers: ReadonlyArray<ServerProvider>): string | null {
+  if (!value.enabled) return null;
+  for (const key of ["reviewerA", "reviewerB", "consolidation"] as const) {
+    const slot = value[key];
+    if (!slot?.model || slot.provider === "grok" ||
+      !providers.some((provider) => provider.enabled && provider.driver === slot.provider))
+      return (key === "reviewerA" ? "Reviewer A" : key === "reviewerB" ? "Reviewer B" : "Consolidation") +
+        ": choose an enabled provider that supports code review, or turn off code review.";
+  }
+  return null;
 }
 
 export function PortReviewOptions(props: {

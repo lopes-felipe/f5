@@ -9,7 +9,7 @@ import {
   type NextTurnQueueSnapshot,
   type ThreadTurnStartCommand,
 } from "@t3tools/contracts";
-import { Effect, Layer, FileSystem, Path, PubSub, Stream } from "effect";
+import { Deferred, Effect, Fiber, Layer, FileSystem, Path, PubSub, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { ServerConfig } from "../config.ts";
 import { emptyQueue } from "../agentBridge/testing/fakeHost.ts";
@@ -24,7 +24,7 @@ import { cancelQueuedSubmission } from "../nextTurnQueue/cancelSubmission.ts";
 import { threadPurgeHandlers } from "../storage/threadPurgePolicy.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { makeProjectionTurnRepository } from "../persistence/Layers/ProjectionTurns.ts";
-import { makePortReviewReactor } from "./portReview.ts";
+import { makePortReviewReactor, type PortReviewReactorDeps } from "./portReview.ts";
 import type { UpstreamGitHub } from "./github.ts";
 import type { OrchestrationEvent } from "@t3tools/contracts";
 import { makeUpstreamStore } from "./store.ts";
@@ -153,10 +153,22 @@ const setup = Effect.gen(function* () {
   let currentTime = new Date(REVIEW_NOW);
   let report = "Fix the missing error handler.";
   let submitFails = false;
-  let github: UpstreamGitHub | null = null;
+  let github: UpstreamGitHub | null = {
+    ...new FakeGitHub().github,
+    available: () => Effect.succeed(true),
+    findPullRequest: () =>
+      Effect.succeed({
+        number: 42,
+        url: REVIEW_PR,
+        state: "open",
+        headRepoFullName: "o/f5",
+        headRef: thread.branch!,
+        headSha: "abc",
+      }),
+  };
   let notifications = 0;
   const submittedCommands: string[] = [];
-  const make = () =>
+  const make = (overrides: Partial<PortReviewReactorDeps> = {}) =>
     makePortReviewReactor({
       host: {
         ...host,
@@ -177,6 +189,7 @@ const setup = Effect.gen(function* () {
         }),
       now: () => currentTime,
       mintId: () => crypto.randomUUID(),
+      ...overrides,
     });
   const clientRequestId = crypto.randomUUID();
   const portCommand: ClientThreadTurnStartCommand = {
@@ -269,6 +282,160 @@ const setup = Effect.gen(function* () {
 });
 
 layer("port review persistence and queue", (it) => {
+  it.effect("rejects a foreign PR locally even when GitHub is unavailable", () =>
+    Effect.gen(function* () {
+      const h = yield* setup;
+      h.setGitHub({ ...new FakeGitHub().github, available: () => Effect.succeed(false) });
+      h.fake.threads[0] = {
+        ...h.thread,
+        messages: h.thread.messages.map((message) => ({
+          ...message,
+          text: "UPSTREAM-OUTCOME: pr https://github.com/foreign/repo/pull/1",
+        })),
+      };
+      yield* h.make().advance(h.thread.id);
+      assert.deepInclude((yield* h.store.getPortReviewByThread(h.thread.id))!, {
+        status: "error",
+        errorStage: "review-setup",
+        detail: "Pull request URL does not belong to origin",
+      });
+      assert.lengthOf(h.fake.reviews, 0);
+    }),
+  );
+  it.effect("does not claim cancellation if the submit never reached the queue", () =>
+    Effect.gen(function* () {
+      const h = yield* setup;
+      yield* h.finishReview;
+      h.failSubmit(true);
+      yield* h.reactor.advance(h.thread.id);
+      h.fake.threads[0] = { ...h.thread, archivedAt: REVIEW_NOW };
+      yield* h.reactor.advance(h.thread.id);
+      assert.deepInclude((yield* h.store.getPortReviewByThread(h.thread.id))!, {
+        status: "skipped",
+        detail: "Port thread archived",
+      });
+    }),
+  );
+  it.effect("isolates corrupt intents while unrelated reviews advance", () =>
+    Effect.gen(function* () {
+      const bad = yield* setup;
+      const good = yield* setup;
+      bad.fake.threads = [bad.thread, good.thread];
+      yield* bad.sql`UPDATE upstream_port_reviews SET reviewers_json = '{' WHERE port_thread_id = ${bad.thread.id}`;
+      yield* bad.reactor.reconcile;
+      assert.deepInclude((yield* bad.store.getPortReviewByThread(bad.thread.id))!, {
+        status: "error",
+        errorStage: "review-setup",
+      });
+      assert.strictEqual(
+        (yield* good.store.getPortReviewByThread(good.thread.id))!.status,
+        "reviewing",
+      );
+      yield* bad.sql`UPDATE upstream_port_reviews SET reviewers_json = ${JSON.stringify(REVIEW_SLOTS)},
+        status = 'applying', apply_command_json = '{' WHERE port_thread_id = ${bad.thread.id}`;
+      yield* bad.reactor.reconcile;
+      assert.deepInclude((yield* bad.store.getPortReviewByThread(bad.thread.id))!, {
+        status: "error",
+        errorStage: "apply-feedback",
+      });
+    }),
+  );
+  it.effect("keeps routing rows admitted during an in-flight reconcile snapshot", () =>
+    Effect.gen(function* () {
+      const h = yield* setup;
+      const captured = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const reactor = h.make({
+        store: {
+          ...h.store,
+          listActivePortReviews: Effect.gen(function* () {
+            const rows = yield* h.store.listActivePortReviews;
+            yield* Deferred.succeed(captured, undefined);
+            yield* Deferred.await(release);
+            return rows;
+          }),
+        },
+      });
+      const events = yield* reactor.subscribe;
+      yield* events.pipe(Effect.forkScoped);
+      const reconciliation = yield* reactor.reconcile.pipe(Effect.forkScoped);
+      yield* Deferred.await(captured);
+      const newer = yield* setup;
+      h.fake.threads.push(newer.thread);
+      yield* reactor.advance(newer.thread.id);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(reconciliation);
+      yield* newer.finishReview;
+      h.fake.workflows = newer.fake.workflows;
+      h.fake.threads = [h.thread, ...newer.fake.threads];
+      const workflow = h.fake.workflows[0]!;
+      yield* h.notify({
+        type: "project.code-review-workflow-upserted",
+        aggregateId: h.thread.projectId,
+        payload: { workflow },
+      } as OrchestrationEvent);
+      for (
+        let i = 0;
+        i < 100 && (yield* h.store.getPortReviewByThread(newer.thread.id))!.status !== "applying";
+        i++
+      )
+        yield* Effect.yieldNow;
+      assert.strictEqual(
+        (yield* h.store.getPortReviewByThread(newer.thread.id))!.status,
+        "applying",
+      );
+    }),
+  );
+  it.effect("retries a transient submit through the short retry queue", () =>
+    Effect.gen(function* () {
+      const h = yield* setup;
+      yield* h.finishReview;
+      h.failSubmit(true);
+      yield* h.reactor.advance(h.thread.id);
+      h.failSubmit(false);
+      yield* h.reactor.retryPending;
+      assert.strictEqual((yield* h.store.getPortReviewByThread(h.thread.id))!.status, "applying");
+      assert.strictEqual(h.submittedCommands[0], h.submittedCommands[1]);
+    }),
+  );
+  it.effect("two retries after a failed revision and moved head retain the known PR", () =>
+    Effect.gen(function* () {
+      const h = yield* setup;
+      yield* h.finishReview;
+      h.failSubmit(true);
+      yield* h.reactor.advance(h.thread.id);
+      yield* h.reactor.retryPending;
+      yield* h.reactor.retryPending;
+      h.fake.threads[0] = {
+        ...h.thread,
+        latestTurn: { ...h.thread.latestTurn!, state: "error" },
+        messages: [],
+      };
+      h.setGitHub({
+        ...new FakeGitHub().github,
+        available: () => Effect.succeed(true),
+        findPullRequest: () =>
+          Effect.succeed({
+            number: 42,
+            url: REVIEW_PR,
+            state: "open",
+            headRepoFullName: "o/f5",
+            headRef: h.thread.branch!,
+            headSha: "new",
+          }),
+      });
+      const reactor = h.make();
+      yield* reactor.retry(h.thread.projectId, h.thread.id);
+      assert.strictEqual((yield* h.store.getPortReviewByThread(h.thread.id))!.errorStage, "review");
+      yield* reactor.retry(h.thread.projectId, h.thread.id);
+      assert.deepInclude((yield* h.store.getPortReviewByThread(h.thread.id))!, {
+        status: "reviewing",
+        prUrl: REVIEW_PR,
+        reviewedHeadSha: "new",
+      });
+      assert.lengthOf(h.fake.reviews, 2);
+    }),
+  );
   it.effect(
     "leaves an accepted failed delivery running on skip, and retry never duplicates it",
     () =>
@@ -363,7 +530,7 @@ layer("port review persistence and queue", (it) => {
       const retried = (yield* h.store.getPortReviewByThread(h.thread.id))!;
       assert.strictEqual(retried.prUrl, "https://github.com/o/f5/pull/43");
       assert.strictEqual(retried.status, "reviewing");
-      assert.isNull(retried.reviewedHeadSha);
+      assert.strictEqual(retried.reviewedHeadSha, "abc");
     }),
   );
   it.effect("purges review payloads with their port thread", () =>
@@ -593,10 +760,26 @@ layer("port review persistence and queue", (it) => {
           checkpointFiles: [],
         });
         assert.isNull(h.fake.threads[0]!.messages.at(-1)!.turnId);
+        h.fake.threads[0] = {
+          ...h.fake.threads[0]!,
+          messages: [
+            ...h.fake.threads[0]!.messages,
+            {
+              ...h.thread.messages[0]!,
+              id: MessageId.makeUnsafe("revision-outcome"),
+              turnId,
+              text: "UPSTREAM-OUTCOME: blocked tests failed",
+            },
+          ],
+        };
         yield* h.reactor.advance(h.thread.id);
         assert.strictEqual(
           (yield* h.store.getPortReviewByThread(h.thread.id))!.status,
           "completed",
+        );
+        assert.include(
+          (yield* h.store.getPortReviewByThread(h.thread.id))!.detail!,
+          "Revision blocked: tests failed",
         );
         yield* h.make().reconcile;
         assert.strictEqual(

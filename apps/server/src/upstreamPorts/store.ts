@@ -5,21 +5,23 @@
  *
  * @module upstreamPorts/store
  */
-import type {
+import {
+  ClientThreadTurnStartCommand,
+  OrchestrationCreateCodeReviewWorkflowInput,
   UpstreamPortReviewRequest,
-  UpstreamPortReviewStatus,
-  UpstreamOccurrenceStatus,
-  UpstreamPortGroupStatus,
-  UpstreamPublicationPauseReason,
-  UpstreamPublicationPhase,
-  UpstreamRunKind,
-  UpstreamRunStatus,
-  UpstreamRunSummary,
-  UpstreamRunTriage,
-  UpstreamRunTrigger,
+  type UpstreamPortReviewStatus,
+  type UpstreamOccurrenceStatus,
+  type UpstreamPortGroupStatus,
+  type UpstreamPublicationPauseReason,
+  type UpstreamPublicationPhase,
+  type UpstreamRunKind,
+  type UpstreamRunStatus,
+  type UpstreamRunSummary,
+  type UpstreamRunTriage,
+  type UpstreamRunTrigger,
 } from "@t3tools/contracts";
 import type { UpstreamLedgerOp } from "@t3tools/shared/upstreamPorts";
-import { Data, Effect } from "effect";
+import { Data, Effect, Schema } from "effect";
 import type * as SqlClient from "effect/unstable/sql/SqlClient";
 
 export class UpstreamStoreError extends Data.TaggedError("UpstreamStoreError")<{
@@ -112,7 +114,7 @@ export interface PortReviewRecord extends PortReviewSummaryRecord {
   readonly projectId: string;
   readonly clientRequestId: string;
   readonly groupIndex: number;
-  readonly reviewers: UpstreamPortReviewRequest;
+  readonly reviewers: UpstreamPortReviewRequest | null;
   readonly errorStage: "review-setup" | "review" | "apply-feedback" | null;
   readonly prUrl: string | null;
   readonly reviewedHeadSha: string | null;
@@ -448,13 +450,46 @@ export function makeUpstreamStore(sql: SqlClient.SqlClient): UpstreamStore {
     apply_command_json AS "applyCommandJson", apply_turn_id AS "applyTurnId",
     submit_failures AS "submitFailures", attempt, updated_at AS "updatedAt"`;
   type ReviewRow = Omit<PortReviewRecord, "reviewers"> & { readonly reviewersJson: string };
-  const toReview = ({ reviewersJson, ...row }: ReviewRow): PortReviewRecord => ({
-    ...row,
-    reviewers: JSON.parse(reviewersJson) as UpstreamPortReviewRequest,
-  });
+  // Validate each row independently so one corrupt intent cannot stall other ports.
+  const toReview = ({ reviewersJson, ...row }: ReviewRow) =>
+    Effect.gen(function* () {
+      const parsed = parseJson<unknown>(reviewersJson, null);
+      const reviewers = Schema.is(UpstreamPortReviewRequest)(parsed) ? parsed : null;
+      const invalidReview =
+        row.reviewInputJson !== null &&
+        !Schema.is(OrchestrationCreateCodeReviewWorkflowInput)(
+          parseJson<unknown>(row.reviewInputJson, null),
+        );
+      const invalidApply =
+        row.applyCommandJson !== null &&
+        !Schema.is(ClientThreadTurnStartCommand)(parseJson<unknown>(row.applyCommandJson, null));
+      if (reviewers && !invalidReview && !invalidApply) return { ...row, reviewers };
+      const detail =
+        "Invalid stored " +
+        (!reviewers
+          ? "reviewer settings"
+          : invalidReview
+            ? "review workflow intent"
+            : "revision command") +
+        "; Retry review or start a new port";
+      const errorStage = invalidApply ? ("apply-feedback" as const) : ("review-setup" as const);
+      if (row.status !== "error" || row.detail !== detail)
+        yield* sql`UPDATE upstream_port_reviews SET status = 'error',
+        error_stage = ${errorStage}, detail = ${detail}
+        WHERE port_thread_id = ${row.threadId}`;
+      return {
+        ...row,
+        reviewers,
+        status: "error" as const,
+        errorStage,
+        detail,
+        reviewInputJson: invalidReview ? null : row.reviewInputJson,
+        applyCommandJson: invalidApply ? null : row.applyCommandJson,
+      };
+    });
   const listActivePortReviews = sql<ReviewRow>`SELECT ${reviewColumns} FROM upstream_port_reviews
     WHERE status IN ('waiting','reviewing','apply_pending','applying')`.pipe(
-    Effect.map((rows) => rows.map(toReview)),
+    Effect.flatMap((rows) => Effect.forEach(rows, toReview)),
     Effect.mapError(fail("listActivePortReviews")),
   );
   const listPortReviewsForThreads: UpstreamStore["listPortReviewsForThreads"] = (ids) =>
@@ -467,7 +502,7 @@ export function makeUpstreamStore(sql: SqlClient.SqlClient): UpstreamStore {
         );
   const getPortReviewByThread: UpstreamStore["getPortReviewByThread"] = (id) =>
     sql<ReviewRow>`SELECT ${reviewColumns} FROM upstream_port_reviews WHERE port_thread_id = ${id}`.pipe(
-      Effect.map((rows) => (rows[0] ? toReview(rows[0]) : null)),
+      Effect.flatMap((rows) => (rows[0] ? toReview(rows[0]) : Effect.succeed(null))),
       Effect.mapError(fail("getPortReviewByThread")),
     );
   const updatePortReview: UpstreamStore["updatePortReview"] = (row) =>

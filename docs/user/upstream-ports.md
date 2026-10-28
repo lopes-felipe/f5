@@ -88,6 +88,10 @@ with a prompt that carries the topic's commits and the trailer that completes it
   back from plan mode before revision if you want it to apply code changes. It pushes fix-up commits to the
   same branch on `origin`, and repeats the port outcome. This adds three review turns and one
   revision per thread, including a grouped port.
+- GitHub must be connected so F5 can verify the PR's repository, branch and head commit.
+  Temporary lookup failures pause the review or revision until verification succeeds.
+- Review status says **revision completed** when that turn finishes. Its detail reports a
+  blocked outcome, plan mode or no new commits; the port outcome remains separate.
 - Review is skipped for non-`pr` outcomes, unlinking, archived or deleted port threads, and
   merged or closed PRs. A queued revision is canceled when skipped; a revision that already
   started is left running. If the PR head changes before revision, **Retry review** reviews

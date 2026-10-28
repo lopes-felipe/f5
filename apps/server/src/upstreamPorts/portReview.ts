@@ -64,7 +64,8 @@ export function portReviewSummary(
 }
 
 export const parsePortPullRequestUrl = (url: string) => {
-  const match = /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/pull\/([1-9]\d*)$/u.exec(url);
+  const match =
+    /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([1-9]\d*)$/u.exec(url);
   return match ? { repo: { owner: match[1]!, name: match[2]! }, number: Number(match[3]) } : null;
 };
 
@@ -138,13 +139,23 @@ export function nextPortReviewStep(row: PortReviewRecord, ctx: PortReviewContext
   if (row.status === "waiting") {
     const finished = getFinishedConsumableLatestTurn(ctx.thread);
     const outcome = finished ? parseUpstreamOutcome(finished.assistantText) : null;
-    if (!row.prUrl) {
-      if (!outcome) return wait();
+    if (!row.prUrl && !ctx.projectedPrUrl) {
+      if (!outcome) {
+        const state = ctx.thread.latestTurn?.state;
+        return state === "error" || state === "interrupted"
+          ? fail(
+              "review-setup",
+              "Port turn " + state + "; finish the port or Retry review after opening a PR",
+            )
+          : wait();
+      }
       if (outcome.kind !== "pr") return skip("Port ended with " + outcome.kind);
     }
     const prUrl = row.prUrl ?? ctx.projectedPrUrl ?? outcome?.detail ?? "";
     if (!parsePortPullRequestUrl(prUrl)) return skip("Port outcome has no valid pull request URL");
     const lookup = ctx.prLookup;
+    if (lookup.kind === "unavailable")
+      return wait("GitHub unavailable; connect GitHub to verify the port PR");
     if (lookup.kind === "error")
       return lookup.transient ? wait(lookup.detail) : fail("review-setup", lookup.detail);
     if (lookup.kind === "found") {
@@ -169,6 +180,8 @@ export function nextPortReviewStep(row: PortReviewRecord, ctx: PortReviewContext
             " does not match port branch " +
             (ctx.thread.branch ?? "(unknown)"),
         );
+      if (!lookup.pr.headSha)
+        return fail("review-setup", "Pull request head is unknown; Retry review to pin it");
     }
     return {
       kind: "startReview",
@@ -192,8 +205,17 @@ export function nextPortReviewStep(row: PortReviewRecord, ctx: PortReviewContext
     const status = deriveCodeReviewWorkflowStatus(workflow);
     if (status !== "completed") return wait();
     if (!ctx.report?.trim()) return fail("review", "Review completed with an empty report");
-    if (ctx.prLookup.kind === "found" && ctx.prLookup.pr) {
+    if (ctx.prLookup.kind === "unavailable")
+      return wait("GitHub unavailable; waiting to verify the reviewed PR head");
+    if (ctx.prLookup.kind === "error")
+      return ctx.prLookup.transient
+        ? wait(ctx.prLookup.detail)
+        : fail("review", ctx.prLookup.detail);
+    if (ctx.prLookup.kind === "found") {
+      if (!ctx.prLookup.pr) return fail("review", "Pull request was not found");
       if (ctx.prLookup.pr.state !== "open") return skip("Pull request is " + ctx.prLookup.pr.state);
+      if (!row.reviewedHeadSha || !ctx.prLookup.pr.headSha)
+        return fail("review", "Pull request head is unknown; Retry review re-reviews it");
       if (
         row.reviewedHeadSha &&
         ctx.prLookup.pr.headSha &&
@@ -261,14 +283,29 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
   const activeWorkflows = new Map<string, string>();
   const workflowByThread = new Map<string, string>();
   const applyingThreads = new Set<string>();
+  const pendingRetryThreads = new Set<string>();
   const summaryKeys = new Map<string, string>();
+  const indexVersions = new Map<string, number>();
+  let indexVersion = 0;
+  const removeIndex = (threadId: string) => {
+    activeThreads.delete(threadId);
+    applyingThreads.delete(threadId);
+    pendingRetryThreads.delete(threadId);
+    const workflow = workflowByThread.get(threadId);
+    if (workflow) activeWorkflows.delete(workflow);
+    workflowByThread.delete(threadId);
+    indexVersions.delete(threadId);
+    summaryKeys.delete(threadId);
+  };
   const index = (row: PortReviewRecord) => {
     activeThreads.delete(row.threadId);
     applyingThreads.delete(row.threadId);
+    pendingRetryThreads.delete(row.threadId);
     const previousWorkflow = workflowByThread.get(row.threadId);
     if (previousWorkflow) activeWorkflows.delete(previousWorkflow);
     workflowByThread.delete(row.threadId);
     if (activePortReview(row)) {
+      indexVersions.set(row.threadId, ++indexVersion);
       activeThreads.set(row.threadId, row.threadId);
       if (row.reviewWorkflowId) {
         activeWorkflows.set(row.reviewWorkflowId, row.threadId);
@@ -276,7 +313,9 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
       }
       if (row.status === "apply_pending" || row.status === "applying")
         applyingThreads.add(row.threadId);
-    } else summaryKeys.delete(row.threadId);
+      if (row.status === "apply_pending" && row.submitFailures > 0)
+        pendingRetryThreads.add(row.threadId);
+    } else removeIndex(row.threadId);
   };
   const notify = (row: PortReviewRecord, workflow?: CodeReviewWorkflow | null) =>
     Effect.gen(function* () {
@@ -291,19 +330,32 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
       const next = { ...row, ...patch, updatedAt: deps.now().toISOString() };
       yield* store.updatePortReview(next);
       index(next);
+      if (activePortReview(next))
+        summaryKeys.set(next.threadId, JSON.stringify(portReviewSummary(next)));
       yield* deps.emit(next.projectId);
       return next;
     });
   const lookup = (cwd: string, prUrl: string | null): Effect.Effect<PortReviewPrLookup> =>
     Effect.gen(function* () {
-      if (!deps.github || !prUrl) return { kind: "unavailable" } as const;
+      if (!prUrl) return { kind: "unavailable" } as const;
       const parsed = parsePortPullRequestUrl(prUrl);
       if (!parsed)
         return { kind: "error", transient: false, detail: "Invalid pull request URL" } as const;
-      if (!(yield* deps.github.available(cwd))) return { kind: "unavailable" } as const;
-      const pr = yield* deps.github.findPullRequest({ cwd, ...parsed });
       const originUrl = yield* deps.originUrl(cwd);
       const origin = originUrl ? parseGitHubRepo(originUrl) : null;
+      if (
+        !origin ||
+        (parsed.repo.owner + "/" + parsed.repo.name).toLowerCase() !==
+          (origin.owner + "/" + origin.name).toLowerCase()
+      )
+        return {
+          kind: "error",
+          transient: false,
+          detail: "Pull request URL does not belong to origin",
+        } as const;
+      if (!deps.github || !(yield* deps.github.available(cwd)))
+        return { kind: "unavailable" } as const;
+      const pr = yield* deps.github.findPullRequest({ cwd, ...parsed });
       return {
         kind: "found",
         pr,
@@ -364,7 +416,7 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
         links.some((link) => link.state === "active");
       const needsPr =
         eligible &&
-        ((row.status === "waiting" && (row.prUrl || outcome?.kind === "pr")) ||
+        ((row.status === "waiting" && (row.prUrl || projectedPrUrl || outcome?.kind === "pr")) ||
           (row.status === "reviewing" &&
             workflow &&
             !workflow.deletedAt &&
@@ -439,7 +491,9 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
               detail +=
                 canceled === "started"
                   ? "; the revision had already started and was left running"
-                  : "; queued revision canceled";
+                  : canceled === "canceled"
+                    ? "; queued revision canceled"
+                    : "";
             }
             if (step.archiveWorkflow && row.reviewWorkflowId)
               yield* host
@@ -449,6 +503,15 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
             return;
           }
           case "startReview": {
+            if (!row.reviewers) {
+              yield* save(row, {
+                status: "error",
+                errorStage: "review-setup",
+                detail: "Invalid stored reviewer settings; start a new port",
+              });
+              return;
+            }
+            const reviewers = row.reviewers;
             const command = ctx.group.command as ClientThreadTurnStartCommand;
             const input = yield* Effect.try({
               try: (): OrchestrationCreateCodeReviewWorkflowInput => ({
@@ -463,7 +526,7 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
                   portPrompt: command.message.text,
                   ledgerDir: ctx.project.ledgerDir,
                 }),
-                ...row!.reviewers,
+                ...reviewers,
               }),
               catch: (error) => (error instanceof Error ? error.message : String(error)),
             }).pipe(
@@ -550,7 +613,9 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
               prompt,
               artifacts: [portReviewReportArtifact(report)],
               targetSlot: {
-                provider: provider.driver as typeof row.reviewers.reviewerA.provider,
+                provider: provider.driver as NonNullable<
+                  PortReviewRecord["reviewers"]
+                >["reviewerA"]["provider"],
                 model: thread.modelSelection?.model ?? thread.model,
               },
               thread,
@@ -635,11 +700,38 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
           case "complete": {
             const final = yield* lookup(ctx.project.cwd, row.prUrl);
             const finalHeadSha = final.kind === "found" ? (final.pr?.headSha ?? null) : null;
+            const turnId = ctx.submission?.turnId ?? row.applyTurnId;
+            const details = turnId
+              ? yield* host.getThreadDetails(ctx.thread!.id).pipe(Effect.orElseSucceed(() => null))
+              : null;
+            const outcome = details
+              ? parseUpstreamOutcome(
+                  details.messages
+                    .filter((message) => message.role === "assistant" && message.turnId === turnId)
+                    .map((message) => message.text)
+                    .join("\n"),
+                )
+              : null;
+            const command = row.applyCommandJson
+              ? (JSON.parse(row.applyCommandJson) as ClientThreadTurnStartCommand)
+              : null;
+            const detail =
+              [
+                outcome?.kind === "blocked"
+                  ? "Revision blocked: " + outcome.detail
+                  : command?.interactionMode === "plan"
+                    ? "Revision completed in plan mode"
+                    : details && outcome?.kind !== "pr"
+                      ? "Revision finished without a PR outcome"
+                      : null,
+                finalHeadSha && finalHeadSha === row.reviewedHeadSha ? "no new commits" : null,
+              ]
+                .filter(Boolean)
+                .join("; ") || null;
             yield* save(row, {
               status: "completed",
               finalHeadSha,
-              detail:
-                finalHeadSha && finalHeadSha === row.reviewedHeadSha ? "no new commits" : null,
+              detail,
             });
             return;
           }
@@ -648,15 +740,14 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
     });
   const advance = (id: string) => withLock(id, advanceUnlocked(id));
   const reconcile = Effect.gen(function* () {
+    const before = new Map(indexVersions);
     const rows = yield* store.listActivePortReviews;
-    // Refresh before yielding; events can now find every active row.
-    activeThreads.clear();
-    activeWorkflows.clear();
-    workflowByThread.clear();
-    applyingThreads.clear();
-    for (const row of rows) index(row);
-    for (const threadId of summaryKeys.keys())
-      if (!activeThreads.has(threadId)) summaryKeys.delete(threadId);
+    // Preserve rows indexed while the SQLite snapshot was in flight.
+    const present = new Set(rows.map((row) => row.threadId));
+    for (const [threadId, version] of before)
+      if (!present.has(threadId) && indexVersions.get(threadId) === version) removeIndex(threadId);
+    for (const row of rows)
+      if (indexVersions.get(row.threadId) === before.get(row.threadId)) index(row);
     yield* Effect.forEach(
       rows,
       (row) => advance(row.threadId).pipe(Effect.ignoreCause({ log: true })),
@@ -674,6 +765,10 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
         if (row.status !== "error" && row.status !== "skipped")
           return yield* Effect.fail(
             new InvalidPortReviewRetry("Only failed or skipped reviews can be retried"),
+          );
+        if (!row.reviewers)
+          return yield* Effect.fail(
+            new InvalidPortReviewRetry("Invalid stored reviewer settings; start a new port"),
           );
         const ctx = yield* readContext(row);
         // A skipped or ambiguously failed submission may have crossed admission.
@@ -709,7 +804,7 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
           (row.errorStage === "apply-feedback" || row.status === "skipped");
         // Reusing a completed report still goes through the head check before applying it.
         yield* save(row, {
-          status: row.prUrl && reuse ? "reviewing" : "waiting",
+          status: reuse ? "reviewing" : "waiting",
           attempt: reuse ? row.attempt + 1 : row.attempt,
           reviewWorkflowId: reuse ? row.reviewWorkflowId : null,
           reviewInputJson: reuse ? row.reviewInputJson : null,
@@ -718,7 +813,7 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
           submitFailures: 0,
           errorStage: reuse ? "apply-feedback" : null,
           detail: null,
-          ...(reuse ? {} : { prUrl: null, reviewedHeadSha: null, finalHeadSha: null }),
+          ...(reuse ? {} : { prUrl: currentPrUrl, reviewedHeadSha: null, finalHeadSha: null }),
         });
         yield* advanceUnlocked(threadId);
       }),
@@ -793,5 +888,12 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
       Stream.runDrain,
     );
   });
-  return { advance, reconcile, retry, subscribe };
+  const retryPending = Effect.suspend(() =>
+    Effect.forEach(
+      [...pendingRetryThreads],
+      (threadId) => advance(threadId).pipe(Effect.ignoreCause({ log: true })),
+      { concurrency: 4, discard: true },
+    ),
+  );
+  return { advance, reconcile, retry, subscribe, retryPending };
 }

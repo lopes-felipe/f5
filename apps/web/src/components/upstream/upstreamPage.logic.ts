@@ -58,7 +58,7 @@ export function portReviewLabel(review: UpstreamPortReviewSummary | null | undef
     case "waiting": return "Code review: waits for the pull request";
     case "reviewing": return "Code review: in progress";
     case "applying": return "Code review: applying feedback" + suffix;
-    case "completed": return "Code review: feedback applied" + suffix;
+    case "completed": return "Code review: revision completed" + suffix;
     case "skipped": return "Code review: skipped" + (review.detail ? " (" + review.detail + ")" : "");
     case "error": return "Code review failed" + suffix;
   }

@@ -58,7 +58,7 @@ import { Textarea } from "../ui/textarea";
 import { portLimitError } from "./upstreamPage.logic";
 import { getCustomModelOptionsByProvider, getProviderDispatchModelsByProvider } from "../ChatView.logic";
 import { makeWorkflowSlotBuilder } from "../workflow/workflowSlots";
-import { PortReviewOptions, portReviewDefaults } from "./PortReviewOptions";
+import { PortReviewOptions, portReviewDefaults, portReviewOptionsError } from "./PortReviewOptions";
 
 export function DeclineDialog(props: {
   readonly open: boolean;
@@ -234,6 +234,7 @@ export const selectionKey = (selection: ModelSelection | null | undefined) =>
 export function StartPortDialog(props: {
   readonly savedReview?: UpstreamPortReviewSettings | undefined;
   readonly reviewSettingsLoaded?: boolean;
+  readonly reviewSettingsError?: boolean;
   readonly open: boolean;
   readonly projectId: ProjectId;
   readonly topicIds: ReadonlyArray<string>;
@@ -308,6 +309,7 @@ export function StartPortDialog(props: {
   )
     setModelSelection(defaultModel);
   const limitError = portLimitError(props.topicIds.length, grouping);
+  const reviewError = submitted ? null : portReviewOptionsError(reviewOptions, providers);
   const ready = isReady(modelSelection);
   const provider = providers.find((p) => p.instanceId === modelSelection.instanceId);
   const driver = provider?.driver ?? ProviderDriverKind.make("codex");
@@ -402,6 +404,8 @@ export function StartPortDialog(props: {
           <PortReviewOptions value={reviewOptions} providers={providers} modelOptionsByProvider={reviewModels}
             locked={locked || !reviewHydrated} onChange={setReviewOptions} />
           {!reviewHydrated && <p role="status">Loading review preferences…</p>}
+          {props.reviewSettingsError && <p role="status">Could not load saved review preferences. Check the review options before starting.</p>}
+          {reviewHydrated && reviewError && <p role="alert" className="text-destructive-foreground">{reviewError}</p>}
           {limitError && (
             <p role="alert" className="text-destructive-foreground">
               {limitError}
@@ -418,9 +422,9 @@ export function StartPortDialog(props: {
             Cancel
           </Button>
           <Button
-            disabled={props.busy || limitError !== null || !ready || !reviewHydrated}
+            disabled={props.busy || limitError !== null || !ready || !reviewHydrated || reviewError !== null}
             onClick={() => {
-              if (!ready || !reviewHydrated) return;
+              if (!ready || !reviewHydrated || reviewError) return;
               let review = lockedReview;
               if (!review) {
                 const buildSlot = makeWorkflowSlotBuilder({

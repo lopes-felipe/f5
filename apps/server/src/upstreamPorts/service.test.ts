@@ -223,6 +223,17 @@ layer("upstream ports service", (it) => {
         yield* Effect.yieldNow;
       assert.strictEqual((yield* store.getPortReviewByThread(thread.id))?.status, "skipped");
       fixture.host.threads = [thread];
+      fixture.gh.available = true;
+      fixture.gh.prs.push({
+        repo: "o/f5",
+        number: 42,
+        url: "https://github.com/o/f5/pull/42",
+        state: "open",
+        head: thread.branch!,
+        headSha: "abc",
+        title: "Port",
+        body: "",
+      });
       const retried = yield* second.retryPortReview({ projectId: PROJECT_ID, threadId: thread.id });
       assert.strictEqual(retried.revision, (yield* second.getOverview(PROJECT_ID)).revision);
       assert.lengthOf(fixture.host.reviews, 1);

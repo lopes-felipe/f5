@@ -12,6 +12,7 @@ import type {
   ProjectionTurn,
 } from "../persistence/Services/ProjectionTurns.ts";
 import type { NextTurnQueueSubmissionRecord } from "./Services/NextTurnQueueStore.ts";
+import { pendingApprovalActivities } from "../orchestration/pendingApprovals.ts";
 
 export interface TurnSubmissionStatusDeps<E> {
   readonly getQueueSnapshot: (threadId: ThreadId) => Effect.Effect<NextTurnQueueSnapshot, E>;
@@ -61,19 +62,6 @@ export function bindSubmissionTurnIds(
   };
 }
 
-function hasPendingApproval(thread: OrchestrationThread): boolean {
-  const open = new Set<string>();
-  for (const activity of [...thread.activities].toSorted(
-    (a, b) => (a.sequence ?? 0) - (b.sequence ?? 0) || a.createdAt.localeCompare(b.createdAt),
-  )) {
-    const payload = activity.payload as { requestId?: unknown } | null;
-    if (typeof payload?.requestId !== "string") continue;
-    if (activity.kind === "approval.requested") open.add(payload.requestId);
-    else if (activity.kind === "approval.resolved") open.delete(payload.requestId);
-  }
-  return open.size > 0;
-}
-
 export function resolveTurnSubmissionStatus<E>(
   deps: TurnSubmissionStatusDeps<E>,
   input: {
@@ -114,7 +102,9 @@ export function resolveTurnSubmissionStatus<E>(
         (message) => message.id === record.messageId,
       )?.turnId;
     if (!turnId) return { status: "running" };
-    const state = yield* deps.getTurnState({ threadId: thread.id, turnId });
+    const state =
+      (yield* deps.getTurnState({ threadId: thread.id, turnId })) ??
+      (thread.latestTurn?.turnId === turnId ? thread.latestTurn.state : null);
     switch (state) {
       case "completed":
         return { status: "completed", turnId };
@@ -132,7 +122,8 @@ export function resolveTurnSubmissionStatus<E>(
         if (thread.latestTurn?.turnId === turnId) {
           if ((thread.pendingUserInputs?.length ?? 0) > 0)
             return { status: "awaiting-input", turnId };
-          if (hasPendingApproval(thread)) return { status: "awaiting-approval", turnId };
+          if (pendingApprovalActivities(thread).length)
+            return { status: "awaiting-approval", turnId };
         }
         return { status: "running", turnId };
     }

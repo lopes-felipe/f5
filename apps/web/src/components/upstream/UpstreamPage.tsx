@@ -1073,7 +1073,8 @@ export function UpstreamPage(props: {
         providers={providers}
         savedModel={projectSettings.data?.settings.upstreamPorts?.portModelSelection ?? null}
         savedReview={projectSettings.data?.settings.upstreamPorts?.portReview}
-        reviewSettingsLoaded={Boolean(projectSettings.data && serverConfig.data)}
+        reviewSettingsLoaded={!projectSettings.isPending && Boolean(serverConfig.data)}
+        reviewSettingsError={projectSettings.isError && !projectSettings.data}
         defaultRuntimeMode={defaultRuntimeMode}
         overview={overview}
         busy={busy}

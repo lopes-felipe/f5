@@ -218,7 +218,20 @@ async function setup(initial: UpstreamSearch = {}, firstTitle = "Topic A") {
     </QueryClientProvider>,
   );
   await expect.element(page.getByRole("checkbox", { name: `Select ${firstTitle}` })).toBeVisible();
+  return client;
 }
+
+it("opens usable review options after the project settings query fails", async () => {
+  api.getOverview.mockResolvedValue({ ...overview, counts: { ...overview.counts, ready: ROWS.length } });
+  api.listTopics.mockResolvedValue(topicsPage(ROWS.map((entry) => ({ ...entry, state: "ready" }))));
+  const client = await setup({ project: projectId, list: "ready" });
+  client.getQueryCache().find({ queryKey: projectSettingsQueryOptions(projectId).queryKey })!
+    .setState({ status: "error", error: new Error("settings unavailable"), data: undefined, fetchStatus: "idle" });
+  await page.getByRole("button", { name: /Start port for all/ }).click();
+  await expect.element(page.getByText("Loading review preferences…")).not.toBeInTheDocument();
+  await expect.element(page.getByText("Could not load saved review preferences. Check the review options before starting.")).toBeVisible();
+  await expect.element(page.getByRole("checkbox", { name: /Code review after port/ })).toBeEnabled();
+});
 
 const focusList = () => (page.getByRole("listbox", { name: "Upstream topics" }).element() as HTMLElement).focus();
 const bulkButton = (name: string) =>

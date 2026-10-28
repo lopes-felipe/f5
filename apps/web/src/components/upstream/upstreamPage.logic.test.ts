@@ -57,7 +57,7 @@ it("labels each review stage independently of the port outcome", () => {
     ["waiting", "Code review: waits for the pull request"],
     ["reviewing", "Code review: in progress"],
     ["applying", "Code review: applying feedback: paused"],
-    ["completed", "Code review: feedback applied: paused"],
+    ["completed", "Code review: revision completed: paused"],
     ["skipped", "Code review: skipped (paused)"],
     ["error", "Code review failed: paused"],
   ] as const) expect(portReviewLabel({ status, detail: "paused", workflowId: null, retryable: false })).toBe(label);

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { nextPortReviewStep, portReviewSummary, type PortReviewPrLookup } from "./portReview.ts";
+import {
+  nextPortReviewStep,
+  parsePortPullRequestUrl,
+  portReviewSummary,
+  type PortReviewPrLookup,
+} from "./portReview.ts";
 import {
   REVIEW_PR,
   reviewContext,
@@ -72,7 +77,7 @@ describe("nextPortReviewStep", () => {
         reviewRecord(),
         reviewContext({ projectedPrUrl: "https://github.com/o/f5/pull/99" }),
       ),
-    ).toEqual({ kind: "startReview", prUrl: "https://github.com/o/f5/pull/99", headSha: null });
+    ).toEqual({ kind: "startReview", prUrl: "https://github.com/o/f5/pull/99", headSha: "abc" });
     const thread = reviewThread();
     expect(
       nextPortReviewStep(
@@ -170,7 +175,7 @@ describe("nextPortReviewStep", () => {
         ...ctx,
         prLookup: { kind: "error", transient: true, detail: "offline" },
       }),
-    ).toEqual({ kind: "prepareApply" });
+    ).toEqual({ kind: "wait", detail: "offline" });
   });
   it("stops retrying a submission after three failures", () => {
     expect(nextPortReviewStep(reviewRecord({ status: "apply_pending" }), reviewContext())).toEqual({
@@ -182,6 +187,38 @@ describe("nextPortReviewStep", () => {
         reviewContext(),
       ),
     ).toMatchObject({ kind: "fail", stage: "apply-feedback" });
+  });
+  it("never applies a report without a successful lookup and two known matching heads", () => {
+    const row = reviewRecord({ status: "reviewing", reviewedHeadSha: "abc", prUrl: REVIEW_PR });
+    const ctx = reviewContext({ workflow: reviewWorkflow(true), report: "Fix it" });
+    for (const [lookup, kind] of [
+      [{ kind: "unavailable" }, "wait"],
+      [{ kind: "error", transient: true, detail: "rate limited" }, "wait"],
+      [{ kind: "error", transient: false, detail: "forbidden" }, "fail"],
+      [{ kind: "found", origin: "o/f5", pr: null }, "fail"],
+      [prLookup({ headSha: undefined }), "fail"],
+    ] as const)
+      expect(nextPortReviewStep(row, { ...ctx, prLookup: lookup }).kind).toBe(kind);
+    expect(nextPortReviewStep({ ...row, reviewedHeadSha: null }, ctx).kind).toBe("fail");
+    expect(
+      nextPortReviewStep(reviewRecord(), reviewContext({ prLookup: { kind: "unavailable" } })).kind,
+    ).toBe("wait");
+  });
+  it("uses a projected PR after an interrupted turn and makes failed ports retryable", () => {
+    for (const state of ["interrupted", "error"] as const) {
+      const ctx = reviewContext({
+        thread: reviewThread({ latestTurn: { ...reviewThread().latestTurn!, state } }),
+      });
+      expect(nextPortReviewStep(reviewRecord(), ctx)).toMatchObject({
+        kind: "fail",
+        stage: "review-setup",
+      });
+      expect(nextPortReviewStep(reviewRecord(), { ...ctx, projectedPrUrl: REVIEW_PR }).kind).toBe(
+        "startReview",
+      );
+    }
+    for (const segment of ['bad"repo', "bad`repo", "bad(repo)", "bad<repo>"])
+      expect(parsePortPullRequestUrl("https://github.com/o/" + segment + "/pull/1")).toBeNull();
   });
   it.each([
     ["queued", "wait"],

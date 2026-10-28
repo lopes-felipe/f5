@@ -2101,6 +2101,12 @@ export function makeUpstreamPortsService(
       yield* portReviews.reconcile.pipe(Effect.ignoreCause({ log: true }), Effect.forkScoped);
       yield* Effect.gen(function* () {
         while (true) {
+          yield* Effect.sleep(5_000);
+          yield* portReviews.retryPending;
+        }
+      }).pipe(Effect.forkScoped);
+      yield* Effect.gen(function* () {
+        while (true) {
           yield* Effect.sleep(SCHEDULER_TICK_MS);
           yield* portReviews.reconcile.pipe(Effect.ignoreCause({ log: true }));
         }
