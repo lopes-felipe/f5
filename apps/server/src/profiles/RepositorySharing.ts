@@ -63,7 +63,7 @@ export async function canonicalGitCommonDirectory(workspaceRoot: string): Promis
   }
 }
 
-async function projectRoots(stateDir: string): Promise<string[]> {
+export async function projectRoots(stateDir: string): Promise<string[]> {
   const file = Path.join(stateDir, "state.sqlite");
   if (!(await FS.stat(file).catch(() => null))?.isFile()) return [];
   const database = process.versions.bun
@@ -156,6 +156,7 @@ export async function assertExclusiveProfileCheckout(
 /** Read ownership once per inventory; an unreadable registry fails closed. */
 export async function readOtherProfileManagedRoots(
   config: Pick<import("../config.ts").ServerConfigShape, "defaultStateDir" | "profile" | "baseDir">,
+  options: { destructive?: boolean } = {},
 ): Promise<string[]> {
   if (!config.defaultStateDir || !config.profile) return [];
   const registry = await new ProfileRegistryStore(config.defaultStateDir).read();
@@ -169,7 +170,17 @@ export async function readOtherProfileManagedRoots(
         try {
           raw = await FS.readFile(Path.join(stateDir, "settings.json"), "utf8");
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            if (options.destructive)
+              throw new Error(
+                "Managed workspace ownership could not be read for profile " + profile.name + ".",
+              );
+            console.warn(
+              "Could not read settings for profile " +
+                profile.name +
+                "; using its default root for browsing.",
+            );
+          }
         }
         const settings = Schema.decodeUnknownOption(
           fromLenientJson(
@@ -179,10 +190,22 @@ export async function readOtherProfileManagedRoots(
             }),
           ),
         )(raw);
+        if (settings._tag === "None" && options.destructive)
+          throw new Error(
+            "Managed workspace ownership could not be established for profile " +
+              profile.name +
+              ".",
+          );
         if (settings._tag === "None")
-          throw new Error("Managed workspace ownership could not be established.");
+          console.warn(
+            "Could not read worktree locations for profile " +
+              profile.name +
+              "; using its default root for browsing.",
+          );
         const directories = managedWorktreesDirectories(
-          settings.value,
+          settings._tag === "Some"
+            ? settings.value
+            : { worktreesDirectory: "", previousWorktreesDirectories: [] },
           Path.join(profile.isDefault ? config.baseDir : stateDir, "worktrees"),
         );
         return (await Promise.all(directories.map(canonicalWorktreePath))).filter(

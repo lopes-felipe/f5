@@ -395,8 +395,45 @@ try {
       session.fromPartition(partition).webRequest.onCompleted(null);
     }
   }, previewConfig.partition);
-  await page.evaluate(() => document.getElementById("smoke-untrusted-guest")?.remove());
   if (guestStatus !== 401) throw new Error(`Guest received backend authorization (${guestStatus})`);
+  const zoomGuestId = await page.evaluate(async () => {
+    const guest = document.getElementById("smoke-untrusted-guest");
+    await window.desktopBridge.preview.createTab("smoke-zoom", { zoomFactor: 1.25, muted: true });
+    const id = guest.getWebContentsId();
+    await window.desktopBridge.preview.registerWebview("smoke-zoom", id);
+    guest.focus();
+    return id;
+  });
+  await application.evaluate(async ({ BrowserWindow, Menu, webContents }, guestId) => {
+    const guest = webContents.fromId(guestId);
+    const owner = BrowserWindow.fromWebContents(guest.hostWebContents);
+    const findItem = (label, items = Menu.getApplicationMenu().items) => {
+      for (const item of items) {
+        if (item.label === label) return item;
+        if (item.submenu) {
+          const found = findItem(label, item.submenu.items);
+          if (found) return found;
+        }
+      }
+    };
+    const before = owner.webContents.getZoomLevel();
+    guest.focus();
+    findItem("Zoom In").click();
+    // Check after Chromium has propagated the embedder's zoom to its guests.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    if (owner.webContents.getZoomLevel() !== before + 0.5)
+      throw new Error("View zoom did not target the app while the preview had focus");
+    if (Math.abs(guest.getZoomFactor() - 1.25) > 0.001)
+      throw new Error("View zoom overwrote the preview's chosen zoom");
+    findItem("Actual Size").click();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    if (owner.webContents.getZoomLevel() !== 0 || Math.abs(guest.getZoomFactor() - 1.25) > 0.001)
+      throw new Error("Resetting app zoom changed the preview zoom");
+  }, zoomGuestId);
+  await page.evaluate(async () => {
+    await window.desktopBridge.preview.closeTab("smoke-zoom");
+    document.getElementById("smoke-untrusted-guest")?.remove();
+  });
 
   const workspace = join(directory, "workspace");
   mkdirSync(workspace);

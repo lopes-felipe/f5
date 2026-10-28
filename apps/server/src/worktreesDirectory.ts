@@ -5,6 +5,8 @@ import {
   DEFAULT_WORKTREES_SETTINGS,
 } from "./worktreesDirectoryPaths.ts";
 export {
+  allocationWorktreesDirectory,
+  customWorktreesDirectory,
   canonicalManagedWorktreesDirectories,
   DEFAULT_WORKTREES_SETTINGS,
   isFilesystemRoot,

@@ -8,6 +8,7 @@ import {
   managedWorktreesDirectories,
   resolveWorktreesDirectory,
 } from "./worktreesDirectory.ts";
+import { customWorktreesDirectory } from "./worktreesDirectoryPaths.ts";
 
 describe("worktree locations", () => {
   it("accepts default, absolute and home paths, rejecting relative and drive roots", () => {
@@ -26,7 +27,14 @@ describe("worktree locations", () => {
         },
         fallback,
       ),
-    ).toEqual([fallback, fallback + "-new", fallback + "-old"]);
+    ).toEqual([
+      fallback,
+      customWorktreesDirectory(fallback + "-new", fallback),
+      customWorktreesDirectory(fallback + "-old", fallback),
+    ]);
+    expect(customWorktreesDirectory(fallback, fallback + "-profile-a")).not.toBe(
+      customWorktreesDirectory(fallback, fallback + "-profile-b"),
+    );
   });
   it("retains old and unavailable locations but rejects symlinks to filesystem roots", async () => {
     const temp = await FS.mkdtemp(Path.join(tmpdir(), "f5-worktrees-directories-"));
@@ -47,8 +55,11 @@ describe("worktree locations", () => {
       );
       expect(roots).toEqual([
         Path.join(canonical, "default"),
-        canonical,
-        Path.join(canonical, "unmounted", "worktrees"),
+        customWorktreesDirectory(canonical, Path.join(temp, "default")),
+        customWorktreesDirectory(
+          Path.join(canonical, "unmounted", "worktrees"),
+          Path.join(temp, "default"),
+        ),
       ]);
     } finally {
       await FS.rm(temp, { recursive: true, force: true });

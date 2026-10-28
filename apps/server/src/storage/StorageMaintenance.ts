@@ -3518,6 +3518,21 @@ const makeStorageMaintenance = Effect.gen(function* () {
       return managedRoots.some((root) => resolved !== root && pathContains(root, resolved));
     });
 
+  // External volumes may disappear. Automatic pruning is restricted to the
+  // built-in root, whose availability is checked again immediately before mutation.
+  const isAutomaticallyPrunable = (path: string) =>
+    Effect.gen(function* () {
+      const available = yield* Effect.promise(() =>
+        FS.stat(config.worktreesDir)
+          .then((stat) => stat.isDirectory())
+          .catch(() => false),
+      );
+      if (!available) return false;
+      const root = yield* Effect.promise(() => canonicalWorktreePath(config.worktreesDir));
+      const resolved = yield* Effect.promise(() => canonicalWorktreePath(path));
+      return resolved !== root && pathContains(root, resolved);
+    });
+
   /**
    * Forget registrations whose folder is still missing, one at a time.
    * `managedOnly` (the hourly run) leaves entries outside the F5 worktrees
@@ -3538,7 +3553,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
         selectedTargetIds !== undefined && !selectedTargetIds.has(target.id)
           ? Effect.succeed(false)
           : options?.managedOnly
-            ? isManagedWorktreePath(target.id)
+            ? isAutomaticallyPrunable(target.id)
             : Effect.succeed(true),
       );
       let completedTargets = 0;
@@ -3557,6 +3572,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
           continue;
         }
         // Re-checks under the repository lock that the folder is still missing.
+        if (options?.managedOnly && !(yield* isAutomaticallyPrunable(target.id))) continue;
         const cleared = yield* git
           .clearMissingRegistration(target.projectRoot, target.id)
           .pipe(Effect.exit);

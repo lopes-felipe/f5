@@ -5,7 +5,9 @@ import { ProfileId } from "@t3tools/contracts";
 import {
   assertExclusiveProfileCheckout,
   assertNotOtherProfileManagedCheckout,
+  readOtherProfileManagedRoots,
 } from "./RepositorySharing";
+import { customWorktreesDirectory } from "../worktreesDirectoryPaths.ts";
 import * as FS from "node:fs/promises";
 import * as OS from "node:os";
 import * as Path from "node:path";
@@ -80,7 +82,21 @@ it("blocks shared-root changes for another profile's archived effective workspac
       await expect(
         assertNotOtherProfileManagedCheckout(
           { defaultStateDir: state, profile: current, baseDir: root },
-          Path.join(managed, "repo", "topic"),
+          Path.join(
+            customWorktreesDirectory(managed, Path.join(root, "worktrees")),
+            "repo",
+            "topic",
+          ),
+        ),
+      ).resolves.toBeUndefined();
+      await expect(
+        assertNotOtherProfileManagedCheckout(
+          { defaultStateDir: state, profile: current, baseDir: root },
+          Path.join(
+            customWorktreesDirectory(managed, Path.join(otherState, "worktrees")),
+            "repo",
+            "topic",
+          ),
         ),
       ).rejects.toThrow(/Another profile owns/);
     }
@@ -90,7 +106,19 @@ it("blocks shared-root changes for another profile's archived effective workspac
         { defaultStateDir: state, profile: current, baseDir: root },
         siblingManaged,
       ),
-    ).rejects.toThrow("Managed workspace ownership could not be established.");
+    ).rejects.toThrow(/Another profile owns/);
+    await expect(
+      readOtherProfileManagedRoots(
+        { defaultStateDir: state, profile: current, baseDir: root },
+        { destructive: true },
+      ),
+    ).rejects.toThrow(/profile/);
+    await expect(
+      assertNotOtherProfileManagedCheckout(
+        { defaultStateDir: state, profile: current, baseDir: root },
+        checkout,
+      ),
+    ).resolves.toBeUndefined();
     await FS.writeFile(Path.join(otherState, "settings.json"), "{}");
     const db = new DatabaseSync(Path.join(otherState, "state.sqlite"));
     try {

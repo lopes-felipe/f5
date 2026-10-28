@@ -1,4 +1,8 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodePath from "node:path";
+import { homedir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
+import { customWorktreesDirectory } from "./worktreesDirectoryPaths.ts";
 import {
   DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
@@ -39,6 +43,54 @@ const makeServerSettingsLayer = () =>
   );
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect(
+    "rejects unsafe worktree locations before persisting and records only used locations",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsService;
+        const config = yield* ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        for (const location of [
+          "relative/worktrees",
+          NodePath.parse(config.baseDir).root,
+          homedir(),
+          config.baseDir,
+          config.stateDir,
+          NodePath.join(config.stateDir, "nested"),
+        ]) {
+          const result = yield* Effect.result(
+            service.updateSettings({ worktreesDirectory: location }),
+          );
+          assert.equal(result._tag, "Failure");
+          assert.equal((yield* service.getSettings).worktreesDirectory, "");
+        }
+        const location = config.baseDir + "-custom";
+        yield* service.updateSettings({ worktreesDirectory: location });
+        assert.deepEqual((yield* service.getSettings).previousWorktreesDirectories, []);
+        yield* service.recordWorktreeLocation!(location);
+        yield* service.updateSettings({ worktreesDirectory: "" });
+        assert.deepEqual((yield* service.getSettings).previousWorktreesDirectories, [location]);
+        assert.isTrue((yield* fs.readFileString(config.settingsPath!)).includes(location));
+        const managedRoot = customWorktreesDirectory(location, config.worktreesDir);
+        yield* fs.makeDirectory(managedRoot, { recursive: true });
+        yield* Effect.addFinalizer(() =>
+          fs.remove(location, { recursive: true }).pipe(Effect.ignore),
+        );
+        yield* service.updateSettings({ enableAssistantStreaming: false });
+        assert.deepEqual((yield* service.getSettings).previousWorktreesDirectories, []);
+        const projectRoot = config.baseDir + "-project";
+        const database = new DatabaseSync(config.dbPath);
+        database.exec("CREATE TABLE projection_projects(workspace_root TEXT,deleted_at TEXT)");
+        database.prepare("INSERT INTO projection_projects VALUES (?,NULL)").run(projectRoot);
+        database.close();
+        for (const value of [projectRoot, NodePath.join(projectRoot, "nested")]) {
+          const result = yield* Effect.result(
+            service.updateSettings({ worktreesDirectory: value }),
+          );
+          assert.equal(result._tag, "Failure");
+        }
+      }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
   it.effect("applies a save to external edits before the watcher reloads them", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsService;

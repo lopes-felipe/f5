@@ -42,7 +42,10 @@ import {
 import { resolveHeadInDefaultBranch } from "../project/worktreeMerge.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { canonicalManagedWorktreesDirectories } from "../worktreesDirectory.ts";
+import {
+  canonicalManagedWorktreesDirectories,
+  managedWorktreesDirectories,
+} from "../worktreesDirectory.ts";
 import { TerminalManager } from "../terminal/Services/Manager.ts";
 import { pruneStorageAutomationAudit, recordStorageAutomationAudit } from "./automationAudit.ts";
 import {
@@ -800,8 +803,12 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
     }).pipe(Effect.provideServices(services), logJobFailure("terminal thread log cleanup"));
 
   /** Audit label: relative to the managed worktrees directory, else `~`-relative. */
-  const worktreeAuditTarget = (path: string) => {
-    const relative = Path.relative(config.worktreesDir, path);
+  const worktreeAuditTarget = (path: string, settings: ServerSettings) => {
+    const root =
+      managedWorktreesDirectories(settings, config.worktreesDir).find((root) =>
+        pathContains(root, path),
+      ) ?? config.worktreesDir;
+    const relative = Path.relative(root, path);
     return relative.length > 0 && !relative.startsWith("..") && !Path.isAbsolute(relative)
       ? relative
       : redactHomePath(path);
@@ -821,7 +828,7 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
           yield* recordStorageAutomationAudit({
             operationId,
             job: "worktree-cleanup",
-            target: worktreeAuditTarget(target.path ?? target.id),
+            target: worktreeAuditTarget(target.path ?? target.id, settings),
             result: "removed",
             reason: pruning
               ? "the worktree folder was missing; its registration was pruned"
@@ -839,7 +846,7 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
             {
               operationId,
               job: "worktree-cleanup",
-              target: worktreeAuditTarget(warning.path),
+              target: worktreeAuditTarget(warning.path, settings),
               result: "skipped",
               reason: warning.reason,
             },
@@ -936,7 +943,7 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
       for (const preview of previews)
         targets.push({
           job: "worktree-cleanup",
-          target: worktreeAuditTarget(preview.path),
+          target: worktreeAuditTarget(preview.path, global),
           projectId: null,
           threadId: null,
           action: preview.action,

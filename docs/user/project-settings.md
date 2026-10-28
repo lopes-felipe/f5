@@ -41,10 +41,16 @@ wins.
 
 Set **Settings → Storage → Worktree location** to an absolute folder on this machine,
 such as `D:\worktrees` or `~/worktrees`, to create new worktrees on another drive.
-Leave it empty to use this profile's F5 worktrees folder. F5 keeps its repository and branch
-names with identity hashes beneath the chosen folder, so similarly named repositories do
-not collide. Existing worktrees stay where they are; cleanup and workspace recovery cover
-the default folder, the current custom folder, and previously selected folders.
+Click **Save** (or press Enter), or leave it empty to use this profile's F5 worktrees folder.
+F5 creates a separate directory for each profile beneath the chosen folder, then repository
+and branch names with identity hashes. Profiles can share a parent folder without sharing
+checkouts. The folder must be separate from app data and project checkouts.
+
+Existing worktrees stay where they are. Cleanup and workspace recovery cover the default
+folder and custom locations where F5 has created checkouts. Unused, reachable locations are
+forgotten when saving settings; unavailable drives remain remembered. Automatic cleanup
+never prunes missing registrations on custom drives. Use the reviewed Storage cleanup to
+remove those entries after confirming that a drive is connected.
 
 ## Good to know
 

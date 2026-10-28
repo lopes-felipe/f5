@@ -1,9 +1,11 @@
 import { gitConfigArgs, literalGitPathspec } from "@t3tools/shared/git";
+import { ServerSettingsService } from "../../serverSettings.ts";
+import { Option } from "effect";
 import {
   canonicalManagedWorktreesDirectories,
   managedWorktreesDirectories,
   makeWorktreesSettingsReader,
-  resolveWorktreesDirectory,
+  allocationWorktreesDirectory,
   isFilesystemRoot,
 } from "../../worktreesDirectory.ts";
 import { makeRefSnapshotCache } from "../refSnapshotCache.ts";
@@ -301,6 +303,7 @@ const makeGitCore = Effect.gen(function* () {
   const preparations = yield* WorktreePreparations;
   const { worktreesDir, baseDir } = yield* ServerConfig;
   const readWorktreesSettings = yield* makeWorktreesSettingsReader;
+  const settingsService = yield* Effect.serviceOption(ServerSettingsService);
   const managedWorktreesRoots = readWorktreesSettings.pipe(
     Effect.flatMap((settings) => canonicalManagedWorktreesDirectories(settings, worktreesDir)),
   );
@@ -2230,7 +2233,7 @@ const makeGitCore = Effect.gen(function* () {
   const allocateWorktreePath: GitCoreShape["allocateWorktreePath"] = ({ cwd, branch }) =>
     Effect.gen(function* () {
       const settings = yield* readWorktreesSettings;
-      const directory = resolveWorktreesDirectory(settings.worktreesDirectory, worktreesDir);
+      const directory = allocationWorktreesDirectory(settings.worktreesDirectory, worktreesDir);
       if (directory === null)
         return yield* createGitCommandError(
           "GitCore.allocateWorktreePath",
@@ -2445,6 +2448,19 @@ const makeGitCore = Effect.gen(function* () {
           );
         // A successful add proves that this operation created the checkout.
         claim();
+        const location = settings.worktreesDirectory;
+        const locationRoot = allocationWorktreesDirectory(location, worktreesDir);
+        if (
+          location &&
+          locationRoot &&
+          pathContains(locationRoot, worktreePath) &&
+          Option.isSome(settingsService)
+        )
+          yield* (
+            settingsService.value
+              .recordWorktreeLocation?.(location)
+              .pipe(Effect.ignoreCause({ log: true })) ?? Effect.void
+          );
       });
       yield* withWorktreeLifecycleLock(
         worktreePath,

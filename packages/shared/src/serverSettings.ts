@@ -262,20 +262,6 @@ export function applyServerSettingsPatch(
         });
     result = { ...result, [key]: createModelSelection(instanceId, model, options) };
   }
-  if (
-    patch.worktreesDirectory !== undefined &&
-    patch.worktreesDirectory !== current.worktreesDirectory
-  ) {
-    result = {
-      ...result,
-      previousWorktreesDirectories: [
-        ...new Set([
-          ...current.previousWorktreesDirectories,
-          ...(current.worktreesDirectory ? [current.worktreesDirectory] : []),
-        ]),
-      ].filter((directory) => directory !== patch.worktreesDirectory),
-    };
-  }
   return result;
 }
 

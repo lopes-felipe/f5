@@ -12,6 +12,7 @@ import { canonicalWorktreePath } from "../git/worktreePaths.ts";
 import { NextTurnQueueStoreLive } from "../nextTurnQueue/Layers/NextTurnQueueStore.ts";
 import { TerminalManager, type TerminalManagerShape } from "../terminal/Services/Manager.ts";
 import * as NodeFS from "node:fs/promises";
+import { customWorktreesDirectory } from "../worktreesDirectoryPaths.ts";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
@@ -247,9 +248,20 @@ function makeStorageTestLayer(input?: {
         : Layer.succeed(GitCore, input?.gitCore ?? makeGitCoreStub()),
     ),
     Layer.provideMerge(
-      ServerConfig.layerTest(process.cwd(), {
-        prefix: "t3-storage-maintenance-test-",
-      }),
+      Layer.effect(
+        ServerConfig,
+        Effect.gen(function* () {
+          const config = yield* ServerConfig;
+          yield* Effect.promise(() => new ProfileRegistryStore(config.defaultStateDir!).init());
+          return config;
+        }),
+      ).pipe(
+        Layer.provide(
+          ServerConfig.layerTest(process.cwd(), {
+            prefix: "t3-storage-maintenance-test-",
+          }),
+        ),
+      ),
     ),
     Layer.provideMerge(
       Layer.succeed(ProviderService, input?.providerService ?? makeProviderServiceStub()),
@@ -3589,13 +3601,36 @@ it.layer(
           const oldRoot = NodePath.join(config.baseDir, "old-worktrees");
           const currentRoot = NodePath.join(config.baseDir, "new-worktrees");
           yield* settings.updateSettings({ worktreesDirectory: oldRoot });
+          yield* settings.recordWorktreeLocation!(oldRoot);
           yield* settings.updateSettings({ worktreesDirectory: currentRoot });
-          const oldTree = NodePath.join(oldRoot, "repo", "old");
-          const currentTree = NodePath.join(currentRoot, "repo", "current");
+          const oldTree = NodePath.join(
+            customWorktreesDirectory(oldRoot, config.worktreesDir),
+            "repo",
+            "old",
+          );
+          const currentTree = NodePath.join(
+            customWorktreesDirectory(currentRoot, config.worktreesDir),
+            "repo",
+            "current",
+          );
+          const foreignTree = NodePath.join(
+            customWorktreesDirectory(currentRoot, config.worktreesDir),
+            "repo",
+            "foreign",
+          );
           yield* Effect.promise(async () => {
             runGit(repo.root, "worktree", "add", "-q", "-b", "custom-old", oldTree, "main");
             runGit(repo.root, "worktree", "add", "-q", "-b", "custom-current", currentTree, "main");
+            runGit(repo.root, "worktree", "add", "-q", "-b", "foreign", foreignTree, "main");
           });
+          for (const [index, worktreePath] of [oldTree, currentTree].entries())
+            yield* seedThread({
+              sql,
+              threadId: ThreadId.makeUnsafe("custom-owner-" + index),
+              worktreePath,
+              archivedAt: daysAgo(90),
+              deletedAt: null,
+            });
           yield* seedProject({
             sql,
             projectId: "custom-storage-project",
@@ -3607,6 +3642,7 @@ it.layer(
           )!.targets;
           for (const tree of [oldTree, currentTree])
             assert.equal(targets.find((target) => target.path === tree)?.safeToDelete, true);
+          assert.equal(targets.find((target) => target.path === foreignTree)?.safeToDelete, false);
           assert.deepEqual(
             report.categories.find((category) => category.id === "externalWorktrees")!.targets,
             [],
@@ -3617,7 +3653,7 @@ it.layer(
             nonce: report.confirmationNonce,
             categoryIds: ["inactiveF5Worktrees"],
             targetSelections: [
-              { categoryId: "inactiveF5Worktrees", targetIds: targets.map((target) => target.id) },
+              { categoryId: "inactiveF5Worktrees", targetIds: [oldTree, currentTree] },
             ],
             confirmationText: "DELETE",
             options: { vacuumAfterDeletes: false },
@@ -3625,6 +3661,28 @@ it.layer(
           assert.equal(cleaned.results[0]?.status, "Cleaned");
           assert.equal(yield* Effect.promise(() => pathExists(oldTree)), false);
           assert.equal(yield* Effect.promise(() => pathExists(currentTree)), false);
+          assert.equal(yield* Effect.promise(() => pathExists(foreignTree)), true);
+          const unavailable = currentRoot + "-offline";
+          yield* Effect.promise(() => NodeFS.rename(currentRoot, unavailable));
+          yield* Effect.addFinalizer(() =>
+            Effect.promise(() => NodeFS.rename(unavailable, currentRoot)),
+          );
+          yield* seedThread({
+            sql,
+            threadId: ThreadId.makeUnsafe("unmounted-custom-owner"),
+            worktreePath: foreignTree,
+            archivedAt: daysAgo(90),
+            deletedAt: null,
+          });
+          const automatic = yield* storage.cleanInactiveWorktreesAutomatically({
+            operationId: "unmounted-custom-root",
+          });
+          assert.isFalse(
+            automatic?.some((result) =>
+              result.perTargetReclaimed.some((target) => target.path === foreignTree),
+            ) ?? false,
+          );
+          assert.isTrue(runGit(repo.root, "worktree", "list", "--porcelain").includes(foreignTree));
         }),
       ),
     60_000,

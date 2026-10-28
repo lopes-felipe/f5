@@ -2705,7 +2705,8 @@ describe("ChatView timeline (full app)", () => {
         expect(form.dataset.composerCollapsed).toBe("false");
         window.getSelection()!.removeAllRanges();
         wheel(-12);
-        await waitForLayout();
+        // Both deltas must belong to the same 120 ms gesture, including on
+        // loaded CI runners where waiting for layout can exceed that interval.
         expect(form.dataset.composerCollapsed).toBe("false");
         wheel(-12);
         await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));

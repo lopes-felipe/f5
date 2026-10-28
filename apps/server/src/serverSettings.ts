@@ -1,5 +1,6 @@
 import { AGENT_BRIDGE_ACTIVATION_VERSION } from "@t3tools/contracts";
 import { validateManagedHome } from "./profiles/providerIsolation";
+import { validateWorktreeLocation, unusedWorktreeLocation } from "./worktreeLocationValidation.ts";
 import { assertAccountEnvironmentOverrides } from "./providerProcessEnv";
 /**
  * ServerSettings - Server-authoritative settings service.
@@ -151,6 +152,8 @@ export interface ServerSettingsShape {
   readonly updateSettings: (
     patch: ServerSettingsPatch,
   ) => Effect.Effect<ServerSettings, ServerSettingsError>;
+  /** Internal: remember a location only after Git has created a checkout there. */
+  readonly recordWorktreeLocation?: (directory: string) => Effect.Effect<void, ServerSettingsError>;
 
   readonly migrateClientSetting: (
     input: MigrateClientSettingInput,
@@ -194,6 +197,13 @@ export class ServerSettingsService extends ServiceMap.Service<
           start: Effect.void,
           ready: Effect.void,
           getSettings: Ref.get(currentSettingsRef),
+          recordWorktreeLocation: (directory) =>
+            Ref.update(currentSettingsRef, (current) => ({
+              ...current,
+              previousWorktreesDirectories: [
+                ...new Set([...current.previousWorktreesDirectories, directory]),
+              ],
+            })),
           migrateClientSetting: ({ key, value }) =>
             Ref.modify(
               currentSettingsRef,
@@ -743,6 +753,21 @@ const makeServerSettings = Effect.gen(function* () {
           return { applied: true, currentValue: value };
         }),
       ),
+    recordWorktreeLocation: (directory) =>
+      writeSemaphore.withPermits(1)(
+        Effect.gen(function* () {
+          if (!directory) return;
+          const current = yield* reloadSettingsForWrite;
+          if (current.previousWorktreesDirectories.includes(directory)) return;
+          yield* publishSettings(
+            {
+              ...current,
+              previousWorktreesDirectories: [...current.previousWorktreesDirectories, directory],
+            },
+            [],
+          );
+        }),
+      ),
     updateSettings: (patch) =>
       writeSemaphore.withPermits(1)(
         Effect.gen(function* () {
@@ -792,10 +817,26 @@ const makeServerSettings = Effect.gen(function* () {
             });
           }
           const current = yield* reloadSettingsForWrite;
+          if (patch.worktreesDirectory !== undefined)
+            yield* Effect.tryPromise({
+              try: () => validateWorktreeLocation(patch.worktreesDirectory!, serverConfig),
+              catch: (cause) =>
+                new ServerSettingsError({ settingsPath, detail: String(cause), cause }),
+            });
+          const retainedLocations = yield* Effect.filter(
+            current.previousWorktreesDirectories,
+            (directory) =>
+              Effect.promise(() =>
+                unusedWorktreeLocation(directory, serverConfig.worktreesDir),
+              ).pipe(Effect.map((unused) => !unused)),
+          );
           // Apply explicit replacements/removals before resolving references. This lets a
           // user repair a missing secret, while unchanged references still fail closed.
           const patched = yield* materializeProviderEnvironmentSecrets(
-            applyServerSettingsPatch(current, patch),
+            applyServerSettingsPatch(
+              { ...current, previousWorktreesDirectories: retainedLocations },
+              patch,
+            ),
           );
           const prepared = yield* prepareProviderEnvironmentSecrets(current, patched);
           const next = yield* Schema.decodeEffect(ServerSettings)({

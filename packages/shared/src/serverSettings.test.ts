@@ -17,16 +17,16 @@ import {
 } from "./serverSettings";
 
 describe("serverSettings helpers", () => {
-  it("remembers former worktree locations across changes and resets", () => {
+  it("does not claim unused worktree locations when changing settings", () => {
     const first = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, { worktreesDirectory: "/a" });
     expect(first.previousWorktreesDirectories).toEqual([]);
     const second = applyServerSettingsPatch(first, { worktreesDirectory: "/b" });
-    expect(second.previousWorktreesDirectories).toEqual(["/a"]);
+    expect(second.previousWorktreesDirectories).toEqual([]);
     const reset = applyServerSettingsPatch(second, { worktreesDirectory: "" });
-    expect(reset.previousWorktreesDirectories).toEqual(["/a", "/b"]);
+    expect(reset.previousWorktreesDirectories).toEqual([]);
     expect(
       applyServerSettingsPatch(reset, { worktreesDirectory: "/a" }).previousWorktreesDirectories,
-    ).toEqual(["/b"]);
+    ).toEqual([]);
   });
   it("defaults summaries to Luna low independently of Git generation", () => {
     expect(DEFAULT_SERVER_SETTINGS.sessionNotesModelSelection).toEqual({
