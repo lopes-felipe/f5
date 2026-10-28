@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 
 import {
   DEFAULT_TERMINAL_ID,
@@ -1145,6 +1146,19 @@ describe("TerminalManager", () => {
     await manager.dispose();
   });
 
+  it("keeps long-thread histories separate from adversarial legacy thread ids", async () => {
+    const { manager, ptyAdapter } = makeManager();
+    const threadId = "x".repeat(300);
+    const legacyId = "terminal_sha256." + createHash("sha256").update(threadId).digest("base64url");
+    await manager.open(openInput({ threadId }));
+    ptyAdapter.processes[0]!.emitData("long thread history\n");
+    await manager.close({ threadId });
+    expect((await manager.open(openInput({ threadId: legacyId }))).history).toBe("");
+    await manager.close({ threadId: legacyId, deleteHistory: true });
+    expect((await manager.open(openInput({ threadId }))).history).toBe("long thread history\n");
+    await manager.dispose();
+  });
+
   it("retries with fallback shells when preferred shell spawn fails", async () => {
     const { manager, ptyAdapter } = makeManager(5, {
       shellResolver: () =>
@@ -1280,10 +1294,13 @@ describe("TerminalManager", () => {
       });
       const snapshot = await manager.open(
         openInput({
-          env: projectScriptRuntimeEnv({
-            project: { cwd: "/repo" },
-            worktreePath: "/repo/worktree-a",
-          }),
+          env: {
+            ...projectScriptRuntimeEnv({
+              project: { cwd: "/repo" },
+              worktreePath: "/repo/worktree-a",
+            }),
+            TMUX_PANE: "%9",
+          },
         }),
       );
 
@@ -1291,6 +1308,7 @@ describe("TerminalManager", () => {
       expect(ptyAdapter.spawnInputs[0]?.env.T3CODE_PROJECT_ROOT).toBe("/repo");
       expect(ptyAdapter.spawnInputs[0]?.env.T3CODE_WORKTREE_PATH).toBe("/repo/worktree-a");
       expect(ptyAdapter.spawnInputs[0]?.env.F5_PROFILE_ISOLATED).toBe(isDefault ? undefined : "1");
+      expect(ptyAdapter.spawnInputs[0]?.env.TMUX_PANE).toBe("%9");
 
       await manager.dispose();
     },

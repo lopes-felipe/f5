@@ -64,10 +64,7 @@ const DEFAULT_PROCESS_KILL_GRACE_MS = 1_000;
 const DEFAULT_MAX_RETAINED_INACTIVE_SESSIONS = 128;
 const DEFAULT_OPEN_COLS = 120;
 const DEFAULT_OPEN_ROWS = 30;
-const TERMINAL_ENV_BLOCKLIST = new Set([
-  "PORT",
-  "ELECTRON_RENDERER_PORT",
-  "ELECTRON_RUN_AS_NODE",
+const MULTIPLEXER_ENV_NAMES = new Set([
   "TMUX",
   "TMUX_PANE",
   "STY",
@@ -75,6 +72,12 @@ const TERMINAL_ENV_BLOCKLIST = new Set([
   "ZELLIJ",
   "ZELLIJ_SESSION_NAME",
   "ZELLIJ_PANE_ID",
+]);
+const TERMINAL_ENV_BLOCKLIST = new Set([
+  "PORT",
+  "ELECTRON_RENDERER_PORT",
+  "ELECTRON_RUN_AS_NODE",
+  ...MULTIPLEXER_ENV_NAMES,
 ]);
 
 const decodeTerminalOpenInput = Schema.decodeUnknownSync(TerminalOpenInput);
@@ -203,9 +206,9 @@ function hashHistoryId(id: string): string {
   return createHash("sha256").update(id).digest("base64url");
 }
 
-// "." is outside the base64url alphabet, preventing collisions with encoded names.
+// "~" is outside both the base64url alphabet and legacySafeThreadId's output.
 function hashedThreadPart(threadId: string): string {
-  return `terminal_sha256.${hashHistoryId(threadId)}`;
+  return `terminal_sha256~${hashHistoryId(threadId)}`;
 }
 
 function hasLegacyHistoryPath(threadId: string): boolean {
@@ -250,13 +253,15 @@ function createTerminalSpawnEnv(
   return spawnEnv;
 }
 
-function projectScriptEnvOf(
+function explicitTerminalRuntimeEnvOf(
   runtimeEnv: Record<string, string> | null,
 ): Record<string, string> | null {
   if (!runtimeEnv) return null;
   return Object.fromEntries(
-    Object.entries(runtimeEnv).filter(([key]) =>
-      PROJECT_SCRIPT_ENV_NAMES.some((name) => name === key.toUpperCase()),
+    Object.entries(runtimeEnv).filter(
+      ([key]) =>
+        PROJECT_SCRIPT_ENV_NAMES.some((name) => name === key.toUpperCase()) ||
+        MULTIPLEXER_ENV_NAMES.has(key.toUpperCase()),
     ),
   );
 }
@@ -722,9 +727,9 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
               ...(session.runtimeEnv ? { overrides: session.runtimeEnv } : {}),
             })
           : process.env,
-        // The account environment already holds the runtime env, but the spawn
-        // filter drops T3CODE_* keys, so restore the project script variables.
-        this.accountConfig ? projectScriptEnvOf(session.runtimeEnv) : session.runtimeEnv,
+        // Restore intentional script/multiplexer overrides after filtering the
+        // account environment; inherited pane identities remain excluded.
+        this.accountConfig ? explicitTerminalRuntimeEnvOf(session.runtimeEnv) : session.runtimeEnv,
       );
       let lastSpawnError: unknown = null;
 

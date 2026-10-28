@@ -3,6 +3,9 @@ import * as NodePath from "node:path";
 import { homedir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { customWorktreesDirectory } from "./worktreesDirectoryPaths.ts";
+import * as WorktreeLocation from "./worktreeLocationValidation.ts";
+import * as TestClock from "effect/testing/TestClock";
+import { vi } from "vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
@@ -43,6 +46,26 @@ const makeServerSettingsLayer = () =>
   );
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect("retains history when a drive scan hangs and releases the settings write lock", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const directory = config.baseDir + "-unavailable";
+      yield* fs.writeFileString(
+        config.settingsPath!,
+        JSON.stringify({ previousWorktreesDirectories: [directory] }),
+      );
+      const probe = vi
+        .spyOn(WorktreeLocation, "unusedWorktreeLocation")
+        .mockImplementation(() => new Promise<boolean>(() => {}));
+      yield* Effect.addFinalizer(() => Effect.sync(() => probe.mockRestore()));
+      const saved = yield* service.updateSettings({ enableAssistantStreaming: false });
+      assert.deepEqual(saved.previousWorktreesDirectories, [directory]);
+      assert.equal((yield* service.getSettings).enableAssistantStreaming, false);
+      assert.equal(probe.mock.calls.length, 1);
+    }).pipe(TestClock.withLive, Effect.provide(makeServerSettingsLayer())),
+  );
   it.effect(
     "rejects unsafe worktree locations before persisting and records only used locations",
     () =>

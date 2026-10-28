@@ -828,7 +828,16 @@ const makeServerSettings = Effect.gen(function* () {
             (directory) =>
               Effect.promise(() =>
                 unusedWorktreeLocation(directory, serverConfig.worktreesDir),
-              ).pipe(Effect.map((unused) => !unused)),
+              ).pipe(
+                Effect.timeoutOption("500 millis"),
+                Effect.map((unused) => Option.isNone(unused) || !unused.value),
+              ),
+            { concurrency: 4 },
+          ).pipe(
+            Effect.timeoutOption("2 seconds"),
+            Effect.map((retained) =>
+              Option.isSome(retained) ? retained.value : current.previousWorktreesDirectories,
+            ),
           );
           // Apply explicit replacements/removals before resolving references. This lets a
           // user repair a missing secret, while unchanged references still fail closed.

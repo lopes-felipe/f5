@@ -3678,6 +3678,12 @@ it.layer(
             archivedAt: daysAgo(90),
             deletedAt: null,
           });
+          const previews = yield* storage.previewInactiveWorktrees;
+          assert.isFalse(
+            previews.some(
+              (preview) => preview.kind === "missingRegistration" && preview.path === foreignTree,
+            ),
+          );
           const automatic = yield* storage.cleanInactiveWorktreesAutomatically({
             operationId: "unmounted-custom-root",
           });

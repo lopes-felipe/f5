@@ -4664,7 +4664,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
         });
       }
       for (const target of (yield* computeStaleRegistrationTargets()).targets) {
-        if (!(yield* isManagedWorktreePath(target.id))) continue;
+        if (!(yield* isAutomaticallyPrunable(target.id))) continue;
         previews.push({
           path: target.id,
           kind: "missingRegistration",
