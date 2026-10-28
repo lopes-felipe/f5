@@ -3,10 +3,47 @@ import { claudeSubscriptionLabel } from "../provider/claudeSubscription.ts";
 import {
   asRecord,
   asTrimmedString,
+  asNonNegativeInteger,
   asNonNegativeNumber,
   asIsoDateTime,
 } from "./accountUsageJson.ts";
 import { AccountUsageReadError } from "./accountUsageErrors.ts";
+
+function percentFromAmounts(used: unknown, limit: unknown): number | null {
+  const usedAmount = asNonNegativeNumber(used);
+  const limitAmount = asNonNegativeNumber(limit);
+  if (usedAmount === null || limitAmount === null || limitAmount <= 0) return null;
+  const percent = (usedAmount / limitAmount) * 100;
+  return Number.isFinite(percent) ? Math.min(100, percent) : null;
+}
+
+/**
+ * Enterprise accounts can have a monthly spending budget instead of rolling
+ * quotas. Prefer the exact spend amounts; `spend.percent` is rounded. Minor-unit
+ * ratios require a matching currency and scale.
+ */
+function monthlySpendPercent(limits: Record<string, unknown>): number | null {
+  const spend = asRecord(limits.spend);
+  const used = asRecord(spend?.used);
+  const limit = asRecord(spend?.limit);
+  const currency = asTrimmedString(used?.currency);
+  if (
+    spend?.enabled === true &&
+    currency !== null &&
+    currency === asTrimmedString(limit?.currency) &&
+    asNonNegativeInteger(used?.exponent) !== null &&
+    used?.exponent === limit?.exponent
+  ) {
+    const percent = percentFromAmounts(used?.amount_minor, limit?.amount_minor);
+    if (percent !== null) return percent;
+  }
+  const extra = asRecord(limits.extra_usage);
+  if (extra?.is_enabled !== true) return null;
+  const percent =
+    percentFromAmounts(extra.used_credits, extra.monthly_limit) ??
+    asNonNegativeNumber(extra.utilization);
+  return percent === null ? null : Math.min(100, percent);
+}
 
 export function normalizeClaudeAccountUsage(value: unknown): ClaudeAccountUsage {
   const record = asRecord(value);
@@ -62,6 +99,14 @@ export function normalizeClaudeAccountUsage(value: unknown): ClaudeAccountUsage 
       });
     }
     windows.push(...[...scoped.values()].sort((a, b) => a.key.localeCompare(b.key)));
+    const spend = monthlySpendPercent(limits);
+    if (spend !== null)
+      windows.push({
+        key: "monthly_spend",
+        label: "Monthly spend",
+        utilization: spend,
+        resetsAt: null,
+      });
   }
   const extra = record.rate_limits_available ? asRecord(limits?.extra_usage) : null;
   return {

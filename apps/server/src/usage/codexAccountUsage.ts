@@ -60,6 +60,18 @@ function normalizeRateLimitWindow(value: unknown): CodexAccountRateLimitWindow |
   };
 }
 
+/** Enterprise credit allowances report what remains and carry no window duration. */
+function normalizeIndividualLimit(value: unknown): CodexAccountRateLimitWindow | null {
+  const record = asRecord(value);
+  const remaining = record?.remainingPercent;
+  if (typeof remaining !== "number" || !Number.isFinite(remaining)) return null;
+  return {
+    usedPercent: Math.min(100, Math.max(0, 100 - remaining)),
+    windowDurationMins: null,
+    resetsAt: asNonNegativeInteger(record?.resetsAt),
+  };
+}
+
 function normalizeCredits(value: unknown): CodexAccountCredits | null {
   const record = asRecord(value);
   if (!record || typeof record.hasCredits !== "boolean" || typeof record.unlimited !== "boolean") {
@@ -76,12 +88,14 @@ function normalizeRateLimit(value: unknown, fallbackId: string): CodexAccountRat
   const record = asRecord(value);
   if (!record) return null;
   const id = asTrimmedString(record.limitId) ?? fallbackId;
+  const individual = normalizeIndividualLimit(record.individualLimit);
   return {
     id,
     name: asTrimmedString(record.limitName),
     planType: asTrimmedString(record.planType),
     primary: normalizeRateLimitWindow(record.primary),
     secondary: normalizeRateLimitWindow(record.secondary),
+    ...(individual ? { individual } : {}),
     credits: normalizeCredits(record.credits),
   };
 }

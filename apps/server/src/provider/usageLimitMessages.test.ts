@@ -82,6 +82,47 @@ describe("provider usage-limit messages", () => {
       formatCodexUsageError("out of credits", merged, "2026-09-28T00:00:00Z", "usageLimitReached"),
     ).toContain("5-hour usage limit");
   });
+  it("names the exhausted Enterprise monthly credit limit and its reset", () => {
+    const monthlyReset = Date.parse("2026-10-01T00:00:00Z") / 1000;
+    const snapshot = {
+      limitId: "codex",
+      individualLimit: { remainingPercent: 0, resetsAt: monthlyReset },
+    };
+    expect(
+      formatCodexUsageError(
+        "usage limit reached",
+        snapshot,
+        "2026-09-28T00:00:00Z",
+        "usageLimitReached",
+      ),
+    ).toContain("Codex monthly credit usage limit reached. Resets at 2026-10-01T00:00:00.000Z.");
+    expect(
+      detectCodexUsageLimit({
+        message: "usage limit reached",
+        errorInfo: "usageLimitReached",
+        snapshots: [snapshot],
+        at: "2026-09-28T00:00:00Z",
+      }),
+    ).toEqual({
+      windows: [
+        { id: "codex:individual", label: "monthly credit", resetsAt: "2026-10-01T00:00:00.000Z" },
+      ],
+      resetsAt: "2026-10-01T00:00:00.000Z",
+      evidence: "typed",
+      resetSource: "provider",
+    });
+    const remaining = mergeCodexLimitSnapshot(snapshot, {
+      primary: { usedPercent: 12 },
+    });
+    expect(remaining?.individualLimit).toEqual(snapshot.individualLimit);
+    const replenished = mergeCodexLimitSnapshot(remaining, {
+      individualLimit: { remainingPercent: 75, resetsAt: monthlyReset },
+    });
+    expect(replenished?.individualLimit).toEqual({ remainingPercent: 75, resetsAt: monthlyReset });
+    expect(
+      mergeCodexLimitSnapshot(replenished, { individualLimit: null })?.individualLimit,
+    ).toBeNull();
+  });
   it("names the longer blocking Codex window and leaves unrelated errors intact", () => {
     expect(
       formatCodexUsageError(
@@ -250,6 +291,46 @@ it.each([
     if (previous === undefined) delete process.env.TZ;
     else process.env.TZ = previous;
   }
+});
+
+it("resolves an unknown Codex reset from an exhausted monthly credit limit", () => {
+  const limit = usageLimitFromWindows([{ id: "codex:individual", label: null, resetsAt: null }]);
+  const resetsAt = Date.parse("2026-11-01T00:00:00Z") / 1000;
+  const account: UsageAccount = {
+    key: "codex:test",
+    provider: "codex",
+    providerInstanceId: null,
+    displayName: "Codex",
+    enabled: true,
+    refreshState: "idle",
+    sections: [
+      {
+        kind: "codex-limits",
+        outcome: "available",
+        lastAttemptAt: "2026-10-01T00:00:01Z",
+        errorCode: null,
+        snapshot: {
+          fetchedAt: "2026-10-01T00:00:01Z",
+          data: {
+            rateLimits: [
+              {
+                id: "codex",
+                name: null,
+                planType: "enterprise_cbp_usage_based",
+                primary: null,
+                secondary: null,
+                individual: { usedPercent: 100, windowDurationMins: null, resetsAt },
+                credits: null,
+              },
+            ],
+          },
+        },
+      },
+    ],
+  };
+  expect(resolveAccountUsageLimit(limit, account, "2026-10-01T00:00:00Z").resetsAt).toBe(
+    "2026-11-01T00:00:00.000Z",
+  );
 });
 
 it("requires a successful fresh account section before resolving unknown resets", () => {

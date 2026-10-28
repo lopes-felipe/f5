@@ -71,6 +71,7 @@ export function quotaWindowsFromSection(section: AccountUsageSection): Array<Quo
           [
             ["primary", limit.primary, "Primary limit"],
             ["secondary", limit.secondary, "Secondary limit"],
+            ["individual", limit.individual, "Monthly credit limit"],
           ] as const
         ).flatMap(([slot, window, fallback]) =>
           window

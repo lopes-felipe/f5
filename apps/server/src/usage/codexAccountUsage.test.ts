@@ -1,6 +1,7 @@
 import { Effect } from "effect";
 import type { CodexControlClient } from "../codex/CodexControlClient.ts";
 import { describe, expect, it } from "vitest";
+import { quotaWindowsFromSection } from "@t3tools/shared/usageLimit";
 
 import { readCodexAccountSections } from "./codexAccountUsage.ts";
 
@@ -56,6 +57,46 @@ describe("Codex account usage", () => {
         },
       ],
     });
+  });
+
+  it("reads an Enterprise monthly credit allowance without a window duration", async () => {
+    const individualLimit = { remainingPercent: 99, resetsAt: 1_784_500_000 };
+    const client = {
+      readAccountTokenUsage: async () => ({}),
+      readAccountRateLimits: async () => ({
+        rateLimits: {
+          limitId: "codex",
+          planType: "enterprise_cbp_usage_based",
+          primary: null,
+          secondary: null,
+          individualLimit,
+        },
+      }),
+    } as unknown as CodexControlClient;
+
+    const sections = await Effect.runPromise(readCodexAccountSections(client));
+    const data = sections[1]?.snapshot?.data;
+    expect(data).toEqual({
+      rateLimits: [
+        {
+          id: "codex",
+          name: null,
+          planType: "enterprise_cbp_usage_based",
+          primary: null,
+          secondary: null,
+          individual: { usedPercent: 1, windowDurationMins: null, resetsAt: 1_784_500_000 },
+          credits: null,
+        },
+      ],
+    });
+    expect(quotaWindowsFromSection(sections[1]!)).toEqual([
+      {
+        windowKey: "codex:individual",
+        label: "Monthly credit limit",
+        usedPercent: 1,
+        resetsAt: "2026-07-19T22:26:40.000Z",
+      },
+    ]);
   });
 
   it("keeps partial endpoint support usable", async () => {

@@ -127,7 +127,7 @@ export function resolveAccountUsageLimit(
       }
     } else if (section.kind === "codex-limits") {
       for (const bucket of section.snapshot.data.rateLimits) {
-        for (const name of ["primary", "secondary"] as const) {
+        for (const name of ["primary", "secondary", "individual"] as const) {
           const window = bucket[name];
           if (window && window.usedPercent >= 100)
             windows.push({

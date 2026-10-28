@@ -55,13 +55,107 @@ describe("Claude account normalization", () => {
       "seven_day_sonnet",
       "model:fable",
       "model:opus",
+      "monthly_spend",
     ]);
+    expect(normalized.windows.at(-1)?.utilization).toBe(10);
     expect(normalized.extraUsage).toEqual({ enabled: true, utilization: 12 });
     expect(
       normalizeClaudeAccountUsage(
         payload({ ...limits, model_scoped: [...limits.model_scoped].reverse() }),
       ),
     ).toEqual(normalized);
+  });
+});
+
+describe("Claude monthly spend budget", () => {
+  const enterprise = {
+    five_hour: null,
+    seven_day: null,
+    spend: {
+      enabled: true,
+      used: { amount_minor: 4_631, currency: "USD", exponent: 2 },
+      limit: { amount_minor: 50_000, currency: "USD", exponent: 2 },
+      percent: 9,
+    },
+    extra_usage: {
+      is_enabled: true,
+      used_credits: 4_631,
+      monthly_limit: 50_000,
+      utilization: 9.261999999999999,
+      currency: "USD",
+      decimal_places: 2,
+    },
+  };
+  const monthly = {
+    key: "monthly_spend",
+    label: "Monthly spend",
+    utilization: expect.closeTo(9.262, 10),
+    resetsAt: null,
+  };
+
+  it("maps an Enterprise budget precisely, preferring spend beside rolling windows", () => {
+    expect(normalizeClaudeAccountUsage(payload(enterprise)).windows).toEqual([monthly]);
+    expect(
+      normalizeClaudeAccountUsage(
+        payload({
+          ...enterprise,
+          five_hour: { utilization: 12, resets_at: null },
+          extra_usage: { ...enterprise.extra_usage, used_credits: 30_000, utilization: 60 },
+        }),
+      ).windows,
+    ).toEqual([
+      { key: "five_hour", label: "5-hour limit", utilization: 12, resetsAt: null },
+      monthly,
+    ]);
+  });
+
+  it("falls back to enabled extra usage amounts or utilization when spend is unusable", () => {
+    const disabledSpend = {
+      ...enterprise,
+      spend: {
+        ...enterprise.spend,
+        enabled: false,
+        used: { amount_minor: 30_000, currency: "USD", exponent: 2 },
+      },
+      extra_usage: { ...enterprise.extra_usage, utilization: 9 },
+    };
+    expect(normalizeClaudeAccountUsage(payload(disabledSpend)).windows).toEqual([monthly]);
+    expect(
+      normalizeClaudeAccountUsage(
+        payload({
+          ...disabledSpend,
+          spend: { enabled: true, used: null, limit: null, percent: 9 },
+          extra_usage: { ...enterprise.extra_usage, used_credits: null, monthly_limit: null },
+        }),
+      ).windows,
+    ).toEqual([monthly]);
+  });
+
+  it("omits disabled budgets and refuses mismatched or zero limits without a fallback", () => {
+    const extra_usage = { ...enterprise.extra_usage, is_enabled: false };
+    for (const spend of [
+      { ...enterprise.spend, enabled: false },
+      { ...enterprise.spend, limit: { ...enterprise.spend.limit, currency: "EUR" } },
+      { ...enterprise.spend, limit: { ...enterprise.spend.limit, exponent: 0 } },
+      { ...enterprise.spend, limit: { ...enterprise.spend.limit, amount_minor: 0 } },
+    ])
+      expect(
+        normalizeClaudeAccountUsage(payload({ ...enterprise, spend, extra_usage })).windows,
+      ).toEqual([]);
+  });
+
+  it("caps an overspent budget at the full window", () => {
+    expect(
+      normalizeClaudeAccountUsage(
+        payload({
+          ...enterprise,
+          spend: {
+            ...enterprise.spend,
+            used: { ...enterprise.spend.used, amount_minor: 60_000 },
+          },
+        }),
+      ).windows,
+    ).toEqual([{ ...monthly, utilization: 100 }]);
   });
 });
 
