@@ -1,6 +1,20 @@
 import type { MenuItemConstructorOptions } from "electron";
+import { selectAppMenuWindow } from "./windowMenu";
 
 export type AppZoomDirection = "in" | "out" | "reset";
+
+/** Recovery windows can zoom, but cannot receive renderer menu actions. */
+export function selectAppZoomWindow<T>(
+  focused: T | null,
+  main: T | null,
+  windows: readonly T[],
+  isAppWindow: (window: T) => boolean,
+  isRecoveryWindow: (window: T) => boolean,
+): T | null {
+  if (focused && isRecoveryWindow(focused)) return focused;
+  return selectAppMenuWindow(focused, main, windows, isAppWindow);
+}
+
 export function zoomAppContents(
   contents: { getZoomLevel(): number; setZoomLevel(level: number): void },
   direction: AppZoomDirection,

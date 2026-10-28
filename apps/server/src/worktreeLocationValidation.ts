@@ -34,13 +34,22 @@ export async function unusedWorktreeLocation(
   setting: string,
   defaultDir: string,
   stateDir?: string,
+  forgetUnrecordedMissingRoot = false,
 ): Promise<boolean> {
   const directory = resolveWorktreesDirectory(setting, defaultDir);
   if (!directory) return false;
   let visited = 0;
+  const root = customWorktreesDirectory(directory, defaultDir);
   const empty = async (path: string, depth: number): Promise<boolean> => {
     if (++visited > 256) return false;
-    const entries = await FS.readdir(path, { withFileTypes: true });
+    const entries = await FS.readdir(path, { withFileTypes: true }).catch(
+      (error: NodeJS.ErrnoException) => {
+        // A setting that was never used has no namespace to remember. Already
+        // recorded locations keep the conservative unavailable-drive behavior.
+        if (forgetUnrecordedMissingRoot && path === root && error.code === "ENOENT") return [];
+        throw error;
+      },
+    );
     if (depth === 0 && entries.length) return false;
     for (const entry of entries)
       if (!entry.isDirectory() || !(await empty(Path.join(path, entry.name), depth - 1)))
@@ -48,7 +57,6 @@ export async function unusedWorktreeLocation(
     return true;
   };
   try {
-    const root = customWorktreesDirectory(directory, defaultDir);
     if (!(await empty(root, 3))) return false;
     if (stateDir) {
       const canonicalRoot = await canonicalWorktreePath(root);

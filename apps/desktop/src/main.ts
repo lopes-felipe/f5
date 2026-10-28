@@ -1,6 +1,11 @@
 import "./stdioErrors";
 import { registerHtmlPreviewIpc } from "./htmlPreview";
-import { appZoomMenu, zoomAppContents, type AppZoomDirection } from "./appZoom";
+import {
+  appZoomMenu,
+  selectAppZoomWindow,
+  zoomAppContents,
+  type AppZoomDirection,
+} from "./appZoom";
 import { desktopCloseWindowItem, desktopWindowMenu, selectAppMenuWindow } from "./windowMenu";
 import {
   BackendOutputTail,
@@ -1089,6 +1094,7 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
     );
     entry.enforcePopupPolicy = popups.enforcePolicy;
   }
+  guest.setZoomMode("isolated");
   guest.setZoomFactor(entry.zoomFactor);
   guest.setAudioMuted(entry.muted ?? false);
   installGuestControls(guest);
@@ -2428,18 +2434,17 @@ function registerDesktopProtocol(profileSession = electronSession.defaultSession
 }
 
 function zoomMainWindow(direction: AppZoomDirection): void {
-  const window = selectAppMenuWindow(
+  const window = selectAppZoomWindow(
     BrowserWindow.getFocusedWindow(),
     mainWindow,
     BrowserWindow.getAllWindows(),
     (candidate) => !candidate.isDestroyed() && profileByWebContentsId.has(candidate.webContents.id),
+    (candidate) =>
+      !candidate.isDestroyed() &&
+      [...backends.values()].some((runtime) => runtime.recoveryWindow === candidate),
   );
   if (!window || window.webContents.isDestroyed()) return;
   zoomAppContents(window.webContents, direction);
-  for (const [tabId, entry] of previewTabs) {
-    const guest = getPreviewWebContents(tabId);
-    if (guest && !guest.isDestroyed()) guest.setZoomFactor(entry.zoomFactor);
-  }
 }
 
 function dispatchMenuAction(action: string): void {
@@ -3047,7 +3052,12 @@ function showStartupRecovery(runtime: BackendRuntime, reason: string): void {
       show: false,
       title: "F5 could not start",
       autoHideMenuBar: true,
-      webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        zoomMode: "isolated",
+      },
     });
     runtime.recoveryWindow = window;
     recoveryHtmlByRuntime.delete(runtime);
@@ -4160,6 +4170,7 @@ function createWindow(
       nodeIntegration: false,
       sandbox: true,
       webviewTag: true,
+      zoomMode: "isolated",
     },
   });
 
@@ -4193,6 +4204,7 @@ function createWindow(
     webPreferences.disableHtmlFullscreenWindowResize = true;
     // Agent-driven previews may be hidden or headless; keep timers and rendering running.
     webPreferences.backgroundThrottling = false;
+    webPreferences.zoomMode = "isolated";
     webPreferences.sandbox = true;
     webPreferences.nodeIntegration = false;
     webPreferences.nodeIntegrationInSubFrames = false;

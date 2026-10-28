@@ -817,17 +817,40 @@ const makeServerSettings = Effect.gen(function* () {
             });
           }
           const current = yield* reloadSettingsForWrite;
+          const previousLocations =
+            patch.worktreesDirectory !== undefined &&
+            current.worktreesDirectory &&
+            current.worktreesDirectory !== patch.worktreesDirectory
+              ? [...new Set([...current.previousWorktreesDirectories, current.worktreesDirectory])]
+              : current.previousWorktreesDirectories;
           if (patch.worktreesDirectory !== undefined)
             yield* Effect.tryPromise({
               try: () => validateWorktreeLocation(patch.worktreesDirectory!, serverConfig),
               catch: (cause) =>
                 new ServerSettingsError({ settingsPath, detail: String(cause), cause }),
-            });
+            }).pipe(
+              Effect.timeoutOption("5 seconds"),
+              Effect.flatMap((validated) =>
+                Option.isSome(validated)
+                  ? Effect.void
+                  : Effect.fail(
+                      new ServerSettingsError({
+                        settingsPath,
+                        detail: "Timed out while checking the worktree location.",
+                      }),
+                    ),
+              ),
+            );
           const retainedLocations = yield* Effect.filter(
-            current.previousWorktreesDirectories,
+            previousLocations,
             (directory) =>
               Effect.promise(() =>
-                unusedWorktreeLocation(directory, serverConfig.worktreesDir, serverConfig.stateDir),
+                unusedWorktreeLocation(
+                  directory,
+                  serverConfig.worktreesDir,
+                  serverConfig.stateDir,
+                  !current.previousWorktreesDirectories.includes(directory),
+                ),
               ).pipe(
                 Effect.timeoutOption("500 millis"),
                 Effect.map((unused) => Option.isNone(unused) || !unused.value),
@@ -836,7 +859,7 @@ const makeServerSettings = Effect.gen(function* () {
           ).pipe(
             Effect.timeoutOption("2 seconds"),
             Effect.map((retained) =>
-              Option.isSome(retained) ? retained.value : current.previousWorktreesDirectories,
+              Option.isSome(retained) ? retained.value : previousLocations,
             ),
           );
           // Apply explicit replacements/removals before resolving references. This lets a

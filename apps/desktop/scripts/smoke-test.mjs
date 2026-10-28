@@ -407,6 +407,8 @@ try {
   await application.evaluate(async ({ BrowserWindow, Menu, webContents }, guestId) => {
     const guest = webContents.fromId(guestId);
     const owner = BrowserWindow.fromWebContents(guest.hostWebContents);
+    if (owner.webContents.getZoomMode() !== "isolated" || guest.getZoomMode() !== "isolated")
+      throw new Error("App and preview contents must use independent zoom");
     const findItem = (label, items = Menu.getApplicationMenu().items) => {
       for (const item of items) {
         if (item.label === label) return item;

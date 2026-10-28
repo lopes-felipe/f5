@@ -46,6 +46,53 @@ const makeServerSettingsLayer = () =>
   );
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect("times out location validation without saving or holding the settings write lock", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      yield* service.updateSettings({ enableAssistantStreaming: true });
+      const before = yield* fs.readFileString(config.settingsPath!);
+      const validation = vi
+        .spyOn(WorktreeLocation, "validateWorktreeLocation")
+        .mockImplementation(() => new Promise<void>(() => {}));
+      yield* Effect.addFinalizer(() => Effect.sync(() => validation.mockRestore()));
+      const result = yield* Effect.exit(
+        service.updateSettings({ worktreesDirectory: config.baseDir + "-stalled" }),
+      );
+      assert.isTrue(Exit.isFailure(result));
+      if (Exit.isFailure(result))
+        assert.include(
+          Cause.pretty(result.cause),
+          "Timed out while checking the worktree location.",
+        );
+      assert.equal(yield* fs.readFileString(config.settingsPath!), before);
+      assert.equal((yield* service.getSettings).worktreesDirectory, "");
+      yield* service.updateSettings({ enableAssistantStreaming: false });
+      assert.equal((yield* service.getSettings).enableAssistantStreaming, false);
+    }).pipe(TestClock.withLive, Effect.provide(makeServerSettingsLayer())),
+  );
+  it.effect("remembers a used old root when checkout history recording failed", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const location = config.baseDir + "-unrecorded";
+      const root = customWorktreesDirectory(location, config.worktreesDir);
+      yield* service.updateSettings({ worktreesDirectory: location });
+      yield* fs.makeDirectory(root, { recursive: true });
+      yield* fs.writeFileString(NodePath.join(root, "checkout"), "existing checkout");
+      yield* Effect.addFinalizer(() =>
+        fs.remove(location, { recursive: true }).pipe(Effect.ignore),
+      );
+      // No recordWorktreeLocation call: exercise a checkout whose post-add save failed.
+      assert.deepEqual((yield* service.getSettings).previousWorktreesDirectories, []);
+      yield* service.updateSettings({ worktreesDirectory: config.baseDir + "-never-used" });
+      assert.deepEqual((yield* service.getSettings).previousWorktreesDirectories, [location]);
+      yield* service.updateSettings({ worktreesDirectory: "" });
+      assert.deepEqual((yield* service.getSettings).previousWorktreesDirectories, [location]);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
   it.effect("retains history when a drive scan hangs and releases the settings write lock", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsService;
