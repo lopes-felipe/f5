@@ -46,14 +46,11 @@ export const formatSchemaError = (cause: Cause.Cause<Schema.SchemaError>) => {
 const parseLenientJsonGetter = SchemaGetter.onSome((input: string) =>
   Effect.try({
     try: () => {
+      // Match both comment forms in one pass so a `//` inside a block comment (such as a
+      // URL) stays in the block; whitespace keeps the tokens around a comment apart.
       let stripped = input.replace(
-        /("(?:[^"\\]|\\.)*")|\/\/[^\n]*/g,
-        (match, stringLiteral: string | undefined) => (stringLiteral ? match : ""),
-      );
-
-      stripped = stripped.replace(
-        /("(?:[^"\\]|\\.)*")|\/\*[\s\S]*?\*\//g,
-        (match, stringLiteral: string | undefined) => (stringLiteral ? match : ""),
+        /("(?:[^"\\]|\\.)*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g,
+        (match, stringLiteral: string | undefined) => (stringLiteral ? match : " "),
       );
 
       stripped = stripped.replace(
