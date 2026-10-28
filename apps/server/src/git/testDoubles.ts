@@ -264,9 +264,12 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
       record("cleanupSafetyProbe", [cwd]);
       return implementations.cleanupSafetyProbe(cwd);
     },
-    fastForwardTo: (cwd, sha) => {
-      record("fastForwardTo", [cwd, sha]);
-      return implementations.fastForwardTo(cwd, sha);
+    fastForwardTo: (cwd, sha, expectedBranch) => {
+      record(
+        "fastForwardTo",
+        expectedBranch === undefined ? [cwd, sha] : [cwd, sha, expectedBranch],
+      );
+      return implementations.fastForwardTo(cwd, sha, expectedBranch);
     },
     initializeWorktreeSubmodules: (path, policy) => {
       record("initializeWorktreeSubmodules", [path, policy]);

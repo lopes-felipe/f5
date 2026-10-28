@@ -58,7 +58,7 @@ export interface ProviderSubmissionHandle {
 
 export interface ProviderServiceShape {
   readonly mcpApps?: import("./ProviderAdapter.ts").ProviderMcpApps<ProviderServiceError>;
-  /** Preserve a send fence when ingestion cannot retain an admitted event. */
+  /** Stop the matching live turn and preserve a send fence after event ingestion fails. */
   readonly requireHistoryReconciliation?: (
     event: ProviderRuntimeEvent,
   ) => Effect.Effect<void, ProviderServiceError>;

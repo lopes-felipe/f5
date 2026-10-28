@@ -552,9 +552,11 @@ export function ChatComposer({
                       ? "Add feedback to refine the plan, or leave this blank to implement it"
                       : revertInProgress
                         ? "Reverting… you can type, sending resumes when it's done"
-                        : phase === "disconnected" && modelControls.hasThreadStarted
-                          ? "Ask for follow-up changes or attach files"
-                          : "Ask F5 to build, fix, or explain... (@ files, / commands)"
+                        : modelControls.noProviderAvailable
+                          ? "Enable a provider in Settings to send a message"
+                          : phase === "disconnected" && modelControls.hasThreadStarted
+                            ? "Ask for follow-up changes or attach files"
+                            : "Ask F5 to build, fix, or explain... (@ files, / commands)"
               }
               disabled={isConnecting || isComposerApprovalState || isPendingTurnDispatchBlocked}
               ariaLabel="Message"

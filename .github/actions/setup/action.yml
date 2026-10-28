@@ -31,3 +31,9 @@ runs:
     - name: Install dependencies
       shell: bash
       run: bun install --frozen-lockfile
+    - name: Verify Electron installation
+      shell: bash
+      working-directory: apps/desktop
+      run: |
+        node node_modules/electron/install.js
+        node -e 'const fs = require("node:fs"); const { execFileSync } = require("node:child_process"); const resolved = execFileSync(process.execPath, ["-p", "require(\"electron\")"], { encoding: "utf8" }).trim(); if (!fs.existsSync(resolved)) throw new Error("Electron must resolve to an installed executable without download output");'

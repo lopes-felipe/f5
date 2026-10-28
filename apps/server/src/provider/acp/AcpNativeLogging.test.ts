@@ -37,6 +37,23 @@ import { ThreadId } from "@t3tools/contracts";
 import { Cause, Effect } from "effect";
 import { vi } from "vitest";
 
+it("enables verbose protocol diagnostics through the server environment", () => {
+  vi.stubEnv("F5_ACP_PROTOCOL_LOGGING", "1");
+  try {
+    const input = {
+      nativeEventLogger: { write: () => Effect.void } as never,
+      provider: "cursor" as const,
+      threadId: ThreadId.makeUnsafe("log-test"),
+    };
+    expect(makeAcpNativeLoggers(input).protocolLogging?.logIncoming).toBe(true);
+    expect(
+      makeAcpNativeLoggers({ ...input, verboseProtocolLogging: false }).protocolLogging,
+    ).toBeUndefined();
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
 it("redacts MCP array and object configuration, raw frames, echoed failures and late diagnostics", async () => {
   const marker = "credential-sentinel-48be";
   const scrubber = new AcpCredentialScrubber();
@@ -63,6 +80,7 @@ it("redacts MCP array and object configuration, raw frames, echoed failures and 
   expect(redact(mapped)).toMatchObject({ mcpServers: { f5: { env: { TOKEN: "[redacted]" } } } });
   const write = vi.fn(() => Effect.void);
   const loggers = makeAcpNativeLoggers({
+    verboseProtocolLogging: true,
     nativeEventLogger: { write } as never,
     provider: "cursor",
     threadId: ThreadId.makeUnsafe("log-test"),
@@ -117,6 +135,7 @@ it("redacts once per native log sink and retains failures as failures", async ()
   const write = vi.fn((_value: unknown) => Effect.void);
   const redact = vi.fn(redactAcpLogPayload);
   const loggers = makeAcpNativeLoggers({
+    verboseProtocolLogging: true,
     nativeEventLogger: { write } as never,
     provider: "cursor",
     threadId: ThreadId.makeUnsafe("single-log"),
@@ -147,6 +166,16 @@ it("redacts once per native log sink and retains failures as failures", async ()
     failure: { code: -32000, message: "Usage limit" },
   });
   expect(logged.event.payload).not.toHaveProperty("result");
+});
+
+it("keeps request diagnostics while leaving verbose protocol logging off by default", () => {
+  const loggers = makeAcpNativeLoggers({
+    nativeEventLogger: { write: () => Effect.void } as never,
+    provider: "cursor",
+    threadId: ThreadId.makeUnsafe("quiet-protocol"),
+  });
+  expect(loggers.requestLogger).toBeDefined();
+  expect(loggers.protocolLogging).toBeUndefined();
 });
 
 it("preserves non-computer error details while always scrubbing credentials and MCP config", () => {

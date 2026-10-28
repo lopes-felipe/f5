@@ -542,6 +542,31 @@ export interface DraftThreadState extends WorktreeCreationOptions {
   envMode: DraftThreadEnvMode;
 }
 
+function resolveDraftWorkspace(
+  projectId: ProjectId,
+  existing: DraftThreadState | undefined,
+  options?: Partial<Pick<DraftThreadState, "branch" | "worktreePath" | "envMode">>,
+) {
+  const projectChanged = existing !== undefined && projectId !== existing.projectId;
+  const worktreePath =
+    options?.worktreePath === undefined
+      ? projectChanged
+        ? null
+        : (existing?.worktreePath ?? null)
+      : (options.worktreePath ?? null);
+  return {
+    branch:
+      options?.branch === undefined
+        ? projectChanged
+          ? null
+          : (existing?.branch ?? null)
+        : (options.branch ?? null),
+    worktreePath,
+    // Workspace paths belong to a machine; the user's environment choice carries over.
+    envMode: options?.envMode ?? (worktreePath ? "worktree" : (existing?.envMode ?? "local")),
+  };
+}
+
 export interface ProjectDraftThread extends DraftThreadState {
   threadId: ThreadId;
 }
@@ -1845,10 +1870,6 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         }
         set((state) => {
           const existingThread = state.draftThreadsByThreadId[threadId];
-          const nextWorktreePath =
-            options?.worktreePath === undefined
-              ? (existingThread?.worktreePath ?? null)
-              : (options.worktreePath ?? null);
           const nextDraftThread: DraftThreadState = {
             projectId,
             createdAt: options?.createdAt ?? existingThread?.createdAt ?? new Date().toISOString(),
@@ -1860,15 +1881,8 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
               options?.interactionMode ??
               existingThread?.interactionMode ??
               DEFAULT_INTERACTION_MODE,
-            branch:
-              options?.branch === undefined
-                ? (existingThread?.branch ?? null)
-                : (options.branch ?? null),
-            worktreePath: nextWorktreePath,
+            ...resolveDraftWorkspace(projectId, existingThread, options),
             ...resolveDraftWorktreeOptions(existingThread, options),
-            envMode:
-              options?.envMode ??
-              (nextWorktreePath ? "worktree" : (existingThread?.envMode ?? "local")),
           };
           const nextProjectDraftKey = keyForDraftThread(nextDraftThread);
           const previousThreadIdForProjectKey =
@@ -1973,10 +1987,8 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           if (nextProjectId.length === 0) {
             return state;
           }
-          const nextWorktreePath =
-            options.worktreePath === undefined
-              ? existing.worktreePath
-              : (options.worktreePath ?? null);
+          const workspace = resolveDraftWorkspace(nextProjectId, existing, options);
+          const nextWorktreePath = workspace.worktreePath;
           const nextDraftThread: DraftThreadState = {
             projectId: nextProjectId,
             createdAt:
@@ -1985,8 +1997,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
                 : options.createdAt || existing.createdAt,
             runtimeMode: options.runtimeMode ?? existing.runtimeMode,
             interactionMode: options.interactionMode ?? existing.interactionMode,
-            branch: options.branch === undefined ? existing.branch : (options.branch ?? null),
-            worktreePath: nextWorktreePath,
+            ...workspace,
             ...resolveDraftWorktreeOptions(existing, options),
             ...((options.sharedFilesystemConfirmed ??
             (nextProjectId === existing.projectId &&
@@ -1995,8 +2006,6 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
               existing.sharedFilesystemConfirmed))
               ? { sharedFilesystemConfirmed: true }
               : {}),
-            envMode:
-              options.envMode ?? (nextWorktreePath ? "worktree" : (existing.envMode ?? "local")),
           };
           const isUnchanged =
             nextDraftThread.projectId === existing.projectId &&

@@ -33,7 +33,6 @@ import {
 
 import {
   buildServerProvider,
-  DEFAULT_TIMEOUT_MS,
   detailFromResult,
   isCommandMissingCause,
   mergeReportedProviderModels,
@@ -59,6 +58,8 @@ const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabili
 });
 
 const PROVIDER = ProviderDriverKind.make("claudeAgent");
+// Cold CLI startup on Windows can exceed the shared four-second probe deadline.
+const CLAUDE_VERSION_CHECK_TIMEOUT_MS = 20_000;
 const CLAUDE_PRESENTATION = {
   displayName: "Claude",
   showInteractionModeToggle: true,
@@ -605,7 +606,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     ["--version"],
     environment,
     cwd,
-  ).pipe(Effect.timeoutOption(DEFAULT_TIMEOUT_MS), Effect.result);
+  ).pipe(Effect.timeoutOption(CLAUDE_VERSION_CHECK_TIMEOUT_MS), Effect.result);
 
   if (Result.isFailure(versionProbe)) {
     const error = versionProbe.failure;

@@ -231,10 +231,12 @@ describe("ProviderCommandReactor", () => {
     readonly tracePath?: string;
     readonly orphanedTitleRegenerationBeforeStart?: boolean;
     readonly nativeFallback?: boolean;
+    readonly openCodeFork?: boolean;
     readonly bridgeTurnDelivery?: boolean;
     readonly recoverySummary?: string;
   }) {
     const simulateNativeFallback = input?.nativeFallback;
+    const simulateOpenCodeFork = input?.openCodeFork;
     const recoverySummary = input?.recoverySummary;
     const now = new Date().toISOString();
     const stateDir = input?.stateDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "t3code-reactor-"));
@@ -289,7 +291,9 @@ describe("ProviderCommandReactor", () => {
         typeof input === "object" &&
         input !== null &&
         "provider" in input &&
-        (input.provider === "codex" || input.provider === "claudeAgent")
+        (input.provider === "codex" ||
+          input.provider === "claudeAgent" ||
+          input.provider === "opencode")
           ? input.provider
           : "codex";
       const resumeCursor =
@@ -337,9 +341,19 @@ describe("ProviderCommandReactor", () => {
         ...(model !== undefined ? { model } : {}),
         threadId,
         resumeCursor:
-          simulateNativeFallback && sessionIndex === 1
-            ? { threadId: "replacement-native" }
-            : (resumeCursor ?? { opaque: `cursor-${sessionIndex}` }),
+          provider === "opencode" &&
+          input !== null &&
+          typeof input === "object" &&
+          "cwd" in input &&
+          input.cwd !== workspaceRoot &&
+          isRecord(resumeCursor) &&
+          resumeCursor.sessionId === "ses_original"
+            ? { schemaVersion: 1, sessionId: "ses_fork", forkedFromSessionId: "ses_original" }
+            : provider === "opencode" && simulateOpenCodeFork
+              ? { schemaVersion: 1, sessionId: "ses_original" }
+              : simulateNativeFallback && sessionIndex === 1
+                ? { threadId: "replacement-native" }
+                : (resumeCursor ?? { opaque: `cursor-${sessionIndex}` }),
         createdAt: now,
         updatedAt: now,
       };
@@ -2648,6 +2662,93 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
     expect(harness.startSession).not.toHaveBeenCalled();
   });
+
+  it.each(["active", "stopped"] as const)(
+    "preserves OpenCode fork history across a cwd change from an %s session",
+    async (state) => {
+      const harness = await createHarness({
+        threadModel: "anthropic/sonnet",
+        openCodeFork: true,
+      });
+      const threadId = ThreadId.makeUnsafe("thread-1");
+      const now = new Date().toISOString();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe("opencode-initial"),
+          threadId,
+          message: {
+            messageId: asMessageId("opencode-first"),
+            role: "user",
+            text: "remember",
+            attachments: [],
+          },
+          provider: "opencode",
+          model: "anthropic/sonnet",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      await harness.waitForDeliveries();
+      await appendAssistantContext(harness.engine, {
+        threadId,
+        turnId: asTurnId("turn-1"),
+        createdAt: now,
+      });
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.compacted.record",
+          commandId: CommandId.makeUnsafe("opencode-native-compaction"),
+          threadId,
+          compaction: {
+            kind: "native",
+            summary: "Native context",
+            trigger: "manual",
+            estimatedTokens: 100,
+            modelContextWindowTokens: 200000,
+            createdAt: now,
+            direction: null,
+            pivotMessageId: null,
+            fromTurnCount: null,
+            toTurnCount: null,
+          },
+          createdAt: now,
+        }),
+      );
+      await harness.drain();
+      if (state === "stopped") harness.removeLiveSession(threadId);
+      const nextCwd = path.join(harness.workspaceRoot, "opencode-worktree");
+      fs.mkdirSync(nextCwd);
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("opencode-cwd-change"),
+          threadId,
+          worktreePath: nextCwd,
+        }),
+      );
+      await waitFor(() => harness.startSession.mock.calls.length >= 2);
+      await harness.drain();
+      expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+        cwd: nextCwd,
+        resumeCursor: { schemaVersion: 1, sessionId: "ses_original" },
+      });
+      expect(harness.startSession).toHaveBeenCalledTimes(2);
+      expect(harness.runOneOffPrompt).not.toHaveBeenCalled();
+      expect(harness.getBinding(threadId)?.resumeCursor).toMatchObject({
+        sessionId: "ses_fork",
+        forkedFromSessionId: "ses_original",
+      });
+      const snapshot = await Effect.runPromise(harness.engine.getReadModel());
+      expect(
+        snapshot.threads
+          .find((thread) => thread.id === threadId)
+          ?.activities.some((activity) => activity.summary === "Session context reset"),
+      ).toBe(false);
+    },
+  );
 
   it("drops a cold-recovery cursor when the thread cwd changed and surfaces the reset", async () => {
     const harness = await createHarness({ threadModel: "claude-sonnet-4-6" });

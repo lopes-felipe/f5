@@ -12,7 +12,6 @@ import { useTheme } from "../hooks/useTheme";
 import { getAvailableThemePalettes } from "../themePalette";
 
 import {
-  DEFAULT_MODEL_BY_PROVIDER,
   type FilesystemBrowseResult,
   type ProjectContentMatch,
   type ProjectId,
@@ -20,6 +19,7 @@ import {
 } from "@t3tools/contracts";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { resolveDefaultProviderModelSelection } from "../providerInstances";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
@@ -1281,13 +1281,18 @@ function OpenCommandPaletteDialog(props: {
 
       try {
         const projectId = newProjectId();
+        const config = await api.server.getConfig().catch(() => undefined);
+        const defaultModelSelection = resolveDefaultProviderModelSelection(
+          config?.providers ?? [],
+          null,
+        );
         await api.orchestration.dispatchCommand({
           type: "project.create",
           commandId: newCommandId(),
           projectId,
           title: inferProjectTitleFromPath(cwd),
           workspaceRoot: cwd,
-          defaultModel: DEFAULT_MODEL_BY_PROVIDER.codex,
+          ...(defaultModelSelection ? { defaultModelSelection } : {}),
           createdAt: new Date().toISOString(),
         });
         await handleNewThread(projectId).catch(() => undefined);

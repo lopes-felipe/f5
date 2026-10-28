@@ -3,9 +3,9 @@ import { Effect } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqliteClient from "../NodeSqliteClient.ts";
 import Migration137 from "./137_UpstreamPorts.ts";
-import Migration141 from "./141_UpstreamPortQueue.ts";
+import Migration143 from "./143_UpstreamPortQueue.ts";
 
-it.layer(SqliteClient.layerMemory())("141_UpstreamPortQueue", (it) => {
+it.layer(SqliteClient.layerMemory())("143_UpstreamPortQueue", (it) => {
   it.effect(
     "preserves old rows, widens kinds, keeps uniqueness and excludes preexisting ports",
     () =>
@@ -18,7 +18,7 @@ it.layer(SqliteClient.layerMemory())("141_UpstreamPortQueue", (it) => {
         yield* sql`INSERT INTO upstream_port_links VALUES ('p','pr-1',1,'thread','request',0,'active')`;
         yield* sql`CREATE TABLE search_source (id TEXT)`;
         yield* sql`CREATE TRIGGER broken_search AFTER INSERT ON search_source BEGIN INSERT INTO absent_table VALUES(new.id); END`;
-        yield* Migration141;
+        yield* Migration143;
         assert.deepStrictEqual(yield* sql`SELECT op_id,kind FROM upstream_ledger_ops`, [
           { op_id: "old", kind: "decision" },
         ]);

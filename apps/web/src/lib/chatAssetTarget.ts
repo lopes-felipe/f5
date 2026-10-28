@@ -1,10 +1,25 @@
 import type { ProjectId, ThreadId, ProjectIssueAssetUrlInput } from "@t3tools/contracts";
+import { isNetworkPath, workspaceRelativeFilePath } from "@t3tools/shared/path";
+import { safeDecodeLocalPath } from "../local-paths";
 export function resolveChatAssetTarget(
   src: string,
   cwd: string | undefined,
   projects: ReadonlyArray<{ id: ProjectId; cwd: string }>,
   threads: ReadonlyArray<{ id: ThreadId; worktreePath: string | null }>,
 ): { identity: ProjectIssueAssetUrlInput["identity"]; path: string } | undefined {
+  const decoded = safeDecodeLocalPath(src);
+  if (isNetworkPath(decoded)) {
+    const relative = workspaceRelativeFilePath(decoded, cwd);
+    if (relative === null) return;
+    const thread = threads.find((thread) => thread.worktreePath === cwd);
+    const project = projects.find((project) => project.cwd === cwd);
+    const identity = thread
+      ? { kind: "thread" as const, threadId: thread.id }
+      : project
+        ? { kind: "project" as const, projectId: project.id }
+        : undefined;
+    return identity ? { identity, path: relative } : undefined;
+  }
   if (
     !cwd ||
     src.startsWith("//") ||

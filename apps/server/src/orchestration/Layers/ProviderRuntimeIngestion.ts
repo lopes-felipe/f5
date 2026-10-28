@@ -4470,8 +4470,9 @@ const make = Effect.gen(function* () {
             if (activeTurnId !== null && eventTurnId !== undefined) {
               return sameId(activeTurnId, eventTurnId);
             }
-            // If no active turn is tracked, accept completion scoped to this thread.
-            return true;
+            // Without an active turn, only a named completion can establish ownership.
+            // Resume handshakes must not overwrite a pending turn's starting state.
+            return eventTurnId !== undefined;
           default:
             return true;
         }

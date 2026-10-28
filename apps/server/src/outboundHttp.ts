@@ -1,6 +1,29 @@
 // @effect-diagnostics nodeBuiltinImport:off - process bootstrap configures Node's fetch dispatcher.
 import { createRequire } from "node:module";
+import * as NodeNet from "node:net";
 import type * as Undici from "undici";
+
+type TypeOfServiceSocket = {
+  setTypeOfService?: (this: NodeNet.Socket, typeOfService: number) => NodeNet.Socket;
+};
+
+/** A reset peer can make macOS reject undici's optional socket QoS hint. */
+export function ignoreMacosTypeOfServiceEinval(
+  platform = process.platform,
+  socketPrototype: TypeOfServiceSocket = NodeNet.Socket.prototype as TypeOfServiceSocket,
+): void {
+  if (platform !== "darwin") return;
+  const original = socketPrototype.setTypeOfService;
+  if (typeof original !== "function") return;
+  socketPrototype.setTypeOfService = function (...args) {
+    try {
+      return original.apply(this, args);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "EINVAL") return this;
+      throw error;
+    }
+  };
+}
 
 /** Node 26's bundled undici 8 negotiates HTTP/2 by default. */
 export const builtinFetchUsesHttp2 = (version: string | undefined): boolean =>

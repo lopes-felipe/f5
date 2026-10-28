@@ -11,6 +11,7 @@ import {
   NATIVE_OPERATION_WS_METHODS,
   CommandId,
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
+  DEFAULT_SERVER_SETTINGS,
   EventId,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
@@ -26,6 +27,7 @@ import {
   type OrchestrationReadModel,
   type ProjectId,
   ProviderInstanceId,
+  ProviderDriverKind,
   type ServerConfig,
   ThreadId,
   TurnId,
@@ -45,12 +47,14 @@ import { timelineScrollAnchors } from "./chat/timelineScrollAnchors";
 import { render } from "vitest-browser-react";
 
 import { type ComposerImageAttachment, useComposerDraftStore } from "../composerDraftStore";
+import { resetThreadModelOptionsSeedsForTests } from "../threadModelOptionsSeeds";
 import {
   clearAllPendingTurnDispatchArtifacts,
   usePendingTurnDispatchStore,
 } from "../pendingTurnDispatchStore";
 import { parsePersistedAppSettings } from "../appSettings";
 import { appendAttachedFilesToPrompt } from "../lib/attachedFiles";
+import { orchestrationQueryKeys } from "../lib/orchestrationReactQuery";
 import { resetLiveThreadWarmSchedulerForTests } from "../lib/threadPreload";
 import {
   INLINE_TERMINAL_CONTEXT_PLACEHOLDER,
@@ -1308,6 +1312,9 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
     return { entries: [], generatedAt: NOW_ISO };
   }
   if (tag === NATIVE_OPERATION_WS_METHODS.list) return [];
+  // The chat header lists the conversation's automations from the shared task list.
+  if (tag === WS_METHODS.scheduledTasksList) return { tasks: [], revision: 0 };
+  if (tag === WS_METHODS.scheduledTasksFindRunForTurn) return { runId: null };
   if (tag === WS_METHODS.nextTurnQueueSummary) {
     return { threads: [] };
   }
@@ -1624,7 +1631,7 @@ function composerTransitions(form: HTMLElement): CSSTransition[] {
     .filter((animation): animation is CSSTransition => animation instanceof CSSTransition);
 }
 
-/** Resumes any seeked transitions and waits until all of them have settled. */
+/** Waits until the composer's transitions have settled. */
 async function waitForComposerTransitions(form: HTMLElement): Promise<void> {
   await nextFrame();
   await Promise.all(
@@ -1637,14 +1644,15 @@ async function waitForComposerTransitions(form: HTMLElement): Promise<void> {
 }
 
 /**
- * Holds the composer's transitions at a fraction of their duration, then waits
- * until that frame's observers (the dock's end pin) have run. Deterministic
+ * Seeks the composer's transitions while CDP holds the animation clock, then waits
+ * until that frame's observers (the dock's end pin) have run.
  * The transition must still exist: callers inspecting an early frame should
  * hold the animation clock before triggering a change on a slow runner.
  */
 async function seekComposerTransitions(form: HTMLElement, fraction: number): Promise<void> {
   for (const transition of composerTransitions(form)) {
-    transition.pause();
+    // Keep playState running: production uses it to clip the resizing editor,
+    // and a queued transitionrun must not observe an artificially paused state.
     transition.currentTime = Number(transition.effect!.getComputedTiming().duration) * fraction;
   }
   await nextFrame();
@@ -2242,6 +2250,7 @@ describe("ChatView timeline (full app)", () => {
     await setViewport(DEFAULT_VIEWPORT);
     localStorage.clear();
     useComposerMentionHistoryStore.setState({ entries: [] });
+    resetThreadModelOptionsSeedsForTests();
     document.body.innerHTML = "";
     wsRequests.length = 0;
     useComposerDraftStore.setState({
@@ -2297,6 +2306,192 @@ describe("ChatView timeline (full app)", () => {
     useRightPanelStore.setState({ byThreadId: {} });
     document.body.innerHTML = "";
   });
+
+  it.each(["missing-codex", "unprobed-codex", "disabled-selection"] as const)(
+    "sends with a usable provider for a draft with %s",
+    async (scenario) => {
+      useComposerDraftStore.getState().setProjectDraftThreadId(PROJECT_ID, THREAD_ID, {
+        runtimeMode: "full-access",
+        branch: "main",
+        envMode: "local",
+      });
+      if (scenario === "disabled-selection") {
+        useComposerDraftStore.getState().setProvider(THREAD_ID, "codex");
+        useComposerDraftStore
+          .getState()
+          .setProviderInstance(THREAD_ID, ProviderInstanceId.make("codex"));
+        useComposerDraftStore.getState().setModel(THREAD_ID, "gpt-5");
+      }
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createDraftOnlySnapshot(),
+        configureFixture: (next) => {
+          next.serverConfig = {
+            ...next.serverConfig,
+            settings: {
+              ...DEFAULT_SERVER_SETTINGS,
+              providers: {
+                ...DEFAULT_SERVER_SETTINGS.providers,
+                codex: {
+                  ...DEFAULT_SERVER_SETTINGS.providers.codex,
+                  enabled: scenario !== "disabled-selection",
+                },
+              },
+            },
+            providers: [
+              createTestServerProvider("codex", {
+                status: scenario === "unprobed-codex" ? "warning" : "error",
+                enabled: scenario !== "disabled-selection",
+                installed: false,
+              }),
+              createTestServerProvider("claudeAgent", {
+                models: [
+                  {
+                    slug: "claude-fable-5",
+                    name: "Claude Fable 5",
+                    isCustom: false,
+                    capabilities: null,
+                  },
+                ],
+              }),
+            ],
+          };
+        },
+      });
+      try {
+        useComposerDraftStore.getState().setPrompt(THREAD_ID, "Use the available provider");
+        const send = await waitForSendButton();
+        await vi.waitFor(() => expect(send.disabled).toBe(false));
+        send.click();
+        await vi.waitFor(() => {
+          const command = getDispatchCommandRequests("thread.turn.start")[0]?.command as
+            | { provider?: string; modelSelection?: { instanceId: string; model: string } }
+            | undefined;
+          expect(command?.provider).toBe("claudeAgent");
+          expect(command?.modelSelection).toMatchObject({
+            instanceId: "claudeAgent",
+            model: "claude-fable-5",
+          });
+        });
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it("keeps a providerless draft editable and prevents dispatch", async () => {
+    useComposerDraftStore.getState().setProjectDraftThreadId(PROJECT_ID, THREAD_ID);
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      configureFixture: (next) => {
+        next.serverConfig = { ...next.serverConfig, providers: [] };
+      },
+    });
+    try {
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Keep my draft");
+      await vi.waitFor(() => expect(document.body.textContent).toContain("No provider available"));
+      const send = await waitForSendButton();
+      expect(send.disabled).toBe(true);
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+      expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+        "Keep my draft",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("runs the local usage command without an available provider", async () => {
+    useComposerDraftStore.getState().setProjectDraftThreadId(PROJECT_ID, THREAD_ID);
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      configureFixture: (next) => {
+        next.serverConfig = { ...next.serverConfig, providers: [] };
+        next.resolveWsRequest = (body) =>
+          body._tag === "usage.getAccounts" ? { type: "result", result: [] } : null;
+      },
+    });
+    try {
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "/usage-limits");
+      const send = await waitForSendButton();
+      await vi.waitFor(() => expect(send.disabled).toBe(false));
+      send.click();
+      await vi.waitFor(() =>
+        expect(wsRequests).toContainEqual(
+          expect.objectContaining({ _tag: "usage.getAccounts", refresh: "none" }),
+        ),
+      );
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "").toBe(""),
+      );
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it.each(["enabled", "disabled", "deleted"] as const)(
+    "keeps a started legacy thread on its native instance when it is %s",
+    async (availability) => {
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotForTargetUser({
+          targetMessageId: "native-instance-user" as MessageId,
+          targetText: "Existing native context",
+          fillerPairCount: 0,
+        }),
+        configureFixture: (next) => {
+          next.serverConfig = {
+            ...next.serverConfig,
+            settings: {
+              ...DEFAULT_SERVER_SETTINGS,
+              providers: {
+                ...DEFAULT_SERVER_SETTINGS.providers,
+                codex: {
+                  ...DEFAULT_SERVER_SETTINGS.providers.codex,
+                  enabled: availability === "enabled",
+                },
+              },
+              providerInstances: {
+                [ProviderInstanceId.make("codex_sibling")]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  enabled: true,
+                },
+              },
+            },
+            providers: [
+              ...(availability === "deleted"
+                ? []
+                : [createTestServerProvider("codex", { enabled: availability === "enabled" })]),
+              createTestServerProvider("codex", {
+                instanceId: ProviderInstanceId.make("codex_sibling"),
+              }),
+            ],
+          };
+        },
+      });
+      try {
+        useComposerDraftStore.getState().setPrompt(THREAD_ID, "Continue existing context");
+        const send = await waitForSendButton();
+        await vi.waitFor(() => expect(send.disabled).toBe(availability !== "enabled"));
+        if (availability !== "enabled") {
+          expect(document.body.textContent).toContain("No provider available");
+          const editor = await waitForComposerEditor();
+          editor
+            .closest("form")!
+            .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+          expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+          expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+            "Continue existing context",
+          );
+        }
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
 
   describe("composer redesign", () => {
     beforeEach(() => {
@@ -2574,7 +2769,7 @@ describe("ChatView timeline (full app)", () => {
         await cdp().send("Animation.setPlaybackRate", { playbackRate: 0 });
         editor.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
         await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("false"));
-        // Let transitionrun mark the running animation before seeking pauses it.
+        // Let transitionrun mark the running animation before seeking it.
         await vi.waitFor(() => expect(form.hasAttribute("data-composer-resizing")).toBe(true));
         await seekComposerTransitions(form, 0.05);
         // Animating toward the uncapped draft height would already be clamped at 200px.
@@ -2702,7 +2897,8 @@ describe("ChatView timeline (full app)", () => {
         expect(form.dataset.composerCollapsed).toBe("false");
         window.getSelection()!.removeAllRanges();
         wheel(-12);
-        await waitForLayout();
+        // Both deltas must belong to the same 120 ms gesture, including on
+        // loaded CI runners where waiting for layout can exceed that interval.
         expect(form.dataset.composerCollapsed).toBe("false");
         wheel(-12);
         await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
@@ -2864,9 +3060,13 @@ describe("ChatView timeline (full app)", () => {
     });
   });
 
-  it.each(["Changed editor text", ""])(
+  it.each([
+    ["Changed editor text", false],
+    ["", false],
+    ["Answer after disabling providers", true],
+  ] as const)(
     "keeps a provider editor prefill editable and restores the original composer draft: %s",
-    async (answer) => {
+    async (answer, disableProviders) => {
       const snapshot = createSnapshotForTargetUser({
         targetMessageId: "editor-user" as MessageId,
         targetText: "Ask me",
@@ -2897,8 +3097,10 @@ describe("ChatView timeline (full app)", () => {
       const mounted = await mountChatView({
         viewport: DEFAULT_VIEWPORT,
         snapshot: withQuestion,
-        configureFixture: () =>
-          useComposerDraftStore.getState().setPrompt(THREAD_ID, "Keep original composer draft"),
+        configureFixture: (next) => {
+          useComposerDraftStore.getState().setPrompt(THREAD_ID, "Keep original composer draft");
+          if (disableProviders) next.serverConfig = { ...next.serverConfig, providers: [] };
+        },
       });
       try {
         const editor = await waitForComposerEditor();
@@ -3149,6 +3351,43 @@ describe("ChatView timeline (full app)", () => {
     } finally {
       await mounted.cleanup();
     }
+  });
+
+  it("cancels background file-change reads when the thread unmounts without an unhandled rejection", async () => {
+    persistAppSettings({ showFileChangeDiffsInline: true });
+    const response = createDeferred<WsRequestResolution>();
+    const unhandled: unknown[] = [];
+    const onRejection = (event: PromiseRejectionEvent) => unhandled.push(event.reason);
+    window.addEventListener("unhandledrejection", onRejection);
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-pending-file-changes" as MessageId,
+        targetText: "Pending file changes",
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.resolveWsRequest = (body) =>
+          body._tag === ORCHESTRATION_WS_METHODS.getThreadFileChanges ? response.promise : null;
+      },
+    });
+    const queryClient = mounted.router.options.context.queryClient;
+    const queryKey = orchestrationQueryKeys.threadFileChanges(THREAD_ID);
+    try {
+      await waitForComposerEditor();
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.some((body) => body._tag === ORCHESTRATION_WS_METHODS.getThreadFileChanges),
+        ).toBe(true);
+        expect(queryClient.getQueryState(queryKey)?.fetchStatus).toBe("fetching");
+      });
+    } finally {
+      await mounted.cleanup();
+      response.resolve({ type: "result", result: createThreadFileChangesResult(THREAD_ID, []) });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      window.removeEventListener("unhandledrejection", onRejection);
+    }
+    expect(queryClient.getQueryState(queryKey)?.fetchStatus).toBe("idle");
+    expect(unhandled).toEqual([]);
   });
 
   it("renders a startup thread skeleton for deep links until the snapshot resolves", async () => {
@@ -4781,6 +5020,15 @@ describe("ChatView timeline (full app)", () => {
       configureFixture: (nextFixture) => {
         nextFixture.serverConfig = {
           ...nextFixture.serverConfig,
+          settings: {
+            ...DEFAULT_SERVER_SETTINGS,
+            providerInstances: {
+              [testCase.selectedInstanceId]: {
+                driver: createTestServerProvider("claudeAgent").driver,
+                enabled: true,
+              },
+            },
+          },
           providers: [
             createTestServerProvider("claudeAgent", {
               version: testCase.defaultIncludesOpus5
@@ -5590,6 +5838,77 @@ describe("ChatView timeline (full app)", () => {
         id: "reasoningEffort",
         value: "high",
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  // Upstream ports and scheduled tasks create threads on the server, so only
+  // the thread's selection knows the chosen effort.
+  async function mountThreadWithSavedLowEffort() {
+    useComposerDraftStore.getState().setPrompt(THREAD_ID, "follow up");
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-thread-effort" as MessageId,
+      targetText: "thread effort target",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) => ({
+          ...thread,
+          model: "gpt-5.4",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.4",
+            options: [{ id: "reasoningEffort", value: "low" }],
+          },
+        })),
+      },
+    });
+    await vi.waitFor(() =>
+      expect(
+        useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.modelOptions?.codex
+          ?.reasoningEffort,
+      ).toBe("low"),
+    );
+    return mounted;
+  }
+
+  async function sendAndReadCodexEffort() {
+    (await waitForSendButton()).click();
+    await vi.waitFor(() => expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(1));
+    const command = getSubmittedTurnCommand(getDispatchCommandRequests("thread.turn.start")[0]!) as
+      | {
+          modelSelection?: { options?: ReadonlyArray<{ id: string; value: unknown }> };
+          modelOptions?: { codex?: { reasoningEffort?: string } };
+        }
+      | undefined;
+    return {
+      selection: command?.modelSelection?.options?.find((option) => option.id === "reasoningEffort")
+        ?.value,
+      modelOptions: command?.modelOptions?.codex?.reasoningEffort,
+    };
+  }
+
+  it("keeps the effort of a thread created without a local draft", async () => {
+    const mounted = await mountThreadWithSavedLowEffort();
+    try {
+      expect(await sendAndReadCodexEffort()).toEqual({ selection: "low", modelOptions: "low" });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the model's default effort picked after seeding a thread's effort", async () => {
+    const mounted = await mountThreadWithSavedLowEffort();
+    try {
+      // Picking the default effort (High here) stores no options, like the Codex picker does.
+      useComposerDraftStore.getState().setModelOptions(THREAD_ID, null);
+      expect(await sendAndReadCodexEffort()).toEqual({ selection: "high", modelOptions: "high" });
+      expect(
+        useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.modelOptions ?? null,
+      ).toBeNull();
     } finally {
       await mounted.cleanup();
     }
@@ -8767,6 +9086,7 @@ describe("ChatView timeline (full app)", () => {
         snapshot,
       });
       try {
+        await waitForTimelineScrollToSettle();
         const paragraph = await vi.waitFor(() => {
           const node = document.querySelector('[data-message-role="assistant"] p');
           expect(node).not.toBeNull();

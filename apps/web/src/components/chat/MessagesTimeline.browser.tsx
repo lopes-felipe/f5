@@ -21,7 +21,7 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import type { LegendListRef } from "@legendapp/list/react";
-import { StrictMode } from "react";
+import { Profiler, StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {} from "@vitest/browser-playwright"; // Types cdp() as a Playwright CDPSession.
 import { cdp, page, userEvent } from "vitest/browser";
@@ -730,11 +730,106 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
-  it("invokes scrollToEnd and flips isAtEnd on 0 → >0 row transitions", async () => {
-    // Upstream fix 33dadb5a: when the row count goes from 0 to >0 (new thread,
-    // first message), LegendList has already latched `initialScrollAtEnd`, so
-    // we must explicitly scroll to end and propagate isAtEnd=true again. This
-    // test exercises the requestAnimationFrame path inside MessagesTimeline.
+  it("keeps the measured end target when a tall thread loads into an empty pane", async () => {
+    let api: TimelineHarnessApi | null = null;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[]}
+        onIsAtEndChangeSpy={() => {}}
+        setApi={(next) => {
+          api = next;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      // Let the empty pane finish mounting before its history arrives.
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const entries = Array.from({ length: 12 }, (_, index) =>
+        makeAssistantEntry(
+          "loaded-tall-" + index,
+          Array.from({ length: 60 }, (_, line) => "Paragraph " + index + "." + line).join("\n\n"),
+          index,
+        ),
+      );
+      api!.setEntries(entries);
+      await vi.waitFor(() => {
+        const viewport = host.querySelector<HTMLElement>(
+          '[data-slot="messages-scroll-container"]',
+        )!;
+        expect(viewport).not.toBeNull();
+        expect(viewport.scrollHeight).toBeGreaterThan(viewport.clientHeight);
+        expect(host.textContent).toContain("Paragraph 11.59");
+        expect(
+          viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop,
+        ).toBeLessThanOrEqual(1);
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("settles when short history loads above very long replies", async () => {
+    let api: TimelineHarnessApi | null = null;
+    let nested = 0;
+    let maximumNested = 0;
+    const short = Array.from({ length: 80 }, (_, index) =>
+      makeAssistantEntry("history-short-" + index, "Short reply " + index, index),
+    );
+    const long = Array.from({ length: 4 }, (_, index) =>
+      makeAssistantEntry(
+        "history-long-" + index,
+        ("Long handbook paragraph. ".repeat(40) + "\n\n").repeat(60),
+        index + 80,
+      ),
+    );
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <Profiler
+        id="history"
+        onRender={(_id, phase) => {
+          nested = phase === "nested-update" ? nested + 1 : 0;
+          maximumNested = Math.max(maximumNested, nested);
+        }}
+      >
+        <TimelineHarness
+          initialEntries={long}
+          initialHeight={400}
+          onIsAtEndChangeSpy={() => {}}
+          setApi={(next) => {
+            api = next;
+          }}
+        />
+      </Profiler>,
+      { container: host },
+    );
+    try {
+      const viewport = await waitForScrollContainer(host);
+      await waitForTimelineLayout(() => viewport);
+      viewport.scrollTop = 0;
+      viewport.dispatchEvent(new Event("scroll"));
+      maximumNested = 0;
+      api!.setEntries([...short, ...long]);
+      await vi.waitFor(() => {
+        viewport.scrollTop = 0;
+        viewport.dispatchEvent(new Event("scroll"));
+        expect(host.textContent).toContain("Short reply 0");
+      });
+      await waitForTimelineLayout(() => viewport);
+      expect(maximumNested).toBeLessThan(8);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("flips isAtEnd on 0 → >0 row transitions", async () => {
+    // The initial measured target belongs to LegendList, while the timeline
+    // still reports that its first nonempty render is following the end.
     const isAtEndCalls: boolean[] = [];
     const scrollToEndSpy = vi.fn();
     let currentRef: LegendListRef | null = null;
@@ -967,6 +1062,72 @@ describe("MessagesTimeline (LegendList)", () => {
             "Appended row should stay out of view while the user is reading history.",
           ).toBe(false);
         }
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("keeps a reader just above the bottom in place while the running reply grows", async () => {
+    const initialEntries = [
+      ...makeOverflowEntries(16),
+      makeAssistantEntry("streaming-tail", "Reply", 121),
+    ];
+    let api: TimelineHarnessApi | null = null;
+    let currentRef: LegendListRef | null = null;
+    const isAtEndCalls: boolean[] = [];
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={initialEntries}
+        initialHeight={800}
+        initialIsWorking
+        onIsAtEndChangeSpy={(value) => isAtEndCalls.push(value)}
+        onListRefChange={(ref) => {
+          currentRef = ref;
+        }}
+        setApi={(nextApi) => {
+          api = nextApi;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const node = await waitForScrollContainer(host);
+      await scrollTimelineToOffset(currentRef, node, node.scrollHeight - node.clientHeight - 65);
+      node.dispatchEvent(new WheelEvent("wheel", { deltaY: -65 }));
+      node.dispatchEvent(new Event("scroll"));
+      await vi.waitFor(() => expect(isAtEndCalls.at(-1)).toBe(false));
+      const before = node.scrollTop;
+      api!.setEntries([
+        ...initialEntries.slice(0, -1),
+        makeAssistantEntry(
+          "streaming-tail",
+          Array.from({ length: 12 }, (_, index) => "Streamed paragraph " + index).join("\n\n"),
+          121,
+        ),
+      ]);
+      await waitForTimelineLayout(() => node);
+      expect(Math.abs(node.scrollTop - before)).toBeLessThan(8);
+      expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeGreaterThan(40);
+      await scrollTimelineToOffset(currentRef, node, node.scrollHeight - node.clientHeight - 30);
+      node.dispatchEvent(new Event("scroll"));
+      await vi.waitFor(() => expect(isAtEndCalls.at(-1)).toBe(true));
+      const beforeContinuedStream = node.scrollHeight;
+      api!.setEntries([
+        ...initialEntries.slice(0, -1),
+        makeAssistantEntry(
+          "streaming-tail",
+          Array.from({ length: 24 }, (_, index) => "Continued paragraph " + index).join("\n\n"),
+          121,
+        ),
+      ]);
+      await vi.waitFor(() => {
+        expect(node.scrollHeight).toBeGreaterThan(beforeContinuedStream + 100);
+        expect(node.scrollHeight - node.clientHeight - node.scrollTop).toBeLessThan(40);
+        expect(isAtEndCalls.at(-1)).toBe(true);
       });
     } finally {
       await screen.unmount();

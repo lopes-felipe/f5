@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
 const APP_DISPLAY_NAME = isDevelopment ? "F5 (Dev)" : "F5";
 const APP_BUNDLE_ID = "io.github.lopesfelipe.f5.dev";
-const LAUNCHER_VERSION = 3;
+const LAUNCHER_VERSION = 4;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const desktopDir = resolve(__dirname, "..");
@@ -49,6 +49,31 @@ function patchMainBundleInfoPlist(appBundlePath, iconPath) {
   setPlistString(infoPlistPath, "CFBundleName", APP_DISPLAY_NAME);
   setPlistString(infoPlistPath, "CFBundleIdentifier", APP_BUNDLE_ID);
   setPlistString(infoPlistPath, "CFBundleIconFile", "icon.icns");
+  const autoFill = spawnSync(
+    "plutil",
+    [
+      "-replace",
+      "NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac",
+      "-bool",
+      "true",
+      infoPlistPath,
+    ],
+    { encoding: "utf8" },
+  );
+  if (autoFill.status !== 0) {
+    const inserted = spawnSync(
+      "plutil",
+      [
+        "-insert",
+        "NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac",
+        "-bool",
+        "true",
+        infoPlistPath,
+      ],
+      { encoding: "utf8" },
+    );
+    if (inserted.status !== 0) throw new Error("Failed to configure macOS one-time-code autofill.");
+  }
 
   const resourcesDir = join(appBundlePath, "Contents", "Resources");
   copyFileSync(iconPath, join(resourcesDir, "icon.icns"));

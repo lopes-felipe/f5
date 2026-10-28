@@ -39,6 +39,7 @@ export function settlementErrorDetail(error: unknown): string {
 export type ThreadActionId =
   | "scheduled-origin"
   | "edit-schedule"
+  | "schedule-in-conversation"
   | "rename"
   | "regenerate-title"
   | "title-regeneration-pending"
@@ -65,6 +66,13 @@ export interface ThreadActionMenuItem {
   readonly separatorBefore?: boolean;
 }
 
+/** Only a server conversation that has already sent a message has settings a task can reuse. */
+export function canScheduleIntoThread(
+  serverThread: Pick<Thread, "modelSelection"> | undefined,
+): boolean {
+  return serverThread?.modelSelection != null;
+}
+
 export function buildThreadActionMenuItems(input: {
   readonly thread: Pick<
     Thread,
@@ -73,8 +81,14 @@ export function buildThreadActionMenuItems(input: {
   readonly pinned: boolean;
   readonly snoozed: boolean;
   readonly schedule?: ScheduledTaskMenuState;
+  /** A server thread that a new task can send its runs into. */
+  readonly canScheduleInConversation?: boolean;
 }): ThreadActionMenuItem[] {
   const { thread, pinned, snoozed } = input;
+  const schedulable =
+    input.canScheduleInConversation === true &&
+    thread.archivedAt === null &&
+    !thread.scheduledOrigin;
   return [
     ...(thread.scheduledOrigin
       ? [
@@ -103,6 +117,9 @@ export function buildThreadActionMenuItems(input: {
     thread.titleRegeneration
       ? { id: "title-regeneration-pending", label: "Regenerating title…", disabled: true }
       : { id: "regenerate-title", label: "Regenerate title" },
+    ...(schedulable
+      ? [{ id: "schedule-in-conversation" as const, label: "Schedule in this conversation…" }]
+      : []),
     ...(thread.archivedAt === null
       ? [
           { id: pinned ? "unpin" : "pin", label: pinned ? "Unpin" : "Pin" } as const,
@@ -160,9 +177,12 @@ export function useThreadActionController(input: {
       : undefined,
   );
   const queryClient = useQueryClient();
+  // The chat header also keeps this list cached for every conversation; only a scheduled
+  // conversation's host subscribes, so task changes do not re-render the others.
   const schedules = useQuery({
     ...scheduledTasksQueryOptions(),
     enabled: activeScheduledTaskId !== undefined,
+    subscribed: activeScheduledTaskId !== undefined,
   });
   const pinRevision = useStore((state) => state.pinRevision ?? 0);
   const markThreadUnread = useStore((state) => state.markThreadUnread);
@@ -216,6 +236,9 @@ export function useThreadActionController(input: {
         pinned: orderedPinnedThreadIds(useStore.getState().threads).includes(thread.id),
         snoozed: isSnoozedThread(thread),
         schedule,
+        canScheduleInConversation: canScheduleIntoThread(
+          selectThreadById(useStore.getState(), thread.id),
+        ),
       }),
     [],
   );
@@ -362,6 +385,13 @@ export function useThreadActionController(input: {
             description: error instanceof Error ? error.message : "An error occurred.",
           });
         }
+        return;
+      }
+      if (actionId === "schedule-in-conversation") {
+        await navigate({
+          to: "/scheduled",
+          search: { projectId: thread.projectId, threadId: thread.id },
+        });
         return;
       }
       if (actionId === "rename") {

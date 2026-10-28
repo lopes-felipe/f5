@@ -16,8 +16,11 @@ import {
 } from "@t3tools/shared/slashCommands";
 import {
   CommandId,
+  EventId,
   MessageId,
+  SCHEDULED_TASK_TURN_SUBMITTED_ACTIVITY_KIND,
   ThreadId,
+  type TurnId,
   ScheduledTaskId,
   ScheduledTaskRunId,
   type ScheduleAuthority,
@@ -45,7 +48,12 @@ import type { AgentBridgeHostShape } from "../agentBridge/AgentBridgeHost.ts";
 import { isProviderUsable } from "../agentBridge/threadTools.ts";
 import type { ServerSettingsShape } from "../serverSettings.ts";
 import { canonicalJsonHash } from "../canonicalJsonHash.ts";
-import { buildNewThreadSubmission } from "../turnSubmission.ts";
+import { buildExistingThreadSubmission, buildNewThreadSubmission } from "../turnSubmission.ts";
+import {
+  boundThreadIneligibilityMessage,
+  isBoundThreadIdle,
+  resolveBoundExecution,
+} from "./boundThread.ts";
 import {
   type ScheduledTaskStoreShape,
   scheduleError,
@@ -177,9 +185,15 @@ export const makeScheduledTaskService = (deps: {
             error instanceof Error ? error.message : "Invalid schedule.",
           ),
       });
-    const validateExecution = (
+    const ownedByUnboundRun = (threadId: string) =>
+      sql`SELECT 1 FROM scheduled_task_runs WHERE thread_id=${threadId}
+        AND json_extract(snapshot_json,'$.workspace.kind') IS NOT 'thread' LIMIT 1`.pipe(
+        Effect.map((rows) => rows.length > 0),
+        Effect.mapError(storageError),
+      );
+    const validateExecution = <C extends ScheduledTaskConfiguration>(
       projectId: string,
-      config: ScheduledTaskConfiguration,
+      config: C,
       actor: ScheduleActor,
     ) =>
       Effect.gen(function* () {
@@ -188,43 +202,83 @@ export const makeScheduledTaskService = (deps: {
           !(yield* scheduleAuthorityCurrent(actor, projectId, yield* settings.getSettings, sql))
         )
           return yield* scheduleError("forbidden", "An active scheduling grant is required.");
+        if (
+          actor.kind === "agent" &&
+          config.workspace.kind === "thread" &&
+          !(yield* scheduleAuthorityCurrent(
+            actor,
+            projectId,
+            yield* settings.getSettings,
+            sql,
+            true,
+          ))
+        )
+          return yield* scheduleError(
+            "forbidden",
+            "Scheduling into an existing conversation also requires permission to send messages.",
+          );
         const snapshot = yield* host.readSnapshot.pipe(
           Effect.mapError(() => scheduleError("not_found", "Workspace unavailable.")),
         );
         const project = snapshot.projects.find((p) => p.id === projectId && p.deletedAt === null);
         if (!project || (actor.kind === "agent" && !actor.visibleProjectIds?.has(project.id)))
           return yield* scheduleError("not_found", "Project not found.");
-        const provider = (yield* host.listProviderInstances).find(
-          (p) => p.instanceId === config.modelSelection.instanceId,
-        );
-        if (!provider || !isProviderUsable(provider))
-          return yield* scheduleError("invalid_schedule", "Select an available provider.");
-        if (
-          !isKnownProviderKind(provider.driver) ||
-          !runtimeModeCapabilities(provider.driver).has(config.runtimeMode)
-        )
-          return yield* scheduleError(
-            "forbidden",
-            "This provider does not support the selected runtime mode.",
-          );
-        if (actor.kind === "agent" && config.runtimeMode !== "approval-required")
-          return yield* scheduleError(
-            "forbidden",
-            "Agent schedules require approval-required mode.",
-          );
-        if (
-          provider.models.length &&
-          !provider.models.some((m) => m.slug === config.modelSelection.model)
-        )
-          return yield* scheduleError("invalid_schedule", "The selected model is unavailable.");
-        if (
-          config.workspace.kind === "worktree" &&
-          (yield* host.getProjectGitBranch(project.workspaceRoot)) === null
-        )
-          return yield* scheduleError(
-            "invalid_schedule",
-            "Non-Git projects require explicit project-root execution.",
-          );
+        const providers = yield* host.listProviderInstances;
+        let effective = config;
+        let provider: (typeof providers)[number] | undefined;
+        if (config.workspace.kind === "thread") {
+          const bound = resolveBoundExecution({
+            snapshot,
+            providers,
+            projectId,
+            threadId: config.workspace.threadId,
+            requireSupervised: actor.kind === "agent",
+            ownedByUnboundRun: yield* ownedByUnboundRun(config.workspace.threadId),
+          });
+          if (bound.kind === "ineligible")
+            return yield* scheduleError(
+              bound.reason === "unsupervised" ? "forbidden" : "invalid_schedule",
+              boundThreadIneligibilityMessage[bound.reason],
+            );
+          provider = bound.provider;
+          // Stored settings are informational; each run uses the thread's settings at admission.
+          effective = {
+            ...config,
+            modelSelection: bound.modelSelection,
+            runtimeMode: bound.runtimeMode,
+            interactionMode: bound.interactionMode,
+          };
+        } else {
+          provider = providers.find((p) => p.instanceId === config.modelSelection.instanceId);
+          if (!provider || !isProviderUsable(provider))
+            return yield* scheduleError("invalid_schedule", "Select an available provider.");
+          if (
+            !isKnownProviderKind(provider.driver) ||
+            !runtimeModeCapabilities(provider.driver).has(config.runtimeMode)
+          )
+            return yield* scheduleError(
+              "forbidden",
+              "This provider does not support the selected runtime mode.",
+            );
+          if (actor.kind === "agent" && config.runtimeMode !== "approval-required")
+            return yield* scheduleError(
+              "forbidden",
+              "Agent schedules require approval-required mode.",
+            );
+          if (
+            provider.models.length &&
+            !provider.models.some((m) => m.slug === config.modelSelection.model)
+          )
+            return yield* scheduleError("invalid_schedule", "The selected model is unavailable.");
+          if (
+            config.workspace.kind === "worktree" &&
+            (yield* host.getProjectGitBranch(project.workspaceRoot)) === null
+          )
+            return yield* scheduleError(
+              "invalid_schedule",
+              "Non-Git projects require explicit project-root execution.",
+            );
+        }
         const name = /^\s*\/([^\s/]+)(?:\s|$)/.exec(config.prompt)?.[1];
         const catalog = buildSlashComposerMenuItems({
           query: "",
@@ -236,11 +290,13 @@ export const makeScheduledTaskService = (deps: {
             description: c.description ?? c.name,
           })),
         });
-        return name && !catalog.some((c) => c.type === "skill" && c.name === name)
-          ? [
-              `Skill /${name} is not available for the selected provider. The task can still be saved.`,
-            ]
-          : [];
+        const warnings =
+          name && !catalog.some((c) => c.type === "skill" && c.name === name)
+            ? [
+                `Skill /${name} is not available for the selected provider. The task can still be saved.`,
+              ]
+            : [];
+        return { warnings, config: effective };
       });
     const previewSchedule = (input: SchedulePreviewInput) =>
       Effect.gen(function* () {
@@ -307,8 +363,8 @@ export const makeScheduledTaskService = (deps: {
             );
           return { task: prior.task, warnings: [] as string[] };
         }
-        const config = yield* validate(input.configuration, at);
-        const warnings = yield* validateExecution(input.projectId, config, actor);
+        const validated = yield* validate(input.configuration, at);
+        const { warnings, config } = yield* validateExecution(input.projectId, validated, actor);
         const task: ScheduledTask = {
           ...config,
           id: input.id,
@@ -367,7 +423,13 @@ export const makeScheduledTaskService = (deps: {
         if (
           task.authority.kind === "agent" &&
           (task.enabled || task.disabledReason !== "authority_revoked") &&
-          !(yield* scheduleAuthorityCurrent(task.authority, task.projectId, config, sql))
+          !(yield* scheduleAuthorityCurrent(
+            task.authority,
+            task.projectId,
+            config,
+            sql,
+            task.workspace.kind === "thread",
+          ))
         )
           invalidTasks.push(task);
       for (const task of invalidTasks)
@@ -399,6 +461,7 @@ export const makeScheduledTaskService = (deps: {
             run.snapshot.projectId,
             config,
             sql,
+            run.snapshot.workspace.kind === "thread",
           ))
         )
           yield* store.transaction(
@@ -428,12 +491,16 @@ export const makeScheduledTaskService = (deps: {
             "forbidden",
             "The user must adopt or re-enable this revoked schedule.",
           );
-        const config = adopting
-          ? yield* validate(input.configuration, at)
-          : { ...input.configuration, nextRunAt: previous.nextRunAt };
-        const warnings = adopting
-          ? yield* validateExecution(previous.projectId, config, actor)
-          : [];
+        const { warnings, config } = adopting
+          ? yield* validateExecution(
+              previous.projectId,
+              yield* validate(input.configuration, at),
+              actor,
+            )
+          : {
+              warnings: [] as string[],
+              config: { ...input.configuration, nextRunAt: previous.nextRunAt },
+            };
         const scheduleChanged =
           previous.cron !== config.cron ||
           previous.timezone !== config.timezone ||
@@ -553,11 +620,27 @@ export const makeScheduledTaskService = (deps: {
       store.transaction(
         Effect.gen(function* () {
           // Quarantined evidence may still own execution even when it cannot be decoded.
-          const owner = (yield* sql<{
+          let owner = (yield* sql<{
+            id: string;
+            reason: string | null;
             submission_started: number;
             budget_consumed: number;
             created_at: string;
-          }>`SELECT submission_started,budget_consumed,created_at FROM scheduled_task_runs WHERE task_id=${task.id} AND owns_execution=1 LIMIT 1`)[0];
+          }>`SELECT id,reason,submission_started,budget_consumed,created_at FROM scheduled_task_runs WHERE task_id=${task.id} AND owns_execution=1 LIMIT 1`)[0];
+          // A bound run still waiting for its conversation when the next fire arrives is missed,
+          // not carried forward: the newer fire replaces it instead of being dropped as pending.
+          if (
+            trigger !== "manual" &&
+            owner?.reason === "conversation_busy" &&
+            !owner.submission_started &&
+            !owner.budget_consumed
+          ) {
+            yield* fenceScheduledRun(owner.id, at).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            );
+            yield* store.transition(owner.id, "skipped", "conversation_busy", at);
+            owner = undefined;
+          }
           const reason = owner
             ? owner.submission_started || owner.budget_consumed
               ? "overlap"
@@ -709,6 +792,62 @@ export const makeScheduledTaskService = (deps: {
           yield* Effect.logError("scheduledTasks.invalidSchedule", { taskId: task.id, detail });
         }),
       );
+    /**
+     * Disables, never deletes, a bound task whose conversation was archived or deleted, while
+     * it still targets that conversation. Like any disable, its unstarted runs are canceled,
+     * so a quick unarchive cannot let a waiting run send. The caller owns the transaction.
+     */
+    const disableUnavailableBoundTask = (task: ScheduledTask, threadId: string, at: string) =>
+      Effect.gen(function* () {
+        const live = yield* store.task(task.id);
+        if (
+          !live ||
+          live.task.version !== task.version ||
+          !live.task.enabled ||
+          live.task.workspace.kind !== "thread" ||
+          live.task.workspace.threadId !== threadId
+        )
+          return false;
+        yield* store.saveTask({
+          ...live.task,
+          enabled: false,
+          nextRunAt: null,
+          disabledReason: "thread_unavailable",
+          updatedAt: at,
+          version: live.task.version + 1,
+        });
+        yield* cancelUnstarted(live.task.id, "task_disabled", at);
+        yield* store.revision;
+        return true;
+      });
+    /**
+     * Event-time removal names the thread; the startup/watchdog sweep checks
+     * every enabled bound task against the live snapshot as a backstop.
+     */
+    const disableRemovedBoundTasks = (removedThreadId?: string) =>
+      Effect.gen(function* () {
+        const at = yield* now;
+        const tasks = (yield* store.tasks()).filter(
+          (task) => task.enabled && task.workspace.kind === "thread",
+        );
+        if (!tasks.length) return;
+        const threads = removedThreadId ? null : (yield* host.readSnapshot).threads;
+        const disabled: ScheduledTaskId[] = [];
+        for (const task of tasks) {
+          const workspace = task.workspace;
+          if (workspace.kind !== "thread") continue;
+          if (removedThreadId) {
+            if (workspace.threadId !== removedThreadId) continue;
+          } else {
+            const thread = threads!.find((t) => t.id === workspace.threadId);
+            if (thread && thread.deletedAt === null && thread.archivedAt === null) continue;
+          }
+          // A task edited meanwhile is left alone and publishes no change.
+          if (yield* store.transaction(disableUnavailableBoundTask(task, workspace.threadId, at)))
+            disabled.push(task.id);
+        }
+        if (disabled.length) yield* changed(disabled);
+      });
     const evaluate = (catchUp: boolean) =>
       Effect.gen(function* () {
         const at = yield* now,
@@ -829,6 +968,7 @@ export const makeScheduledTaskService = (deps: {
             current.snapshot.projectId,
             yield* settings.getSettings,
             sql,
+            current.snapshot.workspace.kind === "thread",
           ))
         ) {
           yield* revalidateAuthorities;
@@ -858,8 +998,18 @@ export const makeScheduledTaskService = (deps: {
           yield* changed([task.id], [current.run.id]);
           return null;
         }
-        const provider = (yield* host.listProviderInstances).find(
-          (p) => p.instanceId === current.snapshot.modelSelection.instanceId,
+        const providers = yield* host.listProviderInstances;
+        const boundWorkspace =
+          current.snapshot.workspace.kind === "thread" ? current.snapshot.workspace : null;
+        const liveBoundThread = boundWorkspace
+          ? snapshot.threads.find((t) => t.id === boundWorkspace.threadId)
+          : undefined;
+        const provider = providers.find(
+          (p) =>
+            p.instanceId ===
+            (boundWorkspace
+              ? liveBoundThread?.modelSelection?.instanceId
+              : current.snapshot.modelSelection.instanceId),
         );
         if (
           provider &&
@@ -871,13 +1021,67 @@ export const makeScheduledTaskService = (deps: {
           yield* sql`UPDATE scheduled_task_runs SET retry_at=${new Date(Date.parse(at) + 30000).toISOString()} WHERE id=${current.run.id}`;
           return null;
         }
+        // Bound runs follow the conversation's live settings at admission.
+        let execution = {
+          modelSelection: current.snapshot.modelSelection,
+          runtimeMode: current.snapshot.runtimeMode,
+          interactionMode: current.snapshot.interactionMode,
+        };
+        if (boundWorkspace) {
+          const bound = resolveBoundExecution({
+            snapshot,
+            providers,
+            projectId: current.snapshot.projectId,
+            threadId: boundWorkspace.threadId,
+            requireSupervised: current.snapshot.authority.kind === "agent",
+            ownedByUnboundRun: yield* ownedByUnboundRun(boundWorkspace.threadId),
+          });
+          if (bound.kind === "ineligible") {
+            if (bound.reason === "unsupervised")
+              yield* store.transition(current.run.id, "skipped", "authority_revoked", at);
+            else if (
+              bound.reason === "provider_unavailable" ||
+              bound.reason === "no_model_selection"
+            )
+              yield* store.transition(current.run.id, "skipped", "provider_unavailable", at);
+            else {
+              yield* store.transaction(
+                Effect.gen(function* () {
+                  yield* store.transition(current.run.id, "skipped", "thread_removed", at);
+                  yield* disableUnavailableBoundTask(task, boundWorkspace.threadId, at);
+                }),
+              );
+              yield* changed([task.id], [current.run.id]);
+            }
+            return null;
+          }
+          // Another bound run claimed this conversation, possibly in this same pass, and its
+          // turn has not started yet, so the conversation still looks idle.
+          const otherBoundRun =
+            (yield* sql`SELECT 1 FROM scheduled_task_runs WHERE thread_id=${boundWorkspace.threadId} AND capacity=1 AND status='pending' AND id!=${current.run.id} LIMIT 1`)
+              .length;
+          // A reserved command was admitted while idle; replay it rather than waiting again.
+          if (
+            !current.command &&
+            (otherBoundRun || !(yield* isBoundThreadIdle(sql, host, bound.thread)))
+          ) {
+            // The reason shows on the Scheduled page while the run waits for the conversation.
+            yield* sql`UPDATE scheduled_task_runs SET retry_at=${new Date(Date.parse(at) + 30000).toISOString()},reason='conversation_busy',state_json=json_set(state_json,'$.reason','conversation_busy') WHERE id=${current.run.id}`;
+            return null;
+          }
+          execution = {
+            modelSelection: bound.modelSelection,
+            runtimeMode: bound.runtimeMode,
+            interactionMode: bound.interactionMode,
+          };
+        }
         if (!provider || !isProviderUsable(provider)) {
           yield* store.transition(current.run.id, "skipped", "provider_unavailable", at);
           return null;
         }
         const usageRetry = scheduledUsageRetryAt(
           yield* deps.usageAccounts ?? Effect.succeed([]),
-          current.snapshot.modelSelection,
+          execution.modelSelection,
           Date.parse(at),
         );
         if (usageRetry) {
@@ -900,6 +1104,7 @@ export const makeScheduledTaskService = (deps: {
                 return yield* scheduleError("conflict", "Reserved command hash does not match.");
               return {
                 run: live.run,
+                snapshot: live.snapshot,
                 command: live.command,
                 submissionId: CommandId.makeUnsafe(live.submissionId),
               };
@@ -913,8 +1118,11 @@ export const makeScheduledTaskService = (deps: {
               yield* store.transition(live.run.id, "skipped", "budget_exhausted", at);
               return null;
             }
-            const threadId = ThreadId.makeUnsafe(crypto.randomUUID()),
-              submissionId = CommandId.makeUnsafe(crypto.randomUUID());
+            const threadId = boundWorkspace
+                ? boundWorkspace.threadId
+                : ThreadId.makeUnsafe(crypto.randomUUID()),
+              submissionId = CommandId.makeUnsafe(crypto.randomUUID()),
+              messageId = MessageId.makeUnsafe(crypto.randomUUID());
             const rewritten = rewriteComposerRuntimeSkillInvocationForSend({
               text: current.snapshot.prompt,
               provider: isKnownProviderKind(provider.driver) ? provider.driver : undefined,
@@ -925,25 +1133,37 @@ export const makeScheduledTaskService = (deps: {
                 description: c.description ?? c.name,
               })),
             });
-            const built = buildNewThreadSubmission({
-              project,
-              threadId,
-              commandId: submissionId,
-              messageId: MessageId.makeUnsafe(crypto.randomUUID()),
-              prompt: rewritten.text,
-              modelSelection: current.snapshot.modelSelection,
-              runtimeMode: current.snapshot.runtimeMode,
-              createdAt: at,
-              title: current.snapshot.name,
-              branch:
-                current.snapshot.workspace.kind === "worktree"
-                  ? current.snapshot.workspace.baseBranch
-                  : null,
-              useWorktree: current.snapshot.workspace.kind === "worktree",
-              requireWorktree: true,
-              scheduledOrigin: { taskId: task.id, runId: current.run.id },
-              ...(isKnownProviderKind(provider.driver) ? { provider: provider.driver } : {}),
-            });
+            const providerKind = isKnownProviderKind(provider.driver)
+              ? { provider: provider.driver }
+              : {};
+            const built = boundWorkspace
+              ? buildExistingThreadSubmission({
+                  threadId,
+                  commandId: submissionId,
+                  messageId,
+                  prompt: rewritten.text,
+                  ...execution,
+                  createdAt: at,
+                  ...providerKind,
+                })
+              : buildNewThreadSubmission({
+                  project,
+                  threadId,
+                  commandId: submissionId,
+                  messageId,
+                  prompt: rewritten.text,
+                  ...execution,
+                  createdAt: at,
+                  title: current.snapshot.name,
+                  branch:
+                    current.snapshot.workspace.kind === "worktree"
+                      ? current.snapshot.workspace.baseBranch
+                      : null,
+                  useWorktree: current.snapshot.workspace.kind === "worktree",
+                  requireWorktree: true,
+                  scheduledOrigin: { taskId: task.id, runId: current.run.id },
+                  ...providerKind,
+                });
             const command = {
               ...built,
               message: {
@@ -966,10 +1186,48 @@ export const makeScheduledTaskService = (deps: {
               updatedAt: at,
             });
             yield* store.revision;
-            return { run, command, submissionId };
+            return { run, snapshot: live.snapshot, command, submissionId };
           }),
         );
       });
+    const appendBoundActivity = (claimed: {
+      run: ScheduledTaskRun;
+      snapshot: ScheduledTask;
+      command: { threadId: ThreadId };
+      submissionId: CommandId;
+    }) =>
+      Effect.gen(function* () {
+        const createdAt = yield* now;
+        const id = `scheduled-activity:${claimed.submissionId}`;
+        yield* host.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.makeUnsafe(id),
+          threadId: claimed.command.threadId,
+          activity: {
+            id: EventId.makeUnsafe(id),
+            tone: "info",
+            kind: SCHEDULED_TASK_TURN_SUBMITTED_ACTIVITY_KIND,
+            // Admission only queues the message; it may still be canceled before sending.
+            summary: `Queued by scheduled task "${claimed.snapshot.name}"`,
+            payload: {
+              taskId: claimed.run.taskId,
+              runId: claimed.run.id,
+              submissionId: claimed.submissionId,
+            },
+            turnId: null,
+            createdAt,
+          },
+          createdAt,
+        });
+      }).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("scheduledTasks.activity.append.failed", {
+            runId: claimed.run.id,
+            submissionId: claimed.submissionId,
+            error,
+          }),
+        ),
+      );
     const inFlight = new Set<string>();
     let dispatchesDone = yield* Deferred.make<void>();
     const drainDispatches = Effect.suspend(() =>
@@ -1003,6 +1261,8 @@ export const makeScheduledTaskService = (deps: {
         }
         const claimed = yield* claim(candidate);
         if (!claimed) return;
+        // The frozen snapshot decides, so a replayed reservation keeps its intent.
+        const bound = claimed.snapshot.workspace.kind === "thread";
         yield* Effect.uninterruptibleMask((restore) =>
           Effect.gen(function* () {
             if (sources.stopped) return;
@@ -1020,6 +1280,7 @@ export const makeScheduledTaskService = (deps: {
                     frozen.snapshot.projectId,
                     yield* settings.getSettings,
                     sql,
+                    frozen.snapshot.workspace.kind === "thread",
                   ))
                 ) {
                   yield* revalidateAuthorities;
@@ -1029,19 +1290,31 @@ export const makeScheduledTaskService = (deps: {
                   yield* sql`UPDATE scheduled_task_runs SET submission_started=1,state_json=json_set(state_json,'$.startedAt',${at}) WHERE id=${claimed.run.id} AND submission_started=0 AND owns_execution=1 AND canceled=0 AND capacity=1 RETURNING id`;
                 if (!marked.length) return;
                 return yield* host.submitTurnSubmission(
-                  { submissionId: claimed.submissionId, intent: "auto", command: claimed.command },
+                  {
+                    submissionId: claimed.submissionId,
+                    // Bound runs never steer: they queue behind the user's own work.
+                    intent: bound ? "queue-tail" : "auto",
+                    command: claimed.command,
+                  },
                   { submissionSource: "automation" },
                 );
               }),
             ).pipe(
               Effect.flatMap((result) =>
                 Effect.gen(function* () {
-                  return yield* result &&
-                  (result.disposition === "rejected" ||
+                  if (!result) return;
+                  if (
+                    result.disposition === "rejected" ||
                     result.disposition === "canceled" ||
-                    result.disposition === "cleared")
-                    ? store.transition(claimed.run.id, "failed", "delivery_failed", yield* now)
-                    : Effect.void;
+                    result.disposition === "cleared"
+                  )
+                    return yield* store.transition(
+                      claimed.run.id,
+                      "failed",
+                      "delivery_failed",
+                      yield* now,
+                    );
+                  if (bound) yield* appendBoundActivity(claimed);
                 }),
               ),
               Effect.catch((error) =>
@@ -1189,15 +1462,61 @@ export const makeScheduledTaskService = (deps: {
               );
               return;
             }
+            // A bound run never waits out a usage limit in the user's conversation: a
+            // rejection before any turn exists is terminal and releases capacity.
+            if (current.snapshot.workspace.kind === "thread") {
+              const limited = yield* sql<{
+                error_detail: string | null;
+              }>`SELECT d.error_detail FROM provider_turn_deliveries d WHERE d.command_id=${submissionId} AND d.state='rejected' AND d.usage_limit_json IS NOT NULL LIMIT 1`;
+              if (limited.length) {
+                yield* store.transaction(
+                  Effect.gen(function* () {
+                    const safe = yield* fenceScheduledRun(current.run.id, at).pipe(
+                      Effect.provideService(SqlClient.SqlClient, sql),
+                    );
+                    yield* store.transition(
+                      current.run.id,
+                      safe ? "failed" : "needs_attention",
+                      safe ? "usage_limit" : "delivery_unknown",
+                      at,
+                      limited[0]!.error_detail,
+                    );
+                  }),
+                );
+                return;
+              }
+            }
             const receipt = yield* host.getSubmission(CommandId.makeUnsafe(submissionId));
             const thread = snapshot.threads.find((t) => t.id === current.run.threadId);
-            if (
-              !receipt &&
-              !thread &&
-              (recovering ||
-                Date.parse(at) - Date.parse(current.run.startedAt ?? current.run.createdAt) >
-                  600000)
-            )
+            const stale =
+              recovering ||
+              Date.parse(at) - Date.parse(current.run.startedAt ?? current.run.createdAt) > 600000;
+            if (current.snapshot.workspace.kind === "thread") {
+              // A shared conversation has its own turns and queue; only this run's item counts.
+              const queue = yield* host.getQueueSnapshot(current.snapshot.workspace.threadId);
+              const item = queue.items.find((i) => i.submissionId === submissionId);
+              if (!receipt && !item && stale)
+                yield* store.transition(
+                  current.run.id,
+                  "needs_attention",
+                  "delivery_unknown",
+                  at,
+                  "Execution was interrupted during submission. The original prompt will not be resent automatically.",
+                );
+              if (
+                item &&
+                (item.status === "failed" ||
+                  (queue.items[0]?.itemId === item.itemId &&
+                    (queue.blockedKind === "error" || queue.blockedKind === "paused")))
+              )
+                yield* store.transition(
+                  current.run.id,
+                  "needs_attention",
+                  "manual_pause",
+                  at,
+                  queue.reasonDetail ?? item.lastErrorDetail,
+                );
+            } else if (!receipt && !thread && stale)
               yield* store.transition(
                 current.run.id,
                 "needs_attention",
@@ -1205,14 +1524,7 @@ export const makeScheduledTaskService = (deps: {
                 at,
                 "Execution was interrupted during submission. The original prompt will not be resent automatically.",
               );
-            else if (
-              !receipt &&
-              thread &&
-              !thread.latestTurn &&
-              (recovering ||
-                Date.parse(at) - Date.parse(current.run.startedAt ?? current.run.createdAt) >
-                  600000)
-            )
+            else if (!receipt && thread && !thread.latestTurn && stale)
               yield* store.transition(
                 current.run.id,
                 "needs_attention",
@@ -1220,7 +1532,7 @@ export const makeScheduledTaskService = (deps: {
                 at,
                 "Submission was interrupted. Inspect the thread and worktree before resolving.",
               );
-            if (current.run.threadId) {
+            if (current.run.threadId && current.snapshot.workspace.kind !== "thread") {
               const queue = yield* host.getQueueSnapshot(current.run.threadId);
               const item = queue.items.find((i) => i.submissionId === submissionId);
               if (
@@ -1299,20 +1611,24 @@ export const makeScheduledTaskService = (deps: {
             "conflict",
             "Explicitly acknowledge unknown delivery before abandoning it.",
           );
-        const snapshot = yield* host.readSnapshot;
-        const thread = snapshot.threads.find((t) => t.id === current.run.threadId);
-        if (thread?.session?.activeTurnId || thread?.latestTurn?.state === "running")
-          return yield* scheduleError(
-            "conflict",
-            "Stop the active turn in its thread before resolving this run.",
-          );
-        const sending =
-          yield* sql`SELECT delivery_id FROM provider_turn_deliveries WHERE thread_id=${current.run.threadId} AND state='sending'`;
-        if (sending.length)
-          return yield* scheduleError(
-            "conflict",
-            "A provider handoff is still in flight. Recheck it in the thread before resolving.",
-          );
+        // A shared conversation's own turns and sends do not block this run; the
+        // per-run checks below still guard its submissions.
+        if (current.snapshot.workspace.kind !== "thread") {
+          const snapshot = yield* host.readSnapshot;
+          const thread = snapshot.threads.find((t) => t.id === current.run.threadId);
+          if (thread?.session?.activeTurnId || thread?.latestTurn?.state === "running")
+            return yield* scheduleError(
+              "conflict",
+              "Stop the active turn in its thread before resolving this run.",
+            );
+          const sending =
+            yield* sql`SELECT delivery_id FROM provider_turn_deliveries WHERE thread_id=${current.run.threadId} AND state='sending'`;
+          if (sending.length)
+            return yield* scheduleError(
+              "conflict",
+              "A provider handoff is still in flight. Recheck it in the thread before resolving.",
+            );
+        }
         const at = yield* now;
         yield* store.transaction(
           Effect.gen(function* () {
@@ -1338,6 +1654,18 @@ export const makeScheduledTaskService = (deps: {
         );
         yield* changed([current.run.taskId], [input.runId]);
         return (yield* store.run(input.runId))!.run;
+      });
+    /** The scheduled run, if any, that owns a turn; lets clients suppress duplicate thread notices. */
+    const findRunForTurn = (input: { threadId: ThreadId; turnId: TurnId }, actor: ScheduleActor) =>
+      Effect.gen(function* () {
+        if (actor.kind !== "user")
+          return yield* scheduleError("forbidden", "Only the user can look up scheduled turns.");
+        const rows = yield* sql<{
+          run_id: string;
+        }>`SELECT run_id FROM scheduled_run_submissions WHERE thread_id=${input.threadId} AND turn_id=${input.turnId} LIMIT 1`.pipe(
+          Effect.mapError(storageError),
+        );
+        return { runId: rows[0] ? ScheduledTaskRunId.makeUnsafe(rows[0].run_id) : null };
       });
     const claimNotifications = (input: { owner: string }) =>
       store.transaction(
@@ -1370,6 +1698,7 @@ export const makeScheduledTaskService = (deps: {
         revalidateAuthorities
           .pipe(Effect.andThen(reconcileFor(true)))
           .pipe(
+            Effect.andThen(disableRemovedBoundTasks()),
             Effect.andThen(evaluate(true)),
             Effect.andThen(sql`UPDATE scheduled_control SET ready=1 WHERE id=1`),
           ),
@@ -1380,7 +1709,12 @@ export const makeScheduledTaskService = (deps: {
           Stream.filter((e) => e.aggregateKind === "thread" && isScheduledRunEvent(e)),
           // The projector commits the revision first. Terminal transitions release
           // ownership, so publishing must use the revision rather than an owner lookup.
-          Stream.runForEach(() => changed()),
+          Stream.runForEach((event) =>
+            (event.type === "thread.deleted" || event.type === "thread.archived"
+              ? disableRemovedBoundTasks(event.aggregateId)
+              : Effect.void
+            ).pipe(Effect.andThen(changed())),
+          ),
         ),
         "scheduledTasks.domainEvents",
       ).pipe(Effect.forkIn(sources.scope));
@@ -1412,7 +1746,11 @@ export const makeScheduledTaskService = (deps: {
         lastWall = wall;
         lastMono = mono;
         yield* mutex.withPermits(1)(
-          evaluate(drift).pipe(Effect.andThen(revalidateAuthorities), Effect.andThen(reconcile)),
+          evaluate(drift).pipe(
+            Effect.andThen(revalidateAuthorities),
+            Effect.andThen(reconcile),
+            Effect.andThen(disableRemovedBoundTasks()),
+          ),
         );
         yield* store.prune(new Date(wall).toISOString());
         yield* signal;
@@ -1451,6 +1789,7 @@ export const makeScheduledTaskService = (deps: {
       list,
       get,
       listRuns,
+      findRunForTurn,
       previewSchedule,
       resolveRun,
       claimNotifications,

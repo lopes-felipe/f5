@@ -2,7 +2,7 @@ import { Effect, Exit } from "effect";
 import { expect, it, vi } from "vitest";
 import { enqueueBackgroundWork, makeBackgroundWorker } from "./backgroundWorker.ts";
 
-it.each(["closed", "failed"])(
+it.each(["closed", "item-failed"])(
   "settles a detached flush timer after worker %s without a rejected Promise",
   async (phase) => {
     const unhandled = vi.fn();
@@ -12,13 +12,13 @@ it.each(["closed", "failed"])(
         Effect.scoped(
           Effect.gen(function* () {
             const worker = yield* makeBackgroundWorker(
-              (_item: number) => (phase === "failed" ? Effect.die("worker died") : Effect.void),
+              (_item: number) => (phase === "item-failed" ? Effect.die("item died") : Effect.void),
               { name: "flush-admission" },
             );
             if (phase === "closed") yield* worker.close;
             else {
               yield* worker.enqueue(0);
-              expect(Exit.isFailure(yield* Effect.exit(worker.drain))).toBe(true);
+              expect(Exit.isSuccess(yield* Effect.exit(worker.drain))).toBe(true);
             }
             yield* Effect.promise(
               () =>
@@ -30,6 +30,10 @@ it.each(["closed", "failed"])(
                 ),
             );
             expect(unhandled).not.toHaveBeenCalled();
+            if (phase === "item-failed") {
+              yield* worker.drain;
+              expect((yield* worker.snapshot).failures).toBe(2);
+            }
           }),
         ),
       );

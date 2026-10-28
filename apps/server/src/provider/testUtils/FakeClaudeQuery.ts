@@ -134,12 +134,16 @@ export class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     await this.setModelWait;
   };
 
+  public setPermissionModeWait: Promise<void> | undefined;
   readonly setPermissionMode = async (mode: PermissionMode): Promise<void> => {
     this.setPermissionModeCalls.push(mode);
+    await this.setPermissionModeWait;
   };
 
+  public applyFlagSettingsWait: Promise<void> | undefined;
   readonly applyFlagSettings = async (settings: Record<string, unknown>): Promise<void> => {
     this.applyFlagSettingsCalls.push(settings);
+    await this.applyFlagSettingsWait;
   };
 
   readonly initializationResult = async (): Promise<unknown> => this.initializationResultValue;

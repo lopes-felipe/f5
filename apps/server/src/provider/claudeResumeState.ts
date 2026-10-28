@@ -125,10 +125,23 @@ export function readClaudeRecoveryMetadata(cursor: unknown): {
   resumeRecoveryGeneration?: string;
   transcriptRepairBackupId?: string;
   missingResumePoint?: string;
+  transcriptFork?: { target: string; activeLeaf?: string };
 } {
   if (!cursor || typeof cursor !== "object") return {};
   const value = cursor as Record<string, unknown>;
+  const fork =
+    value.transcriptFork && typeof value.transcriptFork === "object"
+      ? (value.transcriptFork as Record<string, unknown>)
+      : undefined;
   return {
+    ...(typeof fork?.target === "string"
+      ? {
+          transcriptFork: {
+            target: fork.target,
+            ...(typeof fork.activeLeaf === "string" ? { activeLeaf: fork.activeLeaf } : {}),
+          },
+        }
+      : {}),
     ...(typeof value.resumeRecoveryGeneration === "string"
       ? { resumeRecoveryGeneration: value.resumeRecoveryGeneration }
       : {}),

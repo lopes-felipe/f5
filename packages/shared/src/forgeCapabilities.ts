@@ -1,5 +1,17 @@
 import type { ForgeCapabilities, SourceControlProviderKind } from "@t3tools/contracts";
 
+const IMMEDIATELY_MERGEABLE = new Set(["CLEAN", "HAS_HOOKS", "UNSTABLE"]);
+export function canQueueGitHubAutoMerge(
+  autoMergeAllowed: unknown,
+  mergeStateStatus: unknown,
+): boolean {
+  return (
+    autoMergeAllowed === true &&
+    typeof mergeStateStatus === "string" &&
+    !IMMEDIATELY_MERGEABLE.has(mergeStateStatus.toUpperCase())
+  );
+}
+
 type ForgeKind = Exclude<SourceControlProviderKind, "github" | "unknown">;
 const COMMON = {
   diff: true,

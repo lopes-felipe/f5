@@ -505,6 +505,12 @@ export const ServerSettings = Schema.Struct({
   sourceControlWriting: SourceControlWritingSettings.pipe(Schema.withDecodingDefault(() => ({}))),
   scheduledBackupsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   storageCleanup: StorageCleanupSettings.pipe(Schema.withDecodingDefault(() => ({}))),
+  /** Empty uses this profile's default worktrees folder; otherwise absolute or ~/… on this machine. */
+  worktreesDirectory: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
+  /** Server-maintained history keeps existing worktrees eligible for management. */
+  previousWorktreesDirectories: Schema.Array(TrimmedString).pipe(
+    Schema.withDecodingDefault(() => []),
+  ),
   /** Project-scopable worktree cleanup policy; null uses `storageCleanup.worktree`. */
   worktreeCleanup: Schema.NullOr(WorktreeCleanup).pipe(Schema.withDecodingDefault(() => null)),
   /** Changes Storage cleanup may discard when removing a worktree. Empty discards nothing. */
@@ -698,6 +704,7 @@ export const ServerSettingsPatch = Schema.Struct({
   sourceControlWriting: Schema.optionalKey(SourceControlWritingSettingsPatch),
   scheduledBackupsEnabled: Schema.optionalKey(Schema.Boolean),
   storageCleanup: Schema.optionalKey(StorageCleanupSettingsPatch),
+  worktreesDirectory: Schema.optionalKey(TrimmedString),
   worktreeCleanup: Schema.optionalKey(Schema.NullOr(WorktreeCleanup)),
   worktreeDisposablePaths: Schema.optionalKey(WorktreeDisposablePaths),
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),

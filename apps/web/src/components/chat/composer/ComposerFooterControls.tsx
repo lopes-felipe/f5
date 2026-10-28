@@ -141,23 +141,29 @@ export function ComposerFooterControls(props: {
         />
       ) : null}
       {/* Provider/model picker */}
-      <ProviderInstanceModelPicker
-        compact={compact}
-        instanceId={model.selectedProviderInstanceId}
-        model={model.selectedModelForPickerWithCustomFallback}
-        lockedInstanceId={model.hasThreadStarted ? model.selectedProviderInstanceId : null}
-        modelOptionsByInstance={model.modelOptionsByInstance}
-        ultrathinkActive={model.isClaudeUltrathink}
-        providers={model.providerStatuses}
-        keybindings={model.keybindings}
-        terminalOpen={model.terminalOpen}
-        open={model.isModelPickerOpen}
-        onOpenChange={model.setIsModelPickerOpen}
-        disabled={isPendingTurnDispatchBlocked}
-        onInstanceModelChange={model.onProviderModelSelect}
-        {...(model.fanOutModels ? { selectedModels: model.fanOutModels } : {})}
-        {...(model.onToggleFanOutModel ? { onToggleModel: model.onToggleFanOutModel } : {})}
-      />
+      {model.noProviderAvailable ? (
+        <span className="px-2 text-xs text-muted-foreground" role="status">
+          No provider available
+        </span>
+      ) : (
+        <ProviderInstanceModelPicker
+          compact={compact}
+          instanceId={model.selectedProviderInstanceId}
+          model={model.selectedModelForPickerWithCustomFallback}
+          lockedInstanceId={model.hasThreadStarted ? model.selectedProviderInstanceId : null}
+          modelOptionsByInstance={model.modelOptionsByInstance}
+          ultrathinkActive={model.isClaudeUltrathink}
+          providers={model.providerStatuses}
+          keybindings={model.keybindings}
+          terminalOpen={model.terminalOpen}
+          open={model.isModelPickerOpen}
+          onOpenChange={model.setIsModelPickerOpen}
+          disabled={isPendingTurnDispatchBlocked}
+          onInstanceModelChange={model.onProviderModelSelect}
+          {...(model.fanOutModels ? { selectedModels: model.fanOutModels } : {})}
+          {...(model.onToggleFanOutModel ? { onToggleModel: model.onToggleFanOutModel } : {})}
+        />
+      )}
 
       {compact ? (
         <CompactComposerControlsMenu

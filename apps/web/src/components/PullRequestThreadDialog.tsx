@@ -21,6 +21,7 @@ import {
 } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Spinner } from "./ui/spinner";
+import { toastManager } from "./ui/toast";
 
 interface PullRequestThreadDialogProps {
   open: boolean;
@@ -141,6 +142,13 @@ export function PullRequestThreadDialog({
           branch: result.branch,
           worktreePath: result.worktreePath,
         });
+        if (result.isOnPullRequestHead === false)
+          toastManager.add({
+            type: "warning",
+            title: "Checkout head could not be confirmed",
+            description:
+              "Local commits and files were preserved. The checkout may differ from the pull request's latest commits.",
+          });
         onOpenChange(false);
       } finally {
         setPreparingMode(null);

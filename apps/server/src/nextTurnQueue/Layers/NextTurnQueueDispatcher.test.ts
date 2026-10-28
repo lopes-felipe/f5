@@ -632,6 +632,31 @@ layer("NextTurnQueueDispatcher", (it) => {
     }),
   );
 
+  it.effect("never pauses the queue for a scheduled delivery abandoned after claim", () =>
+    Effect.gen(function* () {
+      const dispatcher = yield* NextTurnQueueDispatcher;
+      const threadId = ThreadId.makeUnsafe("queue-abandoned-scheduled-thread");
+      yield* seedThread(threadId);
+      deliveryRows.set(
+        "abandoned-scheduled",
+        deliveryRow({ commandId: "abandoned-scheduled", threadId, state: "abandoned" }),
+      );
+
+      yield* dispatcher.handleDeliveryOutcome({
+        deliveryId: CommandId.makeUnsafe("abandoned-scheduled"),
+        commandId: CommandId.makeUnsafe("abandoned-scheduled"),
+        threadId,
+        state: "abandoned",
+        detail: "Scheduled execution was canceled before delivery.",
+      });
+
+      const snapshot = yield* dispatcher.getSnapshot(threadId);
+      assert.equal(snapshot.paused, false);
+      assert.equal(snapshot.reasonCode, null);
+      assert.equal(snapshot.unresolvedDelivery, null);
+    }),
+  );
+
   it.effect("keeps a delivery pause and reports the delivery while it is unresolved", () =>
     Effect.gen(function* () {
       const dispatcher = yield* NextTurnQueueDispatcher;

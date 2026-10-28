@@ -33,6 +33,7 @@ export type NextTurnQueueBlockedKind = typeof NextTurnQueueBlockedKind.Type;
 
 export const QueueReasonCode = Schema.Literals([
   "scheduled_task_wait",
+  "scheduled_task_canceled",
   "manual_pause",
   "active_turn",
   "turn_starting",

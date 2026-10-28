@@ -518,6 +518,8 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   }
 
   if (platform === "linux") {
+    // The static runtime also launches on distributions without libfuse2.
+    buildConfig.toolsets = { appimage: "1.0.3" };
     buildConfig.linux = {
       target: [target],
       icon: "icon.png",

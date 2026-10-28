@@ -4,7 +4,8 @@ import { ensureNativeApi } from "../../nativeApi";
 import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
 import { Button } from "../ui/button";
 import * as Schema from "effect/Schema";
-import type { ForgeMutationPayload, TrackedPullRequest } from "@t3tools/contracts";
+import type { ForgeMutationPayload, TrackedPullRequest, PrHubDetail } from "@t3tools/contracts";
+import { canQueueGitHubAutoMerge } from "@t3tools/shared/forgeCapabilities";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { getPrHubDraftIdentity } from "../../lib/prHubAccount";
 import { ForgeOperationPanel } from "./ForgeOperationPanel";
@@ -77,7 +78,13 @@ export function ForgeComposer({
     </section>
   );
 }
-export function ForgeControls({ pr }: { pr: TrackedPullRequest }) {
+export function ForgeControls({
+  pr,
+  detail,
+}: {
+  pr: TrackedPullRequest;
+  detail?: Pick<PrHubDetail, "state" | "providerDetails"> | undefined;
+}) {
   const caps = pr.forgeCapabilities;
   const [action, setAction] = useState(caps?.actions[0] ?? "close");
   const [method, setMethod] = useState<"merge" | "squash" | "rebase">("merge");
@@ -85,9 +92,17 @@ export function ForgeControls({ pr }: { pr: TrackedPullRequest }) {
   const [title, setTitle] = useState(pr.title),
     [body, setBody] = useState("");
   if (!caps || pr.repositoryArchived) return null;
-  const actions = caps.actions.filter(
-    (action) => action !== "delete-branch" || pr.state === "merged" || pr.state === "closed",
-  );
+  const actions = caps.actions.filter((action) => {
+    if (action === "enable-auto-merge" && detail?.providerDetails.provider === "github")
+      return (
+        detail.state === "open" &&
+        canQueueGitHubAutoMerge(
+          detail.providerDetails.autoMergeAllowed,
+          detail.providerDetails.mergeStateStatus,
+        )
+      );
+    return action !== "delete-branch" || pr.state === "merged" || pr.state === "closed";
+  });
   const availableAction = actions.includes(action) ? action : actions[0]!;
   const methods = availableAction === "update-branch" ? caps.updateMethods : caps.mergeMethods;
   return (

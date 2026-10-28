@@ -1,8 +1,9 @@
-import { ScheduledTaskId, ScheduledTaskRunId } from "@t3tools/contracts";
+import { ProviderInstanceId, ScheduledTaskId, ScheduledTaskRunId } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
   buildThreadActionMenuItems,
+  canScheduleIntoThread,
   nativeThreadActionMenuItems,
   settlementErrorDetail,
 } from "./useThreadActionController";
@@ -131,5 +132,35 @@ describe("scheduled thread actions", () => {
       expect(items.some((item) => item.id === "edit-schedule")).toBe(false);
       expect(items.some((item) => item.id === "rename")).toBe(true);
     }
+  });
+  it("offers scheduling into active, unscheduled conversations only", () => {
+    const ids = (overrides: Partial<Parameters<typeof buildThreadActionMenuItems>[0]["thread"]>) =>
+      buildThreadActionMenuItems({
+        thread: { ...thread, scheduledOrigin: null, ...overrides },
+        pinned: false,
+        snoozed: false,
+        canScheduleInConversation: true,
+      }).map((item) => item.id);
+    expect(ids({}).slice(0, 3)).toEqual(["rename", "regenerate-title", "schedule-in-conversation"]);
+    expect(ids({ archivedAt: "2026-01-01T00:00:00Z" })).not.toContain("schedule-in-conversation");
+    expect(ids({ scheduledOrigin: thread.scheduledOrigin })).not.toContain(
+      "schedule-in-conversation",
+    );
+    expect(
+      buildThreadActionMenuItems({
+        thread: { ...thread, scheduledOrigin: null },
+        pinned: false,
+        snoozed: false,
+      }).map((item) => item.id),
+    ).not.toContain("schedule-in-conversation");
+  });
+  it("offers scheduling only for server conversations that have sent a message", () => {
+    expect(canScheduleIntoThread(undefined)).toBe(false);
+    expect(canScheduleIntoThread({ modelSelection: undefined })).toBe(false);
+    expect(
+      canScheduleIntoThread({
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+      }),
+    ).toBe(true);
   });
 });

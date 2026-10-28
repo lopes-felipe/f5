@@ -14,6 +14,32 @@ import {
 import { setupProjectScript } from "@t3tools/shared/projectScripts";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
 
+/** A turn for an existing conversation, without bootstrap. Settings are the thread's admitted ones. */
+export function buildExistingThreadSubmission(input: {
+  threadId: ThreadId;
+  commandId: CommandId;
+  messageId: MessageId;
+  prompt: string;
+  modelSelection: ModelSelection;
+  runtimeMode: RuntimeMode;
+  interactionMode: ProviderInteractionMode;
+  createdAt: string;
+  provider?: ProviderKind;
+}): ClientThreadTurnStartCommand {
+  return {
+    type: "thread.turn.start",
+    commandId: input.commandId,
+    threadId: input.threadId,
+    message: { messageId: input.messageId, role: "user", text: input.prompt, attachments: [] },
+    ...(input.provider ? { provider: input.provider } : {}),
+    model: input.modelSelection.model,
+    modelSelection: input.modelSelection,
+    runtimeMode: input.runtimeMode,
+    interactionMode: input.interactionMode,
+    createdAt: input.createdAt,
+  };
+}
+
 /** Pure builder shared by chat transports and scheduled admission. All identities are supplied before side effects. */
 export function buildNewThreadSubmission(input: {
   project: OrchestrationProject;

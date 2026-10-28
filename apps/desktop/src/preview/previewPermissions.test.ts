@@ -73,6 +73,8 @@ it("lets the user's own local app use its camera, location and file pickers", ()
     expect(granted(userTab, "media", url)).toBe(true);
   expect(granted(userTab, "fileSystem", "http://[::1]:8080/")).toBe(true);
   expect(check!(userTab, "geolocation", "http://localhost:5173")).toBe(true);
+  expect(granted(userTab, "notifications", "http://localhost:5173/")).toBe(false);
+  expect(check!(userTab, "notifications", "http://localhost:5173")).toBe(false);
   // A page the agent drives, a remote origin and an unlisted permission stay denied.
   expect(granted(agentTab, "media", "http://localhost:5173/")).toBe(false);
   expect(granted(userTab, "media", "https://example.com/")).toBe(false);

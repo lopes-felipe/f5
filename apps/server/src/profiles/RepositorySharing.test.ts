@@ -5,7 +5,9 @@ import { ProfileId } from "@t3tools/contracts";
 import {
   assertExclusiveProfileCheckout,
   assertNotOtherProfileManagedCheckout,
+  readOtherProfileManagedRoots,
 } from "./RepositorySharing";
+import { customWorktreesDirectory } from "../worktreesDirectoryPaths.ts";
 import * as FS from "node:fs/promises";
 import * as OS from "node:os";
 import * as Path from "node:path";
@@ -65,6 +67,59 @@ it("blocks shared-root changes for another profile's archived effective workspac
         siblingManaged,
       ),
     ).rejects.toThrow(/Another profile owns/);
+    const custom = Path.join(root, "other-custom");
+    const previous = Path.join(root, "other-previous");
+    await FS.mkdir(custom);
+    await FS.mkdir(previous);
+    await FS.writeFile(
+      Path.join(otherState, "settings.json"),
+      JSON.stringify({
+        worktreesDirectory: custom,
+        previousWorktreesDirectories: [previous],
+      }),
+    );
+    for (const managed of [custom, previous]) {
+      await expect(
+        assertNotOtherProfileManagedCheckout(
+          { defaultStateDir: state, profile: current, baseDir: root },
+          Path.join(
+            customWorktreesDirectory(managed, Path.join(root, "worktrees")),
+            "repo",
+            "topic",
+          ),
+        ),
+      ).resolves.toBeUndefined();
+      await expect(
+        assertNotOtherProfileManagedCheckout(
+          { defaultStateDir: state, profile: current, baseDir: root },
+          Path.join(
+            customWorktreesDirectory(managed, Path.join(otherState, "worktrees")),
+            "repo",
+            "topic",
+          ),
+        ),
+      ).rejects.toThrow(/Another profile owns/);
+    }
+    await FS.writeFile(Path.join(otherState, "settings.json"), '{"credential":"private-value",');
+    await expect(
+      assertNotOtherProfileManagedCheckout(
+        { defaultStateDir: state, profile: current, baseDir: root },
+        siblingManaged,
+      ),
+    ).rejects.toThrow(/Another profile owns/);
+    await expect(
+      readOtherProfileManagedRoots(
+        { defaultStateDir: state, profile: current, baseDir: root },
+        { destructive: true },
+      ),
+    ).rejects.toThrow(/profile/);
+    await expect(
+      assertNotOtherProfileManagedCheckout(
+        { defaultStateDir: state, profile: current, baseDir: root },
+        checkout,
+      ),
+    ).resolves.toBeUndefined();
+    await FS.writeFile(Path.join(otherState, "settings.json"), "{}");
     const db = new DatabaseSync(Path.join(otherState, "state.sqlite"));
     try {
       db.exec(
@@ -72,6 +127,12 @@ it("blocks shared-root changes for another profile's archived effective workspac
       );
       db.prepare("INSERT INTO projection_projects VALUES ('project',?,NULL)").run(checkout);
       db.exec("INSERT INTO projection_threads VALUES ('project',NULL,NULL,'archived')");
+      await expect(
+        assertExclusiveProfileCheckout({ defaultStateDir: state, profile: current }, checkout),
+      ).rejects.toThrow(/Another profile/);
+      db.prepare("UPDATE projection_projects SET workspace_root=?").run(
+        Path.join(checkout, "nested-project"),
+      );
       await expect(
         assertExclusiveProfileCheckout({ defaultStateDir: state, profile: current }, checkout),
       ).rejects.toThrow(/Another profile/);
