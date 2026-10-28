@@ -27,6 +27,7 @@ import {
   type DefaultBranchConfirmableAction,
   requiresDefaultBranchConfirmation,
   resolveDefaultBranchActionDialogCopy,
+  resolveFeatureBranchUnavailableReason,
   resolveQuickAction,
   summarizeGitResult,
   shouldSavePullRequestLink,
@@ -312,6 +313,15 @@ export default function GitActionsControl({
         action: pendingDefaultBranchAction.action,
         branchName: pendingDefaultBranchAction.branchName,
         includesCommit: pendingDefaultBranchAction.includesCommit,
+      })
+    : null;
+  // Follows the live status so the button tracks the tree while the dialog is open. Until the
+  // status loads, keep the option enabled: the server stays the authority and rejects a stale
+  // request with its own error.
+  const featureBranchUnavailableReason = pendingDefaultBranchAction
+    ? resolveFeatureBranchUnavailableReason({
+        branchName: pendingDefaultBranchAction.branchName,
+        hasWorkingTreeChanges: gitStatus?.hasWorkingTreeChanges ?? true,
       })
     : null;
 
@@ -1166,6 +1176,9 @@ export default function GitActionsControl({
               {pendingDefaultBranchActionCopy?.title ?? "Run action on default branch?"}
             </DialogTitle>
             <DialogDescription>{pendingDefaultBranchActionCopy?.description}</DialogDescription>
+            {featureBranchUnavailableReason && (
+              <p className="text-xs text-muted-foreground">{featureBranchUnavailableReason}</p>
+            )}
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setPendingDefaultBranchAction(null)}>
@@ -1174,7 +1187,11 @@ export default function GitActionsControl({
             <Button variant="outline" size="sm" onClick={continuePendingDefaultBranchAction}>
               {pendingDefaultBranchActionCopy?.continueLabel ?? "Continue"}
             </Button>
-            <Button size="sm" onClick={checkoutFeatureBranchAndContinuePendingAction}>
+            <Button
+              size="sm"
+              onClick={checkoutFeatureBranchAndContinuePendingAction}
+              disabled={featureBranchUnavailableReason !== null}
+            >
               Checkout feature branch & continue
             </Button>
           </DialogFooter>

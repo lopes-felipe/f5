@@ -48,12 +48,13 @@ import {
   FileSystem,
   Layer,
   Ref,
+  Schedule,
   Schema,
   Semaphore,
 } from "effect";
 
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../../observability/Metrics.ts";
-import { GitCommandError } from "../Errors.ts";
+import { GitCommandError, isGitConfigLockedError, isMissingGitExecutable } from "../Errors.ts";
 import { checkoutConflictFiles } from "../checkoutConflict.ts";
 import { GitService } from "../Services/GitService.ts";
 import {
@@ -436,6 +437,96 @@ const makeGitCore = Effect.gen(function* () {
       Effect.map((result) => result.stdout),
     );
 
+  // Every worktree shares `.git/config`, and Git fails rather than waits for its lock, so F5's
+  // own writes to it take turns per repository.
+  const sharedConfigLocks = new Map<string, Semaphore.Semaphore>();
+  const withSharedConfigLock = <A>(cwd: string, effect: Effect.Effect<A, GitCommandError>) =>
+    runGitStdout("GitCore.sharedConfigLock.commonDir", cwd, [
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-common-dir",
+    ]).pipe(
+      Effect.map((stdout) => stripPathTerminator(stdout) || null),
+      Effect.orElseSucceed(() => null),
+      Effect.flatMap((commonDir) => {
+        if (commonDir === null) return effect;
+        let lock = sharedConfigLocks.get(commonDir);
+        if (lock === undefined) {
+          lock = Semaphore.makeUnsafe(1);
+          sharedConfigLocks.set(commonDir, lock);
+        }
+        return lock.withPermits(1)(effect);
+      }),
+    );
+
+  // Git run outside F5, such as an agent's, can hold the lock too. Only writes that are safe to
+  // repeat go through this.
+  const writeSharedConfig = <A>(cwd: string, effect: Effect.Effect<A, GitCommandError>) =>
+    withSharedConfigLock(cwd, effect).pipe(
+      Effect.retry({
+        while: isGitConfigLockedError,
+        times: 10,
+        schedule: Schedule.spaced("50 millis"),
+      }),
+    );
+
+  const writeConfigValue = (operation: string, cwd: string, key: string, value: string) =>
+    writeSharedConfig(cwd, runGit(operation, cwd, ["config", "--", key, value]));
+
+  // A remote start point makes `git branch` write its upstream, which fails outright, after the
+  // ref exists, when the config is locked. Tracking is recorded afterwards by a write that retries.
+  const createBranchAt = (
+    operation: string,
+    input: { readonly cwd: string; readonly branch: string; readonly startPoint: string },
+  ) =>
+    Effect.gen(function* () {
+      yield* runGit(operation, input.cwd, [
+        "branch",
+        "--no-track",
+        "--",
+        input.branch,
+        input.startPoint,
+      ]);
+      const autoSetupMerge = (yield* runGitStdout(
+        `${operation}.autoSetupMerge`,
+        input.cwd,
+        ["config", "--get", "--", "branch.autoSetupMerge"],
+        true,
+      ))
+        .trim()
+        .toLowerCase();
+      if (autoSetupMerge === "false") return;
+      const startRef = yield* executeGit(
+        `${operation}.resolveStartPoint`,
+        input.cwd,
+        [
+          "rev-parse",
+          "--verify",
+          "--quiet",
+          "--symbolic-full-name",
+          "--end-of-options",
+          input.startPoint,
+        ],
+        { allowNonZeroExit: true },
+      ).pipe(Effect.map((result) => (result.code === 0 ? result.stdout.trim() : "")));
+      if (!startRef.startsWith("refs/remotes/")) return;
+      yield* writeSharedConfig(
+        input.cwd,
+        runGit(`${operation}.track`, input.cwd, [
+          "branch",
+          `--set-upstream-to=${startRef}`,
+          "--",
+          input.branch,
+        ]),
+      ).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("Created the branch without tracking its start point", {
+            error: error.message,
+          }),
+        ),
+      );
+    });
+
   const branchExists = (cwd: string, branch: string): Effect.Effect<boolean, GitCommandError> =>
     executeGit(
       "GitCore.branchExists",
@@ -498,8 +589,10 @@ const makeGitCore = Effect.gen(function* () {
       Effect.gen(function* () {
         const [commonDirStdout, remoteNamesStdout] = yield* Effect.all(
           [
+            // Git resolves relative paths from the physical cwd, which a symlink can hide.
             runGitStdout("GitCore.statusStaticMetadata.commonDir", cwd, [
               "rev-parse",
+              "--path-format=absolute",
               "--git-common-dir",
             ]),
             runGitStdout("GitCore.statusStaticMetadata.remoteNames", cwd, ["remote"]),
@@ -940,17 +1033,18 @@ const makeGitCore = Effect.gen(function* () {
     Effect.gen(function* () {
       const preferredName = sanitizeRemoteName(input.preferredName);
       const normalizedTargetUrl = normalizeRemoteUrl(input.url);
-      const remoteFetchUrls = yield* runGitStdout(
-        "GitCore.ensureRemote.listRemoteUrls",
-        input.cwd,
-        ["remote", "-v"],
-      ).pipe(Effect.map((stdout) => parseRemoteFetchUrls(stdout)));
+      const listRemoteFetchUrls = runGitStdout("GitCore.ensureRemote.listRemoteUrls", input.cwd, [
+        "remote",
+        "-v",
+      ]).pipe(Effect.map((stdout) => parseRemoteFetchUrls(stdout)));
+      const findMatchingRemote = (remoteFetchUrls: Map<string, string>) =>
+        [...remoteFetchUrls].find(
+          ([, remoteUrl]) => normalizeRemoteUrl(remoteUrl) === normalizedTargetUrl,
+        )?.[0];
 
-      for (const [remoteName, remoteUrl] of remoteFetchUrls.entries()) {
-        if (normalizeRemoteUrl(remoteUrl) === normalizedTargetUrl) {
-          return remoteName;
-        }
-      }
+      const remoteFetchUrls = yield* listRemoteFetchUrls;
+      const existing = findMatchingRemote(remoteFetchUrls);
+      if (existing !== undefined) return existing;
 
       let remoteName = preferredName;
       let suffix = 1;
@@ -959,14 +1053,27 @@ const makeGitCore = Effect.gen(function* () {
         suffix += 1;
       }
 
-      yield* runGit("GitCore.ensureRemote.add", input.cwd, [
-        "remote",
-        "add",
-        "--",
-        remoteName,
-        input.url,
-      ]);
-      return remoteName;
+      return yield* writeSharedConfig(
+        input.cwd,
+        runGit("GitCore.ensureRemote.add", input.cwd, [
+          "remote",
+          "add",
+          "--",
+          remoteName,
+          input.url,
+        ]),
+      ).pipe(
+        Effect.as(remoteName),
+        // A parallel launch for the same fork may have added it since the listing above.
+        Effect.catch((error) =>
+          listRemoteFetchUrls.pipe(
+            Effect.flatMap((current) => {
+              const added = findMatchingRemote(current);
+              return added === undefined ? Effect.fail(error) : Effect.succeed(added);
+            }),
+          ),
+        ),
+      );
     });
 
   const resolveBaseBranchForNoUpstream = (
@@ -1060,7 +1167,7 @@ const makeGitCore = Effect.gen(function* () {
       const index = yield* executeGit(
         "GitCore.statusDetails.indexPath",
         cwd,
-        ["rev-parse", "--git-path", "index"],
+        ["rev-parse", "--path-format=absolute", "--git-path", "index"],
         { allowNonZeroExit: true },
       );
       if (index.code === 0 && index.stdout.trim()) {
@@ -1579,6 +1686,7 @@ const makeGitCore = Effect.gen(function* () {
     Effect.gen(function* () {
       const rawPath = yield* runGitStdout("GitCore.commitIndex.path", cwd, [
         "rev-parse",
+        "--path-format=absolute",
         "--git-path",
         "index",
       ]);
@@ -1761,6 +1869,7 @@ const makeGitCore = Effect.gen(function* () {
       if (filePaths && filePaths.length > 0) {
         const mergeHeadPath = yield* runGitStdout("GitCore.commit.mergeHeadPath", cwd, [
           "rev-parse",
+          "--path-format=absolute",
           "--git-path",
           "MERGE_HEAD",
         ]).pipe(Effect.map((stdout) => stdout.trim()));
@@ -1779,6 +1888,32 @@ const makeGitCore = Effect.gen(function* () {
 
       return { commitSha };
     });
+
+  // `push -u` exits 0 without recording the upstream when another writer holds the config lock.
+  const recordPushedUpstream = (cwd: string, branch: string, remoteName: string) =>
+    Effect.gen(function* () {
+      const operation = "GitCore.pushCurrentBranch.recordUpstream";
+      // Without a prior upstream, Git ignores a merge ref with no remote, so losing the second
+      // write leaves none rather than a wrong one.
+      yield* writeConfigValue(operation, cwd, `branch.${branch}.merge`, `refs/heads/${branch}`);
+      yield* writeConfigValue(operation, cwd, `branch.${branch}.remote`, remoteName);
+      // Matches what `push -u` records for a remote upstream.
+      const autoSetupRebase = (yield* runGitStdout(
+        operation,
+        cwd,
+        ["config", "--get", "--", "branch.autoSetupRebase"],
+        true,
+      )).trim();
+      if (autoSetupRebase === "always" || autoSetupRebase === "remote")
+        yield* writeConfigValue(operation, cwd, `branch.${branch}.rebase`, "true");
+      return true;
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("Pushed, but could not record the branch upstream", {
+          error: error.message,
+        }).pipe(Effect.as(false)),
+      ),
+    );
 
   const pushCurrentBranch: GitCoreShape["pushCurrentBranch"] = (cwd, fallbackBranch) =>
     Effect.gen(function* () {
@@ -1842,14 +1977,14 @@ const makeGitCore = Effect.gen(function* () {
         yield* executeGit(
           "GitCore.pushCurrentBranch.pushWithUpstream",
           cwd,
-          ["push", "-u", "--", publishRemoteName, `HEAD:refs/heads/${branch}`],
+          ["push", "--", publishRemoteName, `HEAD:refs/heads/${branch}`],
           { timeoutMs: 15 * 60_000 },
         );
         return {
           status: "pushed" as const,
           branch,
           upstreamBranch: `${publishRemoteName}/${branch}`,
-          setUpstream: true,
+          setUpstream: yield* recordPushedUpstream(cwd, branch, publishRemoteName),
         };
       }
 
@@ -1873,23 +2008,23 @@ const makeGitCore = Effect.gen(function* () {
             true,
           );
           if (!configuredBase.trim())
-            yield* runGit("GitCore.pushCurrentBranch.recordMergeBase", cwd, [
-              "config",
-              "--",
+            yield* writeConfigValue(
+              "GitCore.pushCurrentBranch.recordMergeBase",
+              cwd,
               mergeBaseKey,
               currentUpstream.upstreamBranch,
-            ]);
+            );
           yield* executeGit(
             "GitCore.pushCurrentBranch.pushOwnBranch",
             cwd,
-            ["push", "-u", "--", remoteName!, `HEAD:refs/heads/${branch}`],
+            ["push", "--", remoteName!, `HEAD:refs/heads/${branch}`],
             { timeoutMs: 15 * 60_000 },
           );
           return {
             status: "pushed" as const,
             branch,
             upstreamBranch: `${remoteName}/${branch}`,
-            setUpstream: true,
+            setUpstream: yield* recordPushedUpstream(cwd, branch, remoteName!),
           };
         }
         yield* executeGit(
@@ -2152,7 +2287,12 @@ const makeGitCore = Effect.gen(function* () {
           );
         });
       return { branches, isRepo: true, hasOriginRemote: metadata.remoteNames.includes("origin") };
-    });
+    }).pipe(
+      // Without Git installed no folder can be a repository; other spawn failures still surface.
+      Effect.catchIf(isMissingGitExecutable, () =>
+        Effect.succeed({ branches: [], isRepo: false, hasOriginRemote: false }),
+      ),
+    );
 
   const initializeSubmodules = (
     worktreePath: string,
@@ -2173,22 +2313,29 @@ const makeGitCore = Effect.gen(function* () {
       }
       progress?.onSubmodulesStarted?.();
       const lines = makeProgressLineSplitter((line) => progress?.onSubmoduleLine?.(line));
-      yield* executeGit(
-        "GitCore.createWorktree.submodules",
+      // Registering submodule URLs writes the shared config; the clones that follow do not.
+      yield* writeSharedConfig(
         worktreePath,
-        [
-          ...gitConfigArgs([["protocol.file.allow", "never"]]),
-          "submodule",
-          "update",
-          "--init",
-          ...((submodules ?? "recursive") === "recursive" ? ["--recursive"] : []),
-        ],
-        {
-          timeoutMs: 300_000,
-          fallbackErrorMessage: "Unable to initialize worktree submodules",
-          ...(progress?.onSubmoduleLine ? { onStderrChunk: lines } : {}),
-        },
+        runGit("GitCore.createWorktree.initSubmodules", worktreePath, ["submodule", "init"]),
       ).pipe(
+        Effect.andThen(
+          executeGit(
+            "GitCore.createWorktree.submodules",
+            worktreePath,
+            [
+              ...gitConfigArgs([["protocol.file.allow", "never"]]),
+              "submodule",
+              "update",
+              "--init",
+              ...((submodules ?? "recursive") === "recursive" ? ["--recursive"] : []),
+            ],
+            {
+              timeoutMs: 300_000,
+              fallbackErrorMessage: "Unable to initialize worktree submodules",
+              ...(progress?.onSubmoduleLine ? { onStderrChunk: lines } : {}),
+            },
+          ),
+        ),
         Effect.tap(() =>
           Effect.sync(() => progress?.onSubmodulesFinished?.({ status: "done", detail: null })),
         ),
@@ -2329,15 +2476,9 @@ const makeGitCore = Effect.gen(function* () {
         );
         const progress = input.progress;
         // `worktree add` has no --progress flag: GIT_PROGRESS_DELAY=0 makes git
-        // print checkout progress even though stderr is a pipe.
-        const args = [
-          "worktree",
-          "add",
-          ...(input.newBranch ? ["-b", input.newBranch] : []),
-          "--",
-          worktreePath,
-          baseRefName,
-        ];
+        // print checkout progress even though stderr is a pipe. A new branch is created
+        // beforehand, so a held config lock cannot fail the checkout after creating it.
+        const args = ["worktree", "add", "--", worktreePath, input.newBranch ?? baseRefName];
         // Reject occupied targets under the lifecycle lock before allocating ownership.
         const existedBefore = yield* fileSystem
           .exists(worktreePath)
@@ -2423,6 +2564,19 @@ const makeGitCore = Effect.gen(function* () {
           claimed = true;
           progress?.onWorktreeClaimed?.(worktreePath);
         };
+        const newBranch = input.newBranch;
+        if (newBranch)
+          yield* createBranchAt("GitCore.createWorktree.createBranch", {
+            cwd: input.cwd,
+            branch: newBranch,
+            startPoint: baseRefName,
+          }).pipe(
+            Effect.tapError(() =>
+              releaseFailedWorktreeAllocation(receipt, input.cwd, worktreePath).pipe(
+                Effect.ignoreCause({ log: true }),
+              ),
+            ),
+          );
         yield* executeGit("GitCore.createWorktree", input.cwd, args, {
           timeoutMs: 300_000,
           fallbackErrorMessage: "git worktree add failed",
@@ -2443,8 +2597,19 @@ const makeGitCore = Effect.gen(function* () {
         }).pipe(
           Effect.tapError(() =>
             Effect.gen(function* () {
-              if (yield* checkoutExists(worktreePath)) claim();
-              else yield* releaseFailedWorktreeAllocation(receipt, input.cwd, worktreePath);
+              if (yield* checkoutExists(worktreePath)) return claim();
+              yield* releaseFailedWorktreeAllocation(receipt, input.cwd, worktreePath);
+              // No checkout uses the branch created above, so a retry must not find it taken.
+              if (newBranch)
+                yield* writeSharedConfig(
+                  input.cwd,
+                  runGit("GitCore.createWorktree.deleteBranch", input.cwd, [
+                    "branch",
+                    "-D",
+                    "--",
+                    newBranch,
+                  ]),
+                );
             }).pipe(Effect.ignoreCause({ log: true })),
           ),
         );
@@ -3099,23 +3264,35 @@ const makeGitCore = Effect.gen(function* () {
       const localBranchAlreadyExists = yield* branchExists(input.cwd, input.localBranch);
       if (localBranchAlreadyExists && input.preserveExisting) return;
       const targetRef = `${input.remoteName}/${input.remoteBranch}`;
-      yield* runGit(
-        "GitCore.fetchRemoteBranch.materialize",
+      if (!localBranchAlreadyExists)
+        return yield* createBranchAt("GitCore.fetchRemoteBranch.materialize", {
+          cwd: input.cwd,
+          branch: input.localBranch,
+          startPoint: targetRef,
+        });
+      yield* withSharedConfigLock(
         input.cwd,
-        localBranchAlreadyExists && !input.preserveExisting
-          ? ["branch", "--force", "--", input.localBranch, targetRef]
-          : ["branch", "--", input.localBranch, targetRef],
+        runGit("GitCore.fetchRemoteBranch.materialize", input.cwd, [
+          "branch",
+          "--force",
+          "--",
+          input.localBranch,
+          targetRef,
+        ]),
       );
     }).pipe(Effect.asVoid);
 
   const setBranchUpstream: GitCoreShape["setBranchUpstream"] = (input) =>
-    runGit("GitCore.setBranchUpstream", input.cwd, [
-      "branch",
-      "--set-upstream-to",
-      `${input.remoteName}/${input.remoteBranch}`,
-      "--",
-      input.branch,
-    ]);
+    writeSharedConfig(
+      input.cwd,
+      runGit("GitCore.setBranchUpstream", input.cwd, [
+        "branch",
+        "--set-upstream-to",
+        `${input.remoteName}/${input.remoteBranch}`,
+        "--",
+        input.branch,
+      ]),
+    );
 
   const clearMissingRegistrationUnlocked = (cwd: string, path: string) =>
     Effect.gen(function* () {
@@ -3428,7 +3605,7 @@ const makeGitCore = Effect.gen(function* () {
           "The target branch changed after workspace verification.",
         );
       const checkoutArgs = target.checkoutArgs;
-      yield* executeGit(
+      const checkout = executeGit(
         "GitCore.checkoutBranch.checkout",
         input.cwd,
         [checkoutArgs[0]!, "--no-overwrite-ignore", ...checkoutArgs.slice(1), "--"],
@@ -3438,6 +3615,10 @@ const makeGitCore = Effect.gen(function* () {
           // Keep diagnostics stable for classification, regardless of the host's locale.
           env: { LC_ALL: "C" },
         },
+      );
+      // `checkout --track` creates a local branch and records its upstream in the shared config.
+      yield* (
+        checkoutArgs.includes("--track") ? withSharedConfigLock(input.cwd, checkout) : checkout
       ).pipe(
         Effect.mapError((error) => {
           const files = checkoutConflictFiles(error.detail);

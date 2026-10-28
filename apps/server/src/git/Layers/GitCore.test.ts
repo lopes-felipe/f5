@@ -433,7 +433,8 @@ describe("GitCore unit", () => {
   it("limits generated commit context to the selected paths", async () => {
     const indexPath = join(tmpdir(), `f5-fake-index-${crypto.randomUUID()}`);
     const scripted = makeScriptedGitService((input) => {
-      if (argsEqual(input, ["rev-parse", "--git-path", "index"])) return { stdout: indexPath };
+      if (argsEqual(input, ["rev-parse", "--path-format=absolute", "--git-path", "index"]))
+        return { stdout: indexPath };
       if (input.args.includes("--name-status")) return { stdout: "M\tsrc/selected.ts\n" };
       if (input.args.includes("--patch")) return { stdout: "+selected\n" };
       return {};
@@ -476,7 +477,7 @@ describe("GitCore unit", () => {
     const mergeHeadPath = path.join(cwd, "MERGE_HEAD");
     fs.writeFileSync(mergeHeadPath, "0123456789abcdef\n");
     const scripted = makeScriptedGitService((input) => {
-      if (argsEqual(input, ["rev-parse", "--git-path", "MERGE_HEAD"])) {
+      if (argsEqual(input, ["rev-parse", "--path-format=absolute", "--git-path", "MERGE_HEAD"])) {
         return { stdout: `${mergeHeadPath}\n` };
       }
       if (argsEqual(input, ["rev-parse", "HEAD"])) return { stdout: "abc123\n" };
@@ -520,9 +521,6 @@ describe("GitCore unit", () => {
           return { stdout: `${"b".repeat(40)}\n` };
         if (argsEqual(input, ["remote"])) {
           return { stdout: "origin\n" };
-        }
-        if (argsEqual(input, ["rev-parse", "--git-common-dir"])) {
-          return { stdout: ".git\n" };
         }
         if (argsEqual(input, ["status", "--porcelain=2", "--branch", "-z"])) {
           return {
@@ -574,7 +572,9 @@ describe("GitCore unit", () => {
         ),
       ).toHaveLength(1);
       expect(
-        scripted.calls.filter((call) => argsEqual(call, ["rev-parse", "--git-common-dir"])),
+        scripted.calls.filter(
+          (call) => call.operation === "GitCore.statusStaticMetadata.commonDir",
+        ),
       ).toHaveLength(1);
       expect(scripted.calls.filter((call) => argsEqual(call, ["remote"]))).toHaveLength(1);
       expect(scripted.calls.filter((call) => call.args[0] === "fetch")).toHaveLength(
@@ -769,7 +769,7 @@ describe("GitCore unit", () => {
     );
 
     expect(remote).toBe("Octo-Cat-1");
-    expect(scripted.calls.at(-1)?.args).toEqual([
+    expect(scripted.calls.map((call) => call.args)).toContainEqual([
       "remote",
       "add",
       "--",
@@ -921,7 +921,8 @@ it.each(["none", "shallow", "recursive"] as const)(
       }
       return {
         stdout: input.args[0] === "rev-parse" ? "a".repeat(40) : "",
-        code: input.args.includes("submodule") ? 1 : 0,
+        // A failed clone still leaves the created worktree usable.
+        code: input.args.includes("submodule") && input.args.includes("update") ? 1 : 0,
       };
     });
     const core = await makeCore(scripted.service);
@@ -932,16 +933,19 @@ it.each(["none", "shallow", "recursive"] as const)(
     const calls = scripted.calls.filter((call) => call.args.includes("submodule"));
     if (submodules === "none") expect(calls).toHaveLength(0);
     else {
-      expect(calls).toHaveLength(1);
-      expect(calls[0]!.args).toEqual([
-        "-c",
-        "protocol.file.allow=never",
-        "submodule",
-        "update",
-        "--init",
-        ...(submodules === "recursive" ? ["--recursive"] : []),
+      // Registration writes the shared config on its own; the clones run separately.
+      expect(calls.map((call) => call.args)).toEqual([
+        ["submodule", "init"],
+        [
+          "-c",
+          "protocol.file.allow=never",
+          "submodule",
+          "update",
+          "--init",
+          ...(submodules === "recursive" ? ["--recursive"] : []),
+        ],
       ]);
-      expect(calls[0]!.cwd).toBe(result.worktree.path);
+      expect(calls.every((call) => call.cwd === result.worktree.path)).toBe(true);
     }
   },
 );
@@ -1076,7 +1080,7 @@ it.each([true, false])(
       "refs/heads/feature:refs/remotes/origin/feature",
     );
     expect(scripted.calls.find((call) => call.args[0] === "branch")?.args).toEqual(
-      alreadyExists ? undefined : ["branch", "--", "existing", "origin/feature"],
+      alreadyExists ? undefined : ["branch", "--no-track", "--", "existing", "origin/feature"],
     );
     expect(scripted.calls.flatMap((call) => call.args)).not.toContain("--force");
   },
