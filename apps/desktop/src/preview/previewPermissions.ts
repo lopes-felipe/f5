@@ -24,7 +24,6 @@ export const ALLOWED_PREVIEW_PERMISSIONS: ReadonlySet<string> = new Set([
 export const LOCAL_PREVIEW_PERMISSIONS: ReadonlySet<string> = new Set([
   "media",
   "geolocation",
-  "notifications",
   "pointerLock",
   "fileSystem",
   "clipboard-read",

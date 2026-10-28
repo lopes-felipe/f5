@@ -29,15 +29,19 @@ it.each([
     );
     let output = "";
     let errors = "";
+    let database: DatabaseSync | undefined;
+    let release: ReturnType<typeof setTimeout> | undefined;
     child.stdout.on("data", (data) => {
       output += data.toString();
+      // Release from the signal itself: expect.poll can back off beyond the
+      // child's five-second busy timeout on a loaded Windows runner.
+      if (output.includes("writing") && !release)
+        release = setTimeout(() => database!.exec("COMMIT"), 250);
     });
     child.stderr.on("data", (data) => {
       errors += data.toString();
     });
     const exited = once(child, "exit");
-    let database: DatabaseSync | undefined;
-    let release: ReturnType<typeof setTimeout> | undefined;
     try {
       await expect
         .poll(() => output.includes("ready") || child.exitCode !== null, { timeout: 30_000 })
@@ -50,7 +54,6 @@ it.each([
         .poll(() => output.includes("writing") || child.exitCode !== null, { timeout: 30_000 })
         .toBe(true);
       expect(output, errors).toContain("writing");
-      release = setTimeout(() => database!.exec("COMMIT"), 250);
       const [code] = await exited;
       expect(code, errors).toBe(0);
       expect(output).toContain("written:");

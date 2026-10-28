@@ -3,6 +3,13 @@ import type { SettingsItemDescriptor } from "../settingsSearch";
 
 export const STORAGE_SETTINGS_DESCRIPTORS = [
   {
+    ...SETTINGS_ITEM_ROUTES["storage.worktree-location"],
+    label: "Worktree location",
+    description: "Choose the folder where new worktrees are created on this machine.",
+    keywords: ["worktree", "folder", "directory", "path", "drive", "disk"],
+    targetSelector: '[data-settings-search-target="storage.worktree-location"]',
+  },
+  {
     ...SETTINGS_ITEM_ROUTES["storage.attachments"],
     label: "Attachments",
     description: "Review unowned images and files before reclaiming space.",
