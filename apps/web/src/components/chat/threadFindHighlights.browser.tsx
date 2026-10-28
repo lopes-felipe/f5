@@ -26,8 +26,24 @@ it("keeps a newer highlight owner when an older row releases its highlights", ()
   root.textContent = "one two";
   const old = highlightThreadFind(root, "one", 0);
   const current = highlightThreadFind(root, "two", 0);
-  old();
+  expect(current.selected?.toString()).toBe("two");
+  old.clear();
   expect([...CSS.highlights.get("f5-thread-find-active")!][0]?.toString()).toBe("two");
-  current();
+  current.clear();
   expect(CSS.highlights.has("f5-thread-find-active")).toBe(false);
+});
+it("never scrolls its container", () => {
+  const container = document.body.appendChild(document.createElement("div"));
+  container.dataset.slot = "messages-scroll-container";
+  Object.assign(container.style, { height: "100px", overflow: "auto" });
+  const root = container.appendChild(document.createElement("div"));
+  root.innerHTML = `<div style="height:1000px"></div><p>needle</p>`;
+  const highlight = highlightThreadFind(root, "needle", 0);
+  try {
+    expect(highlight.selected?.toString()).toBe("needle");
+    expect(container.scrollTop).toBe(0);
+  } finally {
+    highlight.clear();
+    container.remove();
+  }
 });

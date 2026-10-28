@@ -21,6 +21,7 @@ import {
 } from "@t3tools/contracts";
 import {
   createContext,
+  Fragment,
   memo,
   useCallback,
   useContext,
@@ -111,8 +112,16 @@ import {
   sampleTimelineMinimapRowIndices,
   summarizeWorkGroup,
   TIMELINE_TURN_RAIL_MIN_ITEMS,
+  advanceRowArrivals,
+  type RowArrivalState,
+  type TimelineTurnRailItem,
 } from "./MessagesTimeline.logic";
 import { TimelineTurnRail } from "./TimelineTurnRail";
+import { createPortal } from "react-dom";
+import {
+  ConversationNavigation,
+  createConversationNavigationStore,
+} from "./ConversationNavigation";
 import { forwardWheelToTimeline } from "./timelineMinimapWheel";
 import { WorkingRibbon, type WorkingRibbonReleaseReason } from "./WorkingRibbon";
 import { useNowIso } from "../../lib/nowTicker";
@@ -139,6 +148,11 @@ import {
   textContainsInlineTerminalContextLabels,
 } from "./userMessageTerminalContexts";
 import { buildCollapsedUserMessageText, shouldCollapseUserMessage } from "./userMessageCollapse";
+import {
+  clipUserMessageSegments,
+  hasUserMessageMarkup,
+  parseUserMessageMarkup,
+} from "../../lib/userMessageMarkup";
 import { ReasoningSection } from "./ReasoningSection";
 import { COMPOSER_INLINE_CHIP_CLASS_NAME } from "../composerInlineChip";
 import { DiffSurfaceBoundary } from "../DiffSurfaceBoundary";
@@ -334,6 +348,21 @@ interface MessagesTimelineProps {
    * working label it would return focus to is gone too (the turn ended).
    */
   onWorkingRibbonFocusLost?: (() => void) | undefined;
+  /** Quotes a settled assistant message into the composer; omitted hides "Quote in reply". */
+  onQuoteAssistantMessage?: ((messageId: MessageId, text: string) => void) | undefined;
+  /**
+   * Routes rail, minimap, popover and revert jumps through the navigation
+   * owner. Omitted scrolls to the row directly.
+   */
+  onNavigateToEntry?: ((entryId: string, position: number) => void) | undefined;
+  /** Runs after each committed change of the entry-to-row map. */
+  onEntryRowIndexMapCommit?: (() => void) | undefined;
+  /** Header element the "Conversation navigation" control portals into. */
+  navigationHost?: HTMLElement | null | undefined;
+  /** Opens thread find; omitted hides the popover's "Find in thread". */
+  onOpenThreadFind?: (() => void) | undefined;
+  /** Retries a failed older-history load from the navigation popover. */
+  onRetryOlderHistory?: (() => void) | undefined;
 }
 
 export interface PendingRevertDisplay {
@@ -390,6 +419,7 @@ function selectTimelineSettings(settings: AppSettings) {
     expandMcpToolCalls: settings.expandMcpToolCalls,
     showFileChangeDiffsInline: settings.showFileChangeDiffsInline,
     showReasoningExpanded: settings.showReasoningExpanded,
+    composerRichTextEnabled: settings.composerRichTextEnabled,
   };
 }
 
@@ -443,6 +473,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   listHeaderContent,
   chatDiffContext = EMPTY_CHAT_DIFF_CONTEXT,
   onWorkingRibbonFocusLost,
+  onQuoteAssistantMessage,
+  onNavigateToEntry,
+  onEntryRowIndexMapCommit,
+  navigationHost = null,
+  onOpenThreadFind,
+  onRetryOlderHistory,
 }: MessagesTimelineProps) {
   const settings = useAppSettingsSelector(selectTimelineSettings);
   // The working label can be picked up and steered (see WorkingRibbon).
@@ -528,6 +564,41 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
   );
 
+  // Messages appended by a live turn (or right after a send) rise into place.
+  // Work-log and working-indicator rows churn throughout a turn and stay still.
+  // Kept identical while the ids are, so streaming deltas take the cheap path.
+  const messageRowIdsRef = useRef<readonly string[]>([]);
+  const messageRowIds = useMemo(() => {
+    const next = rows.flatMap((row) => (row.kind === "message" ? [row.id] : []));
+    const current = messageRowIdsRef.current;
+    return next.length === current.length && next.every((id, index) => id === current[index])
+      ? current
+      : next;
+  }, [rows]);
+  useLayoutEffect(() => {
+    messageRowIdsRef.current = messageRowIds;
+  }, [messageRowIds]);
+  const [rowArrivals, setRowArrivals] = useState<RowArrivalState | null>(null);
+  const [, setRowArrivalExpiryTick] = useState(0);
+  const nextRowArrivals = advanceRowArrivals(rowArrivals, {
+    threadId,
+    rowIds: messageRowIds,
+    isWorking,
+    followNextTailNonce,
+    now: Date.now(),
+  });
+  if (nextRowArrivals !== rowArrivals) setRowArrivals(nextRowArrivals);
+  const enteringRowIds = nextRowArrivals.entering;
+  useEffect(() => {
+    if (enteringRowIds.size === 0) return;
+    const firstExpiry = Math.min(...enteringRowIds.values());
+    const timer = window.setTimeout(
+      () => setRowArrivalExpiryTick((tick) => tick + 1),
+      Math.max(0, firstExpiry - Date.now()),
+    );
+    return () => window.clearTimeout(timer);
+  }, [enteringRowIds]);
+
   const rowCount = rows.length;
   const lastRowId = rowCount > 0 ? (rows[rowCount - 1]?.id ?? null) : null;
   const entryRowIndexMap = useMemo(
@@ -542,8 +613,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       ),
     [rows],
   );
+  const onEntryRowIndexMapCommitRef = useRef(onEntryRowIndexMapCommit);
+  useLayoutEffect(() => {
+    onEntryRowIndexMapCommitRef.current = onEntryRowIndexMapCommit;
+  });
   useLayoutEffect(() => {
     resolvedEntryRowIndexMapRef.current = entryRowIndexMap;
+    onEntryRowIndexMapCommitRef.current?.();
     return () => {
       if (resolvedEntryRowIndexMapRef.current === entryRowIndexMap) {
         resolvedEntryRowIndexMapRef.current = null;
@@ -892,6 +968,62 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     },
     [listRef, onIsAtEndChange],
   );
+  // Rail, minimap, popover and revert jumps go through the navigation owner
+  // by row id, so they cancel pending find placement like any other jump.
+  const rowsRef = useRef(rows);
+  useLayoutEffect(() => {
+    rowsRef.current = rows;
+  });
+  const navigateToRow = useCallback(
+    (rowIndex: number, viewPosition: number) => {
+      const rowId = rowsRef.current[rowIndex]?.id;
+      if (onNavigateToEntry && rowId !== undefined) onNavigateToEntry(rowId, viewPosition);
+      else navigateToTimelineRow(rowIndex, viewPosition);
+    },
+    [navigateToTimelineRow, onNavigateToEntry],
+  );
+
+  const navigationStore = useState(createConversationNavigationStore)[0];
+  useEffect(() => {
+    if (!navigationHost) return;
+    navigationStore.publish({
+      items: turnRailItems,
+      activeIndex: turnRailActiveTickIndex,
+      hasOlderHistory,
+      isLoadingOlderHistory,
+      hasHistoryLoadError,
+    });
+  }, [
+    hasHistoryLoadError,
+    hasOlderHistory,
+    isLoadingOlderHistory,
+    navigationHost,
+    navigationStore,
+    turnRailActiveTickIndex,
+    turnRailItems,
+  ]);
+  // By row id: a popover snapshot's row index can be one render stale after
+  // older history is prepended.
+  const selectNavigationTurn = useCallback(
+    (item: TimelineTurnRailItem) => {
+      if (onNavigateToEntry) onNavigateToEntry(item.id, 0.1);
+      else navigateToRow(item.rowIndex, 0.1);
+    },
+    [navigateToRow, onNavigateToEntry],
+  );
+  const loadOlderHistoryFromNavigation = useCallback(() => {
+    if (!onLoadOlderHistory || historyLoadControllerRef.current) return;
+    const controller = new AbortController();
+    historyLoadControllerRef.current = controller;
+    void onLoadOlderHistory(controller.signal)
+      .catch((error) => {
+        if (!controller.signal.aborted) console.warn("Failed to load older thread history.", error);
+      })
+      .finally(() => {
+        if (historyLoadControllerRef.current === controller)
+          historyLoadControllerRef.current = null;
+      });
+  }, [onLoadOlderHistory]);
 
   const forwardOverlayWheel = useCallback(
     (event: WheelEvent) => {
@@ -950,7 +1082,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       (row) => row.kind === "message" && row.message.id === revertReopenRequest.messageId,
     );
     if (rowIndex < 0) return;
-    navigateToTimelineRow(rowIndex, 0.3);
+    navigateToRow(rowIndex, 0.3);
     setRevertPopover({
       messageId: revertReopenRequest.messageId,
       presetRestoreFiles: revertReopenRequest.restoreFiles,
@@ -981,6 +1113,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     revertPopover,
     chatDiffContext,
     pinEndThroughDisclosure,
+    onQuoteAssistantMessage,
   };
   const latestRowInputsRef = useRef(latestRowInputs);
   useLayoutEffect(() => {
@@ -1038,6 +1171,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       },
       setChangedFilesPresentationOverrides,
       startRibbon: (origin) => setRibbonOrigin(origin),
+      quoteAssistantMessage: (messageId, text) =>
+        latestRowInputsRef.current.onQuoteAssistantMessage?.(messageId, text),
     }),
     [],
   );
@@ -1073,12 +1208,16 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       canSetWorkGroupExpanded: onSetWorkGroupExpanded !== undefined,
       isWorking,
       reducedMotion,
+      userMessageMarkup: settings.composerRichTextEnabled,
+      canQuoteAssistantMessages: onQuoteAssistantMessage !== undefined,
       grabButtonRef,
       actions: rowActions,
     }),
     [
       allDirectoriesExpanded,
       canRestoreFiles,
+      onQuoteAssistantMessage,
+      settings.composerRichTextEnabled,
       chatDiffContext.isGitRepo,
       chatDiffContext.promptLinkRepository,
       effectiveRevertDisabledReason,
@@ -1123,11 +1262,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           newestTurnDiffId,
           expandedCommandExecutions,
           ribbonActive,
+          enteringRowIds,
         },
         committedRowExternalsRef.current,
       ),
     [
       changedFilesPresentationOverrides,
+      enteringRowIds,
       expandedCommandExecutions,
       expandedWorkGroups,
       newestTurnDiffId,
@@ -1197,6 +1338,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 row={item}
                 externals={externalsEntry.externals}
                 rowVersion={externalsEntry.version}
+                entering={externalsEntry.entering}
               />
             ) : null}
           </div>
@@ -1205,6 +1347,22 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     },
     [pendingRevert, revertDimFromRowIndex, rowExternals],
   );
+
+  // Portalled into the header: turn data never passes through header props.
+  const navigationControl = navigationHost
+    ? createPortal(
+        <ConversationNavigation
+          store={navigationStore}
+          disabled={!hasMessages}
+          timestampFormat={timestampFormat}
+          onSelectTurn={selectNavigationTurn}
+          onOpenFind={onOpenThreadFind}
+          onLoadOlderHistory={onLoadOlderHistory ? loadOlderHistoryFromNavigation : undefined}
+          onRetryOlderHistory={onRetryOlderHistory}
+        />,
+        navigationHost,
+      )
+    : null;
 
   if (!hasMessages && !isWorking) {
     // Render the header slot above the empty-state message so that any
@@ -1219,6 +1377,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       >
         {listHeaderContent ? <div className="pt-3 sm:pt-4">{listHeaderContent}</div> : null}
         <MessagesTimelineEmpty emptyState={emptyState} />
+        {navigationControl}
       </div>
     );
   }
@@ -1305,7 +1464,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             markerRowIndices={minimapRowIndices}
             activeRowIndex={activeMinimapRowIndex}
             hasUnloadedHistory={hasOlderHistory}
-            onNavigate={(rowIndex) => navigateToTimelineRow(rowIndex, 0.3)}
+            onNavigate={(rowIndex) => navigateToRow(rowIndex, 0.3)}
             onWheel={forwardOverlayWheel}
           />
         ) : null}
@@ -1315,10 +1474,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             hasPersistentGutter={turnRailHasPersistentGutter}
             hitStripWidth={turnRailHitStripWidth}
             activeTickIndex={turnRailActiveTickIndex}
-            onSelect={(item) => navigateToTimelineRow(item.rowIndex, 0.1)}
+            onSelect={selectNavigationTurn}
             onWheel={forwardOverlayWheel}
           />
         ) : null}
+        {navigationControl}
       </TooltipScrollDismissArea>
     </TimelineRowContext.Provider>
   );
@@ -1485,10 +1645,13 @@ function RevertStatusPill({ label }: { label: string }) {
 // internally, so the ResizeObserver shim is no longer needed.
 const TimelineRowWrapper = memo(function TimelineRowWrapper({
   row,
+  entering,
   testRenderCountProps,
   children,
 }: {
   row: TimelineRow;
+  /** A freshly appended row: rises in (a transform, so list measurement is unaffected). */
+  entering: boolean;
   testRenderCountProps?: { "data-render-count": number } | undefined;
   children: ReactNode;
 }) {
@@ -1500,12 +1663,19 @@ const TimelineRowWrapper = memo(function TimelineRowWrapper({
     if (!active || !find || !root) return;
     let clear = () => {};
     let frame = 0;
+    let reported = false;
+    // Streaming and highlighter mutations only refresh the highlights; the
+    // range is reported once so the navigation owner places it a single time.
     const refresh = () => {
       window.cancelAnimationFrame(frame);
       frame = window.requestAnimationFrame(() => {
         frame = window.requestAnimationFrame(() => {
           clear();
-          clear = highlightThreadFind(root, find.query, find.occurrence);
+          const highlight = highlightThreadFind(root, find.query, find.occurrence);
+          clear = highlight.clear;
+          if (reported || !highlight.selected || find.requestId == null) return;
+          reported = true;
+          find.onSelectedRange?.(find.requestId, highlight.selected);
         });
       });
     };
@@ -1523,7 +1693,8 @@ const TimelineRowWrapper = memo(function TimelineRowWrapper({
     <div
       ref={element}
       data-thread-find-active={active ? "true" : undefined}
-      className="pb-4"
+      data-row-entering={entering ? "" : undefined}
+      className={entering ? "pb-4 motion-safe:animate-rise" : "pb-4"}
       {...testRenderCountProps}
       data-timeline-row-id={row.id}
       data-timeline-row-kind={row.kind}
@@ -1739,7 +1910,11 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   text: string;
   skillCall?: UserMessageSkillCall | undefined;
   terminalContexts: ParsedTerminalContextEntry[];
+  markup: boolean;
+  /** The active thread-find match is in this message: show it in full. */
+  forceExpandedForFind: boolean;
 }) {
+  // The manual choice survives a forced expansion and returns once the match moves on.
   const [expanded, setExpanded] = useState(false);
   const shouldCollapse =
     props.terminalContexts.length === 0 && shouldCollapseUserMessage(props.text);
@@ -1752,25 +1927,97 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
       skillCall: props.skillCall,
     });
   if (!canCollapse) {
-    return <UserMessageBody {...props} />;
+    return (
+      <UserMessageBody
+        text={props.text}
+        skillCall={props.skillCall}
+        terminalContexts={props.terminalContexts}
+        markup={props.markup}
+      />
+    );
   }
 
-  const displayText = expanded ? props.text : collapsedText;
+  const showsAll = expanded || props.forceExpandedForFind;
+  const displayText = showsAll ? props.text : collapsedText;
   return (
     <>
-      <UserMessageBody text={displayText} skillCall={props.skillCall} terminalContexts={[]} />
-      <button
-        type="button"
-        className="mt-1 text-2xs text-muted-foreground transition-colors hover:text-foreground"
-        aria-expanded={expanded}
-        data-scroll-anchor-ignore
-        onClick={() => setExpanded((current) => !current)}
-      >
-        {expanded ? "Show less" : "Show more"}
-      </button>
+      <UserMessageBody
+        text={displayText}
+        markupSource={props.text}
+        skillCall={props.skillCall}
+        terminalContexts={[]}
+        markup={props.markup}
+      />
+      {props.forceExpandedForFind ? null : (
+        <button
+          type="button"
+          className="mt-1 text-2xs text-muted-foreground transition-colors hover:text-foreground"
+          aria-expanded={expanded}
+          data-scroll-anchor-ignore
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      )}
     </>
   );
 });
+
+/**
+ * A user message with its code spans, fences and bold rendered. The full
+ * source is parsed and clipped to the displayed prefix, so a collapsed bubble
+ * always shows the start of the expanded one.
+ */
+function UserMessageMarkupText(props: {
+  text: string;
+  markupSource: string;
+  testRenderCountProps: { "data-render-count": number } | undefined;
+}) {
+  const segments = useMemo(() => {
+    const parsed = parseUserMessageMarkup(props.markupSource);
+    return props.text.length < props.markupSource.length
+      ? clipUserMessageSegments(parsed, props.text.length)
+      : parsed;
+  }, [props.markupSource, props.text.length]);
+  if (!hasUserMessageMarkup(segments)) {
+    return (
+      <pre
+        className="whitespace-pre-wrap wrap-break-word chat-plaintext leading-relaxed text-foreground"
+        {...(props.testRenderCountProps ?? {})}
+      >
+        {props.text}
+      </pre>
+    );
+  }
+  return (
+    <div
+      className="whitespace-pre-wrap wrap-break-word chat-plaintext leading-relaxed text-foreground"
+      data-user-message-markup=""
+      {...(props.testRenderCountProps ?? {})}
+    >
+      {segments.map((segment) => {
+        switch (segment.kind) {
+          case "text":
+            return <Fragment key={segment.start}>{segment.raw}</Fragment>;
+          case "code":
+            return (
+              <code key={segment.start} className="user-message-inline-code">
+                {segment.value}
+              </code>
+            );
+          case "bold":
+            return <strong key={segment.start}>{segment.value}</strong>;
+          case "codeblock":
+            return (
+              <pre key={segment.start} className="user-message-codeblock">
+                <code>{segment.value}</code>
+              </pre>
+            );
+        }
+      })}
+    </div>
+  );
+}
 
 function isSkillPrefixBoundary(value: string): boolean {
   return value.length === 0 || /\s/u.test(value);
@@ -1811,8 +2058,11 @@ function collapsedTextPreservesSkillPrefix(input: {
 
 const UserMessageBody = memo(function UserMessageBody(props: {
   text: string;
+  /** The full message when `text` is its collapsed prefix. */
+  markupSource?: string;
   skillCall?: UserMessageSkillCall | undefined;
   terminalContexts: ParsedTerminalContextEntry[];
+  markup?: boolean;
 }) {
   // Test-only render-attempt counter used by browser regression tests. This
   // intentionally measures render calls, not committed renders.
@@ -1941,6 +2191,16 @@ const UserMessageBody = memo(function UserMessageBody(props: {
           <span key="user-message-skill-call-rest">{textAfterSkillPrefix}</span>
         ) : null}
       </div>
+    );
+  }
+
+  if (props.markup) {
+    return (
+      <UserMessageMarkupText
+        text={textAfterSkillPrefix}
+        markupSource={props.markupSource ?? textAfterSkillPrefix}
+        testRenderCountProps={testRenderCountProps}
+      />
     );
   }
 
@@ -3460,6 +3720,8 @@ type TimelineRowExternals =
       turnSummary: TurnDiffSummary | undefined;
       presentationOverride: ChangedFilesPresentation | undefined;
       isNewest: boolean;
+      /** The last assistant message in the timeline: its code blocks never fold. */
+      isLatestAssistantMessage: boolean;
     }
   | { kind: "command"; expanded: boolean }
   | { kind: "working"; ribbonActive: boolean }
@@ -3486,6 +3748,7 @@ interface TimelineRowActions {
     SetStateAction<Readonly<Record<string, ChangedFilesPresentation>>>
   >;
   startRibbon: (origin: RibbonPoint) => void;
+  quoteAssistantMessage: (messageId: MessageId, text: string) => void;
 }
 
 /**
@@ -3515,6 +3778,9 @@ interface TimelineRowContextValue {
   canSetWorkGroupExpanded: boolean;
   isWorking: boolean;
   reducedMotion: boolean;
+  /** User bubbles render code spans, fences and bold (the rich-text composer setting). */
+  userMessageMarkup: boolean;
+  canQuoteAssistantMessages: boolean;
   grabButtonRef: MutableRefObject<HTMLButtonElement | null>;
   actions: TimelineRowActions;
 }
@@ -3566,11 +3832,16 @@ const TimelineRowView = memo(function TimelineRowView(props: {
   row: TimelineRow;
   externals: TimelineRowExternals;
   rowVersion: string;
+  entering?: boolean;
 }) {
   "use memo";
   const testRenderCountProps = useTestRenderCountProps();
   return (
-    <TimelineRowWrapper row={props.row} testRenderCountProps={testRenderCountProps}>
+    <TimelineRowWrapper
+      row={props.row}
+      entering={props.entering ?? false}
+      testRenderCountProps={testRenderCountProps}
+    >
       <SurfaceErrorBoundary
         name="timeline-row"
         resetKeys={[props.row, props.rowVersion]}
@@ -3755,9 +4026,12 @@ function UserMessageRowContent(props: {
     revertPreferenceKey,
     threadId,
     timestampFormat,
+    userMessageMarkup,
     usesCustomImageContextMenu,
     workspaceRoot,
   } = useTimelineRowContext();
+  const find = useContext(ThreadFindContext);
+  const forceExpandedForFind = find?.entryId === row.id;
   if (String(row.message.id).startsWith("resume:"))
     return (
       <div
@@ -3781,7 +4055,7 @@ function UserMessageRowContent(props: {
   return (
     <div className="group/user-message flex flex-col items-end">
       <div
-        className="max-w-[85%] rounded-xl rounded-br-md border border-border bg-secondary px-4 py-2.5"
+        className="max-w-full rounded-xl rounded-br-md border border-border bg-secondary px-4 py-2.5 sm:max-w-[85%]"
         data-slot="user-message-bubble"
       >
         {userFiles.map((file) => (
@@ -3864,11 +4138,13 @@ function UserMessageRowContent(props: {
               text={displayedUserMessage.visibleText}
               skillCall={row.message.skillCall}
               terminalContexts={terminalContexts}
+              markup={userMessageMarkup}
+              forceExpandedForFind={forceExpandedForFind}
             />
           </>
         )}
       </div>
-      <div className="mt-1 flex items-center gap-1 pr-1">
+      <div className="mt-1.5 flex min-h-7 items-center gap-1 pr-1">
         <div className="flex items-center gap-0.5 opacity-0 transition-opacity duration-(--duration-fast) focus-within:opacity-100 group-hover/user-message:opacity-100 has-[[data-popup-open]]:opacity-100 pointer-coarse:opacity-100">
           {displayedUserMessage.copyText && (
             <MessageCopyButton text={displayedUserMessage.copyText} />
@@ -3942,8 +4218,17 @@ function AssistantMessageRowContent(props: {
 }) {
   "use memo";
   const { row, externals } = props;
-  const { markdownCwd, showReasoningExpanded, timestampFormat } = useTimelineRowContext();
+  const {
+    actions,
+    canQuoteAssistantMessages,
+    markdownCwd,
+    showReasoningExpanded,
+    timestampFormat,
+  } = useTimelineRowContext();
   const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+  const settledText = !row.message.streaming && row.message.text.length > 0;
+  const messageId = row.message.id;
+  const rawText = row.message.text;
   const reasoning = messageReasoningContent(row.message);
   const reasoningText = reasoning.text;
   const isStreamingReasoning =
@@ -3981,6 +4266,9 @@ function AssistantMessageRowContent(props: {
             textRevision={messageTextRevision(row.message)}
             cwd={markdownCwd}
             isStreaming={Boolean(row.message.streaming)}
+            // The block the user just watched stream stays open.
+            foldCodeBlocks={!row.message.streaming && !externals.isLatestAssistantMessage}
+            showStreamingCaret
           />
         </div>
         <AssistantChangedFiles externals={externals} />
@@ -3994,8 +4282,14 @@ function AssistantMessageRowContent(props: {
               timestampFormat={timestampFormat}
             />
           </p>
-          <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-(--duration-fast) focus-within:opacity-100 group-hover/assistant-message:opacity-100 has-[[data-popup-open]]:opacity-100 pointer-coarse:opacity-100">
-            <AssistantMessageActions rawText={row.message.text} />
+          {/* Always laid out, only faded: hovering never shifts the row. */}
+          <div className="flex items-center gap-0.5 opacity-0 transition-opacity duration-(--duration-fast) focus-within:opacity-100 group-hover/assistant-message:opacity-100 has-[[data-popup-open]]:opacity-100 pointer-coarse:opacity-100">
+            {settledText ? <MessageCopyButton text={rawText} /> : null}
+            {settledText && canQuoteAssistantMessages ? (
+              <AssistantMessageActions
+                onQuote={() => actions.quoteAssistantMessage(messageId, rawText)}
+              />
+            ) : null}
           </div>
         </div>
       </div>
@@ -4477,17 +4771,21 @@ export interface TimelineRowExternalsInputs {
   newestTurnDiffId: TurnId | null;
   expandedCommandExecutions: Readonly<Record<string, boolean>>;
   ribbonActive: boolean;
+  /** Rows playing their entrance animation (see advanceRowArrivals). */
+  enteringRowIds?: { has(rowId: string): boolean };
 }
 
 export interface TimelineRowExternalsEntry {
   /** Covers exactly the external inputs the row reads. */
   readonly version: string;
   readonly externals: TimelineRowExternals;
+  readonly entering: boolean;
 }
 
 function describeTimelineRowExternals(
   row: TimelineRow,
   inputs: TimelineRowExternalsInputs,
+  latestAssistantRowId: string | null,
 ): { version: string; build: () => TimelineRowExternals } {
   switch (row.kind) {
     case "work": {
@@ -4564,14 +4862,22 @@ function describeTimelineRowExternals(
           : undefined;
         const isNewest =
           turnSummary !== undefined && turnSummary.turnId === inputs.newestTurnDiffId;
+        const isLatestAssistantMessage = row.id === latestAssistantRowId;
         return {
           version: [
             "assistant",
             timelineObjectVersion(turnSummary),
             presentationOverride ?? "",
             isNewest ? "newest" : "older",
+            isLatestAssistantMessage ? "latest" : "earlier",
           ].join(":"),
-          build: () => ({ kind: "assistant-message", turnSummary, presentationOverride, isNewest }),
+          build: () => ({
+            kind: "assistant-message",
+            turnSummary,
+            presentationOverride,
+            isNewest,
+            isLatestAssistantMessage,
+          }),
         };
       }
       return { version: "static", build: () => ({ kind: "static" }) };
@@ -4601,10 +4907,23 @@ export function buildTimelineRowExternals(
 ): ReadonlyMap<string, TimelineRowExternalsEntry> {
   const next = new Map<string, TimelineRowExternalsEntry>();
   let changed = rows.length !== previous.size;
+  let latestAssistantRowId: string | null = null;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index]!;
+    if (row.kind === "message" && row.message.role === "assistant") {
+      latestAssistantRowId = row.id;
+      break;
+    }
+  }
   for (const row of rows) {
-    const { version, build } = describeTimelineRowExternals(row, inputs);
+    const described = describeTimelineRowExternals(row, inputs, latestAssistantRowId);
+    const entering = inputs.enteringRowIds?.has(row.id) ?? false;
+    const version = entering ? `${described.version}:entering` : described.version;
     const cached = previous.get(row.id);
-    const entry = cached && cached.version === version ? cached : { version, externals: build() };
+    const entry =
+      cached && cached.version === version
+        ? cached
+        : { version, externals: described.build(), entering };
     if (entry !== cached) changed = true;
     next.set(row.id, entry);
   }

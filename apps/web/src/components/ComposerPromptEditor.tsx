@@ -689,6 +689,8 @@ interface ComposerPromptEditorProps {
   disabled: boolean;
   placeholder: string;
   className?: string;
+  /** The editable element's id, for controls that point at it. */
+  id?: string | undefined;
   ariaLabel?: string | undefined;
   /** Identifies an editor with suggestions, even while its list is closed. */
   suggestionListId?: string | undefined;
@@ -1060,6 +1062,7 @@ function ComposerPromptEditorInner({
   disabled,
   placeholder,
   className,
+  id,
   ariaLabel,
   suggestionListId,
   activeSuggestionId,
@@ -1317,9 +1320,10 @@ function ComposerPromptEditorInner({
           contentEditable={
             <ContentEditable
               className={cn(
-                "block max-h-[200px] min-h-17.5 w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent leading-relaxed text-foreground focus:outline-none",
+                "block max-h-[var(--composer-editor-max-height,200px)] min-h-17.5 w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent leading-relaxed text-foreground focus:outline-none",
                 className,
               )}
+              {...(id ? { id } : {})}
               data-testid="composer-editor"
               ariaMultiline
               {...(ariaLabel ? { ariaLabel } : {})}
@@ -1372,6 +1376,7 @@ export const ComposerPromptEditor = forwardRef<
     disabled,
     placeholder,
     className,
+    id,
     ariaLabel,
     suggestionListId,
     activeSuggestionId,
@@ -1419,6 +1424,7 @@ export const ComposerPromptEditor = forwardRef<
         terminalContexts={terminalContexts}
         disabled={disabled}
         placeholder={placeholder}
+        id={id}
         ariaLabel={ariaLabel}
         suggestionListId={suggestionListId}
         activeSuggestionId={activeSuggestionId}

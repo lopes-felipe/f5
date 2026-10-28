@@ -1,6 +1,6 @@
 "use client";
 
-import { usePopupFocus } from "./popupFocus";
+import { usePopupFocus, usePopupOwnerAttributes } from "./popupFocus";
 
 import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 
@@ -37,6 +37,7 @@ function PopoverPopup({
   anchor?: PopoverPrimitive.Positioner.Props["anchor"];
 }) {
   const finalFocus = usePopupFocus();
+  const ownerAttributes = usePopupOwnerAttributes();
   return (
     <PopoverPrimitive.Portal>
       <PopoverPrimitive.Positioner
@@ -57,6 +58,7 @@ function PopoverPopup({
             className,
           )}
           data-slot="popover-popup"
+          {...ownerAttributes}
           {...props}
         >
           <PopoverPrimitive.Viewport

@@ -15,6 +15,12 @@ import { MessagesTimeline } from "../components/chat/MessagesTimeline";
 import { ComposerDock } from "../components/chat/composer/ComposerDock";
 import type { ImageAttachmentActionItem } from "../components/chat/imageAttachmentActions";
 import { WORK_LOG_PAGE_SIZE } from "../components/chat/workLogConstants";
+import { ThreadFindContext } from "../components/chat/threadFindContext";
+import {
+  useTimelineNavigation,
+  type TimelineNavigateOptions,
+  type TimelineNavigationStatus,
+} from "../components/chat/useTimelineNavigation";
 /** Wait for LegendList's asynchronous initial measurements and end positioning. */
 export async function waitForTimelineLayout(getNode: () => HTMLElement | null): Promise<void> {
   let stableFrames = 0;
@@ -134,7 +140,28 @@ export interface HarnessProps {
   latestMessageId?: MessageId | null;
   initialNowIso?: string;
   onWorkingRibbonFocusLost?: () => void;
+  onQuoteAssistantMessage?: (messageId: MessageId, text: string) => void;
+  /**
+   * Wires the real navigation owner the way ChatView does: rail, minimap and
+   * popover jumps, a header host for "Conversation navigation", and find
+   * placement. `loadAround` stands in for the history load.
+   */
+  navigation?: {
+    loadAround: (
+      entryId: string,
+      anchorKind: "message" | "activity",
+      signal: AbortSignal,
+    ) => Promise<void>;
+    onOpenThreadFind?: () => void;
+  };
 }
+
+export type TimelineHarnessFind = {
+  entryId: string;
+  query: string;
+  occurrence: number;
+  requestId?: number | null;
+} | null;
 
 export interface TimelineHarnessApi {
   setEntries: (entries: TimelineEntry[]) => void;
@@ -153,6 +180,18 @@ export interface TimelineHarnessApi {
   }) => void;
   /** Mirrors ChatView's send-follow: appends entries and requests a tail follow in one commit. */
   followNewTurn: (entries: TimelineEntry[]) => void;
+  /** The active thread-find match, as ChatView provides it. */
+  setFind: (find: TimelineHarnessFind) => void;
+  /** Navigation mode only: a jump through the navigation owner. */
+  navigate: (entryId: string, options?: TimelineNavigateOptions) => number;
+  /** Navigation mode only: selects a find match and places it, as ChatView's find bar does. */
+  navigateToFind: (match: { entryId: string; query: string; occurrence: number }) => void;
+  navigationStatus: () => TimelineNavigationStatus;
+  retryNavigation: () => void;
+  /** Cancels request `id` only if it is still pending (a closed find's jump). */
+  cancelNavigationRequest: (id: number) => void;
+  /** Mirrors ChatView's Jump to latest. */
+  jumpToLatest: () => void;
 }
 
 export function TimelineHarness(
@@ -197,6 +236,7 @@ export function TimelineHarness(
     {},
   );
   const [followNextTailNonce, setFollowNextTailNonce] = useState(0);
+  const [find, setFind] = useState<TimelineHarnessFind>(null);
   const listRef = useRef<LegendListRef | null>(null);
   const queryClientRef = useRef<QueryClient>(props.queryClient ?? makeQueryClient());
   // Expose the list ref out through the callback so tests can observe the
@@ -204,6 +244,31 @@ export function TimelineHarness(
   useLayoutEffect(() => {
     props.onListRefChange?.(listRef.current);
   });
+  const entryRowIndexMapRef = useRef<ReadonlyMap<string, number> | null>(null);
+  const [navigationHost, setNavigationHost] = useState<HTMLElement | null>(null);
+  const navigation = useTimelineNavigation({
+    threadId: threadId ?? null,
+    listRef,
+    entryRowIndexMapRef,
+    loadAround: (entryId, anchorKind, signal) =>
+      props.navigation?.loadAround(entryId, anchorKind, signal) ?? Promise.resolve(),
+    onLeaveEnd: () => props.onIsAtEndChangeSpy(false),
+    followNextTailNonce,
+  });
+  const navigationStatusRef = useRef(navigation.status);
+  navigationStatusRef.current = navigation.status;
+  const navigationProps = props.navigation
+    ? {
+        onNavigateToEntry: (entryId: string, position: number) => {
+          setFind(null);
+          navigation.navigate(entryId, { position });
+        },
+        onEntryRowIndexMapCommit: navigation.handleRowMapCommit,
+        navigationHost,
+        onOpenThreadFind: props.navigation.onOpenThreadFind,
+        entryRowIndexMapRef,
+      }
+    : {};
 
   if (props.setApi) {
     props.setApi({
@@ -225,6 +290,29 @@ export function TimelineHarness(
         setEntries(nextEntries);
         setFollowNextTailNonce((nonce) => nonce + 1);
       },
+      setFind,
+      navigate: (entryId, options) => navigation.navigate(entryId, options),
+      navigateToFind: (match) => {
+        const requestId = navigation.navigate(match.entryId, { position: 0.3, placeRange: true });
+        setFind({ ...match, requestId });
+      },
+      navigationStatus: () => navigationStatusRef.current,
+      retryNavigation: () => {
+        // Mirrors ChatView: a retried find request keeps ownership of the match.
+        const retried = navigation.retry();
+        if (!retried) return;
+        setFind((current) =>
+          current?.requestId === retried.previousId
+            ? { ...current, requestId: retried.id }
+            : current,
+        );
+      },
+      cancelNavigationRequest: (id) => navigation.cancelRequest(id),
+      jumpToLatest: () => {
+        navigation.cancel();
+        setFind(null);
+        void listRef.current?.scrollToEnd?.({ animated: false });
+      },
     });
   }
 
@@ -233,85 +321,96 @@ export function TimelineHarness(
       data-composer-dock-host
       style={{ height, display: "flex", flexDirection: "column", position: "relative" }}
     >
+      {props.navigation ? (
+        <div data-testid="harness-navigation-host" ref={setNavigationHost} />
+      ) : null}
       <QueryClientProvider client={queryClientRef.current}>
-        <MessagesTimeline
-          key={threadId}
-          {...(threadId ? { threadId } : {})}
-          {...(props.onWorkingRibbonFocusLost
-            ? { onWorkingRibbonFocusLost: props.onWorkingRibbonFocusLost }
-            : {})}
-          hasMessages={entries.length > 0}
-          isWorking={isWorking}
-          activeTurnStartedAt={activeTurnStartedAt}
-          liveActivity={liveActivity}
-          listRef={listRef}
-          followNextTailNonce={followNextTailNonce}
-          onIsAtEndChange={props.onIsAtEndChangeSpy}
-          timelineEntries={entries}
-          completionDividerBeforeEntryId={null}
-          completionSummary={null}
-          turnDiffSummaryByAssistantMessageId={new Map()}
-          turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId ?? new Map()}
-          expandedWorkGroups={expandedWorkGroups}
-          onToggleWorkGroup={(groupId, paginatedEntryCount) => {
-            setExpandedWorkGroups((current) => {
-              const revealedEntries = current[groupId] ?? WORK_LOG_PAGE_SIZE;
-              return {
+        <ThreadFindContext
+          value={find ? { ...find, onSelectedRange: navigation.handleSelectedRange } : null}
+        >
+          <MessagesTimeline
+            {...navigationProps}
+            key={threadId}
+            {...(threadId ? { threadId } : {})}
+            {...(props.onWorkingRibbonFocusLost
+              ? { onWorkingRibbonFocusLost: props.onWorkingRibbonFocusLost }
+              : {})}
+            {...(props.onQuoteAssistantMessage
+              ? { onQuoteAssistantMessage: props.onQuoteAssistantMessage }
+              : {})}
+            hasMessages={entries.length > 0}
+            isWorking={isWorking}
+            activeTurnStartedAt={activeTurnStartedAt}
+            liveActivity={liveActivity}
+            listRef={listRef}
+            followNextTailNonce={followNextTailNonce}
+            onIsAtEndChange={props.onIsAtEndChangeSpy}
+            timelineEntries={entries}
+            completionDividerBeforeEntryId={null}
+            completionSummary={null}
+            turnDiffSummaryByAssistantMessageId={new Map()}
+            turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId ?? new Map()}
+            expandedWorkGroups={expandedWorkGroups}
+            onToggleWorkGroup={(groupId, paginatedEntryCount) => {
+              setExpandedWorkGroups((current) => {
+                const revealedEntries = current[groupId] ?? WORK_LOG_PAGE_SIZE;
+                return {
+                  ...current,
+                  [groupId]:
+                    revealedEntries >= paginatedEntryCount
+                      ? WORK_LOG_PAGE_SIZE
+                      : Math.min(paginatedEntryCount, revealedEntries + WORK_LOG_PAGE_SIZE),
+                };
+              });
+            }}
+            workGroupCollapseOverrides={workGroupCollapseOverrides}
+            onSetWorkGroupExpanded={(groupId, expanded) => {
+              setWorkGroupCollapseOverrides((current) => ({ ...current, [groupId]: expanded }));
+            }}
+            onOpenTurnDiff={props.onOpenTurnDiff ?? (() => {})}
+            revertTurnCountByUserMessageId={props.revertTurnCountByUserMessageId ?? new Map()}
+            onRevertUserMessage={props.onRevertUserMessage ?? (() => {})}
+            canRestoreFiles={props.canRestoreFiles}
+            isRevertingCheckpoint={false}
+            revertDisabledReason={props.revertDisabledReason ?? null}
+            pendingRevert={props.pendingRevert ?? null}
+            revertReopenRequest={props.revertReopenRequest ?? null}
+            onRevertReopenHandled={props.onRevertReopenHandled}
+            latestMessageId={props.latestMessageId ?? null}
+            onImageExpand={() => {}}
+            onImageActionMenu={props.onImageActionMenu}
+            usesCustomImageContextMenu={props.usesCustomImageContextMenu}
+            markdownCwd={undefined}
+            resolvedTheme="light"
+            timestampFormat="locale"
+            workspaceRoot={props.workspaceRoot}
+            expandedCommandExecutions={expandedCommandExecutions}
+            onToggleCommandExecution={(commandExecutionId) => {
+              setExpandedCommandExecutions((current) => ({
                 ...current,
-                [groupId]:
-                  revealedEntries >= paginatedEntryCount
-                    ? WORK_LOG_PAGE_SIZE
-                    : Math.min(paginatedEntryCount, revealedEntries + WORK_LOG_PAGE_SIZE),
-              };
-            });
-          }}
-          workGroupCollapseOverrides={workGroupCollapseOverrides}
-          onSetWorkGroupExpanded={(groupId, expanded) => {
-            setWorkGroupCollapseOverrides((current) => ({ ...current, [groupId]: expanded }));
-          }}
-          onOpenTurnDiff={props.onOpenTurnDiff ?? (() => {})}
-          revertTurnCountByUserMessageId={props.revertTurnCountByUserMessageId ?? new Map()}
-          onRevertUserMessage={props.onRevertUserMessage ?? (() => {})}
-          canRestoreFiles={props.canRestoreFiles}
-          isRevertingCheckpoint={false}
-          revertDisabledReason={props.revertDisabledReason ?? null}
-          pendingRevert={props.pendingRevert ?? null}
-          revertReopenRequest={props.revertReopenRequest ?? null}
-          onRevertReopenHandled={props.onRevertReopenHandled}
-          latestMessageId={props.latestMessageId ?? null}
-          onImageExpand={() => {}}
-          onImageActionMenu={props.onImageActionMenu}
-          usesCustomImageContextMenu={props.usesCustomImageContextMenu}
-          markdownCwd={undefined}
-          resolvedTheme="light"
-          timestampFormat="locale"
-          workspaceRoot={props.workspaceRoot}
-          expandedCommandExecutions={expandedCommandExecutions}
-          onToggleCommandExecution={(commandExecutionId) => {
-            setExpandedCommandExecutions((current) => ({
-              ...current,
-              [commandExecutionId]: !(current[commandExecutionId] ?? false),
-            }));
-          }}
-          allDirectoriesExpanded={false}
-          onToggleAllDirectories={() => {}}
-          listHeaderContent={headerContent}
-          chatDiffContext={{
-            threadId: INLINE_DIFF_THREAD_ID,
-            isGitRepo: true,
-            inferredCheckpointTurnCountByTurnId: {},
-            expandedFileChangeDiffs,
-            fileChangeSummariesById: {},
-            onToggleFileChangeDiff: (workEntryId) => {
-              setExpandedFileChangeDiffs((current) => ({
-                ...current,
-                [workEntryId]: !(current[workEntryId] ?? true),
+                [commandExecutionId]: !(current[commandExecutionId] ?? false),
               }));
-            },
-            onOpenFileChangeDiff: () => {},
-            ...props.chatDiffContextOverrides,
-          }}
-        />
+            }}
+            allDirectoriesExpanded={false}
+            onToggleAllDirectories={() => {}}
+            listHeaderContent={headerContent}
+            chatDiffContext={{
+              threadId: INLINE_DIFF_THREAD_ID,
+              isGitRepo: true,
+              inferredCheckpointTurnCountByTurnId: {},
+              expandedFileChangeDiffs,
+              fileChangeSummariesById: {},
+              onToggleFileChangeDiff: (workEntryId) => {
+                setExpandedFileChangeDiffs((current) => ({
+                  ...current,
+                  [workEntryId]: !(current[workEntryId] ?? true),
+                }));
+              },
+              onOpenFileChangeDiff: () => {},
+              ...props.chatDiffContextOverrides,
+            }}
+          />
+        </ThreadFindContext>
       </QueryClientProvider>
       <ComposerDock>
         <div data-testid="harness-dock-content" style={{ height: dockHeight }} />

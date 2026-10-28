@@ -2904,6 +2904,7 @@ describe("MessagesTimeline", () => {
         onToggleCommandExecution={() => {}}
         allDirectoriesExpanded={true}
         onToggleAllDirectories={() => {}}
+        onQuoteAssistantMessage={() => {}}
       />,
     );
 
@@ -2912,6 +2913,7 @@ describe("MessagesTimeline", () => {
 
     expect(assistantMarkup).toContain('data-message-role="assistant"');
     expect(assistantMarkup).toContain('aria-label="Message actions"');
+    expect(assistantMarkup).toContain('title="Copy message"');
     expect(userMarkup).toContain('data-message-role="user"');
     expect(userMarkup).not.toContain('aria-label="Message actions"');
     expect(userMarkup).toContain('title="Copy message"');

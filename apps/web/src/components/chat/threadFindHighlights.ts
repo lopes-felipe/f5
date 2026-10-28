@@ -66,6 +66,10 @@ export function threadFindRanges(root: HTMLElement, query: string, occurrence = 
   return { ranges, selected: selected ?? ranges[0] };
 }
 
+/**
+ * Installs the find highlights for `root` and returns the active range. It never
+ * scrolls: placing the match is the navigation owner's job, done once per request.
+ */
 export function highlightThreadFind(root: HTMLElement, query: string, occurrence: number) {
   const { ranges, selected } = threadFindRanges(root, query, occurrence);
   const matches = typeof Highlight !== "undefined" ? new Highlight(...ranges) : undefined;
@@ -75,20 +79,15 @@ export function highlightThreadFind(root: HTMLElement, query: string, occurrence
     CSS.highlights.set("f5-thread-find", matches!);
     CSS.highlights.set("f5-thread-find-active", active!);
   }
-  if (selected) {
-    const container = root.closest<HTMLElement>('[data-slot="messages-scroll-container"]');
-    const rect = selected.getBoundingClientRect();
-    if (container && rect.height)
-      container.scrollBy({
-        top: rect.top - container.getBoundingClientRect().top - container.clientHeight * 0.3,
-        behavior: "instant",
-      });
-  }
-  return () => {
-    if (typeof CSS !== "undefined" && CSS.highlights) {
-      if (CSS.highlights.get("f5-thread-find") === matches) CSS.highlights.delete("f5-thread-find");
-      if (CSS.highlights.get("f5-thread-find-active") === active)
-        CSS.highlights.delete("f5-thread-find-active");
-    }
+  return {
+    selected: selected ?? null,
+    clear: () => {
+      if (typeof CSS !== "undefined" && CSS.highlights) {
+        if (CSS.highlights.get("f5-thread-find") === matches)
+          CSS.highlights.delete("f5-thread-find");
+        if (CSS.highlights.get("f5-thread-find-active") === active)
+          CSS.highlights.delete("f5-thread-find-active");
+      }
+    },
   };
 }

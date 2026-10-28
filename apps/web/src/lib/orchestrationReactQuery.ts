@@ -808,9 +808,17 @@ export async function loadThreadHistoryAroundMessage(
       ? page.messages.some((message) => message.id === anchorId)
       : page.activities.some((activity) => activity.id === anchorId);
   if (!anchorPresent) {
-    throw new Error("The requested timeline item is no longer available.");
+    throw new TimelineAnchorUnavailableError();
   }
   useStore.getState().mergeAnchoredThreadHistoryPage(threadId, page, history.generation);
+}
+
+/** The anchor a history load was asked for is gone (deleted or reverted), unlike a transport failure. */
+export class TimelineAnchorUnavailableError extends Error {
+  constructor() {
+    super("The requested timeline item is no longer available.");
+    this.name = "TimelineAnchorUnavailableError";
+  }
 }
 
 export async function loadNewerThreadHistoryPage(

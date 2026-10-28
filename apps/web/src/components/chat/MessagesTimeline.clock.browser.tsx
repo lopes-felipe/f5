@@ -19,9 +19,9 @@ import { MessagesTimeline } from "./MessagesTimeline";
 // Counts renders of finished assistant rows. The real component is memoized,
 // which would hide row re-renders; this stand-in runs whenever its row does.
 const assistantRowRenders = vi.hoisted(() => new Map<string, number>());
-vi.mock("./AssistantMessageActions", () => ({
-  AssistantMessageActions: (props: { rawText: string }) => {
-    assistantRowRenders.set(props.rawText, (assistantRowRenders.get(props.rawText) ?? 0) + 1);
+vi.mock("./MessageCopyButton", () => ({
+  MessageCopyButton: (props: { text: string }) => {
+    assistantRowRenders.set(props.text, (assistantRowRenders.get(props.text) ?? 0) + 1);
     return null;
   },
 }));

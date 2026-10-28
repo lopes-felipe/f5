@@ -465,6 +465,47 @@ describe("steered working ribbon", () => {
   });
 });
 
+describe("expanded composer", () => {
+  const bindings = compile([
+    { shortcut: { ...modShortcut("escape"), modKey: false }, command: "thread.stop" },
+    { shortcut: modShortcut("escape"), command: "chat.new" },
+  ]);
+  const options = { platform: "MacIntel" };
+
+  function withActiveElement(insideExpandedComposer: boolean, run: () => void) {
+    vi.stubGlobal("document", {
+      activeElement: {
+        closest: (selector: string) =>
+          insideExpandedComposer && selector === '[data-composer-expanded="true"]' ? {} : null,
+      },
+    });
+    try {
+      run();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  }
+
+  it("resolves no binding for a bare Escape inside the composer or its popups", () => {
+    withActiveElement(true, () => {
+      assert.isNull(resolveShortcutCommand(event({ key: "Escape" }), bindings, options));
+      assert.strictEqual(
+        resolveShortcutCommand(event({ key: "Escape", metaKey: true }), bindings, options),
+        "chat.new",
+      );
+    });
+  });
+
+  it("resolves Escape as usual when focus is elsewhere", () => {
+    withActiveElement(false, () => {
+      assert.strictEqual(
+        resolveShortcutCommand(event({ key: "Escape" }), bindings, options),
+        "thread.stop",
+      );
+    });
+  });
+});
+
 describe("cross-command precedence", () => {
   it("uses when + order so a later focused rule overrides a global rule", () => {
     const keybindings = compile([

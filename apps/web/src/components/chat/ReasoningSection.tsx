@@ -53,7 +53,7 @@ export function ReasoningSection({
         />
       </CollapsibleTrigger>
       <CollapsiblePanel>
-        <div className="rounded-lg bg-muted/40 p-3">
+        <div className="rounded-xl border border-border bg-card/50 p-3">
           <div className="text-ui text-muted-foreground">
             <ChatMarkdown
               textRevision={textRevision}

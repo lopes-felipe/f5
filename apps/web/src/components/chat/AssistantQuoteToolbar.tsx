@@ -4,7 +4,7 @@ import { Button } from "../ui/button";
 import { Popover, PopoverPopup } from "../ui/popover";
 import { Textarea } from "../ui/textarea";
 import {
-  serializeAssistantQuote,
+  assistantQuoteLimitError,
   type AssistantQuote,
 } from "./composer/ComposerAssistantQuoteNode";
 
@@ -96,13 +96,10 @@ export function AssistantQuoteToolbar({
   };
   const insert = async (send = false) => {
     if (busy || alreadyInserted) return;
-    if (maxLength <= 0) {
-      setError("Waiting for server capabilities. Reconnect before adding a quote.");
-      return;
-    }
     const quote = { messageId: selection.messageId, text: selection.text, comment };
-    if (currentLength + serializeAssistantQuote(quote).length + 2 > maxLength) {
-      setError("This quote would exceed the message limit.");
+    const limitError = assistantQuoteLimitError(currentLength, quote, maxLength);
+    if (limitError) {
+      setError(limitError);
       return;
     }
     setBusy(true);

@@ -32,12 +32,15 @@ export const makeThreadFind = Effect.gen(function* () {
         entry.kind === "message"
           ? yield* sql<{
               text: string;
-            }>`SELECT text FROM projection_thread_messages WHERE thread_id=${threadId} AND message_id=${entry.id}`
+              role: string;
+            }>`SELECT text, role FROM projection_thread_messages WHERE thread_id=${threadId} AND message_id=${entry.id}`
           : yield* sql<{
               text: string;
-            }>`SELECT plan_markdown AS text FROM projection_thread_proposed_plans WHERE thread_id=${threadId} AND plan_id=${entry.id}`;
+              role: string;
+            }>`SELECT plan_markdown AS text, 'plan' AS role FROM projection_thread_proposed_plans WHERE thread_id=${threadId} AND plan_id=${entry.id}`;
       if (!rows[0]) return yield* refused("The matching item is no longer available.");
-      return searchableThreadSegments(rows[0].text);
+      // User bubbles show alert markers literally; other surfaces render them as titles.
+      return searchableThreadSegments(rows[0].text, { renderAlerts: rows[0].role !== "user" });
     });
   const search = (input: ThreadSearchInput) =>
     Effect.gen(function* () {

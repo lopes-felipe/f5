@@ -1,6 +1,6 @@
 "use client";
 
-import { usePopupFocus } from "./popupFocus";
+import { usePopupFocus, usePopupOwnerAttributes } from "./popupFocus";
 
 import { Combobox as ComboboxPrimitive } from "@base-ui/react/combobox";
 import { CheckIcon, ChevronsUpDownIcon, XIcon } from "lucide-react";
@@ -154,6 +154,7 @@ function ComboboxPopup({
   anchor?: ComboboxPrimitive.Positioner.Props["anchor"];
 }) {
   const finalFocus = usePopupFocus();
+  const ownerAttributes = usePopupOwnerAttributes();
   const { chipsRef } = React.useContext(ComboboxContext);
   const anchor = anchorProp ?? chipsRef;
 
@@ -178,6 +179,7 @@ function ComboboxPopup({
             finalFocus={finalFocus}
             className="flex max-h-[min(var(--available-height),23rem)] flex-1 flex-col text-foreground"
             data-slot="combobox-popup"
+            {...ownerAttributes}
             {...props}
           >
             {children}
