@@ -29125,9 +29125,18 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:03:37.410Z",
+      "decidedBy": "user",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [],
+        "f5Refs": [
+          "054a4605d1d406406263a52deabc719384365f1d"
+        ]
+      },
       "id": "pr-20759",
-      "status": "inbox",
+      "reason": "Implementation commits recorded in the earlier catch-up are on main",
+      "status": "equivalent",
       "suggestion": {
         "areas": [],
         "confidence": 0.7,
@@ -60415,9 +60424,18 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:03:37.410Z",
+      "decidedBy": "user",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [],
+        "f5Refs": [
+          "5c1905c433673b48aa152789b2a98cda20cdb090"
+        ]
+      },
       "id": "pr-8103",
-      "status": "inbox",
+      "reason": "Implementation commits recorded in the earlier catch-up are on main",
+      "status": "equivalent",
       "suggestion": {
         "areas": [],
         "confidence": 0.7,
@@ -60627,9 +60645,19 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
+      "decidedAt": "2026-10-28T21:03:37.410Z",
+      "decidedBy": "user",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [],
+        "f5Refs": [
+          "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+          "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+        ]
+      },
       "id": "pr-8313",
-      "status": "inbox",
+      "reason": "Implementation commits recorded in the earlier catch-up are on main",
+      "status": "equivalent",
       "suggestion": {
         "areas": [],
         "confidence": 0.7,
@@ -60665,9 +60693,20 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
+      "decidedAt": "2026-10-28T21:03:37.410Z",
+      "decidedBy": "user",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [],
+        "f5Refs": [
+          "248320007cdfebeec43a0c011acc13c04e8e5015",
+          "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+          "d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"
+        ]
+      },
       "id": "pr-8358",
-      "status": "inbox",
+      "reason": "Implementation commits recorded in the earlier catch-up are on main",
+      "status": "equivalent",
       "suggestion": {
         "areas": [],
         "confidence": 0.7,
@@ -62232,9 +62271,19 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
+      "decidedAt": "2026-10-28T21:03:37.410Z",
+      "decidedBy": "user",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [],
+        "f5Refs": [
+          "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+          "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+        ]
+      },
       "id": "pr-9541",
-      "status": "inbox",
+      "reason": "Implementation commits recorded in the earlier catch-up are on main",
+      "status": "equivalent",
       "suggestion": {
         "areas": [],
         "confidence": 0.7,
@@ -63043,9 +63092,19 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-10-28T21:03:37.410Z",
+      "decidedBy": "user",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [],
+        "f5Refs": [
+          "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+          "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+        ]
+      },
       "id": "pr-9782",
-      "status": "inbox",
+      "reason": "Implementation commits recorded in the earlier catch-up are on main",
+      "status": "equivalent",
       "suggestion": {
         "areas": [],
         "confidence": 0.7,
