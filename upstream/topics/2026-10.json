@@ -18452,11 +18452,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T20:52:58.466Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-28T23:38:47.834Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-18412",
-      "status": "port",
+      "reason": "f5 has no project-script settings hook; its action editor (`apps/web/src/components/ProjectScriptsControl.tsx`) loads the existing shortcut and always sends it back, so editing the name or command keeps the shortcut.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
@@ -21914,11 +21916,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T20:53:00.075Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-28T23:38:47.834Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-19145",
-      "status": "port",
+      "reason": "f5 has no ACP Registry search or Add-provider registry step; the ACP Registry driver is listed only as \"coming soon\".",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
@@ -35113,11 +35117,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-10-28T20:52:50.110Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-28T23:38:47.834Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-21924",
-      "status": "port",
+      "reason": "f5's VS Code theme importer (`apps/web/src/vscodeThemeImport.ts`) maps theme colors directly to tokens and never replaces a low-contrast error or warning color with white or black, so destructive buttons can't lose their red this way.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
