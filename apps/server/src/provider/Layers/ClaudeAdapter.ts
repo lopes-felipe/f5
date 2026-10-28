@@ -80,6 +80,10 @@ import { isProviderResumeFailureText } from "../resumeFailure.ts";
 import { appendClaudeStderrTail, parseClaudeProcessExit } from "../claudeProcessExit.ts";
 import { makeClaudeProcessGroupSpawner } from "../claudeProcessGroup.ts";
 import { resolveClaudeToolSearchOverride } from "../claudeToolSearch.ts";
+import {
+  joinClaudeSystemPromptAppend,
+  resolveClaudeLaunchAppendSystemPrompt,
+} from "../claudeAppendSystemPrompt.ts";
 import * as Path from "effect/Path";
 /**
  * ClaudeAdapterLive - Scoped live implementation for the Claude Agent provider adapter.
@@ -169,7 +173,10 @@ import {
   supportsClaudeContextWindow,
   claudeModelSupportsAdaptiveThinking,
 } from "@t3tools/shared/model";
-import { filterReservedClaudeLaunchArgs } from "@t3tools/shared/cliArgs";
+import {
+  CLAUDE_APPEND_SYSTEM_PROMPT_FLAG_NAMES,
+  filterReservedClaudeLaunchArgs,
+} from "@t3tools/shared/cliArgs";
 import { assertNever } from "@t3tools/shared/exhaustive";
 import { isImagePreviewPath } from "@t3tools/shared/filePreview";
 import {
@@ -1649,7 +1656,14 @@ const SUPPORTED_CLAUDE_IMAGE_MIME_TYPES = new Set([
   "image/png",
   "image/webp",
 ]);
-const CLAUDE_ONE_OFF_SELECTION_FLAGS = new Set(["model", "effort", "fallback-model"]);
+// Inline append text is for chat sessions; one-off prompts never received it.
+const CLAUDE_ONE_OFF_EXCLUDED_FLAGS = new Set(["append-system-prompt"]);
+const CLAUDE_ONE_OFF_SELECTION_FLAGS = new Set([
+  ...CLAUDE_ONE_OFF_EXCLUDED_FLAGS,
+  "model",
+  "effort",
+  "fallback-model",
+]);
 const CLAUDE_SETTING_SOURCES = [
   "user",
   "project",
@@ -6524,7 +6538,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   ...(() => {
                     const filtered = filterReservedClaudeLaunchArgs(
                       providerOptions?.launchArgs,
-                      input.modelSelection ? CLAUDE_ONE_OFF_SELECTION_FLAGS : undefined,
+                      input.modelSelection
+                        ? CLAUDE_ONE_OFF_SELECTION_FLAGS
+                        : CLAUDE_ONE_OFF_EXCLUDED_FLAGS,
                     );
                     return filtered ? { extraArgs: filtered } : {};
                   })(),
@@ -6648,6 +6664,23 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               issue: mcpConfigErrorMessage(cause),
             }),
         });
+        // Read before anything stops the live session so a bad path leaves it running.
+        const launchAppendSystemPrompt = yield* resolveClaudeLaunchAppendSystemPrompt({
+          launchArgs: input.providerOptions?.claudeAgent?.launchArgs,
+          cwd: input.cwd,
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, toolSearchPath),
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "startSession",
+                issue: cause.message,
+                cause,
+              }),
+          ),
+        );
         const startedAt = yield* nowIso;
         let resumeState = readClaudeResumeState(input.resumeCursor);
         const threadId = input.threadId;
@@ -7734,10 +7767,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         });
         // Rebuild on every launch: Claude appends are not persisted developer
         // instructions. Omit turnCount to preserve the prompt cache on resumes.
+        // Claude Code replaces its CLI append text with this value, so the
+        // append launch arguments travel here, after F5's instructions.
         const systemPrompt = {
           type: "preset",
           preset: "claude_code",
-          append: appendInstructionText,
+          append: joinClaudeSystemPromptAppend(appendInstructionText, launchAppendSystemPrompt),
           snapshot: false,
         } satisfies NonNullable<ClaudeQueryOptions["systemPrompt"]>;
         // Sent on every launch: Claude Code applies it only while the permission
@@ -7797,7 +7832,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           // each SDK bump).
           // F5 settings decide Claude in Chrome; any user chrome flag is replaced.
           extraArgs: forceClaudeChromeFlag(
-            filterReservedClaudeLaunchArgs(providerOptions?.launchArgs),
+            filterReservedClaudeLaunchArgs(
+              providerOptions?.launchArgs,
+              CLAUDE_APPEND_SYSTEM_PROMPT_FLAG_NAMES,
+            ),
             chromeAllowed,
           ),
           ...(Object.keys(settings).length > 0 ? { settings } : {}),
@@ -8215,7 +8253,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           slashCommandsLoaded: false,
           supportedCommandsFingerprint: fingerprintSupportedSlashCommands([]),
           baseContextChars:
-            resumeState?.baseContextChars ?? Math.max(0, appendInstructionText?.length ?? 0),
+            resumeState?.baseContextChars ?? systemPrompt.append.length,
           approximateConversationChars: resumeState?.approximateConversationChars ?? 0,
           resumeCompactionDialogShown: false,
           compactionRecommendationEmitted: resumeState?.compactionRecommendationEmitted ?? false,

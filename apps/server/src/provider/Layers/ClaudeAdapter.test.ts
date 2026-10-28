@@ -2989,6 +2989,7 @@ describe("ClaudeAdapterLive", () => {
               launchArgs: {
                 "--verbose": null,
                 resume: "skip-me",
+                "--append-system-prompt": "chat sessions only",
               },
             },
           },
@@ -3884,6 +3885,78 @@ describe("ClaudeAdapterLive", () => {
         options.planModeInstructions?.includes("Workflow Read-Only Host Contract"),
         false,
       );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("folds append system prompt launch arguments into the SDK append", () => {
+    const harness = makeHarness();
+    const cwd = mkdtempSync(path.join(os.tmpdir(), "claude-append-"));
+    writeFileSync(path.join(cwd, "append.md"), "From the file.\n");
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        cwd,
+        providerOptions: {
+          claudeAgent: {
+            launchArgs: {
+              "append-system-prompt": "Inline text.",
+              "append-system-prompt-file": "append.md",
+              verbose: null,
+            },
+          },
+        },
+      });
+
+      const options = harness.getLastCreateQueryInput()?.options;
+      const append = (options?.systemPrompt as { readonly append?: string } | undefined)?.append;
+      assert.ok(append?.includes("F5 switches between Default and Plan mode"));
+      assert.ok(append?.endsWith("\n\nFrom the file.\n\nInline text."));
+      assert.deepEqual(options?.extraArgs, { verbose: null, "no-chrome": null });
+    }).pipe(
+      Effect.ensuring(Effect.sync(() => rmSync(cwd, { recursive: true, force: true }))),
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect.each([
+    [
+      "an unreadable append file",
+      { "append-system-prompt-file": "missing-append.md" },
+      /could not read the --append-system-prompt-file launch argument at .*missing-append\.md/,
+    ],
+    [
+      "a missing append value",
+      { "--append-system-prompt": null },
+      /The --append-system-prompt launch argument has no text/,
+    ],
+    [
+      "an empty append file path",
+      { "append-system-prompt-file": "" },
+      /The --append-system-prompt-file launch argument has no file path/,
+    ],
+  ] as const)("refuses to start with %s", ([, launchArgs, message]) => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const error = yield* adapter
+        .startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          cwd: os.tmpdir(),
+          providerOptions: { claudeAgent: { launchArgs } },
+        })
+        .pipe(Effect.flip);
+      assert.ok(Schema.is(ProviderAdapterValidationError)(error));
+      assert.match(error.issue, message);
+      assert.equal(harness.getLastCreateQueryInput(), undefined);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

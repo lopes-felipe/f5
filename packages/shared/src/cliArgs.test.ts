@@ -7,6 +7,7 @@ import {
   MAX_LAUNCH_ARG_TOKENS,
   parseClaudeLaunchArgs,
   parseLaunchArgv,
+  readClaudeAppendSystemPromptArgs,
 } from "./cliArgs";
 
 describe("parseLaunchArgv", () => {
@@ -148,6 +149,28 @@ describe("parseClaudeLaunchArgs", () => {
     if (!result.ok) {
       expect(result.error).toMatch(/managed by the app/);
     }
+  });
+
+  it("accepts the append system prompt flags", () => {
+    expect(
+      parseClaudeLaunchArgs('--append-system-prompt "Be brief." --append-system-prompt-file ./a.md'),
+    ).toEqual({
+      ok: true,
+      args: { "append-system-prompt": "Be brief.", "append-system-prompt-file": "./a.md" },
+    });
+  });
+});
+
+describe("readClaudeAppendSystemPromptArgs", () => {
+  it("reads both flags with or without the -- prefix", () => {
+    expect(readClaudeAppendSystemPromptArgs(undefined)).toEqual({});
+    expect(
+      readClaudeAppendSystemPromptArgs({
+        "--append-system-prompt": "Be brief.",
+        "append-system-prompt-file": null,
+        verbose: null,
+      }),
+    ).toEqual({ text: "Be brief.", file: null });
   });
 });
 
