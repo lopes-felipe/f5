@@ -226,6 +226,68 @@ it.effect("archive and delete disable bound tasks at claim and at event time", (
   }).pipe(Effect.provide(testLayer), Effect.scoped),
 );
 
+it.effect("archiving cancels a run waiting on a busy conversation, even after unarchive", () =>
+  Effect.gen(function* () {
+    const f = yield* bound;
+    yield* seedBoundThread(f.host, f.store, THREAD, {
+      session: { activeTurnId: TurnId.makeUnsafe("user-turn"), status: "running" } as never,
+    });
+    const { task } = yield* f.createBound();
+    const waiting = yield* f.fire(task);
+    expect(waiting.run.status).toBe("pending");
+    expect(waiting.run.reason).toBe("conversation_busy");
+    yield* f.service.start;
+    yield* TestClock.adjust("10 millis");
+    yield* PubSub.publish(
+      f.host.domainEvents,
+      f.event(1, "thread.archived", { threadId: THREAD, archivedAt: new Date(0).toISOString() }),
+    );
+    for (let i = 0; i < 50 && (yield* f.store.task(task.id))!.task.enabled; i++)
+      yield* TestClock.adjust("10 millis");
+    expect((yield* f.store.task(task.id))!.task.enabled).toBe(false);
+    // The user unarchives within the retry window and the conversation goes idle.
+    yield* seedBoundThread(f.host, f.store, THREAD);
+    yield* TestClock.adjust("31 seconds");
+    yield* f.service.dispatch;
+    yield* f.service.drainDispatches;
+    expect(f.host.submissions).toHaveLength(0);
+    const settled = (yield* f.store.run(waiting.run.id))!;
+    expect(settled.run.status).toBe("skipped");
+    expect(settled.run.reason).toBe("task_disabled");
+  }).pipe(Effect.provide(testLayer), Effect.scoped),
+);
+
+it.effect("the next scheduled fire replaces a run still waiting on a busy conversation", () =>
+  Effect.gen(function* () {
+    const f = yield* bound;
+    yield* seedBoundThread(f.host, f.store, THREAD, {
+      session: { activeTurnId: TurnId.makeUnsafe("user-turn"), status: "running" } as never,
+    });
+    const { task } = yield* f.createBound();
+    yield* TestClock.adjust("1 minute");
+    yield* f.service.evaluate(false);
+    yield* f.service.dispatch;
+    yield* f.service.drainDispatches;
+    const [first] = yield* f.store.history(task.id);
+    expect(first!.run.reason).toBe("conversation_busy");
+    yield* TestClock.adjust("1 minute");
+    yield* f.service.evaluate(false);
+    const rows = yield* f.store.history(task.id);
+    const missed = rows.find((row) => row.run.id === first!.run.id)!;
+    expect(missed.run.status).toBe("skipped");
+    expect(missed.run.reason).toBe("conversation_busy");
+    expect(missed.owner).toBe(false);
+    const owners = rows.filter((row) => row.owner);
+    expect(owners).toHaveLength(1);
+    expect(owners[0]!.run.status).toBe("pending");
+    expect(owners[0]!.run.reason).not.toBe("already_pending");
+    expect(
+      yield* f.store.sql`SELECT id FROM scheduled_notifications WHERE run_id=${first!.run.id}`,
+    ).toHaveLength(1);
+    expect(f.host.submissions).toHaveLength(0);
+  }).pipe(Effect.provide(testLayer), Effect.scoped),
+);
+
 it.effect("the startup sweep disables tasks bound to an archived conversation", () =>
   Effect.gen(function* () {
     const f = yield* bound;

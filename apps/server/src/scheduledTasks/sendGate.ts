@@ -45,9 +45,17 @@ export const scheduledSendGate = (
       ScheduledTask,
       "authority" | "projectId" | "workspace"
     >;
-    if (!(yield* scheduleAuthorityCurrent(snapshot.authority, snapshot.projectId, settings, sql)))
-      return "cancel" as const;
     const bound = snapshot.workspace?.kind === "thread";
+    if (
+      !(yield* scheduleAuthorityCurrent(
+        snapshot.authority,
+        snapshot.projectId,
+        settings,
+        sql,
+        bound,
+      ))
+    )
+      return "cancel" as const;
     // A bound item must never hold up the user's queue, and it is admitted only
     // with the conversation's settings at claim time.
     if (bound && row.command) {

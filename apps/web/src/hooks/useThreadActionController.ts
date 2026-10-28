@@ -66,6 +66,13 @@ export interface ThreadActionMenuItem {
   readonly separatorBefore?: boolean;
 }
 
+/** Only a server conversation that has already sent a message has settings a task can reuse. */
+export function canScheduleIntoThread(
+  serverThread: Pick<Thread, "modelSelection"> | undefined,
+): boolean {
+  return serverThread?.modelSelection != null;
+}
+
 export function buildThreadActionMenuItems(input: {
   readonly thread: Pick<
     Thread,
@@ -229,7 +236,9 @@ export function useThreadActionController(input: {
         pinned: orderedPinnedThreadIds(useStore.getState().threads).includes(thread.id),
         snoozed: isSnoozedThread(thread),
         schedule,
-        canScheduleInConversation: true,
+        canScheduleInConversation: canScheduleIntoThread(
+          selectThreadById(useStore.getState(), thread.id),
+        ),
       }),
     [],
   );

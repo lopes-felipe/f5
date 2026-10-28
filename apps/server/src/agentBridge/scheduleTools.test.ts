@@ -2,7 +2,13 @@ import { it } from "@effect/vitest";
 import { expect } from "vitest";
 import { Effect } from "effect";
 import { TestClock } from "effect/testing";
-import { ProjectId, ProviderInstanceId, type ScheduledTask } from "@t3tools/contracts";
+import {
+  ProjectId,
+  ProviderInstanceId,
+  ScheduledTaskId,
+  ThreadId,
+  type ScheduledTask,
+} from "@t3tools/contracts";
 import { provider } from "./testing/fakeHost.ts";
 import { seedBoundThread, setup, testLayer } from "../scheduledTasks/testing.ts";
 import { userScheduleActor } from "../scheduledTasks/Service.ts";
@@ -607,6 +613,81 @@ it.effect("agent tasks bound to a conversation require supervision at save and a
     const run = (yield* f.store.run(fired.run.id))!;
     expect([run.run.status, run.run.reason]).toEqual(["skipped", "authority_revoked"]);
     expect(f.host.submissions).toHaveLength(0);
+  }).pipe(Effect.provide(testLayer), Effect.scoped),
+);
+it.effect("binding a task to a conversation requires the send-message grant", () =>
+  Effect.gen(function* () {
+    const f = yield* setupTools;
+    yield* f.grant(true);
+    yield* seedBoundThread(f.host, f.store, "conversation");
+    yield* f.store
+      .sql`INSERT INTO agent_bridge_clients(id,kind,name,label,scopes_json,project_ids_json,grant_generation,created_at) VALUES('schedules-only','dcr','Schedules',NULL,'["f5.read","f5.schedules"]','["project"]',0,${new Date(0).toISOString()})`;
+    const result = yield* Effect.result(
+      f.call(
+        "create_scheduled_task",
+        {
+          clientRequestId: "bound-without-turns",
+          projectId: "project",
+          name: "Check",
+          prompt: "Run tests",
+          cron: "0 9 * * 1-5",
+          timezone: "UTC",
+          workspace: { kind: "thread", threadId: "conversation" },
+        },
+        "schedules-only",
+      ),
+    );
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure")
+      expect(result.failure).toMatchObject({ requiredScope: "f5.turns" });
+    expect((yield* f.service.list({}, userScheduleActor)).tasks).toHaveLength(0);
+    // The service enforces the same rule for any agent actor.
+    const direct = yield* Effect.result(
+      f.service.create(
+        {
+          id: ScheduledTaskId.makeUnsafe(crypto.randomUUID()),
+          projectId: ProjectId.makeUnsafe("project"),
+          requestedAt: new Date(0).toISOString(),
+          configuration: {
+            ...savedTask(yield* f.createTask()),
+            workspace: { kind: "thread", threadId: ThreadId.makeUnsafe("conversation") },
+          },
+        },
+        {
+          kind: "agent",
+          clientId: "schedules-only",
+          grantGeneration: 0,
+          visibleProjectIds: new Set(["project"]),
+        },
+      ),
+    );
+    expect(direct._tag).toBe("Failure");
+    if (direct._tag === "Failure")
+      expect(direct.failure.message).toContain("permission to send messages");
+  }).pipe(Effect.provide(testLayer), Effect.scoped),
+);
+it.effect("a bound task rejects provider, model and mode inputs it would ignore", () =>
+  Effect.gen(function* () {
+    const f = yield* setupTools;
+    yield* f.grant(true);
+    yield* seedBoundThread(f.host, f.store, "conversation");
+    const workspace = { kind: "thread", threadId: "conversation" };
+    const rejected = yield* Effect.result(
+      f.createTask(undefined, { workspace, interactionMode: "plan" }),
+    );
+    expect(rejected._tag).toBe("Failure");
+    if (rejected._tag === "Failure") expect(rejected.failure.message).toContain("Omit them");
+    const task = savedTask(yield* f.createTask(undefined, { workspace }));
+    // Echoing the stored values back is not a change.
+    const updated = savedTask(
+      yield* f.call("update_scheduled_task", {
+        taskId: task.id,
+        clientRequestId: "bound-echo",
+        expectedVersion: task.version,
+        configuration: { prompt: "Again", model: task.modelSelection.model },
+      }),
+    );
+    expect(updated.prompt).toBe("Again");
   }).pipe(Effect.provide(testLayer), Effect.scoped),
 );
 it.effect("updates to a bound task ignore its obsolete stored provider", () =>

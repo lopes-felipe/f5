@@ -1,8 +1,9 @@
-import { ScheduledTaskId, ScheduledTaskRunId } from "@t3tools/contracts";
+import { ProviderInstanceId, ScheduledTaskId, ScheduledTaskRunId } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
   buildThreadActionMenuItems,
+  canScheduleIntoThread,
   nativeThreadActionMenuItems,
   settlementErrorDetail,
 } from "./useThreadActionController";
@@ -152,5 +153,14 @@ describe("scheduled thread actions", () => {
         snoozed: false,
       }).map((item) => item.id),
     ).not.toContain("schedule-in-conversation");
+  });
+  it("offers scheduling only for server conversations that have sent a message", () => {
+    expect(canScheduleIntoThread(undefined)).toBe(false);
+    expect(canScheduleIntoThread({ modelSelection: undefined })).toBe(false);
+    expect(
+      canScheduleIntoThread({
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+      }),
+    ).toBe(true);
   });
 });

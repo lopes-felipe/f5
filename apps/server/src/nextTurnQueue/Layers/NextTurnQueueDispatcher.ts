@@ -294,9 +294,18 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         item.scheduleReason === "usage_limit_reset"
           ? yield* store.getUsageResumeContext(item.itemId)
           : null;
-      const currentSettings = Option.isSome(restartSettingsOption)
-        ? yield* restartSettingsOption.value.getSettings.pipe(Effect.mapError(storageError))
-        : null;
+      // Unbound scheduled items keep the delivery worker's gate; only usage-limit resumes
+      // and bound items, which apply settings to the user's conversation, are gated here.
+      const boundScheduled =
+        !resumeContext && Option.isSome(sqlOption) && Option.isSome(restartSettingsOption)
+          ? yield* isBoundScheduledSubmission(sqlOption.value, item.command.commandId).pipe(
+              Effect.mapError(storageError),
+            )
+          : false;
+      const currentSettings =
+        Option.isSome(restartSettingsOption) && (resumeContext || boundScheduled)
+          ? yield* restartSettingsOption.value.getSettings.pipe(Effect.mapError(storageError))
+          : null;
       const settings = resumeContext ? currentSettings : null;
       const config = resumeContext
         ? settings?.providerInstances[
@@ -307,8 +316,8 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         !!resumeContext?.fingerprint &&
         !!settings &&
         (!config || (yield* protectedFingerprint(config)) !== resumeContext.fingerprint);
-      // Every scheduled item is gated before dispatch: a bound item must be canceled
-      // before its turn start can apply stale settings to the user's conversation.
+      // A bound item must be canceled before its turn start can apply stale settings
+      // to the user's conversation.
       if (Option.isSome(sqlOption) && currentSettings) {
         const scheduled = yield* scheduledSendGate(
           sqlOption.value,
@@ -1670,6 +1679,13 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       ),
     handleDeliveryOutcome: (outcome) =>
       Effect.gen(function* () {
+        // The worker already retired the fenced scheduled item; the rest of the queue proceeds.
+        if (outcome.state === "abandoned") {
+          yield* reconcileDeliveryPause(outcome.threadId);
+          yield* publishChanged(outcome.threadId);
+          yield* notify(outcome.threadId);
+          return;
+        }
         const item = yield* store.getByCommandId(outcome.commandId);
         if (
           outcome.state === "rejected" &&

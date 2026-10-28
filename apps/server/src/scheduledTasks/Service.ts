@@ -202,6 +202,21 @@ export const makeScheduledTaskService = (deps: {
           !(yield* scheduleAuthorityCurrent(actor, projectId, yield* settings.getSettings, sql))
         )
           return yield* scheduleError("forbidden", "An active scheduling grant is required.");
+        if (
+          actor.kind === "agent" &&
+          config.workspace.kind === "thread" &&
+          !(yield* scheduleAuthorityCurrent(
+            actor,
+            projectId,
+            yield* settings.getSettings,
+            sql,
+            true,
+          ))
+        )
+          return yield* scheduleError(
+            "forbidden",
+            "Scheduling into an existing conversation also requires permission to send messages.",
+          );
         const snapshot = yield* host.readSnapshot.pipe(
           Effect.mapError(() => scheduleError("not_found", "Workspace unavailable.")),
         );
@@ -408,7 +423,13 @@ export const makeScheduledTaskService = (deps: {
         if (
           task.authority.kind === "agent" &&
           (task.enabled || task.disabledReason !== "authority_revoked") &&
-          !(yield* scheduleAuthorityCurrent(task.authority, task.projectId, config, sql))
+          !(yield* scheduleAuthorityCurrent(
+            task.authority,
+            task.projectId,
+            config,
+            sql,
+            task.workspace.kind === "thread",
+          ))
         )
           invalidTasks.push(task);
       for (const task of invalidTasks)
@@ -440,6 +461,7 @@ export const makeScheduledTaskService = (deps: {
             run.snapshot.projectId,
             config,
             sql,
+            run.snapshot.workspace.kind === "thread",
           ))
         )
           yield* store.transaction(
@@ -598,11 +620,27 @@ export const makeScheduledTaskService = (deps: {
       store.transaction(
         Effect.gen(function* () {
           // Quarantined evidence may still own execution even when it cannot be decoded.
-          const owner = (yield* sql<{
+          let owner = (yield* sql<{
+            id: string;
+            reason: string | null;
             submission_started: number;
             budget_consumed: number;
             created_at: string;
-          }>`SELECT submission_started,budget_consumed,created_at FROM scheduled_task_runs WHERE task_id=${task.id} AND owns_execution=1 LIMIT 1`)[0];
+          }>`SELECT id,reason,submission_started,budget_consumed,created_at FROM scheduled_task_runs WHERE task_id=${task.id} AND owns_execution=1 LIMIT 1`)[0];
+          // A bound run still waiting for its conversation when the next fire arrives is missed,
+          // not carried forward: the newer fire replaces it instead of being dropped as pending.
+          if (
+            trigger !== "manual" &&
+            owner?.reason === "conversation_busy" &&
+            !owner.submission_started &&
+            !owner.budget_consumed
+          ) {
+            yield* fenceScheduledRun(owner.id, at).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            );
+            yield* store.transition(owner.id, "skipped", "conversation_busy", at);
+            owner = undefined;
+          }
           const reason = owner
             ? owner.submission_started || owner.budget_consumed
               ? "overlap"
@@ -754,8 +792,11 @@ export const makeScheduledTaskService = (deps: {
           yield* Effect.logError("scheduledTasks.invalidSchedule", { taskId: task.id, detail });
         }),
       );
-    /** Disables, never deletes, a bound task whose conversation was archived or deleted. The caller owns the transaction. */
-    /** Disables a task only while it still targets the conversation that became unavailable. */
+    /**
+     * Disables, never deletes, a bound task whose conversation was archived or deleted, while
+     * it still targets that conversation. Like any disable, its unstarted runs are canceled,
+     * so a quick unarchive cannot let a waiting run send. The caller owns the transaction.
+     */
     const disableUnavailableBoundTask = (task: ScheduledTask, threadId: string, at: string) =>
       Effect.gen(function* () {
         const live = yield* store.task(task.id);
@@ -766,7 +807,7 @@ export const makeScheduledTaskService = (deps: {
           live.task.workspace.kind !== "thread" ||
           live.task.workspace.threadId !== threadId
         )
-          return;
+          return false;
         yield* store.saveTask({
           ...live.task,
           enabled: false,
@@ -775,7 +816,9 @@ export const makeScheduledTaskService = (deps: {
           updatedAt: at,
           version: live.task.version + 1,
         });
+        yield* cancelUnstarted(live.task.id, "task_disabled", at);
         yield* store.revision;
+        return true;
       });
     /**
      * Event-time removal names the thread; the startup/watchdog sweep checks
@@ -792,15 +835,16 @@ export const makeScheduledTaskService = (deps: {
         const disabled: ScheduledTaskId[] = [];
         for (const task of tasks) {
           const workspace = task.workspace;
-          if (!task.enabled || workspace.kind !== "thread") continue;
+          if (workspace.kind !== "thread") continue;
           if (removedThreadId) {
             if (workspace.threadId !== removedThreadId) continue;
           } else {
             const thread = threads!.find((t) => t.id === workspace.threadId);
             if (thread && thread.deletedAt === null && thread.archivedAt === null) continue;
           }
-          yield* store.transaction(disableUnavailableBoundTask(task, workspace.threadId, at));
-          disabled.push(task.id);
+          // A task edited meanwhile is left alone and publishes no change.
+          if (yield* store.transaction(disableUnavailableBoundTask(task, workspace.threadId, at)))
+            disabled.push(task.id);
         }
         if (disabled.length) yield* changed(disabled);
       });
@@ -924,6 +968,7 @@ export const makeScheduledTaskService = (deps: {
             current.snapshot.projectId,
             yield* settings.getSettings,
             sql,
+            current.snapshot.workspace.kind === "thread",
           ))
         ) {
           yield* revalidateAuthorities;
@@ -1235,6 +1280,7 @@ export const makeScheduledTaskService = (deps: {
                     frozen.snapshot.projectId,
                     yield* settings.getSettings,
                     sql,
+                    frozen.snapshot.workspace.kind === "thread",
                   ))
                 ) {
                   yield* revalidateAuthorities;

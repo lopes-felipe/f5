@@ -24,6 +24,8 @@ const notificationMessages: Readonly<Record<string, string>> = {
   project_missing: "The task project is unavailable.",
   authority_revoked: "Scheduling permission was revoked.",
   thread_removed: "The run's thread was removed.",
+  conversation_busy:
+    "The conversation stayed busy until the next scheduled time, so this run was skipped.",
   setup_failed: "Workspace preparation failed.",
   manual_pause: "Execution is paused and needs your attention.",
 };
@@ -273,7 +275,8 @@ export const makeScheduledTaskStore = Effect.gen(function* () {
               (reason === "project_missing" ||
                 reason === "provider_unavailable" ||
                 reason === "authority_revoked" ||
-                reason === "thread_removed")))
+                reason === "thread_removed" ||
+                reason === "conversation_busy")))
         ) {
           const episode = yield* sql<{
             attention_episode: number;

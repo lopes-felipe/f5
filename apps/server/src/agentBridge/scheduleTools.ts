@@ -16,7 +16,7 @@ import {
 import { createModelSelection } from "@t3tools/shared/model";
 import { previewCronSchedule } from "@t3tools/shared/cronSchedule";
 import { scheduledExecutionConfiguration } from "@t3tools/shared/scheduledTasks";
-import { canonicalJsonHash } from "../canonicalJsonHash.ts";
+import { canonicalJson, canonicalJsonHash } from "../canonicalJsonHash.ts";
 import type { ScheduledTaskServiceShape, ScheduleActor } from "../scheduledTasks/Service.ts";
 import type { AgentBridgeStore } from "./AgentBridgeStore.ts";
 import type { AgentBridgeHostShape } from "./AgentBridgeHost.ts";
@@ -114,6 +114,7 @@ export const makeScheduleTools = (deps: {
     };
   };
   const configure = (
+    caller: AgentBridgeCaller,
     input: typeof PartialConfiguration.Type,
     projectId: ProjectId,
     requestedAt: string,
@@ -122,6 +123,27 @@ export const makeScheduleTools = (deps: {
     Effect.gen(function* () {
       if (input.runtimeMode !== undefined && input.runtimeMode !== "approval-required")
         return yield* fail("Agent schedules require approval-required mode.");
+      if ((input.workspace ?? previous?.workspace)?.kind === "thread") {
+        // Each run posts into the user's own conversation, like send_message.
+        if (!caller.client.scopes.includes("f5.turns"))
+          return yield* new AgentBridgeToolError({
+            message:
+              "Scheduling into an existing conversation also requires permission to send messages.",
+            requiredScope: "f5.turns",
+          });
+        // A bound task always runs with its conversation's settings at admission.
+        const changed = <A>(value: A | undefined, kept: A | undefined) =>
+          value !== undefined && (!previous || canonicalJson(value) !== canonicalJson(kept));
+        if (
+          changed(input.providerInstanceId, previous?.modelSelection.instanceId) ||
+          changed(input.model, previous?.modelSelection.model) ||
+          changed(input.modelOptions, previous?.modelSelection.options) ||
+          changed(input.interactionMode, previous?.interactionMode)
+        )
+          return yield* fail(
+            "A task bound to a conversation uses that conversation's provider, model, options and mode. Omit them.",
+          );
+      }
       const name = input.name ?? previous?.name,
         prompt = input.prompt ?? previous?.prompt,
         cron = input.cron ?? previous?.cron,
@@ -396,7 +418,7 @@ export const makeScheduleTools = (deps: {
               runId: crypto.randomUUID(),
               projectId: input.projectId,
               requestedAt: at,
-              configuration: yield* configure(input, input.projectId, at),
+              configuration: yield* configure(caller, input, input.projectId, at),
             };
           }),
         (r, at) =>
@@ -429,6 +451,7 @@ export const makeScheduleTools = (deps: {
               projectId: current.task.projectId,
               requestedAt: at,
               configuration: yield* configure(
+                caller,
                 input.configuration,
                 current.task.projectId,
                 at,
