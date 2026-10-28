@@ -4,6 +4,7 @@ import { normalizeProviderRuntimeInfo } from "@t3tools/shared/runtimeInfo";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -49,6 +50,12 @@ import { fingerprintSupportedSlashCommands } from "./provider/supportedSlashComm
 import { ElicitationRegistry } from "./provider/elicitationRegistry";
 
 const asThreadId = (value: string): ThreadId => ThreadId.makeUnsafe(value);
+
+async function cleanupCodexFixture(manager: CodexAppServerManager, directory: string) {
+  // stopAll initiates termination; Windows keeps the cwd locked until the child exits.
+  await manager.shutdown();
+  await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
 
 type TurnStartContextParams = {
   additionalContext?: Record<string, { kind: string; value: string }>;
@@ -784,8 +791,7 @@ describe("startSession", () => {
       const first = requests.mock.calls.find((call) => call[1] === "turn/start")?.[2];
       expect(additionalContextText(first)).toContain("Recovered requirement");
     } finally {
-      manager.stopAll();
-      rmSync(directory, { recursive: true, force: true });
+      await cleanupCodexFixture(manager, directory);
     }
   });
 
@@ -828,8 +834,7 @@ describe("startSession", () => {
         threadId: "archived-thread",
       });
     } finally {
-      manager.stopAll();
-      rmSync(directory, { recursive: true, force: true });
+      await cleanupCodexFixture(manager, directory);
     }
   });
 
@@ -883,8 +888,7 @@ describe("startSession", () => {
           "modelContextWindowTokens",
         );
       } finally {
-        manager.stopAll();
-        rmSync(directory, { recursive: true, force: true });
+        await cleanupCodexFixture(manager, directory);
       }
     },
   );
@@ -4598,8 +4602,7 @@ describe("session catalog paging and effective fallback", () => {
         expect(configured.config.serviceTier).toBe(mode === "partial" ? null : "priority");
         if (mode === "paged") expect(configured.config.modelContextWindowTokens).toBe(872_000);
       } finally {
-        manager.stopAll();
-        rmSync(directory, { recursive: true, force: true });
+        await cleanupCodexFixture(manager, directory);
       }
     },
   );
