@@ -708,8 +708,10 @@ function readFilePrefix(
 
 const toTaskRouteError = (error: BotTaskError) => new RouteRequestError({ message: error.message });
 
-function stripRequestTag<T extends { _tag: string }>(body: T) {
-  return Struct.omit(body, ["_tag"]);
+type RequestBodyWithoutTag<T> = T extends { _tag: string } ? Omit<T, "_tag"> : never;
+
+function stripRequestTag<T extends { _tag: string }>(body: T): RequestBodyWithoutTag<T> {
+  return Struct.omit(body, ["_tag"]) as RequestBodyWithoutTag<T>;
 }
 
 function deriveRpcGroup(method: string): string {
@@ -2685,6 +2687,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
   yield* Effect.addFinalizer(() => Scope.close(subscriptionsScope, Exit.void));
 
+  let wakeUpstreamPorts: (threadId?: string) => Effect.Effect<void> = () => Effect.void;
+  yield* Stream.runForEach(serverSettings.streamChanges, () => wakeUpstreamPorts()).pipe(
+    Effect.forkIn(subscriptionsScope),
+  );
   yield* Stream.runForEach(keybindingsManager.streamChanges, (event) =>
     providerAdvisoryProjection.getProviders.pipe(
       Effect.bindTo("providers"),
@@ -2752,6 +2758,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         }),
       ),
       Effect.tap(() => providerUpdateAdvisor.noteRegistryChanged),
+      Effect.tap(() => wakeUpstreamPorts()),
     ),
   ).pipe(Effect.forkIn(subscriptionsScope));
   yield* Stream.runForEach(providerUpdateAdvisor.streamChanges, (advisories) =>
@@ -2905,6 +2912,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               );
           }
           yield* pushBus.publishAll(ORCHESTRATION_WS_CHANNELS.domainEvent, event);
+          if (event.type === "thread.turn-processing-quiesced" || event.type === "thread.deleted")
+            yield* wakeUpstreamPorts(event.aggregateId);
           const gitStatusInvalidation = resolveGitStatusInvalidation(event);
           if (gitStatusInvalidation.publish) {
             yield* pushBus.publishAll(WS_CHANNELS.gitStatusInvalidated, {
@@ -2918,6 +2927,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           Effect.flatMap((snapshot) =>
             pushBus.publishAll(WS_CHANNELS.nextTurnQueueUpdated, snapshot),
           ),
+          Effect.tap(() => wakeUpstreamPorts(threadId)),
           Effect.catchCause((cause) =>
             Effect.logWarning("failed to publish next-turn queue snapshot", {
               threadId,
@@ -3508,6 +3518,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             }),
           getSettings: serverSettings.getSettings.pipe(Effect.mapError(asHostError)),
           listProviders: providerAdvisoryProjection.getProviders,
+          usageAccounts: awaitOrchestrationRuntimeForRoute.pipe(
+            Effect.flatMap((runtime) => runtime.usageService.getAccounts({ refresh: "none" })),
+          ),
           submitTurn: (body) =>
             submitTurnSubmission(body, { submissionSource: "human" }).pipe(
               Effect.mapError((error) => ({
@@ -3544,6 +3557,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           stateDir: serverConfig.stateDir,
         },
       });
+  if (upstreamPorts !== null)
+    wakeUpstreamPorts = (threadId) => upstreamPorts.wakePortQueue(undefined, threadId);
   if (upstreamPorts !== null)
     yield* Deferred.await(orchestrationRuntime).pipe(
       Effect.andThen(Scope.provide(upstreamPorts.start, subscriptionsScope)),
@@ -3984,6 +3999,26 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* upstreamRoute(
           (yield* requireUpstreamPorts).startPort(stripRequestTag(request.body)),
         );
+      case UPSTREAM_PORTS_WS_METHODS.previewPortGroups:
+        return yield* upstreamRoute(
+          (yield* requireUpstreamPorts).previewPortGroups(stripRequestTag(request.body)),
+        );
+      case UPSTREAM_PORTS_WS_METHODS.enqueuePort:
+        return yield* upstreamRoute(
+          (yield* requireUpstreamPorts).enqueuePort(stripRequestTag(request.body)),
+        );
+      case UPSTREAM_PORTS_WS_METHODS.getPortQueue:
+        return yield* upstreamRoute(
+          (yield* requireUpstreamPorts).getPortQueue(stripRequestTag(request.body)),
+        );
+      case UPSTREAM_PORTS_WS_METHODS.dequeuePort:
+        return yield* upstreamRoute(
+          (yield* requireUpstreamPorts).dequeuePort(stripRequestTag(request.body)),
+        );
+      case UPSTREAM_PORTS_WS_METHODS.controlPortQueue:
+        return yield* upstreamRoute(
+          (yield* requireUpstreamPorts).controlPortQueue(stripRequestTag(request.body)),
+        );
       case UPSTREAM_PORTS_WS_METHODS.unlinkPort:
         return yield* upstreamRoute(
           (yield* requireUpstreamPorts).unlinkPort(stripRequestTag(request.body)),
@@ -4139,17 +4174,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             ),
           );
         yield* refreshResumes();
+        yield* wakeUpstreamPorts();
         return result;
       }
       case USAGE_WS_METHODS.getAccounts: {
         const { usageService } = yield* awaitOrchestrationRuntimeForRoute;
-        return yield* usageService
-          .getAccounts(stripRequestTag(request.body))
-          .pipe(
-            Effect.mapError(
-              () => new RouteRequestError({ message: "Unable to load account usage." }),
-            ),
-          );
+        return yield* usageService.getAccounts(stripRequestTag(request.body)).pipe(
+          Effect.tap(() => wakeUpstreamPorts()),
+          Effect.mapError(
+            () => new RouteRequestError({ message: "Unable to load account usage." }),
+          ),
+        );
       }
 
       case NATIVE_OPERATION_WS_METHODS.fork: {

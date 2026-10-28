@@ -424,14 +424,14 @@ export function makeUpstreamStore(sql: SqlClient.SqlClient): UpstreamStore {
           for (const { opId, op } of ops) {
             seq += 1;
             const target =
-              op.kind === "decision"
+              op.kind === "decision" || op.kind === "suggestion"
                 ? op.topicId
                 : op.kind === "interval"
                   ? `interval:${op.file.interval}`
                   : `legacy:${op.file.batch}`;
-            if (op.kind === "decision")
+            if (op.kind === "decision" || op.kind === "suggestion")
               yield* sql`UPDATE upstream_ledger_ops SET state = 'superseded', updated_at = ${at}
-                WHERE project_id = ${projectId} AND kind = 'decision' AND target = ${target}
+                WHERE project_id = ${projectId} AND kind = ${op.kind} AND target = ${target}
                   AND state = 'recorded'`;
             yield* sql`INSERT INTO upstream_ledger_ops
               (op_id, project_id, seq, kind, target, payload_json, state, created_at, updated_at)

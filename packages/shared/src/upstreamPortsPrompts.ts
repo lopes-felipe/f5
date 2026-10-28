@@ -4,7 +4,6 @@
  */
 import {
   UPSTREAM_POLICY_MAX_BYTES,
-  type UpstreamPortOutcome,
   type UpstreamTopic,
   type UpstreamTopicState,
 } from "@t3tools/contracts";
@@ -249,32 +248,40 @@ export function buildPortPrompt(input: PortPromptInput): string {
     boundedPolicy(input.policy).text,
     "",
     "Steps:",
-    "1. Assess first. If this repository already has the behavior, change nothing and end with exactly:",
-    "   UPSTREAM-OUTCOME: equivalent <path:line>[, <path:line>...]",
-    "   If it cannot apply here, end with: UPSTREAM-OUTCOME: not-applicable <one sentence>",
+    ...(input.topics.length > 1
+      ? [
+          "1. Assess every topic first. For each already-present or inapplicable topic, report one of:",
+          "   UPSTREAM-OUTCOME <topic-id>: equivalent <path:line>[, <path:line>...]",
+          "   UPSTREAM-OUTCOME <topic-id>: not-applicable <one sentence>",
+          "   Omit that topic's trailer from commits and the PR. If every topic has one of these outcomes, end with only the per-topic lines.",
+        ]
+      : [
+          "1. Assess first. If this repository already has the behavior, change nothing and end with exactly:",
+          "   UPSTREAM-OUTCOME: equivalent <path:line>[, <path:line>...]",
+          "   If it cannot apply here, end with: UPSTREAM-OUTCOME: not-applicable <one sentence>",
+        ]),
     "2. Otherwise implement it completely with tests, following the repository instructions (AGENTS.md), and run the required checks.",
-    `3. Commit on this branch. Every commit message ends with one trailer line per topic, exactly as listed below. Never edit files under ${input.ledgerDir}/.`,
+    input.topics.length > 1
+      ? `3. Commit on this branch. Every commit message ends with one trailer line per implemented topic, using the exact lines below. Omit trailers for equivalent or not-applicable topics. Never edit files under ${input.ledgerDir}/.`
+      : `3. Commit on this branch. Every commit message ends with one trailer line per topic, exactly as listed below. Never edit files under ${input.ledgerDir}/.`,
     ...trailers.map((line) => `   ${line}`),
     `4. Push and open a pull request against ${input.base}. The PR description also ends with the same trailer lines.`,
     "5. End with exactly: UPSTREAM-OUTCOME: pr <url>",
     "   If you cannot finish, end with: UPSTREAM-OUTCOME: blocked <reason>",
+    ...(input.topics.length > 1
+      ? [
+          "   Put all outcome lines in one consecutive block at the very end: per-topic lines first, then the thread-level line.",
+          "   If every topic was equivalent or not-applicable, end with only the per-topic lines and omit the thread-level line.",
+        ]
+      : []),
   ].join("\n");
 }
 
-const OUTCOME_PATTERN = /^UPSTREAM-OUTCOME: (pr|equivalent|not-applicable|blocked) (.+)$/gmu;
-
-/** The last outcome line in the text, or null. */
-export function parseUpstreamOutcome(text: string): UpstreamPortOutcome | null {
-  let last: UpstreamPortOutcome | null = null;
-  for (const match of text.replaceAll("\r\n", "\n").matchAll(OUTCOME_PATTERN))
-    last = { kind: match[1] as UpstreamPortOutcome["kind"], detail: match[2]!.trim() };
-  return last;
-}
-
-/** `path:line` items from an equivalent outcome. */
-export function outcomeEvidence(outcome: UpstreamPortOutcome): string[] {
-  return outcome.detail
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => /^[^\s:]+:[1-9][0-9]*$/u.test(entry));
-}
+export {
+  parseUpstreamOutcome,
+  parseUpstreamOutcomes,
+  outcomeForTopic,
+  outcomeEvidence,
+  decisionFromOutcome,
+  type ParsedUpstreamOutcomes,
+} from "./upstreamPortsOutcomes";

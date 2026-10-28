@@ -14,6 +14,7 @@ import {
   type TurnSubmissionResult,
   type UpstreamPortsChanged,
   type UpstreamTriageBatchResult,
+  type OrchestrationReadModel,
 } from "@t3tools/contracts";
 import { parseUpstreamTopicTrailers } from "@t3tools/shared/upstreamPorts";
 import { Effect } from "effect";
@@ -312,6 +313,7 @@ export const PROJECT_ID = ProjectId.makeUnsafe("project-upstream");
 export const UPSTREAM_REPOSITORY = "https://github.com/pingdotgg/t3code";
 
 export class FakeHost {
+  threads: OrchestrationReadModel["threads"] = [];
   readonly published: UpstreamPortsChanged[] = [];
   readonly submissions: NextTurnQueueSubmitInput[] = [];
   readonly commonDir = mkdtempSync(path.join(tmpdir(), "f5-upstream-common-"));
@@ -365,7 +367,7 @@ export class FakeHost {
               deletedAt: null,
             },
           ],
-          threads: [],
+          threads: this.threads,
           planningWorkflows: [],
           codeReviewWorkflows: [],
           investigationWorkflows: [],
@@ -391,6 +393,8 @@ export class FakeHost {
         driver: "claudeAgent",
         enabled: true,
         installed: true,
+        status: "ready",
+        auth: { status: "authenticated" },
         models: [{ slug: "claude-test", name: "Claude Test", isCustom: false, capabilities: null }],
       },
     ] as never),

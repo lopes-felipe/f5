@@ -9,7 +9,7 @@ import { fenceScheduledRun } from "./cancellation.ts";
 import { retryScheduledOperation } from "./worker.ts";
 import { detectScheduledClockJump, scheduledDeadlineDelay } from "./timing.ts";
 import { isScheduledRunEvent } from "./projector.ts";
-import { scheduledUsageRetryAt } from "./usageGate.ts";
+import { scheduledUsageRetryAt } from "../usage/usageGate.ts";
 import {
   buildSlashComposerMenuItems,
   rewriteComposerRuntimeSkillInvocationForSend,

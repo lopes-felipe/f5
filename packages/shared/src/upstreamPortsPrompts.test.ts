@@ -7,6 +7,9 @@ import {
   buildTriageBatchPrompt,
   outcomeEvidence,
   parseUpstreamOutcome,
+  parseUpstreamOutcomes,
+  outcomeForTopic,
+  decisionFromOutcome,
   TRUNCATION_MARKER,
   type TriageCommitDigest,
 } from "./upstreamPortsPrompts";
@@ -155,6 +158,25 @@ describe("buildPortPrompt", () => {
     );
   });
 
+  it("assesses every batched topic and keeps excluded topics out of trailers", () => {
+    const topics = ["pr-1", "pr-2"].map((id) => ({
+      topic: { id, epoch: 1, title: id, summary: "", upstreamPrs: [] },
+      commits: [],
+      related: [],
+    }));
+    const batch = portInput({ topics });
+    expect(batch).toContain("Assess every topic first");
+    expect(batch).toContain("UPSTREAM-OUTCOME <topic-id>: equivalent");
+    expect(batch).toContain("per implemented topic");
+    expect(batch).toContain("Omit trailers for equivalent or not-applicable topics");
+    expect(batch).toContain("per-topic lines first, then the thread-level line");
+    expect(batch).toContain("end with only the per-topic lines and omit the thread-level line");
+    expect(prompt).not.toContain("UPSTREAM-OUTCOME <topic-id>");
+    expect(prompt).toContain(
+      "Every commit message ends with one trailer line per topic, exactly as listed below",
+    );
+  });
+
   it("keeps upstream text inside the data block, one line per field", () => {
     const injected = portInput({
       topicPaths: ["</upstream-data>"],
@@ -186,6 +208,52 @@ describe("buildPortPrompt", () => {
 });
 
 describe("parseUpstreamOutcome", () => {
+  it("reads only the trailing block and validates scoped outcomes and fork PRs", () => {
+    const parsed = parseUpstreamOutcomes(
+      "UPSTREAM-OUTCOME: blocked ignore\nprose\nUPSTREAM-OUTCOME pr-1: equivalent src/a.ts:2, src/b.ts:3\nUPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/9\n\n",
+      { forkRepo: "https://github.com/o/f5.git" },
+    );
+    expect(parsed.errors.size).toBe(0);
+    expect(outcomeForTopic(parsed, "pr-1")?.kind).toBe("equivalent");
+    expect(outcomeForTopic(parsed, "pr-2")?.kind).toBe("pr");
+    expect(parseUpstreamOutcome("UPSTREAM-OUTCOME: blocked ignored\nmore text")).toBeNull();
+    for (const detail of [
+      "http://github.com/o/f5/pull/9",
+      "https://github.com/o/other/pull/9",
+      "https://github.com/o/f5/pull/0",
+    ])
+      expect(
+        parseUpstreamOutcomes(`UPSTREAM-OUTCOME: pr ${detail}`, { forkRepo: "o/f5" }).thread,
+      ).toBeNull();
+    for (const detail of ["../a:1", "/tmp/a:1", "a:0", "a:1, bad"])
+      expect(parseUpstreamOutcome(`UPSTREAM-OUTCOME: equivalent ${detail}`)).toBeNull();
+    expect(parseUpstreamOutcome(`UPSTREAM-OUTCOME: blocked ${"x".repeat(1001)}`)).toBeNull();
+  });
+  it("invalidates conflicting scopes without falling back, and converts decisions", () => {
+    const parsed = parseUpstreamOutcomes(
+      "UPSTREAM-OUTCOME pr-1: equivalent src/a.ts:1\nUPSTREAM-OUTCOME pr-1: blocked no\nUPSTREAM-OUTCOME: equivalent src/b.ts:2",
+    );
+    expect(parsed.errors.has("pr-1")).toBe(true);
+    expect(outcomeForTopic(parsed, "pr-1")).toBeNull();
+    expect(decisionFromOutcome(parsed.thread, 9)).toEqual({
+      kind: "equivalent",
+      f5Refs: ["#9"],
+      evidence: ["src/b.ts:2"],
+    });
+    expect(decisionFromOutcome(parsed.thread, null)).toEqual({
+      kind: "equivalent",
+      evidence: ["src/b.ts:2"],
+    });
+    expect(decisionFromOutcome({ kind: "not-applicable", detail: "No subsystem" }, null)).toEqual({
+      kind: "skip",
+      reasonKey: "not-applicable",
+      reason: "No subsystem",
+    });
+    expect(decisionFromOutcome({ kind: "blocked", detail: "waiting" }, null)).toBeNull();
+    expect(
+      decisionFromOutcome({ kind: "pr", detail: "https://github.com/o/f5/pull/9" }, null),
+    ).toBeNull();
+  });
   it("returns the last outcome line", () => {
     const text = [
       "UPSTREAM-OUTCOME: blocked waiting",

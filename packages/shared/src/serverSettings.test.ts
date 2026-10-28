@@ -202,6 +202,8 @@ describe("serverSettings helpers", () => {
     const current = {
       ...DEFAULT_SERVER_SETTINGS,
       upstreamPorts: {
+        portConcurrency: 5,
+        autoRecordOutcomes: true,
         schedule: { mode: "daily" as const, hour: 9, weekday: 1 },
         triageModelSelection: triage,
         portModelSelection: port,
@@ -211,6 +213,8 @@ describe("serverSettings helpers", () => {
       upstreamPorts: { schedule: { mode: "weekly" } },
     });
     expect(applyServerSettingsPatch(current, patch).upstreamPorts).toEqual({
+      portConcurrency: 5,
+      autoRecordOutcomes: true,
       schedule: { mode: "weekly", hour: 9, weekday: 1 },
       triageModelSelection: triage,
       portModelSelection: port,

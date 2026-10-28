@@ -25,6 +25,7 @@ export class DecisionError extends Error {
 }
 
 export interface DecisionContext {
+  readonly decidedBy?: UpstreamTopic["decidedBy"];
   readonly rules: Rules;
   readonly state: UpstreamTopicState;
   /** ISO time stamped as decidedAt. */
@@ -61,7 +62,7 @@ export function decisionFields(
 ): DecisionFields {
   const base = {
     epoch: nextEpoch(topic, context.state, decision.kind),
-    decidedBy: "user" as const,
+    decidedBy: context.decidedBy ?? "user",
     decidedAt: context.now,
   };
   switch (decision.kind) {

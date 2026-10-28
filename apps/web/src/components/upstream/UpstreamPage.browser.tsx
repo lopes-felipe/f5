@@ -8,10 +8,12 @@ import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
 import { projectSettingsQueryOptions } from "../../lib/projectSettingsQuery";
+import { upstreamPortsQueryKeys } from "../../lib/upstreamPortsReactQuery";
 import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
 import { ToastProvider } from "../ui/toast";
 import { TooltipProvider } from "../ui/tooltip";
 import { UpstreamPage } from "./UpstreamPage";
+import { createTestServerProvider } from "../../testServerProvider";
 import type { UpstreamSearch } from "./upstreamSearch";
 
 const api = vi.hoisted(() => ({
@@ -25,6 +27,11 @@ const api = vi.hoisted(() => ({
   acceptSuggestions: vi.fn(),
   undoDecisions: vi.fn(),
   run: vi.fn(),
+  previewPortGroups: vi.fn(),
+  enqueuePort: vi.fn(),
+  dequeuePort: vi.fn(),
+  getPortQueue: vi.fn(),
+  controlPortQueue: vi.fn(),
 }));
 vi.mock("../../nativeApi", () => ({
   ensureNativeApi: () => ({ upstreamPorts: api, server: { updateSettings: vi.fn() } }),
@@ -82,11 +89,22 @@ const inState = (base: UpstreamTopicRow, state: UpstreamTopicRow["state"], scope
 const overview = {
   projectId,
   revision: "r1",
-  config: { repository: "https://github.com/pingdotgg/t3code.git", remote: "upstream", branch: "main", ledgerDir: "upstream" },
+  config: {
+    repository: "https://github.com/pingdotgg/t3code.git",
+    remote: "upstream",
+    branch: "main",
+    ledgerDir: "upstream",
+  },
   diagnostics: [],
   remoteStatus: "ok",
   remoteUrl: "https://github.com/pingdotgg/t3code.git",
-  writer: { claimed: true, managedByThisProfile: true, profileId: "me", hostname: null, claimedAt: null },
+  writer: {
+    claimed: true,
+    managedByThisProfile: true,
+    profileId: "me",
+    hostname: null,
+    claimedAt: null,
+  },
   activeRun: null,
   lastRun: {
     runId: "run",
@@ -121,6 +139,17 @@ const overview = {
   counts: { inbox: 3, ready: 0, "in-progress": 0, watch: 0, done: 0, skipped: 0 },
   trackedThrough: null,
   legacyRemaining: 0,
+  triageFailedCount: 0,
+  portQueue: {
+    queuedTopics: 0,
+    queuedThreads: 0,
+    running: 0,
+    concurrency: 5,
+    waitingOnFiles: 0,
+    paused: false,
+    pausedReason: null,
+    hold: null,
+  },
   untriagedUpstreamCount: 0,
   ghAvailable: true,
   triageModelAvailable: true,
@@ -138,6 +167,7 @@ const FACETS = {
 };
 const topicsPage = (topics: ReadonlyArray<UpstreamTopicRow>, total = topics.length) => ({
   revision: "r1",
+  contentRevision: "r1",
   status: "ok",
   topics,
   nextCursor: null,
@@ -169,6 +199,33 @@ beforeEach(() => {
   });
   api.getOverview.mockResolvedValue(overview);
   api.listTopics.mockResolvedValue(topicsPage(ROWS));
+  api.previewPortGroups.mockResolvedValue({
+    topicCount: 250,
+    threadCount: 50,
+    fileLinkedThreads: 0,
+    filesUnknown: 0,
+    queueable: 250,
+    skipped: [],
+  });
+  api.enqueuePort.mockResolvedValue({ queuedTopicIds: ["pr-1"], queuedThreads: 1, skipped: [] });
+  api.dequeuePort.mockResolvedValue({ revision: "r1" });
+  api.controlPortQueue.mockResolvedValue({ revision: "r1" });
+  api.getPortQueue.mockResolvedValue({
+    entries: [],
+    nextCursor: null,
+    counts: {
+      queued: 2,
+      executing: 0,
+      awaitingReview: 0,
+      recorded: 0,
+      needsAttention: 0,
+      omitted: 0,
+      cancelled: 0,
+    },
+    doneOnDefaultBranch: 0,
+    baseEvidenceAt: null,
+    baseRefreshError: null,
+  });
   api.getTopic.mockImplementation(async ({ topicId }: { topicId: string }) => ({
     revision: "r1",
     repository: "https://github.com/pingdotgg/t3code.git",
@@ -192,13 +249,20 @@ beforeEach(() => {
   });
   api.decide.mockImplementation(decided);
   api.acceptSuggestions.mockImplementation(decided);
-  api.undoDecisions.mockResolvedValue({ revision: "r3", updated: ["pr-1"], unchanged: [], undoToken: null });
+  api.undoDecisions.mockResolvedValue({
+    revision: "r3",
+    updated: ["pr-1"],
+    unchanged: [],
+    undoToken: null,
+  });
 });
 
-async function setup(initial: UpstreamSearch = {}, firstTitle = "Topic A") {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+async function setup(initial: UpstreamSearch = {}, firstTitle = "Topic A", withProvider = false) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+  });
   client.setQueryData<unknown>(serverConfigQueryOptions().queryKey, {
-    providers: [],
+    providers: withProvider ? [createTestServerProvider("codex")] : [],
     settings: DEFAULT_UNIFIED_SETTINGS,
     keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
   });
@@ -216,9 +280,132 @@ async function setup(initial: UpstreamSearch = {}, firstTitle = "Topic A") {
     </QueryClientProvider>,
   );
   await expect.element(page.getByRole("checkbox", { name: `Select ${firstTitle}` })).toBeVisible();
+  return client;
 }
 
 const focusList = () => (page.getByRole("listbox", { name: "Upstream topics" }).element() as HTMLElement).focus();
+
+it("keeps loaded pages, focus, scroll and remaining selection through repeated queue refetches", async () => {
+  const many = Array.from({ length: 100 }, (_, index) => inState(row(`pr-${index + 100}`, `Queued ${index}`), "ready"));
+  let revision = 1;
+  let departed = false;
+  const first = () => ({
+    ...topicsPage(
+      many.slice(0, 50).filter((topic) => !departed || topic.topic.id !== "pr-100"),
+      100,
+    ),
+    revision: `links-${revision}`,
+    nextCursor: "second-page",
+  });
+  const second = () => ({ ...topicsPage(many.slice(50), 100), revision: `links-${revision}` });
+  api.listTopics.mockImplementation(async ({ cursor }: { cursor?: string }) => (cursor ? second() : first()));
+  api.getTopic.mockImplementation(async ({ topicId }: { topicId: string }) => ({
+    revision: `links-${revision}`,
+    repository: "https://github.com/o/f5",
+    row: many.find((topic) => topic.topic.id === topicId),
+    members: [],
+    related: [],
+    history: [],
+  }));
+  const client = await setup({ project: projectId, list: "ready" }, "Queued 0");
+  (page.getByRole("main").element() as HTMLElement).style.height = "600px";
+  const key = upstreamPortsQueryKeys.topics(projectId, "ready", {});
+  client.setQueryData(key, { pages: [first(), second()], pageParams: [null, "second-page"] });
+  await page.getByRole("checkbox", { name: "Select Queued 0", exact: true }).click();
+  await page.getByRole("checkbox", { name: "Select Queued 1", exact: true }).click();
+  await page.getByRole("option", { name: /Queued 2\b/ }).click();
+  const list = page.getByRole("listbox", { name: "Upstream topics" }).element() as HTMLElement;
+  list.focus();
+  const findScroller = () =>
+    [...list.querySelectorAll<HTMLElement>("*")].find(
+      (element) =>
+        element.clientHeight > 0 &&
+        element.scrollHeight > element.clientHeight &&
+        ["auto", "scroll"].includes(getComputedStyle(element).overflowY),
+    );
+  await vi.waitFor(() => expect(findScroller()).toBeDefined());
+  const scroller = findScroller()!;
+  scroller.scrollTop = 500;
+  scroller.dispatchEvent(new Event("scroll"));
+  const scrollBefore = scroller.scrollTop;
+  expect(scrollBefore).toBeGreaterThan(0);
+  const focusBefore = list.getAttribute("aria-activedescendant");
+  for (let index = 0; index < 3; index++) {
+    revision++;
+    await client.invalidateQueries({ queryKey: key });
+    expect(client.getQueryData<{ pages: unknown[] }>(key)?.pages).toHaveLength(2);
+    expect(list.getAttribute("aria-activedescendant")).toBe(focusBefore);
+    expect(document.activeElement).toBe(list);
+    expect(scroller.scrollTop).toBe(scrollBefore);
+    await expect.element(page.getByText("2 selected", { exact: true })).toBeVisible();
+  }
+  departed = true;
+  await client.invalidateQueries({ queryKey: key });
+  await expect.element(page.getByText("1 selected", { exact: true })).toBeVisible();
+  expect(client.getQueryData<{ pages: unknown[] }>(key)?.pages).toHaveLength(2);
+  expect(list.getAttribute("aria-activedescendant")).toBe(focusBefore);
+  client.clear();
+});
+
+it("queues all matching Ready topics using the current filter and sort", async () => {
+  api.getOverview.mockResolvedValue({ ...overview, counts: { ...overview.counts, ready: 250 } });
+  api.listTopics.mockResolvedValue(topicsPage([inState(ROWS[0]!, "ready")], 250));
+  await setup({ project: projectId, list: "ready", q: "Topic", sort: "oldest" }, "Topic A", true);
+  await page.getByRole("button", { name: "Queue all matching Ready…" }).click();
+  await page.getByRole("button", { name: "Add to queue" }).click();
+  await vi.waitFor(() =>
+    expect(api.enqueuePort).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId,
+        target: { kind: "all-ready", filter: { query: "Topic" }, sort: "oldest" },
+        grouping: "batched",
+        batchSize: 5,
+      }),
+    ),
+  );
+});
+
+it("queues selected IDs beyond loaded pages and removes queued topics", async () => {
+  const ready = { ...inState(ROWS[0]!, "ready"), queued: true };
+  api.listTopics.mockResolvedValue(topicsPage([ready], 250));
+  const topicIds = ["pr-1", ...matchingIds(249)];
+  api.listTopicIds.mockResolvedValue({
+    revision: "r1",
+    contentRevision: "r1",
+    topicIds,
+    truncated: false,
+  });
+  await setup({ project: projectId, list: "ready" }, "Topic A", true);
+  await selectAllMatching(250);
+  await bulkButton("Queue selected…").click();
+  await page.getByRole("button", { name: "Add to queue" }).click();
+  await vi.waitFor(() =>
+    expect(api.enqueuePort).toHaveBeenCalledWith(expect.objectContaining({ target: { kind: "ids", topicIds } })),
+  );
+  await bulkButton("Remove from queue").click();
+  await vi.waitFor(() => expect(api.dequeuePort).toHaveBeenCalledWith({ projectId, topicIds }));
+});
+
+it("shows the queue panel and controls pause, resume and clear", async () => {
+  let value = {
+    ...overview,
+    portQueue: { ...overview.portQueue, queuedTopics: 2, queuedThreads: 2 },
+  };
+  api.getOverview.mockResolvedValue(value);
+  api.controlPortQueue.mockImplementation(async ({ action }: { action: string }) => {
+    value = { ...value, portQueue: { ...value.portQueue, paused: action === "pause" } };
+    api.getOverview.mockResolvedValue(value);
+    return { revision: "r1" };
+  });
+  await setup();
+  await page.getByRole("button", { name: /Queue · 0\/5 running · 2 queued/ }).click();
+  await expect.element(page.getByRole("heading", { name: "Port queue" })).toBeVisible();
+  await page.getByRole("button", { name: "Pause", exact: true }).click();
+  await page.getByRole("button", { name: "Resume", exact: true }).click();
+  await page.getByRole("button", { name: "Clear queue", exact: true }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Clear queue", exact: true }).click();
+  await vi.waitFor(() => expect(api.controlPortQueue).toHaveBeenCalledWith({ projectId, action: "clear" }));
+});
 const bulkButton = (name: string) =>
   page.getByRole("toolbar", { name: "Bulk actions" }).getByRole("button", { name, exact: true });
 
@@ -230,7 +417,11 @@ it("shows the bulk bar for a selection and applies its action to the selected ro
   await expect.element(page.getByText("2 selected")).toBeVisible();
   await page.getByRole("toolbar", { name: "Bulk actions" }).getByRole("button", { name: "Watch", exact: true }).click();
   await vi.waitFor(() =>
-    expect(api.decide).toHaveBeenCalledWith({ projectId, topicIds: ["pr-1", "pr-3"], decision: { kind: "watch" } }),
+    expect(api.decide).toHaveBeenCalledWith({
+      projectId,
+      topicIds: ["pr-1", "pr-3"],
+      decision: { kind: "watch" },
+    }),
   );
 });
 
@@ -263,7 +454,9 @@ it("renders the run and ledger state in header popovers", async () => {
 
 it("shows Inbox zero when nothing is left to triage", async () => {
   api.listTopics.mockResolvedValue(topicsPage([]));
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+  });
   client.setQueryData<unknown>(serverConfigQueryOptions().queryKey, {
     providers: [],
     settings: DEFAULT_UNIFIED_SETTINGS,
@@ -349,7 +542,11 @@ it("keeps list shortcuts working after clicking the select-all checkbox", async 
   await page.getByRole("checkbox", { name: "Select all loaded topics" }).click();
   await userEvent.keyboard("w");
   await vi.waitFor(() =>
-    expect(api.decide).toHaveBeenCalledWith({ projectId, topicIds: ["pr-1", "pr-2", "pr-3"], decision: { kind: "watch" } }),
+    expect(api.decide).toHaveBeenCalledWith({
+      projectId,
+      topicIds: ["pr-1", "pr-2", "pr-3"],
+      decision: { kind: "watch" },
+    }),
   );
 });
 
@@ -362,7 +559,11 @@ it("extends the selection, records already-in-f5 and switches lists from the key
   await expect.element(page.getByText("3 topics")).toBeVisible();
   await userEvent.keyboard("e");
   await vi.waitFor(() =>
-    expect(api.decide).toHaveBeenCalledWith({ projectId, topicIds: ["pr-2"], decision: { kind: "equivalent" } }),
+    expect(api.decide).toHaveBeenCalledWith({
+      projectId,
+      topicIds: ["pr-2"],
+      decision: { kind: "equivalent" },
+    }),
   );
   focusList();
   await userEvent.keyboard("]");
@@ -403,7 +604,11 @@ it("saves and clears the scope of a Ready topic without leaving the list", async
   await scope.fill("");
   await page.getByRole("button", { name: "Save scope" }).click();
   await vi.waitFor(() =>
-    expect(api.decide).toHaveBeenLastCalledWith({ projectId, topicIds: ["pr-1"], decision: { kind: "port" } }),
+    expect(api.decide).toHaveBeenLastCalledWith({
+      projectId,
+      topicIds: ["pr-1"],
+      decision: { kind: "port" },
+    }),
   );
 });
 
@@ -416,7 +621,11 @@ it("asks before reopening topics whose port is in progress", async () => {
   expect(api.decide).not.toHaveBeenCalled();
   await page.getByRole("button", { name: "Reopen", exact: true }).last().click();
   await vi.waitFor(() =>
-    expect(api.decide).toHaveBeenCalledWith({ projectId, topicIds: ["pr-1", "pr-3"], decision: { kind: "inbox" } }),
+    expect(api.decide).toHaveBeenCalledWith({
+      projectId,
+      topicIds: ["pr-1", "pr-3"],
+      decision: { kind: "inbox" },
+    }),
   );
 });
 
@@ -460,7 +669,12 @@ const selectAllMatching = async (total: number) => {
 
 it("selects every matching topic, asks before a shortcut reaches unseen ones, and decides them all", async () => {
   api.listTopics.mockResolvedValue(topicsPage(ROWS, 250));
-  api.listTopicIds.mockResolvedValue({ revision: "r1", topicIds: matchingIds(250), truncated: false });
+  api.listTopicIds.mockResolvedValue({
+    revision: "r1",
+    contentRevision: "r1",
+    topicIds: matchingIds(250),
+    truncated: false,
+  });
   await setup();
   await expect.element(page.getByText("250 topics")).toBeVisible();
   await selectAllMatching(250);
@@ -487,7 +701,7 @@ it("drops a Select all matching answer that arrives after the list changed", asy
   focusList();
   await userEvent.keyboard("]");
   await expect.element(page.getByTestId("search")).toHaveTextContent('"list":"ready"');
-  answer({ revision: "r1", topicIds: matchingIds(250), truncated: false });
+  answer({ revision: "r1", contentRevision: "r1", topicIds: matchingIds(250), truncated: false });
   await new Promise((resolve) => setTimeout(resolve, 50));
   await expect.element(page.getByText("250 topics")).toBeVisible();
   await expect.element(page.getByText("250 selected")).not.toBeInTheDocument();
@@ -497,7 +711,12 @@ it.each(["succeeds", "fails"])(
   "keeps only the unrecorded topics of an all-matching decision selected when the refetch %s",
   async (refetch) => {
     api.listTopics.mockResolvedValue(topicsPage(ROWS, 450));
-    api.listTopicIds.mockResolvedValue({ revision: "r1", topicIds: matchingIds(450), truncated: false });
+    api.listTopicIds.mockResolvedValue({
+      revision: "r1",
+      contentRevision: "r1",
+      topicIds: matchingIds(450),
+      truncated: false,
+    });
     const recordAll = api.decide.getMockImplementation()!;
     api.decide
       .mockImplementationOnce(recordAll)
@@ -525,6 +744,7 @@ it("counts unloaded topics of an all-matching selection when reopening In progre
   api.listTopics.mockResolvedValue(topicsPage(loaded, 5));
   api.listTopicIds.mockResolvedValue({
     revision: "r1",
+    contentRevision: "r1",
     topicIds: ["pr-1", "pr-3", ...matchingIds(3)],
     truncated: false,
   });
@@ -559,7 +779,12 @@ it("undoes a decision from its toast, and the newest one with z", async () => {
 
 it("keeps one undo for a whole bulk action, and offers it again when the undo fails", async () => {
   api.listTopics.mockResolvedValue(topicsPage(ROWS, 450));
-  api.listTopicIds.mockResolvedValue({ revision: "r1", topicIds: matchingIds(450), truncated: false });
+  api.listTopicIds.mockResolvedValue({
+    revision: "r1",
+    contentRevision: "r1",
+    topicIds: matchingIds(450),
+    truncated: false,
+  });
   await setup();
   await selectAllMatching(450);
   await bulkButton("Watch").click();
@@ -573,7 +798,12 @@ it("keeps one undo for a whole bulk action, and offers it again when the undo fa
   await page.getByRole("button", { name: "Undo", exact: true }).click();
   await expect.element(page.getByText("Could not undo")).toBeVisible();
   // The entry is back, so Undo works once the repository is free (the first toast may still be closing).
-  api.undoDecisions.mockResolvedValueOnce({ revision: "r3", updated: matchingIds(440), unchanged: matchingIds(450).slice(440), undoToken: null });
+  api.undoDecisions.mockResolvedValueOnce({
+    revision: "r3",
+    updated: matchingIds(440),
+    unchanged: matchingIds(450).slice(440),
+    undoToken: null,
+  });
   await page.getByRole("button", { name: "Undo", exact: true }).last().click();
   await vi.waitFor(() => expect(api.undoDecisions).toHaveBeenCalledTimes(2));
   expect(api.undoDecisions.mock.calls.map(([input]) => input.undoToken)).toEqual(["token-1", "token-1"]);
@@ -589,8 +819,20 @@ it("shows the topic's changed files and history in the detail pane", async () =>
         sha,
         available: true,
         files: [
-          { path: "apps/web/src/app.tsx", added: 4, deleted: 1, existsInF5: true, diffAnchor: "diff-app" },
-          { path: "apps/mobile/app.tsx", added: 1, deleted: 0, existsInF5: false, diffAnchor: "diff-mobile" },
+          {
+            path: "apps/web/src/app.tsx",
+            added: 4,
+            deleted: 1,
+            existsInF5: true,
+            diffAnchor: "diff-app",
+          },
+          {
+            path: "apps/mobile/app.tsx",
+            added: 1,
+            deleted: 0,
+            existsInF5: false,
+            diffAnchor: "diff-mobile",
+          },
         ],
         totalFiles: 2,
         truncated: false,
@@ -621,10 +863,9 @@ it("shows the topic's changed files and history in the detail pane", async () =>
   await setup({ project: projectId, topic: "pr-1" });
   const files = page.getByRole("region", { name: "Files changed" });
   await expect.element(files.getByText("2 files · +5 −1 · 1 exist in f5")).toBeVisible();
-  await expect.element(files.getByRole("link", { name: "apps/web/src/app.tsx" })).toHaveAttribute(
-    "href",
-    `https://github.com/pingdotgg/t3code/commit/${sha}#diff-app`,
-  );
+  await expect
+    .element(files.getByRole("link", { name: "apps/web/src/app.tsx" }))
+    .toHaveAttribute("href", `https://github.com/pingdotgg/t3code/commit/${sha}#diff-app`);
   await expect.element(files.getByText("not in f5")).toBeVisible();
   await expect.element(files.getByText("Only the first 1 of 60 commits are listed.")).toBeVisible();
   await page.getByRole("button", { name: "History (2)" }).click();

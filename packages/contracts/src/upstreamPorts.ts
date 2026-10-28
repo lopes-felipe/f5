@@ -226,6 +226,10 @@ export * from "./upstreamPortsWire";
 export const UPSTREAM_MAX_DECIDE_TOPICS = 200;
 export const UPSTREAM_MAX_PORT_TOPICS = 20;
 export const UPSTREAM_MAX_PORT_GROUPS = 5;
+export const UPSTREAM_PORT_BATCH_SIZE_DEFAULT = 5;
+export const UPSTREAM_PORT_BATCH_SIZE_MAX = 10;
+export const UPSTREAM_PORT_CONCURRENCY_DEFAULT = 5;
+export const UPSTREAM_PORT_CONCURRENCY_MAX = 10;
 export const UPSTREAM_LIST_DEFAULT_LIMIT = 200;
 export const UPSTREAM_LIST_MAX_LIMIT = 500;
 
@@ -252,7 +256,7 @@ export type UpstreamPortsListProjectsInput = typeof UpstreamPortsListProjectsInp
 export const UpstreamPortsProjectInput = Schema.Struct({ projectId: ProjectId });
 export type UpstreamPortsProjectInput = typeof UpstreamPortsProjectInput.Type;
 
-export const UpstreamRunKind = Schema.Literals(["upstream", "legacy"]);
+export const UpstreamRunKind = Schema.Literals(["upstream", "legacy", "retriage"]);
 export type UpstreamRunKind = typeof UpstreamRunKind.Type;
 export const UpstreamRunTriage = Schema.Literals(["llm", "rules-only"]);
 export type UpstreamRunTriage = typeof UpstreamRunTriage.Type;
@@ -373,6 +377,23 @@ export const UpstreamOverview = Schema.Struct({
   counts: UpstreamStateCounts,
   trackedThrough: Schema.NullOr(Schema.String),
   legacyRemaining: NonNegativeInt,
+  triageFailedCount: NonNegativeInt,
+  portQueue: Schema.Struct({
+    queuedTopics: NonNegativeInt,
+    queuedThreads: NonNegativeInt,
+    running: NonNegativeInt,
+    concurrency: PositiveInt,
+    waitingOnFiles: NonNegativeInt,
+    paused: Schema.Boolean,
+    pausedReason: Schema.NullOr(Schema.String),
+    hold: Schema.NullOr(
+      Schema.Struct({
+        kind: Schema.Literals(["usage", "provider", "isolation", "writer"]),
+        message: Schema.String,
+        retryAt: Schema.NullOr(Schema.String),
+      }),
+    ),
+  }),
   untriagedUpstreamCount: NonNegativeInt,
   ghAvailable: Schema.Boolean,
   triageModelAvailable: Schema.Boolean,
@@ -463,6 +484,7 @@ export type UpstreamListTopicIdsInput = typeof UpstreamListTopicIdsInput.Type;
 
 export const UpstreamListTopicIdsResult = Schema.Struct({
   revision: Schema.String,
+  contentRevision: Schema.String,
   topicIds: Schema.Array(UpstreamTopicId),
   /** More than `UPSTREAM_LIST_IDS_MAX` topics matched; only the first ones are listed. */
   truncated: Schema.Boolean,
@@ -497,6 +519,7 @@ export const UpstreamPortLinkSummary = Schema.Struct({
 export type UpstreamPortLinkSummary = typeof UpstreamPortLinkSummary.Type;
 
 export const UpstreamTopicRow = Schema.Struct({
+  queued: Schema.Boolean,
   topic: UpstreamTopic,
   state: UpstreamTopicState,
   commitCount: NonNegativeInt,
@@ -508,6 +531,7 @@ export type UpstreamTopicRow = typeof UpstreamTopicRow.Type;
 
 export const UpstreamListTopicsResult = Schema.Struct({
   revision: Schema.String,
+  contentRevision: Schema.String,
   status: Schema.Literals(["ok", "cursor_stale"]),
   topics: Schema.Array(UpstreamTopicRow),
   nextCursor: Schema.NullOr(Schema.String),
@@ -704,15 +728,148 @@ export const UpstreamRunResult = Schema.Struct({
 });
 export type UpstreamRunResult = typeof UpstreamRunResult.Type;
 
+export const UpstreamPortGrouping = Schema.Literals(["together", "separately", "batched"]);
+export type UpstreamPortGrouping = typeof UpstreamPortGrouping.Type;
+const PortBatchSize = Schema.Int.check(
+  Schema.isBetween({ minimum: 2, maximum: UPSTREAM_PORT_BATCH_SIZE_MAX }),
+);
+const PortRequestId = Schema.String.check(Schema.isMinLength(8), Schema.isMaxLength(128));
+
 export const UpstreamStartPortInput = Schema.Struct({
   projectId: ProjectId,
   topicIds: TopicIds(UPSTREAM_MAX_PORT_TOPICS),
-  grouping: Schema.Literals(["together", "separately"]),
+  grouping: UpstreamPortGrouping,
+  batchSize: Schema.optionalKey(PortBatchSize),
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   clientRequestId: Schema.String.check(Schema.isMinLength(8), Schema.isMaxLength(128)),
 });
 export type UpstreamStartPortInput = typeof UpstreamStartPortInput.Type;
+
+export const UpstreamPortQueueTarget = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("ids"), topicIds: TopicIds(UPSTREAM_LIST_IDS_MAX) }),
+  Schema.Struct({
+    kind: Schema.Literal("all-ready"),
+    filter: Schema.optionalKey(UpstreamTopicFilter),
+    sort: Schema.optionalKey(UpstreamTopicSort),
+  }),
+]);
+export type UpstreamPortQueueTarget = typeof UpstreamPortQueueTarget.Type;
+
+export const UpstreamPreviewPortGroupsInput = Schema.Struct({
+  projectId: ProjectId,
+  target: UpstreamPortQueueTarget,
+  grouping: UpstreamPortGrouping,
+  batchSize: Schema.optionalKey(PortBatchSize),
+});
+export type UpstreamPreviewPortGroupsInput = typeof UpstreamPreviewPortGroupsInput.Type;
+const PortSkipped = Schema.Struct({
+  topicId: UpstreamTopicId,
+  reason: Schema.Literals(["not-ready", "already-queued", "unknown"]),
+});
+export const UpstreamPreviewPortGroupsResult = Schema.Struct({
+  topicCount: NonNegativeInt,
+  threadCount: NonNegativeInt,
+  fileLinkedThreads: NonNegativeInt,
+  filesUnknown: NonNegativeInt,
+  queueable: NonNegativeInt,
+  skipped: Schema.Array(PortSkipped),
+});
+export type UpstreamPreviewPortGroupsResult = typeof UpstreamPreviewPortGroupsResult.Type;
+export const UpstreamEnqueuePortInput = Schema.Struct({
+  ...UpstreamPreviewPortGroupsInput.fields,
+  modelSelection: ModelSelection,
+  runtimeMode: RuntimeMode,
+  clientRequestId: PortRequestId,
+});
+export type UpstreamEnqueuePortInput = typeof UpstreamEnqueuePortInput.Type;
+export const UpstreamEnqueuePortResult = Schema.Struct({
+  queuedTopicIds: Schema.Array(UpstreamTopicId),
+  queuedThreads: NonNegativeInt,
+  skipped: Schema.Array(PortSkipped),
+});
+export type UpstreamEnqueuePortResult = typeof UpstreamEnqueuePortResult.Type;
+
+export const UpstreamPortQueueStatus = Schema.Literals([
+  "queued",
+  "started",
+  "finished",
+  "dropped",
+]);
+export type UpstreamPortQueueStatus = typeof UpstreamPortQueueStatus.Type;
+export const UpstreamGetPortQueueInput = Schema.Struct({
+  projectId: ProjectId,
+  statuses: Schema.optionalKey(Schema.Array(UpstreamPortQueueStatus)),
+  cursor: Schema.optionalKey(Schema.String),
+  limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 500 }))),
+});
+export type UpstreamGetPortQueueInput = typeof UpstreamGetPortQueueInput.Type;
+export const UpstreamPortQueueEntry = Schema.Struct({
+  entryId: Schema.String,
+  position: NonNegativeInt,
+  topics: Schema.Array(
+    Schema.Struct({
+      topicId: UpstreamTopicId,
+      title: Schema.String,
+      state: Schema.NullOr(UpstreamTopicState),
+      epoch: PositiveInt,
+      superseded: Schema.Boolean,
+      result: Schema.NullOr(Schema.String),
+    }),
+  ),
+  status: UpstreamPortQueueStatus,
+  result: Schema.NullOr(Schema.String),
+  reason: Schema.NullOr(Schema.String),
+  threadId: Schema.NullOr(ThreadId),
+  prUrl: Schema.NullOr(Schema.String),
+  fileCount: NonNegativeInt,
+  waitingOn: Schema.Array(
+    Schema.Struct({
+      topicId: UpstreamTopicId,
+      threadId: Schema.NullOr(ThreadId),
+      prUrl: Schema.NullOr(Schema.String),
+      needsAttention: Schema.optionalKey(Schema.Boolean),
+    }),
+  ),
+  ignoreConflicts: Schema.Boolean,
+});
+export type UpstreamPortQueueEntry = typeof UpstreamPortQueueEntry.Type;
+export const UpstreamGetPortQueueResult = Schema.Struct({
+  entries: Schema.Array(UpstreamPortQueueEntry),
+  nextCursor: Schema.NullOr(Schema.String),
+  counts: Schema.Struct({
+    queued: NonNegativeInt,
+    executing: NonNegativeInt,
+    awaitingReview: NonNegativeInt,
+    recorded: NonNegativeInt,
+    needsAttention: NonNegativeInt,
+    omitted: NonNegativeInt,
+    cancelled: NonNegativeInt,
+  }),
+  doneOnDefaultBranch: NonNegativeInt,
+  baseEvidenceAt: Schema.NullOr(Schema.String),
+  baseRefreshError: Schema.NullOr(Schema.String),
+});
+export type UpstreamGetPortQueueResult = typeof UpstreamGetPortQueueResult.Type;
+export const UpstreamDequeuePortInput = Schema.Struct({
+  projectId: ProjectId,
+  topicIds: TopicIds(UPSTREAM_LIST_IDS_MAX),
+});
+export type UpstreamDequeuePortInput = typeof UpstreamDequeuePortInput.Type;
+export const UpstreamControlPortQueueActionInput = Schema.Struct({
+  projectId: ProjectId,
+  action: Schema.Literals(["pause", "resume", "clear"]),
+});
+export const UpstreamIgnorePortConflictsInput = Schema.Struct({
+  projectId: ProjectId,
+  action: Schema.Literal("ignore-conflicts"),
+  entryId: Schema.String.check(Schema.isNonEmpty()),
+});
+export const UpstreamControlPortQueueInput = Schema.Union([
+  UpstreamControlPortQueueActionInput,
+  UpstreamIgnorePortConflictsInput,
+]);
+export type UpstreamControlPortQueueInput = typeof UpstreamControlPortQueueInput.Type;
 
 export const UpstreamPortGroupStatus = Schema.Literals(["pending", "submitted", "rejected"]);
 export type UpstreamPortGroupStatus = typeof UpstreamPortGroupStatus.Type;
