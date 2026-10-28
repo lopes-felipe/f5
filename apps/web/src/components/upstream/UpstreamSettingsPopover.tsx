@@ -56,7 +56,10 @@ function SettingSelect(props: {
  * stays listed as unavailable rather than reading as the empty default.
  */
 function modelSettingOptions(models: ReturnType<typeof modelOptions>, key: string, emptyLabel: string) {
-  const options = [{ value: "", label: emptyLabel }, ...models.map((option) => ({ value: option.key, label: option.label }))];
+  const options = [
+    { value: "", label: emptyLabel },
+    ...models.map((option) => ({ value: option.key, label: option.label })),
+  ];
   if (key && !models.some((option) => option.key === key)) {
     options.push({ value: key, label: `${key.replace("::", " · ")} (unavailable)` });
   }
@@ -73,6 +76,8 @@ export function UpstreamSettingsPopover(props: {
   const loaded = projectSettings.data;
   // Shown while loading only; saving waits for the real settings so it never writes these defaults.
   const current: UpstreamPortsSettings = loaded?.settings.upstreamPorts ?? {
+    portConcurrency: 5,
+    autoRecordOutcomes: true,
     schedule: props.overview.schedule,
     triageModelSelection: null,
     portModelSelection: null,
@@ -115,7 +120,12 @@ export function UpstreamSettingsPopover(props: {
             disabled={disabled}
             options={Object.entries(SCHEDULE_LABELS).map(([value, label]) => ({ value, label }))}
             onChange={(mode) =>
-              void save({ schedule: { ...current.schedule, mode: mode as UpstreamPortsSettings["schedule"]["mode"] } })
+              void save({
+                schedule: {
+                  ...current.schedule,
+                  mode: mode as UpstreamPortsSettings["schedule"]["mode"],
+                },
+              })
             }
           />
         </div>
@@ -136,7 +146,10 @@ export function UpstreamSettingsPopover(props: {
               value={String(current.schedule.hour)}
               display={formatHour(current.schedule.hour)}
               disabled={disabled}
-              options={Array.from({ length: 24 }, (_, hour) => ({ value: String(hour), label: formatHour(hour) }))}
+              options={Array.from({ length: 24 }, (_, hour) => ({
+                value: String(hour),
+                label: formatHour(hour),
+              }))}
               onChange={(hour) => void save({ schedule: { ...current.schedule, hour: Number(hour) } })}
             />
           </div>
@@ -150,7 +163,9 @@ export function UpstreamSettingsPopover(props: {
             disabled={disabled}
             options={triageSetting.options}
             onChange={(key) =>
-              void save({ triageModelSelection: triageModels.find((option) => option.key === key)?.selection ?? null })
+              void save({
+                triageModelSelection: triageModels.find((option) => option.key === key)?.selection ?? null,
+              })
             }
           />
           <span className="block text-xs text-muted-foreground">
@@ -166,7 +181,9 @@ export function UpstreamSettingsPopover(props: {
             disabled={disabled}
             options={portSetting.options}
             onChange={(key) =>
-              void save({ portModelSelection: portModels.find((option) => option.key === key)?.selection ?? null })
+              void save({
+                portModelSelection: portModels.find((option) => option.key === key)?.selection ?? null,
+              })
             }
           />
         </div>
@@ -174,6 +191,27 @@ export function UpstreamSettingsPopover(props: {
           Automatic skips need confidence of at least {Math.round(props.overview.autoSkipConfidence * 100)}% (set in{" "}
           <code>upstream/rules.json</code>).
         </p>
+        <SettingSelect
+          label="Port threads at once"
+          value={String(current.portConcurrency)}
+          display={String(current.portConcurrency)}
+          disabled={disabled}
+          options={Array.from({ length: 10 }, (_, i) => ({
+            value: String(i + 1),
+            label: String(i + 1),
+          }))}
+          onChange={(value) => void save({ portConcurrency: Number(value) })}
+        />
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            role="switch"
+            checked={current.autoRecordOutcomes}
+            disabled={disabled}
+            onChange={(event) => void save({ autoRecordOutcomes: event.target.checked })}
+          />
+          Record equivalent / not-applicable outcomes automatically
+        </label>
       </PopoverPopup>
     </Popover>
   );

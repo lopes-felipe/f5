@@ -17,6 +17,7 @@ import {
   type TurnSubmissionResult,
   type UpstreamPortsChanged,
   type UpstreamTriageBatchResult,
+  type OrchestrationReadModel,
 } from "@t3tools/contracts";
 import { parseUpstreamTopicTrailers } from "@t3tools/shared/upstreamPorts";
 import { Effect, Stream } from "effect";
@@ -328,7 +329,13 @@ export const UPSTREAM_REPOSITORY = "https://github.com/pingdotgg/t3code";
 export class FakeHost {
   unavailableProviders = new Set<string>();
   cancelError: Error | null = null;
-  threads: OrchestrationThread[] = [];
+  private threadValues: OrchestrationReadModel["threads"][number][] = [];
+  get threads() {
+    return this.threadValues;
+  }
+  set threads(value: OrchestrationReadModel["threads"]) {
+    this.threadValues = [...value];
+  }
   workflows: CodeReviewWorkflow[] = [];
   readonly reviews: { input: OrchestrationCreateCodeReviewWorkflowInput; workflowId: string }[] =
     [];
@@ -410,12 +417,22 @@ export class FakeHost {
     listProviders: Effect.sync(
       () =>
         [
-          { instanceId: "codex", driver: "codex", enabled: true, installed: true, models: [] },
+          {
+            instanceId: "codex",
+            driver: "codex",
+            enabled: true,
+            installed: true,
+            status: "ready",
+            auth: { status: "authenticated" },
+            models: [],
+          },
           {
             instanceId: "claudeAgent",
             driver: "claudeAgent",
             enabled: true,
             installed: true,
+            status: "ready",
+            auth: { status: "authenticated" },
             models: [
               { slug: "claude-test", name: "Claude Test", isCustom: false, capabilities: null },
             ],

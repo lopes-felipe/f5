@@ -11,13 +11,17 @@ import {
   ProjectId,
   ThreadId,
   UPSTREAM_MAX_PORT_GROUPS,
+  UPSTREAM_MAX_PORT_TOPICS,
+  UPSTREAM_PORT_BATCH_SIZE_DEFAULT,
   type ClientThreadTurnStartCommand,
   type ModelSelection,
   type RuntimeMode,
   type OrchestrationThread,
   type UpstreamStartPortInput,
   type UpstreamTopic,
+  type UpstreamPortGrouping,
 } from "@t3tools/contracts";
+import { groupPortTopics, type PortGroupingTopic } from "@t3tools/shared/upstreamPortsGrouping";
 
 import { canonicalJsonHash } from "../canonicalJsonHash.ts";
 
@@ -37,7 +41,7 @@ export class AdmissionError extends Error {
 export function portArgsHash(
   input: Pick<
     UpstreamStartPortInput,
-    "topicIds" | "grouping" | "modelSelection" | "runtimeMode" | "review"
+    "topicIds" | "grouping" | "modelSelection" | "runtimeMode" | "review" | "batchSize"
   >,
 ): string {
   return canonicalJsonHash({
@@ -46,17 +50,33 @@ export function portArgsHash(
     modelSelection: input.modelSelection,
     runtimeMode: input.runtimeMode,
     ...(input.review == null ? {} : { review: input.review }),
+    ...(input.grouping === "batched"
+      ? { batchSize: input.batchSize ?? UPSTREAM_PORT_BATCH_SIZE_DEFAULT }
+      : {}),
   });
 }
 
 /** Topic id groups in request order; at most five per request. */
 export function groupTopicIds(
-  topicIds: ReadonlyArray<string>,
-  grouping: "together" | "separately",
+  topics: ReadonlyArray<string | PortGroupingTopic>,
+  grouping: UpstreamPortGrouping,
+  options: { readonly batchSize?: number | undefined; readonly maxGroups?: number | undefined } = {
+    maxGroups: UPSTREAM_MAX_PORT_GROUPS,
+  },
 ): string[][] {
-  const unique = [...new Set(topicIds)];
-  const groups = grouping === "together" ? [unique] : unique.map((id) => [id]);
-  if (groups.length > UPSTREAM_MAX_PORT_GROUPS)
+  const unique = [
+    ...new Map(
+      topics.map((topic) =>
+        typeof topic === "string"
+          ? [topic, { id: topic, area: "", related: [], fileKeys: null }]
+          : [topic.id, topic],
+      ),
+    ).values(),
+  ];
+  if (grouping === "together" && unique.length > UPSTREAM_MAX_PORT_TOPICS)
+    throw new AdmissionError("invalid", "One thread can contain at most 20 topics.");
+  const groups = groupPortTopics(unique, grouping, options.batchSize);
+  if (options.maxGroups !== undefined && groups.length > options.maxGroups)
     throw new AdmissionError(
       "invalid",
       `Start at most ${UPSTREAM_MAX_PORT_GROUPS} separate ports at once, or port the topics together.`,
@@ -120,6 +140,7 @@ export function buildPortCommand(input: {
   readonly driver: string | null;
   readonly runtimeMode: RuntimeMode;
   readonly createdAt: string;
+  readonly requireWorktree?: boolean;
 }): ClientThreadTurnStartCommand {
   const model = input.modelSelection.model;
   return {
@@ -151,6 +172,7 @@ export function buildPortCommand(input: {
         createdAt: input.createdAt,
       },
       prepareWorktree: {
+        ...(input.requireWorktree ? { requireWorktree: true } : {}),
         projectCwd: input.projectCwd,
         baseBranch: input.baseBranch,
         branch: input.branch,

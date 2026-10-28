@@ -1976,9 +1976,12 @@ describe("MessagesTimeline (LegendList)", () => {
       }
 
       // Scrolled up, the toggled row holds its place instead of following the end.
+      // The previous disclosure pins the end for two layout frames. Finish that
+      // phase before establishing this separate scrolled-up precondition.
+      await waitForTimelineLayout(() => scrollContainer);
       scrollContainer.scrollTop -= 120;
       scrollContainer.dispatchEvent(new Event("scroll"));
-      await new Promise((resolve) => requestAnimationFrame(resolve));
+      await waitForTimelineLayout(() => scrollContainer);
       const rowTop = toggle()!.getBoundingClientRect().top;
       toggle()!.click();
       await vi.waitFor(() => {

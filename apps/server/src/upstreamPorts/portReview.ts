@@ -12,7 +12,7 @@ import {
   type UpstreamPortReviewSummary,
 } from "@t3tools/contracts";
 import { formatUpstreamTopicTrailer } from "@t3tools/shared/upstreamPorts";
-import { parseUpstreamOutcome } from "@t3tools/shared/upstreamPortsPrompts";
+import { parseUpstreamOutcome, parseUpstreamOutcomes } from "@t3tools/shared/upstreamPortsPrompts";
 import { Effect, Fiber, Stream } from "effect";
 import { makeOperationGate } from "../provider/operationGate.ts";
 import {
@@ -138,8 +138,19 @@ export function nextPortReviewStep(row: PortReviewRecord, ctx: PortReviewContext
   if (ctx.thread.archivedAt) return skip("Port thread archived");
   if (row.status === "waiting") {
     const finished = getFinishedConsumableLatestTurn(ctx.thread);
-    const outcome = finished ? parseUpstreamOutcome(finished.assistantText) : null;
+    const parsed = parseUpstreamOutcomes(finished?.assistantText ?? "");
+    const outcome = parsed.thread;
     if (!row.prUrl && !ctx.projectedPrUrl) {
+      if (parsed.errors.has("thread")) return skip("Port outcome has no valid pull request URL");
+      if (
+        !outcome &&
+        ctx.group.topicIds.length > 0 &&
+        ctx.group.topicIds.every((id) => {
+          const scoped = parsed.byTopic.get(id);
+          return scoped && scoped.kind !== "pr";
+        })
+      )
+        return skip("Port ended without a pull request for any topic");
       if (!outcome) {
         const state = ctx.thread.latestTurn?.state;
         return state === "error" || state === "interrupted"

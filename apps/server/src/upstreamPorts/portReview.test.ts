@@ -94,6 +94,30 @@ describe("nextPortReviewStep", () => {
       ),
     ).toMatchObject({ kind: "skip", detail: "Port outcome has no valid pull request URL" });
   });
+  it("skips a grouped port whose topics all ended without a PR", () => {
+    const thread = reviewThread();
+    const ctx = reviewContext({
+      thread: {
+        ...thread,
+        messages: thread.messages.map((message) => ({
+          ...message,
+          text: "UPSTREAM-OUTCOME pr-1: equivalent src/a.ts:1\nUPSTREAM-OUTCOME pr-2: not-applicable Not used",
+        })),
+      },
+    });
+    expect(
+      nextPortReviewStep(reviewRecord(), {
+        ...ctx,
+        group: { ...ctx.group, topicIds: ["pr-1", "pr-2"] },
+      }),
+    ).toMatchObject({ kind: "skip", detail: "Port ended without a pull request for any topic" });
+    expect(
+      nextPortReviewStep(reviewRecord(), {
+        ...ctx,
+        group: { ...ctx.group, topicIds: ["pr-1", "pr-2", "pr-3"] },
+      }).kind,
+    ).toBe("wait");
+  });
   const prLookup = (patch = {}): PortReviewPrLookup => ({
     kind: "found",
     origin: "o/f5",

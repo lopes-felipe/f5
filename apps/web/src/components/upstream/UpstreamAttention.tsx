@@ -6,6 +6,8 @@ import { cn } from "../../lib/utils";
 import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
 import { PAUSE_TEXT, PublicationActions } from "./PublicationBanner";
+import { ensureNativeApi } from "../../nativeApi";
+import { toastManager } from "../ui/toast";
 
 /**
  * Blocking or actionable problems only, most severe first. Informational
@@ -24,6 +26,32 @@ export function UpstreamAttention(props: {
   const writerElsewhere = overview.writer.claimed && !overview.writer.managedByThisProfile;
   const paused = overview.publication.pausedReason;
   const items = [
+    overview.portQueue.paused && overview.portQueue.pausedReason && (
+      <Alert key="queue" variant="warning" className="py-2">
+        <TriangleAlertIcon />
+        <AlertDescription>{overview.portQueue.pausedReason}</AlertDescription>
+        <AlertAction>
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={props.busy || props.readOnly}
+            onClick={() =>
+              void ensureNativeApi()
+                .upstreamPorts.controlPortQueue({ projectId: overview.projectId, action: "resume" })
+                .catch((error) =>
+                  toastManager.add({
+                    type: "error",
+                    title: "Could not resume queue",
+                    description: String(error),
+                  }),
+                )
+            }
+          >
+            Resume
+          </Button>
+        </AlertAction>
+      </Alert>
+    ),
     writerElsewhere && (
       <Alert key="writer" variant="warning" className="py-2">
         <TriangleAlertIcon />
@@ -58,9 +86,7 @@ export function UpstreamAttention(props: {
     paused && paused !== "writer-lost" && (
       <Alert key="publication" variant="warning" className="py-2">
         <TriangleAlertIcon />
-        <AlertDescription className="text-foreground">
-          Publishing is paused. {PAUSE_TEXT[paused]}
-        </AlertDescription>
+        <AlertDescription className="text-foreground">Publishing is paused. {PAUSE_TEXT[paused]}</AlertDescription>
         <AlertAction>
           <PublicationActions
             publication={overview.publication}
@@ -81,7 +107,8 @@ export function UpstreamAttention(props: {
             onClick={() => setShowDiagnostics((value) => !value)}
           >
             <ChevronRightIcon className={cn("size-3.5 transition-transform", showDiagnostics && "rotate-90")} />
-            {overview.diagnostics.length} configuration issue{overview.diagnostics.length === 1 ? "" : "s"}
+            {overview.diagnostics.length} configuration issue
+            {overview.diagnostics.length === 1 ? "" : "s"}
           </button>
           {showDiagnostics && (
             <ul className="list-disc pl-5 text-xs text-muted-foreground">

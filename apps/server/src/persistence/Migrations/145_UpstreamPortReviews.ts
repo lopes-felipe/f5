@@ -3,6 +3,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE upstream_port_queue ADD COLUMN review_json TEXT`;
   yield* sql`CREATE TABLE upstream_port_reviews (
     project_id TEXT NOT NULL,
     client_request_id TEXT NOT NULL,

@@ -4,6 +4,14 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./upstreamPortsOutcomes": {
+      "types": "./src/upstreamPortsOutcomes.ts",
+      "import": "./src/upstreamPortsOutcomes.ts"
+    },
+    "./upstreamPortsGrouping": {
+      "types": "./src/upstreamPortsGrouping.ts",
+      "import": "./src/upstreamPortsGrouping.ts"
+    },
     "./nativeHistoryReconciliation": {
       "types": "./src/nativeHistoryReconciliation.ts",
       "import": "./src/nativeHistoryReconciliation.ts"

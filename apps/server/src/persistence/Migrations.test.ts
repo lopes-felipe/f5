@@ -119,7 +119,9 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 140, name: "UpstreamTopicHistoryIndex" },
       { migration_id: 141, name: "QueueHumanSend" },
       { migration_id: 142, name: "ScheduledRunSharedThreads" },
-      { migration_id: 143, name: "UpstreamPortReviews" },
+      { migration_id: 143, name: "UpstreamPortQueue" },
+      { migration_id: 144, name: "UpstreamOutcomeRetries" },
+      { migration_id: 145, name: "UpstreamPortReviews" },
     ]);
     expect(
       yield* sql`SELECT event_id,attempt,origin_session_generation,next_due_at IS NOT NULL AS retry FROM provider_terminal_events`,

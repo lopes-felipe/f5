@@ -78,6 +78,21 @@ export function ledgerCommitMessage(
   ops: ReadonlyArray<OpRecord>,
   rows: ReadonlyArray<DerivedRow>,
 ): string {
+  const suggestions = new Set(
+    ops.flatMap(({ op }) => (op.kind === "suggestion" ? [op.topicId] : [])),
+  );
+  if (
+    suggestions.size &&
+    ops.every(
+      ({ op }) =>
+        op.kind === "suggestion" || (op.kind === "decision" && suggestions.has(op.topicId)),
+    )
+  ) {
+    const skipped = ops.filter(
+      ({ op }) => op.kind === "decision" && op.fields.status === "skip",
+    ).length;
+    return `Re-triage ${suggestions.size} upstream topics (${skipped} skipped automatically)`;
+  }
   const intervals = ops.flatMap((record) => (record.op.kind === "interval" ? [record.op] : []));
   if (intervals.length > 0) {
     const last = intervals.at(-1)!;

@@ -14,6 +14,19 @@ import type { WorktreeSetupGateState } from "../project/Services/WorktreeSetupGa
 export const WORKTREE_SETUP_INTERRUPTED_DETAIL =
   "Worktree setup was interrupted before the agent started. Retry, work locally, or discard.";
 
+export function hasActiveThreadTurn(
+  runningTurn: unknown | null,
+  session: { readonly activeTurnId?: string | null; readonly status: string } | null,
+): boolean {
+  return (
+    runningTurn !== null ||
+    (session !== null &&
+      (session.activeTurnId != null ||
+        session.status === "starting" ||
+        session.status === "running"))
+  );
+}
+
 export type NextTurnQueueGate =
   | { readonly kind: "ready" }
   | {
@@ -148,13 +161,7 @@ export function resolveNextTurnQueueGate(input: {
   if (input.pendingTurnStart !== null) {
     return { kind: "wait", reasonCode: "turn_starting" };
   }
-  if (
-    input.runningTurn !== null ||
-    (input.session !== null &&
-      (input.session.activeTurnId !== null ||
-        input.session.status === "starting" ||
-        input.session.status === "running"))
-  ) {
+  if (hasActiveThreadTurn(input.runningTurn, input.session)) {
     return { kind: "wait", reasonCode: "active_turn" };
   }
   const terminalTurn = input.terminalTurn ?? null;

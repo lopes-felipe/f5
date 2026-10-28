@@ -42,6 +42,10 @@ export const UpstreamPortReviewSettings = Schema.Struct({
 export type UpstreamPortReviewSettings = typeof UpstreamPortReviewSettings.Type;
 
 export const UpstreamPortsSettings = Schema.Struct({
+  portConcurrency: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 })).pipe(
+    Schema.withDecodingDefault(() => 5),
+  ),
+  autoRecordOutcomes: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   schedule: UpstreamSchedule.pipe(Schema.withDecodingDefault(() => ({}))),
   triageModelSelection: Schema.NullOr(ModelSelection).pipe(Schema.withDecodingDefault(() => null)),
   portModelSelection: Schema.NullOr(ModelSelection).pipe(Schema.withDecodingDefault(() => null)),
@@ -55,6 +59,10 @@ export type UpstreamPortsSettings = typeof UpstreamPortsSettings.Type;
  * (or null) replaces the current one.
  */
 export const UpstreamPortsSettingsPatch = Schema.Struct({
+  portConcurrency: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 })),
+  ),
+  autoRecordOutcomes: Schema.optionalKey(Schema.Boolean),
   schedule: Schema.optionalKey(
     Schema.Struct({
       mode: Schema.optionalKey(UpstreamScheduleMode),
@@ -82,6 +90,11 @@ export const UPSTREAM_PORTS_WS_METHODS = {
   undoDecisions: "upstreamPorts.undoDecisions",
   run: "upstreamPorts.run",
   startPort: "upstreamPorts.startPort",
+  previewPortGroups: "upstreamPorts.previewPortGroups",
+  enqueuePort: "upstreamPorts.enqueuePort",
+  getPortQueue: "upstreamPorts.getPortQueue",
+  dequeuePort: "upstreamPorts.dequeuePort",
+  controlPortQueue: "upstreamPorts.controlPortQueue",
   unlinkPort: "upstreamPorts.unlinkPort",
   retryPortReview: "upstreamPorts.retryPortReview",
   getPortPrompt: "upstreamPorts.getPortPrompt",
@@ -99,6 +112,8 @@ export const UpstreamChangedReason = Schema.Literals([
   "run-finished",
   "ledger-updated",
   "ports-updated",
+  "queue-updated",
+  "links-updated",
   "publication-updated",
 ]);
 export type UpstreamChangedReason = typeof UpstreamChangedReason.Type;

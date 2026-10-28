@@ -52,7 +52,11 @@ const count = (value: number | undefined) =>
 /** The search box. It pushes its text to the URL after a short pause; `Esc` returns to the list. */
 const SearchBox = forwardRef<
   HTMLInputElement,
-  { readonly value: string; readonly onChange: (value: string) => void; readonly onEscape: () => void }
+  {
+    readonly value: string;
+    readonly onChange: (value: string) => void;
+    readonly onEscape: () => void;
+  }
 >(function SearchBox(props, ref) {
   const focusShortcut = useUpstreamShortcut("upstream.focusSearch");
   const [text, setText] = useState(props.value);
@@ -117,23 +121,26 @@ export const UpstreamToolbar = forwardRef<
     readonly facets: UpstreamTopicFacets | null;
     readonly onSearchEscape: () => void;
     /** Ready list: Start port for every Ready topic. */
-    readonly startAll: { readonly count: number; readonly disabled: boolean; readonly onStart: () => void } | null;
+    readonly startAll: {
+      readonly count: number;
+      readonly disabled: boolean;
+      readonly onStart: () => void;
+    } | null;
   }
 >(function UpstreamToolbar(props, searchRef) {
   const { search, facets, onSearchChange } = props;
   const chips = activeFilterChips(search);
   const sort = search.sort ?? (props.list === "inbox" ? "priority" : "newest");
   /** Merges `patch` into the search params; `undefined` or an empty list removes a key. */
-  const set = (patch: { readonly [Key in keyof UpstreamSearch]?: UpstreamSearch[Key] | undefined }) => {
+  const set = (patch: {
+    readonly [Key in keyof UpstreamSearch]?: UpstreamSearch[Key] | undefined;
+  }) => {
     const next: Record<string, unknown> = { ...search, ...patch };
     for (const [key, value] of Object.entries(patch))
       if (value === undefined || (Array.isArray(value) && value.length === 0)) delete next[key];
     onSearchChange(next as UpstreamSearch);
   };
-  const strip =
-    props.list === "inbox" && facets
-      ? SUGGESTIONS.filter((value) => facets.suggestion[value] > 0)
-      : [];
+  const strip = props.list === "inbox" && facets ? SUGGESTIONS.filter((value) => facets.suggestion[value] > 0) : [];
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
@@ -185,7 +192,7 @@ export const UpstreamToolbar = forwardRef<
         {props.startAll && props.startAll.count > 0 && (
           <Button size="sm" variant="outline" disabled={props.startAll.disabled} onClick={props.startAll.onStart}>
             <PlayIcon />
-            Start port for all ({props.startAll.count})
+            Queue all matching Ready…
           </Button>
         )}
         <div className="ml-auto flex items-center gap-1.5">
@@ -295,10 +302,7 @@ export const UpstreamToolbar = forwardRef<
               {SORT_LABELS[sort]}
             </MenuTrigger>
             <MenuPopup align="end">
-              <MenuRadioGroup
-                value={sort}
-                onValueChange={(value: string) => set({ sort: value as UpstreamTopicSort })}
-              >
+              <MenuRadioGroup value={sort} onValueChange={(value: string) => set({ sort: value as UpstreamTopicSort })}>
                 {SORTS.map((value) => (
                   <MenuRadioItem key={value} value={value}>
                     {SORT_LABELS[value]}

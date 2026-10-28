@@ -13,7 +13,9 @@ import Migration0139 from "./Migrations/139_ScheduledTaskQuarantine.ts";
 import Migration0140 from "./Migrations/140_UpstreamTopicHistoryIndex.ts";
 import Migration0141 from "./Migrations/141_QueueHumanSend.ts";
 import Migration0142 from "./Migrations/142_ScheduledRunSharedThreads.ts";
-import Migration0143 from "./Migrations/143_UpstreamPortReviews.ts";
+import Migration0143 from "./Migrations/143_UpstreamPortQueue.ts";
+import Migration0144 from "./Migrations/144_UpstreamOutcomeRetries.ts";
+import Migration0145 from "./Migrations/145_UpstreamPortReviews.ts";
 import Migration0127 from "./Migrations/127_ClearPlanningWorkflowLaneBranches.ts";
 import Migration0126 from "./Migrations/126_ProviderTerminalRecoveryIndexes.ts";
 import Migration0124 from "./Migrations/124_ProviderTerminalRetry.ts";
@@ -196,7 +198,9 @@ export const MIGRATIONS = {
   "140_UpstreamTopicHistoryIndex": Migration0140,
   "141_QueueHumanSend": Migration0141,
   "142_ScheduledRunSharedThreads": Migration0142,
-  "143_UpstreamPortReviews": Migration0143,
+  "143_UpstreamPortQueue": Migration0143,
+  "144_UpstreamOutcomeRetries": Migration0144,
+  "145_UpstreamPortReviews": Migration0145,
   "122_StorageActivity": Migration0122,
   "123_WorkspaceMoveRecoveryIndex": Migration0123,
   "121_AttachmentDeletionGuards": Migration0121,
