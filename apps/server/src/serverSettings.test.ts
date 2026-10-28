@@ -93,7 +93,10 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         yield* service.recordWorktreeLocation!(location);
         yield* service.updateSettings({ worktreesDirectory: "" });
         assert.deepEqual((yield* service.getSettings).previousWorktreesDirectories, [location]);
-        assert.isTrue((yield* fs.readFileString(config.settingsPath!)).includes(location));
+        const persisted = Schema.decodeUnknownSync(ServerSettings)(
+          JSON.parse(yield* fs.readFileString(config.settingsPath!)),
+        );
+        assert.deepEqual(persisted.previousWorktreesDirectories, [location]);
         const managedRoot = customWorktreesDirectory(location, config.worktreesDir);
         yield* fs.makeDirectory(managedRoot, { recursive: true });
         yield* Effect.addFinalizer(() =>
