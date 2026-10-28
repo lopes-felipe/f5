@@ -2786,11 +2786,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
-      "decidedAt": "2026-10-28T20:58:35.306Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-28T23:33:34.694Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-11407",
-      "status": "port",
+      "reason": "f5 sends terminal events over its own push bus (apps/server/src/wsServer.ts:3627), which has no per-chunk RPC acks to batch.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "terminal",
@@ -22822,11 +22824,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-28T20:58:27.613Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-28T23:33:34.694Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-19366",
-      "status": "port",
+      "reason": "f5 has no Ghostty terminal surface; macOS paste goes only through xterm's native paste (apps/web/src/terminalClipboard.ts:10) and Shift+Insert cancels the native paste before reading the clipboard (apps/web/src/components/ThreadTerminalDrawer.tsx:491).",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "terminal"
