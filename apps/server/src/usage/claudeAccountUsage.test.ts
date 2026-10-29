@@ -144,7 +144,7 @@ describe("Claude monthly spend budget", () => {
       ).toEqual([]);
   });
 
-  it("caps an overspent budget at the full window", () => {
+  it("keeps overspend above the full window so the meter can show it", () => {
     expect(
       normalizeClaudeAccountUsage(
         payload({
@@ -155,7 +155,7 @@ describe("Claude monthly spend budget", () => {
           },
         }),
       ).windows,
-    ).toEqual([{ ...monthly, utilization: 100 }]);
+    ).toEqual([{ ...monthly, utilization: 120 }]);
   });
 });
 

@@ -1433,6 +1433,63 @@ describe("limits", () => {
     }
   });
 
+  it("meters an overspent monthly budget once, in place of the extra-usage meter", async () => {
+    const fetchedAt = "2026-10-01T00:00:00.000Z";
+    const claude: UsageAccounts[number] = {
+      key: "claude:enterprise",
+      provider: "claudeAgent",
+      providerInstanceId: null,
+      displayName: "Claude",
+      enabled: true,
+      refreshState: "idle",
+      sections: [
+        {
+          kind: "claude-usage",
+          outcome: "available",
+          lastAttemptAt: fetchedAt,
+          errorCode: null,
+          snapshot: {
+            fetchedAt,
+            data: {
+              subscriptionLabel: null,
+              limitsAvailable: true,
+              windows: [
+                {
+                  key: "monthly_spend",
+                  label: "Monthly spend",
+                  utilization: 105.4,
+                  resetsAt: null,
+                },
+              ],
+              extraUsage: { enabled: true, utilization: 105.4 },
+            },
+          },
+        },
+      ],
+    };
+    const screen = await render(
+      <UsageDashboardView
+        summary={summary()}
+        accounts={[claude]}
+        range="7d"
+        onRangeChange={() => {}}
+        fetching={false}
+      />,
+    );
+    try {
+      await expect
+        .element(page.getByRole("progressbar", { name: "Claude · Monthly spend" }))
+        .toHaveAttribute("aria-valuetext", "0% remaining");
+      await expect.element(page.getByText(/over limit \(105% used\)/)).toBeVisible();
+      await expect.element(page.getByText("Extra usage enabled")).toBeVisible();
+      await expect
+        .element(page.getByRole("progressbar", { name: "Claude · Extra usage" }))
+        .not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it.each([
     ["disabled", "Claude is disabled in provider settings."],
     ["unsupported", "This installed Claude version does not expose account usage and rate limits."],

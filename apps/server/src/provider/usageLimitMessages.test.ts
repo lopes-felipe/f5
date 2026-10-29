@@ -293,8 +293,65 @@ it.each([
   }
 });
 
+it("resolves a rolling Claude reset even when the monthly spend budget is used up", () => {
+  const limit = usageLimitFromWindows([{ id: "five_hour", label: "5-hour", resetsAt: null }]);
+  const account: UsageAccount = {
+    key: "claude:test",
+    provider: "claudeAgent",
+    providerInstanceId: null,
+    displayName: "Claude",
+    enabled: true,
+    refreshState: "idle",
+    sections: [
+      {
+        kind: "claude-usage",
+        outcome: "available",
+        lastAttemptAt: "2026-10-01T00:00:01Z",
+        errorCode: null,
+        snapshot: {
+          fetchedAt: "2026-10-01T00:00:01Z",
+          data: {
+            subscriptionLabel: "Max",
+            limitsAvailable: true,
+            extraUsage: { enabled: true, utilization: 100 },
+            windows: [
+              {
+                key: "five_hour",
+                label: "5-hour",
+                utilization: 100,
+                resetsAt: "2026-10-01T03:00:00Z",
+              },
+              { key: "monthly_spend", label: "Monthly spend", utilization: 100, resetsAt: null },
+            ],
+          },
+        },
+      },
+    ],
+  };
+  const resolved = resolveAccountUsageLimit(limit, account, "2026-10-01T00:00:00Z");
+  expect(resolved.resetsAt).toBe("2026-10-01T03:00:00Z");
+  expect(resolved.windows.map((window) => window.id)).toEqual(["five_hour"]);
+});
+
+it("leaves a Spark copy of the monthly credit allowance to the main bucket", () => {
+  const individualLimit = {
+    remainingPercent: 0,
+    resetsAt: Date.parse("2026-11-01T00:00:00Z") / 1000,
+  };
+  expect(
+    detectCodexUsageLimit({
+      message: "usage limit reached",
+      errorInfo: "usageLimitReached",
+      snapshots: [{ limitId: "codex_bengalfox", individualLimit }],
+      at: "2026-10-01T00:00:00Z",
+    })?.windows,
+  ).toEqual([]);
+});
+
 it("resolves an unknown Codex reset from an exhausted monthly credit limit", () => {
-  const limit = usageLimitFromWindows([{ id: "codex:individual", label: null, resetsAt: null }]);
+  const limit = usageLimitFromWindows([
+    { id: "codex:individual", label: "monthly credit", resetsAt: null },
+  ]);
   const resetsAt = Date.parse("2026-11-01T00:00:00Z") / 1000;
   const account: UsageAccount = {
     key: "codex:test",
@@ -328,9 +385,9 @@ it("resolves an unknown Codex reset from an exhausted monthly credit limit", () 
       },
     ],
   };
-  expect(resolveAccountUsageLimit(limit, account, "2026-10-01T00:00:00Z").resetsAt).toBe(
-    "2026-11-01T00:00:00.000Z",
-  );
+  expect(resolveAccountUsageLimit(limit, account, "2026-10-01T00:00:00Z").windows).toEqual([
+    { id: "codex:individual", label: "monthly credit", resetsAt: "2026-11-01T00:00:00.000Z" },
+  ]);
 });
 
 it("requires a successful fresh account section before resolving unknown resets", () => {

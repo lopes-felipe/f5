@@ -88,7 +88,8 @@ function normalizeRateLimit(value: unknown, fallbackId: string): CodexAccountRat
   const record = asRecord(value);
   if (!record) return null;
   const id = asTrimmedString(record.limitId) ?? fallbackId;
-  const individual = normalizeIndividualLimit(record.individualLimit);
+  // The credit allowance is account-wide; Spark repeats it, so only the main bucket owns it.
+  const individual = id === "codex" ? normalizeIndividualLimit(record.individualLimit) : null;
   return {
     id,
     name: asTrimmedString(record.limitName),

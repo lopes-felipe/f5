@@ -1,5 +1,6 @@
 import type { OrchestrationUsageLimit, ThreadId } from "@t3tools/contracts";
 export { usageLimitFailureKey } from "@t3tools/shared/usageLimit";
+import { canResumeAtUsageReset, USAGE_RESUME_BUFFER_MS } from "@t3tools/shared/usageLimit";
 import { ChevronDownIcon, EllipsisIcon, InfoIcon, PauseIcon, XIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ensureNativeApi } from "../../nativeApi";
@@ -96,6 +97,9 @@ export function UsageLimitNotice({
   };
 
   const resetTime = limit.resetsAt ? formatUsageResumeTime(limit.resetsAt) : null;
+  // A monthly reset can fall past the scheduling horizon; only a time picker can help then.
+  const resumableAtReset =
+    limit.resetsAt !== null && canResumeAtUsageReset(limit.resetsAt, Date.now());
   const labels = limit.windows
     .map((window) => window.label)
     .filter(Boolean)
@@ -240,13 +244,13 @@ export function UsageLimitNotice({
               >
                 Pick time…
               </Button>
-            ) : resetTime ? (
+            ) : resumableAtReset ? (
               <>
                 <Button size="xs" disabled={busy || !limitKey} onClick={() => void schedule()}>
                   Continue at{" "}
                   {formatUsageResumeTime(
                     new Date(
-                      Math.max(Date.now(), Date.parse(limit.resetsAt!)) + 60_000,
+                      Math.max(Date.now(), Date.parse(limit.resetsAt!)) + USAGE_RESUME_BUFFER_MS,
                     ).toISOString(),
                   )}
                 </Button>

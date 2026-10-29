@@ -72,7 +72,8 @@ export function formatCodexUsageError(
 }
 
 export function exhaustedCodexWindows(snapshot: CodexLimitSnapshot): RuntimeUsageLimit["windows"] {
-  const individual = snapshot.individualLimit;
+  // The credit allowance is account-wide; Spark repeats it, so only the main bucket owns it.
+  const individual = (snapshot.limitId ?? "codex") === "codex" ? snapshot.individualLimit : null;
   const monthly =
     individual &&
     typeof individual.remainingPercent === "number" &&

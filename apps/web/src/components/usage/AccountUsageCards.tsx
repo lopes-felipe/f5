@@ -8,7 +8,11 @@ import type {
   UsageQuotaSample,
   UsageRange,
 } from "@t3tools/contracts";
-import { codexRateLimitWindowLabel, quotaWindowsFromSection } from "@t3tools/shared/usageLimit";
+import {
+  CLAUDE_MONTHLY_SPEND_WINDOW_KEY,
+  codexRateLimitWindowLabel,
+  quotaWindowsFromSection,
+} from "@t3tools/shared/usageLimit";
 
 import { formatAbsoluteTimeLabel } from "../../lib/relativeTime";
 import { QuotaMeter } from "./charts/QuotaMeter";
@@ -353,7 +357,7 @@ export function AccountUsageCards({
                         {/* The monthly spend window already meters enabled extra usage. */}
                         {section.snapshot.data.extraUsage.enabled &&
                           !section.snapshot.data.windows.some(
-                            (window) => window.key === "monthly_spend",
+                            (window) => window.key === CLAUDE_MONTHLY_SPEND_WINDOW_KEY,
                           ) && (
                             <QuotaMeter
                               label="Extra usage"
