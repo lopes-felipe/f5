@@ -16,30 +16,28 @@ const isRunning = (handle: ChildProcessSpawner.ChildProcessHandle) =>
  * The group gets SIGKILL even when the leader exits within the grace period:
  * a wrapper that honours SIGTERM can leave a descendant that does not, and
  * the spawner only cleans up the group after a non-zero exit code.
+ *
+ * Windows needs nothing extra: the spawner already stops a running child
+ * with `taskkill /T /F`, which cannot be ignored and covers the whole tree.
  */
 export const terminateOnRelease = (
   handle: ChildProcessSpawner.ChildProcessHandle,
   grace: Duration.Input = "1 second",
 ) =>
-  Effect.addFinalizer(() =>
-    Effect.gen(function* () {
-      if (!(yield* isRunning(handle))) return;
-      yield* handle
-        .kill({ killSignal: "SIGTERM" })
-        .pipe(Effect.timeoutOption(grace), Effect.ignore);
-      if (process.platform !== "win32") {
-        // ESRCH once the whole group is gone; killProcessTree swallows it.
-        yield* Effect.sync(() =>
-          killProcessTree(
-            { pid: Number(handle.pid), kill: () => false },
-            { isGroupLeader: true, signal: "SIGKILL" },
-          ),
-        );
-      } else if (yield* isRunning(handle)) {
-        // Windows: the spawner's kill is already `taskkill /T /F`.
-        yield* handle
-          .kill({ killSignal: "SIGKILL" })
-          .pipe(Effect.timeoutOption("1 second"), Effect.ignore);
-      }
-    }).pipe(Effect.uninterruptible),
-  );
+  process.platform === "win32"
+    ? Effect.void
+    : Effect.addFinalizer(() =>
+        Effect.gen(function* () {
+          if (!(yield* isRunning(handle))) return;
+          yield* handle
+            .kill({ killSignal: "SIGTERM" })
+            .pipe(Effect.timeoutOption(grace), Effect.ignore);
+          // ESRCH once the whole group is gone; killProcessTree swallows it.
+          yield* Effect.sync(() =>
+            killProcessTree(
+              { pid: Number(handle.pid), kill: () => false },
+              { isGroupLeader: true, signal: "SIGKILL" },
+            ),
+          );
+        }).pipe(Effect.uninterruptible),
+      );
