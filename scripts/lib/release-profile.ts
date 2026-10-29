@@ -30,7 +30,9 @@ export interface DesktopReleaseAssets {
 
 const DESKTOP_BUILDS: Record<DesktopPlatform, readonly DesktopBuild[]> = {
   mac: [
-    { os: "macos-latest", platform: "mac", arch: "arm64", target: "dmg" },
+    // macOS 26 rejects electron-builder 26.15.3's keychain setup, which passes the
+    // certificate password to `set-key-partition-list`; 26.18.0 fixes it.
+    { os: "macos-15", platform: "mac", arch: "arm64", target: "dmg" },
     { os: "macos-15-intel", platform: "mac", arch: "x64", target: "dmg" },
   ],
   win: [{ os: "windows-latest", platform: "win", arch: "x64", target: "nsis" }],
