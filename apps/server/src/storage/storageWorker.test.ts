@@ -13,6 +13,7 @@ import { createServer } from "node:http";
 import { execFileSync } from "node:child_process";
 import { runProcess } from "../processRunner.ts";
 import { discoverProviderCandidates } from "./cleanupProviders.ts";
+import { fileIdentity } from "./diskUsage.ts";
 
 // Filesystem unit fixtures supply their own activity snapshot; native process
 // and file-sharing behavior is exercised independently in storageActivity.test.
@@ -66,7 +67,11 @@ it("quarantines complete Bun cache entries and a real install remains healthy af
   // Protected contents deliberately leave a partial quarantine behind.
   await FS.writeFile(Path.join(source, ".env"), "retained fixture");
   const archive = Path.join(f.root, "fixture.tgz");
-  execFileSync("tar", ["-czf", archive, "-C", Path.dirname(source), "package"]);
+  // Relative archive names also work with GNU tar on Windows, where C: is
+  // otherwise interpreted as a remote archive host.
+  execFileSync("tar", ["-czf", Path.basename(archive), "-C", "source", "package"], {
+    cwd: f.root,
+  });
   const contents = await FS.readFile(archive);
   let requests = 0;
   const server = createServer((_req, res) => {
@@ -185,6 +190,8 @@ it("measures real ASAR-named files in an isolated maintenance process", async ()
   expect(measurement.warnings).toEqual([]);
   expect(measurement.files.map((file) => file.name).sort()).toEqual(["item", "sample.asar"]);
   expect(measurement.totalBytes).toBeGreaterThan(0);
+  for (const file of measurement.files)
+    expect(file.identity).toEqual(fileIdentity(await FS.lstat(file.path)));
 }, 15_000);
 it("cancels an isolated scanner without deleting fixture data", async () => {
   const f = await fixture();

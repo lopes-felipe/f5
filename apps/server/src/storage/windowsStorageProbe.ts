@@ -61,9 +61,10 @@ public static class F5StorageFiles {
  static extern SafeFileHandle CreateFileW(string path,uint access,uint sharing,IntPtr security,uint creation,uint flags,IntPtr template);
  public static bool Busy(string[] paths) {
    foreach(string path in paths) {
-     // FILE_READ_ATTRIBUTES, no sharing, OPEN_EXISTING. This neither writes nor
-     // deletes a file. Sharing/lock violations prove another handle owns it.
-     using(SafeFileHandle handle=CreateFileW(path,0x80,0,IntPtr.Zero,3,0,IntPtr.Zero)) {
+     // FILE_READ_DATA, no sharing, OPEN_EXISTING. Attribute-only access bypasses
+     // sharing checks; requesting read access detects existing data handles.
+     // This neither reads contents nor writes/deletes the file.
+     using(SafeFileHandle handle=CreateFileW(path,0x1,0,IntPtr.Zero,3,0,IntPtr.Zero)) {
        if(handle.IsInvalid) {
          int code=Marshal.GetLastWin32Error();
          if(code==32 || code==33) return true;
@@ -76,6 +77,8 @@ public static class F5StorageFiles {
  }
 }
 '@
-$paths=@(ConvertFrom-Json ([Console]::In.ReadToEnd()))
+# Preserve the JSON array directly: Windows PowerShell 5.1 otherwise nests it
+# inside @(...), and casting that nested array joins several filenames together.
+[string[]]$paths=ConvertFrom-Json ([Console]::In.ReadToEnd())
 ConvertTo-Json -Compress ([F5StorageFiles]::Busy([string[]]$paths))
 `;

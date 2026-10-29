@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { FileIdentity, EnumeratedFile } from "./diskUsage.ts";
-import { fileIdentity, measureTree, enumerateFiles } from "./diskUsage.ts";
+import { fileIdentity, measureTree, enumerateFiles, storageLstat } from "./diskUsage.ts";
 import { discoverRepositories } from "./storageDiscovery.ts";
 import * as FS from "node:fs/promises";
 import * as Path from "node:path";
@@ -134,7 +134,7 @@ export async function executeStorageTask(
   }
   const processes = snapshot ?? (await readStorageProcesses());
   let activity = activityForTarget(await FS.realpath(task.path), processes, task.application);
-  const stat = await FS.lstat(task.path);
+  const stat = await storageLstat(task.path);
   const enumerated = await enumerateFiles(task.path, { maxDepth: 32 });
   if (enumerated.errors.length) throw new Error("Could not completely inspect the cleanup target.");
   if (process.platform === "win32" && !skipWindowsProbe && activity.state === "idle")
@@ -187,7 +187,7 @@ export async function executeStorageTask(
     // half-populated package in the live cache. Leftovers are discoverable.
     deletionRoot = Path.join(Path.dirname(task.path), ".f5-bun-cache-trash-" + randomUUID());
     await FS.rename(task.path, deletionRoot);
-    const moved = await FS.lstat(deletionRoot);
+    const moved = await storageLstat(deletionRoot);
     if (moved.dev !== stat.dev || moved.ino !== stat.ino)
       throw new Error("Bun cache identity changed before quarantine. Files retained.");
     if (!Path.basename(task.path).startsWith(".f5-bun-cache-trash-"))

@@ -110,6 +110,8 @@ it("detects a real application holding a cache file open while its cwd is elsewh
   await FS.mkdir(target);
   const file = Path.join(target, "download");
   await FS.writeFile(file, "installer data");
+  // Exercise multi-file JSON input to Windows PowerShell as well as an open handle.
+  await FS.writeFile(Path.join(target, "another-download"), "other cached bytes");
   const child = spawn(
     process.execPath,
     [

@@ -710,7 +710,11 @@ for (const cancelled of [false, true]) {
                 yield* Deferred.succeed(release, undefined);
               }
               const result = yield* awaitOperation(storage, operation.operationId);
-              assert.equal(result.status.state, cancelled ? "cancelled" : "partial");
+              assert.equal(
+                result.status.state,
+                cancelled ? "cancelled" : "partial",
+                JSON.stringify(result),
+              );
               assert.isAbove(result.status.result?.reclaimedBytes ?? 0, 0);
               assert.equal(
                 result.status.result?.results[0]?.perTargetReclaimed[0]?.status,
@@ -889,7 +893,7 @@ layer("StorageMaintenance", (it) => {
           options: { vacuumAfterDeletes: false },
         });
 
-        assert.equal(result.results[0]?.status, "Cleaned");
+        assert.equal(result.results[0]?.status, "Cleaned", JSON.stringify(result));
         assert.equal(yield* Effect.promise(() => pathExists(stalePath)), false);
         assert.equal(yield* Effect.promise(() => pathExists(activePath)), true);
         assert.equal(yield* Effect.promise(() => pathExists(busyPath)), true);
