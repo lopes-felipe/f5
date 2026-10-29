@@ -467,7 +467,11 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     ...(platform !== "linux"
       ? {
           extraResources: [{ from: "apps/desktop/native-bin", to: "native" }],
-          ...(signed ? { afterSign: "verify-computer-helper.cjs" } : {}),
+          ...(signed
+            ? {
+                afterSign: platform === "mac" ? "notarize-mac.cjs" : "verify-computer-helper.cjs",
+              }
+            : {}),
         }
       : {}),
     directories: {
@@ -507,7 +511,8 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
         ? {
             hardenedRuntime: true,
             gatekeeperAssess: false,
-            notarize: true,
+            // notarize-mac.cjs notarizes in afterSign with longer retries than electron-builder.
+            notarize: false,
             entitlements: "apps/desktop/resources/entitlements.mac.plist",
             entitlementsInherit: "apps/desktop/resources/entitlements.electron-inherit.plist",
             sign: join(import.meta.dirname, "sign-mac.cjs"),
@@ -686,10 +691,8 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     if (!(yield* fs.exists(binary)))
       return yield* new BuildScriptError({ message: `Missing computer helper: ${binary}` });
     yield* fs.copy(nativeDir, path.join(stageAppDir, "apps/desktop/native-bin"));
-    yield* fs.copyFile(
-      path.join(repoRoot, "scripts/verify-computer-helper.cjs"),
-      path.join(stageAppDir, "verify-computer-helper.cjs"),
-    );
+    for (const hook of ["verify-computer-helper.cjs", "notarize-mac.cjs"])
+      yield* fs.copyFile(path.join(repoRoot, "scripts", hook), path.join(stageAppDir, hook));
   }
 
   yield* assertPlatformBuildResources(options.platform, stageResourcesDir, options.verbose);
