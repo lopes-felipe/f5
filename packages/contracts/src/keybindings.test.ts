@@ -5,6 +5,7 @@ import { Effect } from "effect";
 import {
   KeybindingsConfig,
   KeybindingRule,
+  MAX_KEYBINDINGS_COUNT,
   ResolvedKeybindingRule,
   ResolvedKeybindingsConfig,
 } from "./keybindings";
@@ -20,6 +21,9 @@ const decode = <S extends Schema.Top>(
   >;
 
 const decodeResolvedRule = Schema.decodeUnknownEffect(ResolvedKeybindingRule as never);
+const encodeResolvedKeybindings = Schema.encodeUnknownEffect(
+  ResolvedKeybindingsConfig as never,
+) as (input: ResolvedKeybindingsConfig) => Effect.Effect<unknown, Schema.SchemaError, never>;
 
 it.effect("parses keybinding rules", () =>
   Effect.gen(function* () {
@@ -182,6 +186,85 @@ it.effect("parses resolved keybindings arrays", () =>
       },
     ]);
     assert.lengthOf(parsed, 1);
+  }),
+);
+
+const shortcut = {
+  key: "p",
+  metaKey: false,
+  ctrlKey: false,
+  shiftKey: false,
+  altKey: false,
+  modKey: true,
+};
+
+it.effect("drops resolved rules with commands this build does not know", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decode(ResolvedKeybindingsConfig, [
+      { command: "terminal.toggle", shortcut },
+      { command: "someFuture.toggle", shortcut },
+      { command: "sidebar.toggle", shortcut },
+    ]);
+    assert.deepEqual(
+      parsed.map((rule) => rule.command),
+      ["terminal.toggle", "sidebar.toggle"],
+    );
+  }),
+);
+
+it.effect("drops resolved rules with unknown when-node types", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decode(ResolvedKeybindingsConfig, [
+      {
+        command: "terminal.toggle",
+        shortcut,
+        whenAst: { type: "xor", left: 1, right: 2 },
+      },
+      { command: "terminal.split", shortcut },
+    ]);
+    assert.deepEqual(
+      parsed.map((rule) => rule.command),
+      ["terminal.split"],
+    );
+  }),
+);
+
+it.effect("drops malformed resolved rule entries", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decode(ResolvedKeybindingsConfig, [
+      "garbage",
+      { command: "terminal.toggle", shortcut },
+      null,
+    ]);
+    assert.deepEqual(
+      parsed.map((rule) => rule.command),
+      ["terminal.toggle"],
+    );
+  }),
+);
+
+it.effect("still enforces the resolved keybindings count limit", () =>
+  Effect.gen(function* () {
+    const result = yield* Effect.exit(
+      decode(
+        ResolvedKeybindingsConfig,
+        Array.from({ length: MAX_KEYBINDINGS_COUNT + 1 }, () => ({
+          command: "terminal.toggle",
+          shortcut,
+        })),
+      ),
+    );
+    assert.strictEqual(result._tag, "Failure");
+  }),
+);
+
+it.effect("encodes resolved keybindings to the plain wire shape", () =>
+  Effect.gen(function* () {
+    const rules = [{ command: "terminal.toggle" as const, shortcut }];
+    const encoded = yield* encodeResolvedKeybindings(rules);
+    assert.deepEqual(encoded, rules);
+    const roundTripped = yield* decode(ResolvedKeybindingsConfig, encoded);
+    assert.deepEqual(roundTripped, rules);
   }),
 );
 

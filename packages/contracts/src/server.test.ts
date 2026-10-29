@@ -2,12 +2,23 @@ import { describe, expect, it } from "vitest";
 import { Schema } from "effect";
 
 import {
+  ServerConfig,
   ServerProvider,
   ServerProviderVersionAdvisory,
+  ServerUpsertKeybindingResult,
   type ServerProviderVersionAdvisoryStatus,
 } from "./server";
 
 const decodeServerProvider = Schema.decodeUnknownSync(ServerProvider);
+// The recursive `whenAst` schema leaves keybinding-bearing schemas with
+// unknown decoding services, so they need the same cast keybindings.test uses.
+const decodeUpsertKeybindingResult = Schema.decodeUnknownSync(
+  ServerUpsertKeybindingResult as never,
+) as (input: unknown) => ServerUpsertKeybindingResult;
+const decodeServerConfig = Schema.decodeUnknownSync(ServerConfig as never) as (
+  input: unknown,
+) => ServerConfig;
+const decodeAvailableEditors = Schema.decodeUnknownSync(ServerConfig.fields.availableEditors);
 const decodeVersionAdvisory = Schema.decodeUnknownSync(ServerProviderVersionAdvisory);
 
 const baseProvider = {
@@ -74,4 +85,52 @@ describe("ServerProviderVersionAdvisory", () => {
       expect(decoded.updateCommand).toBeNull();
     },
   );
+});
+
+describe("server config forward compatibility", () => {
+  it("drops config issues with kinds this build does not know", () => {
+    const parsed = decodeUpsertKeybindingResult({
+      keybindings: [],
+      issues: [
+        { kind: "keybindings.invalid-entry", message: "Bad entry", index: 2 },
+        { kind: "keybindings.future-issue", message: "From a newer server" },
+      ],
+    });
+
+    expect(parsed.issues).toEqual([
+      { kind: "keybindings.invalid-entry", message: "Bad entry", index: 2 },
+    ]);
+  });
+
+  it("drops editor ids this build does not know", () => {
+    const parsed = decodeAvailableEditors(["zed", "some-future-editor", "vscode"]);
+
+    expect(parsed).toEqual(["zed", "vscode"]);
+  });
+
+  it("decodes a server config that contains unknown keybindings, issues and editors", () => {
+    const shortcut = {
+      key: "p",
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      modKey: true,
+    };
+    const parsed = decodeServerConfig({
+      cwd: "/repo",
+      keybindingsConfigPath: "/repo/.f5/keybindings.json",
+      keybindings: [
+        { command: "someFuture.toggle", shortcut },
+        { command: "terminal.toggle", shortcut },
+      ],
+      issues: [{ kind: "keybindings.future-issue", message: "From a newer server" }],
+      providers: [],
+      availableEditors: ["some-future-editor", "zed"],
+    });
+
+    expect(parsed.keybindings).toEqual([{ command: "terminal.toggle", shortcut }]);
+    expect(parsed.issues).toEqual([]);
+    expect(parsed.availableEditors).toEqual(["zed"]);
+  });
 });

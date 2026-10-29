@@ -1,4 +1,4 @@
-import { FilesystemPath, NonNegativeInt } from "./baseSchemas";
+import { FilesystemPath, ForwardCompatibleArray, NonNegativeInt } from "./baseSchemas";
 import { Schema } from "effect";
 import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas";
 import { KeybindingRule, KeybindingsConfig, ResolvedKeybindingsConfig } from "./keybindings";
@@ -25,7 +25,9 @@ export const ServerConfigIssue = Schema.Union([
 ]);
 export type ServerConfigIssue = typeof ServerConfigIssue.Type;
 
-const ServerConfigIssues = Schema.Array(ServerConfigIssue);
+// Issue kinds grow over time; older clients must not fail the whole config
+// decode over a kind they cannot render.
+const ServerConfigIssues = ForwardCompatibleArray(ServerConfigIssue);
 const ServerProviderLatestVersionString = TrimmedNonEmptyString.check(Schema.isMaxLength(64));
 
 export const ServerProviderStatusState = Schema.Literals(["ready", "warning", "error"]);
@@ -303,7 +305,9 @@ export const ServerConfig = Schema.Struct({
   customKeybindings: KeybindingsConfig.pipe(Schema.withDecodingDefault(() => [])),
   issues: ServerConfigIssues,
   providers: ServerProviders,
-  availableEditors: Schema.Array(EditorId),
+  // Editor ids grow over time; drop ones this build does not know rather than
+  // failing the whole config decode.
+  availableEditors: ForwardCompatibleArray(EditorId),
   settings: Schema.optional(ServerSettings),
   diagnostics: Schema.optionalKey(DiagnosticsConfiguration),
 });
