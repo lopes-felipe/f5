@@ -1,6 +1,9 @@
 import { ThreadId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it } from "vitest";
-import { usePendingUserInputDraftStore } from "./pendingUserInputDraftStore";
+import {
+  prunableUserInputRequestIds,
+  usePendingUserInputDraftStore,
+} from "./pendingUserInputDraftStore";
 
 const THREAD_A = ThreadId.makeUnsafe("thread-a");
 const THREAD_B = ThreadId.makeUnsafe("thread-b");
@@ -8,7 +11,11 @@ const THREAD_B = ThreadId.makeUnsafe("thread-b");
 const store = () => usePendingUserInputDraftStore.getState();
 
 beforeEach(() => {
-  usePendingUserInputDraftStore.setState({ answersByThreadId: {}, questionIndexByThreadId: {} });
+  usePendingUserInputDraftStore.setState({
+    answersByThreadId: {},
+    questionIndexByThreadId: {},
+    asyncDraftsByThreadId: {},
+  });
 });
 
 describe("usePendingUserInputDraftStore", () => {
@@ -58,5 +65,52 @@ describe("usePendingUserInputDraftStore", () => {
       [THREAD_B]: { resolved: { q1: { customAnswer: "other thread" } } },
     });
     expect(store().questionIndexByThreadId).toEqual({});
+  });
+
+  it("keeps message-question drafts per request and drops them on demand", () => {
+    const draft = { answers: { q1: ["A"] }, custom: {}, customOpen: {}, questionIndex: 1 };
+    store().updateAsyncDraft(THREAD_A, "message", () => draft);
+    store().updateAsyncDraft(THREAD_A, "other", (current) => current);
+    expect(store().asyncDraftsByThreadId).toEqual({ [THREAD_A]: { message: draft } });
+
+    store().pruneRequests(THREAD_A, ["message"]);
+    expect(store().asyncDraftsByThreadId).toEqual({});
+
+    store().updateAsyncDraft(THREAD_A, "message", () => draft);
+    store().updateAsyncDraft(THREAD_A, "message", () => undefined);
+    expect(store().asyncDraftsByThreadId).toEqual({});
+  });
+});
+
+describe("prunableUserInputRequestIds", () => {
+  beforeEach(() => {
+    store().setAnswers(THREAD_A, {
+      pending: { q1: { customAnswer: "still open" } },
+      selected: { q1: { selectedOptionLabels: ["Option"] } },
+      typed: { q1: { customAnswer: "typed" } },
+      resolvedTyped: { q1: { customAnswer: "typed" } },
+    });
+    store().setQuestionIndex(THREAD_A, { position: 1 });
+    store().updateAsyncDraft(THREAD_A, "message", () => ({
+      answers: {},
+      custom: { q1: "typed" },
+      customOpen: { q1: true },
+      questionIndex: 0,
+    }));
+  });
+
+  const prunable = (threadLoaded: boolean) =>
+    prunableUserInputRequestIds(store(), THREAD_A, {
+      pendingRequestIds: ["pending"],
+      resolvedRequestIds: ["resolvedTyped", "pending"],
+      threadLoaded,
+    }).toSorted();
+
+  it("drops only visibly resolved requests until the thread is loaded", () => {
+    expect(prunable(false)).toEqual(["resolvedTyped"]);
+  });
+
+  it("keeps typed blocking answers that still await their dismissal", () => {
+    expect(prunable(true)).toEqual(["message", "position", "resolvedTyped", "selected"]);
   });
 });

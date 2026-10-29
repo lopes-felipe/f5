@@ -2256,7 +2256,11 @@ describe("ChatView timeline (full app)", () => {
     await setViewport(DEFAULT_VIEWPORT);
     localStorage.clear();
     useComposerMentionHistoryStore.setState({ entries: [] });
-    usePendingUserInputDraftStore.setState({ answersByThreadId: {}, questionIndexByThreadId: {} });
+    usePendingUserInputDraftStore.setState({
+      answersByThreadId: {},
+      questionIndexByThreadId: {},
+      asyncDraftsByThreadId: {},
+    });
     resetThreadModelOptionsSeedsForTests();
     document.body.innerHTML = "";
     wsRequests.length = 0;
@@ -3378,6 +3382,96 @@ describe("ChatView timeline (full app)", () => {
       await expect.element(page.getByText("Anything else?", { exact: true })).toBeVisible();
       await vi.waitFor(async () =>
         expect((await waitForComposerEditor()).textContent).toContain("Keep this answer"),
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("carries an answer dismissed while away into the composer once, then drops it", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "question-user" as MessageId,
+      targetText: "Ask me",
+    });
+    const question = createThreadActivity({
+      id: "question",
+      createdAt: isoAt(201),
+      kind: "user-input.requested",
+      summary: "Question",
+      payload: {
+        requestId: "dismiss-request",
+        questions: [
+          {
+            id: "only",
+            header: "Only",
+            question: "Which approach?",
+            options: [{ label: "Use option", description: "Use the suggested approach" }],
+          },
+        ],
+      },
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) => ({ ...thread, activities: [question] })),
+      },
+    });
+    try {
+      await expect.element(page.getByText("Which approach?", { exact: true })).toBeVisible();
+      const editor = await waitForComposerEditor();
+      await page.elementLocator(editor).fill("Dismissed answer");
+      await vi.waitFor(() => expect(editor.textContent).toContain("Dismissed answer"));
+
+      await mounted.router.navigate({ to: "/" });
+      await expect
+        .element(page.getByText("Which approach?", { exact: true }))
+        .not.toBeInTheDocument();
+      const dismissal = createThreadActivity({
+        id: "question-dismissed",
+        createdAt: isoAt(202),
+        kind: "user-input.resolved",
+        summary: "User input dismissed because its turn ended",
+        payload: { requestId: "dismiss-request", resolution: "dismissed" },
+      });
+      useStore.setState((state) => ({
+        threads: state.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                activities: [...thread.activities, dismissal],
+                pendingUserInputs: thread.pendingUserInputs?.filter(
+                  (input) => input.requestId !== "dismiss-request",
+                ),
+              }
+            : thread,
+        ),
+      }));
+      await mounted.router.navigate({ to: "/$threadId", params: { threadId: THREAD_ID } });
+
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+          "Dismissed answer",
+        ),
+      );
+      expect(usePendingUserInputDraftStore.getState().answersByThreadId[THREAD_ID]).toBeUndefined();
+      // Later activity re-runs the effect; the answer must not be carried twice.
+      const later = createThreadActivity({
+        id: "later",
+        createdAt: isoAt(203),
+        kind: "task.progress",
+        summary: "Later",
+      });
+      useStore.setState((state) => ({
+        threads: state.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? { ...thread, activities: [...thread.activities, later] }
+            : thread,
+        ),
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+        "Dismissed answer",
       );
     } finally {
       await mounted.cleanup();

@@ -212,6 +212,7 @@ import {
 import {
   EMPTY_PENDING_USER_INPUT_ANSWERS_BY_REQUEST_ID,
   EMPTY_PENDING_USER_INPUT_QUESTION_INDEX_BY_REQUEST_ID,
+  prunableUserInputRequestIds,
   usePendingUserInputDraftStore,
   type PendingUserInputAnswersByRequestId,
   type PendingUserInputQuestionIndexByRequestId,
@@ -2122,6 +2123,9 @@ export default memo(function ChatView({
         : derivePendingUserInputs(threadActivities),
     [threadActivities, activeThread?.pendingUserInputs],
   );
+  // The projected list is complete only once the server thread's details loaded.
+  const pendingUserInputsLoaded =
+    serverThread?.detailsLoaded === true && serverThread.pendingUserInputs !== undefined;
   // Provider forms render in their own panel and never feed the question drafts.
   const blockingUserInputs = pendingUserInputs.filter(
     (input) => !input.elicitation && isBlockingUserInput(input),
@@ -2149,17 +2153,22 @@ export default memo(function ChatView({
       );
       if (restored !== original) setComposerDraftPrompt(threadId, restored);
     }
-    // Prune only on a visible resolution, after a dismissed answer was carried
-    // into the draft. A request missing from a partly loaded thread is not resolved.
-    const stillPending = new Set<string>(pendingUserInputs.map((input) => input.requestId));
-    usePendingUserInputDraftStore.getState().pruneRequests(
+    // Prune after a dismissed answer was carried into the draft. A request
+    // missing from a partly loaded thread is not resolved.
+    const drafts = usePendingUserInputDraftStore.getState();
+    drafts.pruneRequests(
       threadId,
-      resolvedRequestIds.filter((requestId) => !stillPending.has(requestId)),
+      prunableUserInputRequestIds(drafts, threadId, {
+        pendingRequestIds: pendingUserInputs.map((input) => input.requestId),
+        resolvedRequestIds,
+        threadLoaded: pendingUserInputsLoaded,
+      }),
     );
   }, [
     threadActivities,
     threadId,
     pendingUserInputs,
+    pendingUserInputsLoaded,
     pendingUserInputAnswersByRequestId,
     setComposerDraftPrompt,
   ]);
@@ -2173,7 +2182,7 @@ export default memo(function ChatView({
         ? existing
         : { ...existing, [activePendingUserInput.requestId]: seeded };
     });
-  }, [activePendingUserInput]);
+  }, [activePendingUserInput, setPendingUserInputAnswersByRequestId]);
 
   const activePendingDraftAnswers = useMemo(
     () =>
@@ -5840,7 +5849,7 @@ export default memo(function ChatView({
         [activePendingUserInput.requestId]: nextQuestionIndex,
       }));
     },
-    [activePendingUserInput],
+    [activePendingUserInput, setPendingUserInputQuestionIndexByRequestId],
   );
 
   const onSelectActivePendingUserInputOption = useCallback(
@@ -5869,7 +5878,13 @@ export default memo(function ChatView({
       setComposerCursor(0);
       setComposerTrigger(null);
     },
-    [activePendingUserInput, pendingUserInputAnswersByRequestId, threadId, setComposerDraftPrompt],
+    [
+      activePendingUserInput,
+      pendingUserInputAnswersByRequestId,
+      threadId,
+      setComposerDraftPrompt,
+      setPendingUserInputAnswersByRequestId,
+    ],
   );
 
   const onToggleActivePendingUserInputOption = useCallback(
@@ -5898,7 +5913,13 @@ export default memo(function ChatView({
       setComposerCursor(0);
       setComposerTrigger(null);
     },
-    [activePendingUserInput, pendingUserInputAnswersByRequestId, threadId, setComposerDraftPrompt],
+    [
+      activePendingUserInput,
+      pendingUserInputAnswersByRequestId,
+      threadId,
+      setComposerDraftPrompt,
+      setPendingUserInputAnswersByRequestId,
+    ],
   );
 
   const onChangeActivePendingUserInputCustomAnswer = useCallback(
@@ -5930,7 +5951,7 @@ export default memo(function ChatView({
         cursorAdjacentToMention ? null : detectComposerTrigger(value, expandedCursor),
       );
     },
-    [activePendingUserInput],
+    [activePendingUserInput, setPendingUserInputAnswersByRequestId],
   );
 
   const onAdvanceActivePendingUserInput = useCallback(() => {
@@ -6731,7 +6752,12 @@ export default memo(function ChatView({
       });
       return true;
     },
-    [activePendingProgress, activePendingUserInput, setPrompt],
+    [
+      activePendingProgress,
+      activePendingUserInput,
+      setPendingUserInputAnswersByRequestId,
+      setPrompt,
+    ],
   );
 
   const insertComposerFileMention = useCallback(
