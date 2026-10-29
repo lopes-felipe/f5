@@ -5,10 +5,29 @@ import { F5_HOME_DIR_NAME, USERDATA_STATE_DIR_NAME } from "@t3tools/shared/appSt
 import { readEnvironmentFromLoginShell } from "@t3tools/shared/shell";
 import { ensureWindowsPathHydrated } from "@t3tools/shared/windowsPath";
 
+// Service managers (launchd, systemd) can start the server without HOME. `gh`,
+// git and login shells then miss the user's config, so PR detection breaks.
+export function hydratePosixHome(
+  env: NodeJS.ProcessEnv,
+  resolveHomeDir: () => string = () => OS.userInfo().homedir,
+): void {
+  if ((env.HOME?.trim() ?? "").length > 0) return;
+  try {
+    const homeDir = resolveHomeDir();
+    if (homeDir.length > 0) env.HOME = homeDir;
+  } catch (error) {
+    console.warn(
+      `[environment] Failed to hydrate HOME from the user account: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 export async function fixPath(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): Promise<void> {
+  // Before the login-shell probe, which reads the user's profile from HOME.
+  if (platform === "darwin" || platform === "linux") hydratePosixHome(env);
   // The desktop already ran these probes into the env this child inherits.
   // Repeating them costs a login shell, or seconds of PowerShell on Windows.
   if (env.F5_SHELL_ENVIRONMENT_PREPARED === "1") return;

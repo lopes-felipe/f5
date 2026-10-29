@@ -1,10 +1,12 @@
 import { readFileSync } from "node:fs";
 import { delimiter } from "node:path";
 import { writeCliScript } from "../../testUtils/cli.ts";
+import { awaitProcessExit, awaitStalledCli, stalledCliSource } from "../../testUtils/stalledCli.ts";
 import { ClaudeSettings, ProviderInstanceId, UpstreamTriageBatchResult } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import { Effect, FileSystem, Layer, Path, Schema } from "effect";
+import { Effect, Fiber, FileSystem, Layer, Path, Schema } from "effect";
+import { TestClock } from "effect/testing";
 import { createModelSelection } from "@t3tools/shared/model";
 import { expect } from "vitest";
 
@@ -17,10 +19,15 @@ const ClaudeTextGenerationTestLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-claude-text-generation-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
-function makeFakeClaudeBinary(dir: string) {
+function makeFakeClaudeBinary(dir: string, stalled: boolean) {
   return Effect.gen(function* () {
     const path = yield* Path.Path;
     const binDir = path.join(dir, "bin");
+    const pidPath = path.join(dir, "claude.pid");
+    if (stalled) {
+      const claudePath = writeCliScript(path.join(binDir, "claude"), stalledCliSource(pidPath));
+      return { binDir, claudePath, pidPath };
+    }
     const claudePath = writeCliScript(
       path.join(binDir, "claude"),
       `
@@ -45,7 +52,7 @@ process.stdout.write(env.T3_FAKE_CLAUDE_OUTPUT ?? "");
 process.exitCode = Number(env.T3_FAKE_CLAUDE_EXIT_CODE ?? 0);
 `,
     );
-    return { binDir, claudePath };
+    return { binDir, claudePath, pidPath };
   });
 }
 
@@ -60,13 +67,21 @@ function withFakeClaudeEnv<A, E, R>(
     homeMustBe?: string;
     claudeConfig?: Partial<ClaudeSettings>;
     relativeBinary?: boolean;
+    stalled?: boolean;
   },
-  effectFn: (textGeneration: TextGenerationShape, cwdRecord: string) => Effect.Effect<A, E, R>,
+  effectFn: (
+    textGeneration: TextGenerationShape,
+    cwdRecord: string,
+    pidPath: string,
+  ) => Effect.Effect<A, E, R>,
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-claude-text-" });
-    const { binDir, claudePath } = yield* makeFakeClaudeBinary(tempDir);
+    const { binDir, claudePath, pidPath } = yield* makeFakeClaudeBinary(
+      tempDir,
+      input.stalled === true,
+    );
     const previousPath = process.env.PATH;
     const previousOutput = process.env.T3_FAKE_CLAUDE_OUTPUT;
     const previousExitCode = process.env.T3_FAKE_CLAUDE_EXIT_CODE;
@@ -178,11 +193,33 @@ function withFakeClaudeEnv<A, E, R>(
       ...process.env,
       F5_PROFILE_ISOLATED: "0",
     });
-    return yield* effectFn(textGeneration, path.join(binDir, "last-cwd"));
+    return yield* effectFn(textGeneration, path.join(binDir, "last-cwd"), pidPath);
   }).pipe(Effect.scoped);
 }
 
 it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
+  it.effect("kills a CLI that ignores SIGTERM when the request times out", () =>
+    withFakeClaudeEnv({ output: "", stalled: true }, (textGeneration, _cwdRecord, pidPath) =>
+      Effect.gen(function* () {
+        const fiber = yield* textGeneration
+          .generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Name this thread",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("claudeAgent"),
+              model: "claude-sonnet-4-6",
+            },
+          })
+          .pipe(Effect.flip, Effect.forkScoped);
+        const pid = yield* awaitStalledCli(pidPath);
+
+        yield* TestClock.adjust("180 seconds");
+        yield* awaitProcessExit(pid, TestClock.adjust("100 millis"));
+        expect((yield* Fiber.join(fiber)).detail).toBe("Claude CLI request timed out.");
+      }),
+    ),
+  );
+
   for (const effort of ["high", "xhigh", "ultrathink"] as const) {
     for (const prefixed of [false, true]) {
       it.effect(`forwards Fable 5.1 ${effort} with prefixed=${prefixed}`, () =>

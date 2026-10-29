@@ -1,9 +1,11 @@
 import { createReportedCodexModelCapabilities } from "@t3tools/shared/model";
 import { delimiter } from "node:path";
 import { writeCliCommand } from "../../testUtils/cli.ts";
+import { awaitProcessExit, awaitStalledCli, stalledCliSource } from "../../testUtils/stalledCli.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import { Effect, FileSystem, Layer, Path, Schema } from "effect";
+import { Cause, Effect, Exit, Fiber, FileSystem, Layer, Path, Schema } from "effect";
+import { TestClock } from "effect/testing";
 import { expect } from "vitest";
 
 import { PositiveInt, ProviderInstanceId } from "@t3tools/contracts";
@@ -25,7 +27,7 @@ const makeCodexTextGenerationTestLayer = (stateDir: string) =>
     Layer.provideMerge(NodeServices.layer),
   );
 
-function makeFakeCodexBinary(dir: string) {
+function makeFakeCodexBinary(dir: string, stall?: FakeCodexStall) {
   return Effect.gen(function* () {
     const path = yield* Path.Path;
     const binDir = path.join(dir, "bin");
@@ -35,7 +37,13 @@ function makeFakeCodexBinary(dir: string) {
 const fs = require("node:fs");
 const env = process.env;
 const args = process.argv.slice(2);
-if (args.includes("mcp") && args.includes("list")) {
+const isMcpList = args.includes("mcp") && args.includes("list");
+${
+  stall === undefined
+    ? ""
+    : `if (isMcpList === ${stall.command === "mcp list"}) {${stalledCliSource(stall.pidPath)}return;}`
+}
+if (isMcpList) {
   if (env.T3_FAKE_CODEX_MCP_LOG) fs.appendFileSync(env.T3_FAKE_CODEX_MCP_LOG, args.join(" ") + "\\n");
   process.stdout.write(env.T3_FAKE_CODEX_MCP_LIST ?? "[]");
   process.exit(0);
@@ -74,9 +82,15 @@ process.exitCode = Number(env.T3_FAKE_CODEX_EXIT_CODE ?? 0);
   });
 }
 
+interface FakeCodexStall {
+  readonly command: "exec" | "mcp list";
+  readonly pidPath: string;
+}
+
 function withFakeCodexEnv<A, E, R>(
   input: {
     output: string;
+    stall?: FakeCodexStall;
     exitCode?: number;
     stderr?: string;
     requireImage?: boolean;
@@ -91,7 +105,7 @@ function withFakeCodexEnv<A, E, R>(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-codex-text-" });
-      const binDir = yield* makeFakeCodexBinary(tempDir);
+      const binDir = yield* makeFakeCodexBinary(tempDir, input.stall);
       const previousPath = process.env.PATH;
       const previousOutput = process.env.T3_FAKE_CODEX_OUTPUT_B64;
       const previousExitCode = process.env.T3_FAKE_CODEX_EXIT_CODE;
@@ -231,6 +245,37 @@ it("clamps unsupported Astra reasoning efforts before invoking the CLI", () => {
 });
 
 it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
+  for (const command of ["exec", "mcp list"] as const) {
+    it.effect(`kills a stalled ${command} CLI that ignores SIGTERM on interruption`, () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-codex-stall-" });
+        const pidPath = path.join(dir, "codex.pid");
+        yield* withFakeCodexEnv(
+          { output: "", stall: { command, pidPath } },
+          Effect.gen(function* () {
+            const textGeneration = yield* TextGeneration;
+            const fiber = yield* textGeneration
+              .generateThreadTitle({
+                cwd: process.cwd(),
+                message: "Name this thread",
+                modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+              })
+              .pipe(Effect.forkScoped);
+            const pid = yield* awaitStalledCli(pidPath);
+
+            const interrupted = yield* Fiber.interrupt(fiber).pipe(Effect.forkScoped);
+            yield* awaitProcessExit(pid, TestClock.adjust("100 millis"));
+            yield* Fiber.join(interrupted);
+            const exit = yield* Fiber.await(fiber);
+            expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+          }),
+        );
+      }),
+    );
+  }
+
   for (const effort of ["high", undefined] as const) {
     it.effect(`uses reported auxiliary effort controls: ${effort ?? "none"}`, () =>
       withFakeCodexEnv(
