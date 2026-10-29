@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DesktopComputerHost, type ComputerIpcProcess } from "./DesktopComputerHost";
 class Ipc extends EventEmitter {
   connected = true;
@@ -25,6 +25,7 @@ describe("private desktop host", () => {
       protocolVersion: 1,
       capabilities: [
         "scheduled-notifications-v1",
+        "open-external-url-v1",
         "background-ax-v1",
         "computer-agent-identity-v1",
         "computer-activity-correlation-v1",
@@ -47,5 +48,35 @@ describe("private desktop host", () => {
     await expect(mutation).rejects.toMatchObject({ error: { _tag: "OutcomeUnknown" } });
     await expect(observe).rejects.toMatchObject({ error: { _tag: "Interrupted" } });
     host.close();
+  });
+  it("gates browser requests, correlates results, and resolves pending requests on disconnect", async () => {
+    const ipc = new Ipc();
+    const host = new DesktopComputerHost("p", "i", ipc, true);
+    expect(await host.openExternalUrl("https://example.com")).toBe("unavailable");
+    ipc.emit("message", { type: "hostCapabilities", capabilities: ["open-external-url-v1"] });
+    const response = host.openExternalUrl("https://example.com");
+    const message = ipc.messages.at(-1) as { id: string };
+    expect(message).toMatchObject({ type: "openExternalUrlRequest", url: "https://example.com" });
+    ipc.emit("message", { type: "openExternalUrlResult", id: "wrong", status: "denied" });
+    ipc.emit("message", { type: "openExternalUrlResult", id: message.id, status: "copied" });
+    expect(await response).toBe("copied");
+    const lost = host.openExternalUrl("https://example.com");
+    ipc.emit("disconnect");
+    expect(await lost).toBe("unavailable");
+    host.close();
+  });
+  it("bounds the wait for a capable but unresponsive host", async () => {
+    vi.useFakeTimers();
+    try {
+      const ipc = new Ipc();
+      const host = new DesktopComputerHost("p", "i", ipc, true);
+      ipc.emit("message", { type: "hostCapabilities", capabilities: ["open-external-url-v1"] });
+      const result = host.openExternalUrl("https://example.com");
+      await vi.advanceTimersByTimeAsync(330_000);
+      expect(await result).toBe("unavailable");
+      host.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

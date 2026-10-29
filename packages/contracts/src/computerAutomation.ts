@@ -664,6 +664,15 @@ export const ComputerActivity = Schema.Struct({
 });
 export type ComputerActivity = typeof ComputerActivity.Type;
 export const SCHEDULED_NOTIFICATIONS_CAPABILITY = "scheduled-notifications-v1";
+export const OPEN_EXTERNAL_URL_CAPABILITY = "open-external-url-v1";
+export const OpenExternalUrlStatus = Schema.Literals([
+  "opened",
+  "copied",
+  "denied",
+  "busy",
+  "invalid",
+]);
+export type OpenExternalUrlStatus = typeof OpenExternalUrlStatus.Type;
 export const DesktopScheduledNotification = Schema.Struct({
   id: Id,
   title: Schema.String,
@@ -673,6 +682,16 @@ export const DesktopScheduledNotification = Schema.Struct({
 });
 export type DesktopScheduledNotification = typeof DesktopScheduledNotification.Type;
 export const DesktopComputerHostMessage = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("openExternalUrlRequest"),
+    id: Id,
+    url: Schema.String,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("openExternalUrlResult"),
+    id: Id,
+    status: OpenExternalUrlStatus,
+  }),
   Schema.Struct({
     type: Schema.Literal("scheduledNotification"),
     notification: DesktopScheduledNotification,

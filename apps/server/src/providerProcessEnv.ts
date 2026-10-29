@@ -1,4 +1,5 @@
 import { githubShellEnvironment } from "./git/githubShellStartup";
+import { browserLauncherDir, browserLauncherPath } from "./browser/BrowserOpenLauncher";
 import { githubLauncherDir } from "./git/GithubCliLauncher";
 import { profileGithubEnvironment } from "./git/profileGithubEnvironment";
 import { appendGitConfigPairs, profileSessionGitConfigPairs } from "./git/gitConfigEnvironment";
@@ -149,6 +150,11 @@ export function buildAccountExecutionEnvironment(input: {
     const pathKey = Object.keys(environment).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
     environment[pathKey] =
       githubLauncherDir(input.stateDir) + Path.delimiter + (environment[pathKey] ?? "");
+    if (process.platform === "darwin") {
+      environment.BROWSER = browserLauncherPath(input.stateDir);
+      environment[pathKey] =
+        browserLauncherDir(input.stateDir) + Path.delimiter + environment[pathKey];
+    }
     if (isolated)
       appendGitConfigPairs(
         environment,

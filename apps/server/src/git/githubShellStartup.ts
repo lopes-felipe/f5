@@ -1,5 +1,6 @@
 import * as FS from "node:fs/promises";
 import * as Path from "node:path";
+import { browserLauncherDir, browserLauncherPath } from "../browser/BrowserOpenLauncher";
 
 const shellDir = (stateDir: string) => Path.join(stateDir, "github-shells");
 const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
@@ -26,7 +27,11 @@ export function githubShellEnvironment(
 export async function prepareGithubShellStartup(stateDir: string): Promise<void> {
   const directory = shellDir(stateDir);
   await FS.mkdir(directory, { recursive: true, mode: 0o700 });
-  const reset = `unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN GH_DEBUG\nexport GH_CONFIG_DIR=${quote(Path.join(stateDir, "github"))}\nexport PATH=${quote(Path.join(stateDir, "github-bin"))}:"$PATH"\n`;
+  const reset =
+    `unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN GH_DEBUG\nexport GH_CONFIG_DIR=${quote(Path.join(stateDir, "github"))}\nexport PATH=${quote(Path.join(stateDir, "github-bin"))}:"$PATH"\n` +
+    (process.platform === "darwin"
+      ? `export BROWSER=${quote(browserLauncherPath(stateDir))}\nexport PATH=${quote(browserLauncherDir(stateDir))}:"$PATH"\n`
+      : "");
   for (const name of [".zshenv", ".zprofile", ".zshrc", ".zlogin", ".zlogout"]) {
     await FS.writeFile(
       Path.join(directory, name),
@@ -110,7 +115,10 @@ export function githubTerminalStartup(
       args: [
         ...original,
         "--init-command",
-        `set -gx PATH ${quote(bin)} $PATH; set -gx GH_CONFIG_DIR ${quote(config)}; set -e GH_TOKEN; set -e GITHUB_TOKEN; set -e GH_ENTERPRISE_TOKEN; set -e GITHUB_ENTERPRISE_TOKEN; set -e GH_DEBUG`,
+        `set -gx PATH ${quote(bin)} $PATH; set -gx GH_CONFIG_DIR ${quote(config)}; set -e GH_TOKEN; set -e GITHUB_TOKEN; set -e GH_ENTERPRISE_TOKEN; set -e GITHUB_ENTERPRISE_TOKEN; set -e GH_DEBUG` +
+          (process.platform === "darwin"
+            ? `; set -gx BROWSER ${quote(browserLauncherPath(stateDir))}; set -gx PATH ${quote(browserLauncherDir(stateDir))} $PATH`
+            : ""),
       ],
     };
   return { env: base, args: original };

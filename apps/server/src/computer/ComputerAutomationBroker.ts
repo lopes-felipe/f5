@@ -49,6 +49,8 @@ import { resolveAgentBrowserPolicy, type AgentBrowserPolicy } from "../mcp/brows
 import { AutomationQueue } from "../mcp/automationQueue";
 import { AgentControlPause, AgentControlPauseService } from "../mcp/agentControlPause";
 import { DesktopComputerHost } from "./DesktopComputerHost";
+import { startBrowserOpenListener } from "../browser/BrowserOpenListener";
+import { prepareBrowserOpenLauncher } from "../browser/BrowserOpenLauncher";
 import { computerAccessStorage } from "./computerAccessStorage";
 import { ComputerAccessService } from "./ComputerAccessService";
 
@@ -1769,6 +1771,18 @@ export const ComputerAutomationBrokerLive = Layer.effect(
       Effect.runPromise(effect.pipe(Effect.provide(services)));
     const file = path.join(config.stateDir, "computer-access.json");
     const host = DesktopComputerHost.fromEnvironment(config.profile?.id ?? "default");
+    // Register cleanup before starting any profile-local services.
+    yield* Effect.addFinalizer(() => Effect.sync(() => host.close()));
+    if (process.platform === "darwin") {
+      if (process.env.F5_DESKTOP_COMPUTER_HOST === "ipc") {
+        const closeBrowser = yield* Effect.promise(() =>
+          startBrowserOpenListener(config.stateDir, host),
+        );
+        yield* Effect.addFinalizer(() => Effect.promise(closeBrowser));
+      } else {
+        yield* Effect.promise(() => prepareBrowserOpenLauncher(config.stateDir));
+      }
+    }
     const pause = yield* Effect.serviceOption(AgentControlPauseService);
     const storage = computerAccessStorage({
       exists: () => run(fs.exists(file)),

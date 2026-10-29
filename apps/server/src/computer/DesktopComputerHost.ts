@@ -2,12 +2,14 @@ import { randomUUID } from "node:crypto";
 import { Schema } from "effect";
 import {
   SCHEDULED_NOTIFICATIONS_CAPABILITY,
+  OPEN_EXTERNAL_URL_CAPABILITY,
   COMPUTER_BACKGROUND_CAPABILITY,
   COMPUTER_AGENT_IDENTITY_CAPABILITY,
   COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
   DesktopComputerHostMessage,
   type ComputerAutomationBackendStatus,
   type ComputerAutomationRequest,
+  type OpenExternalUrlStatus,
 } from "@t3tools/contracts";
 import { ComputerControlError, isComputerMutation } from "@t3tools/shared/computerControl";
 
@@ -26,6 +28,13 @@ interface Pending {
 export class DesktopComputerHost {
   private state: ComputerAutomationBackendStatus = { available: false, reason: "no-host" };
   private readonly pending = new Map<string, Pending>();
+  private readonly browserPending = new Map<
+    string,
+    {
+      resolve: (status: OpenExternalUrlStatus | "unavailable") => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
   private readonly listeners = new Set<(message: DesktopComputerHostMessage) => void>();
   private connected = false;
   private hostCapabilities = new Set<string>();
@@ -51,6 +60,7 @@ export class DesktopComputerHost {
       protocolVersion: 1,
       capabilities: [
         SCHEDULED_NOTIFICATIONS_CAPABILITY,
+        OPEN_EXTERNAL_URL_CAPABILITY,
         COMPUTER_BACKGROUND_CAPABILITY,
         COMPUTER_AGENT_IDENTITY_CAPABILITY,
         COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
@@ -76,6 +86,19 @@ export class DesktopComputerHost {
   hasHost(): boolean {
     return this.connected;
   }
+  openExternalUrl(url: string): Promise<OpenExternalUrlStatus | "unavailable"> {
+    if (!this.connected || !this.hostCapabilities.has(OPEN_EXTERNAL_URL_CAPABILITY))
+      return Promise.resolve("unavailable");
+    return new Promise((resolve) => {
+      const id = randomUUID();
+      const timer = setTimeout(() => {
+        this.browserPending.delete(id);
+        resolve("unavailable");
+      }, 330_000);
+      this.browserPending.set(id, { resolve, timer });
+      this.send({ type: "openExternalUrlRequest", id, url });
+    });
+  }
   send(message: DesktopComputerHostMessage): void {
     if (!this.connected || !this.ipc.send) return;
     try {
@@ -96,6 +119,15 @@ export class DesktopComputerHost {
     }
     if (message.type === "hostCapabilities") this.hostCapabilities = new Set(message.capabilities);
     if (message.type === "status") this.state = message.status;
+    if (message.type === "openExternalUrlResult") {
+      const pending = this.browserPending.get(message.id);
+      if (pending) {
+        this.browserPending.delete(message.id);
+        clearTimeout(pending.timer);
+        pending.resolve(message.status);
+      }
+      return;
+    }
     if (message.type === "response") {
       const pending = this.pending.get(message.requestId);
       if (pending) {
@@ -123,6 +155,11 @@ export class DesktopComputerHost {
       );
     }
     this.pending.clear();
+    for (const pending of this.browserPending.values()) {
+      clearTimeout(pending.timer);
+      pending.resolve("unavailable");
+    }
+    this.browserPending.clear();
     for (const listener of this.listeners) listener({ type: "status", status: this.state });
   };
   correlated(
