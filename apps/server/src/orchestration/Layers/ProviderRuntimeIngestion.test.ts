@@ -10237,6 +10237,27 @@ describe("ProviderRuntimeIngestion", () => {
         expect(tokenSequence).toBeGreaterThan(lastMessageSequence);
       });
 
+      it("drops a count whose dispatch fails without blocking completion", async () => {
+        const harness = await startThinkingTurn({
+          failDispatchOnce: (command) => command.type === "thread.message.reasoning-tokens.add",
+        });
+        harness.emit(reasoningDelta("r1", "plan"));
+        harness.emit(reported(300));
+        harness.emit(assistantDelta("a1", "answer"));
+        harness.emit(assistantCompleted("a1"));
+        harness.emit({ ...base(), type: "turn.completed", payload: { state: "completed" } });
+        const thread = await waitForThread(
+          harness.engine,
+          (entry) =>
+            entry.session?.activeTurnId !== "turn-think" &&
+            entry.messages.some((message) => message.id === "assistant:a1" && !message.streaming),
+        );
+        expect(
+          thread.messages.find((message) => message.id === "assistant:a1")?.reasoningText,
+        ).toBe("plan");
+        expect(tokensOf(thread, "assistant:a1")).toEqual([undefined, undefined]);
+      });
+
       it("drops a count when the turn produced no assistant message", async () => {
         const harness = await startThinkingTurn();
         harness.emit(reported(200));

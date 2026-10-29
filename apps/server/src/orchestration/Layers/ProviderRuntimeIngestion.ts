@@ -2971,14 +2971,26 @@ const make = Effect.gen(function* () {
         })
         .pipe(
           Effect.asVoid,
+          // Metadata only: a failed count must not block message completion,
+          // turn cleanup or history reconciliation.
           Effect.catchCause((cause) =>
-            isPermanentDispatchRejection(cause)
-              ? Effect.logDebug("provider runtime ingestion dropped reasoning tokens", {
-                  threadId: input.threadId,
-                  messageId: input.messageId,
-                  tokens: input.tokens.tokens,
-                })
-              : Effect.failCause(cause),
+            Cause.hasInterrupts(cause)
+              ? Effect.failCause(cause)
+              : isPermanentDispatchRejection(cause)
+                ? Effect.logDebug("provider runtime ingestion dropped reasoning tokens", {
+                    threadId: input.threadId,
+                    messageId: input.messageId,
+                    tokens: input.tokens.tokens,
+                  })
+                : Effect.logWarning(
+                    "provider runtime ingestion failed to record reasoning tokens",
+                    {
+                      threadId: input.threadId,
+                      messageId: input.messageId,
+                      tokens: input.tokens.tokens,
+                      cause: Cause.pretty(cause),
+                    },
+                  ),
           ),
         );
     });

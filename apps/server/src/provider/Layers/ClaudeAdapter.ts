@@ -4347,6 +4347,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             if (!turnState) return;
             turnState.thinkingBlockCount += 1;
             const itemId = `${turnState.turnId}:thinking:${turnState.thinkingBlockCount}`;
+            // Each block's estimate restarts from zero; the drop check is only a fallback.
+            if (turnState.thinkingTokens) {
+              turnState.thinkingTokens = { ...turnState.thinkingTokens, lastEstimate: 0 };
+            }
             turnState.openThinkingBlocks.set(index, itemId);
             const stamp = yield* makeEventStamp(context);
             yield* offerRuntimeEvent({

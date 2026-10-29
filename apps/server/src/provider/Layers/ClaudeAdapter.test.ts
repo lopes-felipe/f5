@@ -5228,11 +5228,13 @@ describe("ClaudeAdapterLive", () => {
         index: 1,
         content_block: { type: "thinking", thinking: "", signature: "" },
       });
-      // The estimate restarts for a new block.
-      estimate(200);
+      // The estimate restarts for a new block, even when its first frame
+      // is above the previous block's final estimate.
+      estimate(900);
+      estimate(1_000);
       stream({ type: "content_block_stop", index: 1 });
       // A late frame for the closed block is reported when the turn ends.
-      estimate(350);
+      estimate(1_150);
       emit({ type: "result", subtype: "success", is_error: false, errors: [] });
 
       const events = Array.from(yield* Fiber.join(eventsFiber));
@@ -5244,7 +5246,7 @@ describe("ClaudeAdapterLive", () => {
       const turnId = String(turn.turnId);
       assert.deepEqual(reports, [
         { itemId: `${turnId}:thinking:1`, turnId, tokens: 700, estimated: true },
-        { itemId: `${turnId}:thinking:2`, turnId, tokens: 200, estimated: true },
+        { itemId: `${turnId}:thinking:2`, turnId, tokens: 1_000, estimated: true },
         { itemId: undefined, turnId, tokens: 150, estimated: true },
       ]);
       const completedIndex = events.findIndex((event) => event.type === "turn.completed");
