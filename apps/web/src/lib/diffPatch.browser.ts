@@ -34,7 +34,10 @@ describe("DIFF_PANEL_UNSAFE_CSS", () => {
   it("keeps wrapped split code columns equal when one side has wider mounted lines", () => {
     // Without the override the library's 1fr tracks grow with mounted content.
     const library = renderWrappedSplitDiff("");
-    expect(library.additions).toBeGreaterThan(library.deletions + 1);
+    expect(
+      library.additions,
+      "@pierre/diffs now keeps wrapped split columns equal; remove the override from DIFF_PANEL_UNSAFE_CSS",
+    ).toBeGreaterThan(library.deletions + 1);
 
     const panel = renderWrappedSplitDiff(DIFF_PANEL_UNSAFE_CSS);
     expect(panel.deletions).toBeGreaterThan(0);
