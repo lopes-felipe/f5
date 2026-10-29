@@ -87,20 +87,39 @@ function startPick(contentType: string) {
       documentElement,
     ],
   };
-  const result = runInNewContext(buildPreviewPickScript(), {
+  const context = {
     window,
     document,
     location: { href: "file:///doc.pdf" },
     Node: { ELEMENT_NODE: 1 },
     CSS: { escape: (value: string) => value },
-  }) as Promise<{ element: { tagName: string } } | null>;
+  };
+  const run = () =>
+    runInNewContext(buildPreviewPickScript(), context) as Promise<{
+      element: { tagName: string };
+    } | null>;
+  const result = run();
   const dispatch = (type: string, event: Record<string, unknown>) =>
     listeners.get(type)?.({ preventDefault: () => {}, stopPropagation: () => {}, ...event });
-  const inputLayer = () =>
-    documentElement.children.find((child) =>
+  const inputLayers = () =>
+    documentElement.children.filter((child) =>
       child.hasAttribute(PREVIEW_PICK_INPUT_LAYER_ATTRIBUTE),
     );
-  return { result, dispatch, documentElement, body, embed, inputLayer, listeners };
+  const inputLayer = () => inputLayers()[0];
+  const cancel = () => (window.__f5PreviewPickCancel as (() => void) | undefined)?.();
+  return {
+    result,
+    run,
+    cancel,
+    dispatch,
+    window,
+    documentElement,
+    body,
+    embed,
+    inputLayer,
+    inputLayers,
+    listeners,
+  };
 }
 
 describe("buildPreviewPickScript", () => {
@@ -130,5 +149,35 @@ describe("buildPreviewPickScript", () => {
     pick.dispatch("keydown", { key: "Escape", target: pick.inputLayer() });
     await expect(pick.result).resolves.toBeNull();
     expect(pick.inputLayer()).toBeUndefined();
+  });
+
+  it("highlights the element under the input layer on hover", () => {
+    const pick = startPick("application/pdf");
+    const [overlay, label] = pick.documentElement.children.filter(
+      (child) => child !== pick.body && child !== pick.inputLayer(),
+    );
+    pick.dispatch("mousemove", { target: pick.inputLayer(), clientX: 10, clientY: 10 });
+    expect(overlay!.style.display).toBe("block");
+    expect(label!.textContent).toBe("embed");
+  });
+
+  it("removes the input layer when the host cancels the pick", async () => {
+    const pick = startPick("application/pdf");
+    pick.cancel();
+    await expect(pick.result).resolves.toBeNull();
+    expect(pick.documentElement.children).toEqual([pick.body]);
+    expect(pick.listeners.size).toBe(0);
+    expect(pick.window.__f5PreviewPickCancel).toBeUndefined();
+  });
+
+  it("keeps a single input layer when a pick restarts", async () => {
+    const pick = startPick("application/pdf");
+    const restarted = pick.run();
+    await expect(pick.result).resolves.toBeNull();
+    expect(pick.inputLayers()).toHaveLength(1);
+
+    pick.dispatch("click", { target: pick.inputLayer(), clientX: 10, clientY: 10 });
+    await expect(restarted).resolves.toMatchObject({ element: { tagName: "embed" } });
+    expect(pick.documentElement.children).toEqual([pick.body]);
   });
 });
