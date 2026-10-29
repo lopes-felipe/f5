@@ -229,6 +229,7 @@ export function threadNotificationIcon(status: ThreadStatus): string | undefined
     "plan-ready":
       '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zm0 0v6h6M8 13h8M8 17h8"/>',
     completed: '<path d="m20 6-11 11-5-5"/>',
+    failed: '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6m0-6 6 6"/>',
     working: '<path d="m6 3 14 9-14 9z"/>',
     connecting: '<path d="M12 2a10 10 0 1 0 10 10"/>',
   };

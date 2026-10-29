@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import type { Thread } from "../../types";
 import { HomeAttentionCard, attentionCardActionLabel } from "./HomeAttentionCard";
-import { resolveGreeting } from "./HomeMissionControl";
+import { matchesRecentStatusFilter, resolveGreeting } from "./HomeMissionControl";
 import { appendQuickStartText } from "./HomeQuickStart";
 import { HomeThreadRow } from "./HomeThreadRow";
 import { toThreadSummary } from "../../threadSelectors";
@@ -69,6 +69,17 @@ describe("resolveGreeting", () => {
     expect(resolveGreeting(9)).toBe("Good morning");
     expect(resolveGreeting(14)).toBe("Good afternoon");
     expect(resolveGreeting(21)).toBe("Good evening");
+  });
+});
+
+describe("matchesRecentStatusFilter", () => {
+  it("gives failed threads their own filter instead of hiding them", () => {
+    expect(matchesRecentStatusFilter("failed", "failed")).toBe(true);
+    expect(matchesRecentStatusFilter("failed", "all")).toBe(true);
+    expect(matchesRecentStatusFilter("failed", "completed")).toBe(false);
+    expect(matchesRecentStatusFilter("failed", "idle")).toBe(false);
+    expect(matchesRecentStatusFilter("completed", "completed")).toBe(true);
+    expect(matchesRecentStatusFilter("none", "idle")).toBe(true);
   });
 });
 

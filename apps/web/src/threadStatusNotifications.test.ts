@@ -5,8 +5,18 @@ import {
   diffThreadStatusNotifications,
   showThreadStatusNotification,
   shouldDispatchThreadStatusNotification,
+  threadNotificationIcon,
   type ThreadStatusNotificationInstance,
 } from "./threadStatusNotifications";
+
+describe("threadNotificationIcon", () => {
+  it("gives a failure its own glyph", () => {
+    const failed = threadNotificationIcon("failed");
+    expect(failed).toMatch(/^data:image\/svg\+xml,/);
+    expect(failed).not.toBe(threadNotificationIcon("completed"));
+    expect(threadNotificationIcon("none")).toBeUndefined();
+  });
+});
 
 describe("diffThreadStatusNotifications", () => {
   const threadId = ThreadId.makeUnsafe("thread-1");
