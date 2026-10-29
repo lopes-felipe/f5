@@ -19,6 +19,11 @@ anywhere in the app.
 - `mod+b` toggles the sidebar, except while a terminal or dialog has focus.
 - In the desktop app, `mod+w` closes the focused terminal or active right-panel tab. When
   nothing remains to close, it does nothing; it never closes the window.
+- `F6` and `Shift+F6` move focus between the sidebar, conversation, composer, right panel and
+  terminal. Each area returns focus to the control it last had. Use `mod+F6` where the browser
+  keeps plain F6 for itself. A focused desktop preview hands F6 back to the app. In the sidebar,
+  arrow keys move between rows, Right and Left expand and collapse projects, and F2 renames a
+  thread.
 - `mod+shift+n` opens a new workflow.
 - `mod+enter` scrolls to the bottom of the chat; it doesn't send. In a dialog it runs the primary
   action.
@@ -42,6 +47,10 @@ See the full schema for more details: [`packages/contracts/src/keybindings.ts`](
 
 ```json
 [
+  { "key": "f6", "command": "workspace.focusNext" },
+  { "key": "shift+f6", "command": "workspace.focusPrevious" },
+  { "key": "mod+f6", "command": "workspace.focusNext" },
+  { "key": "mod+shift+f6", "command": "workspace.focusPrevious" },
   { "key": "mod+[", "command": "navigation.back", "when": "!terminalFocus && !dialogFocus" },
   { "key": "mod+]", "command": "navigation.forward", "when": "!terminalFocus && !dialogFocus" },
   {
@@ -292,6 +301,7 @@ Invalid rules are ignored. Invalid config files are ignored. Warnings are logged
 - `thread.switchRecentPrevious`: cycle to the previous recent tab/page (`Ctrl+Shift+Tab` by default)
 - `model.switchRecent`: cycle to the next recent model (`Alt+Tab` by default)
 - `commandPalette.toggle`: open or close the command palette
+- `workspace.focusNext` / `workspace.focusPrevious`: move focus to the next or previous workspace area (`F6` / `Shift+F6` by default)
 - `help.shortcuts`: open or close the keyboard shortcuts reference (`Mod+/` by default)
 - `palette.files`: open the command palette in project-file mode
 - `projectContentSearch.toggle`: open the command palette in project-content mode
@@ -323,7 +333,10 @@ Currently available context keys:
 - `terminalOpen`
 - `composerFocus`
 - `dialogFocus`
-- `editableFocus` (an input, textarea or editable element has focus)
+- `editableFocus` (an input, textarea or editable element has focus). For `thread.undo` it is
+  false right after a thread action shows its Undo toast, so `mod+z` undoes the action from the
+  composer too. The next other key press or text edit hands `mod+z` back to the text field.
+- `threadUndoAvailable` (a thread action's Undo toast is still showing)
 - `upstreamListFocus` (the Upstream page topic list has focus)
 
 Supported operators:

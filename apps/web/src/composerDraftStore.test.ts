@@ -323,6 +323,81 @@ describe("composerDraftStore image imports", () => {
     expect(useComposerDraftStore.getState().draftsByThreadId[threadA]?.images).toHaveLength(1);
     expect(useComposerDraftStore.getState().imageImportsByThreadId[threadA]).toBeUndefined();
   });
+
+  it("shows a preparing tile at once and hands its id to the compressed image", async () => {
+    let resolveImport!: (result: CompressComposerImageResult) => void;
+    const processor: ComposerImageProcessor = () =>
+      new Promise((resolve) => {
+        resolveImport = resolve;
+      });
+    const file = new File([new Uint8Array(6)], "paste.png", { type: "image/png" });
+    const compressed = new File([new Uint8Array(3)], "paste.webp", { type: "image/webp" });
+    const importPromise = useComposerDraftStore
+      .getState()
+      .importImages(threadA, [file], { processor });
+
+    const preparing = useComposerDraftStore.getState().imageImportsByThreadId[threadA]?.preparing;
+    expect(preparing).toEqual([
+      { id: expect.any(String), name: "paste.png", previewUrl: expect.stringMatching(/^blob:/) },
+    ]);
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadA]?.images ?? []).toEqual([]);
+
+    resolveImport({
+      ok: true,
+      file: compressed,
+      recompressed: true,
+      originalSizeBytes: file.size,
+      finalSizeBytes: compressed.size,
+    });
+    await importPromise;
+
+    const [image] = useComposerDraftStore.getState().draftsByThreadId[threadA]?.images ?? [];
+    expect(image).toMatchObject({ id: preparing![0]!.id, name: "paste.webp" });
+    expect(image?.previewUrl).not.toBe(preparing![0]!.previewUrl);
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(preparing![0]!.previewUrl);
+    expect(useComposerDraftStore.getState().imageImportsByThreadId[threadA]).toBeUndefined();
+  });
+
+  it("drops a tile removed while preparing, including its failure", async () => {
+    const resolvers: Array<(result: CompressComposerImageResult) => void> = [];
+    const processor: ComposerImageProcessor = () =>
+      new Promise((resolve) => {
+        resolvers.push(resolve);
+      });
+    const kept = new File([new Uint8Array(6)], "kept.png", { type: "image/png" });
+    const removed = new File([new Uint8Array(6)], "removed.png", { type: "image/png" });
+    const importPromise = useComposerDraftStore
+      .getState()
+      .importImages(threadA, [kept, removed], { processor });
+    const [keptTile, removedTile] =
+      useComposerDraftStore.getState().imageImportsByThreadId[threadA]?.preparing ?? [];
+
+    useComposerDraftStore.getState().removeImage(threadA, removedTile!.id);
+    expect(useComposerDraftStore.getState().imageImportsByThreadId[threadA]).toEqual({
+      pendingCount: 1,
+      preparing: [keptTile],
+    });
+
+    await vi.waitFor(() => expect(resolvers).toHaveLength(2));
+    resolvers[0]!({
+      ok: true,
+      file: kept,
+      recompressed: false,
+      originalSizeBytes: kept.size,
+      finalSizeBytes: kept.size,
+    });
+    resolvers[1]!({ ok: false, reason: "unreadable" });
+    const result = await importPromise;
+
+    expect(result.failures).toEqual([]);
+    const images = useComposerDraftStore.getState().draftsByThreadId[threadA]?.images ?? [];
+    // An unchanged file keeps the tile's URL instead of decoding a new one.
+    expect(images.map((image) => [image.id, image.previewUrl])).toEqual([
+      [keptTile!.id, keptTile!.previewUrl],
+    ]);
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(removedTile!.previewUrl);
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(keptTile!.previewUrl);
+  });
 });
 
 describe("composerDraftStore clearComposerContent", () => {

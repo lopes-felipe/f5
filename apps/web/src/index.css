@@ -1235,3 +1235,9 @@ label:has(> select#reasoning-effort) select {
   outline: 1px solid color-mix(in oklch, var(--primary) 35%, transparent);
   outline-offset: -1px;
 }
+
+/* A workspace area with no control of its own takes F6 focus itself; keep that visible. */
+[data-workspace-area]:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}

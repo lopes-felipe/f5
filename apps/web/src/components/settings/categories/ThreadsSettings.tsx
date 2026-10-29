@@ -13,6 +13,7 @@ import { resolveClaudeSubagentModel } from "../../ChatView.logic";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
 import { SettingsCard, SettingsRow } from "../SettingsCard";
 import { SessionNotesSettings } from "../SessionNotesSettings";
+import { SnoozePresetsSettings } from "../SnoozePresetsSettings";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
@@ -45,6 +46,7 @@ export function ThreadsSettings() {
   return (
     <>
       <NewThreadDefaults />
+      <SnoozePresetsSettings />
       <RuntimeSettings />
       <HelperSettings />
     </>

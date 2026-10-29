@@ -301,16 +301,34 @@ function rankCommandPaletteItemMatch(
   return 0;
 }
 
+/** Rows a root search shows from submenu options, after the root's own matches. */
+export const NESTED_SEARCH_LIMIT = 3;
+
 export function filterCommandPaletteGroups(input: {
   activeGroups: ReadonlyArray<CommandPaletteGroup>;
   query: string;
   isInSubmenu: boolean;
+  /** Submenu options join the root search, and a submenu with no match falls back to it. */
+  allOptions?: {
+    readonly rootGroups: ReadonlyArray<CommandPaletteGroup>;
+    readonly nestedItems: ReadonlyArray<CommandPaletteActionItem>;
+  };
   fileSearchItems?: ReadonlyArray<CommandPaletteActionItem>;
   contentSearchItems?: ReadonlyArray<CommandPaletteActionItem>;
   searchMode?: CommandPaletteFilterMode;
   projectSearchItems: ReadonlyArray<CommandPaletteActionItem>;
   threadSearchItems: ReadonlyArray<CommandPaletteActionItem>;
 }): CommandPaletteGroup[] {
+  if (input.allOptions && input.isInSubmenu) {
+    const { allOptions, ...submenuInput } = input;
+    const scoped = filterCommandPaletteGroups(submenuInput);
+    if (scoped.length > 0 || normalizeSearchText(input.query).length === 0) return scoped;
+    return filterCommandPaletteGroups({
+      ...input,
+      activeGroups: allOptions.rootGroups,
+      isInSubmenu: false,
+    });
+  }
   const searchMode = input.searchMode ?? "all";
   if (searchMode === "files") {
     return input.fileSearchItems?.length
@@ -347,6 +365,13 @@ export function filterCommandPaletteGroups(input: {
   }
 
   const searchableGroups = [...baseGroups];
+  if (!input.isInSubmenu && input.allOptions && input.allOptions.nestedItems.length > 0) {
+    searchableGroups.push({
+      value: "nested-search",
+      label: "Suggestions",
+      items: input.allOptions.nestedItems,
+    });
+  }
   if (!input.isInSubmenu && !isActionsFilter) {
     if (input.projectSearchItems.length > 0) {
       searchableGroups.push({
@@ -383,6 +408,7 @@ export function filterCommandPaletteGroups(input: {
           entry !== null,
       )
       .toSorted((left, right) => right.rank - left.rank || left.index - right.index)
+      .slice(0, group.value === "nested-search" ? NESTED_SEARCH_LIMIT : undefined)
       .map((entry) => entry.item);
 
     if (items.length === 0) {
@@ -410,6 +436,33 @@ export function filterCommandPaletteGroups(input: {
   }
 
   return filteredGroups;
+}
+
+/** Every option inside a submenu as one row, e.g. "New thread in web" or "Choose theme: Dracula". */
+export function buildNestedSearchItems(
+  items: ReadonlyArray<CommandPaletteActionItem | CommandPaletteSubmenuItem>,
+  query: string,
+): CommandPaletteActionItem[] {
+  const topLevelTitles = new Set(
+    items.flatMap((item) => (typeof item.title === "string" ? [item.title] : [])),
+  );
+  const normalizedQuery = normalizeSearchText(query);
+  return items.flatMap((parent) => {
+    if (parent.kind !== "submenu" || typeof parent.title !== "string") return [];
+    const stem = parent.title.replace(/(\.\.\.|…)$/u, "");
+    // A query that only names the submenu ("new thread in") wants the submenu row itself.
+    if (normalizeSearchText(stem).startsWith(normalizedQuery)) return [];
+    const prefix = stem === parent.title ? `${stem}: ` : `${stem.trimEnd()} `;
+    return parent.groups.flatMap((group) =>
+      group.items.flatMap((child) => {
+        if (child.kind !== "action" || typeof child.title !== "string") return [];
+        const title = `${prefix}${child.title}`;
+        if (topLevelTitles.has(title)) return [];
+        // Only the combined title: child keywords like a project path would list every project.
+        return [{ ...child, title, searchTerms: [title] }];
+      }),
+    );
+  });
 }
 
 export function buildBrowseGroups(input: {

@@ -74,6 +74,7 @@ import { useStore } from "../store";
 import { useThread } from "../threadSelectors";
 import { Sidebar, SidebarInset, SidebarProvider, SidebarRail } from "~/components/ui/sidebar";
 import { AppTitlebar } from "~/components/AppTitlebar";
+import { workspaceAreaProps } from "~/lib/workspaceFocus";
 
 function selectThreadRouteSettings(settings: AppSettings) {
   return {
@@ -93,6 +94,7 @@ const RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_right_panel_sidebar_w
 const RIGHT_PANEL_INLINE_DEFAULT_WIDTH = "clamp(28rem,48vw,44rem)";
 const RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH = 26 * 16;
 const COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX = 208;
+const RIGHT_PANEL_WORKSPACE_AREA = workspaceAreaProps("panel", 4, "Workspace panel");
 const EMPTY_ACTIVITIES: ReadonlyArray<OrchestrationThreadActivity> = [];
 const EMPTY_TASKS: ReadonlyArray<TaskItem> = [];
 type RightPanelRenderMode = Extract<DiffPanelMode, "sheet" | "sidebar">;
@@ -285,6 +287,8 @@ const RightPanelInlineSidebar = (props: {
         collapsible="offcanvas"
         // A second canvas beside the main one: same 8px gutter on the chrome.
         className="border-l-0 bg-transparent py-2 pe-2 text-foreground *:data-[slot=sidebar-inner]:overflow-hidden *:data-[slot=sidebar-inner]:rounded-xl *:data-[slot=sidebar-inner]:surface-canvas"
+        {...RIGHT_PANEL_WORKSPACE_AREA}
+        data-workspace-unavailable={open ? undefined : "true"}
         resizable={{
           minWidth: RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH,
           shouldAcceptWidth: shouldAcceptInlineSidebarWidth,

@@ -62,4 +62,19 @@ describe("thread undo", () => {
     expect(await undoThreadAction()).toBe(true);
     expect(undo).toHaveBeenCalledTimes(2);
   });
+
+  it("claims mod+z for a fresh action until released or expired", async () => {
+    const { recordThreadUndo, releaseThreadUndoShortcut, threadUndoClaimsShortcut } =
+      await import("./threadUndo");
+    expect(threadUndoClaimsShortcut()).toBe(false);
+    recordThreadUndo("Settled", vi.fn().mockResolvedValue(undefined));
+    expect(threadUndoClaimsShortcut()).toBe(true);
+    releaseThreadUndoShortcut();
+    expect(threadUndoClaimsShortcut()).toBe(false);
+
+    recordThreadUndo("Snoozed", vi.fn().mockResolvedValue(undefined));
+    expect(threadUndoClaimsShortcut()).toBe(true);
+    vi.advanceTimersByTime(8000);
+    expect(threadUndoClaimsShortcut()).toBe(false);
+  });
 });

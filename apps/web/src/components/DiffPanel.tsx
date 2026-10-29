@@ -34,6 +34,7 @@ import { type AppSettings, updateAppSettings, useAppSettingsSelector } from "../
 import { readNativeApi } from "../nativeApi";
 import { resolvePathLinkTarget } from "../terminal-links";
 import { clearTurnDiffSearchParams, parseDiffRouteSearch } from "../diffRouteSearch";
+import { useDiffFileRevealRequestId } from "../diffFileReveal";
 import { useTheme } from "../hooks/useTheme";
 import { PREFERRED_HIGHLIGHTER, resolveDiffThemeName } from "../lib/diffRendering";
 import {
@@ -308,15 +309,41 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
     [activeThreadId, diffLogicalScope],
   );
 
+  // The file tree and a file clicked in a turn share this path: expand the file,
+  // keep every other file's choice, then scroll it to the top.
+  const revealDiffFile = useCallback(
+    (path: string): boolean => {
+      const file = renderableFiles.find((entry) => resolveFileDiffPath(entry) === path);
+      if (!file) return false;
+      setCollapsedFileOverrides((previous) => ({
+        ...previous,
+        [logicalFileKey(buildFileDiffLogicalIdentity(file))]: false,
+      }));
+      window.requestAnimationFrame(() =>
+        Array.from(
+          patchViewportRef.current?.querySelectorAll<HTMLElement>("[data-diff-file-path]") ?? [],
+        )
+          .find((node) => node.dataset.diffFilePath === path)
+          ?.scrollIntoView({ block: "start" }),
+      );
+      return true;
+    },
+    [logicalFileKey, renderableFiles],
+  );
+
+  // Each pick of a file reveals once. A refresh that rebuilds the file list must not
+  // expand the file again after the user collapsed it; picking it again does.
+  const revealRequestId = useDiffFileRevealRequestId();
+  const routeRevealKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!selectedFilePath || !patchViewportRef.current) {
+    if (!selectedFilePath) {
+      routeRevealKeyRef.current = null;
       return;
     }
-    const target = Array.from(
-      patchViewportRef.current.querySelectorAll<HTMLElement>("[data-diff-file-path]"),
-    ).find((element) => element.dataset.diffFilePath === selectedFilePath);
-    target?.scrollIntoView({ block: "nearest" });
-  }, [selectedFilePath, renderableFiles]);
+    const key = JSON.stringify([logicalFileKey(""), selectedFilePath, revealRequestId]);
+    if (routeRevealKeyRef.current === key) return;
+    if (revealDiffFile(selectedFilePath)) routeRevealKeyRef.current = key;
+  }, [logicalFileKey, revealDiffFile, revealRequestId, selectedFilePath]);
 
   const openDiffFileInEditor = useCallback(
     (filePath: string) => {
@@ -717,20 +744,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
           scope={`workspace:${activeCwd ?? activeThreadId}`}
           files={renderableFiles.map((file) => ({ path: resolveFileDiffPath(file) }))}
           onSelect={(path) => {
-            const file = renderableFiles.find((entry) => resolveFileDiffPath(entry) === path);
-            if (!file) return;
-            setCollapsedFileOverrides((previous) => ({
-              ...previous,
-              [logicalFileKey(buildFileDiffLogicalIdentity(file))]: false,
-            }));
-            window.requestAnimationFrame(() =>
-              Array.from(
-                patchViewportRef.current?.querySelectorAll<HTMLElement>("[data-diff-file-path]") ??
-                  [],
-              )
-                .find((node) => node.dataset.diffFilePath === path)
-                ?.scrollIntoView({ block: "start" }),
-            );
+            revealDiffFile(path);
           }}
           onContextMenu={openFileContextMenu}
         />

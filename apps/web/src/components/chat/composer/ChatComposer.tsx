@@ -3,6 +3,7 @@ import { useComposerExpandBudget } from "./useComposerExpandBudget";
 import { composerAttachmentStatus } from "~/lib/attachmentValidation";
 import { getAttachmentUploadState, subscribeAttachmentUploads } from "~/lib/attachmentUploadQueue";
 import { AttachmentUploadProgress } from "./AttachmentUploadProgress";
+import { NO_PREPARING_COMPOSER_IMAGES, useComposerDraftStore } from "~/composerDraftStore";
 import { PopupFocusContext, PopupOwnerAttributesContext } from "~/components/ui/popupFocus";
 import { EXPANDED_COMPOSER_ATTRIBUTE } from "~/keybindings";
 import { type ComposerMention, insertComposerMentionTrigger } from "~/composer-editor-mentions";
@@ -196,6 +197,9 @@ export function ChatComposer({
   } = attachments;
   const dropLabel =
     attachments.composerDropKind === "reference" ? "Drop to mention" : "Drop files to attach";
+  const preparingComposerImages = useComposerDraftStore(
+    (store) => store.imageImportsByThreadId[threadId]?.preparing ?? NO_PREPARING_COMPOSER_IMAGES,
+  );
   const attachmentCount = composerImages.length + composerFilePaths.length;
   const attachmentStatus = composerAttachmentStatus(composerImages, modelControls.selectedProvider);
   const attachmentUploadFailed = useSyncExternalStore(
@@ -548,7 +552,7 @@ export function ChatComposer({
 
               {!isComposerApprovalState && pendingUserInputs.length === 0 && (
                 <div id={attachmentTrayId} data-composer-attachment-tray="true">
-                  {composerImages.length > 0 && (
+                  {(composerImages.length > 0 || preparingComposerImages.length > 0) && (
                     <div className="mb-3 flex flex-wrap gap-2">
                       {(() => {
                         const status = attachmentStatus;
@@ -561,20 +565,39 @@ export function ChatComposer({
                           </p>
                         ) : null;
                       })()}
-                      {visibleComposerImages.map((image) => (
+                      {/* One keyed list: a prepared image takes its placeholder's id, so the
+                          tile and its thumbnail element survive the swap. */}
+                      {[
+                        ...visibleComposerImages.map((image) => ({
+                          id: image.id,
+                          name: image.name,
+                          previewUrl: image.type === "image" ? image.previewUrl : null,
+                          image,
+                        })),
+                        ...preparingComposerImages.map((preparing) => ({
+                          id: preparing.id,
+                          name: preparing.name,
+                          previewUrl: preparing.previewUrl,
+                          image: null,
+                        })),
+                      ].map(({ id, name, previewUrl, image }) => (
                         <div
-                          key={image.id}
+                          key={id}
                           className="relative size-16 overflow-hidden rounded-lg border border-border bg-background focus-within:ring-2 focus-within:ring-ring"
-                          title={image.name}
+                          title={name}
+                          aria-busy={image ? undefined : true}
                         >
-                          {image.type === "image" && image.previewUrl ? (
+                          {previewUrl ? (
                             <button
                               type="button"
-                              className="h-full w-full cursor-zoom-in outline-none"
-                              aria-label={`Preview ${image.name}`}
+                              className={cn(
+                                "h-full w-full outline-none",
+                                image && "cursor-zoom-in",
+                              )}
+                              aria-label={image ? `Preview ${name}` : `Preparing ${name}`}
+                              disabled={!image}
                               onContextMenu={(event) => {
-                                if (!attachments.usesCustomImageContextMenu || !image.previewUrl)
-                                  return;
+                                if (!image || !attachments.usesCustomImageContextMenu) return;
                                 event.preventDefault();
                                 event.stopPropagation();
                                 attachments.onImageActionMenu(
@@ -588,25 +611,32 @@ export function ChatComposer({
                                 );
                               }}
                               onClick={() => {
+                                if (!image) return;
                                 const preview = buildExpandedImagePreview(composerImages, image.id);
                                 if (!preview) return;
                                 attachments.setExpandedImage(preview);
                               }}
                             >
                               <img
-                                src={image.previewUrl}
-                                alt={image.name}
+                                src={previewUrl}
+                                alt={name}
                                 className="h-full w-full object-cover"
                                 draggable={false}
                               />
                             </button>
                           ) : (
                             <div className="flex h-full w-full items-center justify-center overflow-hidden px-1 text-center text-2xs break-all text-muted-foreground">
-                              <span className="line-clamp-3">{image.name}</span>
+                              <span className="line-clamp-3">{name}</span>
                             </div>
                           )}
-                          <AttachmentUploadProgress image={image} threadId={threadId} />
-                          {attachments.nonPersistedComposerImageIdSet.has(image.id) && (
+                          {image ? (
+                            <AttachmentUploadProgress image={image} threadId={threadId} />
+                          ) : (
+                            <div className="pointer-events-none absolute bottom-0 left-0 right-0 bg-background/95 p-1 text-2xs">
+                              0% uploaded
+                            </div>
+                          )}
+                          {attachments.nonPersistedComposerImageIdSet.has(id) && (
                             <Tooltip>
                               <TooltipTrigger
                                 render={
@@ -632,8 +662,8 @@ export function ChatComposer({
                             variant="ghost"
                             size="icon-xs"
                             className="absolute right-1 top-1 bg-background/80 hover:bg-background/90"
-                            onClick={() => removeComposerImage(image.id)}
-                            aria-label={`Remove ${image.name}`}
+                            onClick={() => removeComposerImage(id)}
+                            aria-label={`Remove ${name}`}
                             disabled={isPendingTurnDispatchBlocked}
                           >
                             <XIcon />
