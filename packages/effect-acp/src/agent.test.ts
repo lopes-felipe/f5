@@ -254,6 +254,87 @@ it.effect("effect-acp agent keeps RPC ids within int32 and apart from extension 
       const permission = yield* Fiber.join(permissionFiber);
       assert.equal(permission.outcome.outcome, "selected");
       assert.deepEqual(yield* Fiber.join(extFiber), { ok: true });
+
+      const nextPermissionFiber = yield* agent.client
+        .requestPermission(permissionRequest.params)
+        .pipe(Effect.forkScoped);
+      const nextPermissionRequest = yield* decodedPermission(yield* Queue.take(output));
+      assert.equal(Number(nextPermissionRequest.id), 2 ** 30 + 1);
+      yield* Queue.offer(
+        input,
+        yield* encodeJsonl(RequestPermissionResponse, {
+          jsonrpc: "2.0",
+          id: nextPermissionRequest.id,
+          result: { outcome: { outcome: "cancelled" } },
+        }),
+      );
+      assert.equal((yield* Fiber.join(nextPermissionFiber)).outcome.outcome, "cancelled");
     }).pipe(Effect.provide(context), Effect.ensuring(Scope.close(scope, Exit.void)));
   }),
+);
+
+it.effect.each([0, 2 ** 30, 2 ** 32])(
+  "effect-acp agent answers incoming id %s independently of outbound ids",
+  (requestId) =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const scope = yield* Scope.make();
+      const context = yield* Layer.buildWithScope(AcpAgent.layer(stdio), scope);
+
+      yield* Effect.gen(function* () {
+        const agent = yield* AcpAgent.AcpAgent;
+        yield* agent.handleInitialize(() =>
+          Effect.succeed({
+            protocolVersion: 1,
+            agentCapabilities: {},
+            agentInfo: { name: "mock-agent", version: "0.0.0" },
+          }),
+        );
+
+        // Opposite directions may reuse an id even while a request is pending.
+        const outboundFiber = yield* agent.client
+          .requestPermission({
+            sessionId: "session-1",
+            toolCall: { toolCallId: "tool-1", title: "Allow mock action" },
+            options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+          })
+          .pipe(Effect.forkScoped);
+        const outbound = yield* Schema.decodeEffect(
+          Schema.fromJsonString(RequestPermissionRequest),
+        )(yield* Queue.take(output));
+
+        yield* Queue.offer(
+          input,
+          yield* encodeJsonl(InitializeRequest, {
+            jsonrpc: "2.0",
+            id: requestId,
+            method: "initialize",
+            params: {
+              protocolVersion: 1,
+              clientCapabilities: {
+                fs: { readTextFile: false, writeTextFile: false },
+                terminal: false,
+              },
+              clientInfo: { name: "effect-acp-test", version: "0.0.0" },
+            },
+            headers: [],
+          }),
+        );
+        const initResponse = yield* Schema.decodeEffect(Schema.fromJsonString(InitializeResponse))(
+          yield* Queue.take(output),
+        );
+        assert.equal(Number(initResponse.id), requestId);
+        assert.equal(initResponse.result.agentInfo?.name, "mock-agent");
+
+        yield* Queue.offer(
+          input,
+          yield* encodeJsonl(RequestPermissionResponse, {
+            jsonrpc: "2.0",
+            id: outbound.id,
+            result: { outcome: { outcome: "cancelled" } },
+          }),
+        );
+        assert.equal((yield* Fiber.join(outboundFiber)).outcome.outcome, "cancelled");
+      }).pipe(Effect.provide(context), Effect.ensuring(Scope.close(scope, Exit.void)));
+    }),
 );
