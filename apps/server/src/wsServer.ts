@@ -7135,11 +7135,26 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const blocking = yield* nextTurnQueueDispatcher
           .getBlockingDelivery(body.threadId)
           .pipe(Effect.mapError(mapNextTurnQueueRouteError));
-        const delivery = blocking
-          ? yield* providerTurnDeliveryWorker
-              .recheck(body.threadId, blocking.deliveryId)
-              .pipe(Effect.mapError(toDeliveryRecoveryError))
+        const rechecked = blocking
+          ? yield* (
+              providerTurnDeliveryWorker.recheckWithReason?.(body.threadId, blocking.deliveryId) ??
+              providerTurnDeliveryWorker
+                .recheck(body.threadId, blocking.deliveryId)
+                .pipe(Effect.map((delivery) => ({ delivery })))
+            ).pipe(Effect.mapError(toDeliveryRecoveryError))
           : null;
+        const delivery = rechecked?.delivery ?? null;
+        // Otherwise Recheck looks like it did nothing while history is unreadable.
+        if (
+          delivery?.state === "ambiguous" &&
+          rechecked &&
+          "historyError" in rechecked &&
+          rechecked.historyError
+        )
+          return yield* new RouteRequestError({
+            code: "NextTurnQueueDeliveryRecoveryError",
+            message: `Couldn't read provider history: ${rechecked.historyError}`,
+          });
         if (delivery?.state === "accepted") {
           yield* nextTurnQueueDispatcher
             .handleDeliveryOutcome({

@@ -36,7 +36,10 @@ import {
 import { spawnRegisteredProcess } from "../registeredIntegrationProcess";
 import { readClaudeNativeResumeMetadata } from "../claudeResumeState.ts";
 import { normalizeProviderRuntimeInfo } from "@t3tools/shared/runtimeInfo";
-import { recoverClaudeTranscriptCursor } from "../../maintenance/ClaudeTranscriptRepair.ts";
+import {
+  recoverClaudeTranscriptCursor,
+  rejoinRotatedClaudeTranscript,
+} from "../../maintenance/ClaudeTranscriptRepair.ts";
 import { withProviderThreadAccess } from "../providerThreadAccess.ts";
 import { resolveClaudeCleanupPeriodDays } from "../claudeTranscriptRetention.ts";
 import { claudeThinkingConfig, type ClaudeThinkingResolution } from "../claudeProviderOptions.ts";
@@ -98,6 +101,7 @@ import * as Path from "effect/Path";
  */
 import {
   isClaudeTranscriptUnderMaintenance,
+  beginClaudeTranscriptMaintenance,
   findClaudeTranscript,
   readClaudeTranscript,
   readClaudeTranscriptLines,
@@ -707,6 +711,76 @@ export function resolveClaudeConfigDir(
 function resolveChildHomeDir(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
   const home = platform === "win32" ? env.USERPROFILE : env.HOME;
   return home ? home : NodeOS.homedir();
+}
+
+const CLAUDE_TRANSCRIPT_REJOIN_BUDGET_MS = 30_000;
+
+/**
+ * When no resume point has a complete chain because another tool moved the
+ * transcript's beginning to a sibling file, rejoin it before the CLI starts.
+ * Returns the rejoined file names, or undefined when nothing was changed.
+ */
+function rejoinMovedClaudeTranscriptHead(input: {
+  readonly threadId: string;
+  readonly sessionId: string;
+  readonly file: string;
+  readonly entries: ReadonlyMap<string, Record<string, unknown>>;
+  readonly cursor: unknown;
+}) {
+  const state = readClaudeResumeState(input.cursor);
+  const target =
+    state && !state.resumeLatest
+      ? (state.resumeSessionAt ?? state.turnBoundaries?.at(-1)?.assistantUuid)
+      : undefined;
+  if (
+    !state ||
+    !target ||
+    !isUuid(target) ||
+    resolveClaudeResumePoint(input.entries, target, state.turnBoundaries ?? []).kind !== "none"
+  )
+    return Effect.succeed(undefined);
+  const deadline = Date.now() + CLAUDE_TRANSCRIPT_REJOIN_BUDGET_MS;
+  return Effect.acquireUseRelease(
+    Effect.try({
+      try: () => beginClaudeTranscriptMaintenance(input.sessionId),
+      catch: (cause) =>
+        new ProviderAdapterProcessError({
+          provider: PROVIDER,
+          threadId: input.threadId,
+          detail: "Claude transcript repair is already in progress.",
+          cause,
+        }),
+    }),
+    // The lock must outlive the file replacement, which cannot be cancelled.
+    () =>
+      Effect.uninterruptible(
+        Effect.tryPromise(() =>
+          rejoinRotatedClaudeTranscript({
+            file: input.file,
+            target,
+            resumeCursor: input.cursor,
+            deadline,
+          }),
+        ),
+      ),
+    (release) => Effect.sync(release),
+  ).pipe(
+    Effect.map((result) => result?.rejoinedFrom),
+    Effect.tap((rejoined) =>
+      rejoined
+        ? Effect.logWarning("Rejoined Claude transcript with a moved copy of its beginning", {
+            threadId: input.threadId,
+            rejoined,
+          })
+        : Effect.void,
+    ),
+    Effect.catch((cause) =>
+      Effect.logWarning("Claude transcript rejoin failed", {
+        threadId: input.threadId,
+        cause: String(cause),
+      }).pipe(Effect.as(undefined)),
+    ),
+  );
 }
 
 export interface ClaudeSessionStoreFs {
@@ -6934,22 +7008,42 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         if (resumeState?.resume) {
           const sessionId = resumeState.resume;
           const claudeConfigDir = resolveClaudeConfigDir(queryEnvironment, input.cwd);
-          const indexed = yield* Effect.tryPromise(async (signal) => {
+          const readIndexed = Effect.tryPromise(async (signal) => {
             if (options?.readResumeTranscript)
               return {
                 entries: await options.readResumeTranscript({ sessionId, claudeConfigDir }),
                 cursor: input.resumeCursor,
+                file: undefined,
               };
             const file = await findClaudeTranscript(claudeConfigDir, sessionId, signal);
             const cursor = await recoverClaudeTranscriptCursor(file, input.resumeCursor);
             return {
               entries: await readClaudeTranscript(file, false, { skipMalformed: true, signal }),
               cursor,
+              file,
             };
           }).pipe(
             Effect.timeoutOption(1500),
             Effect.orElseSucceed(() => Option.none()),
           );
+          let indexed = yield* readIndexed;
+          if (Option.isSome(indexed) && indexed.value.file !== undefined) {
+            const { file, entries, cursor } = indexed.value;
+            const rejoined = yield* rejoinMovedClaudeTranscriptHead({
+              threadId,
+              sessionId,
+              file,
+              entries,
+              cursor,
+            });
+            if (rejoined) {
+              // The repair receipt matches this cursor, so the re-read adopts
+              // the recovered cursor and its new recovery generation.
+              input = { ...input, resumeCursor: cursor };
+              pendingTranscriptWarning = `Rejoined Claude transcript with moved copy ${rejoined.join(", ")}.`;
+              indexed = yield* readIndexed;
+            }
+          }
           if (Option.isSome(indexed)) {
             input = { ...input, resumeCursor: indexed.value.cursor };
             resumeState = readClaudeResumeState(indexed.value.cursor)!;

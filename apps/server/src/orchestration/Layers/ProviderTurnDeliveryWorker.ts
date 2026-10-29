@@ -47,6 +47,14 @@ import {
   type ProviderTurnDeliveryWorkerShape,
 } from "../Services/ProviderTurnDeliveryWorker.ts";
 
+/** The provider's own explanation, without adapter and thread prefixes. */
+function describeHistoryError(cause: Cause.Cause<unknown>): string {
+  const error = Cause.squash(cause) as { detail?: unknown; message?: unknown } | null;
+  if (typeof error?.detail === "string" && error.detail.trim()) return error.detail.trim();
+  if (typeof error?.message === "string" && error.message.trim()) return error.message.trim();
+  return "The provider did not return its history.";
+}
+
 const make = Effect.gen(function* () {
   const repository = yield* ProviderTurnDeliveryRepository;
   const scheduledSql = yield* Effect.serviceOption(SqlClient.SqlClient);
@@ -778,33 +786,39 @@ const make = Effect.gen(function* () {
       .getByCommandId(deliveryId)
       .pipe(Effect.map((delivery) => (delivery?.threadId === threadId ? delivery : null)));
 
-  const recheck: ProviderTurnDeliveryWorkerShape["recheck"] = (threadId, deliveryId) =>
+  const recheckWithReason: NonNullable<ProviderTurnDeliveryWorkerShape["recheckWithReason"]> = (
+    threadId,
+    deliveryId,
+  ) =>
     Effect.gen(function* () {
       const delivery =
         deliveryId === undefined
           ? yield* repository.getLatestByThread(threadId)
           : yield* getTargetDelivery(threadId, deliveryId);
-      if (!delivery) return null;
+      if (!delivery) return { delivery: null };
       if (
         delivery.state === "accepted" ||
         delivery.state === "abandoned" ||
         delivery.state === "pending" ||
         (delivery.state === "rejected" && delivery.certainty === "not_sent")
       ) {
-        return delivery;
+        return { delivery };
       }
+      let historyError: string | undefined;
       const snapshot = yield* provider.readThread(threadId).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("provider delivery recheck could not inspect provider history", {
+        Effect.catchCause((cause) => {
+          historyError = describeHistoryError(cause);
+          return Effect.logWarning("provider delivery recheck could not inspect provider history", {
             threadId,
             deliveryId: delivery.deliveryId,
             cause: Cause.pretty(cause),
-          }).pipe(Effect.as(null)),
-        ),
+          }).pipe(Effect.as(null));
+        }),
       );
-      if (!snapshot || delivery.event.type === "thread.turn-steer-requested") return delivery;
+      if (!snapshot) return historyError === undefined ? { delivery } : { delivery, historyError };
+      if (delivery.event.type === "thread.turn-steer-requested") return { delivery };
       const newTurnId = yield* findProvenProviderTurn(delivery);
-      if (newTurnId === null) return delivery;
+      if (newTurnId === null) return { delivery };
       yield* markAccepted({
         deliveryId: delivery.deliveryId,
         commandId: delivery.commandId,
@@ -812,13 +826,15 @@ const make = Effect.gen(function* () {
         providerTurnId: newTurnId,
       });
       return {
-        ...delivery,
-        state: "accepted" as const,
-        providerTurnId: newTurnId,
-        errorCode: null,
-        errorDetail: null,
-        certainty: null,
-        updatedAt: new Date().toISOString(),
+        delivery: {
+          ...delivery,
+          state: "accepted" as const,
+          providerTurnId: newTurnId,
+          errorCode: null,
+          errorDetail: null,
+          certainty: null,
+          updatedAt: new Date().toISOString(),
+        },
       };
     }).pipe(
       Effect.mapError((error) =>
@@ -827,6 +843,9 @@ const make = Effect.gen(function* () {
           : new Error("Could not recheck provider delivery.", { cause: error }),
       ),
     );
+
+  const recheck: ProviderTurnDeliveryWorkerShape["recheck"] = (threadId, deliveryId) =>
+    recheckWithReason(threadId, deliveryId).pipe(Effect.map((result) => result.delivery));
 
   const retry: ProviderTurnDeliveryWorkerShape["retry"] = (input) =>
     Effect.gen(function* () {
@@ -910,6 +929,7 @@ const make = Effect.gen(function* () {
           ),
         ),
     recheck,
+    recheckWithReason,
     retry,
     discard,
   } satisfies ProviderTurnDeliveryWorkerShape;

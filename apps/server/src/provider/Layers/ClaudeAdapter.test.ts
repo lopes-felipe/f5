@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -82,6 +82,8 @@ function makeHarness(config?: {
   readonly cwd?: string;
   readonly stateDir?: string;
   readonly readResumeTranscript?: ClaudeAdapterLiveOptions["readResumeTranscript"];
+  /** Read the transcript from CLAUDE_CONFIG_DIR as production does. */
+  readonly readResumeTranscriptFromDisk?: boolean;
   readonly probeResumableClaudeSession?: ClaudeAdapterLiveOptions["probeResumableClaudeSession"];
   readonly resumeConfirmationTimeoutMs?: number;
   readonly interruptGraceMs?: number;
@@ -121,15 +123,19 @@ function makeHarness(config?: {
       if (!queries.includes(nextQuery)) queries.push(nextQuery);
       return nextQuery;
     },
-    readResumeTranscript:
-      config?.readResumeTranscript ??
-      (async () =>
-        new Map([
-          [
-            "123e4567-e89b-42d3-a456-426614174001",
-            { uuid: "123e4567-e89b-42d3-a456-426614174001", parentUuid: null },
-          ],
-        ])),
+    ...(config?.readResumeTranscriptFromDisk
+      ? {}
+      : {
+          readResumeTranscript:
+            config?.readResumeTranscript ??
+            (async () =>
+              new Map([
+                [
+                  "123e4567-e89b-42d3-a456-426614174001",
+                  { uuid: "123e4567-e89b-42d3-a456-426614174001", parentUuid: null },
+                ],
+              ])),
+        }),
     probeResumableClaudeSession:
       config?.probeResumableClaudeSession ?? (() => Effect.succeed("unknown" as const)),
     // The fake CLI only emits messages when a test pushes them, so most tests
@@ -10070,6 +10076,99 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(exit._tag, "Failure");
       }).pipe(Effect.provide(harness.layer));
     });
+    describe("when another tool moved the transcript's beginning", () => {
+      const row = (uuid: string, parentUuid: string | null, type: "user" | "assistant") =>
+        JSON.stringify({
+          uuid,
+          parentUuid,
+          type,
+          sessionId,
+          isSidechain: false,
+          message: { role: type, content: [{ type: "text", text: uuid }] },
+        });
+      const head = `${row("root-row", null, "user")}\n${row(saved, "root-row", "assistant")}\n`;
+      const tail = `${row("user-row", saved, "user")}\n${row(missing, "user-row", "assistant")}\n`;
+      const withMovedHead = <A, E, R>(
+        moved: boolean,
+        use: (file: string, configDir: string) => Effect.Effect<A, E, R>,
+      ) =>
+        Effect.suspend(() => {
+          const configDir = mkdtempSync(path.join(os.tmpdir(), "f5-claude-rejoin-"));
+          const dir = path.join(configDir, "projects", "-project");
+          mkdirSync(dir, { recursive: true });
+          const file = path.join(dir, `${sessionId}.jsonl`);
+          if (moved) writeFileSync(`${file}.bak`, head);
+          writeFileSync(file, tail);
+          return use(file, configDir).pipe(
+            Effect.ensuring(Effect.sync(() => rmSync(configDir, { recursive: true, force: true }))),
+          );
+        });
+
+      it.effect("rejoins the moved copy and resumes at the saved turn", () =>
+        withMovedHead(true, (file, configDir) => {
+          const harness = makeHarness({
+            readResumeTranscriptFromDisk: true,
+            processEnvironment: { HOME: configDir, CLAUDE_CONFIG_DIR: configDir },
+          });
+          return Effect.gen(function* () {
+            const adapter = yield* ClaudeAdapter;
+            const observed: ProviderRuntimeEvent[] = [];
+            yield* Stream.runForEach(adapter.streamEvents, (event) =>
+              Effect.sync(() => {
+                observed.push(event);
+              }),
+            ).pipe(Effect.forkChild);
+            const session = yield* adapter.startSession({
+              threadId: THREAD_ID,
+              provider: "claudeAgent",
+              runtimeMode: "full-access",
+              resumeCursor: cursor,
+            });
+            assert.equal(readFileSync(file, "utf8"), head + tail);
+            assert.equal(readFileSync(`${file}.bak`, "utf8"), head);
+            assert.equal(harness.getLastCreateQueryInput()?.options.resume, sessionId);
+            assert.equal(harness.getLastCreateQueryInput()?.options.resumeSessionAt, missing);
+            assert.isString(
+              (session.resumeCursor as Record<string, unknown>).transcriptRepairBackupId,
+            );
+            while (
+              !observed.some(
+                (event) =>
+                  event.type === "runtime.warning" &&
+                  event.payload.message.includes("Rejoined Claude transcript"),
+              )
+            )
+              yield* Effect.yieldNow;
+            yield* adapter.stopSession(THREAD_ID);
+          }).pipe(Effect.provide(harness.layer));
+        }),
+      );
+
+      it.effect("still fails without starting the CLI when no moved copy exists", () =>
+        withMovedHead(false, (file, configDir) => {
+          const harness = makeHarness({
+            readResumeTranscriptFromDisk: true,
+            processEnvironment: { HOME: configDir, CLAUDE_CONFIG_DIR: configDir },
+          });
+          return Effect.gen(function* () {
+            const adapter = yield* ClaudeAdapter;
+            const exit = yield* Effect.exit(
+              adapter.startSession({
+                threadId: THREAD_ID,
+                provider: "claudeAgent",
+                runtimeMode: "full-access",
+                resumeCursor: cursor,
+              }),
+            );
+            assert.equal(exit._tag, "Failure");
+            assert.include(String(exit), "complete parent chain");
+            assert.equal(readFileSync(file, "utf8"), tail);
+            assert.equal(harness.getCreateQueryInputs().length, 0);
+          }).pipe(Effect.provide(harness.layer));
+        }),
+      );
+    });
+
     it.effect("caps repeated failed preflights and permits retry after transcript repair", () => {
       const harness = makeHarness({ readResumeTranscript: async () => new Map() });
       return Effect.gen(function* () {
