@@ -36,7 +36,12 @@ import {
 import { spawnRegisteredProcess } from "../registeredIntegrationProcess";
 import { readClaudeNativeResumeMetadata } from "../claudeResumeState.ts";
 import { normalizeProviderRuntimeInfo } from "@t3tools/shared/runtimeInfo";
-import { recoverClaudeTranscriptCursor } from "../../maintenance/ClaudeTranscriptRepair.ts";
+import {
+  ClaudeTranscriptRejoinCancelled,
+  commitClaudeTranscriptRejoin,
+  planClaudeTranscriptRejoin,
+  recoverClaudeTranscriptCursor,
+} from "../../maintenance/ClaudeTranscriptRepair.ts";
 import { withProviderThreadAccess } from "../providerThreadAccess.ts";
 import { resolveClaudeCleanupPeriodDays } from "../claudeTranscriptRetention.ts";
 import { claudeThinkingConfig, type ClaudeThinkingResolution } from "../claudeProviderOptions.ts";
@@ -100,6 +105,7 @@ import * as Path from "effect/Path";
  */
 import {
   isClaudeTranscriptUnderMaintenance,
+  beginClaudeTranscriptMaintenance,
   findClaudeTranscript,
   readClaudeTranscript,
   readClaudeTranscriptLines,
@@ -741,6 +747,88 @@ export function resolveClaudeConfigDir(
 function resolveChildHomeDir(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
   const home = platform === "win32" ? env.USERPROFILE : env.HOME;
   return home ? home : NodeOS.homedir();
+}
+
+const CLAUDE_TRANSCRIPT_REJOIN_BUDGET_MS = 30_000;
+
+/**
+ * When no resume point has a complete chain because another tool moved the
+ * transcript's beginning to a sibling file, rejoin it before the CLI starts.
+ * Planning is interruptible and bounded by the budget; only the final file
+ * replacement is not. Callers must not run this while a Claude process for
+ * the session may still write the transcript. Returns the rejoined file names
+ * and the recovered cursor, or undefined when nothing was changed.
+ */
+function rejoinMovedClaudeTranscriptHead(input: {
+  readonly threadId: string;
+  readonly sessionId: string;
+  readonly file: string;
+  readonly entries: ReadonlyMap<string, Record<string, unknown>>;
+  readonly cursor: unknown;
+}) {
+  const state = readClaudeResumeState(input.cursor);
+  const target =
+    state && !state.resumeLatest
+      ? (state.resumeSessionAt ?? state.turnBoundaries?.at(-1)?.assistantUuid)
+      : undefined;
+  if (
+    !state ||
+    !target ||
+    !isUuid(target) ||
+    resolveClaudeResumePoint(input.entries, target, state.turnBoundaries ?? []).kind !== "none"
+  )
+    return Effect.succeed(undefined);
+  const deadline = Date.now() + CLAUDE_TRANSCRIPT_REJOIN_BUDGET_MS;
+  return Effect.acquireUseRelease(
+    Effect.try({
+      try: () => beginClaudeTranscriptMaintenance(input.sessionId),
+      catch: (cause) =>
+        new ProviderAdapterProcessError({
+          provider: PROVIDER,
+          threadId: input.threadId,
+          detail: "Claude transcript repair is already in progress.",
+          cause,
+        }),
+    }),
+    () =>
+      Effect.tryPromise((signal) =>
+        planClaudeTranscriptRejoin({ file: input.file, target, signal, deadline }),
+      ).pipe(
+        Effect.flatMap((plan) =>
+          plan.status !== "planned"
+            ? Effect.succeed(undefined)
+            : // The lock outlives the replacement, which must not stop halfway.
+              Effect.uninterruptible(
+                Effect.tryPromise(() => {
+                  if (Date.now() > deadline) throw new ClaudeTranscriptRejoinCancelled();
+                  return commitClaudeTranscriptRejoin(
+                    { file: input.file, target, resumeCursor: input.cursor },
+                    plan,
+                  );
+                }),
+              ),
+        ),
+      ),
+    (release) => Effect.sync(release),
+  ).pipe(
+    Effect.map((result) =>
+      result ? { rejoinedFrom: result.rejoinedFrom, resumeCursor: result.resumeCursor } : undefined,
+    ),
+    Effect.tap((rejoined) =>
+      rejoined
+        ? Effect.logWarning("Rejoined Claude transcript with a moved copy of its beginning", {
+            threadId: input.threadId,
+            rejoined: rejoined.rejoinedFrom,
+          })
+        : Effect.void,
+    ),
+    Effect.catch((cause) =>
+      Effect.logWarning("Claude transcript rejoin failed", {
+        threadId: input.threadId,
+        cause: String(cause),
+      }).pipe(Effect.as(undefined)),
+    ),
+  );
 }
 
 export interface ClaudeSessionStoreFs {
@@ -7015,22 +7103,52 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         if (resumeState?.resume) {
           const sessionId = resumeState.resume;
           const claudeConfigDir = resolveClaudeConfigDir(queryEnvironment, input.cwd);
-          const indexed = yield* Effect.tryPromise(async (signal) => {
-            if (options?.readResumeTranscript)
+          const readIndexed = (timeoutMs: number) =>
+            Effect.tryPromise(async (signal) => {
+              if (options?.readResumeTranscript)
+                return {
+                  entries: await options.readResumeTranscript({ sessionId, claudeConfigDir }),
+                  cursor: input.resumeCursor,
+                  file: undefined,
+                };
+              const file = await findClaudeTranscript(claudeConfigDir, sessionId, signal);
+              const cursor = await recoverClaudeTranscriptCursor(file, input.resumeCursor);
               return {
-                entries: await options.readResumeTranscript({ sessionId, claudeConfigDir }),
-                cursor: input.resumeCursor,
+                entries: await readClaudeTranscript(file, false, { skipMalformed: true, signal }),
+                cursor,
+                file,
               };
-            const file = await findClaudeTranscript(claudeConfigDir, sessionId, signal);
-            const cursor = await recoverClaudeTranscriptCursor(file, input.resumeCursor);
-            return {
-              entries: await readClaudeTranscript(file, false, { skipMalformed: true, signal }),
+            }).pipe(
+              Effect.timeoutOption(timeoutMs),
+              Effect.orElseSucceed(() => Option.none()),
+            );
+          let indexed = yield* readIndexed(1500);
+          let rejoinedWarning: string | undefined;
+          const live = sessions.get(threadId);
+          // A process that may still append would lose records to the replacement.
+          if (
+            Option.isSome(indexed) &&
+            indexed.value.file !== undefined &&
+            (!live || live.stopped)
+          ) {
+            const { file, entries, cursor } = indexed.value;
+            const rejoined = yield* rejoinMovedClaudeTranscriptHead({
+              threadId,
+              sessionId,
+              file,
+              entries,
               cursor,
-            };
-          }).pipe(
-            Effect.timeoutOption(1500),
-            Effect.orElseSucceed(() => Option.none()),
-          );
+            });
+            if (rejoined) {
+              // Adopt the recovered cursor directly so its backup and recovery
+              // generation survive even if the re-read below times out.
+              input = { ...input, resumeCursor: rejoined.resumeCursor };
+              resumeState = readClaudeResumeState(rejoined.resumeCursor) ?? resumeState;
+              rejoinedWarning = `Rejoined Claude transcript with moved copy ${rejoined.rejoinedFrom.join(", ")}.`;
+              pendingTranscriptWarning = rejoinedWarning;
+              indexed = yield* readIndexed(CLAUDE_TRANSCRIPT_REJOIN_BUDGET_MS);
+            }
+          }
           if (Option.isSome(indexed)) {
             input = { ...input, resumeCursor: indexed.value.cursor };
             resumeState = readClaudeResumeState(indexed.value.cursor)!;
@@ -7074,8 +7192,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   resumeState.turnBoundaries?.some(
                     (boundary) => boundary.assistantUuid === requested,
                   ) === true) ||
-                readClaudeRecoveryMetadata(input.resumeCursor).transcriptRepairBackupId !==
-                  undefined;
+                // A rejoin keeps the cursor's own resume point and adds no pin.
+                (resumeState.resumeSessionAt !== undefined &&
+                  readClaudeRecoveryMetadata(input.resumeCursor).transcriptRepairBackupId !==
+                    undefined);
               if (selected !== requested) {
                 resumeFallbackWarning = { requested, selected };
                 yield* Effect.logWarning(
@@ -7088,8 +7208,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           } else {
             // An unknown store must never authorize a pinned, unverified UUID.
             // Let the CLI resume its saved conversation, as the existing probe does.
-            pendingTranscriptWarning =
-              "Claude transcript validation was unavailable or timed out. Resuming the saved conversation without a message checkpoint.";
+            pendingTranscriptWarning = [
+              rejoinedWarning,
+              "Claude transcript validation was unavailable or timed out. Resuming the saved conversation without a message checkpoint.",
+            ]
+              .filter(Boolean)
+              .join(" ");
           }
         }
         const generation = readClaudeRecoveryMetadata(input.resumeCursor).resumeRecoveryGeneration;

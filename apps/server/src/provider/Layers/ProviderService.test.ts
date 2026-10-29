@@ -44,6 +44,7 @@ import { Deferred, Effect, Fiber, Layer, Metric, Option, PubSub, Ref, Stream } f
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
+  ProviderAdapterProcessError,
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
   type ProviderAdapterError,
@@ -2178,6 +2179,42 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.threadId, initial.threadId);
       }
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("reports a failed sendTurn recovery as not sent", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const initial = yield* provider.startSession(asThreadId("thread-1"), {
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* routing.codex.stopAll();
+      routing.codex.sendTurn.mockClear();
+      routing.codex.startSession.mockImplementationOnce(
+        () =>
+          Effect.fail(
+            new ProviderAdapterProcessError({
+              provider: "codex",
+              threadId: initial.threadId,
+              detail: "The saved conversation cannot be resumed.",
+            }),
+          ) as never,
+      );
+
+      const error = yield* Effect.flip(
+        provider.sendTurn({ threadId: initial.threadId, input: "resume", attachments: [] }),
+      );
+
+      assert.deepInclude(error, {
+        _tag: "ProviderTurnDeliveryError",
+        certainty: "not_sent",
+        retryable: false,
+        detail: "The saved conversation cannot be resumed. This message was not sent.",
+      });
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 0);
     }),
   );
 

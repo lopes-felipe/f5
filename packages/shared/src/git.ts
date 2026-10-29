@@ -77,6 +77,7 @@ const GIT_CONFIG_OVERRIDE_KEYS = new Set([
   "core.fsync",
   "core.fsyncmethod",
   "core.fsmonitor",
+  "core.quotepath",
   "index.sparse",
   "sparse.expectfilesoutsideofpatterns",
   "protocol.file.allow",

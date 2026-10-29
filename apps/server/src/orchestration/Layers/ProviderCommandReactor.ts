@@ -76,14 +76,11 @@ import {
   providerSessionContextResetsTotal,
 } from "../../observability/Metrics.ts";
 import {
+  asPreSendDeliveryError,
+  isNotSentProviderError,
   ProviderAdapterRequestError,
-  ProviderAdapterValidationError,
   ProviderServiceError,
-  ProviderSessionNotFoundError,
   ProviderTurnDeliveryError,
-  ProviderUnsupportedError,
-  ProviderSessionActionUnavailableError,
-  ProviderValidationError,
 } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
 import {
@@ -340,13 +337,7 @@ export function toProviderTurnDeliveryError(error: unknown): ProviderTurnDeliver
       cause: error,
     });
   }
-  const definitelyNotSent =
-    !!rejectedUsageLimit ||
-    Schema.is(ProviderValidationError)(error) ||
-    Schema.is(ProviderSessionNotFoundError)(error) ||
-    Schema.is(ProviderUnsupportedError)(error) ||
-    Schema.is(ProviderSessionActionUnavailableError)(error) ||
-    Schema.is(ProviderAdapterValidationError)(error);
+  const definitelyNotSent = !!rejectedUsageLimit || isNotSentProviderError(error);
   const detail =
     rejectedMessage ??
     (definitelyNotSent
@@ -361,6 +352,12 @@ export function toProviderTurnDeliveryError(error: unknown): ProviderTurnDeliver
     detail,
     cause: error,
   });
+}
+
+/** Maps a failure that happened before the provider send; it keeps known not-sent mappings. */
+export function toPreSendDeliveryError(error: unknown): ProviderTurnDeliveryError {
+  const mapped = toProviderTurnDeliveryError(error);
+  return mapped.certainty === "not_sent" ? mapped : asPreSendDeliveryError(error);
 }
 
 const make = Effect.gen(function* () {
@@ -1257,7 +1254,7 @@ const make = Effect.gen(function* () {
     }).pipe(Effect.withSpan("provider.ensure-session"));
   });
 
-  const sendTurnForThread = Effect.fnUntraced(function* (input: {
+  interface SendTurnForThreadInput {
     readonly threadId: ThreadId;
     readonly deliveryId?: CommandId;
     readonly continuationRequestId?: string;
@@ -1272,7 +1269,9 @@ const make = Effect.gen(function* () {
     readonly interactionMode?: "default" | "plan";
     readonly workflowExecutionProfile?: WorkflowTurnExecutionProfile;
     readonly createdAt: string;
-  }) {
+  }
+
+  const sendTurnForThread = Effect.fnUntraced(function* (input: SendTurnForThreadInput) {
     const thread = yield* resolveThread(input.threadId);
     if (!thread) {
       return;
@@ -1308,6 +1307,18 @@ const make = Effect.gen(function* () {
           : {}),
       });
     }
+    // Nothing reaches the provider before sendTurn, so an earlier failure,
+    // such as a session that cannot resume, is certainly not sent.
+    const request = yield* prepareTurnForThread(input, thread).pipe(
+      Effect.mapError(toPreSendDeliveryError),
+    );
+    return yield* providerService.sendTurn(request);
+  });
+
+  const prepareTurnForThread = Effect.fnUntraced(function* (
+    input: SendTurnForThreadInput,
+    thread: OrchestrationThread,
+  ) {
     if (thread.worktreePath && thread.branch) {
       const model = yield* orchestrationEngine.getReadModel();
       const project = model.projects.find((entry) => entry.id === thread.projectId);
@@ -1433,7 +1444,7 @@ const make = Effect.gen(function* () {
         Effect.provideService(SqlClient.SqlClient, sqlOption.value),
         Effect.provideService(ServerSettingsService, serverSettings),
       );
-    return yield* providerService.sendTurn({
+    return {
       ...(input.continuationRequestId
         ? { continuationRequestId: input.continuationRequestId }
         : {}),
@@ -1450,7 +1461,7 @@ const make = Effect.gen(function* () {
       ...(input.workflowExecutionProfile !== undefined
         ? { workflowExecutionProfile: input.workflowExecutionProfile }
         : {}),
-    });
+    };
   });
 
   const maybeGenerateAndRenameWorktreeBranchForFirstTurn = Effect.fnUntraced(function* (input: {

@@ -248,6 +248,7 @@ function makeDeliveryWorker(
     outcomes: Stream.empty,
     acknowledgeOutcome: () => Effect.void,
     recheck: () => Effect.succeed(null),
+    recheckWithReason: () => Effect.succeed({ delivery: null }),
     retry: ({ threadId }) => Effect.succeed(makeProviderTurnDelivery(threadId, "pending")),
     discard: (threadId) => Effect.succeed(makeProviderTurnDelivery(threadId, "abandoned")),
     ...overrides,
