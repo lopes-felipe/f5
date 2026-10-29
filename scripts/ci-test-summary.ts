@@ -3,6 +3,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { reportPath, type SuiteIdentity } from "./lib/ci-test-reports.ts";
 import { classifyReport, type SuiteSummary } from "./lib/ci-test-report-validation.ts";
+import { readFlakyRecords, type FlakyRecord } from "./lib/ci-flaky-records.ts";
 
 export {
   classifyReport,
@@ -78,6 +79,44 @@ export function summarize(directory: string, expected: SuiteIdentity[]): SuiteSu
   return results;
 }
 
+const escapeCell = (text: string) =>
+  text
+    .replace(/[|\r\n]/g, " ")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+// GitHub workflow-command data and property escapes.
+const escapeData = (text: string) =>
+  text.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
+const escapeProperty = (text: string) =>
+  escapeData(text).replaceAll(":", "%3A").replaceAll(",", "%2C");
+
+/** Flaky passes stay visible on the PR without changing the job verdict. */
+export function renderFlaky(records: readonly FlakyRecord[]): {
+  markdown: string;
+  annotations: string[];
+} {
+  if (!records.length) return { markdown: "", annotations: [] };
+  const markdown =
+    "\n**Passed on retry (flaky)**: recorded for the flake ledger; please fix rather than rerun.\n\n" +
+    "| Suite | Kind | Test | Retries |\n| --- | --- | --- | ---: |\n" +
+    records
+      .map(
+        (record) =>
+          `| ${escapeCell(record.suite)} | ${record.kind} | ${escapeCell(`${record.file} > ${record.name}`)} | ${record.retryCount} |`,
+      )
+      .join("\n") +
+    "\n";
+  // ci-retry-once annotates its own step records when it recovers.
+  const annotations = records
+    .filter((record) => record.kind === "test")
+    .map(
+      (record) =>
+        `::warning title=${escapeProperty("Flaky test")}::${escapeData(`${record.suite} ${record.file} > ${record.name}`)}`,
+    );
+  return { markdown, annotations };
+}
+
 function main() {
   const directory = process.env.F5_CI_REPORT_DIR;
   if (!directory) throw new Error("F5_CI_REPORT_DIR is required");
@@ -97,17 +136,19 @@ function main() {
   const expected = inventories[process.argv[2] ?? ""];
   if (!expected?.length) throw new Error("Unknown or empty suite inventory");
   const results = summarize(directory, expected);
-  const escape = (text: string) => text.replace(/[|\r\n]/g, " ");
+  const flaky = renderFlaky(readFlakyRecords(directory));
   const markdown =
     "\n| Suite | Result | Passed | Failed | Skipped | Detail |\n| --- | --- | ---: | ---: | ---: | --- |\n" +
     results
       .map(
         (result) =>
-          `| ${escape(result.name)} | ${result.verdict} | ${result.passed} | ${result.failed} | ${result.skipped} | ${escape(result.detail)} |`,
+          `| ${escapeCell(result.name)} | ${result.verdict} | ${result.passed} | ${result.failed} | ${result.skipped} | ${escapeCell(result.detail)} |`,
       )
       .join("\n") +
-    "\n";
+    "\n" +
+    flaky.markdown;
   console.log(markdown);
+  for (const annotation of flaky.annotations) console.log(annotation);
   if (process.env.GITHUB_STEP_SUMMARY) {
     mkdirSync(dirname(process.env.GITHUB_STEP_SUMMARY), { recursive: true });
     appendFileSync(process.env.GITHUB_STEP_SUMMARY, markdown);

@@ -232,6 +232,38 @@ produce a cleanup warning without changing the smoke verdict.
 Only these explicit files are uploaded. Profile directories, databases, provider
 homes, auth files and cookies must never be uploaded.
 
+## Flaky tests
+
+CI retries a failed Vitest test once (`retry: 1`, set by `ciTestReports()` whenever
+`F5_CI_REPORT_DIR` is set; local runs never retry). A test that passes only on the
+retry is a recorded flake, not a pass: `CiFlakyReporter` appends it to `flaky.jsonl`
+beside its suite report, the job summary lists it under "Passed on retry (flaky)",
+and the PR shows a warning annotation. Desktop smoke is the only non-Vitest step
+that retries: `scripts/ci-retry-once.ts` reruns it once, keeps each attempt's
+diagnostics in `attempt-1`/`attempt-2`, and records a recovered attempt the same
+way. `F5_CI_TEST_RETRY=0` restores single attempts. An unhandled error fails the
+whole suite and is never retried; it is always a bug.
+
+After every CI run, `.github/workflows/ci-flakes.yml` downloads that run's
+`reports-*` artifacts and `scripts/ci-flake-ledger.ts` files one `ci-flaky` issue per
+test (keyed by repository path and full name, across OSes and shards). Each
+occurrence comments once with OS, job, branch, commit, run and the first failure; a
+closed issue reopens when the flake recurs. The ledger also files failures from an
+earlier attempt that a manual "Re-run failed jobs" turned green, and suites that
+failed on an unhandled error. It runs the default branch's scripts only, reads
+artifacts as data, and never fails the CI verdict.
+
+Rules:
+
+- Do not merge on a manual rerun. If you rerun anyway, the ledger still files the
+  failure.
+- Fix each `ci-flaky` issue in its own PR, never inside a feature PR, then close it.
+- Prove the fix with `.github/workflows/ci-flake-repro.yml` (manual dispatch: OS,
+  suite, test file, repeats). It repeats the target with retries off; 30/30 green
+  on the OS where it flaked is the bar, linked from the PR.
+- A timeout increase needs the repro run's duration table showing healthy runs near
+  the limit. Raising timeouts did not fix the Windows quit or VACUUM flakes.
+
 ## Maintainer rollout
 
 PR #163 combines the Agent Bridge fix, workflow restructure, reports/diagnostics

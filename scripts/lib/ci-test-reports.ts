@@ -1,5 +1,9 @@
-import { join, resolve } from "node:path";
-import type { InlineConfig } from "vitest/node";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import type { InlineConfig, Reporter, TestModule } from "vitest/node";
+
+// No relative imports: Node runs this file directly through CI scripts, and the
+// web project typechecks it without `.ts` import paths.
 
 export interface SuiteIdentity {
   packageName: string;
@@ -30,7 +34,113 @@ export function ciTestReports(env: NodeJS.ProcessEnv = process.env): InlineConfi
   }
   const json = resolve(env.F5_CI_REPORT_DIR, reportPath({ packageName, event }));
   return {
-    reporters: ["default", "junit", "json"],
+    // One CI retry absorbs a transient failure; CiFlakyReporter records it so the
+    // flake ledger can file it. Local runs never retry.
+    retry: ciTestRetry(env),
+    reporters: [
+      "default",
+      "junit",
+      "json",
+      new CiFlakyReporter(join(dirname(json), FLAKY_RECORD_FILE), `${packageName}/${event}`),
+    ],
     outputFile: { json, junit: json.replace(/\.json$/, ".xml") },
   };
+}
+
+/** CI attempts after the first; `F5_CI_TEST_RETRY=0` restores single-attempt runs. */
+export function ciTestRetry(env: NodeJS.ProcessEnv = process.env): number {
+  const value = env.F5_CI_TEST_RETRY ?? "1";
+  if (!/^\d+$/.test(value) || Number(value) > 3)
+    throw new Error("F5_CI_TEST_RETRY must be an integer from 0 to 3");
+  return Number(value);
+}
+
+/** Not `.json`: the CI summary treats every `.json` file as a suite report. */
+export const FLAKY_RECORD_FILE = "flaky.jsonl";
+export const MAX_FLAKY_ERROR_BYTES = 2048;
+const MAX_FLAKY_ERRORS = 3;
+
+/** A test or CI step that failed and then passed within one job. */
+export interface FlakyRecord {
+  version: 1;
+  kind: "test" | "step";
+  suite: string;
+  file: string;
+  name: string;
+  retryCount: number;
+  os: string;
+  job: string;
+  runId: string;
+  runAttempt: string;
+  errors: string[];
+}
+
+export function truncateUtf8(text: string, maxBytes: number, keep: "start" | "end" = "start") {
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.length <= maxBytes) return text;
+  const slice = keep === "start" ? bytes.subarray(0, maxBytes) : bytes.subarray(-maxBytes);
+  // A cut can split a multi-byte character; drop the replacement character.
+  return slice.toString("utf8").replace(/^\uFFFD|\uFFFD$/g, "");
+}
+
+export function flakyRecord(
+  fields: Pick<FlakyRecord, "kind" | "suite" | "file" | "name" | "retryCount" | "errors">,
+  env: NodeJS.ProcessEnv = process.env,
+): FlakyRecord {
+  return {
+    version: 1,
+    ...fields,
+    errors: fields.errors.map((error) => truncateUtf8(error, MAX_FLAKY_ERROR_BYTES)),
+    os: process.platform,
+    job: env.GITHUB_JOB ?? "",
+    runId: env.GITHUB_RUN_ID ?? "",
+    runAttempt: env.GITHUB_RUN_ATTEMPT ?? "",
+  };
+}
+
+export function appendFlakyRecords(file: string, records: readonly FlakyRecord[]) {
+  if (!records.length) return;
+  mkdirSync(dirname(file), { recursive: true });
+  appendFileSync(file, records.map((record) => JSON.stringify(record) + "\n").join(""));
+}
+
+const repoRoot = resolve(import.meta.dirname, "../..");
+
+/** Repository-relative with `/`, so one test maps to one ledger issue on every OS and shard. */
+export const repoRelativePath = (path: string) => relative(repoRoot, path).split(sep).join("/");
+
+/** Records each test that passed only on a CI retry, so the retry never hides it. */
+export class CiFlakyReporter implements Reporter {
+  // Plain fields: Node's type stripping rejects parameter properties.
+  private readonly file: string;
+  private readonly suite: string;
+
+  constructor(file: string, suite: string) {
+    this.file = file;
+    this.suite = suite;
+  }
+
+  onTestRunEnd(modules: readonly TestModule[]) {
+    const records: FlakyRecord[] = [];
+    for (const module of modules)
+      for (const test of module.children.allTests()) {
+        const diagnostic = test.diagnostic();
+        if (!diagnostic?.flaky) continue;
+        // Passed results keep the errors of the attempts that failed first.
+        const errors = (test.result().errors ?? [])
+          .slice(0, MAX_FLAKY_ERRORS)
+          .map((error) => error.message || String(error));
+        records.push(
+          flakyRecord({
+            kind: "test",
+            suite: this.suite,
+            file: repoRelativePath(module.moduleId),
+            name: test.fullName,
+            retryCount: diagnostic.retryCount,
+            errors,
+          }),
+        );
+      }
+    appendFlakyRecords(this.file, records);
+  }
 }
