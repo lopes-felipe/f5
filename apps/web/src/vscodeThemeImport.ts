@@ -6,6 +6,8 @@ import {
   createCustomThemeDefinition,
   generateThemeTokens,
   MAX_THEME_DEFINITION_BYTES,
+  MIN_BODY_TEXT_CONTRAST,
+  normalizeThemeParameters,
   parseSafeThemeColor,
   parseThemeDefinitionV1,
   type ThemeDefinitionV1,
@@ -77,7 +79,6 @@ const VSCODE_COLOR_TOKEN_MAP = {
   "editorGroupHeader.tabsBackground": ["muted"],
   "editor.selectionBackground": ["accent"],
   "editor.selectionForeground": ["accent-foreground"],
-  "button.foreground": ["primary-foreground"],
   "panel.border": ["border"],
   errorForeground: ["destructive", "destructive-foreground"],
 } as const satisfies Readonly<Record<string, readonly ThemeTokenName[]>>;
@@ -156,32 +157,42 @@ function firstApart(
   return undefined;
 }
 
+/**
+ * Normalized so the tokens checked at import match the ones rendered from the
+ * stored (rounded) parameters.
+ */
 function baseParametersFromSeed(seed: string | undefined): ThemeParameters {
   const parsed = seed ? parse(seed) : undefined;
   const converted = parsed ? toOklch(parsed) : undefined;
-  return {
+  return normalizeThemeParameters({
     baseHue: typeof converted?.h === "number" ? converted.h : 264,
     chroma: typeof converted?.c === "number" ? Math.max(0.06, Math.min(0.24, converted.c)) : 0.16,
     contrast: 1,
-  };
+  });
 }
 
 interface ControlColorSources {
   readonly keyword: string | undefined;
   readonly focusBorder: string | undefined;
   readonly buttonBackground: string | undefined;
+  readonly buttonForeground: string | undefined;
   readonly inputBackground: string | undefined;
   readonly inputBorder: string | undefined;
 }
 
-type ControlTokenName = "primary" | "ring" | "input";
+type ControlTokenName = "primary" | "primary-foreground" | "ring" | "input";
+
+function isReadableOn(text: string, fill: string): boolean {
+  return wcagContrast(flattenOver(text, fill), fill) >= MIN_BODY_TEXT_CONTRAST;
+}
 
 /**
- * Resolves `ring` (focus), `primary` (checked switch track) and `input`
- * (unchecked switch track, input borders). VS Code themes often set these
- * workbench keys to transparent or to the editor background, so an authored
- * color is accepted only when it stays distinct from the surfaces next to it;
- * otherwise the next candidate, then the generated value, then black or white.
+ * Resolves `ring` (focus), `primary` (checked switch track), its foreground,
+ * and `input` (unchecked switch track, input borders). VS Code themes often
+ * set these workbench keys to transparent or to the editor background, so an
+ * authored color is accepted only when it stays distinct from the surfaces
+ * next to it; otherwise the next candidate, then the generated value, then
+ * black or white.
  */
 function resolveControlColors(
   surfaces: Readonly<Partial<Record<ThemeTokenName, string>>>,
@@ -197,7 +208,17 @@ function resolveControlColors(
   const canvas = surfaces.background
     ? flattenOver(surfaces.background, fallbackCanvas)
     : fallbackCanvas;
-  const raised = surfaces.popover ? flattenOver(surfaces.popover, canvas) : undefined;
+
+  // The hue comes from the theme's accent even when that color is later
+  // rejected next to the raised surface, which needs the parameters first.
+  const seed = firstApart(
+    [sources.keyword, sources.buttonBackground, sources.focusBorder],
+    canvas,
+    [canvas],
+  );
+  const parameters = baseParametersFromSeed(seed);
+  const generated = generateThemeTokens(parameters, variant);
+  const raised = surfaces.popover ? flattenOver(surfaces.popover, canvas) : generated.popover;
   const accentSurfaces = [canvas, raised];
 
   const ring = firstApart(
@@ -206,8 +227,6 @@ function resolveControlColors(
     accentSurfaces,
   );
   const primary = firstApart([sources.keyword, sources.buttonBackground], canvas, accentSurfaces);
-  const parameters = baseParametersFromSeed(primary ?? ring);
-  const generated = generateThemeTokens(parameters, variant);
 
   const controls: Partial<Record<ControlTokenName, string>> = {};
   if (ring) controls.ring = ring;
@@ -219,7 +238,26 @@ function resolveControlColors(
     controls.primary = controls.ring ?? generated.ring;
   }
 
-  const inputSurfaces = [canvas, controls.primary ?? generated.primary];
+  // `button.foreground` was chosen for `button.background`; keep it on any
+  // other fill only when it is still readable there.
+  const resolvedPrimary = controls.primary ?? generated.primary;
+  const primaryIsButton =
+    primary !== undefined &&
+    sources.buttonBackground !== undefined &&
+    primary === flattenOver(sources.buttonBackground, canvas);
+  if (
+    sources.buttonForeground &&
+    (primaryIsButton || isReadableOn(sources.buttonForeground, resolvedPrimary))
+  ) {
+    controls["primary-foreground"] = sources.buttonForeground;
+  } else if (!isReadableOn(generated["primary-foreground"], resolvedPrimary)) {
+    controls["primary-foreground"] =
+      wcagContrast("#ffffff", resolvedPrimary) >= wcagContrast("#000000", resolvedPrimary)
+        ? "#ffffff"
+        : "#000000";
+  }
+
+  const inputSurfaces = [canvas, resolvedPrimary];
   const input = firstApart([sources.inputBackground, sources.inputBorder], canvas, inputSurfaces);
   if (input) controls.input = input;
   else if (!standsApart(generated.input, inputSurfaces)) {
@@ -252,6 +290,7 @@ export function importVsCodeThemeDocument(
     keyword: tokenColors.keyword,
     focusBorder: readSafeColor(colors.focusBorder),
     buttonBackground: readSafeColor(colors["button.background"]),
+    buttonForeground: readSafeColor(colors["button.foreground"]),
     inputBackground: readSafeColor(colors["input.background"]),
     inputBorder: readSafeColor(colors["input.border"]),
   };

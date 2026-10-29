@@ -1,9 +1,9 @@
+import { wcagContrast } from "culori";
 import { strToU8, zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 
 import { importThemeFile, importVsCodeThemeDocument } from "./vscodeThemeImport";
 import { resolveThemePalette } from "./themePalette";
-import { wcagContrast } from "culori";
 
 describe("VS Code theme import", () => {
   it("keeps generated fallback muted and placeholder text dimmer than entered text", () => {
@@ -179,6 +179,73 @@ describe("VS Code theme import", () => {
       const colors = resolve(theme).dark;
       expect(theme.overrides?.dark?.primary).not.toBe("#2a2d3a");
       expect(separation(colors.primary, colors.popover)).toBeGreaterThanOrEqual(1.1);
+    });
+
+    it("checks the checked track against the generated popover without a widget background", () => {
+      const theme = importVsCodeThemeDocument({
+        name: "Near-black button",
+        type: "dark",
+        colors: { "editor.background": "#000000", "button.background": "#151515" },
+      });
+      const colors = resolve(theme).dark;
+      expect(theme.overrides?.dark?.popover).toBeUndefined();
+      expect(theme.overrides?.dark?.primary).not.toBe("#151515");
+      expect(separation(colors.primary, colors.popover)).toBeGreaterThanOrEqual(1.1);
+      expect(separation(colors.ring, colors.popover)).toBeGreaterThanOrEqual(1.1);
+    });
+
+    it("keeps the authored button text on its own button background", () => {
+      const theme = importVsCodeThemeDocument({
+        name: "Button pair",
+        type: "dark",
+        colors: {
+          "editor.background": "#1e1e1e",
+          "button.background": "#0e639c",
+          "button.foreground": "#ffffff",
+        },
+      });
+      expect(theme.overrides?.dark?.primary).toBe("#0e639c");
+      expect(theme.overrides?.dark?.["primary-foreground"]).toBe("#ffffff");
+    });
+
+    it("drops button text that is unreadable on a replaced checked track", () => {
+      const theme = importVsCodeThemeDocument({
+        name: "Transparent button text",
+        type: "dark",
+        colors: {
+          "editor.background": "#1e1e1e",
+          "button.background": "#00000000",
+          "button.foreground": "#cccccc",
+        },
+      });
+      const colors = resolve(theme).dark;
+      expect(theme.overrides?.dark?.["primary-foreground"]).not.toBe("#cccccc");
+      expect(separation(colors["primary-foreground"], colors.primary)).toBeGreaterThanOrEqual(4.5);
+    });
+
+    it("keeps button text readable on the black or white fallback track", () => {
+      const theme = importVsCodeThemeDocument({
+        name: "Fallback button text",
+        type: "light",
+        colors: {
+          "editor.background": "#ffffff",
+          "editorWidget.background": "#325cbd",
+          "button.background": "#ffffff",
+          "button.foreground": "#000000",
+        },
+      });
+      const colors = resolve(theme).light;
+      expect(separation(colors.primary, colors.background)).toBeGreaterThanOrEqual(1.1);
+      expect(separation(colors["primary-foreground"], colors.primary)).toBeGreaterThanOrEqual(4.5);
+    });
+
+    it("imports a file whose only supported key is an input border", () => {
+      const theme = importVsCodeThemeDocument({
+        name: "Border only",
+        type: "dark",
+        colors: { "input.border": "#585b70" },
+      });
+      expect(theme.overrides?.dark?.input).toBe("#585b70");
     });
 
     it("keeps a visible ring when the file has no usable accent key", () => {
