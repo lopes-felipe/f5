@@ -59,6 +59,8 @@ import {
 import { buildElicitationDescriptor } from "@t3tools/shared/elicitationForm";
 import {
   buildClaudeToolCompletion,
+  CLAUDE_SUBAGENT_TASK_MUTATION_TOOL_NAMES,
+  claudeSubagentTaskToolOutput,
   isClaudeTaskToolName,
   storeClaudeToolCompletionArtifact,
 } from "../claudeToolCompletion.ts";
@@ -497,6 +499,8 @@ interface ClaudeSessionContext {
   readonly taskStates: Map<string, ClaudeTaskState>;
   readonly taskModelsByTool: Map<string, string>;
   readonly taskLaunchesByTool: Map<string, ClaudeSubagentLaunch>;
+  /** Subagent TaskCreate/TaskUpdate calls awaiting their result, by tool_use id. */
+  readonly subagentTaskTools: Map<string, ToolInFlight>;
   readonly lifecycle: ClaudeTurnLifecycle;
   settlementWatchdog: { resultId: string; cancel: Deferred.Deferred<void> } | undefined;
   turnState: ClaudeTurnState | undefined;
@@ -4422,6 +4426,124 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
       });
 
+    /**
+     * Subagents write to the session's shared task store, so their TaskCreate
+     * and TaskUpdate calls feed the parent thread's task list. Child reads and
+     * every other child tool stay out of the parent's events.
+     */
+    const startSubagentTaskTools = (
+      context: ClaudeSessionContext,
+      message: SDKMessage,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        if (message.type !== "assistant") return;
+        for (const block of Array.isArray(message.message?.content)
+          ? message.message.content
+          : []) {
+          const record = asUnknownRecord(block);
+          if (
+            record?.type !== "tool_use" ||
+            typeof record.id !== "string" ||
+            typeof record.name !== "string" ||
+            !CLAUDE_SUBAGENT_TASK_MUTATION_TOOL_NAMES.has(record.name) ||
+            context.subagentTaskTools.has(record.id)
+          )
+            continue;
+          const toolInput = asUnknownRecord(record.input) ?? {};
+          const itemType = classifyToolItemType(record.name, { input: toolInput });
+          const detail = summarizeToolRequest(record.name, toolInput);
+          const tool: ToolInFlight = {
+            itemId: record.id,
+            itemType,
+            toolName: record.name,
+            title: titleForTool(itemType, toolInput, record.name),
+            detail,
+            input: toolInput,
+            partialInputJson: "",
+          };
+          context.subagentTaskTools.set(tool.itemId, tool);
+          const stamp = yield* makeEventStamp(context);
+          yield* offerRuntimeEvent({
+            type: "item.started",
+            ...stamp,
+            eventId: stamp.eventId,
+            provider: PROVIDER,
+            createdAt: stamp.createdAt,
+            threadId: context.session.threadId,
+            ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+            itemId: asRuntimeItemId(tool.itemId),
+            payload: {
+              itemType: tool.itemType,
+              status: "inProgress",
+              title: tool.title,
+              ...(tool.detail ? { detail: tool.detail } : {}),
+              data: buildToolLifecycleData({ toolName: tool.toolName, toolInput }),
+            },
+            providerRefs: nativeProviderRefs(context, { providerItemId: tool.itemId }),
+            raw: {
+              source: "claude.sdk.message",
+              method: "claude/assistant",
+              payload: message,
+            },
+          });
+        }
+      });
+
+    const completeSubagentTaskTool = (
+      context: ClaudeSessionContext,
+      message: SDKMessage,
+      tool: ToolInFlight,
+      toolResult: ReturnType<typeof toolResultBlocksFromUserMessage>[number],
+      correlated: boolean,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        if (message.type !== "user") return;
+        context.subagentTaskTools.delete(tool.itemId);
+        const structured = (message as { readonly tool_use_result?: unknown }).tool_use_result;
+        const { envelope: completion } = buildClaudeToolCompletion({
+          toolUseId: tool.itemId,
+          toolName: tool.toolName,
+          toolInput: tool.input,
+          structuredOutput:
+            correlated && structured !== undefined && structured !== null
+              ? structured
+              : claudeSubagentTaskToolOutput(tool.toolName, toolResult.text),
+          // The text fallback belongs to this result block.
+          correlated: true,
+          isError: toolResult.isError,
+          nativeSessionId: message.session_id,
+        });
+        const stamp = yield* makeEventStamp(context);
+        yield* offerRuntimeEvent({
+          type: "item.completed",
+          ...stamp,
+          eventId: stamp.eventId,
+          provider: PROVIDER,
+          createdAt: stamp.createdAt,
+          threadId: context.session.threadId,
+          ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+          itemId: asRuntimeItemId(tool.itemId),
+          payload: {
+            itemType: tool.itemType,
+            status: completion.semanticSuccess ? "completed" : "failed",
+            title: tool.title,
+            ...(tool.detail ? { detail: tool.detail } : {}),
+            data: buildToolLifecycleData({
+              toolName: tool.toolName,
+              toolInput: tool.input,
+              result: toolResult.block,
+            }),
+            completion,
+          },
+          providerRefs: nativeProviderRefs(context, { providerItemId: tool.itemId }),
+          raw: {
+            source: "claude.sdk.message",
+            method: "claude/user",
+            payload: message,
+          },
+        });
+      });
+
     const handleUserMessage = (
       context: ClaudeSessionContext,
       message: SDKMessage,
@@ -4439,6 +4561,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         for (const toolResult of toolResultBlocks) {
           const toolEntry = findInFlightToolEntryByItemId(context, toolResult.toolUseId);
           if (!toolEntry) {
+            const subagentTool = context.subagentTaskTools.get(toolResult.toolUseId);
+            if (subagentTool)
+              yield* completeSubagentTaskTool(
+                context,
+                message,
+                subagentTool,
+                toolResult,
+                toolResultBlocks.length === 1,
+              );
             continue;
           }
 
@@ -4742,6 +4873,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           });
         }
         if (parentToolUseId) {
+          yield* startSubagentTaskTools(context, message);
           const model = childModel;
           if (model) {
             for (const [taskId, task] of context.taskStates) {
@@ -8241,6 +8373,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           taskStates,
           taskModelsByTool: new Map(),
           taskLaunchesByTool: new Map(),
+          subagentTaskTools: new Map(),
           lifecycle: createClaudeTurnLifecycle(),
           settlementWatchdog: undefined,
           turnState: undefined,
@@ -8252,8 +8385,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           availableSlashCommands: [],
           slashCommandsLoaded: false,
           supportedCommandsFingerprint: fingerprintSupportedSlashCommands([]),
-          baseContextChars:
-            resumeState?.baseContextChars ?? systemPrompt.append.length,
+          baseContextChars: resumeState?.baseContextChars ?? systemPrompt.append.length,
           approximateConversationChars: resumeState?.approximateConversationChars ?? 0,
           resumeCompactionDialogShown: false,
           compactionRecommendationEmitted: resumeState?.compactionRecommendationEmitted ?? false,

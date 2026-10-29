@@ -53,6 +53,30 @@ function readSemanticFailure(output: unknown): { readonly error?: string } | und
     : {};
 }
 
+/** Task tools whose subagent calls change the session's shared task list. */
+export const CLAUDE_SUBAGENT_TASK_MUTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "TaskCreate",
+  "TaskUpdate",
+]);
+
+/**
+ * Subagent Task tool results carry no structured `tool_use_result`, only text
+ * such as "Task #3 created successfully: <subject>" or "Updated task #3 status".
+ * Rebuild the structured result the task projection reads; any other text is
+ * a failed call that changed nothing.
+ */
+export function claudeSubagentTaskToolOutput(toolName: string, text: string): unknown {
+  const trimmed = text.trim();
+  if (toolName === "TaskCreate") {
+    const match = /^Task #(\S+) created successfully: (.+)$/s.exec(trimmed);
+    if (match) return { task: { id: match[1]!, subject: match[2]!.trim() } };
+  } else if (toolName === "TaskUpdate") {
+    const match = /^Updated task #(\S+)/.exec(trimmed);
+    if (match) return { success: true, taskId: match[1]! };
+  }
+  return { success: false, ...(trimmed ? { error: trimmed } : {}) };
+}
+
 export interface ClaudeToolCompletionDraft {
   readonly envelope: ToolCompletionEnvelope;
   /** Present when retained output exceeded the inline limit and should be stored. */

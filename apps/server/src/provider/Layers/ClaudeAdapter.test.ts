@@ -5728,7 +5728,7 @@ describe("ClaudeAdapterLive", () => {
           tool_use_result: structured,
         } as unknown as SDKMessage);
 
-      // A child agent's own task list must not drive the parent thread's panel.
+      // Child stream events never start parent tool items.
       harness.query.emit({
         type: "stream_event",
         session_id: "sdk-session-tasks",
@@ -5744,17 +5744,6 @@ describe("ClaudeAdapterLive", () => {
             input: { subject: "Child work" },
           },
         },
-      } as unknown as SDKMessage);
-      harness.query.emit({
-        type: "user",
-        session_id: "sdk-session-tasks",
-        uuid: "user-child-task",
-        parent_tool_use_id: "agent-tool",
-        message: {
-          role: "user",
-          content: [{ type: "tool_result", tool_use_id: "child-task-create", content: "ok" }],
-        },
-        tool_use_result: { task: { id: "1", subject: "Child work" } },
       } as unknown as SDKMessage);
       toolUse(0, "tool-task-create-1", "TaskCreate", {
         subject: "Run tests",
@@ -5804,6 +5793,104 @@ describe("ClaudeAdapterLive", () => {
           assert.equal("completion" in event.payload, false);
         }
       }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("feeds subagent TaskCreate and TaskUpdate results to the parent task list", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const eventsFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "item.started" || event.type === "item.completed",
+      ).pipe(
+        Stream.takeUntil(
+          (event) => event.type === "item.completed" && event.itemId === "child-update-error",
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: session.threadId, input: "delegate", attachments: [] });
+
+      const childToolUse = (id: string, name: string, input: unknown) =>
+        harness.query.emit({
+          type: "assistant",
+          session_id: "sdk-session-tasks",
+          uuid: `assistant-${id}`,
+          parent_tool_use_id: "agent-tool",
+          message: {
+            id: `message-${id}`,
+            role: "assistant",
+            content: [{ type: "tool_use", id, name, input }],
+          },
+        } as unknown as SDKMessage);
+      // Subagent results are text only; they carry no structured tool_use_result.
+      const childToolResult = (id: string, text: string, isError = false) =>
+        harness.query.emit({
+          type: "user",
+          session_id: "sdk-session-tasks",
+          uuid: `user-${id}`,
+          parent_tool_use_id: "agent-tool",
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: id, content: text, is_error: isError }],
+          },
+        } as unknown as SDKMessage);
+
+      childToolUse("child-list", "TaskList", {});
+      childToolResult("child-list", "#1 [pending] Child work");
+      childToolUse("child-create", "TaskCreate", { subject: "Child work" });
+      childToolResult("child-create", "Task #1 created successfully: Child work");
+      childToolUse("child-update", "TaskUpdate", { taskId: "1", status: "completed" });
+      childToolResult("child-update", "Updated task #1 status");
+      childToolUse("child-update-missing", "TaskUpdate", { taskId: "9", status: "completed" });
+      childToolResult("child-update-missing", "Task #9 not found");
+      childToolUse("child-update-error", "TaskUpdate", { taskId: "1", status: "pending" });
+      childToolResult("child-update-error", "<tool_use_error>Denied</tool_use_error>", true);
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      // Child reads stay with the child.
+      assert.equal(
+        events.some((event) => event.itemId === "child-list"),
+        false,
+      );
+      const started = events.filter((event) => event.type === "item.started");
+      assert.deepEqual(
+        started.map((event) => String(event.itemId)),
+        ["child-create", "child-update", "child-update-missing", "child-update-error"],
+      );
+      const completion = (itemId: string) => {
+        const event = events.find(
+          (candidate): candidate is Extract<ProviderRuntimeEvent, { type: "item.completed" }> =>
+            candidate.type === "item.completed" && candidate.itemId === itemId,
+        );
+        return event?.payload.completion;
+      };
+      assert.deepEqual(completion("child-create"), {
+        version: 1,
+        nativeCallId: "child-create",
+        nativeSessionId: "sdk-session-tasks",
+        toolName: "TaskCreate",
+        input: { subject: "Child work" },
+        structuredOutput: { task: { id: "1", subject: "Child work" } },
+        transportError: false,
+        semanticSuccess: true,
+      });
+      assert.equal(completion("child-update")?.semanticSuccess, true);
+      assert.deepEqual(completion("child-update")?.input, { taskId: "1", status: "completed" });
+      // Failed calls changed nothing.
+      assert.equal(completion("child-update-missing")?.semanticSuccess, false);
+      assert.equal(completion("child-update-missing")?.semanticError, "Task #9 not found");
+      assert.equal(completion("child-update-error")?.semanticSuccess, false);
+      assert.equal(completion("child-update-error")?.transportError, true);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

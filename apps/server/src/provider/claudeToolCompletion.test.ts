@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   buildClaudeToolCompletion,
+  claudeSubagentTaskToolOutput,
   isClaudeTaskToolName,
   storeClaudeToolCompletionArtifact,
 } from "./claudeToolCompletion.ts";
@@ -114,6 +115,33 @@ describe("buildClaudeToolCompletion", () => {
       buildClaudeToolCompletion({ ...base, toolName: "TaskList", structuredOutput: cyclic })
         .envelope.outputOmission,
     ).toEqual({ reason: "unserializable" });
+  });
+});
+
+describe("claudeSubagentTaskToolOutput", () => {
+  it("rebuilds structured results from subagent text", () => {
+    expect(
+      claudeSubagentTaskToolOutput("TaskCreate", "Task #3 created successfully: Run tests\n"),
+    ).toEqual({ task: { id: "3", subject: "Run tests" } });
+    expect(claudeSubagentTaskToolOutput("TaskUpdate", "Updated task #3 status")).toEqual({
+      success: true,
+      taskId: "3",
+    });
+  });
+
+  it("treats any other text as a failed call", () => {
+    expect(claudeSubagentTaskToolOutput("TaskUpdate", "Task #9 not found")).toEqual({
+      success: false,
+      error: "Task #9 not found",
+    });
+    expect(claudeSubagentTaskToolOutput("TaskCreate", "")).toEqual({ success: false });
+    const failed = buildClaudeToolCompletion({
+      ...base,
+      toolName: "TaskUpdate",
+      structuredOutput: claudeSubagentTaskToolOutput("TaskUpdate", "Task #9 not found"),
+    });
+    expect(failed.envelope.semanticSuccess).toBe(false);
+    expect(failed.envelope.semanticError).toBe("Task #9 not found");
   });
 });
 
