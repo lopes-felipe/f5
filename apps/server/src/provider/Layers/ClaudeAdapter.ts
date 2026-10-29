@@ -67,6 +67,7 @@ import {
 } from "../claudeToolCompletion.ts";
 import { randomUUID } from "node:crypto";
 import {
+  CLAUDE_PLAN_MODE_EDIT_DENIAL,
   claudeMandatoryPolicyOptions,
   evaluateClaudeMandatoryPolicy,
   isClaudePlanModeWorkspaceEdit,
@@ -7583,12 +7584,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 } satisfies PermissionResult;
               }
               const inPlanMode = context.configuredBase?.permissionMode === "plan";
-              if (inPlanMode && input.approvalPolicy === "never")
-                return {
-                  behavior: "deny",
-                  message: "Plan mode requires approval for this tool, but approvals are disabled.",
-                } satisfies PermissionResult;
-              // Full access never prompts; plan mode still refuses workspace edits.
+              // Full access never prompts, whatever the approval policy; plan
+              // mode still refuses workspace edits.
               if (inPlanMode && (input.runtimeMode ?? DEFAULT_RUNTIME_MODE) === "full-access") {
                 return isClaudePlanModeWorkspaceEdit(toolName, toolInput, {
                   plansDirectory,
@@ -7596,11 +7593,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 })
                   ? ({
                       behavior: "deny",
-                      message:
-                        "Plan mode is read-only: file edits are not allowed until the plan is approved. Put changes in the plan instead.",
+                      message: CLAUDE_PLAN_MODE_EDIT_DENIAL,
                     } satisfies PermissionResult)
                   : ({ behavior: "allow", updatedInput: toolInput } satisfies PermissionResult);
               }
+              if (inPlanMode && input.approvalPolicy === "never")
+                return {
+                  behavior: "deny",
+                  message: "Plan mode requires approval for this tool, but approvals are disabled.",
+                } satisfies PermissionResult;
               const runtimeMode = inPlanMode
                 ? "approval-required"
                 : (input.runtimeMode ?? DEFAULT_RUNTIME_MODE);

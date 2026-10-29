@@ -137,6 +137,9 @@ export function evaluateClaudeMandatoryHookPolicy(
     : undefined;
 }
 
+export const CLAUDE_PLAN_MODE_EDIT_DENIAL =
+  "Plan mode is read-only: file edits are not allowed until the plan is approved. Put changes in the plan instead.";
+
 /** True for a file edit that plan mode must not make (plan file writes excepted). */
 export function isClaudePlanModeWorkspaceEdit(
   toolName: string,

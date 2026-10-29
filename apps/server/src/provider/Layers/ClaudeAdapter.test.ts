@@ -12678,10 +12678,24 @@ describe("ClaudeAdapterLive", () => {
     ],
     ["full-access", "Write", { file_path: "/repo/a.ts", content: "work" }, "deny"],
     ["full-access", "Edit", { file_path: "/repo/a.ts", old_string: "a", new_string: "b" }, "deny"],
+    [
+      "full-access",
+      "MultiEdit",
+      { file_path: "/repo/a.ts", edits: [{ old_string: "a", new_string: "b" }] },
+      "deny",
+    ],
+    [
+      "full-access",
+      "MultiEdit",
+      { file_path: "/isolated/.claude/plans/x.md", edits: [{ old_string: "a", new_string: "b" }] },
+      "allow",
+    ],
     ["full-access", "NotebookEdit", { notebook_path: "/repo/a.ipynb", new_source: "x" }, "deny"],
+    ["full-access/never", "Bash", { command: "bun run test" }, "allow"],
+    ["full-access/never", "Write", { file_path: "/repo/a.ts", content: "work" }, "deny"],
   ] as const)(
     "decides a plan-mode callback in %s mode for %s without asking",
-    ([runtimeMode, toolName, toolInput, behavior]) => {
+    ([mode, toolName, toolInput, behavior]) => {
       const harness = makeHarness({
         processEnvironment: { CLAUDE_CONFIG_DIR: "/isolated/.claude" },
       });
@@ -12696,7 +12710,12 @@ describe("ClaudeAdapterLive", () => {
           ),
           Effect.forkChild,
         );
-        yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode, cwd: "/repo" });
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          runtimeMode: "full-access",
+          cwd: "/repo",
+          ...(mode === "full-access/never" ? { approvalPolicy: "never" as const } : {}),
+        });
         yield* adapter.sendTurn({
           threadId: THREAD_ID,
           input: "plan",
@@ -12717,6 +12736,57 @@ describe("ClaudeAdapterLive", () => {
       }).pipe(Effect.provide(harness.layer));
     },
   );
+
+  it.effect("allows full-access repo edits again after leaving plan mode", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        runtimeMode: "full-access",
+        cwd: "/repo",
+      });
+      const decide = () =>
+        Effect.promise(() =>
+          harness.getLastCreateQueryInput()!.options.canUseTool!(
+            "Write",
+            { file_path: "/repo/a.ts", content: "work" },
+            {
+              signal: new AbortController().signal,
+              toolUseID: "plan-exit",
+              requestId: "plan-exit",
+            },
+          ),
+        );
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "plan",
+        attachments: [],
+        interactionMode: "plan",
+      });
+      assert.equal((yield* decide())?.behavior, "deny");
+      const turnCompletedFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runHead, Effect.forkChild);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-plan-exit",
+        uuid: "result-plan-exit",
+      } as unknown as SDKMessage);
+      yield* Fiber.join(turnCompletedFiber);
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "implement",
+        attachments: [],
+        interactionMode: "default",
+      });
+      assert.equal((yield* decide())?.behavior, "allow");
+    }).pipe(Effect.provide(harness.layer));
+  });
 
   it.effect.each([
     ["auto", "Write"],
@@ -12778,7 +12848,7 @@ describe("ClaudeAdapterLive", () => {
         const adapter = yield* ClaudeAdapter;
         yield* adapter.startSession({
           threadId: THREAD_ID,
-          runtimeMode: "full-access",
+          runtimeMode: "approval-required",
           approvalPolicy: "never",
         });
         yield* adapter.sendTurn({
