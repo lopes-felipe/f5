@@ -2606,8 +2606,20 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       yield* runGit(repoDir, ["remote", "add", "origin", originDir]);
       yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
       yield* runGit(repoDir, ["remote", "add", "fork-seed", forkDir]);
-      yield* runGit(repoDir, ["push", "fork-seed", "main"]);
+      const localMainBefore = (yield* runGit(repoDir, ["rev-parse", "main"])).stdout.trim();
+      // The fork's main carries a contributor commit the user's own main must never take in.
       yield* runGit(repoDir, ["checkout", "-b", "root-work"]);
+      fs.writeFileSync(path.join(repoDir, "contributor.txt"), "fork work\n");
+      yield* runGit(repoDir, ["add", "contributor.txt"]);
+      yield* runGit(repoDir, ["commit", "-m", "Contributor commit"]);
+      yield* runGit(repoDir, ["push", "fork-seed", "root-work:main"]);
+      // Leave the fork tracking ref stale so an unnecessary fetch would change it.
+      yield* runGit(repoDir, ["update-ref", "refs/remotes/fork-seed/main", localMainBefore]);
+      const trackingRefs = () =>
+        runGit(repoDir, ["for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes"]).pipe(
+          Effect.map((output) => output.stdout),
+        );
+      const trackingRefsBefore = yield* trackingRefs();
       const worktreeParent = yield* makeTempDir("pr-unrelated-main-");
       const mainWorktreePath = path.join(worktreeParent, "main");
       yield* runGit(repoDir, ["worktree", "add", mainWorktreePath, "main"]);
@@ -2647,6 +2659,19 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           "@{upstream}",
         ])).stdout.trim(),
       ).toBe("origin/main");
+      expect(result.branch).toBe("t3code/pr-94/main");
+      expect((yield* runGit(repoDir, ["rev-parse", "main"])).stdout.trim()).toBe(localMainBefore);
+      expect(yield* trackingRefs()).toBe(trackingRefsBefore);
+      expect((yield* runGit(mainWorktreePath, ["branch", "--show-current"])).stdout.trim()).toBe(
+        "main",
+      );
+      expect(fs.existsSync(path.join(mainWorktreePath, "contributor.txt"))).toBe(false);
+
+      // A later pull follows the user's own upstream and takes in nothing from the fork.
+      yield* runGit(mainWorktreePath, ["pull", "--ff-only"]);
+      expect((yield* runGit(mainWorktreePath, ["rev-parse", "HEAD"])).stdout.trim()).toBe(
+        localMainBefore,
+      );
     }),
   );
 

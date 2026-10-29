@@ -252,6 +252,143 @@ describe("credential-bound GitHub requests", () => {
     expect(error.kind).toBe("invalid_json");
   });
 
+  it.each([
+    [401, "unauthenticated", "", null],
+    [403, "forbidden", "", null],
+    [403, "rate_limited", "Retry-After: 30\r\n", 30],
+    [429, "rate_limited", "Retry-After: 60\r\n", 60],
+    [503, "network", "", null],
+  ] as const)(
+    "classifies a GraphQL verification HTTP %s with %j as %s",
+    async (status, kind, headers, retryAfterSeconds) => {
+      const execute = vi.fn<GitHubCliShape["execute"]>((input) =>
+        Effect.succeed({
+          stdout:
+            input.args[1] === "user"
+              ? wire({ message: "forbidden" }, 403)
+              : wire({ message: "verification failed" }, status, headers),
+          stderr: "",
+          code: 0,
+          signal: null,
+          timedOut: false,
+        }),
+      );
+      const error = await Effect.runPromise(
+        makeGitHubApi(execute, makeGitHubRequestScheduler(), () =>
+          Effect.succeed("restricted-token"),
+        )
+          .getCredentialContext({ cwd: "/repo", host: "github.com" })
+          .pipe(Effect.flip),
+      );
+      expect(error.operation).toBe("credentials");
+      expect(error.kind).toBe(kind);
+      // The fallback's own rate-limit data, not the REST 403's, reaches the caller.
+      expect(error.rateLimit?.retryAfterSeconds ?? null).toBe(retryAfterSeconds);
+    },
+  );
+
+  it("classifies a GraphQL rate-limit error during credential verification", async () => {
+    const execute = vi.fn<GitHubCliShape["execute"]>((input) =>
+      Effect.succeed({
+        stdout:
+          input.args[1] === "user"
+            ? wire({ message: "forbidden" }, 403)
+            : wire({ data: null, errors: [{ type: "RATE_LIMITED", message: "limited" }] }),
+        stderr: "",
+        code: 0,
+        signal: null,
+        timedOut: false,
+      }),
+    );
+    const error = await Effect.runPromise(
+      makeGitHubApi(execute, makeGitHubRequestScheduler(), () => Effect.succeed("restricted-token"))
+        .getCredentialContext({ cwd: "/repo", host: "github.com" })
+        .pipe(Effect.flip),
+    );
+    expect(error).toMatchObject({ operation: "credentials", kind: "rate_limited" });
+  });
+
+  it("classifies a timed-out GraphQL verification as a credential timeout", async () => {
+    const execute = vi.fn<GitHubCliShape["execute"]>((input) =>
+      Effect.succeed({
+        stdout: input.args[1] === "user" ? wire({ message: "forbidden" }, 403) : "",
+        stderr: "",
+        code: input.args[1] === "user" ? 0 : 1,
+        signal: null,
+        timedOut: input.args[1] !== "user",
+      }),
+    );
+    const error = await Effect.runPromise(
+      makeGitHubApi(execute, makeGitHubRequestScheduler(), () => Effect.succeed("restricted-token"))
+        .getCredentialContext({ cwd: "/repo", host: "github.com" })
+        .pipe(Effect.flip),
+    );
+    expect(error).toMatchObject({ operation: "credentials", kind: "timeout" });
+  });
+
+  it("re-verifies a viewer-only credential without reading /user again", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      let token = "restricted-token";
+      const execute = vi.fn<GitHubCliShape["execute"]>((input) =>
+        Effect.succeed({
+          stdout:
+            input.args[1] === "user"
+              ? token === "restricted-token"
+                ? wire({ message: "forbidden" }, 403)
+                : wire({ id: 8, login: "classic-viewer" })
+              : wire({ data: { viewer: { databaseId: 7, login: "app-viewer" } } }),
+          stderr: "",
+          code: 0,
+          signal: null,
+          timedOut: false,
+        }),
+      );
+      const api = makeGitHubApi(execute, makeGitHubRequestScheduler(), () => Effect.succeed(token));
+      const verify = () =>
+        Effect.runPromise(api.getCredentialContext({ cwd: "/repo", host: "github.com" }));
+      const endpoints = () => execute.mock.calls.map(([input]) => input.args[1]);
+
+      await verify();
+      vi.setSystemTime(Date.now() + 61_000);
+      expect(await verify()).toMatchObject({ viewerId: 7 });
+      expect(endpoints()).toEqual(["user", "graphql", "graphql"]);
+
+      // A different credential is verified through /user again.
+      token = "classic-token";
+      expect(await verify()).toMatchObject({ viewerId: 8 });
+      expect(endpoints().at(-1)).toBe("user");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("classifies GraphQL transport failures as credential verification errors", async () => {
+    const execute = vi.fn<GitHubCliShape["execute"]>((input) =>
+      input.args[1] === "user"
+        ? Effect.succeed({
+            stdout: wire({ message: "forbidden" }, 403),
+            stderr: "",
+            code: 0,
+            signal: null,
+            timedOut: false,
+          })
+        : Effect.fail(
+            new GitHubCliError({
+              operation: "request",
+              kind: "network",
+              detail: "GitHub CLI could not reach GitHub.",
+            }),
+          ),
+    );
+    const error = await Effect.runPromise(
+      makeGitHubApi(execute, makeGitHubRequestScheduler(), () => Effect.succeed("restricted-token"))
+        .getCredentialContext({ cwd: "/repo", host: "github.com" })
+        .pipe(Effect.flip),
+    );
+    expect(error).toMatchObject({ operation: "credentials", kind: "network" });
+  });
+
   it("keeps execution bound to the verified credential across an external account switch", async () => {
     const h = harness();
     const first = await Effect.runPromise(

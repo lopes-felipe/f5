@@ -111,6 +111,20 @@ export function githubCredentialEnvironment(context: GitHubCredentialContext): N
   return tokenEnvironment(context.host, credential.token);
 }
 
+function isRateLimitedResponse(response: GitHubApiResponse): boolean {
+  return (
+    response.status === 429 ||
+    (response.status === 403 &&
+      (response.rateLimit.remaining === 0 || response.rateLimit.retryAfterSeconds != null)) ||
+    response.graphqlErrors.some(
+      (error) =>
+        typeof error === "object" &&
+        error !== null &&
+        (error as { type?: unknown }).type === "RATE_LIMITED",
+    )
+  );
+}
+
 function nonNegativeHeader(headers: Map<string, string>, name: string): number | null {
   const value = headers.get(name);
   if (value === undefined || !/^\d+$/.test(value)) return null;
@@ -226,6 +240,8 @@ export function makeGitHubApi(
   options: { readonly invalidateToken?: (host: string) => void } = {},
 ) {
   const rejectedCredentials = new Map<string, string>();
+  /** Per host, the fingerprint of a credential that verified through the GraphQL viewer. */
+  const viewerOnlyCredentials = new Map<string, string>();
   const accounts = new Map<string, GitHubCredentialContext>();
   const verifiedAt = new Map<string, number>();
   const identityLock = Semaphore.makeUnsafe(1);
@@ -538,40 +554,49 @@ export function makeGitHubApi(
         Date.now() - (verifiedAt.get(host) ?? 0) < 60_000
       )
         return cached;
-      let verified = yield* requestCaptured({
+      // Some credentials (GitHub App and restricted tokens) cannot read /user but can still
+      // read pull requests, so a plain 403 verifies the same token through the GraphQL viewer.
+      // Its failures are this verification's failures, never a raw request error.
+      const readViewer = requestCaptured({
         cwd: input.cwd,
         host,
         token,
-        method: "GET",
-        endpoint: "user",
-      });
-      const rateLimited =
-        verified.status === 429 ||
-        (verified.status === 403 &&
-          (verified.rateLimit.remaining === 0 || verified.rateLimit.retryAfterSeconds != null));
-      let viewer =
-        typeof verified.body === "object" && verified.body !== null
-          ? (verified.body as Record<string, unknown>)
-          : null;
-      // Some credentials (GitHub App and restricted tokens) cannot read /user but can still
-      // read pull requests, so a plain 403 verifies the same token through the GraphQL viewer.
-      if (verified.status === 403 && !rateLimited) {
-        const graphql = yield* requestCaptured({
-          cwd: input.cwd,
-          host,
-          token,
-          method: "POST",
-          endpoint: "graphql",
-          body: { query: "query { viewer { databaseId login } }" },
-        });
-        const data = (graphql.body as { data?: { viewer?: Record<string, unknown> } } | null)?.data
-          ?.viewer;
-        if (graphql.status === 200 && graphql.graphqlErrors.length === 0 && data) {
-          verified = graphql;
-          viewer = { id: data.databaseId, login: data.login };
-        }
+        method: "POST",
+        endpoint: "graphql",
+        body: { query: "query { viewer { databaseId login } }" },
+      }).pipe(
+        Effect.mapError(
+          (error) =>
+            new GitHubCliError({
+              operation: "credentials",
+              detail: error.detail,
+              ...(error.kind === undefined ? {} : { kind: error.kind }),
+              ...(error.rateLimit === undefined ? {} : { rateLimit: error.rateLimit }),
+            }),
+        ),
+      );
+      // A credential already known to need the viewer skips the /user read GitHub refuses.
+      let viaViewer = viewerOnlyCredentials.get(host) === fingerprint;
+      let verified = viaViewer
+        ? yield* readViewer
+        : yield* requestCaptured({ cwd: input.cwd, host, token, method: "GET", endpoint: "user" });
+      if (!viaViewer && verified.status === 403 && !isRateLimitedResponse(verified)) {
+        verified = yield* readViewer;
+        viaViewer = true;
       }
-      if (verified.status !== 200) {
+      const viewerNode = viaViewer
+        ? (verified.body as { data?: { viewer?: Record<string, unknown> } } | null)?.data?.viewer
+        : undefined;
+      // The decisive response (REST, or the GraphQL fallback) classifies a failure.
+      const rateLimited = isRateLimitedResponse(verified);
+      const viewer = !viaViewer
+        ? typeof verified.body === "object" && verified.body !== null
+          ? (verified.body as Record<string, unknown>)
+          : null
+        : verified.graphqlErrors.length === 0 && viewerNode
+          ? { id: viewerNode.databaseId, login: viewerNode.login }
+          : null;
+      if (verified.status !== 200 || rateLimited) {
         if (verified.status === 401) rejectedCredentials.set(host, fingerprint);
         return yield* Effect.fail(
           new GitHubCliError({
@@ -609,6 +634,8 @@ export function makeGitHubApi(
         );
       }
       rejectedCredentials.delete(host);
+      if (viaViewer) viewerOnlyCredentials.set(host, fingerprint);
+      else viewerOnlyCredentials.delete(host);
       const previous = accounts.get(host);
       const generation =
         previous?.viewerId === viewer.id && credentials.get(previous)?.fingerprint === fingerprint
