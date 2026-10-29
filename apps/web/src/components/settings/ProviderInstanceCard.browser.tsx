@@ -416,7 +416,9 @@ describe("provider update execution", () => {
       await expect.element(page.getByText("Updating Codex…", { exact: true })).toBeVisible();
       expect(onRun).toHaveBeenCalledTimes(1);
       complete(updateResult);
-      await expect.element(page.getByText("Update failed (exit 1).")).toBeVisible();
+      await expect
+        .element(page.getByText("Update failed (exit 1): installer failure marker"))
+        .toBeVisible();
       const { versionAdvisory: _advisory, ...withoutAdvisory } = makeLiveProvider();
       await screen.rerender(card({ liveProvider: withoutAdvisory }));
       expect(document.body.textContent).toContain("installer failure marker");

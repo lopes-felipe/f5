@@ -5,6 +5,12 @@ import type { PtyProcess, PtyExitEvent } from "../terminal/Services/PTY.ts";
 import { AntigravityInstallation } from "../provider/AntigravityInstallation.ts";
 import { makeAntigravityAcpRuntime } from "../provider/acp/AntigravityAcpSupport.ts";
 
+// A healthy agent shows the Google link within seconds. Its bundled Python has no IPv4
+// fallback race, so a host with broken IPv6 waits about two minutes per Google request.
+const NO_RESPONSE_HINT_MS = 30_000;
+const NO_RESPONSE_MESSAGE =
+  "Antigravity has not reached Google after 30 seconds. Check this machine's network connection. Broken IPv6 is a common cause.";
+
 /** Fits the existing owner-scoped account job and lease lifecycle without creating a shell. */
 export function createAntigravityAccountProcess(input: {
   stateDir: string;
@@ -19,8 +25,14 @@ export function createAntigravityAccountProcess(input: {
   const emit = (data: string) => {
     for (const listener of dataListeners) listener(data);
   };
+  let authorizationUrlShown = false;
+  let noResponseHint: ReturnType<typeof setTimeout> | undefined;
   // AccountService registers its handlers in the same turn before this starts.
   queueMicrotask(() => {
+    if (input.action === "login")
+      noResponseHint = setTimeout(() => {
+        if (!authorizationUrlShown && !exited) emit(`${NO_RESPONSE_MESSAGE}\n`);
+      }, NO_RESPONSE_HINT_MS);
     const operation =
       input.action === "install"
         ? new AntigravityInstallation(input.stateDir).install(controller.signal).then(() => {
@@ -34,7 +46,10 @@ export function createAntigravityAccountProcess(input: {
                 childProcessSpawner: spawner,
                 cwd: input.stateDir,
                 accountSetup: true,
-                onAuthorizationUrl: (url) => emit(`Open this URL to sign in:\n${url}\n`),
+                onAuthorizationUrl: (url) => {
+                  authorizationUrlShown = true;
+                  emit(`Open this URL to sign in:\n${url}\n`);
+                },
               });
               yield* runtime.request("initialize", {
                 protocolVersion: 1,
@@ -66,6 +81,7 @@ export function createAntigravityAccountProcess(input: {
         },
       )
       .finally(() => {
+        clearTimeout(noResponseHint);
         for (const listener of exitListeners) listener(exited!);
       });
   });

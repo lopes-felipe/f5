@@ -237,6 +237,17 @@ function claudeAuthMetadata(input: {
   return undefined;
 }
 
+/** An HTTP(S) `ANTHROPIC_BASE_URL` other than Anthropic's own API host. */
+export function isCustomClaudeApiEndpoint(baseUrl: string | undefined): boolean {
+  const endpoint = URL.parse(baseUrl?.trim() ?? "");
+  return (
+    endpoint !== null &&
+    (endpoint.protocol === "http:" || endpoint.protocol === "https:") &&
+    endpoint.hostname !== "" &&
+    endpoint.hostname !== "api.anthropic.com"
+  );
+}
+
 // ── SDK capability probe ────────────────────────────────────────────
 
 function nonEmptyProbeString(value: string): string | undefined {
@@ -696,7 +707,12 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       message: "Could not verify Claude authentication status. Recheck the account.",
     })),
   );
-  if (authProbe.authStatus !== "authenticated") {
+  // First-party account state cannot verify credentials for a custom endpoint.
+  const customApiEndpoint = isCustomClaudeApiEndpoint(environment.ANTHROPIC_BASE_URL);
+  if (
+    authProbe.authStatus !== "authenticated" &&
+    !(customApiEndpoint && authProbe.authStatus === "unauthenticated")
+  ) {
     return buildServerProvider({
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
@@ -716,10 +732,12 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     });
   }
 
-  const authMetadata = claudeAuthMetadata({
-    subscriptionType: capabilities?.subscriptionType,
-    authMethod: capabilities?.tokenSource,
-  });
+  const authMetadata =
+    claudeAuthMetadata({
+      subscriptionType: capabilities?.subscriptionType,
+      authMethod: capabilities?.tokenSource,
+    }) ??
+    (customApiEndpoint ? { type: "customEndpoint", label: "Custom API endpoint" } : undefined);
   return buildServerProvider({
     presentation: CLAUDE_PRESENTATION,
     enabled: claudeSettings.enabled,

@@ -84,6 +84,68 @@ describe("checkGrokProviderStatus", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+  const runLoginProbe = async (secondModelsOutput: string, environment: NodeJS.ProcessEnv = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), "f5-grok-login-"));
+    const count = join(dir, "models.count");
+    const binaryPath = join(dir, "grok");
+    // The first `grok models` reports a logged-out token; later runs print `secondModelsOutput`.
+    writeFileSync(
+      binaryPath,
+      `#!/bin/sh\n[ "$1" = "--version" ] && echo "grok 1.2.0" && exit 0\necho x >> "${count}"\nif [ "$(wc -l < "${count}")" -eq 1 ]; then echo "You are not logged in."; else printf '${secondModelsOutput}\\n'; fi\nexit 0\n`,
+    );
+    chmodSync(binaryPath, 0o755);
+    try {
+      const settings = Schema.decodeSync(GrokSettings)({
+        enabled: true,
+        binaryPath,
+        customModels: [],
+      });
+      const provider = await Effect.runPromise(
+        checkGrokProviderStatus(settings, { PATH: process.env.PATH, ...environment }).pipe(
+          Effect.provide(NodeServices.layer),
+        ),
+      );
+      return { provider, modelsRuns: readFileSync(count, "utf8").trim().split("\n").length };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  it.skipIf(process.platform === "win32")(
+    "rechecks login once when the first probe refreshed an expired token",
+    async () => {
+      const { provider, modelsRuns } = await runLoginProbe(
+        "You are logged in with grok.com.\\nAvailable models:\\n - grok-4.6",
+      );
+      expect(modelsRuns).toBe(2);
+      expect(provider.status).toBe("ready");
+      expect(provider.auth.status).toBe("authenticated");
+    },
+  );
+  it.skipIf(process.platform === "win32")(
+    "keeps a real logout unauthenticated after one recheck",
+    async () => {
+      const { provider, modelsRuns } = await runLoginProbe("You are not logged in.");
+      expect(modelsRuns).toBe(2);
+      expect(provider.auth.status).toBe("unauthenticated");
+    },
+  );
+  it.skipIf(process.platform === "win32")(
+    "keeps the logged-out verdict when the recheck is inconclusive",
+    async () => {
+      const { provider } = await runLoginProbe("Available models:\\n - grok-4.6");
+      expect(provider.auth.status).toBe("unauthenticated");
+    },
+  );
+  it.skipIf(process.platform === "win32")(
+    "does not recheck login when an xAI API key is configured",
+    async () => {
+      const { provider, modelsRuns } = await runLoginProbe("You are logged in.", {
+        XAI_API_KEY: "xai-test",
+      });
+      expect(modelsRuns).toBe(1);
+      expect(provider.auth.status).toBe("authenticated");
+    },
+  );
   it("reports a missing binary as unavailable", async () => {
     const settings = Schema.decodeSync(GrokSettings)({
       enabled: true,

@@ -3,7 +3,9 @@ import { findMcpAppToolPolicy } from "@t3tools/shared/mcpApp";
 import { raceWithAbort } from "@t3tools/shared/abortSignal";
 import { probeCodexCliVersion } from "./codex/cliVersionProbe.ts";
 import { Utf8Lines } from "@t3tools/shared/utf8Lines";
-import { ProviderLineReader } from "./codex/lineReader.ts";
+import { CODEX_MAX_INCOMING_MESSAGE_BYTES, ProviderLineReader } from "./codex/lineReader.ts";
+
+export { CODEX_MAX_INCOMING_MESSAGE_BYTES };
 import type { ProviderAdapterSessionStartInput } from "./provider/Services/ProviderAdapter.ts";
 import { readBoundedPages } from "./codex/readBoundedPages.ts";
 import {
@@ -1277,7 +1279,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         env: childEnvironment,
         stdio: ["pipe", "pipe", "pipe"],
       });
-      const output = new ProviderLineReader(child.stdout);
+      const output = new ProviderLineReader(child.stdout, CODEX_MAX_INCOMING_MESSAGE_BYTES);
       const writer = createJsonRpcStdinWriter({
         stdin: child.stdin,
         closedMessage: "Cannot write to codex app-server stdin.",
@@ -3250,6 +3252,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       this.sourceDrains.delete(drained.promise);
       drained.resolve();
       context.output.off("line", onLine);
+      context.output.off("overflow", onOutputOverflow);
       context.output.off("close", onStdoutClose);
       context.child.stderr.off("data", onStderr);
       context.child.stderr.off("end", onStderrClose);
@@ -3314,7 +3317,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       finish();
       context.child.off("error", onError);
     };
+    // The reader stops at the cap; the session cannot resynchronize mid-message, so it ends.
+    const onOutputOverflow = () => {
+      const message = `codex app-server sent a message larger than ${CODEX_MAX_INCOMING_MESSAGE_BYTES} bytes; the session was ended.`;
+      onError(new Error(message));
+      if (!context.child.killed) killChildTree(context.child);
+    };
     context.beginDrain = beginDrain;
+    context.output.on("overflow", onOutputOverflow);
     context.output.on("line", onLine);
     context.output.on("close", onStdoutClose);
     context.child.stderr.on("data", onStderr);

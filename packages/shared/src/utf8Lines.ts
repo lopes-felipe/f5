@@ -1,3 +1,34 @@
+/** A line exceeded the limit. `lines` holds the complete lines framed before it in the same chunk. */
+export class Utf8LineOverflowError extends Error {
+  constructor(
+    readonly maxBytes: number,
+    readonly lines: ReadonlyArray<string>,
+  ) {
+    super(`Provider stdout line exceeds the ${maxBytes} byte limit`);
+    this.name = "Utf8LineOverflowError";
+  }
+}
+
+/** UTF-8 length without allocating an encoded copy; lone surrogates count as U+FFFD (3 bytes). */
+function utf8ByteLength(text: string): number {
+  let bytes = 0;
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (
+      code >= 0xd800 &&
+      code <= 0xdbff &&
+      index + 1 < text.length &&
+      (text.charCodeAt(index + 1) & 0xfc00) === 0xdc00
+    ) {
+      bytes += 4;
+      index++;
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
 /** Incremental UTF-8/CRLF framing. Unbounded unless the transport specifies a limit. */
 export class Utf8Lines {
   private readonly decoder = new TextDecoder();
@@ -44,12 +75,9 @@ export class Utf8Lines {
     while (start < chunk.length) {
       const end = chunk.indexOf("\n", start);
       let fragment = chunk.slice(start, end < 0 ? undefined : end);
-      const size = Number.isFinite(this.maxBytes)
-        ? this.encoder.encode(fragment).byteLength
-        : fragment.length;
+      const size = Number.isFinite(this.maxBytes) ? utf8ByteLength(fragment) : fragment.length;
       if (this.bytes + size > this.maxBytes) {
-        if (this.overflow === "error")
-          throw new Error(`Provider stdout line exceeds the ${this.maxBytes} byte limit`);
+        if (this.overflow === "error") throw new Utf8LineOverflowError(this.maxBytes, lines);
         let remaining = Math.max(0, this.maxBytes - this.bytes);
         let prefix = "";
         for (const character of fragment) {

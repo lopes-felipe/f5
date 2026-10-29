@@ -221,13 +221,56 @@ describe("checkClaudeProviderStatus", () => {
     ['{"unexpected":"response"}', "unknown"],
   ])("does not treat SDK initialization as a login: %s", async (auth, expected) => {
     const snapshot = await Effect.runPromise(
-      checkClaudeProviderStatus(claudeSettings, capabilitiesProbe).pipe(
+      checkClaudeProviderStatus(claudeSettings, capabilitiesProbe, {}).pipe(
         Effect.provide(Layer.merge(NodeServices.layer, mockClaudeVersionLayer("2.1.257", auth))),
       ),
     );
     expect(snapshot.auth.status).toBe(expected);
     expect(snapshot.auth.email).toBeUndefined();
     expect(snapshot.status).not.toBe("ready");
+  });
+  const accountlessCapabilities = () =>
+    Effect.succeed({
+      email: undefined,
+      subscriptionType: undefined,
+      tokenSource: undefined,
+      slashCommands: [],
+    });
+  const runLoggedOutStatus = (environment: NodeJS.ProcessEnv) =>
+    Effect.runPromise(
+      checkClaudeProviderStatus(claudeSettings, accountlessCapabilities, environment).pipe(
+        Effect.provide(
+          Layer.merge(
+            NodeServices.layer,
+            mockClaudeVersionLayer("2.1.257", '{"loggedIn":false,"authMethod":"none"}'),
+          ),
+        ),
+      ),
+    );
+  it.each(["https://proxy.example/api", "http://localhost:8080"])(
+    "keeps Claude ready behind the custom API endpoint %s",
+    async (baseUrl) => {
+      const snapshot = await runLoggedOutStatus({ ANTHROPIC_BASE_URL: baseUrl });
+      expect(snapshot.status).toBe("ready");
+      expect(snapshot.auth).toMatchObject({
+        status: "authenticated",
+        type: "customEndpoint",
+        label: "Custom API endpoint",
+      });
+    },
+  );
+  it.each([
+    "",
+    "https://api.anthropic.com",
+    "https://api.anthropic.com:8443",
+    "openrouter.ai/api",
+    "localhost:8080",
+    "ftp://proxy.example",
+  ])("keeps Claude logged out when the endpoint is %j", async (baseUrl) => {
+    const snapshot = await runLoggedOutStatus({ ANTHROPIC_BASE_URL: baseUrl });
+    expect(snapshot.status).toBe("error");
+    expect(snapshot.auth.status).toBe("unauthenticated");
+    expect(snapshot.auth.type).toBeUndefined();
   });
   it.each(["2.1.256", "2.1.257"])("gates Fable 5.1 and custom aliases at %s", async (version) => {
     const snapshot = await runStatusForVersionWithSettings(version, {
