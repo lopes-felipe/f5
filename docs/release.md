@@ -27,7 +27,7 @@ Apply a tag ruleset restricting create/update/delete of `refs/tags/v*` to admins
 
 ## Prepare and publish
 
-First public release: Windows-only `v0.1.0` stable. It is rehearsed without publishing anything: by the Windows update rehearsal (on every dry run and tag) and by the manual acceptance checks below. No public beta precedes it.
+First public release: `v0.1.1` stable with the `all` profile, rehearsed as `v0.1.1-beta.1` and `v0.1.1-beta.2` first. The Windows-only `v0.1.0` was built but never published, so no earlier desktop release has updater manifests.
 
 The Windows CLI archives and the rehearsal live in `.github/workflows/windows-release-checks.yml`. The release workflow calls it, and pull requests that touch packaging, distribution, desktop or release files run it as well, with no secrets or environment approval. Get it green on the pull request before merging; a release dry run then only has to confirm the signed and cross-platform parts.
 
@@ -43,12 +43,12 @@ The rehearsal job builds two unpublished installers from the release commit, on 
 
 What the rehearsal does **not** prove:
 
-- **Published clients:** both builds contain the release commit's updater, so it cannot show that already-published clients can update to the new release. That matters from the second Windows release on. Before tagging `v0.1.1` (or any Windows release after `v0.1.0`), change the job to use the latest published stable installer as the baseline and the `desktop-win-x64` build artifact as the target.
+- **Published clients:** both builds contain the release commit's updater, so it cannot show that already-published clients can update to the new release. That matters from the second published Windows release on. Before tagging any release after `v0.1.1`, change the job to use the latest published stable installer as the baseline and the `desktop-win-x64` build artifact as the target.
 - **Signed builds:** its builds are always unsigned. When Windows signing is enabled, extend it to signed-to-signed upgrades and to rejecting unsigned or wrongly signed updates.
 
 A green dry run with the release's profile is a hard precondition for tagging. The rehearsal has no non-blocking mode; a flaky failure means re-running the job.
 
-1. Run `node scripts/prepare-release.ts <version>`: `0.1.0` for the Windows-only first release (no beta). With the `all` profile, rehearse as `X.Y.Z-beta.N` first. It updates four manifests and the lockfile. Stable preparation moves Unreleased into a dated section; beta preparation leaves it untouched. Follow the printed commands to open a release PR.
+1. Run `node scripts/prepare-release.ts <version>`. With the `all` profile, rehearse as `X.Y.Z-beta.N` first. It updates four manifests and the lockfile. Stable preparation moves Unreleased into a dated section; beta preparation leaves it untouched. Follow the printed commands to open a release PR.
 2. Merge and wait for a successful **CI push** run on main at the exact release SHA.
 3. Run `git tag vX.Y.Z <sha>` and `git push origin vX.Y.Z` (use `-beta.N` for beta). Only stable and beta.N tags are accepted. The version must exceed every published stable/beta version.
 4. Approve the release environment. The workflow builds the profile's desktops (with `all`, it also signs and notarizes macOS; with `windows`, it produces only the unsigned Windows installer), runs the Windows rehearsal, checks all hashes/manifests, and creates a **draft**. Updaters cannot see drafts. `workflow_dispatch` with `dry_run=true` on main rehearses builds with a unique dryrun version and creates no release.
@@ -70,8 +70,8 @@ Releases across both channels must increase globally. If a higher beta is alread
   - Download through a browser (SmartScreen path), verify its hash against `SHA256SUMS`, install, launch without Node/Bun, create data, and uninstall (data is kept).
   - On Windows 11, record Smart App Control behaviour and confirm it matches `docs/install.md`.
   - Test import and side-by-side operation with F5 (Alpha), as in the full checklist.
-- Publish with `bun run release:promote --tag v0.1.0`, then `gh release edit v0.1.0 --latest`.
-- Then confirm that `releases/latest/download/F5-0.1.0-x64.exe`, `latest.yml` and `f5-cli-release.json` return 200 with the expected version. An installed 0.1.0 must report "up to date" against the production feed, and `f5 install` must work from the new manifest.
+- Publish with `bun run release:promote --tag <tag>`, then `gh release edit <tag> --latest`.
+- Then confirm that `releases/latest/download/F5-<version>-x64.exe`, `latest.yml` and `f5-cli-release.json` return 200 with the expected version. An installed release must report "up to date" against the production feed, and `f5 install` must work from the new manifest.
 
 ## Full checklist (`all` profile; record results in the PR)
 
