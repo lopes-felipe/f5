@@ -16935,11 +16935,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T09:07:01.338Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-18092",
-      "status": "port",
+      "reason": "f5 lacks upstream's remote SSH editor-link feature (#6572, triaged not-applicable), so there are no remote editor URLs to add the SSH username to.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "open-in",
