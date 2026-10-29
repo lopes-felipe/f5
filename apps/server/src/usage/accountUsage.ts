@@ -16,6 +16,8 @@ export interface AccountUsageCapability {
     mode: UsageGetAccountsInput["refresh"],
     permits: Semaphore.Semaphore,
   ) => Effect.Effect<void>;
+  /** Drops cached reads so the next refresh probes again. */
+  readonly invalidate?: Effect.Effect<void>;
 }
 
 /** Hashes configuration inputs into a stable, secret-free account identity. */

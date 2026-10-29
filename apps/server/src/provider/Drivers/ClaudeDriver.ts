@@ -256,6 +256,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             claudeProcessEnvironment,
           ),
           readerOwnsTimeout: true,
+          // A failed or signed-out usage read retries instead of holding the TTL.
+          retryFailedReads: true,
         },
       );
 
@@ -265,6 +267,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         processEnv,
         serverConfig.stateDir,
       ).pipe(
+        // Signing out drops cached account probes, so limits return as soon as the user signs back in.
+        Effect.tap((provider) =>
+          provider.auth.status === "unauthenticated"
+            ? probes.invalidate.pipe(Effect.andThen(accountUsage.invalidate))
+            : Effect.void,
+        ),
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(Path.Path, path),

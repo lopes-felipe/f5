@@ -1,5 +1,5 @@
 import type { AccountUsageSection, UsageAccount } from "@t3tools/contracts";
-import { Cache, Cause, Clock, Deferred, Effect, Ref } from "effect";
+import { Cache, Cause, Clock, Deferred, Duration, Effect, Exit, Ref } from "effect";
 import { accountUsageErrorCode } from "../accountUsageErrors.ts";
 
 import { ACCOUNT_ATTEMPT_TTL_MS, type AccountUsageCapability } from "../accountUsage.ts";
@@ -16,18 +16,28 @@ export function emptyAccountSection(kind: AccountUsageSection["kind"]): AccountU
 export const makeAccountUsageCapability = <E>(
   initial: UsageAccount,
   read: Effect.Effect<ReadonlyArray<AccountUsageSection>, E>,
-  options: { readonly identity: string; readonly readerOwnsTimeout?: boolean },
+  options: {
+    readonly identity: string;
+    readonly readerOwnsTimeout?: boolean;
+    /** Only an available read holds the attempt TTL; failed reads retry on the next refresh. */
+    readonly retryFailedReads?: boolean;
+  },
 ) =>
   Effect.gen(function* () {
     const scope = yield* Effect.scope;
     const state = yield* Ref.make(initial);
-    // TTL starts at completion, including failure. Forced refresh bypasses it.
+    // TTL starts at completion, including failure unless `retryFailedReads`. Forced refresh bypasses it.
     let inFlight: Deferred.Deferred<void> | undefined;
     const lastJobFresh = yield* Ref.make(false);
     const lastCompleted = yield* Ref.make<number | null>(null);
-    const attempts = yield* Cache.make({
+    const isFresh = (sections: ReadonlyArray<AccountUsageSection>) =>
+      sections.some((section) => section.outcome === "available" && section.snapshot !== null);
+    const attempts = yield* Cache.makeWith({
       capacity: 4,
-      timeToLive: ACCOUNT_ATTEMPT_TTL_MS,
+      timeToLive: (exit) =>
+        options.retryFailedReads && !(Exit.isSuccess(exit) && isFresh(exit.value))
+          ? Duration.zero
+          : ACCOUNT_ATTEMPT_TTL_MS,
       lookup: () =>
         (options.readerOwnsTimeout ? read : read.pipe(Effect.timeout("8 seconds"))).pipe(
           // Readers return section failures independently. Only a connection-level
@@ -60,12 +70,14 @@ export const makeAccountUsageCapability = <E>(
           if (!initial.enabled || mode === "none") return;
           const now = yield* Clock.currentTimeMillis;
           const previous = yield* Ref.get(lastCompleted);
+          const holdMs =
+            mode === "force"
+              ? 5_000
+              : options.retryFailedReads && !(yield* Ref.get(lastJobFresh))
+                ? 0
+                : ACCOUNT_ATTEMPT_TTL_MS;
           const scheduled = yield* Ref.modify(state, (current) => {
-            if (
-              current.refreshState !== "idle" ||
-              (previous !== null &&
-                now - previous < (mode === "force" ? 5_000 : ACCOUNT_ATTEMPT_TTL_MS))
-            )
+            if (current.refreshState !== "idle" || (previous !== null && now - previous < holdMs))
               return [false, current] as const;
             return [true, { ...current, refreshState: "queued" as const }] as const;
           });
@@ -81,9 +93,7 @@ export const makeAccountUsageCapability = <E>(
               }));
               if (mode === "force") yield* Cache.invalidate(attempts, initial.key);
               const sections = yield* Cache.get(attempts, initial.key);
-              jobFresh = sections.some(
-                (section) => section.outcome === "available" && section.snapshot !== null,
-              );
+              jobFresh = isFresh(sections);
               yield* Ref.update(state, (current) => ({
                 ...current,
                 sections: sections.map((section) => {
@@ -138,5 +148,9 @@ export const makeAccountUsageCapability = <E>(
       getSnapshot: Ref.get(state),
       refresh,
       refreshAccount,
+      invalidate: Cache.invalidateAll(attempts).pipe(
+        Effect.andThen(Ref.set(lastJobFresh, false)),
+        Effect.andThen(Ref.set(lastCompleted, null)),
+      ),
     } satisfies AccountUsageCapability;
   });

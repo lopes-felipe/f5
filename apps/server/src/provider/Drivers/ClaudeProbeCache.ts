@@ -1,6 +1,6 @@
 import type { ClaudeSettings } from "@t3tools/contracts";
 import type { query } from "@anthropic-ai/claude-agent-sdk";
-import { Cache, Clock, Effect, Path, Ref } from "effect";
+import { Cache, Clock, Duration, Effect, Exit, Path, Ref } from "effect";
 import * as Semaphore from "effect/Semaphore";
 import {
   probeClaudeCapabilities,
@@ -23,9 +23,11 @@ export const makeClaudeInstanceProbes = (
       null,
     );
     const key = yield* makeClaudeCapabilitiesCacheKey(settings);
-    const cache = yield* Cache.make({
+    const cache = yield* Cache.makeWith({
       capacity: 4,
-      timeToLive: ACCOUNT_ATTEMPT_TTL_MS,
+      // Only a successful probe earns the TTL; a failed one retries on the next check.
+      timeToLive: (exit) =>
+        Exit.isSuccess(exit) && exit.value !== undefined ? ACCOUNT_ATTEMPT_TTL_MS : Duration.zero,
       lookup: () =>
         lock.withPermits(1)(
           Effect.gen(function* () {
