@@ -34,6 +34,7 @@ import { CodexAdapter, type CodexAdapterShape } from "../Services/CodexAdapter.t
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import { readRuntimeConfiguredPayload } from "@t3tools/shared/orchestrationActivityPayload";
 import {
+  codexReasoningTokensSinceBaseline,
   hookTargetItemId,
   makeCodexAdapterLive,
   normalizeCodexThreadItemType,
@@ -62,6 +63,33 @@ it("reports Codex's preview as verified, so its chip can reach ready", () => {
     installed: true,
     verified: true,
   });
+});
+
+it("diffs Codex reasoning totals against the session baseline", () => {
+  const frame = (total: number | undefined, last: number | undefined) => ({
+    tokenUsage: {
+      ...(total !== undefined ? { total: { reasoningOutputTokens: total } } : {}),
+      ...(last !== undefined ? { last: { reasoningOutputTokens: last } } : {}),
+    },
+  });
+  assert.deepEqual(codexReasoningTokensSinceBaseline(frame(9_000, 300), undefined), {
+    tokens: 300,
+    baseline: 9_000,
+  });
+  assert.deepEqual(codexReasoningTokensSinceBaseline(frame(9_250, 250), 9_000), {
+    tokens: 250,
+    baseline: 9_250,
+  });
+  assert.deepEqual(codexReasoningTokensSinceBaseline(frame(9_000, 0), 9_000), {
+    tokens: 0,
+    baseline: 9_000,
+  });
+  // A total that went backwards (new rollout) restarts from `last`.
+  assert.deepEqual(codexReasoningTokensSinceBaseline(frame(100, 100), 9_000), {
+    tokens: 100,
+    baseline: 100,
+  });
+  assert.equal(codexReasoningTokensSinceBaseline({}, undefined), undefined);
 });
 
 it("maps exact current Codex item types and legacy aliases without substring collisions", () => {
@@ -2395,6 +2423,64 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         contextTokens: 157_823,
         modelContextWindowTokens: 258_400,
       });
+    }),
+  );
+
+  it.effect("reports reasoning tokens once per increase in Codex usage totals", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      // Its own thread keeps the per-session baseline and stream isolated from other tests.
+      const threadId = asThreadId("thread-reasoning-tokens");
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.take(5),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const usage = (id: string, total: number, last: number): ProviderEvent => ({
+        id: asEventId(id),
+        kind: "notification",
+        provider: "codex",
+        threadId,
+        createdAt: new Date().toISOString(),
+        method: "thread/tokenUsage/updated",
+        turnId: asTurnId("turn-reasoning-1"),
+        payload: {
+          threadId: "codex-thread-1",
+          turnId: "turn-reasoning-1",
+          tokenUsage: {
+            total: { totalTokens: 10_000, reasoningOutputTokens: total },
+            last: { totalTokens: 1_000, reasoningOutputTokens: last },
+            modelContextWindow: 258_400,
+          },
+        },
+      });
+
+      // A resumed thread's history (64_521) is not attributed; only `last` counts.
+      lifecycleManager.emit("event", usage("evt-usage-1", 64_521, 516));
+      // A repeated frame adds nothing.
+      lifecycleManager.emit("event", usage("evt-usage-2", 64_521, 516));
+      lifecycleManager.emit("event", usage("evt-usage-3", 64_921, 400));
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      assert.deepEqual(
+        events.map((event) => event.type),
+        [
+          "thread.token-usage.updated",
+          "turn.reasoning-tokens.reported",
+          "thread.token-usage.updated",
+          "thread.token-usage.updated",
+          "turn.reasoning-tokens.reported",
+        ],
+      );
+      const reports = events.filter((event) => event.type === "turn.reasoning-tokens.reported");
+      assert.deepEqual(
+        reports.map((event) => [String(event.turnId), event.payload]),
+        [
+          ["turn-reasoning-1", { tokens: 516, estimated: false }],
+          ["turn-reasoning-1", { tokens: 400, estimated: false }],
+        ],
+      );
     }),
   );
 

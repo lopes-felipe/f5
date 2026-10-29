@@ -5185,6 +5185,79 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("reports estimated thinking tokens when each thinking block closes", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "think",
+        attachments: [],
+      });
+      const emit = (message: Record<string, unknown>) =>
+        harness.query.emit({
+          uuid: crypto.randomUUID(),
+          session_id: "sdk-session-thinking-tokens",
+          ...message,
+        } as unknown as SDKMessage);
+      const stream = (event: Record<string, unknown>) =>
+        emit({ type: "stream_event", parent_tool_use_id: null, event });
+      const estimate = (tokens: number) =>
+        emit({ type: "system", subtype: "thinking_tokens", estimated_tokens: tokens });
+
+      stream({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking", thinking: "", signature: "" },
+      });
+      estimate(300);
+      estimate(700);
+      stream({ type: "content_block_stop", index: 0 });
+      stream({
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "thinking", thinking: "", signature: "" },
+      });
+      // The estimate restarts for a new block.
+      estimate(200);
+      stream({ type: "content_block_stop", index: 1 });
+      // A late frame for the closed block is reported when the turn ends.
+      estimate(350);
+      emit({ type: "result", subtype: "success", is_error: false, errors: [] });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      const reports = events.flatMap((event) =>
+        event.type === "turn.reasoning-tokens.reported"
+          ? [{ itemId: event.itemId, turnId: String(event.turnId), ...event.payload }]
+          : [],
+      );
+      const turnId = String(turn.turnId);
+      assert.deepEqual(reports, [
+        { itemId: `${turnId}:thinking:1`, turnId, tokens: 700, estimated: true },
+        { itemId: `${turnId}:thinking:2`, turnId, tokens: 200, estimated: true },
+        { itemId: undefined, turnId, tokens: 150, estimated: true },
+      ]);
+      const completedIndex = events.findIndex((event) => event.type === "turn.completed");
+      const lastReportIndex = events.findLastIndex(
+        (event) => event.type === "turn.reasoning-tokens.reported",
+      );
+      assert.isTrue(lastReportIndex < completedIndex);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("closes a stale thinking block and ignores thinking after an interrupt", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

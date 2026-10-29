@@ -310,6 +310,24 @@ type PromptQueueItem =
       readonly type: "terminate";
     };
 
+export interface ClaudeThinkingTokenAccount {
+  /** Latest per-block estimate; it restarts from zero for each thinking block. */
+  readonly lastEstimate: number;
+  /** Tokens estimated since the last report. */
+  readonly pending: number;
+}
+
+/** Folds a live per-block estimate into the account, treating a drop as a new block. */
+export function accumulateClaudeThinkingTokens(
+  account: ClaudeThinkingTokenAccount | undefined,
+  estimatedTokens: number,
+): ClaudeThinkingTokenAccount {
+  const lastEstimate = account?.lastEstimate ?? 0;
+  const pending = account?.pending ?? 0;
+  const added = estimatedTokens >= lastEstimate ? estimatedTokens - lastEstimate : estimatedTokens;
+  return { lastEstimate: estimatedTokens, pending: pending + added };
+}
+
 interface ClaudeTurnState {
   goalChecked?: boolean;
   userMessageUuids?: Set<string>;
@@ -328,6 +346,8 @@ interface ClaudeTurnState {
   thinkingBlockCount: number;
   /** Open thinking blocks by stream block index, closed on stop or turn end. */
   readonly openThinkingBlocks: Map<number, string>;
+  /** Live `thinking_tokens` accounting, reported when a thinking block closes. */
+  thinkingTokens?: ClaudeThinkingTokenAccount;
   authenticationFailureMessage?: string;
   rateLimitFailure?: true;
   rejectedUsageLimits?: Map<string, ReturnType<typeof claudeLimitState>>;
@@ -3871,6 +3891,34 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           providerRefs: nativeProviderRefs(context),
           raw: { source: "claude.sdk.message", method: raw.method, payload: raw.payload },
         });
+        yield* reportPendingThinkingTokens(context, turnState, raw, itemId);
+      });
+
+    // Claude reports no billed thinking tokens, so the live estimate is all there is.
+    const reportPendingThinkingTokens = (
+      context: ClaudeSessionContext,
+      turnState: ClaudeTurnState,
+      raw: { readonly method: string; readonly payload: unknown },
+      itemId?: string,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const account = turnState.thinkingTokens;
+        if (!account || account.pending <= 0) return;
+        turnState.thinkingTokens = { ...account, pending: 0 };
+        const stamp = yield* makeEventStamp(context);
+        yield* offerRuntimeEvent({
+          type: "turn.reasoning-tokens.reported",
+          ...stamp,
+          eventId: stamp.eventId,
+          provider: PROVIDER,
+          createdAt: stamp.createdAt,
+          threadId: context.session.threadId,
+          turnId: asCanonicalTurnId(turnState.turnId),
+          ...(itemId !== undefined ? { itemId: asRuntimeItemId(itemId) } : {}),
+          payload: { tokens: account.pending, estimated: true },
+          providerRefs: nativeProviderRefs(context),
+          raw: { source: "claude.sdk.message", method: raw.method, payload: raw.payload },
+        });
       });
 
     const completeOpenThinkingBlocks = (
@@ -3882,7 +3930,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         [...turnState.openThinkingBlocks.keys()],
         (index) => completeThinkingBlock(context, turnState, index, raw),
         { discard: true },
-      ).pipe(Effect.andThen(Effect.sync(() => turnState.openThinkingBlocks.clear())));
+      ).pipe(
+        Effect.andThen(Effect.sync(() => turnState.openThinkingBlocks.clear())),
+        // Estimates that arrived after their block closed.
+        Effect.andThen(reportPendingThinkingTokens(context, turnState, raw)),
+      );
 
     const completeTurn = (
       context: ClaudeSessionContext,
@@ -5505,6 +5557,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             // dedicated runtime event; deliberately kept out of the context-token
             // / compaction accounting since it is ephemeral per-thinking-block
             // progress.
+            if (context.turnState) {
+              context.turnState.thinkingTokens = accumulateClaudeThinkingTokens(
+                context.turnState.thinkingTokens,
+                message.estimated_tokens,
+              );
+            }
             yield* offerRuntimeEvent({
               ...base,
               type: "thread.thinking-tokens.updated",

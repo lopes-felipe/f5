@@ -51,6 +51,7 @@ import {
   type TaskItem,
   ThreadId,
   TurnId,
+  type OrchestrationThread,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
   type ProviderSessionCapabilities,
@@ -168,6 +169,11 @@ interface ReasoningStatusEntry {
   readonly headingParts: Readonly<Record<string, string | null>>;
 }
 
+interface PendingReasoningTokens {
+  readonly tokens: number;
+  readonly estimated: boolean;
+}
+
 interface ReasoningSection {
   readonly key: string;
   /** The streamed message that last received this turn's reasoning, if any. */
@@ -234,6 +240,8 @@ const REASONING_STATUS_BY_TURN_KEY_CACHE_CAPACITY = 10_000;
 const REASONING_STATUS_BY_TURN_KEY_TTL = Duration.minutes(120);
 const REASONING_SECTION_BY_TURN_KEY_CACHE_CAPACITY = 10_000;
 const REASONING_SECTION_BY_TURN_KEY_TTL = Duration.minutes(120);
+const REASONING_TOKENS_BY_TURN_KEY_CACHE_CAPACITY = 10_000;
+const REASONING_TOKENS_BY_TURN_KEY_TTL = Duration.minutes(120);
 // A summary part that has not produced a `**Heading**` within this many
 // characters never will; stop scanning it.
 const REASONING_HEADING_SCAN_CHARS = 400;
@@ -2730,6 +2738,32 @@ const make = Effect.gen(function* () {
     lookup: () => Effect.succeed(null),
   });
 
+  // Reasoning-token counts follow their reasoning text. Counts reported while
+  // the text is still buffered (or before any text) wait here for the message
+  // that receives it; leftovers attach to the turn's last message on completion.
+  const pendingReasoningTokensByTurnKey = yield* Cache.make<string, PendingReasoningTokens | null>({
+    capacity: REASONING_TOKENS_BY_TURN_KEY_CACHE_CAPACITY,
+    timeToLive: REASONING_TOKENS_BY_TURN_KEY_TTL,
+    lookup: () => Effect.succeed(null),
+  });
+  // The message that last received reasoning text and has not yet been
+  // credited with a count for it. Cleared once credited, so a later count
+  // without visible reasoning moves on to the next message.
+  const reasoningRecipientByTurnKey = yield* Cache.make<string, MessageId | null>({
+    capacity: REASONING_TOKENS_BY_TURN_KEY_CACHE_CAPACITY,
+    timeToLive: REASONING_TOKENS_BY_TURN_KEY_TTL,
+    lookup: () => Effect.succeed(null),
+  });
+  // Counts attributed to a message that is still streaming, dispatched once it completes.
+  const deferredReasoningTokensByMessageId = yield* Cache.make<
+    MessageId,
+    (PendingReasoningTokens & { readonly turnId: TurnId }) | null
+  >({
+    capacity: REASONING_TOKENS_BY_TURN_KEY_CACHE_CAPACITY,
+    timeToLive: REASONING_TOKENS_BY_TURN_KEY_TTL,
+    lookup: () => Effect.succeed(null),
+  });
+
   const resolveWorkspaceCwdForThread = Effect.fnUntraced(function* (threadId: ThreadId) {
     const readModel = yield* orchestrationEngine.getReadModel();
     const thread = readModel.threads.find((entry) => entry.id === threadId);
@@ -2870,6 +2904,178 @@ const make = Effect.gen(function* () {
     Cache.invalidate(bufferedReasoningTextByTurnKey, turnKey).pipe(
       Effect.andThen(Cache.invalidate(reasoningSectionByTurnKey, turnKey)),
     );
+
+  const hasBufferedReasoningText = (turnKey: string) =>
+    Cache.getOption(bufferedReasoningTextByTurnKey, turnKey).pipe(
+      Effect.map(Option.match({ onNone: () => false, onSome: (text) => text.length > 0 })),
+    );
+
+  const clearReasoningTokenState = (turnKey: string) =>
+    Cache.invalidate(pendingReasoningTokensByTurnKey, turnKey).pipe(
+      Effect.andThen(Cache.invalidate(reasoningRecipientByTurnKey, turnKey)),
+    );
+
+  const addPendingReasoningTokens = (turnKey: string, tokens: number, estimated: boolean) =>
+    Cache.getOption(pendingReasoningTokensByTurnKey, turnKey).pipe(
+      Effect.flatMap((existing) => {
+        const previous = Option.getOrNull(existing);
+        return Cache.set(pendingReasoningTokensByTurnKey, turnKey, {
+          tokens: (previous?.tokens ?? 0) + tokens,
+          estimated: (previous?.estimated ?? false) || estimated,
+        });
+      }),
+    );
+
+  const takePendingReasoningTokens = (turnKey: string) =>
+    Cache.getOption(pendingReasoningTokensByTurnKey, turnKey).pipe(
+      Effect.flatMap((existing) =>
+        Cache.invalidate(pendingReasoningTokensByTurnKey, turnKey).pipe(
+          Effect.as(Option.getOrNull(existing)),
+        ),
+      ),
+    );
+
+  const dispatchReasoningTokens = (input: {
+    readonly event: ProviderRuntimeEvent;
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly messageId: MessageId;
+    readonly tokens: PendingReasoningTokens;
+    readonly tag: string;
+  }) =>
+    Effect.gen(function* () {
+      if (input.tokens.tokens <= 0) return;
+      const readModel = yield* orchestrationEngine.getReadModel();
+      const message = readModel.threads
+        .find((thread) => thread.id === input.threadId)
+        ?.messages.find((entry) => entry.id === input.messageId);
+      // Event compaction folds a streamed message into its final event, so a
+      // count recorded before completion would replay ahead of its message.
+      if (message === undefined || message.streaming) {
+        yield* deferReasoningTokens(input.messageId, input.turnId, input.tokens);
+        return;
+      }
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.message.reasoning-tokens.add",
+          commandId: providerCommandId(
+            input.event,
+            `reasoning-tokens-${input.tag}:${input.messageId}`,
+          ),
+          threadId: input.threadId,
+          messageId: input.messageId,
+          turnId: input.turnId,
+          tokens: input.tokens.tokens,
+          estimated: input.tokens.estimated,
+          createdAt: input.event.createdAt,
+        })
+        .pipe(
+          Effect.asVoid,
+          Effect.catchCause((cause) =>
+            isPermanentDispatchRejection(cause)
+              ? Effect.logDebug("provider runtime ingestion dropped reasoning tokens", {
+                  threadId: input.threadId,
+                  messageId: input.messageId,
+                  tokens: input.tokens.tokens,
+                })
+              : Effect.failCause(cause),
+          ),
+        );
+    });
+
+  const deferReasoningTokens = (
+    messageId: MessageId,
+    turnId: TurnId,
+    tokens: PendingReasoningTokens,
+  ) =>
+    Cache.getOption(deferredReasoningTokensByMessageId, messageId).pipe(
+      Effect.flatMap((existing) => {
+        const previous = Option.getOrNull(existing);
+        return Cache.set(deferredReasoningTokensByMessageId, messageId, {
+          turnId,
+          tokens: (previous?.tokens ?? 0) + tokens.tokens,
+          estimated: (previous?.estimated ?? false) || tokens.estimated,
+        });
+      }),
+    );
+
+  /** Dispatches counts that waited for this message to complete. */
+  const flushDeferredReasoningTokens = (input: {
+    readonly event: ProviderRuntimeEvent;
+    readonly threadId: ThreadId;
+    readonly messageId: MessageId;
+  }) =>
+    Effect.gen(function* () {
+      const deferred = Option.getOrNull(
+        yield* Cache.getOption(deferredReasoningTokensByMessageId, input.messageId),
+      );
+      if (!deferred) return;
+      yield* Cache.invalidate(deferredReasoningTokensByMessageId, input.messageId);
+      yield* dispatchReasoningTokens({
+        event: input.event,
+        threadId: input.threadId,
+        turnId: deferred.turnId,
+        messageId: input.messageId,
+        tokens: deferred,
+        tag: "deferred",
+      });
+    });
+
+  /** Records the message that just received reasoning text and hands it any waiting count. */
+  const noteReasoningRecipient = (input: {
+    readonly event: ProviderRuntimeEvent;
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly messageId: MessageId;
+  }) =>
+    Effect.gen(function* () {
+      const turnKey = providerTurnKey(input.threadId, input.turnId);
+      yield* Cache.set(reasoningRecipientByTurnKey, turnKey, input.messageId);
+      if (yield* hasBufferedReasoningText(turnKey)) return;
+      const pending = yield* takePendingReasoningTokens(turnKey);
+      if (!pending) return;
+      yield* Cache.invalidate(reasoningRecipientByTurnKey, turnKey);
+      yield* dispatchReasoningTokens({ ...input, tokens: pending, tag: "flush" });
+    });
+
+  /** On turn completion, credits any uncredited count to the turn's last assistant message. */
+  const attachLeftoverReasoningTokens = (input: {
+    readonly event: ProviderRuntimeEvent;
+    readonly thread: Pick<OrchestrationThread, "id" | "messages">;
+    readonly turnId: TurnId;
+    readonly assistantMessageIds: ReadonlySet<MessageId>;
+  }) =>
+    Effect.gen(function* () {
+      const turnKey = providerTurnKey(input.thread.id, input.turnId);
+      const recipient = Option.getOrNull(
+        yield* Cache.getOption(reasoningRecipientByTurnKey, turnKey),
+      );
+      const pending = yield* takePendingReasoningTokens(turnKey);
+      yield* clearReasoningTokenState(turnKey);
+      if (!pending) return;
+      const messageId =
+        [...input.assistantMessageIds].at(-1) ??
+        recipient ??
+        input.thread.messages.findLast(
+          (message) => message.role === "assistant" && message.turnId === input.turnId,
+        )?.id;
+      if (messageId === undefined) {
+        yield* Effect.logDebug("provider runtime ingestion dropped unattributed reasoning tokens", {
+          threadId: input.thread.id,
+          turnId: input.turnId,
+          tokens: pending.tokens,
+        });
+        return;
+      }
+      yield* dispatchReasoningTokens({
+        event: input.event,
+        threadId: input.thread.id,
+        turnId: input.turnId,
+        messageId,
+        tokens: pending,
+        tag: "turn-end",
+      });
+    });
 
   const dispatchReasoningStatus = (input: {
     readonly event: ProviderRuntimeEvent;
@@ -3149,6 +3355,14 @@ const make = Effect.gen(function* () {
               ),
         ),
       );
+      if (bufferedReasoningText.length > 0 && input.turnId) {
+        yield* noteReasoningRecipient({
+          event: input.event,
+          threadId: input.threadId,
+          turnId: input.turnId,
+          messageId: input.messageId,
+        });
+      }
 
       yield* orchestrationEngine.dispatch({
         type: "thread.message.assistant.complete",
@@ -3157,6 +3371,11 @@ const make = Effect.gen(function* () {
         messageId: input.messageId,
         ...(input.turnId ? { turnId: input.turnId } : {}),
         createdAt: input.createdAt,
+      });
+      yield* flushDeferredReasoningTokens({
+        event: input.event,
+        threadId: input.threadId,
+        messageId: input.messageId,
       });
       streamingDeltas.forgetMessage(input.threadId, input.messageId);
       yield* clearAssistantMessageState(
@@ -3249,6 +3468,12 @@ const make = Effect.gen(function* () {
       const proposedPlanPrefix = `plan:${threadId}:`;
       const turnKeys = Array.from(yield* Cache.keys(turnMessageIdsByTurnKey));
       const bufferedReasoningKeys = Array.from(yield* Cache.keys(bufferedReasoningTextByTurnKey));
+      const reasoningTokenKeys = Array.from(
+        new Set([
+          ...(yield* Cache.keys(pendingReasoningTokensByTurnKey)),
+          ...(yield* Cache.keys(reasoningRecipientByTurnKey)),
+        ]),
+      );
       const proposedPlanKeys = Array.from(yield* Cache.keys(bufferedProposedPlanById));
       yield* Effect.forEach(
         turnKeys,
@@ -3270,6 +3495,7 @@ const make = Effect.gen(function* () {
             }
 
             yield* clearBufferedReasoningText(key);
+            yield* clearReasoningTokenState(key);
             yield* Cache.invalidate(turnMessageIdsByTurnKey, key);
           }),
         { concurrency: 1 },
@@ -3279,6 +3505,11 @@ const make = Effect.gen(function* () {
         // Intentional overlap with the turn-key loop above: this also clears
         // orphaned reasoning buffers whose assistant message mapping is gone.
         (key) => (key.startsWith(prefix) ? clearBufferedReasoningText(key) : Effect.void),
+        { concurrency: 1 },
+      ).pipe(Effect.asVoid);
+      yield* Effect.forEach(
+        reasoningTokenKeys,
+        (key) => (key.startsWith(prefix) ? clearReasoningTokenState(key) : Effect.void),
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
       yield* Effect.forEach(
@@ -4133,6 +4364,7 @@ const make = Effect.gen(function* () {
           event.type === "thread.state.changed" ||
           event.type === "thread.token-usage.updated" ||
           event.type === "thread.thinking-tokens.updated" ||
+          event.type === "turn.reasoning-tokens.reported" ||
           event.type === "compaction.recommended" ||
           event.type === "turn.started" ||
           event.type.startsWith("runtime.") ||
@@ -4764,6 +4996,33 @@ const make = Effect.gen(function* () {
         }
       }
 
+      if (event.type === "turn.reasoning-tokens.reported") {
+        const turnId = toTurnId(event.turnId);
+        if (turnId && event.payload.tokens > 0) {
+          const turnKey = providerTurnKey(thread.id, turnId);
+          const recipient = Option.getOrNull(
+            yield* Cache.getOption(reasoningRecipientByTurnKey, turnKey),
+          );
+          if (recipient === null || (yield* hasBufferedReasoningText(turnKey))) {
+            yield* addPendingReasoningTokens(
+              turnKey,
+              event.payload.tokens,
+              event.payload.estimated,
+            );
+          } else {
+            yield* Cache.invalidate(reasoningRecipientByTurnKey, turnKey);
+            yield* dispatchReasoningTokens({
+              event,
+              threadId: thread.id,
+              turnId,
+              messageId: recipient,
+              tokens: { tokens: event.payload.tokens, estimated: event.payload.estimated },
+              tag: "report",
+            });
+          }
+        }
+      }
+
       if (event.type === "thread.token-usage.updated") {
         const normalizedContextTokens = event.payload.contextTokens;
         const providerReportedContextTokens =
@@ -5126,6 +5385,12 @@ const make = Effect.gen(function* () {
                     : restoreBufferedReasoningText(turnKey, spillChunk),
                 ),
               );
+              yield* noteReasoningRecipient({
+                event,
+                threadId: thread.id,
+                turnId,
+                messageId: assistantMessageId,
+              });
             } else if (spillChunk.length > 0) {
               const cappedReasoningText = capBufferedReasoningText(spillChunk);
               if (cappedReasoningText.length < spillChunk.length) {
@@ -5158,6 +5423,12 @@ const make = Effect.gen(function* () {
                     : restoreBufferedReasoningText(turnKey, reasoningText),
                 ),
               );
+              yield* noteReasoningRecipient({
+                event,
+                threadId: thread.id,
+                turnId,
+                messageId: assistantMessageId,
+              });
             }
           } else if (spillChunk.length > 0) {
             const cappedReasoningText = capBufferedReasoningText(spillChunk);
@@ -5351,6 +5622,12 @@ const make = Effect.gen(function* () {
               }),
             { concurrency: 1 },
           ).pipe(Effect.asVoid);
+          yield* attachLeftoverReasoningTokens({
+            event,
+            thread,
+            turnId,
+            assistantMessageIds,
+          });
           yield* clearAssistantMessageIdsForTurn(thread.id, turnId);
           if (event.provider === "codex") {
             const reconciliation = yield* backfillCodexAssistantMessagesFromProviderSnapshot({

@@ -122,6 +122,8 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
     reasoningText: Schema.NullOr(Schema.String),
+    reasoningTokens: Schema.NullOr(Schema.Number),
+    reasoningTokensEstimated: Schema.NullOr(Schema.Number),
     skillCall: Schema.NullOr(Schema.fromJsonString(UserMessageSkillCall)),
     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
   }),
@@ -379,6 +381,20 @@ function withTimedLog<A, E, R>(params: {
   );
 }
 
+function reasoningTokenFieldsFromRow(
+  row: Pick<
+    Schema.Schema.Type<typeof ProjectionThreadMessageDbRowSchema>,
+    "reasoningTokens" | "reasoningTokensEstimated"
+  >,
+): Pick<OrchestrationMessage, "reasoningTokens" | "reasoningTokensEstimated"> {
+  return {
+    ...(row.reasoningTokens !== null ? { reasoningTokens: row.reasoningTokens } : {}),
+    ...(row.reasoningTokensEstimated !== null
+      ? { reasoningTokensEstimated: row.reasoningTokensEstimated === 1 }
+      : {}),
+  };
+}
+
 function toReadModelMessage(
   row: Schema.Schema.Type<typeof ProjectionThreadMessageDbRowSchema>,
 ): OrchestrationMessage {
@@ -387,6 +403,7 @@ function toReadModelMessage(
     role: row.role,
     text: row.text,
     ...(row.reasoningText !== null ? { reasoningText: row.reasoningText } : {}),
+    ...reasoningTokenFieldsFromRow(row),
     ...(row.skillCall !== null ? { skillCall: row.skillCall } : {}),
     ...(row.attachments !== null ? { attachments: row.attachments } : {}),
     turnId: row.turnId,
@@ -552,6 +569,10 @@ function mapThreadDetailMessages(
     createdAt: message.createdAt,
     updatedAt: message.updatedAt,
     ...(message.reasoningText !== undefined ? { reasoningText: message.reasoningText } : {}),
+    ...(message.reasoningTokens !== undefined ? { reasoningTokens: message.reasoningTokens } : {}),
+    ...(message.reasoningTokensEstimated !== undefined
+      ? { reasoningTokensEstimated: message.reasoningTokensEstimated }
+      : {}),
     ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
   }));
 }
@@ -640,6 +661,7 @@ function toProjectionThreadMessageRecord(
     role: row.role,
     text: row.text,
     ...(row.reasoningText !== null ? { reasoningText: row.reasoningText } : {}),
+    ...reasoningTokenFieldsFromRow(row),
     ...(row.skillCall !== null ? { skillCall: row.skillCall } : {}),
     isStreaming: row.isStreaming === 1,
     createdAt: row.createdAt,
@@ -1052,6 +1074,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           reasoning_text AS "reasoningText",
+          reasoning_tokens AS "reasoningTokens",
+          reasoning_tokens_estimated AS "reasoningTokensEstimated",
           skill_call_json AS "skillCall",
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
@@ -1076,6 +1100,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             role,
             text,
             reasoning_text AS "reasoningText",
+            reasoning_tokens AS "reasoningTokens",
+            reasoning_tokens_estimated AS "reasoningTokensEstimated",
             skill_call_json AS "skillCall",
             attachments_json AS "attachments",
             is_streaming AS "isStreaming",
@@ -1095,6 +1121,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           "reasoningText",
+          "reasoningTokens",
+          "reasoningTokensEstimated",
           "skillCall",
           "attachments",
           "isStreaming",
@@ -1378,6 +1406,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           reasoning_text AS "reasoningText",
+          reasoning_tokens AS "reasoningTokens",
+          reasoning_tokens_estimated AS "reasoningTokensEstimated",
           skill_call_json AS "skillCall",
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
@@ -1410,6 +1440,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           reasoning_text AS "reasoningText",
+          reasoning_tokens AS "reasoningTokens",
+          reasoning_tokens_estimated AS "reasoningTokensEstimated",
           skill_call_json AS "skillCall",
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",

@@ -328,6 +328,28 @@ function codexThreadTokenUsageSnapshot(payload: Record<string, unknown> | undefi
   };
 }
 
+/**
+ * Reasoning tokens spent since the previous usage frame. Codex can repeat a
+ * frame (rate-limit refreshes), so the cumulative total is diffed against the
+ * last seen total. Without a baseline, only `last` counts, so a resumed
+ * thread's history is never attributed to one message.
+ */
+export function codexReasoningTokensSinceBaseline(
+  payload: Record<string, unknown> | undefined,
+  baseline: number | undefined,
+): { readonly tokens: number; readonly baseline: number } | undefined {
+  const tokenUsage = asObject(payload?.tokenUsage);
+  const total = asNonNegativeInteger(asObject(tokenUsage?.total)?.reasoningOutputTokens);
+  const last = asNonNegativeInteger(asObject(tokenUsage?.last)?.reasoningOutputTokens);
+  if (total === undefined) {
+    return last === undefined ? undefined : { tokens: last, baseline: baseline ?? 0 };
+  }
+  if (baseline === undefined || total < baseline) {
+    return { tokens: last ?? 0, baseline: total };
+  }
+  return { tokens: total - baseline, baseline: total };
+}
+
 function asMcpStartupStatus(
   value: unknown,
 ): "starting" | "ready" | "failed" | "cancelled" | "needs-auth" | undefined {
@@ -3444,6 +3466,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     const eventPreparation = new Map<string, Promise<void>>();
     const preparationControllers = new Set<AbortController>();
     const turnStartedAtByThread = new Map<string, string>();
+    const reasoningTokenBaselineByThread = new Map<string, number>();
     const limitsByThread = new Map<
       string,
       Map<string, { snapshot: CodexLimitSnapshot; observedAt: string }>
@@ -3638,6 +3661,27 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 ownsAutomation ? computerDecisions.get(event.threadId) : undefined,
                 ownsAutomation ? chromeSessions.get(event.threadId)?.state : undefined,
               );
+              if (event.method === "thread/tokenUsage/updated") {
+                const reasoning = codexReasoningTokensSinceBaseline(
+                  asObject(event.payload),
+                  reasoningTokenBaselineByThread.get(key),
+                );
+                if (reasoning) {
+                  reasoningTokenBaselineByThread.set(key, reasoning.baseline);
+                  if (reasoning.tokens > 0 && event.turnId) {
+                    runtimeEvents = [
+                      ...runtimeEvents,
+                      {
+                        ...runtimeEventBase(event, event.threadId),
+                        eventId: EventId.make(`${event.id}:reasoning-tokens`),
+                        turnId: event.turnId,
+                        type: "turn.reasoning-tokens.reported",
+                        payload: { tokens: reasoning.tokens, estimated: false },
+                      },
+                    ];
+                  }
+                }
+              }
               if (
                 appCapture &&
                 nativeItem &&
@@ -3724,6 +3768,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 incompleteContexts.delete(key);
                 limitsByThread.delete(key);
                 turnStartedAtByThread.delete(key);
+                reasoningTokenBaselineByThread.delete(key);
               }
               if (runtimeEvents.length === 0) {
                 yield* Effect.logDebug("ignoring unhandled Codex provider event", {
