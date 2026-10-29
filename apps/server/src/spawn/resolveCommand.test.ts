@@ -71,7 +71,9 @@ describe("resolveExecutable", () => {
   });
 
   describe("PATH entry deduplication", () => {
-    // Counts the files a miss stats, so the walk runs over every PATH entry.
+    // Records the files a miss stats, so the walk runs over every PATH entry.
+    // Assertions compare against a lookup over the distinct entries rather
+    // than a fixed count, so they don't depend on how candidates are spelled.
     function probedPaths(pathValue: string): string[] {
       vi.mocked(statSync).mockClear();
       expect(
@@ -87,17 +89,22 @@ describe("resolveExecutable", () => {
     it("visits a repeated PATH directory only once", () => {
       const first = tempDir("f5-resolve-command-");
       const second = tempDir("f5-resolve-command-");
+      const distinct = probedPaths([first, second].join(";"));
       const probed = probedPaths([first, second, first, `"${second}"`].join(";"));
 
-      // Two directories, two extensions, upper and lowercase spellings.
-      expect(probed).toHaveLength(8);
+      expect(distinct.length).toBeGreaterThan(0);
+      expect(probed).toEqual(distinct);
       expect(new Set(probed).size).toBe(probed.length);
     });
 
     it("still visits PATH entries that differ only in case", () => {
       // Windows can mark a directory case-sensitive, so the two spellings are
       // not provably one directory.
-      expect(probedPaths("C:\\bin;C:\\BIN")).toHaveLength(8);
+      const lower = probedPaths("C:\\bin");
+      const upper = probedPaths("C:\\BIN");
+
+      expect(lower.length).toBeGreaterThan(0);
+      expect(probedPaths("C:\\bin;C:\\BIN")).toEqual([...lower, ...upper]);
     });
   });
 
