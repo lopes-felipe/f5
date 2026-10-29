@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as Path from "node:path";
 import { fallbackDefaultProfile } from "./profiles/ProfileRegistryStore";
+import { browserOpenEnabled } from "./browser/BrowserOpenLauncher";
 import {
   buildAccountExecutionEnvironment,
   assertAccountEnvironmentOverrides,
@@ -73,7 +74,12 @@ describe("profile account execution", () => {
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(env.GH_TOKEN).toBeUndefined();
     expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBeUndefined();
-    expect(env.PATH).toBe(Path.join(stateDir, "github-bin") + Path.delimiter + "tools");
+    expect(env.PATH).toBe(
+      (browserOpenEnabled() ? Path.join(stateDir, "browser-bin") + Path.delimiter : "") +
+        Path.join(stateDir, "github-bin") +
+        Path.delimiter +
+        "tools",
+    );
     expect(env.CODEX_HOME).toBe(Path.join(stateDir, "provider-homes", "codex"));
     expect(env.HOME).toBe(env.USERPROFILE);
     expect(env.F5_PROFILE_ISOLATED).toBe("1");
@@ -170,6 +176,44 @@ describe("profile account execution", () => {
     "F5_PROFILE",
   ])("rejects reserved override %s", (key) => {
     expect(() => assertAccountEnvironmentOverrides({ [key]: "escape" })).toThrow(/reserved/);
+  });
+});
+
+describe("profile browser environment", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+  it.each([
+    ["darwin", "ipc", true],
+    ["darwin", "", false],
+    ["linux", "ipc", false],
+    ["win32", "ipc", false],
+  ] as const)("injects the launcher only for desktop macOS (%s, %s)", (platform, host, enabled) => {
+    vi.stubEnv("F5_DESKTOP_COMPUTER_HOST", host);
+    vi.stubGlobal(
+      "process",
+      new Proxy(process, {
+        get: (target, key) => (key === "platform" ? platform : Reflect.get(target, key)),
+      }),
+    );
+    const stateDir = Path.resolve("browser-env-test");
+    for (const purpose of ["provider", "terminal"] as const) {
+      const env = buildAccountExecutionEnvironment({
+        purpose,
+        stateDir,
+        profile: undefined,
+        baseEnv: { PATH: "/usr/bin", BROWSER: "user-browser" },
+      });
+      expect(env.BROWSER).toBe(
+        enabled ? Path.join(stateDir, "browser-bin", "f5-open-url") : "user-browser",
+      );
+      expect(env.PATH?.split(Path.delimiter).slice(0, enabled ? 2 : 1)).toEqual(
+        (enabled ? ["browser-bin", "github-bin"] : ["github-bin"]).map((name) =>
+          Path.join(stateDir, name),
+        ),
+      );
+    }
   });
 });
 

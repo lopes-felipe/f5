@@ -599,6 +599,25 @@ it.effect("does not infer acceptance from an unrelated new turn during Recheck",
   }).pipe(Effect.provide(testLayer)),
 );
 
+it.effect("Recheck reports why provider history could not be read", () =>
+  Effect.gen(function* () {
+    resetDelivery();
+    state = { ...state, state: "ambiguous", certainty: "unknown" };
+    providerReadFails = true;
+    const worker = yield* ProviderTurnDeliveryWorker;
+    const unreadable = yield* worker.recheckWithReason(threadId);
+    assert.equal(unreadable.delivery?.state, "ambiguous");
+    assert.equal(
+      "historyError" in unreadable ? unreadable.historyError : undefined,
+      "provider unavailable",
+    );
+
+    providerReadFails = false;
+    const readable = yield* worker.recheckWithReason(threadId);
+    assert.isFalse("historyError" in readable);
+  }).pipe(Effect.provide(testLayer)),
+);
+
 it.effect("a steer disconnected after acceptance is ambiguous and never retried on restart", () =>
   Effect.gen(function* () {
     resetDelivery();

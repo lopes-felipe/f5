@@ -13,6 +13,7 @@ import {
   PROVIDER_INTEGRATION_RECORDS,
   SUPPORTED_CODEX_CHROME_ADMISSION,
   codexParentIdentifierAllowed,
+  compareVersions,
   integrationTemplateRecord,
   type IntegrationEvidenceReport,
 } from "@t3tools/shared/providerIntegrationCertification";
@@ -48,7 +49,11 @@ import {
   processRows,
   waitFor,
 } from "./fixtures/codexAppServer";
-import { nodeReplCandidates, statusTools } from "./fixtures/codexHostedSpike";
+import {
+  CODEX_HOSTED_MIN_VERSION,
+  nodeReplCandidates,
+  statusTools,
+} from "./fixtures/codexHostedSpike";
 import { evidenceSource } from "./fixtures/evidenceSource";
 import {
   DEFAULT_QUIET_WINDOW,
@@ -117,6 +122,11 @@ describe.skipIf(!optedIn)("Codex Chrome live certification", () => {
       cwd: process.cwd(),
     });
     if (!codex.path || !codex.version) throw new Error("Couldn't resolve Codex or its version.");
+    // The run's version becomes the record's floor; Spike D validated the design from here.
+    if ((compareVersions(codex.version, CODEX_HOSTED_MIN_VERSION) ?? -1) < 0)
+      throw new Error(
+        `${binaryPath} is Codex ${codex.version}; certification needs ${CODEX_HOSTED_MIN_VERSION} or newer (set F5_CODEX_BINARY).`,
+      );
     if (!(await codexBinarySigned(codex.path, template.identity.teamId)))
       throw new Error(`${codex.path} isn't an OpenAI-signed Codex.`);
 
@@ -209,9 +219,13 @@ nodeRepl.write("finished");`;
             if (alive(row.pid)) process.kill(row.pgid === row.pid ? -row.pid : row.pid, "SIGKILL");
           throw new Error("Couldn't verify the node_repl Codex started.");
         }
+        // Like main: a runtime this session already supervises keeps its registration.
+        const existing = [...supervised].find(([, target]) => target.pid === candidate.pid);
+        if (existing) return { launchToken: existing[0] } as never;
         supervised.set(adoption.launchToken, { pid: candidate.pid, pgid: candidate.pgid });
         lastAdopted = { pid: candidate.pid, pgid: candidate.pgid };
-        return {} as never;
+        // The session stops what main registered, so the reply names the token.
+        return { launchToken: adoption.launchToken } as never;
       },
       // Group kill: SIGTERM now, SIGKILL after 1 s.
       stopIntegrationProcess: (launchToken) => {
@@ -293,6 +307,20 @@ nodeRepl.write("finished");`;
         return `error: ${errorText(error)}`;
       }
     };
+    /** Every item a turn completed after `since`: its type, tool and a short excerpt. */
+    const turnItems = (since: number) =>
+      server.notifications
+        .filter((entry) => entry.at >= since && entry.method === "item/completed")
+        .map((entry) => asRecord(asRecord(entry.params)?.item))
+        .filter((item) => item !== undefined)
+        .slice(0, 20)
+        .map((item) => ({
+          type: item.type,
+          ...(item.server ? { server: item.server, tool: item.tool, status: item.status } : {}),
+          excerpt: JSON.stringify(
+            item.text ?? item.result ?? item.error ?? item.command ?? null,
+          ).slice(0, 600),
+        }));
     /** One real turn: the model calls `js` with `code`, exactly as given. */
     const startTurn = async (code: string) => {
       await session!.beforeTurn();
@@ -414,15 +442,27 @@ nodeRepl.write("finished");`;
             await server.request("config/mcpServer/reload", undefined);
           },
           callTool: async (tool, args, meta) => {
-            const result = asRecord(
-              await server.request("mcpServer/tool/call", {
-                threadId,
-                server: SERVER,
-                tool,
-                arguments: args,
-                _meta: meta,
-              }),
-            );
+            const startedAt = Date.now();
+            let result: Record<string, unknown> | undefined;
+            try {
+              result = asRecord(
+                await server.request("mcpServer/tool/call", {
+                  threadId,
+                  server: SERVER,
+                  tool,
+                  arguments: args,
+                  _meta: meta,
+                }),
+              );
+            } catch (error) {
+              if (tool === CODEX_CHROME_DRAIN_TOOL)
+                drains.push({
+                  turnId: args.turn_id,
+                  ok: false,
+                  result: `error after ${Date.now() - startedAt} ms: ${errorText(error)}`,
+                });
+              throw error;
+            }
             if (tool === CODEX_CHROME_DRAIN_TOOL)
               drains.push({
                 turnId: args.turn_id,
@@ -478,11 +518,18 @@ nodeRepl.write("finished");`;
         );
       observations.titleTurn = {
         status: asRecord(asRecord(titleDone?.params)?.turn)?.status,
+        error: JSON.stringify(asRecord(asRecord(titleDone?.params)?.turn)?.error ?? null).slice(
+          0,
+          1000,
+        ),
+        pageLoads: fixture.hits(markers.title).length,
         calls: titleCalls.map((item) => ({
           tool: item?.tool,
           status: item?.status,
           result: JSON.stringify(item?.result ?? item?.error ?? null).slice(0, 1000),
         })),
+        // What the turn did instead, when it made no node_repl call.
+        items: turnItems(titleTurn.since),
       };
 
       // Interrupt a real turn mid-call: F5 interrupts the turn, then drains it through
@@ -524,7 +571,9 @@ nodeRepl.write("finished");`;
         callStarted: hungStarted !== undefined,
         completedAfterMs: hungDone ? hungDone.at - interruptedAt : undefined,
         status: asRecord(asRecord(hungDone?.params)?.turn)?.status,
-        drain: drained,
+        drain: drained ?? { missing: true, drains },
+        items: turnItems(hungTurn.since),
+        afterPageLoads: fixture.hits(markers.after).length,
         after: after.slice(0, 500),
       };
 

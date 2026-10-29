@@ -1,5 +1,14 @@
 import { randomUUID, createHash } from "node:crypto";
-import { readFile, writeFile, copyFile, rename, readdir, chmod, unlink } from "node:fs/promises";
+import {
+  readFile,
+  writeFile,
+  copyFile,
+  rename,
+  readdir,
+  chmod,
+  unlink,
+  stat,
+} from "node:fs/promises";
 import { readCompleteLogLines } from "./completeLogLines.ts";
 import path from "node:path";
 import {
@@ -7,6 +16,7 @@ import {
   classifyClaudeResumePoint,
   hasClaudeParentChain,
   readClaudeTranscript,
+  readClaudeTranscriptLines,
   transcriptRecord as record,
 } from "../provider/claudeTranscript.ts";
 import { readClaudeResumeState } from "../provider/claudeResumeState.ts";
@@ -155,6 +165,234 @@ function withBranchNote(entry: Record<string, unknown>): string | undefined {
   });
 }
 
+interface TranscriptScan {
+  readonly parents: ReadonlyMap<string, unknown>;
+  /** The last record with a UUID, in file order. */
+  readonly lastUuid: string | undefined;
+  readonly malformed: number;
+}
+
+async function scanTranscript(file: string, signal?: AbortSignal): Promise<TranscriptScan> {
+  const parents = new Map<string, unknown>();
+  let lastUuid: string | undefined;
+  let malformed = 0;
+  for await (const line of readClaudeTranscriptLines(file, signal)) {
+    if (!line.trim()) continue;
+    let entry: Record<string, unknown> | undefined;
+    try {
+      entry = record(JSON.parse(line));
+    } catch {
+      malformed++;
+      continue;
+    }
+    const uuid = uuidOf(entry);
+    if (!uuid) continue;
+    parents.set(uuid, entry!.parentUuid);
+    lastUuid = uuid;
+  }
+  return { parents, lastUuid, malformed };
+}
+
+const missingParentsOf = (parents: ReadonlyMap<string, unknown>) => {
+  const missing = new Set<string>();
+  for (const parent of parents.values())
+    if (typeof parent === "string" && !parents.has(parent)) missing.add(parent);
+  return missing;
+};
+
+const chainIndex = (parents: ReadonlyMap<string, unknown>) =>
+  new Map([...parents].map(([uuid, parentUuid]) => [uuid, { parentUuid }]));
+
+/** F5's own repair files: backups can hold branches that repair deliberately removed. */
+const isRepairArtifact = (name: string) =>
+  /\.bak-before-repair-|\.receipt$|\.pending$|\.undo-/.test(name);
+
+const MAX_ROTATED_SIBLINGS = 8;
+
+/** Why a moved copy did not qualify, phrased to follow "it". */
+function rejectionReason(
+  scan: TranscriptScan,
+  missing: ReadonlySet<string>,
+  known: ReadonlyMap<string, unknown>,
+) {
+  if (scan.malformed > 0) return "has malformed lines";
+  if ([...scan.parents.keys()].some((uuid) => known.has(uuid)))
+    return "repeats messages the transcript already has";
+  if (![...missing].every((uuid) => scan.parents.has(uuid)))
+    return "does not hold every missing message";
+  if (scan.lastUuid === undefined || !missing.has(scan.lastUuid))
+    return "does not end where the transcript starts";
+  return undefined;
+}
+
+export type ClaudeTranscriptRejoinPlan =
+  | { readonly status: "not_needed" }
+  | { readonly status: "refused"; readonly reason: string }
+  | {
+      readonly status: "planned";
+      readonly original: string;
+      readonly repaired: string;
+      readonly restoredMessages: number;
+      readonly rejoinedFrom: ReadonlyArray<string>;
+    };
+
+export class ClaudeTranscriptRejoinCancelled extends Error {
+  constructor() {
+    super("Claude transcript rejoin ran out of time; no changes were made.");
+  }
+}
+
+/**
+ * Plan how to rejoin a transcript whose beginning another tool moved to a
+ * sibling file, such as `<session>.jsonl.bak`, while the CLI kept appending to
+ * the original path. A sibling is used only when it shares no UUIDs with the
+ * transcript, holds every missing parent, and ends at one of them, so the join
+ * adds history and cannot change it. Copies with identical bytes count once;
+ * differing copies that both fit are refused rather than picked by date.
+ * Nothing is written; `signal` and `deadline` stop the work with
+ * ClaudeTranscriptRejoinCancelled.
+ */
+export async function planClaudeTranscriptRejoin(input: {
+  file: string;
+  target: string;
+  signal?: AbortSignal;
+  deadline?: number;
+}): Promise<ClaudeTranscriptRejoinPlan> {
+  const name = path.basename(input.file);
+  const checkpoint = () => {
+    if (input.signal?.aborted || (input.deadline !== undefined && Date.now() > input.deadline))
+      throw new ClaudeTranscriptRejoinCancelled();
+  };
+  const current = await scanTranscript(input.file, input.signal);
+  const parents = new Map(current.parents);
+  let missing = missingParentsOf(parents);
+  if (missing.size === 0) return { status: "not_needed" };
+  if (current.malformed > 0)
+    return {
+      status: "refused",
+      reason: `Claude's transcript is missing its beginning and has malformed lines, so a moved copy cannot be rejoined safely. Restore ${name} from a backup or start a new thread.`,
+    };
+  const directory = path.dirname(input.file);
+  const candidates: Array<{ file: string; modified: number }> = [];
+  for (const entry of await readdir(directory)) {
+    if (!entry.startsWith(`${name}.`) || isRepairArtifact(entry)) continue;
+    const file = path.join(directory, entry);
+    const info = await stat(file).catch(() => undefined);
+    if (info?.isFile()) candidates.push({ file, modified: info.mtimeMs });
+  }
+  if (candidates.length === 0)
+    return {
+      status: "refused",
+      reason: `Claude's transcript is missing its beginning and no moved copy was found next to it. Restore ${name} from a backup or start a new thread.`,
+    };
+  candidates.sort((a, b) => b.modified - a.modified);
+  const scans = new Map<string, TranscriptScan>();
+  const digests = new Map<string, string>();
+  // Oldest piece first once complete; each round finds the piece before the last.
+  const pieces: string[] = [];
+  let restoredMessages = 0;
+  const rejected: string[] = [];
+  while (missing.size > 0 && pieces.length < MAX_ROTATED_SIBLINGS) {
+    const fitting: string[] = [];
+    rejected.length = 0;
+    for (const candidate of candidates) {
+      if (pieces.includes(candidate.file)) continue;
+      checkpoint();
+      let scan = scans.get(candidate.file);
+      if (!scan) {
+        scan = await scanTranscript(candidate.file, input.signal);
+        scans.set(candidate.file, scan);
+      }
+      const reason = rejectionReason(scan, missing, parents);
+      if (reason) rejected.push(`${path.basename(candidate.file)} ${reason}`);
+      else fitting.push(candidate.file);
+    }
+    if (fitting.length === 0)
+      return {
+        status: "refused",
+        reason: `Claude's transcript is missing its beginning. A moved copy is next to it but cannot be rejoined: ${rejected.join("; ")}. Restore ${name} from a backup or start a new thread.`,
+      };
+    if (fitting.length > 1) {
+      for (const file of fitting) {
+        checkpoint();
+        if (!digests.has(file)) digests.set(file, digest(await readFile(file, "utf8")));
+      }
+      if (new Set(fitting.map((file) => digests.get(file))).size > 1)
+        return {
+          status: "refused",
+          reason: `Claude's transcript is missing its beginning, and several different moved copies could hold it (${fitting.map((file) => path.basename(file)).join(", ")}). Keep only the right copy next to ${name}, then use Repair transcript.`,
+        };
+    }
+    const found = fitting[0]!;
+    const scan = scans.get(found)!;
+    pieces.unshift(found);
+    for (const [uuid, parent] of scan.parents) parents.set(uuid, parent);
+    restoredMessages += scan.parents.size;
+    missing = missingParentsOf(parents);
+  }
+  if (missing.size > 0 || !hasClaudeParentChain(chainIndex(parents), input.target))
+    return {
+      status: "refused",
+      reason: `Claude's transcript is missing its beginning, and its moved copies do not restore the conversation this thread resumes from. Restore ${name} from a backup or start a new thread.`,
+    };
+  checkpoint();
+  const original = await readFile(input.file, "utf8");
+  const texts = [...(await Promise.all(pieces.map((file) => readFile(file, "utf8")))), original];
+  checkpoint();
+  // A BOM is valid only at the start of the joined file.
+  const repaired = texts
+    .map((text, index) => (index > 0 && text.charCodeAt(0) === 0xfeff ? text.slice(1) : text))
+    .map((text, index, all) =>
+      index < all.length - 1 && !text.endsWith("\n") ? `${text}\n` : text,
+    )
+    .join("");
+  return {
+    status: "planned",
+    original,
+    repaired,
+    restoredMessages,
+    rejoinedFrom: pieces.map((file) => path.basename(file)),
+  };
+}
+
+/**
+ * Write a planned rejoin with the usual backup, receipt, verification and
+ * undo. The cursor keeps its own resume point: rejoining adds history before
+ * it and gives no reason to pin a turn boundary. Refuses if the transcript
+ * changed since planning.
+ */
+export async function commitClaudeTranscriptRejoin(
+  input: { file: string; target: string; resumeCursor?: unknown },
+  plan: Extract<ClaudeTranscriptRejoinPlan, { status: "planned" }>,
+) {
+  const result = await writeTranscriptRepair(
+    input,
+    plan.original,
+    plan.repaired,
+    input.target,
+    plan.restoredMessages,
+    [],
+    0,
+    { pin: false },
+  );
+  return { ...result, rejoinedFrom: plan.rejoinedFrom };
+}
+
+/** Plan and write a rejoin; see planClaudeTranscriptRejoin. */
+export async function rejoinRotatedClaudeTranscript(input: {
+  file: string;
+  target: string;
+  resumeCursor?: unknown;
+  signal?: AbortSignal;
+  deadline?: number;
+}) {
+  const plan = await planClaudeTranscriptRejoin(input);
+  if (plan.status !== "planned") return plan;
+  if (input.deadline !== undefined && Date.now() > input.deadline)
+    throw new ClaudeTranscriptRejoinCancelled();
+  return await commitClaudeTranscriptRejoin(input, plan);
+}
+
 export async function repairClaudeResumePoint(input: {
   file: string;
   target: string;
@@ -223,6 +461,13 @@ export async function repairClaudeResumePoint(input: {
       strayRows,
     );
   }
+  // A missing beginning is recoverable only from a moved copy; logs hold just the tail.
+  const rejoined = await rejoinRotatedClaudeTranscript(input);
+  if (rejoined.status === "repaired") return rejoined;
+  const unrecoverableHead =
+    rejoined.status === "refused"
+      ? rejoined.reason
+      : "No part of Claude's saved transcript has a complete parent chain, so repair has nothing to anchor on. Start a new thread to continue.";
   const events: Array<Record<string, unknown>> = [];
   for (const name of await readdir(input.providerLogsDir)) {
     if (name !== `${input.threadId}.log` && !name.startsWith(`${input.threadId}.log.`)) continue;
@@ -302,7 +547,7 @@ export async function repairClaudeResumePoint(input: {
   let parent = [...persisted.keys()]
     .toReversed()
     .find((uuid) => hasClaudeParentChain(persisted, uuid));
-  if (!parent) throw new Error("No intact parent chain is available to anchor the repair.");
+  if (!parent) throw new Error(unrecoverableHead);
   const anchor = persisted.get(parent)!;
   const assistantEnvelope = [...persisted.values()]
     .toReversed()
@@ -489,12 +734,14 @@ async function writeTranscriptRepair(
   restoredMessages: number,
   quarantinedLines: number[],
   quarantinedBranchMessages: number,
+  /** `pin: false` keeps the cursor's own resume point instead of pinning the target. */
+  options: { pin: boolean } = { pin: true },
 ) {
   const backup = `${input.file}.bak-before-repair-${randomUUID()}`;
   const temporary = `${backup}.pending`;
   const recoveredCursor = {
     ...record(input.resumeCursor),
-    resumeSessionAt: target,
+    ...(options.pin ? { resumeSessionAt: target } : {}),
     resumeRecoveryGeneration: randomUUID(),
     transcriptRepairBackupId: path.basename(backup),
   };

@@ -36,7 +36,12 @@ import {
 import { spawnRegisteredProcess } from "../registeredIntegrationProcess";
 import { readClaudeNativeResumeMetadata } from "../claudeResumeState.ts";
 import { normalizeProviderRuntimeInfo } from "@t3tools/shared/runtimeInfo";
-import { recoverClaudeTranscriptCursor } from "../../maintenance/ClaudeTranscriptRepair.ts";
+import {
+  ClaudeTranscriptRejoinCancelled,
+  commitClaudeTranscriptRejoin,
+  planClaudeTranscriptRejoin,
+  recoverClaudeTranscriptCursor,
+} from "../../maintenance/ClaudeTranscriptRepair.ts";
 import { withProviderThreadAccess } from "../providerThreadAccess.ts";
 import { resolveClaudeCleanupPeriodDays } from "../claudeTranscriptRetention.ts";
 import { claudeThinkingConfig, type ClaudeThinkingResolution } from "../claudeProviderOptions.ts";
@@ -67,8 +72,10 @@ import {
 } from "../claudeToolCompletion.ts";
 import { randomUUID } from "node:crypto";
 import {
+  CLAUDE_PLAN_MODE_EDIT_DENIAL,
   claudeMandatoryPolicyOptions,
   evaluateClaudeMandatoryPolicy,
+  isClaudePlanModeWorkspaceEdit,
 } from "../claudeMandatoryPolicy.ts";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import type { ProviderSessionStartInput } from "@t3tools/contracts";
@@ -98,6 +105,7 @@ import * as Path from "effect/Path";
  */
 import {
   isClaudeTranscriptUnderMaintenance,
+  beginClaudeTranscriptMaintenance,
   findClaudeTranscript,
   readClaudeTranscript,
   readClaudeTranscriptLines,
@@ -320,6 +328,36 @@ type PromptQueueItem =
       readonly type: "terminate";
     };
 
+export interface ClaudeThinkingTokenAccount {
+  /** Latest per-block estimate; it restarts from zero for each thinking block. */
+  readonly lastEstimate: number;
+  /** Tokens estimated since the last report. */
+  readonly pending: number;
+}
+
+/**
+ * Folds a live per-block estimate into the account. The SDK's per-frame
+ * delta is used when present; otherwise the running total is diffed, with a
+ * drop treated as a new block.
+ */
+export function accumulateClaudeThinkingTokens(
+  account: ClaudeThinkingTokenAccount | undefined,
+  estimatedTokens: number,
+  estimatedTokensDelta?: number,
+): ClaudeThinkingTokenAccount {
+  const lastEstimate = account?.lastEstimate ?? 0;
+  const pending = account?.pending ?? 0;
+  const added =
+    typeof estimatedTokensDelta === "number" &&
+    Number.isFinite(estimatedTokensDelta) &&
+    estimatedTokensDelta >= 0
+      ? estimatedTokensDelta
+      : estimatedTokens >= lastEstimate
+        ? estimatedTokens - lastEstimate
+        : estimatedTokens;
+  return { lastEstimate: estimatedTokens, pending: pending + added };
+}
+
 interface ClaudeTurnState {
   goalChecked?: boolean;
   userMessageUuids?: Set<string>;
@@ -338,6 +376,8 @@ interface ClaudeTurnState {
   thinkingBlockCount: number;
   /** Open thinking blocks by stream block index, closed on stop or turn end. */
   readonly openThinkingBlocks: Map<number, string>;
+  /** Live `thinking_tokens` accounting, reported when a thinking block closes. */
+  thinkingTokens?: ClaudeThinkingTokenAccount;
   authenticationFailureMessage?: string;
   rateLimitFailure?: true;
   rejectedUsageLimits?: Map<string, ReturnType<typeof claudeLimitState>>;
@@ -707,6 +747,88 @@ export function resolveClaudeConfigDir(
 function resolveChildHomeDir(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
   const home = platform === "win32" ? env.USERPROFILE : env.HOME;
   return home ? home : NodeOS.homedir();
+}
+
+const CLAUDE_TRANSCRIPT_REJOIN_BUDGET_MS = 30_000;
+
+/**
+ * When no resume point has a complete chain because another tool moved the
+ * transcript's beginning to a sibling file, rejoin it before the CLI starts.
+ * Planning is interruptible and bounded by the budget; only the final file
+ * replacement is not. Callers must not run this while a Claude process for
+ * the session may still write the transcript. Returns the rejoined file names
+ * and the recovered cursor, or undefined when nothing was changed.
+ */
+function rejoinMovedClaudeTranscriptHead(input: {
+  readonly threadId: string;
+  readonly sessionId: string;
+  readonly file: string;
+  readonly entries: ReadonlyMap<string, Record<string, unknown>>;
+  readonly cursor: unknown;
+}) {
+  const state = readClaudeResumeState(input.cursor);
+  const target =
+    state && !state.resumeLatest
+      ? (state.resumeSessionAt ?? state.turnBoundaries?.at(-1)?.assistantUuid)
+      : undefined;
+  if (
+    !state ||
+    !target ||
+    !isUuid(target) ||
+    resolveClaudeResumePoint(input.entries, target, state.turnBoundaries ?? []).kind !== "none"
+  )
+    return Effect.succeed(undefined);
+  const deadline = Date.now() + CLAUDE_TRANSCRIPT_REJOIN_BUDGET_MS;
+  return Effect.acquireUseRelease(
+    Effect.try({
+      try: () => beginClaudeTranscriptMaintenance(input.sessionId),
+      catch: (cause) =>
+        new ProviderAdapterProcessError({
+          provider: PROVIDER,
+          threadId: input.threadId,
+          detail: "Claude transcript repair is already in progress.",
+          cause,
+        }),
+    }),
+    () =>
+      Effect.tryPromise((signal) =>
+        planClaudeTranscriptRejoin({ file: input.file, target, signal, deadline }),
+      ).pipe(
+        Effect.flatMap((plan) =>
+          plan.status !== "planned"
+            ? Effect.succeed(undefined)
+            : // The lock outlives the replacement, which must not stop halfway.
+              Effect.uninterruptible(
+                Effect.tryPromise(() => {
+                  if (Date.now() > deadline) throw new ClaudeTranscriptRejoinCancelled();
+                  return commitClaudeTranscriptRejoin(
+                    { file: input.file, target, resumeCursor: input.cursor },
+                    plan,
+                  );
+                }),
+              ),
+        ),
+      ),
+    (release) => Effect.sync(release),
+  ).pipe(
+    Effect.map((result) =>
+      result ? { rejoinedFrom: result.rejoinedFrom, resumeCursor: result.resumeCursor } : undefined,
+    ),
+    Effect.tap((rejoined) =>
+      rejoined
+        ? Effect.logWarning("Rejoined Claude transcript with a moved copy of its beginning", {
+            threadId: input.threadId,
+            rejoined: rejoined.rejoinedFrom,
+          })
+        : Effect.void,
+    ),
+    Effect.catch((cause) =>
+      Effect.logWarning("Claude transcript rejoin failed", {
+        threadId: input.threadId,
+        cause: String(cause),
+      }).pipe(Effect.as(undefined)),
+    ),
+  );
 }
 
 export interface ClaudeSessionStoreFs {
@@ -3898,6 +4020,34 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           providerRefs: nativeProviderRefs(context),
           raw: { source: "claude.sdk.message", method: raw.method, payload: raw.payload },
         });
+        yield* reportPendingThinkingTokens(context, turnState, raw, itemId);
+      });
+
+    // Claude reports no billed thinking tokens, so the live estimate is all there is.
+    const reportPendingThinkingTokens = (
+      context: ClaudeSessionContext,
+      turnState: ClaudeTurnState,
+      raw: { readonly method: string; readonly payload: unknown },
+      itemId?: string,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const account = turnState.thinkingTokens;
+        if (!account || account.pending <= 0) return;
+        turnState.thinkingTokens = { ...account, pending: 0 };
+        const stamp = yield* makeEventStamp(context);
+        yield* offerRuntimeEvent({
+          type: "turn.reasoning-tokens.reported",
+          ...stamp,
+          eventId: stamp.eventId,
+          provider: PROVIDER,
+          createdAt: stamp.createdAt,
+          threadId: context.session.threadId,
+          turnId: asCanonicalTurnId(turnState.turnId),
+          ...(itemId !== undefined ? { itemId: asRuntimeItemId(itemId) } : {}),
+          payload: { tokens: account.pending, estimated: true },
+          providerRefs: nativeProviderRefs(context),
+          raw: { source: "claude.sdk.message", method: raw.method, payload: raw.payload },
+        });
       });
 
     const completeOpenThinkingBlocks = (
@@ -3909,7 +4059,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         [...turnState.openThinkingBlocks.keys()],
         (index) => completeThinkingBlock(context, turnState, index, raw),
         { discard: true },
-      ).pipe(Effect.andThen(Effect.sync(() => turnState.openThinkingBlocks.clear())));
+      ).pipe(
+        Effect.andThen(Effect.sync(() => turnState.openThinkingBlocks.clear())),
+        // Estimates that arrived after their block closed.
+        Effect.andThen(reportPendingThinkingTokens(context, turnState, raw)),
+      );
 
     const completeTurn = (
       context: ClaudeSessionContext,
@@ -4328,6 +4482,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             if (!turnState) return;
             turnState.thinkingBlockCount += 1;
             const itemId = `${turnState.turnId}:thinking:${turnState.thinkingBlockCount}`;
+            // Each block's estimate restarts from zero; the drop check is only a fallback.
+            if (turnState.thinkingTokens) {
+              turnState.thinkingTokens = { ...turnState.thinkingTokens, lastEstimate: 0 };
+            }
             turnState.openThinkingBlocks.set(index, itemId);
             const stamp = yield* makeEventStamp(context);
             yield* offerRuntimeEvent({
@@ -5721,6 +5879,13 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             // dedicated runtime event; deliberately kept out of the context-token
             // / compaction accounting since it is ephemeral per-thinking-block
             // progress.
+            if (context.turnState) {
+              context.turnState.thinkingTokens = accumulateClaudeThinkingTokens(
+                context.turnState.thinkingTokens,
+                message.estimated_tokens,
+                message.estimated_tokens_delta,
+              );
+            }
             yield* offerRuntimeEvent({
               ...base,
               type: "thread.thinking-tokens.updated",
@@ -6895,6 +7060,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           input.providerOptions?.claudeAgent,
           options?.processEnvironment ?? process.env,
         );
+        const plansDirectory = NodePath.join(
+          resolveClaudeConfigDir(queryEnvironment, input.cwd),
+          "plans",
+        );
         let pendingContextResetReason: string | undefined;
         let resumeFallbackWarning: { requested: string; selected: string } | undefined;
         if (resumeState?.resume && isClaudeTranscriptUnderMaintenance(resumeState.resume)) {
@@ -6934,22 +7103,52 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         if (resumeState?.resume) {
           const sessionId = resumeState.resume;
           const claudeConfigDir = resolveClaudeConfigDir(queryEnvironment, input.cwd);
-          const indexed = yield* Effect.tryPromise(async (signal) => {
-            if (options?.readResumeTranscript)
+          const readIndexed = (timeoutMs: number) =>
+            Effect.tryPromise(async (signal) => {
+              if (options?.readResumeTranscript)
+                return {
+                  entries: await options.readResumeTranscript({ sessionId, claudeConfigDir }),
+                  cursor: input.resumeCursor,
+                  file: undefined,
+                };
+              const file = await findClaudeTranscript(claudeConfigDir, sessionId, signal);
+              const cursor = await recoverClaudeTranscriptCursor(file, input.resumeCursor);
               return {
-                entries: await options.readResumeTranscript({ sessionId, claudeConfigDir }),
-                cursor: input.resumeCursor,
+                entries: await readClaudeTranscript(file, false, { skipMalformed: true, signal }),
+                cursor,
+                file,
               };
-            const file = await findClaudeTranscript(claudeConfigDir, sessionId, signal);
-            const cursor = await recoverClaudeTranscriptCursor(file, input.resumeCursor);
-            return {
-              entries: await readClaudeTranscript(file, false, { skipMalformed: true, signal }),
+            }).pipe(
+              Effect.timeoutOption(timeoutMs),
+              Effect.orElseSucceed(() => Option.none()),
+            );
+          let indexed = yield* readIndexed(1500);
+          let rejoinedWarning: string | undefined;
+          const live = sessions.get(threadId);
+          // A process that may still append would lose records to the replacement.
+          if (
+            Option.isSome(indexed) &&
+            indexed.value.file !== undefined &&
+            (!live || live.stopped)
+          ) {
+            const { file, entries, cursor } = indexed.value;
+            const rejoined = yield* rejoinMovedClaudeTranscriptHead({
+              threadId,
+              sessionId,
+              file,
+              entries,
               cursor,
-            };
-          }).pipe(
-            Effect.timeoutOption(1500),
-            Effect.orElseSucceed(() => Option.none()),
-          );
+            });
+            if (rejoined) {
+              // Adopt the recovered cursor directly so its backup and recovery
+              // generation survive even if the re-read below times out.
+              input = { ...input, resumeCursor: rejoined.resumeCursor };
+              resumeState = readClaudeResumeState(rejoined.resumeCursor) ?? resumeState;
+              rejoinedWarning = `Rejoined Claude transcript with moved copy ${rejoined.rejoinedFrom.join(", ")}.`;
+              pendingTranscriptWarning = rejoinedWarning;
+              indexed = yield* readIndexed(CLAUDE_TRANSCRIPT_REJOIN_BUDGET_MS);
+            }
+          }
           if (Option.isSome(indexed)) {
             input = { ...input, resumeCursor: indexed.value.cursor };
             resumeState = readClaudeResumeState(indexed.value.cursor)!;
@@ -6993,8 +7192,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   resumeState.turnBoundaries?.some(
                     (boundary) => boundary.assistantUuid === requested,
                   ) === true) ||
-                readClaudeRecoveryMetadata(input.resumeCursor).transcriptRepairBackupId !==
-                  undefined;
+                // A rejoin keeps the cursor's own resume point and adds no pin.
+                (resumeState.resumeSessionAt !== undefined &&
+                  readClaudeRecoveryMetadata(input.resumeCursor).transcriptRepairBackupId !==
+                    undefined);
               if (selected !== requested) {
                 resumeFallbackWarning = { requested, selected };
                 yield* Effect.logWarning(
@@ -7007,8 +7208,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           } else {
             // An unknown store must never authorize a pinned, unverified UUID.
             // Let the CLI resume its saved conversation, as the existing probe does.
-            pendingTranscriptWarning =
-              "Claude transcript validation was unavailable or timed out. Resuming the saved conversation without a message checkpoint.";
+            pendingTranscriptWarning = [
+              rejoinedWarning,
+              "Claude transcript validation was unavailable or timed out. Resuming the saved conversation without a message checkpoint.",
+            ]
+              .filter(Boolean)
+              .join(" ");
           }
         }
         const generation = readClaudeRecoveryMetadata(input.resumeCursor).resumeRecoveryGeneration;
@@ -7578,6 +7783,19 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 } satisfies PermissionResult;
               }
               const inPlanMode = context.configuredBase?.permissionMode === "plan";
+              // Full access never prompts, whatever the approval policy; plan
+              // mode still refuses workspace edits.
+              if (inPlanMode && (input.runtimeMode ?? DEFAULT_RUNTIME_MODE) === "full-access") {
+                return isClaudePlanModeWorkspaceEdit(toolName, toolInput, {
+                  plansDirectory,
+                  cwd: input.cwd,
+                })
+                  ? ({
+                      behavior: "deny",
+                      message: CLAUDE_PLAN_MODE_EDIT_DENIAL,
+                    } satisfies PermissionResult)
+                  : ({ behavior: "allow", updatedInput: toolInput } satisfies PermissionResult);
+              }
               if (inPlanMode && input.approvalPolicy === "never")
                 return {
                   behavior: "deny",
@@ -8083,10 +8301,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   )
                 );
               },
-              plansDirectory: NodePath.join(
-                resolveClaudeConfigDir(queryEnvironment, input.cwd),
-                "plans",
-              ),
+              plansDirectory,
             },
             undefined,
             async (hook, signal) => {

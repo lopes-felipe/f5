@@ -3,6 +3,8 @@ import type { ChildProcess } from "node:child_process";
 import { Schema } from "effect";
 import {
   SCHEDULED_NOTIFICATIONS_CAPABILITY,
+  OPEN_EXTERNAL_URL_CAPABILITY,
+  type OpenExternalUrlStatus,
   COMPUTER_BACKGROUND_CAPABILITY,
   COMPUTER_AGENT_IDENTITY_CAPABILITY,
   COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
@@ -70,6 +72,8 @@ export class ComputerHostChannel {
         profileId: string,
         notification: import("@t3tools/contracts").DesktopScheduledNotification,
       ) => boolean;
+      openExternalUrl?: (profileId: string, url: string) => Promise<OpenExternalUrlStatus>;
+      cancelBrowserOpen?: (profileId: string) => void;
     } = {},
   ) {
     this.chrome = new ChromeLeaseAuthority((holder) => {
@@ -104,6 +108,7 @@ export class ComputerHostChannel {
     };
   }
   private disconnectProfile(profileId: string): void {
+    this.options.cancelBrowserOpen?.(profileId);
     const builtin = this.controller.lease
       .holders()
       .filter((holder) => holder.profileId === profileId && holder.backend !== "native");
@@ -195,6 +200,7 @@ export class ComputerHostChannel {
                 this.options.notificationAvailable?.() !== false) ||
               capability === COMPUTER_AGENT_IDENTITY_CAPABILITY ||
               capability === COMPUTER_ACTIVITY_CORRELATION_CAPABILITY ||
+              (capability === OPEN_EXTERNAL_URL_CAPABILITY && !!this.options.openExternalUrl) ||
               (capability === COMPUTER_BACKGROUND_CAPABILITY &&
                 this.options.advertiseBackground !== false),
           ),
@@ -213,6 +219,23 @@ export class ComputerHostChannel {
       const fail = (requestId: string, error: unknown) =>
         this.send(profileId, { type: "response", requestId, error: computerError(error) });
       switch (message.type) {
+        case "openExternalUrlRequest":
+          if (!backend.capabilities.has(OPEN_EXTERNAL_URL_CAPABILITY)) return;
+          void this.options.openExternalUrl!(profileId, message.url).then(
+            (status) => {
+              if (this.backends.get(profileId) === backend)
+                this.send(profileId, { type: "openExternalUrlResult", id: message.id, status });
+            },
+            () => {
+              if (this.backends.get(profileId) === backend)
+                this.send(profileId, {
+                  type: "openExternalUrlResult",
+                  id: message.id,
+                  status: "denied",
+                });
+            },
+          );
+          return;
         case "scheduledNotification":
           if (
             backend.capabilities.has(SCHEDULED_NOTIFICATIONS_CAPABILITY) &&

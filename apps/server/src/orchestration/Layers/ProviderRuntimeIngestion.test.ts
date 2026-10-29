@@ -10113,6 +10113,248 @@ describe("ProviderRuntimeIngestion", () => {
       expect(second?.reasoningText ?? "").toBe("");
     });
 
+    describe("reasoning tokens", () => {
+      const reasoningDelta = (itemId: string, delta: string): ProviderRuntimeEvent => ({
+        ...base(),
+        type: "content.delta",
+        itemId: RuntimeItemId.makeUnsafe(itemId),
+        payload: { streamKind: "reasoning_text", delta },
+      });
+      const reported = (tokens: number, estimated = false): ProviderRuntimeEvent => ({
+        ...base(),
+        type: "turn.reasoning-tokens.reported",
+        payload: { tokens, estimated },
+      });
+      const tokensOf = (
+        thread: { readonly messages: ReadonlyArray<ProviderRuntimeTestMessage> },
+        id: string,
+      ) => {
+        const message = thread.messages.find((entry) => entry.id === id);
+        return [message?.reasoningTokens, message?.reasoningTokensEstimated];
+      };
+
+      it("credits a count reported after the reasoning flush to that completed message", async () => {
+        const harness = await startThinkingTurn();
+        harness.emit(reasoningDelta("r1", "plan"));
+        harness.emit(assistantDelta("a1", "answer"));
+        harness.emit(assistantCompleted("a1"));
+        await waitForThread(harness.engine, (entry) =>
+          entry.messages.some((message) => message.id === "assistant:a1" && !message.streaming),
+        );
+        harness.emit(reported(500));
+        const thread = await waitForThread(harness.engine, (entry) =>
+          entry.messages.some((message) => message.reasoningTokens !== undefined),
+        );
+        expect(tokensOf(thread, "assistant:a1")).toEqual([500, false]);
+      });
+
+      it("holds a count reported while reasoning is buffered for the message that receives it", async () => {
+        const harness = await startThinkingTurn();
+        harness.emit(reasoningDelta("r1", "plan"));
+        harness.emit(reported(300, true));
+        harness.emit(assistantDelta("a1", "answer"));
+        harness.emit(assistantCompleted("a1"));
+        const thread = await waitForThread(harness.engine, (entry) =>
+          entry.messages.some((message) => message.reasoningTokens !== undefined),
+        );
+        expect(tokensOf(thread, "assistant:a1")).toEqual([300, true]);
+      });
+
+      it("moves a later count without new reasoning to the next message at turn end", async () => {
+        const harness = await startThinkingTurn();
+        harness.emit(reasoningDelta("r1", "plan"));
+        harness.emit(assistantDelta("a1", "first"));
+        harness.emit(assistantCompleted("a1"));
+        harness.emit(reported(500));
+        // No visible reasoning for this request, so a1 must not absorb it.
+        harness.emit(reported(200));
+        harness.emit(assistantDelta("a2", "second"));
+        harness.emit(assistantCompleted("a2"));
+        harness.emit({ ...base(), type: "turn.completed", payload: { state: "completed" } });
+        const thread = await waitForThread(harness.engine, (entry) =>
+          entry.messages.some(
+            (message) => message.id === "assistant:a2" && message.reasoningTokens !== undefined,
+          ),
+        );
+        expect(tokensOf(thread, "assistant:a1")).toEqual([500, false]);
+        expect(tokensOf(thread, "assistant:a2")).toEqual([200, false]);
+      });
+
+      it("waits for a streaming message to complete before recording its count", async () => {
+        const harness = await createHarness();
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.makeUnsafe("cmd-turn-start-reasoning-tokens-streaming"),
+            threadId: ThreadId.makeUnsafe("thread-1"),
+            message: {
+              messageId: asMessageId("message-reasoning-tokens-streaming"),
+              role: "user",
+              text: "stream",
+              attachments: [],
+            },
+            assistantDeliveryMode: "streaming",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            runtimeMode: "approval-required",
+            createdAt: new Date().toISOString(),
+          }),
+        );
+        await harness.drain();
+        harness.emit({ ...base(), type: "turn.started" });
+        await waitForThread(
+          harness.engine,
+          (thread) => thread.session?.activeTurnId === "turn-think",
+        );
+        harness.emit(assistantDelta("a1", "answer"));
+        harness.emit(reasoningDelta("r1", "plan"));
+        harness.emit(reported(250));
+        await harness.drain();
+        const streaming = (await Effect.runPromise(harness.engine.getReadModel())).threads[0]!;
+        expect(tokensOf(streaming, "assistant:a1")).toEqual([undefined, undefined]);
+
+        harness.emit(assistantCompleted("a1"));
+        const thread = await waitForThread(harness.engine, (entry) =>
+          entry.messages.some((message) => message.reasoningTokens !== undefined),
+        );
+        expect(tokensOf(thread, "assistant:a1")).toEqual([250, false]);
+
+        // Compaction folds a message into its last event, so the count must follow it.
+        const events = await Effect.runPromise(
+          Stream.runCollect(harness.engine.readEvents(0)).pipe(
+            Effect.map((chunk) => Array.from(chunk)),
+          ),
+        );
+        const lastMessageSequence = Math.max(
+          ...events.flatMap((event) =>
+            event.type === "thread.message-sent" && event.payload.messageId === "assistant:a1"
+              ? [event.sequence]
+              : [],
+          ),
+        );
+        const tokenSequence = events.find(
+          (event) => event.type === "thread.message-reasoning-tokens-added",
+        )?.sequence;
+        expect(tokenSequence).toBeGreaterThan(lastMessageSequence);
+      });
+
+      const reasoningTokenEvents = async (harness: Awaited<ReturnType<typeof createHarness>>) => {
+        await harness.drain();
+        const events = await Effect.runPromise(
+          Stream.runCollect(harness.engine.readEvents(0)).pipe(
+            Effect.map((chunk) => Array.from(chunk)),
+          ),
+        );
+        return events.filter((event) => event.type === "thread.message-reasoning-tokens-added");
+      };
+      const runCountTurn = async (harness: Awaited<ReturnType<typeof createHarness>>) => {
+        harness.emit(reasoningDelta("r1", "plan"));
+        harness.emit(reported(300));
+        harness.emit(assistantDelta("a1", "answer"));
+        harness.emit(assistantCompleted("a1"));
+        harness.emit({ ...base(), type: "turn.completed", payload: { state: "completed" } });
+        return waitForThread(
+          harness.engine,
+          (entry) =>
+            entry.session?.activeTurnId !== "turn-think" &&
+            entry.messages.some((message) => message.id === "assistant:a1" && !message.streaming),
+        );
+      };
+
+      it("retries a transient dispatch failure and records the count once", async () => {
+        const harness = await startThinkingTurn({
+          failDispatchOnce: (command) => command.type === "thread.message.reasoning-tokens.add",
+        });
+        const thread = await runCountTurn(harness);
+        expect(tokensOf(thread, "assistant:a1")).toEqual([300, false]);
+        expect(await reasoningTokenEvents(harness)).toHaveLength(1);
+      });
+
+      it("drops a count whose dispatch keeps failing without blocking completion", async () => {
+        const harness = await startThinkingTurn({
+          failDispatchOnce: (command) => command.type === "thread.message.reasoning-tokens.add",
+          dispatchFailureCount: 10,
+        });
+        const thread = await runCountTurn(harness);
+        expect(
+          thread.messages.find((message) => message.id === "assistant:a1")?.reasoningText,
+        ).toBe("plan");
+        expect(tokensOf(thread, "assistant:a1")).toEqual([undefined, undefined]);
+      });
+
+      it("keeps each response's count on the message that shows its reasoning", async () => {
+        const harness = await startThinkingTurn();
+        // A: reasoning then a tool call, no message.
+        harness.emit(reasoningDelta("rA", "a"));
+        harness.emit(reported(100));
+        // B: reasoning, message M_B, tool call.
+        harness.emit(reasoningDelta("rB", "b"));
+        harness.emit(assistantDelta("mB", "B"));
+        harness.emit(assistantCompleted("mB"));
+        harness.emit(reported(20));
+        // C: reasoning, message M_C.
+        harness.emit(reasoningDelta("rC", "c"));
+        harness.emit(assistantDelta("mC", "C"));
+        harness.emit(assistantCompleted("mC"));
+        harness.emit(reported(3));
+        harness.emit({ ...base(), type: "turn.completed", payload: { state: "completed" } });
+        const thread = await waitForThread(harness.engine, (entry) =>
+          entry.messages.some(
+            (message) => message.id === "assistant:mC" && message.reasoningTokens !== undefined,
+          ),
+        );
+        // M_B shows A's and B's reasoning, so it carries both counts.
+        expect(tokensOf(thread, "assistant:mB")).toEqual([120, false]);
+        expect(tokensOf(thread, "assistant:mC")).toEqual([3, false]);
+      });
+
+      it("credits a leftover count when the turn is aborted", async () => {
+        const harness = await startThinkingTurn();
+        harness.emit(reported(90, true));
+        harness.emit(assistantDelta("a1", "partial"));
+        harness.emit({ ...base(), type: "turn.aborted", payload: { reason: "interrupted" } });
+        const thread = await waitForThread(harness.engine, (entry) =>
+          entry.messages.some((message) => message.reasoningTokens !== undefined),
+        );
+        expect(tokensOf(thread, "assistant:a1")).toEqual([90, true]);
+      });
+
+      it("ignores counts from a retired session generation", async () => {
+        const harness = await startThinkingTurn();
+        harness.emit(reasoningDelta("r1", "plan"));
+        harness.emit(assistantDelta("a1", "answer"));
+        harness.emit(assistantCompleted("a1"));
+        await waitForThread(harness.engine, (entry) =>
+          entry.messages.some((message) => message.id === "assistant:a1" && !message.streaming),
+        );
+        await Effect.runPromise(
+          harness.providerSessionDirectory.upsert({
+            threadId: asThreadId("thread-1"),
+            provider: "codex",
+            runtimePayload: { sessionGeneration: 2, activeTurnId: "turn-think" },
+          }),
+        );
+        harness.emit({ ...reported(5_000), sessionGeneration: 1 });
+        harness.emit({ ...reported(40), sessionGeneration: 2 });
+        const thread = await waitForThread(harness.engine, (entry) =>
+          entry.messages.some((message) => message.reasoningTokens !== undefined),
+        );
+        expect(tokensOf(thread, "assistant:a1")).toEqual([40, false]);
+      });
+
+      it("drops a count when the turn produced no assistant message", async () => {
+        const harness = await startThinkingTurn();
+        harness.emit(reported(200));
+        harness.emit({ ...base(), type: "turn.completed", payload: { state: "completed" } });
+        const thread = await waitForThread(
+          harness.engine,
+          (entry) => entry.session?.activeTurnId !== "turn-think",
+        );
+        expect(thread.messages.some((message) => message.reasoningTokens !== undefined)).toBe(
+          false,
+        );
+      });
+    });
+
     it("carries reasoning that follows a completed message onto the next message", async () => {
       const harness = await startThinkingTurn();
       harness.emit(assistantDelta("a1", "first"));

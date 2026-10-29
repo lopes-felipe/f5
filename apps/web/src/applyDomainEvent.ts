@@ -271,6 +271,12 @@ function upsertMessage(
     role: payload.role,
     text: nextText,
     ...(nextReasoningText !== undefined ? { reasoningText: nextReasoningText } : {}),
+    ...(existing?.reasoningTokens !== undefined
+      ? { reasoningTokens: existing.reasoningTokens }
+      : {}),
+    ...(existing?.reasoningTokensEstimated !== undefined
+      ? { reasoningTokensEstimated: existing.reasoningTokensEstimated }
+      : {}),
     ...(payload.skillCall !== undefined ? { skillCall: payload.skillCall } : {}),
     ...(payload.turnId !== null ? { turnId: payload.turnId } : {}),
     createdAt: existing?.createdAt ?? payload.createdAt,
@@ -292,6 +298,29 @@ function upsertMessage(
   nextMessages[existingIndex] = nextMessage;
   recordMessageListChange(messages, nextMessages, existing, nextMessage);
   return arraysShallowEqual(nextMessages, messages) ? messages : nextMessages;
+}
+
+function addMessageReasoningTokens(
+  messages: Thread["messages"],
+  payload: Extract<
+    OrchestrationEvent,
+    { type: "thread.message-reasoning-tokens-added" }
+  >["payload"],
+): Thread["messages"] {
+  const existingIndex = messages.findIndex((entry) => entry.id === payload.messageId);
+  const existing = existingIndex >= 0 ? messages[existingIndex] : undefined;
+  if (!existing || payload.tokens === 0) return messages;
+  const nextMessage: ChatMessage = {
+    ...existing,
+    reasoningTokens: (existing.reasoningTokens ?? 0) + payload.tokens,
+    reasoningTokensEstimated: (existing.reasoningTokensEstimated ?? false) || payload.estimated,
+  };
+  // Empty suffixes carry the text revisions over, so rendered markdown is kept.
+  recordMessageAppend(existing, nextMessage, "", "");
+  const nextMessages = [...messages];
+  nextMessages[existingIndex] = nextMessage;
+  recordMessageListChange(messages, nextMessages, existing, nextMessage);
+  return nextMessages;
 }
 
 function messageCharacters(message: Pick<ChatMessage, "text" | "reasoningText" | "attachments">) {
@@ -1201,6 +1230,18 @@ function reduceDomainEvent(
           : { ...thread, interactionMode: event.payload.interactionMode },
       );
       return threads === state.threads ? state : { ...state, threads };
+    }
+
+    case "thread.message-reasoning-tokens-added": {
+      const detailGate = gateThreadDetailMutations(state, event.payload.threadId, event);
+      if (!detailGate.applyDetailMutations) return detailGate.state;
+      const threads = updateThread(detailGate.state.threads, event.payload.threadId, (thread) => {
+        const messages = addMessageReasoningTokens(thread.messages, event.payload);
+        return messages === thread.messages ? thread : { ...thread, messages };
+      });
+      return threads === detailGate.state.threads
+        ? detailGate.state
+        : { ...detailGate.state, threads };
     }
 
     case "thread.message-sent": {

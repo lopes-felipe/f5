@@ -29,6 +29,17 @@ export interface ProviderTurnDeliveryWorkerShape {
     threadId: ThreadId,
     deliveryId?: CommandId,
   ) => Effect.Effect<ProviderTurnDelivery | null, Error>;
+  /**
+   * `recheck`, plus why provider history could not be read when that left the
+   * delivery unresolved, so a person can see why nothing changed.
+   */
+  readonly recheckWithReason: (
+    threadId: ThreadId,
+    deliveryId?: CommandId,
+  ) => Effect.Effect<
+    { readonly delivery: ProviderTurnDelivery | null; readonly historyError?: string },
+    Error
+  >;
   /** Targets `deliveryId` when given, otherwise the thread's unresolved delivery. */
   readonly retry: (input: {
     readonly threadId: ThreadId;

@@ -56,7 +56,7 @@ import { roughTokenEstimateFromCharacters } from "@t3tools/shared/model";
 import { ServerConfig } from "../../config.ts";
 import { TextGenerationError } from "../../git/Errors.ts";
 import { ThreadTitleRetryDelay } from "../../threadTitle.ts";
-import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
+import { ProviderAdapterProcessError, ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import {
   ProjectMcpConfigService,
   ProjectMcpConfigServiceError,
@@ -5465,6 +5465,53 @@ describe("ProviderCommandReactor", () => {
     );
     expect(error).toMatchObject({ certainty: "not_sent", retryable: false });
     expect(harness.startSession).not.toHaveBeenCalled();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+  });
+
+  it("reports a session that cannot resume as not sent instead of ambiguous", async () => {
+    const harness = await createHarness({ bridgeTurnDelivery: false });
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const createdAt = new Date().toISOString();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("unresumable-delivery"),
+        threadId,
+        message: {
+          messageId: asMessageId("unresumable-message"),
+          role: "user",
+          text: "go ahead",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        createdAt,
+      }),
+    );
+    const events = await Effect.runPromise(Stream.runCollect(harness.engine.readEvents(0)));
+    const intent = events.find((event) => event.type === "thread.turn-start-requested");
+    if (!intent || intent.type !== "thread.turn-start-requested") throw new Error("Missing intent");
+    harness.startSession.mockImplementationOnce(
+      (_: unknown, __: unknown) =>
+        Effect.fail(
+          new ProviderAdapterProcessError({
+            provider: "claudeAgent",
+            threadId,
+            detail:
+              "No persisted Claude resume boundary has a complete parent chain. Use Repair transcript.",
+          }),
+        ) as never,
+    );
+    const error = await Effect.runPromise(
+      harness.reactor.deliverTurnStart(intent).pipe(Effect.flip, Effect.scoped),
+    );
+    expect(error).toMatchObject({
+      certainty: "not_sent",
+      retryable: false,
+      detail:
+        "No persisted Claude resume boundary has a complete parent chain. Use Repair transcript. This message was not sent.",
+    });
+    expect(harness.startSession).toHaveBeenCalledTimes(1);
     expect(harness.sendTurn).not.toHaveBeenCalled();
   });
 });

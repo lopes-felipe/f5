@@ -16,6 +16,7 @@ export interface ThreadDetailCoverage {
 export function detailEntityKey(event: OrchestrationEvent): string | null {
   switch (event.type) {
     case "thread.message-sent":
+    case "thread.message-reasoning-tokens-added":
       return `message:${event.payload.messageId}`;
     case "thread.turn-diff-completed":
       return `checkpoint:${event.payload.turnId}`;

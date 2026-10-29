@@ -394,6 +394,10 @@ export const OrchestrationMessage = Schema.Struct({
   role: OrchestrationMessageRole,
   text: Schema.String,
   reasoningText: Schema.optional(Schema.String),
+  /** Reasoning tokens attributed to this assistant message. */
+  reasoningTokens: Schema.optional(NonNegativeInt),
+  /** True when any part of `reasoningTokens` is a provider estimate. */
+  reasoningTokensEstimated: Schema.optional(Schema.Boolean),
   skillCall: Schema.optional(UserMessageSkillCall),
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),
@@ -1762,6 +1766,18 @@ const ThreadMessageAssistantCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+// Metadata only, so it also applies to completed messages.
+const ThreadMessageReasoningTokensAddCommand = Schema.Struct({
+  type: Schema.Literal("thread.message.reasoning-tokens.add"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  turnId: TurnId,
+  tokens: NonNegativeInt,
+  estimated: Schema.Boolean,
+  createdAt: IsoDateTime,
+});
+
 const ThreadProposedPlanUpsertCommand = Schema.Struct({
   type: Schema.Literal("thread.proposed-plan.upsert"),
   commandId: CommandId,
@@ -1962,6 +1978,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
   ThreadMessageAssistantReconcileCommand,
+  ThreadMessageReasoningTokensAddCommand,
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
   ThreadTurnProcessingQuiesceCommand,
@@ -2025,6 +2042,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.runtime-mode-set",
   "thread.interaction-mode-set",
   "thread.message-sent",
+  "thread.message-reasoning-tokens-added",
   "thread.turn-start-requested",
   "thread.turn-steer-requested",
   "thread.turn-interrupt-requested",
@@ -2332,6 +2350,15 @@ export const ThreadMessageSentPayload = Schema.Struct({
   turnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(() => null)),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadMessageReasoningTokensAddedPayload = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+  turnId: TurnId,
+  tokens: NonNegativeInt,
+  estimated: Schema.Boolean,
   updatedAt: IsoDateTime,
 });
 
@@ -2712,6 +2739,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.message-sent"),
     payload: ThreadMessageSentPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.message-reasoning-tokens-added"),
+    payload: ThreadMessageReasoningTokensAddedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

@@ -119,6 +119,7 @@ describe("OrchestrationReactor", () => {
                   acknowledged += 1;
                 }),
               recheck: () => Effect.succeed(null),
+              recheckWithReason: () => Effect.succeed({ delivery: null }),
               retry: () => Effect.die("unsupported"),
               discard: () => Effect.die("unsupported"),
             }),

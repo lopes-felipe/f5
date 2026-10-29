@@ -735,6 +735,7 @@ async function createHarness(
           outcomes: Stream.empty,
           acknowledgeOutcome: () => Effect.void,
           recheck: options?.recheckDelivery ?? (() => Effect.succeed(null)),
+          recheckWithReason: () => Effect.die(new Error("Unexpected recheck with reason in test.")),
           retry:
             options?.retryDelivery ??
             (() => Effect.die(new Error("Unexpected provider delivery retry in test."))),

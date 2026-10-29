@@ -61,6 +61,7 @@ import {
   ThreadTitleRegenerationDiscardedPayload,
   ThreadPinsReplacedPayload,
   ThreadLegacyPinsImportedPayload,
+  ThreadMessageReasoningTokensAddedPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
   ThreadSnoozedPayload,
@@ -1609,6 +1610,36 @@ export function projectEvent(
     case "thread.file-change-recorded":
     case "thread.usage-recorded":
       return Effect.succeed(nextBase);
+
+    case "thread.message-reasoning-tokens-added":
+      return decodeForEvent(
+        ThreadMessageReasoningTokensAddedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread?.messages.some((entry) => entry.id === payload.messageId)) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              messages: thread.messages.map((entry) =>
+                entry.id === payload.messageId
+                  ? {
+                      ...entry,
+                      reasoningTokens: (entry.reasoningTokens ?? 0) + payload.tokens,
+                      reasoningTokensEstimated:
+                        (entry.reasoningTokensEstimated ?? false) || payload.estimated,
+                    }
+                  : entry,
+              ),
+            }),
+          };
+        }),
+      );
 
     default: {
       const exhaustiveEvent: never = event;

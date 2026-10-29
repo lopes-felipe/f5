@@ -189,6 +189,40 @@ export class ProviderTurnDeliveryError extends Schema.TaggedErrorClass<ProviderT
   }
 }
 
+const NOT_SENT_SUFFIX = "This message was not sent.";
+
+/**
+ * A failure before the provider send call, such as a session that cannot
+ * resume, proves the input never left F5. Typed delivery errors keep their
+ * own certainty.
+ */
+export function asPreSendDeliveryError(error: unknown): ProviderTurnDeliveryError {
+  if (Schema.is(ProviderTurnDeliveryError)(error)) return error;
+  const value = error as {
+    detail?: unknown;
+    message?: unknown;
+    deliveryCertainty?: unknown;
+    deliveryRetryable?: unknown;
+    retryable?: unknown;
+  } | null;
+  // Keep a retry hint only where the error itself declares the send safe to repeat.
+  const retryable =
+    value?.deliveryRetryable === true ||
+    (value?.deliveryCertainty === "not_sent" && value.retryable === true);
+  const reason =
+    typeof value?.detail === "string" && value.detail.trim()
+      ? value.detail.trim()
+      : typeof value?.message === "string" && value.message.trim()
+        ? value.message.trim()
+        : "The provider session could not be prepared.";
+  return new ProviderTurnDeliveryError({
+    certainty: "not_sent",
+    retryable,
+    detail: reason.endsWith(NOT_SENT_SUFFIX) ? reason : `${reason} ${NOT_SENT_SUFFIX}`,
+    cause: error,
+  });
+}
+
 export type ProviderAdapterError =
   | ProviderAdapterValidationError
   | ProviderAdapterSessionNotFoundError
@@ -242,3 +276,14 @@ export type ProviderServiceError =
   | ProviderDriverError
   | ProviderAdapterError
   | CheckpointServiceError;
+
+/** Errors whose type alone proves the provider never received the input. */
+export function isNotSentProviderError(error: unknown): boolean {
+  return (
+    Schema.is(ProviderValidationError)(error) ||
+    Schema.is(ProviderSessionNotFoundError)(error) ||
+    Schema.is(ProviderUnsupportedError)(error) ||
+    Schema.is(ProviderSessionActionUnavailableError)(error) ||
+    Schema.is(ProviderAdapterValidationError)(error)
+  );
+}

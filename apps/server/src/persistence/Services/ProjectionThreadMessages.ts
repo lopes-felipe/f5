@@ -10,6 +10,7 @@ import {
   ChatAttachment,
   OrchestrationMessageRole,
   MessageId,
+  NonNegativeInt,
   ThreadId,
   TurnId,
   IsoDateTime,
@@ -27,6 +28,8 @@ export const ProjectionThreadMessage = Schema.Struct({
   role: OrchestrationMessageRole,
   text: Schema.String,
   reasoningText: Schema.optional(Schema.String),
+  reasoningTokens: Schema.optional(NonNegativeInt),
+  reasoningTokensEstimated: Schema.optional(Schema.Boolean),
   skillCall: Schema.optional(UserMessageSkillCall),
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   isStreaming: Schema.Boolean,
@@ -34,6 +37,15 @@ export const ProjectionThreadMessage = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 export type ProjectionThreadMessage = typeof ProjectionThreadMessage.Type;
+
+export const AddProjectionThreadMessageReasoningTokensInput = Schema.Struct({
+  messageId: MessageId,
+  threadId: ThreadId,
+  tokens: NonNegativeInt,
+  estimated: Schema.Boolean,
+});
+export type AddProjectionThreadMessageReasoningTokensInput =
+  typeof AddProjectionThreadMessageReasoningTokensInput.Type;
 
 export const ListProjectionThreadMessagesInput = Schema.Struct({
   threadId: ThreadId,
@@ -79,6 +91,11 @@ export interface ProjectionThreadMessageRepositoryShape {
    */
   readonly upsert: (
     message: ProjectionThreadMessage,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /** Add to a message's reasoning-token count; the estimated flag is sticky. */
+  readonly addReasoningTokens: (
+    input: AddProjectionThreadMessageReasoningTokensInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /**
