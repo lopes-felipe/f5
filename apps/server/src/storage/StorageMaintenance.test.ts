@@ -3510,8 +3510,9 @@ it.layer(
           assert.equal(yield* Effect.promise(() => pathExists(managed("d"))), true);
         }),
       ),
-    // Seven real worktrees, each inspected and removed with several Git calls.
-    60_000,
+    // Seven real worktrees and six removals, each with real Git and fresh native
+    // probes. PowerShell startup and NTFS Git calls need a larger Windows budget.
+    process.platform === "win32" ? 120_000 : 60_000,
   );
 
   it.effect(
