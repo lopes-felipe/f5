@@ -1,9 +1,12 @@
 import type { AccountUsageSection, UsageAccount } from "@t3tools/contracts";
-import { Cache, Cause, Clock, Deferred, Effect, Ref } from "effect";
+import { Cache, Cause, Clock, Deferred, Duration, Effect, Exit, Ref } from "effect";
 import { accountUsageErrorCode } from "../accountUsageErrors.ts";
 
 import { ACCOUNT_ATTEMPT_TTL_MS, type AccountUsageCapability } from "../accountUsage.ts";
 export type { AccountUsageCapability } from "../accountUsage.ts";
+/** Hold after a failed read when `retryFailedReads` is set. */
+const FAILED_READ_RETRY_MS = 30_000;
+
 export function emptyAccountSection(kind: AccountUsageSection["kind"]): AccountUsageSection {
   return { kind, outcome: "unavailable", lastAttemptAt: null, snapshot: null, errorCode: null };
 }
@@ -16,41 +19,75 @@ export function emptyAccountSection(kind: AccountUsageSection["kind"]): AccountU
 export const makeAccountUsageCapability = <E>(
   initial: UsageAccount,
   read: Effect.Effect<ReadonlyArray<AccountUsageSection>, E>,
-  options: { readonly identity: string; readonly readerOwnsTimeout?: boolean },
+  options: {
+    readonly identity: string;
+    readonly readerOwnsTimeout?: boolean;
+    /**
+     * Only an available or unsupported read holds the attempt TTL; other
+     * failures retry after a short hold.
+     */
+    readonly retryFailedReads?: boolean;
+  },
 ) =>
   Effect.gen(function* () {
     const scope = yield* Effect.scope;
     const state = yield* Ref.make(initial);
-    // TTL starts at completion, including failure. Forced refresh bypasses it.
+    // TTL starts at completion, including failure unless `retryFailedReads`. Forced refresh bypasses it.
     let inFlight: Deferred.Deferred<void> | undefined;
     const lastJobFresh = yield* Ref.make(false);
-    const lastCompleted = yield* Ref.make<number | null>(null);
-    const attempts = yield* Cache.make({
+    // `invalidate` bumps the generation, so a read already running cannot restore the hold.
+    const generation = yield* Ref.make(0);
+    const lastCompleted = yield* Ref.make<{
+      readonly at: number;
+      readonly generation: number;
+      readonly holdMs: number;
+    } | null>(null);
+    const isFresh = (sections: ReadonlyArray<AccountUsageSection>) =>
+      sections.some((section) => section.outcome === "available" && section.snapshot !== null);
+    const attemptHoldMs = (sections: ReadonlyArray<AccountUsageSection>) =>
+      !options.retryFailedReads ||
+      isFresh(sections) ||
+      sections.every((section) => section.outcome === "unsupported")
+        ? ACCOUNT_ATTEMPT_TTL_MS
+        : FAILED_READ_RETRY_MS;
+    const readAttempt = (
+      options.readerOwnsTimeout ? read : read.pipe(Effect.timeout("8 seconds"))
+    ).pipe(
+      // Readers return section failures independently. Only a connection-level
+      // failure (or defect) here applies to every section. Never swallow retirement.
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.failCause(cause)
+          : Effect.gen(function* () {
+              const at = new Date(yield* Clock.currentTimeMillis).toISOString();
+              const errorCode = accountUsageErrorCode(Cause.squash(cause));
+              return initial.sections.map((section) => ({
+                ...section,
+                outcome:
+                  errorCode === "unsupported" ? ("unsupported" as const) : ("unavailable" as const),
+                lastAttemptAt: at,
+                errorCode,
+              }));
+            }),
+      ),
+    );
+    const attempts = yield* Cache.makeWith({
       capacity: 4,
-      timeToLive: ACCOUNT_ATTEMPT_TTL_MS,
+      timeToLive: (exit) => (Exit.isSuccess(exit) ? attemptHoldMs(exit.value) : Duration.zero),
       lookup: () =>
-        (options.readerOwnsTimeout ? read : read.pipe(Effect.timeout("8 seconds"))).pipe(
-          // Readers return section failures independently. Only a connection-level
-          // failure (or defect) here applies to every section. Never swallow retirement.
-          Effect.catchCause((cause) =>
-            Cause.hasInterrupts(cause)
-              ? Effect.failCause(cause)
-              : Effect.gen(function* () {
-                  const at = new Date(yield* Clock.currentTimeMillis).toISOString();
-                  const errorCode = accountUsageErrorCode(Cause.squash(cause));
-                  return initial.sections.map((section) => ({
-                    ...section,
-                    outcome:
-                      errorCode === "unsupported"
-                        ? ("unsupported" as const)
-                        : ("unavailable" as const),
-                    lastAttemptAt: at,
-                    errorCode,
-                  }));
-                }),
-          ),
-          Effect.ensuring(
-            Clock.currentTimeMillis.pipe(Effect.flatMap((at) => Ref.set(lastCompleted, at))),
+        Effect.flatMap(Ref.get(generation), (readGeneration) =>
+          readAttempt.pipe(
+            Effect.onExit((exit) =>
+              Clock.currentTimeMillis.pipe(
+                Effect.flatMap((at) =>
+                  Ref.set(lastCompleted, {
+                    at,
+                    generation: readGeneration,
+                    holdMs: Exit.isSuccess(exit) ? attemptHoldMs(exit.value) : 0,
+                  }),
+                ),
+              ),
+            ),
           ),
         ),
     });
@@ -60,11 +97,15 @@ export const makeAccountUsageCapability = <E>(
           if (!initial.enabled || mode === "none") return;
           const now = yield* Clock.currentTimeMillis;
           const previous = yield* Ref.get(lastCompleted);
+          const jobGeneration = yield* Ref.get(generation);
+          // An invalidated read no longer holds ordinary refreshes; the force throttle still applies.
+          const invalidated = previous !== null && previous.generation !== jobGeneration;
+          const holdMs =
+            previous === null ? 0 : mode === "force" ? 5_000 : invalidated ? 0 : previous.holdMs;
           const scheduled = yield* Ref.modify(state, (current) => {
             if (
               current.refreshState !== "idle" ||
-              (previous !== null &&
-                now - previous < (mode === "force" ? 5_000 : ACCOUNT_ATTEMPT_TTL_MS))
+              (previous !== null && now - previous.at < holdMs)
             )
               return [false, current] as const;
             return [true, { ...current, refreshState: "queued" as const }] as const;
@@ -79,11 +120,10 @@ export const makeAccountUsageCapability = <E>(
                 ...current,
                 refreshState: "refreshing" as const,
               }));
-              if (mode === "force") yield* Cache.invalidate(attempts, initial.key);
+              // A read that finished after `invalidate` may have refilled the cache.
+              if (mode === "force" || invalidated) yield* Cache.invalidate(attempts, initial.key);
               const sections = yield* Cache.get(attempts, initial.key);
-              jobFresh = sections.some(
-                (section) => section.outcome === "available" && section.snapshot !== null,
-              );
+              jobFresh = isFresh(sections);
               yield* Ref.update(state, (current) => ({
                 ...current,
                 sections: sections.map((section) => {
@@ -129,7 +169,7 @@ export const makeAccountUsageCapability = <E>(
           snapshot,
           fresh,
           ...(mode === "force" && !joined && completed !== null
-            ? { nextAllowedAt: new Date(completed + 5000).toISOString() }
+            ? { nextAllowedAt: new Date(completed.at + 5000).toISOString() }
             : {}),
         };
       });
@@ -138,5 +178,8 @@ export const makeAccountUsageCapability = <E>(
       getSnapshot: Ref.get(state),
       refresh,
       refreshAccount,
+      invalidate: Ref.update(generation, (value) => value + 1).pipe(
+        Effect.andThen(Cache.invalidateAll(attempts)),
+      ),
     } satisfies AccountUsageCapability;
   });
