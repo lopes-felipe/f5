@@ -605,7 +605,7 @@ it.effect("Recheck reports why provider history could not be read", () =>
     state = { ...state, state: "ambiguous", certainty: "unknown" };
     providerReadFails = true;
     const worker = yield* ProviderTurnDeliveryWorker;
-    const unreadable = yield* worker.recheckWithReason!(threadId);
+    const unreadable = yield* worker.recheckWithReason(threadId);
     assert.equal(unreadable.delivery?.state, "ambiguous");
     assert.equal(
       "historyError" in unreadable ? unreadable.historyError : undefined,
@@ -613,7 +613,7 @@ it.effect("Recheck reports why provider history could not be read", () =>
     );
 
     providerReadFails = false;
-    const readable = yield* worker.recheckWithReason!(threadId);
+    const readable = yield* worker.recheckWithReason(threadId);
     assert.isFalse("historyError" in readable);
   }).pipe(Effect.provide(testLayer)),
 );

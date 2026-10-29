@@ -1,8 +1,10 @@
 import { mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ClaudeTranscriptRejoinCancelled,
+  planClaudeTranscriptRejoin,
   rejoinRotatedClaudeTranscript,
   repairClaudeResumePoint,
   undoClaudeResumeRepair,
@@ -84,12 +86,35 @@ describe("rejoining a transcript whose beginning was moved", () => {
     expect(await readFile(input.file, "utf8")).toBe(tailText);
   });
 
+  it("keeps the cursor's own resume point instead of pinning the target", async () => {
+    const latest = await rotated();
+    const unpinned = await rejoinRotatedClaudeTranscript({
+      ...latest.input,
+      resumeCursor: { resume: "session", resumeRecoveryGeneration: "before" },
+    });
+    expect(unpinned.status).toBe("repaired");
+    if (unpinned.status !== "repaired") return;
+    expect(unpinned.resumeCursor).not.toHaveProperty("resumeSessionAt");
+    expect(unpinned.resumeCursor.resumeRecoveryGeneration).not.toBe("before");
+    expect(unpinned.resumeCursor.transcriptRepairBackupId).toBe(unpinned.backupId);
+
+    const pinned = await rotated();
+    const kept = await rejoinRotatedClaudeTranscript({
+      ...pinned.input,
+      resumeCursor: { resume: "session", resumeSessionAt: "u2" },
+    });
+    expect(kept.status === "repaired" && kept.resumeCursor.resumeSessionAt).toBe("u2");
+  });
+
   it("joins a chain of moved copies in order", async () => {
     const { input, tailText } = await rotated([assistant("a1", "a0")], {
       "session.jsonl.bak.1": jsonl([user("root", null), assistant("a0", "root")]),
     });
     const result = await rejoinRotatedClaudeTranscript(input);
-    expect(result?.rejoinedFrom).toEqual(["session.jsonl.bak.1", "session.jsonl.bak"]);
+    expect(result.status === "repaired" && result.rejoinedFrom).toEqual([
+      "session.jsonl.bak.1",
+      "session.jsonl.bak",
+    ]);
     const joined = await readFile(input.file, "utf8");
     expect(joined).toBe(
       jsonl([user("root", null), assistant("a0", "root")]) +
@@ -107,21 +132,23 @@ describe("rejoining a transcript whose beginning was moved", () => {
 
   it.each([
     [
-      "shares a UUID with the transcript",
+      "repeats messages the transcript already has",
       [user("root", null), assistant("u2", "root"), assistant("a1", "root")],
     ],
     [
-      "does not end at the missing parent",
+      "does not end where the transcript starts",
       [user("root", null), assistant("a1", "root"), assistant("x", "a1")],
     ],
     [
-      "has a malformed line",
+      "has malformed lines",
       `${JSON.stringify(user("root", null))}\n{"broken"\n${JSON.stringify(assistant("a1", "root"))}\n`,
     ],
-  ])("refuses a copy that %s", async (_label, head) => {
+  ])("refuses a copy that %s and names it in the error", async (reason, head) => {
     const { input, tailText } = await rotated(head as string | unknown[]);
-    expect(await rejoinRotatedClaudeTranscript(input)).toBeUndefined();
-    await expect(repairClaudeResumePoint(input)).rejects.toThrow(/missing its beginning/);
+    expect(await rejoinRotatedClaudeTranscript(input)).toMatchObject({ status: "refused" });
+    await expect(repairClaudeResumePoint(input)).rejects.toThrow(
+      `A moved copy is next to it but cannot be rejoined: session.jsonl.bak ${reason}.`,
+    );
     expect(await readFile(input.file, "utf8")).toBe(tailText);
   });
 
@@ -129,33 +156,83 @@ describe("rejoining a transcript whose beginning was moved", () => {
     const { input, dir, headText, tailText } = await rotated();
     await rm(`${input.file}.bak`);
     await writeFile(path.join(dir, "session.jsonl.bak-before-repair-x"), headText);
-    expect(await rejoinRotatedClaudeTranscript(input)).toBeUndefined();
     await expect(repairClaudeResumePoint(input)).rejects.toThrow(
       "Claude's transcript is missing its beginning and no moved copy was found next to it. Restore session.jsonl from a backup or start a new thread.",
     );
     expect(await readFile(input.file, "utf8")).toBe(tailText);
   });
 
-  it("leaves an intact transcript alone and writes nothing after the deadline", async () => {
-    const { input, tailText } = await rotated();
-    expect(
-      await rejoinRotatedClaudeTranscript({ ...input, deadline: Date.now() - 1 }),
-    ).toBeUndefined();
-    expect(await readFile(input.file, "utf8")).toBe(tailText);
+  it("refuses when the transcript itself has malformed lines", async () => {
+    const { input } = await rotated();
+    await writeFile(input.file, `${JSON.stringify(user("u2", "a1"))}\n{"broken"\n`);
+    expect(await planClaudeTranscriptRejoin(input)).toMatchObject({
+      status: "refused",
+      reason: expect.stringContaining("has malformed lines"),
+    });
+  });
 
+  it("stops before scanning or writing once the deadline passes or the signal aborts", async () => {
+    const { input, tailText } = await rotated();
+    await expect(
+      rejoinRotatedClaudeTranscript({ ...input, deadline: Date.now() - 1 }),
+    ).rejects.toBeInstanceOf(ClaudeTranscriptRejoinCancelled);
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      planClaudeTranscriptRejoin({ ...input, signal: controller.signal }),
+    ).rejects.toThrow();
+    expect(await readFile(input.file, "utf8")).toBe(tailText);
+  });
+
+  it("stops without writing when the deadline passes after the scans have started", async () => {
+    const { input, tailText } = await rotated();
+    const start = Date.now();
+    let calls = 0;
+    // In time for the candidate scan and the full reads, late from then on.
+    const now = vi
+      .spyOn(Date, "now")
+      .mockImplementation(() => (++calls <= 2 ? start : start + 60_000));
+    try {
+      await expect(
+        rejoinRotatedClaudeTranscript({ ...input, deadline: start + 1_000 }),
+      ).rejects.toBeInstanceOf(ClaudeTranscriptRejoinCancelled);
+    } finally {
+      now.mockRestore();
+    }
+    expect(calls).toBeGreaterThan(2);
+    expect(await readFile(input.file, "utf8")).toBe(tailText);
+  });
+
+  it("leaves a transcript with no missing parents alone", async () => {
+    const { input } = await rotated();
     await rejoinRotatedClaudeTranscript(input);
     const joined = await readFile(input.file, "utf8");
-    expect(await rejoinRotatedClaudeTranscript(input)).toBeUndefined();
+    expect(await rejoinRotatedClaudeTranscript(input)).toEqual({ status: "not_needed" });
     expect(await readFile(input.file, "utf8")).toBe(joined);
   });
 
-  it("prefers the newest qualifying copy", async () => {
-    const { input, dir } = await rotated(undefined, {
+  it("counts byte-identical copies once", async () => {
+    const { input, headText, tailText } = await rotated(undefined, {
+      "session.jsonl.copy": jsonl([user("root", null), assistant("a1", "root")]),
+    });
+    const result = await rejoinRotatedClaudeTranscript(input);
+    expect(result.status).toBe("repaired");
+    expect(await readFile(input.file, "utf8")).toBe(headText + tailText);
+  });
+
+  it("refuses to choose between different copies that both fit, whatever their dates", async () => {
+    const { input, dir, tailText } = await rotated(undefined, {
       "session.jsonl.old": jsonl([user("old-root", null), assistant("a1", "old-root")]),
     });
     const old = new Date("2026-01-01T00:00:00Z");
     await utimes(path.join(dir, "session.jsonl.old"), old, old);
     const result = await rejoinRotatedClaudeTranscript(input);
-    expect(result?.rejoinedFrom).toEqual(["session.jsonl.bak"]);
+    expect(result).toMatchObject({
+      status: "refused",
+      reason: expect.stringContaining(
+        "several different moved copies could hold it (session.jsonl.bak, session.jsonl.old)",
+      ),
+    });
+    expect(await readFile(input.file, "utf8")).toBe(tailText);
   });
 });

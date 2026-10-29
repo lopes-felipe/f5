@@ -33,7 +33,7 @@ export interface ProviderTurnDeliveryWorkerShape {
    * `recheck`, plus why provider history could not be read when that left the
    * delivery unresolved, so a person can see why nothing changed.
    */
-  readonly recheckWithReason?: (
+  readonly recheckWithReason: (
     threadId: ThreadId,
     deliveryId?: CommandId,
   ) => Effect.Effect<

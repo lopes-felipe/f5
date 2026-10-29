@@ -786,7 +786,7 @@ const make = Effect.gen(function* () {
       .getByCommandId(deliveryId)
       .pipe(Effect.map((delivery) => (delivery?.threadId === threadId ? delivery : null)));
 
-  const recheckWithReason: NonNullable<ProviderTurnDeliveryWorkerShape["recheckWithReason"]> = (
+  const recheckWithReason: ProviderTurnDeliveryWorkerShape["recheckWithReason"] = (
     threadId,
     deliveryId,
   ) =>

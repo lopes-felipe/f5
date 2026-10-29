@@ -10167,6 +10167,59 @@ describe("ClaudeAdapterLive", () => {
           }).pipe(Effect.provide(harness.layer));
         }),
       );
+
+      it.effect("leaves the transcript alone while a live session may still write it", () =>
+        withMovedHead(true, (file, configDir) => {
+          const harness = makeHarness({
+            readResumeTranscriptFromDisk: true,
+            processEnvironment: { HOME: configDir, CLAUDE_CONFIG_DIR: configDir },
+          });
+          return Effect.gen(function* () {
+            const adapter = yield* ClaudeAdapter;
+            yield* adapter.startSession({
+              threadId: THREAD_ID,
+              provider: "claudeAgent",
+              runtimeMode: "full-access",
+            });
+            const exit = yield* Effect.exit(
+              adapter.startSession({
+                threadId: THREAD_ID,
+                provider: "claudeAgent",
+                runtimeMode: "full-access",
+                resumeCursor: cursor,
+              }),
+            );
+            assert.equal(exit._tag, "Failure");
+            assert.equal(readFileSync(file, "utf8"), tail);
+            yield* adapter.stopSession(THREAD_ID).pipe(Effect.ignore);
+          }).pipe(Effect.provide(harness.layer));
+        }),
+      );
+
+      it.effect("does not rejoin or start the CLI while another repair holds the lock", () =>
+        withMovedHead(true, (file, configDir) => {
+          const harness = makeHarness({
+            readResumeTranscriptFromDisk: true,
+            processEnvironment: { HOME: configDir, CLAUDE_CONFIG_DIR: configDir },
+          });
+          return Effect.gen(function* () {
+            const adapter = yield* ClaudeAdapter;
+            const release = beginClaudeTranscriptMaintenance(sessionId);
+            const exit = yield* Effect.exit(
+              adapter.startSession({
+                threadId: THREAD_ID,
+                provider: "claudeAgent",
+                runtimeMode: "full-access",
+                resumeCursor: cursor,
+              }),
+            ).pipe(Effect.ensuring(Effect.sync(release)));
+            assert.equal(exit._tag, "Failure");
+            assert.include(String(exit), "Claude transcript repair is in progress");
+            assert.equal(readFileSync(file, "utf8"), tail);
+            assert.equal(harness.getCreateQueryInputs().length, 0);
+          }).pipe(Effect.provide(harness.layer));
+        }),
+      );
     });
 
     it.effect("caps repeated failed preflights and permits retry after transcript repair", () => {

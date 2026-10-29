@@ -576,6 +576,7 @@ async function createHarness(
               outcomes: Stream.empty,
               acknowledgeOutcome: () => Effect.void,
               recheck: () => Effect.succeed(null),
+              recheckWithReason: () => Effect.succeed({ delivery: null }),
               retry: () => Effect.die("unsupported"),
               discard: () => Effect.die("unsupported"),
               ...options.providerTurnDeliveryWorker,

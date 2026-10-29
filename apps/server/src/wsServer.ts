@@ -7136,25 +7136,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           .getBlockingDelivery(body.threadId)
           .pipe(Effect.mapError(mapNextTurnQueueRouteError));
         const rechecked = blocking
-          ? yield* (
-              providerTurnDeliveryWorker.recheckWithReason?.(body.threadId, blocking.deliveryId) ??
-              providerTurnDeliveryWorker
-                .recheck(body.threadId, blocking.deliveryId)
-                .pipe(Effect.map((delivery) => ({ delivery })))
-            ).pipe(Effect.mapError(toDeliveryRecoveryError))
+          ? yield* providerTurnDeliveryWorker
+              .recheckWithReason(body.threadId, blocking.deliveryId)
+              .pipe(Effect.mapError(toDeliveryRecoveryError))
           : null;
         const delivery = rechecked?.delivery ?? null;
-        // Otherwise Recheck looks like it did nothing while history is unreadable.
-        if (
-          delivery?.state === "ambiguous" &&
-          rechecked &&
-          "historyError" in rechecked &&
-          rechecked.historyError
-        )
-          return yield* new RouteRequestError({
-            code: "NextTurnQueueDeliveryRecoveryError",
-            message: `Couldn't read provider history: ${rechecked.historyError}`,
-          });
         if (delivery?.state === "accepted") {
           yield* nextTurnQueueDispatcher
             .handleDeliveryOutcome({
@@ -7172,6 +7158,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         yield* nextTurnQueueDispatcher
           .reconcileDeliveryPause(body.threadId)
           .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+        // Otherwise Recheck looks like it did nothing while history is unreadable.
+        if (delivery?.state === "ambiguous" && rechecked?.historyError)
+          return yield* new RouteRequestError({
+            code: "NextTurnQueueDeliveryRecoveryError",
+            message: `Couldn't read provider history: ${rechecked.historyError}`,
+          });
         return yield* nextTurnQueueDispatcher
           .getSnapshot(body.threadId)
           .pipe(Effect.mapError(mapNextTurnQueueRouteError));
