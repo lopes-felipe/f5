@@ -25637,14 +25637,25 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T08:55:09.579Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/mcp/PreviewAutomationBroker.ts:364",
+          "apps/web/src/components/PreviewBrowserHost.tsx:160",
+          "apps/web/src/components/PreviewBrowserHost.logic.ts:75"
+        ],
+        "f5Refs": [
+          "65255d1324901533db6d50872154d89eb9865657"
+        ]
+      },
       "id": "pr-19919",
+      "reason": "Already present in f5",
       "relatedTopics": [
         "pr-14955"
       ],
-      "status": "port",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "preview-browser"
