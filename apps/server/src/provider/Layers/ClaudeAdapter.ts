@@ -69,6 +69,7 @@ import { randomUUID } from "node:crypto";
 import {
   claudeMandatoryPolicyOptions,
   evaluateClaudeMandatoryPolicy,
+  isClaudePlanModeWorkspaceEdit,
 } from "../claudeMandatoryPolicy.ts";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import type { ProviderSessionStartInput } from "@t3tools/contracts";
@@ -6895,6 +6896,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           input.providerOptions?.claudeAgent,
           options?.processEnvironment ?? process.env,
         );
+        const plansDirectory = NodePath.join(
+          resolveClaudeConfigDir(queryEnvironment, input.cwd),
+          "plans",
+        );
         let pendingContextResetReason: string | undefined;
         let resumeFallbackWarning: { requested: string; selected: string } | undefined;
         if (resumeState?.resume && isClaudeTranscriptUnderMaintenance(resumeState.resume)) {
@@ -7583,6 +7588,19 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   behavior: "deny",
                   message: "Plan mode requires approval for this tool, but approvals are disabled.",
                 } satisfies PermissionResult;
+              // Full access never prompts; plan mode still refuses workspace edits.
+              if (inPlanMode && (input.runtimeMode ?? DEFAULT_RUNTIME_MODE) === "full-access") {
+                return isClaudePlanModeWorkspaceEdit(toolName, toolInput, {
+                  plansDirectory,
+                  cwd: input.cwd,
+                })
+                  ? ({
+                      behavior: "deny",
+                      message:
+                        "Plan mode is read-only: file edits are not allowed until the plan is approved. Put changes in the plan instead.",
+                    } satisfies PermissionResult)
+                  : ({ behavior: "allow", updatedInput: toolInput } satisfies PermissionResult);
+              }
               const runtimeMode = inPlanMode
                 ? "approval-required"
                 : (input.runtimeMode ?? DEFAULT_RUNTIME_MODE);
@@ -8083,10 +8101,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   )
                 );
               },
-              plansDirectory: NodePath.join(
-                resolveClaudeConfigDir(queryEnvironment, input.cwd),
-                "plans",
-              ),
+              plansDirectory,
             },
             undefined,
             async (hook, signal) => {

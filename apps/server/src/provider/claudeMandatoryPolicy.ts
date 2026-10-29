@@ -129,11 +129,26 @@ export function evaluateClaudeMandatoryHookPolicy(
   const name = toolName.trim().toLowerCase();
   if (policy.subagentsEnabled === false && DELEGATION_ALIASES.has(name)) return reason;
   if (name === "exitplanmode" || name === "askuserquestion") return reason;
-  if (!WORKSPACE_MUTATION_TOOLS.has(name)) return undefined;
-  return PLAN_FILE_TOOLS.has(name) &&
-    targetsPlansDirectory(policy.plansDirectory, context?.toolInput, context?.cwd)
-    ? undefined
-    : reason;
+  return isClaudePlanModeWorkspaceEdit(toolName, context?.toolInput, {
+    plansDirectory: policy.plansDirectory,
+    cwd: context?.cwd,
+  })
+    ? reason
+    : undefined;
+}
+
+/** True for a file edit that plan mode must not make (plan file writes excepted). */
+export function isClaudePlanModeWorkspaceEdit(
+  toolName: string,
+  toolInput: unknown,
+  context: { readonly plansDirectory: string | undefined; readonly cwd: string | undefined },
+): boolean {
+  const name = toolName.trim().toLowerCase();
+  if (!WORKSPACE_MUTATION_TOOLS.has(name)) return false;
+  return !(
+    PLAN_FILE_TOOLS.has(name) &&
+    targetsPlansDirectory(context.plansDirectory, toolInput, context.cwd)
+  );
 }
 
 /** Empty hook output preserves native permission evaluation; never return allow. */

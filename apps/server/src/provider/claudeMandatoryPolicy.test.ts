@@ -4,6 +4,7 @@ import {
   claudeMandatoryPolicyOptions,
   evaluateClaudeMandatoryHookPolicy,
   evaluateClaudeMandatoryPolicy,
+  isClaudePlanModeWorkspaceEdit,
 } from "./claudeMandatoryPolicy.ts";
 
 const hookInput = (name: string): PreToolUseHookInput => ({
@@ -93,6 +94,24 @@ describe("mandatory Claude policy before native permissions", () => {
         { toolInput: { file_path: "/home/me/.claude/plans/quiet-fox.md" } },
       ),
     ).toContain("not permitted");
+  });
+  it("classifies plan-mode workspace edits, excluding plan-file writes", () => {
+    const context = { plansDirectory: "/home/me/.claude/plans", cwd: "/repo" };
+    const edits = (toolName: string, filePath: string) =>
+      isClaudePlanModeWorkspaceEdit(toolName, { file_path: filePath }, context);
+    expect(edits("Write", "/home/me/.claude/plans/quiet-fox.md")).toBe(false);
+    expect(edits("Edit", "/home/me/.claude/plans/quiet-fox.md")).toBe(false);
+    expect(edits("Write", "/repo/src/index.ts")).toBe(true);
+    expect(edits("Edit", "src/index.ts")).toBe(true);
+    expect(edits("NotebookEdit", "/home/me/.claude/plans/x.ipynb")).toBe(true);
+    expect(edits("Bash", "/repo/src/index.ts")).toBe(false);
+    expect(
+      isClaudePlanModeWorkspaceEdit(
+        "Write",
+        { file_path: "/home/me/.claude/plans/quiet-fox.md" },
+        { plansDirectory: undefined, cwd: "/repo" },
+      ),
+    ).toBe(true);
   });
   it("still denies delegation in read-only workflows when sub-agents are disabled", () => {
     expect(

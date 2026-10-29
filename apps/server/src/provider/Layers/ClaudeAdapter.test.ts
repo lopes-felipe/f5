@@ -12668,12 +12668,61 @@ describe("ClaudeAdapterLive", () => {
   });
 
   it.effect.each([
-    ["full-access", "Write"],
+    ["full-access", "Bash", { command: "bun run test" }, "allow"],
+    ["full-access", "mcp__preview__navigate", { url: "http://localhost:3000" }, "allow"],
+    [
+      "full-access",
+      "Write",
+      { file_path: "/isolated/.claude/plans/x.md", content: "plan" },
+      "allow",
+    ],
+    ["full-access", "Write", { file_path: "/repo/a.ts", content: "work" }, "deny"],
+    ["full-access", "Edit", { file_path: "/repo/a.ts", old_string: "a", new_string: "b" }, "deny"],
+    ["full-access", "NotebookEdit", { notebook_path: "/repo/a.ipynb", new_source: "x" }, "deny"],
+  ] as const)(
+    "decides a plan-mode callback in %s mode for %s without asking",
+    ([runtimeMode, toolName, toolInput, behavior]) => {
+      const harness = makeHarness({
+        processEnvironment: { CLAUDE_CONFIG_DIR: "/isolated/.claude" },
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events: ProviderRuntimeEvent[] = [];
+        const observer = yield* adapter.streamEvents.pipe(
+          Stream.runForEach((event) =>
+            Effect.sync(() => {
+              events.push(event);
+            }),
+          ),
+          Effect.forkChild,
+        );
+        yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode, cwd: "/repo" });
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "plan",
+          attachments: [],
+          interactionMode: "plan",
+        });
+        const result = yield* Effect.promise(() =>
+          harness.getLastCreateQueryInput()!.options.canUseTool!(toolName, toolInput, {
+            signal: new AbortController().signal,
+            toolUseID: "plan-call",
+            requestId: "plan-call",
+          }),
+        );
+        assert.equal(result?.behavior, behavior);
+        if (result?.behavior === "deny") assert.include(result.message, "Plan mode is read-only");
+        assert.isFalse(events.some((event) => event.type === "request.opened"));
+        yield* Fiber.interrupt(observer);
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect.each([
     ["auto", "Write"],
     ["auto-accept-edits", "Write"],
     ["approval-required", "Write"],
-    ["full-access", "Bash"],
-    ["full-access", "mcp__preview__navigate"],
+    ["approval-required", "Bash"],
   ] as const)("asks before a plan-mode callback in %s mode for %s", ([runtimeMode, toolName]) => {
     const harness = makeHarness();
     return Effect.gen(function* () {
