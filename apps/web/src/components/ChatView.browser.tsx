@@ -80,6 +80,7 @@ import {
 } from "./fileTreeDragMention";
 import { createComposerMention } from "../composer-editor-mentions";
 import { useComposerMentionHistoryStore } from "../composerMentionHistoryStore";
+import { usePendingUserInputDraftStore } from "../pendingUserInputDraftStore";
 import { requestComposerFocus, useComposerFocusRequestStore } from "../composerFocusRequestStore";
 
 vi.mock("./DiffWorkerPoolProvider", () => ({
@@ -2255,6 +2256,7 @@ describe("ChatView timeline (full app)", () => {
     await setViewport(DEFAULT_VIEWPORT);
     localStorage.clear();
     useComposerMentionHistoryStore.setState({ entries: [] });
+    usePendingUserInputDraftStore.setState({ answersByThreadId: {}, questionIndexByThreadId: {} });
     resetThreadModelOptionsSeedsForTests();
     document.body.innerHTML = "";
     wsRequests.length = 0;
@@ -3318,6 +3320,64 @@ describe("ChatView timeline (full app)", () => {
       );
       expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.mentions ?? []).toEqual(
         [],
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps a typed question answer and position after leaving the thread", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "question-user" as MessageId,
+      targetText: "Ask me",
+    });
+    const question = createThreadActivity({
+      id: "question",
+      createdAt: isoAt(201),
+      kind: "user-input.requested",
+      summary: "Question",
+      payload: {
+        requestId: "question-request",
+        questions: [
+          {
+            id: "first",
+            header: "First",
+            question: "Which approach?",
+            options: [{ label: "Use option", description: "Use the suggested approach" }],
+          },
+          {
+            id: "second",
+            header: "Second",
+            question: "Anything else?",
+            options: [{ label: "Nothing", description: "No more input" }],
+          },
+        ],
+      },
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) => ({ ...thread, activities: [question] })),
+      },
+    });
+    try {
+      await page.getByText("Use option", { exact: true }).click();
+      await expect.element(page.getByText("Anything else?", { exact: true })).toBeVisible();
+      const editor = await waitForComposerEditor();
+      await page.elementLocator(editor).fill("Keep this answer");
+      await vi.waitFor(() => expect(editor.textContent).toContain("Keep this answer"));
+
+      await mounted.router.navigate({ to: "/" });
+      await vi.waitFor(() => expect(mounted.router.state.location.pathname).toBe("/"));
+      await expect
+        .element(page.getByText("Anything else?", { exact: true }))
+        .not.toBeInTheDocument();
+      await mounted.router.navigate({ to: "/$threadId", params: { threadId: THREAD_ID } });
+
+      await expect.element(page.getByText("Anything else?", { exact: true })).toBeVisible();
+      await vi.waitFor(async () =>
+        expect((await waitForComposerEditor()).textContent).toContain("Keep this answer"),
       );
     } finally {
       await mounted.cleanup();

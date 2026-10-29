@@ -130,6 +130,7 @@ import {
 import { areProviderModelOptionsEqual } from "@t3tools/shared/providerOptions";
 import {
   type ComponentProps,
+  type SetStateAction,
   lazy,
   memo,
   Suspense,
@@ -208,6 +209,13 @@ import {
   togglePendingUserInputOption,
   type PendingUserInputDraftAnswer,
 } from "../pendingUserInput";
+import {
+  EMPTY_PENDING_USER_INPUT_ANSWERS_BY_REQUEST_ID,
+  EMPTY_PENDING_USER_INPUT_QUESTION_INDEX_BY_REQUEST_ID,
+  usePendingUserInputDraftStore,
+  type PendingUserInputAnswersByRequestId,
+  type PendingUserInputQuestionIndexByRequestId,
+} from "../pendingUserInputDraftStore";
 import { nextRewindDraftReadTicket, useStore } from "../store";
 import { selectThreadIndexById, useThread, useThreadSummaries } from "../threadSelectors";
 import { useTestRenderCountProps } from "../lib/testRenderCount";
@@ -920,11 +928,25 @@ export default memo(function ChatView({
   const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
     ApprovalRequestId[]
   >([]);
-  const [pendingUserInputAnswersByRequestId, setPendingUserInputAnswersByRequestId] = useState<
-    Record<string, Record<string, PendingUserInputDraftAnswer>>
-  >({});
-  const [pendingUserInputQuestionIndexByRequestId, setPendingUserInputQuestionIndexByRequestId] =
-    useState<Record<string, number>>({});
+  // Kept outside the view so leaving the thread does not drop a typed answer.
+  const pendingUserInputAnswersByRequestId = usePendingUserInputDraftStore(
+    (store) => store.answersByThreadId[threadId] ?? EMPTY_PENDING_USER_INPUT_ANSWERS_BY_REQUEST_ID,
+  );
+  const pendingUserInputQuestionIndexByRequestId = usePendingUserInputDraftStore(
+    (store) =>
+      store.questionIndexByThreadId[threadId] ??
+      EMPTY_PENDING_USER_INPUT_QUESTION_INDEX_BY_REQUEST_ID,
+  );
+  const setPendingUserInputAnswersByRequestId = useCallback(
+    (update: SetStateAction<PendingUserInputAnswersByRequestId>) =>
+      usePendingUserInputDraftStore.getState().setAnswers(threadId, update),
+    [threadId],
+  );
+  const setPendingUserInputQuestionIndexByRequestId = useCallback(
+    (update: SetStateAction<PendingUserInputQuestionIndexByRequestId>) =>
+      usePendingUserInputDraftStore.getState().setQuestionIndex(threadId, update),
+    [threadId],
+  );
   const [expandedWorkGroups, setExpandedWorkGroups] = useState<Record<string, number>>({});
   const [workGroupCollapseOverrides, setWorkGroupCollapseOverrides] = useState<
     Readonly<Record<string, boolean>>
@@ -2108,10 +2130,13 @@ export default memo(function ChatView({
   const activePendingUserInput = blockingUserInputs[0] ?? null;
   const preservedDismissedAnswers = useRef(new Set<string>());
   useEffect(() => {
+    const resolvedRequestIds: string[] = [];
     for (const activity of threadActivities) {
       if (activity.kind !== "user-input.resolved") continue;
       const payload = activity.payload as { requestId?: string; resolution?: string } | null;
-      if (payload?.resolution !== "dismissed" || !payload.requestId) continue;
+      if (!payload?.requestId) continue;
+      resolvedRequestIds.push(payload.requestId);
+      if (payload.resolution !== "dismissed") continue;
       const key = `${threadId}:${payload.requestId}`;
       if (preservedDismissedAnswers.current.has(key)) continue;
       const answers = pendingUserInputAnswersByRequestId[payload.requestId];
@@ -2124,7 +2149,20 @@ export default memo(function ChatView({
       );
       if (restored !== original) setComposerDraftPrompt(threadId, restored);
     }
-  }, [threadActivities, threadId, pendingUserInputAnswersByRequestId, setComposerDraftPrompt]);
+    // Prune only on a visible resolution, after a dismissed answer was carried
+    // into the draft. A request missing from a partly loaded thread is not resolved.
+    const stillPending = new Set<string>(pendingUserInputs.map((input) => input.requestId));
+    usePendingUserInputDraftStore.getState().pruneRequests(
+      threadId,
+      resolvedRequestIds.filter((requestId) => !stillPending.has(requestId)),
+    );
+  }, [
+    threadActivities,
+    threadId,
+    pendingUserInputs,
+    pendingUserInputAnswersByRequestId,
+    setComposerDraftPrompt,
+  ]);
 
   useEffect(() => {
     if (!activePendingUserInput) return;
