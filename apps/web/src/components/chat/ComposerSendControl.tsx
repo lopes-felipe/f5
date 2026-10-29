@@ -42,7 +42,6 @@ export function ComposerSendControl({
   readonly onIntent: (intent: SendIntent) => void;
   readonly onInterrupt: () => void;
 }) {
-  const connection = useWsConnectionState();
   const full = itemCount >= maxItems;
   const disabled =
     unavailable || !hasSendableContent || dispatchBlocked || connecting || busy || full;
@@ -135,18 +134,24 @@ export function ComposerSendControl({
           </Menu>
         ) : null}
       </div>
-      {running ? (
-        <button
-          type="button"
-          className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-destructive text-white outline-none transition-colors duration-(--duration-fast) hover:bg-destructive/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
-          disabled={connection.phase !== "connected"}
-          onClick={onInterrupt}
-          aria-label="Stop generation"
-          title="Stop generation"
-        >
-          <span className="size-2.5 rounded-xs bg-current" />
-        </button>
-      ) : null}
+      {running ? <ComposerStopButton onInterrupt={onInterrupt} /> : null}
     </div>
+  );
+}
+
+/** Interrupts the running turn; disabled while the server connection is down. */
+export function ComposerStopButton({ onInterrupt }: { readonly onInterrupt: () => void }) {
+  const connection = useWsConnectionState();
+  return (
+    <button
+      type="button"
+      className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-destructive text-white outline-none transition-colors duration-(--duration-fast) hover:bg-destructive/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
+      disabled={connection.phase !== "connected"}
+      onClick={onInterrupt}
+      aria-label="Stop generation"
+      title="Stop generation"
+    >
+      <span className="size-2.5 rounded-xs bg-current" />
+    </button>
   );
 }
