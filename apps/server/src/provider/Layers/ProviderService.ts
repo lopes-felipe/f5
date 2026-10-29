@@ -113,6 +113,8 @@ import {
   withMetrics,
 } from "../../observability/Metrics.ts";
 import {
+  asPreSendDeliveryError,
+  isNotSentProviderError,
   type ProviderAdapterError,
   type ProviderServiceError,
   ProviderSessionActionUnavailableError,
@@ -2277,13 +2279,19 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             yield* withProviderThreadAccess(
               input.threadId,
               Effect.gen(function* () {
+                // Recovering the session runs before the send, so a failure
+                // there, such as an unresumable transcript, is not sent.
                 const routed = yield* resolveRoutableSession({
                   threadId: input.threadId,
                   operation: "ProviderService.sendTurn",
                   allowRecovery:
                     input.expectedTurnId === undefined && input.continuationRequestId === undefined,
                   binding,
-                });
+                }).pipe(
+                  Effect.mapError((error) =>
+                    isNotSentProviderError(error) ? error : asPreSendDeliveryError(error),
+                  ),
+                );
                 metricProvider = routed.adapter.provider;
                 if (
                   (routed.adapter.provider === "grok" ||
