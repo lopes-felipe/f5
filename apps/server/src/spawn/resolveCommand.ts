@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import * as NodePath from "node:path";
 import { ensureWindowsPathHydrated } from "@t3tools/shared/windowsPath";
@@ -249,15 +250,95 @@ export function preferGitForWindowsBinary(
   return executable;
 }
 
+export type XcodeGitLocator = (env: NodeJS.ProcessEnv) => string | undefined;
+
+// xcrun honors DEVELOPER_DIR and the `xcode-select` choice, as the shim does.
+function locateXcodeGitWithXcrun(env: NodeJS.ProcessEnv): string | undefined {
+  try {
+    const located = execFileSync("/usr/bin/xcrun", ["--find", "git"], {
+      encoding: "utf8",
+      env,
+      timeout: 5_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return NodePath.posix.isAbsolute(located) ? located : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const MACOS_GIT_SHIM = "/usr/bin/git";
+const XCODE_GIT_CACHE_TTL_MS = 30_000;
+
+// An injected locator may answer differently for the same PATH, so its entries
+// are kept apart from every other locator's.
+let xcodeGitLocatorIdCount = 0;
+const xcodeGitLocatorIds = new WeakMap<XcodeGitLocator, number>();
+function xcodeGitLocatorId(locator: XcodeGitLocator): number {
+  let id = xcodeGitLocatorIds.get(locator);
+  if (id === undefined) {
+    id = xcodeGitLocatorIdCount++;
+    xcodeGitLocatorIds.set(locator, id);
+  }
+  return id;
+}
+
+export interface GitExecutableOptions {
+  readonly locateXcodeGit?: XcodeGitLocator;
+  /** The xcrun shim's path; only tests change it. */
+  readonly macosGitShim?: string;
+}
+
 /**
- * The executable to spawn for git. Off Windows, and when PATH holds a git.cmd
+ * /usr/bin/git is an xcrun shim that finds the active developer directory on
+ * every run: about 8 ms per spawn, against under 3 ms for the git behind it.
+ * Only the shim is replaced, so a git the user put first on PATH (Homebrew,
+ * Nix) still wins, and git's own children keep the same PATH. Any lookup
+ * failure keeps plain `git`.
+ */
+function resolveMacosGit(env: NodeJS.ProcessEnv, options: GitExecutableOptions): string {
+  const locateXcodeGit = options.locateXcodeGit ?? locateXcodeGitWithXcrun;
+  const shim = options.macosGitShim ?? MACOS_GIT_SHIM;
+  const cacheKey = [
+    resolutionCacheKey("git", "darwin", env, undefined),
+    "xcode-git",
+    env.DEVELOPER_DIR ?? "",
+    shim,
+    String(xcodeGitLocatorId(locateXcodeGit)),
+  ].join("\0");
+  const cached = resolutionCache.get(cacheKey);
+  // An Xcode update or removal deletes the binary; look again instead of failing the spawn.
+  if (
+    cached &&
+    cached.expiresAt > Date.now() &&
+    (cached.value === "git" || isExecutableFile(cached.value, "darwin"))
+  ) {
+    return cached.value;
+  }
+  const located =
+    resolveExecutable("git", env, { platform: "darwin" }) === shim
+      ? locateXcodeGit(env)
+      : undefined;
+  const resolved = located !== undefined && isExecutableFile(located, "darwin") ? located : "git";
+  resolutionCache.set(cacheKey, {
+    value: resolved,
+    expiresAt: Date.now() + XCODE_GIT_CACHE_TTL_MS,
+  });
+  return resolved;
+}
+
+/**
+ * The executable to spawn for git. On Linux, and when PATH holds a git.cmd
  * wrapper (which would need cmd.exe, cutting multi-line commit messages at the
- * first newline), this stays `git` for the platform's own lookup.
+ * first newline), this stays `git` for the platform's own lookup. On macOS the
+ * xcrun shim is skipped (see `resolveMacosGit`).
  */
 export function resolveGitExecutable(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
+  options: GitExecutableOptions = {},
 ): string {
+  if (platform === "darwin") return resolveMacosGit(env, options);
   if (platform !== "win32") return "git";
   const cacheKey = `${resolutionCacheKey("git", platform, env, undefined)}\0real-git\0${
     findEnvironmentValue(env, "MSYSTEM") ? "msystem" : ""
@@ -305,6 +386,58 @@ function resolveNodeExecutable(
     );
   }
   return node;
+}
+
+// What npm's cmd-shim writes for a package whose bin is a native executable.
+const NPM_EXECUTABLE_SHIM_PREFIX = [
+  "@ECHO off",
+  "GOTO start",
+  ":find_dp0",
+  "SET dp0=%~dp0",
+  "EXIT /b",
+  ":start",
+  "SETLOCAL",
+  "CALL :find_dp0",
+];
+const NPM_EXECUTABLE_SHIM_RUN = /^"%dp0%\\([^"%]+\.exe)" +%\*$/;
+
+function readShimSource(shimPath: string): string | undefined {
+  try {
+    if (statSync(shimPath).size > MAX_CMD_SHIM_BYTES) return undefined;
+    return readFileSync(shimPath, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The executable an npm cmd-shim runs, when the shim does nothing else (as
+ * `npm install -g opencode-ai` writes for opencode.exe). Started directly, the
+ * executable stays in the kill-on-close job libuv puts every child in, so it
+ * stops when this process is killed.
+ */
+export function npmShimExecutable(
+  shimPath: string,
+  readFile: (filePath: string) => string | undefined = readShimSource,
+  fileExists: (filePath: string) => boolean = isFile,
+): string | undefined {
+  if (NodePath.win32.extname(shimPath).toLowerCase() !== ".cmd") return undefined;
+  // Compared exactly: whitespace CMD keeps, such as after `SET dp0=`, would
+  // make it run a different file than the one found here.
+  const lines = readFile(shimPath)
+    ?.split(/\r?\n/)
+    .filter((line) => line.length > 0);
+  if (lines?.length !== NPM_EXECUTABLE_SHIM_PREFIX.length + 1) return undefined;
+  if (NPM_EXECUTABLE_SHIM_PREFIX.some((expected, index) => lines[index] !== expected)) {
+    return undefined;
+  }
+  const target = NPM_EXECUTABLE_SHIM_RUN.exec(lines.at(-1)!)?.[1];
+  if (target === undefined) return undefined;
+  // Platform-simulated tests use POSIX temporary directories.
+  const executable = shimPath.startsWith("/")
+    ? NodePath.join(NodePath.dirname(shimPath), target.replaceAll("\\", "/"))
+    : NodePath.win32.join(NodePath.win32.dirname(shimPath), target);
+  return fileExists(executable) ? executable : undefined;
 }
 
 function resolveNpmShimTarget(shimPath: string, command: string): string {
@@ -397,6 +530,10 @@ export function resolveInvocation(
     };
   }
   if (extension === ".cmd") {
+    const shimExecutable = npmShimExecutable(executable);
+    if (shimExecutable !== undefined) {
+      return { file: shimExecutable, args: [...args], kind: "native" };
+    }
     const target = resolveNpmShimTarget(executable, command);
     return {
       file: resolveNodeExecutable(command, env, platform, executable),
