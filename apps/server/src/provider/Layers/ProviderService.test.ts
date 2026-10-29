@@ -3566,6 +3566,69 @@ it.effect("serializes Apply and post-login reloads with lifecycle replacement", 
   }).pipe(Effect.provide(makeProviderServiceLayerForAdapters(new Map([["codex", fake.adapter]]))));
 });
 
+it.effect("keeps the live session when a Claude append file cannot be read", () => {
+  const codex = makeFakeCodexAdapter("codex");
+  const claude = makeFakeCodexAdapter("claudeAgent");
+  const badLaunch = {
+    cwd: os.tmpdir(),
+    providerOptions: {
+      claudeAgent: { launchArgs: { "append-system-prompt-file": "missing-append-file.md" } },
+    },
+  };
+  return Effect.gen(function* () {
+    const service = yield* ProviderService;
+    const directory = yield* ProviderSessionDirectory;
+    const threadId = asThreadId("claude-append-replace");
+    yield* service.startSession(threadId, {
+      threadId,
+      provider: "claudeAgent",
+      runtimeMode: "full-access",
+    });
+    const generation = readPersistedSessionGeneration(
+      Option.getOrThrow(yield* directory.getBinding(threadId)).runtimePayload,
+    );
+    const replaced = yield* service
+      .replaceSession(
+        threadId,
+        { threadId, provider: "claudeAgent", runtimeMode: "full-access", ...badLaunch },
+        { instanceId: ProviderInstanceId.make("claudeAgent"), generation },
+      )
+      .pipe(Effect.flip);
+    assert.equal(replaced._tag, "ProviderValidationError");
+    assert.match(String(replaced.message), /missing-append-file\.md/);
+    assert.equal(claude.stopSession.mock.calls.length, 0);
+    assert.equal(claude.startSession.mock.calls.length, 1);
+
+    // A switch from another provider checks before stopping the live session too.
+    const switchThreadId = asThreadId("claude-append-switch");
+    yield* service.startSession(switchThreadId, {
+      threadId: switchThreadId,
+      provider: "codex",
+      runtimeMode: "full-access",
+    });
+    const switched = yield* service
+      .startSession(switchThreadId, {
+        threadId: switchThreadId,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        ...badLaunch,
+      })
+      .pipe(Effect.flip);
+    assert.equal(switched._tag, "ProviderValidationError");
+    assert.equal(codex.stopSession.mock.calls.length, 0);
+    assert.equal(claude.startSession.mock.calls.length, 1);
+  }).pipe(
+    Effect.provide(
+      makeProviderServiceLayerForAdapters(
+        new Map([
+          ["codex", codex.adapter],
+          ["claudeAgent", claude.adapter],
+        ]),
+      ),
+    ),
+  );
+});
+
 it.effect(
   "keeps one effective snapshot across retries when a newer save lands during Apply",
   () => {
