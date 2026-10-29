@@ -450,6 +450,101 @@ describe("applyDomainEvent", () => {
     expect(next.threads[0]?.messages[0]?.skillCall).toEqual({ name: "review" });
   });
 
+  it("accumulates reasoning tokens on an assistant message and keeps them across deltas", () => {
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const messageId = MessageId.makeUnsafe("assistant:reasoning-1");
+    const turnId = TurnId.makeUnsafe("turn-1");
+    const sent = applyDomainEvent(
+      makeState(),
+      makeEvent("thread.message-sent", {
+        threadId,
+        messageId,
+        role: "assistant",
+        text: "Hello",
+        reasoningText: "Considering",
+        turnId,
+        streaming: true,
+        createdAt: "2026-04-01T09:04:01.000Z",
+        updatedAt: "2026-04-01T09:04:01.000Z",
+      }),
+    );
+    const reported = applyDomainEvent(
+      sent,
+      makeEvent(
+        "thread.message-reasoning-tokens-added",
+        {
+          threadId,
+          messageId,
+          turnId,
+          tokens: 400,
+          estimated: false,
+          updatedAt: "2026-04-01T09:04:02.000Z",
+        },
+        { sequence: 2 },
+      ),
+    );
+    const estimated = applyDomainEvent(
+      reported,
+      makeEvent(
+        "thread.message-reasoning-tokens-added",
+        {
+          threadId,
+          messageId,
+          turnId,
+          tokens: 100,
+          estimated: true,
+          updatedAt: "2026-04-01T09:04:03.000Z",
+        },
+        { sequence: 3 },
+      ),
+    );
+    const completed = applyDomainEvent(
+      estimated,
+      makeEvent(
+        "thread.message-sent",
+        {
+          threadId,
+          messageId,
+          role: "assistant",
+          text: "",
+          turnId,
+          streaming: false,
+          createdAt: "2026-04-01T09:04:04.000Z",
+          updatedAt: "2026-04-01T09:04:04.000Z",
+        },
+        { sequence: 4 },
+      ),
+    );
+
+    expect(reported.threads[0]?.messages[0]).toMatchObject({
+      reasoningTokens: 400,
+      reasoningTokensEstimated: false,
+    });
+    expect(completed.threads[0]?.messages[0]).toMatchObject({
+      text: "Hello",
+      reasoningTokens: 500,
+      reasoningTokensEstimated: true,
+      streaming: false,
+    });
+  });
+
+  it("ignores reasoning tokens for unknown messages", () => {
+    const state = makeState();
+    const next = applyDomainEvent(
+      state,
+      makeEvent("thread.message-reasoning-tokens-added", {
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        messageId: MessageId.makeUnsafe("missing"),
+        turnId: TurnId.makeUnsafe("turn-1"),
+        tokens: 10,
+        estimated: false,
+        updatedAt: "2026-04-01T09:04:02.000Z",
+      }),
+    );
+
+    expect(next.threads).toBe(state.threads);
+  });
+
   it("reuses live messages when skill call metadata is unchanged", () => {
     const threadId = ThreadId.makeUnsafe("thread-1");
     const messageId = MessageId.makeUnsafe("user-skill-reuse");

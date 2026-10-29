@@ -4323,6 +4323,7 @@ function AssistantMessageRowContent(props: {
   const rawText = row.message.text;
   const reasoning = messageReasoningContent(row.message);
   const reasoningText = reasoning.text;
+  const reasoningTokens = row.message.reasoningTokens ?? 0;
   const isStreamingReasoning =
     Boolean(row.message.streaming) && row.message.text.length === 0 && Boolean(reasoningText);
   return (
@@ -4337,10 +4338,12 @@ function AssistantMessageRowContent(props: {
         </div>
       )}
       <div className="group/assistant-message min-w-0 px-1 py-0.5">
-        {reasoningText ? (
+        {reasoningText || reasoningTokens > 0 ? (
           <ReasoningSection
             reasoningText={reasoningText}
             textRevision={reasoning.revision}
+            reasoningTokens={reasoningTokens}
+            reasoningTokensEstimated={row.message.reasoningTokensEstimated}
             defaultExpanded={showReasoningExpanded}
             isStreaming={isStreamingReasoning}
             cwd={markdownCwd}

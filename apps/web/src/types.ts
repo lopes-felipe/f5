@@ -106,6 +106,8 @@ export interface ChatMessage {
   role: "user" | "assistant" | "system";
   text: string;
   reasoningText?: string;
+  reasoningTokens?: number;
+  reasoningTokensEstimated?: boolean;
   skillCall?: UserMessageSkillCall;
   attachments?: ChatAttachment[];
   turnId?: TurnId | null;

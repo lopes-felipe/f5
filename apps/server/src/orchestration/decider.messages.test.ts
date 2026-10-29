@@ -1,4 +1,4 @@
-import { CommandId, EventId, MessageId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { CommandId, EventId, MessageId, ProjectId, ThreadId, TurnId } from "@t3tools/contracts";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -143,5 +143,64 @@ describe("decider assistant message handling", () => {
 
     expect(Array.isArray(result)).toBe(true);
     expect(result).toEqual([]);
+  });
+});
+
+describe("decider reasoning token handling", () => {
+  const addTokens = (messageId: string, tokens: number, estimated: boolean) =>
+    ({
+      type: "thread.message.reasoning-tokens.add",
+      commandId: CommandId.makeUnsafe(`cmd-reasoning-tokens-${tokens}`),
+      threadId: ThreadId.makeUnsafe("thread-1"),
+      messageId: MessageId.makeUnsafe(messageId),
+      turnId: TurnId.makeUnsafe("turn-1"),
+      tokens,
+      estimated,
+      createdAt: NOW,
+    }) as const;
+
+  it("adds tokens to a completed assistant message and accumulates them in the projection", async () => {
+    let readModel = await createThreadReadModelWithCompletedAssistantMessage();
+    let sequence = 3;
+    for (const [tokens, estimated] of [
+      [400, false],
+      [100, true],
+    ] as const) {
+      const result = await Effect.runPromise(
+        decideOrchestrationCommand({
+          command: addTokens("assistant:item-1", tokens, estimated),
+          readModel,
+        }),
+      );
+      const event = Array.isArray(result) ? result[0] : result;
+      expect(event?.type).toBe("thread.message-reasoning-tokens-added");
+      readModel = await Effect.runPromise(
+        projectEvent(readModel, {
+          ...event!,
+          sequence: sequence++,
+        } as Parameters<typeof projectEvent>[1]),
+      );
+    }
+
+    const message = readModel.threads[0]?.messages.find((entry) => entry.id === "assistant:item-1");
+    expect(message).toMatchObject({
+      text: "hello world",
+      streaming: false,
+      reasoningTokens: 500,
+      reasoningTokensEstimated: true,
+    });
+  });
+
+  it("rejects tokens for a missing message", async () => {
+    const readModel = await createThreadReadModelWithCompletedAssistantMessage();
+    const error = await Effect.runPromise(
+      Effect.flip(
+        decideOrchestrationCommand({
+          command: addTokens("assistant:missing", 10, false),
+          readModel,
+        }),
+      ),
+    );
+    expect(error._tag).toBe("OrchestrationCommandInvariantError");
   });
 });

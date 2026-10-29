@@ -345,6 +345,65 @@ it.layer(layer)("compactThreadEvents", (it) => {
     }),
   );
 
+  it.effect("keeps a message's reasoning-token count after its folded message on replay", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* reset;
+      yield* seed;
+      const store = yield* OrchestrationEventStore;
+      const repairedMessageId = MessageId.makeUnsafe("repaired-message");
+      for (const event of [
+        threadEvent({
+          type: "thread.message-sent",
+          payload: message({ messageId: repairedMessageId, text: "draft", streaming: true }),
+        }),
+        threadEvent({
+          type: "thread.message-sent",
+          payload: message({ messageId: repairedMessageId, text: "", streaming: false }),
+        }),
+        threadEvent({
+          type: "thread.message-reasoning-tokens-added",
+          payload: {
+            threadId,
+            messageId: repairedMessageId,
+            turnId,
+            tokens: 640,
+            estimated: false,
+            updatedAt: at,
+          },
+        }),
+        // History repair rewrites the completed message after its count.
+        threadEvent({
+          type: "thread.message-sent",
+          payload: message({ messageId: repairedMessageId, text: "final", streaming: false }),
+        }),
+      ])
+        yield* store.append(event);
+      yield* (yield* OrchestrationProjectionPipeline).bootstrap;
+
+      yield* compactThreadEvents({ nowMs: Date.now(), maxDurationMs: 60_000 });
+      const repaired = yield* sql<{ readonly sequence: number; readonly eventType: string }>`
+        SELECT sequence, event_type AS "eventType" FROM orchestration_events
+        WHERE json_extract(payload_json, '$.messageId') = ${repairedMessageId}
+        ORDER BY sequence
+      `;
+      // Deltas before the count fold; the repair after it is left alone.
+      assert.deepStrictEqual(
+        repaired.map((row) => row.eventType),
+        ["thread.message-sent", "thread.message-reasoning-tokens-added", "thread.message-sent"],
+      );
+
+      yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`DELETE FROM projection_state WHERE projector = 'projection.thread-messages'`;
+      yield* (yield* OrchestrationProjectionPipeline).bootstrap;
+      const rows = yield* sql<{ readonly text: string; readonly reasoningTokens: number | null }>`
+        SELECT text, reasoning_tokens AS "reasoningTokens" FROM projection_thread_messages
+        WHERE message_id = ${repairedMessageId}
+      `;
+      assert.deepStrictEqual(rows, [{ text: "final", reasoningTokens: 640 }]);
+    }),
+  );
+
   it.effect("commits a group larger than the transaction target as one unit", () =>
     Effect.gen(function* () {
       yield* reset;

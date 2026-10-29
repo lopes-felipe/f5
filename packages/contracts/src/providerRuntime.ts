@@ -167,6 +167,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "turn.started",
   "turn.completed",
   "turn.aborted",
+  "turn.reasoning-tokens.reported",
   "turn.plan.updated",
   "turn.proposed.delta",
   "turn.proposed.completed",
@@ -222,6 +223,7 @@ const ThreadRealtimeClosedType = Schema.Literal("thread.realtime.closed");
 const TurnStartedType = Schema.Literal("turn.started");
 const TurnCompletedType = Schema.Literal("turn.completed");
 const TurnAbortedType = Schema.Literal("turn.aborted");
+const TurnReasoningTokensReportedType = Schema.Literal("turn.reasoning-tokens.reported");
 const TurnPlanUpdatedType = Schema.Literal("turn.plan.updated");
 const TurnProposedDeltaType = Schema.Literal("turn.proposed.delta");
 const TurnProposedCompletedType = Schema.Literal("turn.proposed.completed");
@@ -327,6 +329,16 @@ const ThreadThinkingTokensUpdatedPayload = Schema.Struct({
   estimatedTokensDelta: Schema.optional(Schema.Int),
 });
 export type ThreadThinkingTokensUpdatedPayload = typeof ThreadThinkingTokensUpdatedPayload.Type;
+
+/**
+ * Reasoning tokens spent since the previous report in the same turn. Codex
+ * reports billed `reasoningOutputTokens`; Claude only has SDK estimates.
+ */
+const TurnReasoningTokensReportedPayload = Schema.Struct({
+  tokens: NonNegativeInt,
+  estimated: Schema.Boolean,
+});
+export type TurnReasoningTokensReportedPayload = typeof TurnReasoningTokensReportedPayload.Type;
 
 const CompactionRecommendedPayload = Schema.Struct({
   estimatedTokens: NonNegativeInt,
@@ -861,6 +873,14 @@ const ProviderRuntimeTurnAbortedEvent = Schema.Struct({
 });
 export type ProviderRuntimeTurnAbortedEvent = typeof ProviderRuntimeTurnAbortedEvent.Type;
 
+const ProviderRuntimeTurnReasoningTokensReportedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: TurnReasoningTokensReportedType,
+  payload: TurnReasoningTokensReportedPayload,
+});
+export type ProviderRuntimeTurnReasoningTokensReportedEvent =
+  typeof ProviderRuntimeTurnReasoningTokensReportedEvent.Type;
+
 const ProviderRuntimeTurnPlanUpdatedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: TurnPlanUpdatedType,
@@ -1127,6 +1147,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeTurnStartedEvent,
   ProviderRuntimeTurnCompletedEvent,
   ProviderRuntimeTurnAbortedEvent,
+  ProviderRuntimeTurnReasoningTokensReportedEvent,
   ProviderRuntimeTurnPlanUpdatedEvent,
   ProviderRuntimeTurnProposedDeltaEvent,
   ProviderRuntimeTurnProposedCompletedEvent,

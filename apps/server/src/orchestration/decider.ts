@@ -2125,6 +2125,36 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         : messageEvent;
     }
 
+    case "thread.message.reasoning-tokens.add": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      const existing = thread.messages.find((message) => message.id === command.messageId);
+      if (!existing || existing.role !== "assistant") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Assistant message '${command.messageId}' does not exist on thread '${command.threadId}'.`,
+        });
+      }
+      // Counts are metadata, so they still apply after the message completes.
+      if (command.tokens === 0) return [];
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.message-reasoning-tokens-added",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.messageId,
+          turnId: command.turnId,
+          tokens: command.tokens,
+          estimated: command.estimated,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.proposed-plan.upsert": {
       yield* requireThread({
         readModel,

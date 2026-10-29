@@ -208,6 +208,44 @@ layer("ProjectionThreadMessageRepository", (it) => {
     }),
   );
 
+  it.effect("accumulates reasoning tokens and keeps them across upserts and reverts", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadMessageRepository;
+      const threadId = ThreadId.makeUnsafe("thread-reasoning-tokens");
+      const messageId = MessageId.makeUnsafe("message-reasoning-tokens");
+      const createdAt = "2026-02-28T19:20:00.000Z";
+      const upsert = (isStreaming: boolean, updatedAt: string) =>
+        repository.upsert({
+          messageId,
+          threadId,
+          turnId: null,
+          role: "assistant",
+          text: "answer",
+          isStreaming,
+          createdAt,
+          updatedAt,
+        });
+
+      yield* upsert(true, "2026-02-28T19:20:01.000Z");
+      yield* repository.addReasoningTokens({ messageId, threadId, tokens: 400, estimated: false });
+      yield* repository.addReasoningTokens({ messageId, threadId, tokens: 100, estimated: true });
+      yield* repository.addReasoningTokens({ messageId, threadId, tokens: 50, estimated: false });
+      // A later upsert that omits the count keeps it.
+      yield* upsert(false, "2026-02-28T19:20:02.000Z");
+
+      const [row] = yield* repository.listByThreadId({ threadId });
+      assert.equal(row?.reasoningTokens, 550);
+      assert.equal(row?.reasoningTokensEstimated, true);
+
+      // Revert re-inserts retained rows from what was read.
+      yield* repository.deleteByThreadId({ threadId });
+      yield* repository.upsert(row!);
+      const [restored] = yield* repository.listByThreadId({ threadId });
+      assert.equal(restored?.reasoningTokens, 550);
+      assert.equal(restored?.reasoningTokensEstimated, true);
+    }),
+  );
+
   it.effect("round-trips skill call metadata", () =>
     Effect.gen(function* () {
       const repository = yield* ProjectionThreadMessageRepository;
