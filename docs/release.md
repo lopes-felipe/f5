@@ -27,7 +27,7 @@ Apply a tag ruleset restricting create/update/delete of `refs/tags/v*` to admins
 
 ## Prepare and publish
 
-First public release: `v0.1.1` stable with the `all` profile, rehearsed as `v0.1.1-beta.1` and `v0.1.1-beta.2` first. The Windows-only `v0.1.0` was built but never published, so no earlier desktop release has updater manifests.
+First public release: `v0.1.1` stable with the `all` profile, rehearsed as `v0.1.1-beta.1` and `v0.1.1-beta.2` first. The Windows-only `v0.1.0` was built but never published, so no earlier desktop release has updater manifests. Never promote its draft: it would make a Windows-only release `/releases/latest` and, after beta.1, a stable release lower than a published beta. The maintainer deletes that draft (`gh release delete v0.1.0 --yes`, without `--cleanup-tag`) before tagging `v0.1.1-beta.1`; `release:promote` does not re-check the profile lock or version order.
 
 The Windows CLI archives and the rehearsal live in `.github/workflows/windows-release-checks.yml`. The release workflow calls it, and pull requests that touch packaging, distribution, desktop or release files run it as well, with no secrets or environment approval. Get it green on the pull request before merging; a release dry run then only has to confirm the signed and cross-platform parts.
 
@@ -43,7 +43,7 @@ The rehearsal job builds two unpublished installers from the release commit, on 
 
 What the rehearsal does **not** prove:
 
-- **Published clients:** both builds contain the release commit's updater, so it cannot show that already-published clients can update to the new release. That matters from the second published Windows release on. Before tagging any release after `v0.1.1`, change the job to use the latest published stable installer as the baseline and the `desktop-win-x64` build artifact as the target.
+- **Published clients:** both builds contain the release commit's updater, so it cannot show that already-published clients can update to the new release. That matters from the second published Windows release on. Before tagging any release after `v0.1.1-beta.1`, change the job to use the latest published installer on the release's channel as the baseline (beta.1 for beta.2 and for `v0.1.1`) and the `desktop-win-x64` build artifact as the target.
 - **Signed builds:** its builds are always unsigned. When Windows signing is enabled, extend it to signed-to-signed upgrades and to rejecting unsigned or wrongly signed updates.
 
 A green dry run with the release's profile is a hard precondition for tagging. The rehearsal has no non-blocking mode; a flaky failure means re-running the job.
@@ -70,12 +70,13 @@ Releases across both channels must increase globally. If a higher beta is alread
   - Download through a browser (SmartScreen path), verify its hash against `SHA256SUMS`, install, launch without Node/Bun, create data, and uninstall (data is kept).
   - On Windows 11, record Smart App Control behaviour and confirm it matches `docs/install.md`.
   - Test import and side-by-side operation with F5 (Alpha), as in the full checklist.
-- Publish with `bun run release:promote --tag <tag>`, then `gh release edit <tag> --latest`.
-- Then confirm that `releases/latest/download/F5-<version>-x64.exe`, `latest.yml` and `f5-cli-release.json` return 200 with the expected version. An installed release must report "up to date" against the production feed, and `f5 install` must work from the new manifest.
+- Publish with `bun run release:promote --tag <tag>`, then, for stable only, `gh release edit <tag> --latest`.
+- Stable only: confirm that `releases/latest/download/F5-<version>-x64.exe`, `latest.yml` and `f5-cli-release.json` return 200 with the expected version. An installed release must report "up to date" against the production feed, and `f5 install` must work from the new manifest.
 
 ## Full checklist (`all` profile; record results in the PR)
 
 - Dry run on main produces signed/notarized desktops and five CLI archives, passes assembly, and creates no release.
+- Before publishing beta.1, the first release with `beta-mac.yml`, confirm the macOS preview app has no `resources/app-update.yml`, so it never picks up a beta.
 - Publish beta.1 after inspecting its exact asset set. Install without source, Node or Bun on each OS. macOS passes `codesign --verify --deep --strict`, `xcrun stapler validate`, and `spctl -a -vvv -t execute` with `Notarized Developer ID`.
 - Test import with F5 (Alpha) running: launch blocks until it quits; retry imports without changing legacy data. Regrant Screen Recording and Accessibility. On macOS and Linux, record whether legacy preview sign-ins survive; reauthentication may be required because the old Safe Storage key is not migrated. Verify a newly established F5 preview sign-in survives beta.1 → beta.2. On Windows, verify the copied `Local State` preserves profile decryption.
 - Run alongside upstream T3 Code on macOS/Windows; verify separate storage and independent single-instance locks. F5 must block computer use against itself (including dev).

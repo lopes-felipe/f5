@@ -6,7 +6,8 @@ build from source, see [Quick start](quick-start.md).
 
 ## How to
 
-1. Download the installer from [GitHub Releases](https://github.com/lopes-felipe/f5/releases/latest).
+1. Download the installer from [GitHub Releases](https://github.com/lopes-felipe/f5/releases)
+   (see [Availability](#availability) for which release to pick).
 2. Install it (see your platform below).
 3. Install Git and at least one provider, then sign in. See
    [Provider prerequisites](provider-prerequisites.md).
@@ -44,8 +45,8 @@ Check the download before running it: compare
 ## macOS
 
 Open `F5-<version>-arm64.dmg` (Apple Silicon) or `F5-<version>-x64.dmg` (Intel) and drag F5 to
-Applications. Builds are signed with Developer ID and notarized, so Gatekeeper opens them without
-a warning. The older `v0.0.11-computer-use-preview.1` preview is unsigned and doesn't update; see
+Applications. Builds are signed with Developer ID and notarized, so Gatekeeper opens them after
+the usual first-launch confirmation. The older `v0.0.11-computer-use-preview.1` preview is unsigned and doesn't update; see
 "Upgrade from F5 (Alpha)" below.
 
 ## Linux
