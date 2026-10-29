@@ -4,6 +4,7 @@ import type { Thread } from "../types";
 import {
   buildCommandPaletteRows,
   buildFileSearchActionItems,
+  buildNestedSearchItems,
   buildThreadActionItems,
   filterCommandPaletteGroups,
   findHighlightedCommandPaletteItem,
@@ -169,6 +170,78 @@ describe("buildThreadActionItems", () => {
     });
 
     expect(items.map((item) => item.value)).toEqual(["thread:thread-active"]);
+  });
+});
+
+describe("buildNestedSearchItems", () => {
+  const action = (value: string, title: string): CommandPaletteActionItem => ({
+    kind: "action",
+    value,
+    searchTerms: [title, `/path/${title}`],
+    title,
+    icon: null,
+    run: async () => undefined,
+  });
+  const projects = [action("new-thread-in:f5", "f5"), action("new-thread-in:web", "web")];
+  const newThreadIn = {
+    kind: "submenu" as const,
+    value: "action:new-thread-in",
+    searchTerms: ["new thread"],
+    title: "New thread in...",
+    icon: null,
+    addonIcon: null,
+    groups: [{ value: "projects", label: "Projects", items: projects }],
+  };
+  const themes = {
+    kind: "submenu" as const,
+    value: "action:theme-picker",
+    searchTerms: ["theme"],
+    title: "Choose theme",
+    icon: null,
+    addonIcon: null,
+    groups: [
+      {
+        value: "themes",
+        label: "Themes",
+        items: ["Dracula", "Nord", "Solarized", "Monokai"].map((name) =>
+          action(`theme:${name}`, name),
+        ),
+      },
+    ],
+  };
+  const addProject = action("action:add-project", "Add project");
+  const rootItems = [newThreadIn, themes, addProject];
+  const rootGroups: CommandPaletteGroup[] = [
+    { value: "actions", label: "Actions", items: rootItems },
+  ];
+  const search = (query: string, isInSubmenu: boolean) =>
+    filterCommandPaletteGroups({
+      activeGroups: isInSubmenu ? newThreadIn.groups : rootGroups,
+      query,
+      isInSubmenu,
+      allOptions: { rootGroups, nestedItems: buildNestedSearchItems(rootItems, query) },
+      projectSearchItems: [],
+      threadSearchItems: [],
+    }).map((group) => [group.label, group.items.map((item) => item.title)]);
+
+  it("joins submenu options to the root search with their parent's name", () => {
+    expect(search("new thread in f5", false)).toEqual([["Suggestions", ["New thread in f5"]]]);
+    expect(search("dracula", false)).toEqual([["Suggestions", ["Choose theme: Dracula"]]]);
+  });
+
+  it("leaves the submenu row alone when the query only names it", () => {
+    expect(search("new thread", false)).toEqual([["Actions", ["New thread in..."]]]);
+  });
+
+  it("matches only the combined title and shows at most three", () => {
+    expect(search("/path/", false).map(([label]) => label)).toEqual(["Actions"]);
+    expect(search("choose theme:", false)[0]?.[1]).toHaveLength(3);
+  });
+
+  it("falls back to the full search from a submenu with no match", () => {
+    expect(search("f5", true)).toEqual([["Projects", ["f5"]]]);
+    expect(search("add project", true)).toEqual([["Actions", ["Add project"]]]);
+    expect(search("", true)).toEqual([["Projects", ["f5", "web"]]]);
   });
 });
 

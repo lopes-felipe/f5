@@ -13,6 +13,7 @@ import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
+import { updateAppSettings } from "../appSettings";
 import { useStore } from "../store";
 import type { Project, Thread, TurnDiffSummary } from "../types";
 import DiffPanel from "./DiffPanel";
@@ -309,6 +310,40 @@ describe("DiffPanel", () => {
         .element(page.getByTestId("file-diff-example"))
         .toHaveAttribute("data-collapsed", "false");
     } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("expands a file selected from a turn once, keeping later collapse choices", async () => {
+    installNativeApi();
+    seedStore();
+    updateAppSettings({ diffFileDefaultState: "collapsed" });
+    routeSearchRef.current = {
+      diff: "1",
+      diffTurnId: turnIdValue,
+      diffFilePath: "src/example.ts",
+    };
+    const screen = await renderDiffPanel();
+    try {
+      await expect
+        .element(page.getByTestId("file-diff-example"))
+        .toHaveAttribute("data-collapsed", "false");
+      await page.getByRole("button", { name: "Collapse src/example.ts" }).click();
+      await expect
+        .element(page.getByTestId("file-diff-example"))
+        .toHaveAttribute("data-collapsed", "true");
+      // A refresh rebuilds the file list; the earlier selection must not expand it again.
+      await page.getByLabelText("Ignore whitespace").click();
+      await vi.waitFor(() => {
+        expect(getTurnDiff).toHaveBeenCalledWith(
+          expect.objectContaining({ options: { ignoreWhitespace: true } }),
+        );
+      });
+      await expect
+        .element(page.getByTestId("file-diff-example"))
+        .toHaveAttribute("data-collapsed", "true");
+    } finally {
+      updateAppSettings({ diffFileDefaultState: "auto" });
       await screen.unmount();
     }
   });

@@ -41,6 +41,7 @@ import {
 } from "./sidebarLists";
 import { SIDEBAR_ROW_REVEAL_CLASS_NAME, SidebarThreadRow } from "./SidebarThreadRow";
 import type { SidebarThreadActions } from "./useSidebarThreadActions";
+import { useSidebarTreeRowProps } from "./sidebarTreeRow";
 
 export interface SidebarThreadRowIndicators {
   threadStatus: ThreadStatusPill | null;
@@ -129,6 +130,7 @@ export function SidebarWorkflowItem(props: {
   });
   const workflowCollapsed = !workflowExpanded;
   const typeLabel = workflowTypeLabel(type, workflow);
+  const treeRowProps = useSidebarTreeRowProps(`workflow:${workflow.id}`);
   const openWorkflow = () => {
     void navigate({
       to: workflowRoute,
@@ -139,7 +141,7 @@ export function SidebarWorkflowItem(props: {
   return (
     <SidebarMenuSubItem className="group/workflow-row relative w-full">
       <SidebarMenuSubButton
-        render={<div role="button" tabIndex={0} />}
+        render={<div role="button" tabIndex={0} {...treeRowProps} />}
         size="md"
         isActive={isWorkflowActive}
         className={cn(
@@ -265,6 +267,7 @@ export function SidebarArchivedWorkflowRow(props: {
   const workflowRoute = workflowRouteForType(type);
   const isActive = isWorkflowRouteActive(pathname, workflow.id, type);
   const typeLabel = workflowTypeLabel(type, workflow);
+  const treeRowProps = useSidebarTreeRowProps(`workflow:archived:${workflow.id}`);
   const openWorkflow = () => {
     void navigate({
       to: workflowRoute,
@@ -275,7 +278,7 @@ export function SidebarArchivedWorkflowRow(props: {
   return (
     <SidebarMenuSubItem className="group/thread-row w-full">
       <SidebarMenuSubButton
-        render={<div role="button" tabIndex={0} />}
+        render={<div role="button" tabIndex={0} {...treeRowProps} />}
         size="md"
         isActive={isActive}
         className={resolveThreadRowClassName({ isActive, isSelected: false })}

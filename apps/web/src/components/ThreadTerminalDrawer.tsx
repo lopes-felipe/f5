@@ -29,6 +29,7 @@ import { Button } from "~/components/ui/button";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
+import { workspaceAreaProps } from "~/lib/workspaceFocus";
 import { type TerminalContextSelection } from "~/lib/terminalContext";
 import { openInPreferredEditor } from "../editorPreferences";
 import { useFileNavigation } from "../fileNavigationContext";
@@ -54,6 +55,7 @@ import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useAppearanceSettings } from "~/hooks/useAppearanceSettings";
 import { DEFAULT_MONO_FONT_STACK, fontFamilyStack } from "~/appearanceSettings";
 
+const TERMINAL_WORKSPACE_AREA = workspaceAreaProps("terminal", 5, "Terminal");
 const MIN_DRAWER_HEIGHT = 180;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
 const MULTI_CLICK_SELECTION_ACTION_DELAY_MS = 260;
@@ -1264,6 +1266,7 @@ export default function ThreadTerminalDrawer({
 
   return (
     <aside
+      {...TERMINAL_WORKSPACE_AREA}
       aria-label={profileName ? `Terminal - ${profileName}` : "Terminal"}
       className="thread-terminal-drawer relative flex min-w-0 shrink-0 flex-col overflow-hidden border-t border-border bg-background"
       style={{ height: `${drawerHeight}px` }}

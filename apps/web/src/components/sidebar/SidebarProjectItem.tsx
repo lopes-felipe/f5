@@ -45,6 +45,7 @@ import {
 import { SidebarThreadRow } from "./SidebarThreadRow";
 import { SidebarScheduledFolder } from "./SidebarScheduledFolder";
 import { ListToggleRow, SectionToggleRow } from "./SidebarSectionRows";
+import { SidebarTreeParentContext, sidebarProjectRowId } from "./sidebarTreeRow";
 import {
   SidebarArchivedWorkflowRow,
   SidebarWorkflowItem,
@@ -301,6 +302,10 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
               aria-expanded={project.expanded}
               {...dragHandleProps.attributes}
               {...dragHandleProps.listeners}
+              // After the drag handle's attributes, which bring their own role and Tab stop.
+              role="treeitem"
+              tabIndex={-1}
+              data-sidebar-row={sidebarProjectRowId(project.id)}
               onPointerDownCapture={projectActions.onTitlePointerDownCapture}
               onClick={(event) => projectActions.onTitleClick(event, project.id)}
               onContextMenu={(event) => {
@@ -367,7 +372,11 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
                 render={
                   <SidebarMenuAction
                     render={
-                      <button type="button" aria-label={`Project actions for ${project.name}`} />
+                      <button
+                        type="button"
+                        aria-label={`Project actions for ${project.name}`}
+                        data-sidebar-action-for={sidebarProjectRowId(project.id)}
+                      />
                     }
                     showOnHover
                     className={cn(PROJECT_ACTION_CLASS_NAME, "right-[3.75rem]")}
@@ -391,7 +400,11 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
                   render={
                     <SidebarMenuAction
                       render={
-                        <button type="button" aria-label={`Create workflow in ${project.name}`} />
+                        <button
+                          type="button"
+                          aria-label={`Create workflow in ${project.name}`}
+                          data-sidebar-action-for={sidebarProjectRowId(project.id)}
+                        />
                       }
                       showOnHover
                       className={cn(PROJECT_ACTION_CLASS_NAME, "right-8")}
@@ -419,6 +432,7 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
                       <button
                         type="button"
                         aria-label={`Create new thread in ${project.name}`}
+                        data-sidebar-action-for={sidebarProjectRowId(project.id)}
                         data-testid="new-thread-button"
                       />
                     }
@@ -452,195 +466,199 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
           </div>
 
           <CollapsibleContent keepMounted>
-            <DndContext
-              sensors={props.dndSensors}
-              collisionDetection={props.collisionDetection}
-              modifiers={[restrictToVerticalAxis, restrictToFirstScrollableAncestor]}
-              onDragEnd={projectActions.onPinnedThreadDragEnd}
-            >
-              <SortableContext
-                items={projectPinnedSortableIds}
-                strategy={verticalListSortingStrategy}
+            <SidebarTreeParentContext.Provider value={sidebarProjectRowId(project.id)}>
+              <DndContext
+                sensors={props.dndSensors}
+                collisionDetection={props.collisionDetection}
+                modifiers={[restrictToVerticalAxis, restrictToFirstScrollableAncestor]}
+                onDragEnd={projectActions.onPinnedThreadDragEnd}
               >
-                {/* One tree level: the guide line sits under the project's folder icon. */}
-                <SidebarMenuSub className={SIDEBAR_TREE_LEVEL_CLASS_NAME}>
-                  {showGroupLabels ? <GroupLabelRow label="Workflows" /> : null}
-                  {projectWorkflows.map((entry) => {
-                    const meta = sidebarLists.workflowMetaByKey.get(workflowEntryKey(entry));
-                    return (
-                      <SidebarWorkflowItem
-                        key={entry.workflow.id}
-                        entry={entry}
-                        workflowThreads={workflowThreadsByWorkflowId.get(entry.workflow.id) ?? []}
-                        threadLabels={meta?.threadLabels ?? new Map()}
-                        overallState={meta?.overallState ?? "pending"}
-                        pathname={pathname}
-                        routeThreadId={routeThreadId}
-                        expandByDefault={props.expandWorkflowThreadsByDefault}
-                        overrideExpanded={props.workflowExpandedById[entry.workflow.id]}
-                        onToggleCollapsed={projectActions.onToggleWorkflowCollapsed}
-                        onArchive={projectActions.onArchiveWorkflow}
-                        indicatorsForThread={indicatorsForThread}
-                        actions={threadActions}
-                      />
-                    );
-                  })}
-                  {showGroupLabels ? <GroupLabelRow label="Threads" spaced /> : null}
-                  {visibleActiveThreads.map((thread) => {
-                    const isDraftThread = isDraftThreadId(
-                      thread.id,
-                      draftThreadsByThreadId,
-                      persistedThreadIds,
-                    );
-                    return (
-                      <SidebarThreadRow
-                        key={thread.id}
-                        thread={thread}
-                        section="active"
-                        isActive={routeThreadId === thread.id}
-                        isDraft={isDraftThread}
-                        orderedIds={orderedProjectThreadIds}
-                        isRenaming={threadActions.renamingThreadId === thread.id}
-                        actions={threadActions}
-                        {...indicatorsForThread(thread)}
-                      />
-                    );
-                  })}
-
-                  {hasHiddenActiveThreads ? (
-                    <ListToggleRow
-                      label={activeExpanded ? "Show less" : "Show more"}
-                      onSelect={() => {
-                        if (activeExpanded) {
-                          projectActions.onCollapseThreadList(project.id, "active");
-                        } else {
-                          projectActions.onExpandThreadList(project.id, "active");
-                        }
-                      }}
-                    />
-                  ) : null}
-
-                  {scheduledThreads.length > 0 && (
-                    <SidebarScheduledFolder
-                      threads={scheduledThreads}
-                      visibleThreads={visibleScheduledThreads}
-                      currentThreadCount={currentScheduledThreads.length}
-                      archivedThreads={archivedScheduledThreads}
-                      visibleArchivedThreads={visibleArchivedScheduledThreads}
-                      archivedExpanded={scheduledArchivedExpanded}
-                      archivedShowingAll={scheduledArchivedShowingAll}
-                      expanded={scheduledExpanded}
-                      showingAll={scheduledShowingAll}
-                      previewLimit={threadPreviewLimit}
-                      onToggle={() => setScheduledExpanded((expanded) => !expanded)}
-                      onToggleShowAll={() => setScheduledShowingAll((showing) => !showing)}
-                      onToggleArchived={() => setScheduledArchivedExpanded((expanded) => !expanded)}
-                      onToggleArchivedShowAll={() =>
-                        setScheduledArchivedShowingAll((showing) => !showing)
-                      }
-                      routeThreadId={routeThreadId}
-                      orderedIds={orderedProjectThreadIds}
-                      indicatorsForThread={indicatorsForThread}
-                      actions={threadActions}
-                    />
-                  )}
-
-                  {snoozedThreads.length > 0 ? (
-                    <SectionToggleRow
-                      label={`Snoozed (${snoozedThreads.length})`}
-                      expanded={!snoozedSectionCollapsed}
-                      onToggle={() => projectActions.onToggleSnoozedSection(project.id)}
-                    />
-                  ) : null}
-
-                  {!snoozedSectionCollapsed
-                    ? snoozedThreads.map((thread) => (
-                        <SidebarThreadRow
-                          key={`snoozed:${thread.id}`}
-                          thread={thread}
-                          section="snoozed"
-                          isActive={routeThreadId === thread.id}
-                          orderedIds={orderedProjectThreadIds}
-                          threadStatus={null}
-                          prStatus={null}
-                          terminalStatus={null}
-                          isUnread={indicatorsForThread(thread).isUnread}
-                          isRenaming={false}
+                <SortableContext
+                  items={projectPinnedSortableIds}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {/* One tree level: the guide line sits under the project's folder icon. */}
+                  <SidebarMenuSub className={SIDEBAR_TREE_LEVEL_CLASS_NAME}>
+                    {showGroupLabels ? <GroupLabelRow label="Workflows" /> : null}
+                    {projectWorkflows.map((entry) => {
+                      const meta = sidebarLists.workflowMetaByKey.get(workflowEntryKey(entry));
+                      return (
+                        <SidebarWorkflowItem
+                          key={entry.workflow.id}
+                          entry={entry}
+                          workflowThreads={workflowThreadsByWorkflowId.get(entry.workflow.id) ?? []}
+                          threadLabels={meta?.threadLabels ?? new Map()}
+                          overallState={meta?.overallState ?? "pending"}
+                          pathname={pathname}
+                          routeThreadId={routeThreadId}
+                          expandByDefault={props.expandWorkflowThreadsByDefault}
+                          overrideExpanded={props.workflowExpandedById[entry.workflow.id]}
+                          onToggleCollapsed={projectActions.onToggleWorkflowCollapsed}
+                          onArchive={projectActions.onArchiveWorkflow}
+                          indicatorsForThread={indicatorsForThread}
                           actions={threadActions}
                         />
-                      ))
-                    : null}
-
-                  {settledThreads.length > 0 ? (
-                    <SectionToggleRow
-                      label={`Settled (${settledThreads.length})`}
-                      expanded={settledExpanded}
-                      onToggle={() => setSettledExpanded((value) => !value)}
-                    />
-                  ) : null}
-                  {settledExpanded
-                    ? settledThreads.map((thread) => (
+                      );
+                    })}
+                    {showGroupLabels ? <GroupLabelRow label="Threads" spaced /> : null}
+                    {visibleActiveThreads.map((thread) => {
+                      const isDraftThread = isDraftThreadId(
+                        thread.id,
+                        draftThreadsByThreadId,
+                        persistedThreadIds,
+                      );
+                      return (
                         <SidebarThreadRow
-                          key={`settled:${thread.id}`}
+                          key={thread.id}
                           thread={thread}
-                          section="settled"
+                          section="active"
                           isActive={routeThreadId === thread.id}
+                          isDraft={isDraftThread}
                           orderedIds={orderedProjectThreadIds}
                           isRenaming={threadActions.renamingThreadId === thread.id}
                           actions={threadActions}
                           {...indicatorsForThread(thread)}
-                          threadStatus={null}
-                          terminalStatus={null}
                         />
-                      ))
-                    : null}
-                  {archivedSidebarItems.length > 0 ? (
-                    <SectionToggleRow
-                      label="Archived"
-                      expanded={!archivedSectionCollapsed}
-                      onToggle={() => projectActions.onToggleArchivedSection(project.id)}
-                    />
-                  ) : null}
+                      );
+                    })}
 
-                  {!archivedSectionCollapsed &&
-                    visibleArchivedItems.map((item) =>
-                      item.kind === "workflow" ? (
-                        <SidebarArchivedWorkflowRow
-                          key={item.key}
-                          type={item.type}
-                          workflow={item.workflow}
-                          pathname={pathname}
-                          onUnarchive={projectActions.onUnarchiveWorkflow}
-                        />
-                      ) : (
-                        <SidebarThreadRow
-                          key={item.key}
-                          thread={item.thread}
-                          section="archived"
-                          isActive={routeThreadId === item.thread.id}
-                          orderedIds={orderedProjectThreadIds}
-                          isRenaming={threadActions.renamingThreadId === item.thread.id}
-                          actions={threadActions}
-                          {...indicatorsForThread(item.thread)}
-                        />
-                      ),
+                    {hasHiddenActiveThreads ? (
+                      <ListToggleRow
+                        label={activeExpanded ? "Show less" : "Show more"}
+                        onSelect={() => {
+                          if (activeExpanded) {
+                            projectActions.onCollapseThreadList(project.id, "active");
+                          } else {
+                            projectActions.onExpandThreadList(project.id, "active");
+                          }
+                        }}
+                      />
+                    ) : null}
+
+                    {scheduledThreads.length > 0 && (
+                      <SidebarScheduledFolder
+                        threads={scheduledThreads}
+                        visibleThreads={visibleScheduledThreads}
+                        currentThreadCount={currentScheduledThreads.length}
+                        archivedThreads={archivedScheduledThreads}
+                        visibleArchivedThreads={visibleArchivedScheduledThreads}
+                        archivedExpanded={scheduledArchivedExpanded}
+                        archivedShowingAll={scheduledArchivedShowingAll}
+                        expanded={scheduledExpanded}
+                        showingAll={scheduledShowingAll}
+                        previewLimit={threadPreviewLimit}
+                        onToggle={() => setScheduledExpanded((expanded) => !expanded)}
+                        onToggleShowAll={() => setScheduledShowingAll((showing) => !showing)}
+                        onToggleArchived={() =>
+                          setScheduledArchivedExpanded((expanded) => !expanded)
+                        }
+                        onToggleArchivedShowAll={() =>
+                          setScheduledArchivedShowingAll((showing) => !showing)
+                        }
+                        routeThreadId={routeThreadId}
+                        orderedIds={orderedProjectThreadIds}
+                        indicatorsForThread={indicatorsForThread}
+                        actions={threadActions}
+                      />
                     )}
 
-                  {!archivedSectionCollapsed && hasHiddenArchivedItems ? (
-                    <ListToggleRow
-                      label={archivedExpanded ? "Show less" : "Show more"}
-                      onSelect={() => {
-                        if (archivedExpanded) {
-                          projectActions.onCollapseThreadList(project.id, "archived");
-                        } else {
-                          projectActions.onExpandThreadList(project.id, "archived");
-                        }
-                      }}
-                    />
-                  ) : null}
-                </SidebarMenuSub>
-              </SortableContext>
-            </DndContext>
+                    {snoozedThreads.length > 0 ? (
+                      <SectionToggleRow
+                        label={`Snoozed (${snoozedThreads.length})`}
+                        expanded={!snoozedSectionCollapsed}
+                        onToggle={() => projectActions.onToggleSnoozedSection(project.id)}
+                      />
+                    ) : null}
+
+                    {!snoozedSectionCollapsed
+                      ? snoozedThreads.map((thread) => (
+                          <SidebarThreadRow
+                            key={`snoozed:${thread.id}`}
+                            thread={thread}
+                            section="snoozed"
+                            isActive={routeThreadId === thread.id}
+                            orderedIds={orderedProjectThreadIds}
+                            threadStatus={null}
+                            prStatus={null}
+                            terminalStatus={null}
+                            isUnread={indicatorsForThread(thread).isUnread}
+                            isRenaming={false}
+                            actions={threadActions}
+                          />
+                        ))
+                      : null}
+
+                    {settledThreads.length > 0 ? (
+                      <SectionToggleRow
+                        label={`Settled (${settledThreads.length})`}
+                        expanded={settledExpanded}
+                        onToggle={() => setSettledExpanded((value) => !value)}
+                      />
+                    ) : null}
+                    {settledExpanded
+                      ? settledThreads.map((thread) => (
+                          <SidebarThreadRow
+                            key={`settled:${thread.id}`}
+                            thread={thread}
+                            section="settled"
+                            isActive={routeThreadId === thread.id}
+                            orderedIds={orderedProjectThreadIds}
+                            isRenaming={threadActions.renamingThreadId === thread.id}
+                            actions={threadActions}
+                            {...indicatorsForThread(thread)}
+                            threadStatus={null}
+                            terminalStatus={null}
+                          />
+                        ))
+                      : null}
+                    {archivedSidebarItems.length > 0 ? (
+                      <SectionToggleRow
+                        label="Archived"
+                        expanded={!archivedSectionCollapsed}
+                        onToggle={() => projectActions.onToggleArchivedSection(project.id)}
+                      />
+                    ) : null}
+
+                    {!archivedSectionCollapsed &&
+                      visibleArchivedItems.map((item) =>
+                        item.kind === "workflow" ? (
+                          <SidebarArchivedWorkflowRow
+                            key={item.key}
+                            type={item.type}
+                            workflow={item.workflow}
+                            pathname={pathname}
+                            onUnarchive={projectActions.onUnarchiveWorkflow}
+                          />
+                        ) : (
+                          <SidebarThreadRow
+                            key={item.key}
+                            thread={item.thread}
+                            section="archived"
+                            isActive={routeThreadId === item.thread.id}
+                            orderedIds={orderedProjectThreadIds}
+                            isRenaming={threadActions.renamingThreadId === item.thread.id}
+                            actions={threadActions}
+                            {...indicatorsForThread(item.thread)}
+                          />
+                        ),
+                      )}
+
+                    {!archivedSectionCollapsed && hasHiddenArchivedItems ? (
+                      <ListToggleRow
+                        label={archivedExpanded ? "Show less" : "Show more"}
+                        onSelect={() => {
+                          if (archivedExpanded) {
+                            projectActions.onCollapseThreadList(project.id, "archived");
+                          } else {
+                            projectActions.onExpandThreadList(project.id, "archived");
+                          }
+                        }}
+                      />
+                    ) : null}
+                  </SidebarMenuSub>
+                </SortableContext>
+              </DndContext>
+            </SidebarTreeParentContext.Provider>
           </CollapsibleContent>
         </Collapsible>
       )}

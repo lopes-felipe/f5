@@ -2,13 +2,15 @@ import type { ReactNode } from "react";
 import { ChevronRightIcon } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { SidebarMenuSubButton, SidebarMenuSubItem } from "../ui/sidebar";
+import { useSidebarTreeRowProps } from "./sidebarTreeRow";
 
 /** "Show more" / "Show less" under a list. */
 export function ListToggleRow(props: { label: string; onSelect: () => void }) {
+  const treeRowProps = useSidebarTreeRowProps();
   return (
     <SidebarMenuSubItem className="w-full">
       <SidebarMenuSubButton
-        render={<button type="button" />}
+        render={<button type="button" {...treeRowProps} />}
         data-thread-selection-safe
         size="sm"
         className="h-6 w-full translate-x-0 justify-start rounded-md pl-8 text-left text-2xs text-muted-foreground hover:bg-transparent hover:text-foreground"
@@ -26,10 +28,11 @@ export function SectionToggleRow(props: {
   expanded: boolean;
   onToggle: () => void;
 }) {
+  const treeRowProps = useSidebarTreeRowProps();
   return (
     <SidebarMenuSubItem className="w-full">
       <SidebarMenuSubButton
-        render={<button type="button" />}
+        render={<button type="button" {...treeRowProps} />}
         data-thread-selection-safe
         aria-expanded={props.expanded}
         size="sm"

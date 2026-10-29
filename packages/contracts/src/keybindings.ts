@@ -54,6 +54,8 @@ export const UPSTREAM_KEYBINDING_COMMANDS = [
 export type UpstreamKeybindingCommand = (typeof UPSTREAM_KEYBINDING_COMMANDS)[number];
 
 export const STATIC_KEYBINDING_COMMANDS = [
+  "workspace.focusNext",
+  "workspace.focusPrevious",
   "thread.stop",
   "thread.togglePin",
   "thread.toggleSettled",

@@ -70,3 +70,36 @@ it("edits the focused guest and ignores keys sent to a background guest", () => 
   older.press("v");
   expect(older.guest.paste).toHaveBeenCalledOnce();
 });
+
+it("hands F6 from a focused guest back to the app's area focus", () => {
+  let handler: (event: any, input: any) => void;
+  const host = { isDestroyed: vi.fn(() => false), focus: vi.fn(), send: vi.fn() };
+  const guest = {
+    setIgnoreMenuShortcuts: vi.fn(),
+    isFocused: vi.fn(() => true),
+    focusedFrame: {},
+    hostWebContents: host,
+    on: vi.fn((_name, fn) => (handler = fn)),
+  };
+  installGuestControls(guest as never);
+  const press = (input: object) => {
+    const event = { preventDefault: vi.fn() };
+    handler!(event, { type: "keyDown", ...input });
+    return event;
+  };
+
+  expect(press({ key: "F6" }).preventDefault).toHaveBeenCalledOnce();
+  press({ key: "F6", shift: true });
+  expect(host.focus).toHaveBeenCalledTimes(2);
+  expect(host.send.mock.calls).toEqual([
+    ["desktop:menu-action", "workspace.focusNext"],
+    ["desktop:menu-action", "workspace.focusPrevious"],
+  ]);
+
+  // A held key is consumed without cycling through every area.
+  expect(press({ key: "F6", isAutoRepeat: true }).preventDefault).toHaveBeenCalledOnce();
+  press({ key: "F6", alt: true });
+  guest.focusedFrame = null as never;
+  press({ key: "F6" });
+  expect(host.send).toHaveBeenCalledTimes(2);
+});

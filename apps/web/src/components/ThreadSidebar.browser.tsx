@@ -1076,11 +1076,11 @@ describe("Thread sidebar", () => {
     });
     try {
       await expect
-        .element(page.getByRole("button", { name: "Settled (1)", exact: true }))
+        .element(page.getByRole("treeitem", { name: "Settled (1)", exact: true }))
         .toBeVisible();
       expect(querySidebarThreadRowsByTitle("Settled conversation")).toHaveLength(0);
       expect(mounted.router.state.location.pathname).toBe(`/${THREAD_ID}`);
-      await page.getByRole("button", { name: "Settled (1)", exact: true }).click();
+      await page.getByRole("treeitem", { name: "Settled (1)", exact: true }).click();
       await expect.poll(() => querySidebarThreadRowsByTitle("Settled conversation").length).toBe(1);
       const row = page.getByTestId(`thread-row-${THREAD_ID}`);
       await row.hover();
@@ -1107,7 +1107,7 @@ describe("Thread sidebar", () => {
         ]),
       );
       await expect
-        .element(page.getByRole("button", { name: "Settled (1)", exact: true }))
+        .element(page.getByRole("treeitem", { name: "Settled (1)", exact: true }))
         .not.toBeInTheDocument();
       expect(querySidebarThreadRowsByTitle("Settled conversation")).toHaveLength(1);
     } finally {

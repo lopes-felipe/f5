@@ -12,6 +12,7 @@ import { SidebarThreadRow } from "./SidebarThreadRow";
 import type { SidebarThreadRowIndicators } from "./SidebarWorkflowItem";
 import type { SidebarThreadActions } from "./useSidebarThreadActions";
 import { ListToggleRow, SectionToggleRow } from "./SidebarSectionRows";
+import { useSidebarTreeRowProps } from "./sidebarTreeRow";
 
 export function SidebarScheduledFolder(props: {
   threads: readonly ThreadListItem[];
@@ -62,6 +63,7 @@ export function SidebarScheduledFolder(props: {
     else if (status.pulse) running++;
   }
 
+  const treeRowProps = useSidebarTreeRowProps();
   const renderThread = (thread: ThreadListItem) => {
     const section =
       thread.archivedAt !== null ? "archived" : isSnoozedThread(thread) ? "snoozed" : "active";
@@ -89,7 +91,7 @@ export function SidebarScheduledFolder(props: {
   return (
     <SidebarMenuSubItem className="w-full" data-testid="scheduled-thread-folder">
       <SidebarMenuSubButton
-        render={<button type="button" />}
+        render={<button type="button" {...treeRowProps} />}
         data-thread-selection-safe
         aria-label={`Scheduled (${props.threads.length})`}
         aria-expanded={props.expanded}

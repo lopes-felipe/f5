@@ -12,6 +12,42 @@ interface CaptureQueue {
 }
 const captureQueues = new WeakMap<WebContents, CaptureQueue>();
 
+const PAINT_CHECK_TIMEOUT_MS = 1_000;
+// Its own world, so page code cannot replace the scheduling globals the check uses.
+const PAINT_CHECK_WORLD_ID = 1_008;
+// Two animation frames: the second callback runs after the first frame was painted.
+// The page timer releases the check when only timers keep running.
+const PAINT_CHECK_SCRIPT = `new Promise((resolve) => {
+  let frame;
+  const timer = setTimeout(() => { cancelAnimationFrame(frame); resolve(false); }, ${PAINT_CHECK_TIMEOUT_MS});
+  frame = requestAnimationFrame(() => {
+    frame = requestAnimationFrame(() => { clearTimeout(timer); resolve(true); });
+  });
+})`;
+
+/** Waits, at most briefly, for the guest to paint. An unconfirmed paint still captures. */
+async function confirmPaint(guest: WebContents): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, PAINT_CHECK_TIMEOUT_MS);
+    timer.unref?.();
+  });
+  try {
+    await Promise.race([
+      Promise.resolve()
+        .then(() =>
+          guest.executeJavaScriptInIsolatedWorld(PAINT_CHECK_WORLD_ID, [
+            { code: PAINT_CHECK_SCRIPT },
+          ]),
+        )
+        .catch(() => undefined),
+      deadline,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Retiring a tab must drop requests that have not yet reached Chromium. */
 export function releasePreviewCaptures(guest: WebContents): void {
   const queue = captureQueues.get(guest);
@@ -80,10 +116,21 @@ function captureSerially(guest: WebContents, rect: Rectangle | undefined, timeou
           next();
           return;
         }
+        const assertCurrent = () => {
+          if (current.active !== job || settled || current.released || guest.isDestroyed())
+            throw new Error("Preview changed before screenshot capture.");
+        };
         Promise.resolve()
-          .then(() => {
-            if (current.active !== job || settled)
-              throw new Error("Preview changed before screenshot capture.");
+          .then(async () => {
+            assertCurrent();
+            // A DOM change can precede its compositor frame, and a hidden or minimized
+            // guest can return old pixels. capturePage marks the guest as captured, so a
+            // discarded warmup capture plus a bounded paint check wakes rendering first.
+            await Promise.all([
+              confirmPaint(guest),
+              guest.capturePage(rect).catch(() => undefined),
+            ]);
+            assertCurrent();
             return guest.capturePage(rect);
           })
           .then(

@@ -380,8 +380,47 @@ export async function persistComposerAttachment(
   };
 }
 
+/** An accepted image still being prepared; its tile shows before compression finishes. */
+export interface PreparingComposerImage {
+  /** The id the prepared attachment takes, so its tile survives the swap. */
+  readonly id: string;
+  readonly name: string;
+  /** An object URL of the original file, or null when the browser cannot display it. */
+  readonly previewUrl: string | null;
+}
+
 export interface ComposerImageImportState {
+  /** Always `preparing.length`; holds attachment slots until the images join the draft. */
   readonly pendingCount: number;
+  readonly preparing: ReadonlyArray<PreparingComposerImage>;
+}
+
+export const NO_PREPARING_COMPOSER_IMAGES: ReadonlyArray<PreparingComposerImage> = [];
+
+const BROWSER_PREVIEWABLE_IMAGE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+  "image/bmp",
+]);
+
+function createPreparingPreviewUrl(file: File): string | null {
+  if (!BROWSER_PREVIEWABLE_IMAGE_TYPES.has(file.type)) return null;
+  try {
+    return URL.createObjectURL(file);
+  } catch {
+    return null;
+  }
+}
+
+function withoutPreparingImages(
+  current: ComposerImageImportState | undefined,
+  ids: ReadonlySet<string>,
+): ComposerImageImportState | undefined {
+  const preparing = (current?.preparing ?? []).filter((image) => !ids.has(image.id));
+  return preparing.length > 0 ? { pendingCount: preparing.length, preparing } : undefined;
 }
 
 export interface ComposerImageImportSuccess {
@@ -776,6 +815,7 @@ interface ComposerDraftStoreState {
     files: ReadonlyArray<File>,
     options?: { readonly processor?: ComposerImageProcessor | undefined },
   ) => Promise<ComposerImageImportResult>;
+  /** Removes a draft image, or drops a preparing one so its import discards it. */
   removeImage: (threadId: ThreadId, imageId: string) => void;
   addFilePaths: (threadId: ThreadId, paths: string[]) => void;
   removeFilePath: (threadId: ThreadId, filePath: string) => void;
@@ -2542,10 +2582,11 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         }
         const acceptedFiles: File[] = [];
         const failures: ComposerImageImportFailure[] = [];
+        let preparingImages: PreparingComposerImage[] = [];
         set((state) => {
           const existingImageCount = state.draftsByThreadId[threadId]?.images.length ?? 0;
-          const pendingCount = state.imageImportsByThreadId[threadId]?.pendingCount ?? 0;
-          let reservedCount = existingImageCount + pendingCount;
+          const currentImports = state.imageImportsByThreadId[threadId];
+          let reservedCount = existingImageCount + (currentImports?.pendingCount ?? 0);
           for (const file of files) {
             if (file.size === 0 || file.size > getServerAttachmentLimits().maxFileBytes) {
               failures.push({
@@ -2565,16 +2606,33 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             reservedCount += 1;
           }
           if (acceptedFiles.length === 0) return state;
+          // The tile shows the original right away; slow compressions no longer leave
+          // the strip empty until every image is ready.
+          preparingImages = acceptedFiles.map((file) => ({
+            id: randomUUID(),
+            name: file.name || "image",
+            previewUrl: createPreparingPreviewUrl(file),
+          }));
+          const preparing = [...(currentImports?.preparing ?? []), ...preparingImages];
           return {
             imageImportsByThreadId: {
               ...state.imageImportsByThreadId,
-              [threadId]: { pendingCount: pendingCount + acceptedFiles.length },
+              [threadId]: { pendingCount: preparing.length, preparing },
             },
           };
         });
         if (acceptedFiles.length === 0) {
           return { imported: [], failures, cancelled: false };
         }
+        const preparingIds = new Set(preparingImages.map((image) => image.id));
+        const adoptedPreviewUrls = new Set<string>();
+        // Every preparing preview URL this import created and no draft image adopted.
+        const revokeUnadoptedPreviewUrls = () => {
+          for (const { previewUrl } of preparingImages) {
+            if (previewUrl && !adoptedPreviewUrls.has(previewUrl))
+              revokeObjectPreviewUrl(previewUrl);
+          }
+        };
 
         const importId = randomUUID();
         const controller = new AbortController();
@@ -2606,12 +2664,26 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         );
 
         if (!unregisterImageImportController(threadId, importId)) {
+          revokeUnadoptedPreviewUrls();
           return { imported: [], failures: [], cancelled: true };
         }
 
+        // A draft thread rekeyed mid-import carries its preparing tiles to the new id.
+        const targetThreadId =
+          (Object.entries(get().imageImportsByThreadId).find(([, imports]) =>
+            imports?.preparing.some((image) => preparingIds.has(image.id)),
+          )?.[0] as ThreadId | undefined) ?? threadId;
+        // Tiles removed while preparing are dropped, failures included.
+        const stillPreparingIds = new Set(
+          (get().imageImportsByThreadId[targetThreadId]?.preparing ?? []).flatMap((image) =>
+            preparingIds.has(image.id) ? [image.id] : [],
+          ),
+        );
         const imported: ComposerImageImportSuccess[] = [];
         const nextImages: ComposerImageAttachment[] = [];
-        for (const { file, result } of processed) {
+        for (const [index, { file, result }] of processed.entries()) {
+          const preparing = preparingImages[index]!;
+          if (!stillPreparingIds.has(preparing.id)) continue;
           if (!result.ok) {
             if (result.reason !== "cancelled") {
               failures.push({
@@ -2623,7 +2695,12 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           }
           let previewUrl: string;
           try {
-            previewUrl = URL.createObjectURL(result.file);
+            // An unchanged file keeps its tile's URL; a compressed one swaps in place, and
+            // the image keeps showing the original until the new pixels decode.
+            previewUrl =
+              result.file === file && preparing.previewUrl
+                ? preparing.previewUrl
+                : URL.createObjectURL(result.file);
           } catch {
             failures.push({
               name: file.name,
@@ -2631,6 +2708,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             });
             continue;
           }
+          adoptedPreviewUrls.add(previewUrl);
           const source = attachmentSources.get(file);
           if (source) setAttachmentSource(result.file, source);
           nextImages.push({
@@ -2639,7 +2717,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
               ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(result.file.type)
                 ? "image"
                 : "file",
-            id: randomUUID(),
+            id: preparing.id,
             name: result.file.name || "image",
             mimeType: result.file.type,
             sizeBytes: result.file.size,
@@ -2654,35 +2732,39 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           });
         }
 
+        // One update swaps preparing tiles for draft images, so the strip never shows both.
         set((state) => {
-          const currentPendingCount = state.imageImportsByThreadId[threadId]?.pendingCount ?? 0;
-          const remainingPendingCount = Math.max(0, currentPendingCount - acceptedFiles.length);
           const imageImportsByThreadId = { ...state.imageImportsByThreadId };
-          if (remainingPendingCount === 0) {
-            delete imageImportsByThreadId[threadId];
+          const remaining = withoutPreparingImages(
+            state.imageImportsByThreadId[targetThreadId],
+            preparingIds,
+          );
+          if (remaining) {
+            imageImportsByThreadId[targetThreadId] = remaining;
           } else {
-            imageImportsByThreadId[threadId] = { pendingCount: remainingPendingCount };
+            delete imageImportsByThreadId[targetThreadId];
           }
 
           if (nextImages.length === 0) return { imageImportsByThreadId };
-          const existing = state.draftsByThreadId[threadId] ?? createEmptyThreadDraft();
+          const existing = state.draftsByThreadId[targetThreadId] ?? createEmptyThreadDraft();
           const nextDraft = appendComposerImages(existing, nextImages);
           return {
             imageImportsByThreadId,
             draftsByThreadId:
               nextDraft === existing
                 ? state.draftsByThreadId
-                : { ...state.draftsByThreadId, [threadId]: nextDraft },
+                : { ...state.draftsByThreadId, [targetThreadId]: nextDraft },
           };
         });
+        revokeUnadoptedPreviewUrls();
 
         // Persist sidebar drops and preview captures even when their composer is not mounted.
         for (const image of nextImages) {
-          void persistComposerAttachment(threadId, image)
+          void persistComposerAttachment(targetThreadId, image)
             .then((metadata) => {
-              const draft = get().draftsByThreadId[threadId];
+              const draft = get().draftsByThreadId[targetThreadId];
               if (!draft?.images.some((entry) => entry.id === image.id)) return;
-              get().syncPersistedAttachments(threadId, [
+              get().syncPersistedAttachments(targetThreadId, [
                 ...draft.persistedAttachments.filter((entry) => entry.id !== image.id),
                 metadata,
               ]);
@@ -2695,6 +2777,24 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
       },
       removeImage: (threadId, imageId) => {
         if (threadId.length === 0) {
+          return;
+        }
+        const imports = get().imageImportsByThreadId[threadId];
+        if (imports?.preparing.some((image) => image.id === imageId)) {
+          // Its import still finishes in the background, then drops it and revokes its URL.
+          set((state) => {
+            const imageImportsByThreadId = { ...state.imageImportsByThreadId };
+            const remaining = withoutPreparingImages(
+              state.imageImportsByThreadId[threadId],
+              new Set([imageId]),
+            );
+            if (remaining) {
+              imageImportsByThreadId[threadId] = remaining;
+            } else {
+              delete imageImportsByThreadId[threadId];
+            }
+            return { imageImportsByThreadId };
+          });
           return;
         }
         const existing = get().draftsByThreadId[threadId];

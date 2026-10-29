@@ -102,6 +102,7 @@ import {
   buildBrowseGroups,
   buildCommandPaletteRows,
   buildFileSearchActionItems,
+  buildNestedSearchItems,
   buildProjectActionItems,
   buildRootGroups,
   buildThreadActionItems,
@@ -114,6 +115,7 @@ import {
   getCommandPaletteInputPlaceholder,
   getCommandPaletteMode,
   ITEM_ICON_CLASS,
+  normalizeSearchText,
   RECENT_THREAD_LIMIT,
 } from "./CommandPalette.logic";
 import { CommandPaletteResults, scrollCommandPaletteRowIntoView } from "./CommandPaletteResults";
@@ -1225,6 +1227,14 @@ function OpenCommandPaletteDialog(props: {
     activeGroups,
     query: effectiveQuery,
     isInSubmenu: currentView !== null,
+    ...(searchMode === "all" && normalizeSearchText(effectiveQuery).length > 0
+      ? {
+          allOptions: {
+            rootGroups,
+            nestedItems: buildNestedSearchItems(actionItems, effectiveQuery),
+          },
+        }
+      : {}),
     fileSearchItems,
     contentSearchItems,
     searchMode,

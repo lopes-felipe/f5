@@ -32,9 +32,9 @@ describe("buildThreadActionMenuItems", () => {
       "rename",
       "regenerate-title",
       "pin",
-      "snooze-three-hours",
-      "snooze-tomorrow",
-      "snooze-next-week",
+      "snooze:after:180",
+      "snooze:at:tomorrow:09:00",
+      "snooze:at:next-week:09:00",
       "settle",
       "archive",
       "mark-unread",
@@ -49,7 +49,26 @@ describe("buildThreadActionMenuItems", () => {
       snoozed: true,
     });
     expect(snoozed.some((item) => item.id === "wake")).toBe(true);
-    expect(snoozed.some((item) => item.id.startsWith("snooze-"))).toBe(false);
+    expect(snoozed.some((item) => item.id.startsWith("snooze:"))).toBe(false);
+  });
+
+  it("lists the configured snooze options with their wake times", () => {
+    const items = buildThreadActionMenuItems({
+      thread: { archivedAt: null, titleRegeneration: null },
+      pinned: false,
+      snoozed: false,
+      snoozePresets: [
+        {
+          id: "after:30",
+          label: "In 30 minutes",
+          whenLabel: "10:30",
+          snoozedUntil: "2026-10-28T10:30:00.000Z",
+        },
+      ],
+    });
+    expect(items.filter((item) => item.id.startsWith("snooze:"))).toEqual([
+      { id: "snooze:after:30", label: "Snooze: In 30 minutes (10:30)" },
+    ]);
   });
 
   it("offers an explicit wake and keeps pinned or snoozed work out of manual settlement", () => {

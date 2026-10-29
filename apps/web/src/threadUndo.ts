@@ -7,15 +7,29 @@ interface UndoEntry {
 }
 const entries: UndoEntry[] = [];
 let running = false;
+// A new undo notice owns mod+z even inside a text field, until the user presses
+// another key or edits text. After that, mod+z is the field's own undo again.
+let shortcutClaimed = false;
 
 export function canUndoThreadAction(now = Date.now()): boolean {
   return !running && entries.some((entry) => entry.expiresAt > now);
+}
+
+/** Whether mod+z should undo thread actions even while a text field is focused. */
+export function threadUndoClaimsShortcut(now = Date.now()): boolean {
+  return shortcutClaimed && canUndoThreadAction(now);
+}
+
+/** Called on any other keypress or text edit; hands mod+z back to text fields. */
+export function releaseThreadUndoShortcut(): void {
+  shortcutClaimed = false;
 }
 
 export function recordThreadUndo(title: string, undo: () => Promise<void>): void {
   const id = crypto.randomUUID();
   const entry: UndoEntry = { id, expiresAt: Date.now() + 8000, undo };
   entries.push(entry);
+  shortcutClaimed = true;
   while (entries.length > 10) {
     const removed = entries.shift()!;
     toastManager.close(removed.id);
