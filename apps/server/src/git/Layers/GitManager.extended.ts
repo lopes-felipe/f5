@@ -2550,7 +2550,14 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       yield* runGit(repoDir, ["checkout", "main"]);
       const worktreeParent = yield* makeTempDir("pr-reused-fork-");
       const worktreePath = path.join(worktreeParent, "worktree");
-      yield* runGit(repoDir, ["worktree", "add", worktreePath, "feature/pr-reused-fork"]);
+      yield* runGit(repoDir, [
+        "worktree",
+        "add",
+        "-b",
+        "t3code/pr-83/feature/pr-reused-fork",
+        worktreePath,
+        "feature/pr-reused-fork",
+      ]);
       yield* runGit(worktreePath, ["branch", "--unset-upstream"], true);
 
       const { manager } = yield* makeManager({
@@ -2587,6 +2594,84 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       expect(
         (yield* runGit(worktreePath, ["rev-parse", "--abbrev-ref", "@{upstream}"])).stdout.trim(),
       ).toBe("fork-seed/feature/pr-reused-fork");
+    }),
+  );
+
+  it.effect("preserves the upstream of an unrelated worktree that shares the fork head name", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const originDir = yield* createBareRemote();
+      const forkDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", originDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
+      yield* runGit(repoDir, ["remote", "add", "fork-seed", forkDir]);
+      const localMainBefore = (yield* runGit(repoDir, ["rev-parse", "main"])).stdout.trim();
+      // The fork's main carries a contributor commit the user's own main must never take in.
+      yield* runGit(repoDir, ["checkout", "-b", "root-work"]);
+      fs.writeFileSync(path.join(repoDir, "contributor.txt"), "fork work\n");
+      yield* runGit(repoDir, ["add", "contributor.txt"]);
+      yield* runGit(repoDir, ["commit", "-m", "Contributor commit"]);
+      yield* runGit(repoDir, ["push", "fork-seed", "root-work:main"]);
+      // Leave the fork tracking ref stale so an unnecessary fetch would change it.
+      yield* runGit(repoDir, ["update-ref", "refs/remotes/fork-seed/main", localMainBefore]);
+      const trackingRefs = () =>
+        runGit(repoDir, ["for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes"]).pipe(
+          Effect.map((output) => output.stdout),
+        );
+      const trackingRefsBefore = yield* trackingRefs();
+      const worktreeParent = yield* makeTempDir("pr-unrelated-main-");
+      const mainWorktreePath = path.join(worktreeParent, "main");
+      yield* runGit(repoDir, ["worktree", "add", mainWorktreePath, "main"]);
+
+      const { manager } = yield* makeManager({
+        ghScenario: {
+          pullRequest: {
+            number: 94,
+            title: "Fork PR from main",
+            url: "https://github.com/pingdotgg/codething-mvp/pull/94",
+            baseRefName: "main",
+            headRefName: "main",
+            state: "open",
+            isCrossRepository: true,
+            headRepositoryNameWithOwner: "octocat/codething-mvp",
+            headRepositoryOwnerLogin: "octocat",
+          },
+          repositoryCloneUrls: {
+            "octocat/codething-mvp": { url: forkDir, sshUrl: forkDir },
+          },
+        },
+      });
+
+      const result = yield* preparePullRequestThread(manager, {
+        cwd: repoDir,
+        reference: "94",
+        mode: "worktree",
+      });
+
+      expect(result.worktreePath && fs.realpathSync.native(result.worktreePath)).toBe(
+        fs.realpathSync.native(mainWorktreePath),
+      );
+      expect(
+        (yield* runGit(mainWorktreePath, [
+          "rev-parse",
+          "--abbrev-ref",
+          "@{upstream}",
+        ])).stdout.trim(),
+      ).toBe("origin/main");
+      expect(result.branch).toBe("t3code/pr-94/main");
+      expect((yield* runGit(repoDir, ["rev-parse", "main"])).stdout.trim()).toBe(localMainBefore);
+      expect(yield* trackingRefs()).toBe(trackingRefsBefore);
+      expect((yield* runGit(mainWorktreePath, ["branch", "--show-current"])).stdout.trim()).toBe(
+        "main",
+      );
+      expect(fs.existsSync(path.join(mainWorktreePath, "contributor.txt"))).toBe(false);
+
+      // A later pull follows the user's own upstream and takes in nothing from the fork.
+      yield* runGit(mainWorktreePath, ["pull", "--ff-only"]);
+      expect((yield* runGit(mainWorktreePath, ["rev-parse", "HEAD"])).stdout.trim()).toBe(
+        localMainBefore,
+      );
     }),
   );
 

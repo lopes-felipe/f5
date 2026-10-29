@@ -12,7 +12,7 @@ import type {
 } from "@t3tools/contracts";
 
 export const GITHUB_PR_DETAIL_QUERY = `
-query F5PrDetail($owner:String!,$repo:String!,$number:Int!){
+query F5PrDetail($owner:String!,$repo:String!,$number:Int!,$requestedReviewers:Int!){
   repository(owner:$owner,name:$repo){
     autoMergeAllowed
     pullRequest(number:$number){
@@ -21,7 +21,7 @@ query F5PrDetail($owner:String!,$repo:String!,$number:Int!){
       createdAt updatedAt mergedAt closedAt viewerCanUpdate viewerDidAuthor
       author { login avatarUrl ... on User { name } }
       labels(first:50){ totalCount pageInfo { hasNextPage } nodes { name color } }
-      reviewRequests(first:50){ totalCount pageInfo { hasNextPage } nodes { requestedReviewer { __typename ... on User { login name avatarUrl } ... on Team { slug name avatarUrl } } } }
+      reviewRequests(first:$requestedReviewers){ totalCount pageInfo { hasNextPage } nodes { requestedReviewer { __typename ... on User { login name avatarUrl } ... on Team { slug name avatarUrl } } } }
       latestReviews(first:50){ totalCount pageInfo { hasNextPage } nodes { author { login avatarUrl ... on User { name } } } }
       reactionGroups { content viewerHasReacted users(first:20){ totalCount nodes { login } } }
       commits(last:1){ nodes { commit { statusCheckRollup { contexts(first:100){ totalCount pageInfo { hasNextPage } nodes {
@@ -252,6 +252,38 @@ function rateLimitOf(root: UnknownRecord): SourceControlRateLimit | undefined {
     limit: nonNegativeInt(rate.limit),
     resetAt: nullableString(rate.resetAt),
   };
+}
+
+/** Requested reviewers the detail read asks for; a refused reviewer retries with none. */
+export const GITHUB_PR_DETAIL_REQUESTED_REVIEWERS = 50;
+
+/**
+ * GitHub can answer FORBIDDEN for a requested reviewer the reader cannot see (for example a
+ * team in another organization). When those are the only errors, the rest of the pull request
+ * is readable by asking for no requested reviewers.
+ */
+export function isRefusedRequestedReviewersOnly(response: unknown): boolean {
+  const errors = recordOrNull(response)?.errors;
+  return (
+    Array.isArray(errors) &&
+    errors.length > 0 &&
+    errors.every((error) => {
+      const record = recordOrNull(error);
+      const path = record?.path;
+      return (
+        record?.type === "FORBIDDEN" &&
+        Array.isArray(path) &&
+        path.length === 6 &&
+        path[0] === "repository" &&
+        path[1] === "pullRequest" &&
+        path[2] === "reviewRequests" &&
+        path[3] === "nodes" &&
+        Number.isInteger(path[4]) &&
+        (path[4] as number) >= 0 &&
+        path[5] === "requestedReviewer"
+      );
+    })
+  );
 }
 
 function pullRequestOf(response: unknown): {

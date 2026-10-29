@@ -58,8 +58,10 @@ import {
   decodeGitHubPrDetail,
   decodeGitHubPrTimeline,
   GITHUB_PR_DETAIL_QUERY,
+  GITHUB_PR_DETAIL_REQUESTED_REVIEWERS,
   GITHUB_PR_TIMELINE_QUERY,
   githubTimelineVariables,
+  isRefusedRequestedReviewersOnly,
 } from "../githubPrDetails.ts";
 
 import {
@@ -383,30 +385,33 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
             const provider = yield* sourceControlProviders.get(pr.provider);
             const { owner, repo } = yield* repositoryParts(pr);
             const cacheKey = pr.key;
+            const read = (requestedReviewers: number) =>
+              provider.query({
+                cwd,
+                host: pr.host,
+                document: GITHUB_PR_DETAIL_QUERY,
+                variables: { owner, repo, number: pr.number, requestedReviewers },
+              });
             return yield* readPrDetailCache({
               cache: detailCache,
               key: cacheKey,
               mode: input.mode ?? "if_stale",
-              fetch: provider
-                .query({
-                  cwd,
-                  host: pr.host,
-                  document: GITHUB_PR_DETAIL_QUERY,
-                  variables: { owner, repo, number: pr.number },
-                })
-                .pipe(
-                  Effect.flatMap((response) =>
-                    decodeDetailResponse(pr, "prHub.getDetail.decode", () => {
-                      const decoded = decodeGitHubPrDetail(response, pr);
-                      return {
-                        detail: decoded.detail,
-                        stale: false,
-                        refreshedAt: new Date().toISOString(),
-                        ...(decoded.rateLimit ? { rateLimit: decoded.rateLimit } : {}),
-                      } satisfies PrHubDetailResult;
-                    }),
-                  ),
+              fetch: read(GITHUB_PR_DETAIL_REQUESTED_REVIEWERS).pipe(
+                Effect.flatMap((response) =>
+                  isRefusedRequestedReviewersOnly(response) ? read(0) : Effect.succeed(response),
                 ),
+                Effect.flatMap((response) =>
+                  decodeDetailResponse(pr, "prHub.getDetail.decode", () => {
+                    const decoded = decodeGitHubPrDetail(response, pr);
+                    return {
+                      detail: decoded.detail,
+                      stale: false,
+                      refreshedAt: new Date().toISOString(),
+                      ...(decoded.rateLimit ? { rateLimit: decoded.rateLimit } : {}),
+                    } satisfies PrHubDetailResult;
+                  }),
+                ),
+              ),
             });
           }),
         ),
