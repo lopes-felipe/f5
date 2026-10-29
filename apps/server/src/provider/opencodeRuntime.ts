@@ -307,6 +307,60 @@ export function buildOpenCodeWorkflowPermissionRules(
   ];
 }
 
+type PermissionRule = PermissionRuleset[number];
+
+function permissionRuleEquals(left: PermissionRule, right: PermissionRule): boolean {
+  return (
+    left.permission === right.permission &&
+    left.pattern === right.pattern &&
+    left.action === right.action
+  );
+}
+
+export function permissionRulesetEquals(
+  left: PermissionRuleset,
+  right: PermissionRuleset,
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((rule, index) => permissionRuleEquals(rule, right[index]!))
+  );
+}
+
+let f5OwnedPermissionRules: PermissionRuleset | undefined;
+
+/** Every rule F5 can write into a session, across runtime modes and workflow profiles. */
+function getF5OwnedPermissionRules(): PermissionRuleset {
+  f5OwnedPermissionRules ??= [
+    ...(["approval-required", "auto-accept-edits", "full-access"] as const).flatMap((mode) =>
+      buildOpenCodePermissionRules(mode),
+    ),
+    ...(["attended-readonly", "unattended-readonly"] as const).flatMap((profile) =>
+      buildOpenCodeWorkflowPermissionRules(profile),
+    ),
+  ];
+  return f5OwnedPermissionRules;
+}
+
+/**
+ * OpenCode copies parent rules into a subagent session only when it creates it, so a
+ * resumed subagent keeps the rules of the mode it started in. Rebuild its rules from
+ * the parent's current rules and keep only the child's own (agent) restrictions, which
+ * stay last so they still win. Any rule F5 can write counts as inherited.
+ */
+export function buildOpenCodeChildPermissionRules(
+  parentRules: PermissionRuleset,
+  childRules: PermissionRuleset,
+): PermissionRuleset {
+  const owned = getF5OwnedPermissionRules();
+  return [
+    ...parentRules,
+    ...childRules.filter(
+      (rule) => !owned.some((ownedRule) => permissionRuleEquals(rule, ownedRule)),
+    ),
+  ];
+}
+
 export function toOpenCodePermissionReply(
   decision: ProviderApprovalDecision,
 ): "once" | "always" | "reject" {
