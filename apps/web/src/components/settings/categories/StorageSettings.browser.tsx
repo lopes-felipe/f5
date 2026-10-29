@@ -4,6 +4,7 @@ import "../../../index.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   DEFAULT_SERVER_SETTINGS,
+  ThreadId,
   type NativeApi,
   type StorageAutomationAuditResult,
   type StorageAutomationDryRunResult,
@@ -414,6 +415,116 @@ function getDisabledState(element: Element | null) {
 }
 
 describe("StorageSettings", () => {
+  it("reviews idle conversations and sends explicit archive-and-remove consent", async () => {
+    const report = usageReport({
+      categories: [
+        category({
+          id: "inactiveF5Worktrees",
+          section: "worktrees",
+          title: "Idle worktrees",
+          impact: "high",
+          targetCount: 1,
+          bytes: 1000,
+          reclaimableBytes: 1000,
+          targets: [
+            {
+              id: "idle",
+              path: "/worktrees/idle",
+              label: "Idle checkout",
+              bytes: 1000,
+              safeToDelete: true,
+              action: "archiveAndRemove",
+              affectedThreads: [
+                { threadId: ThreadId.makeUnsafe("idle-thread"), title: "Keep this conversation" },
+              ],
+            },
+          ],
+        }),
+      ],
+    });
+    const { nativeApi, screen, queryClient } = await renderStorageSettings(report);
+    try {
+      await page.getByRole("button", { name: "Archive and remove" }).click();
+      await expect.element(page.getByText("Keep this conversation", { exact: true })).toBeVisible();
+      await page.getByPlaceholder("DELETE", { exact: true }).fill("DELETE");
+      const dialog = document.querySelector('[role="dialog"]')!;
+      const confirm = [...dialog.querySelectorAll("button")].find(
+        (button) => button.textContent?.trim() === "Reclaim",
+      )!;
+      confirm.click();
+      await vi.waitFor(() =>
+        expect(nativeApi.cleanup).toHaveBeenCalledWith(
+          expect.objectContaining({
+            options: { archiveIdleThreads: true },
+            targetSelections: [{ categoryId: "inactiveF5Worktrees", targetIds: ["idle"] }],
+          }),
+        ),
+      );
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
+  it("keeps machine candidates unselected and displays the observed disk-space change separately", async () => {
+    const report = usageReport({
+      categories: [
+        category({
+          id: "bunDownloadCache",
+          section: "machine",
+          title: "Bun download cache",
+          targetCount: 1,
+          defaultSelected: false,
+          bytes: 1000,
+          reclaimableBytes: 1000,
+          targets: [{ id: "cache", label: "Download cache", bytes: 1000, safeToDelete: true }],
+        }),
+      ],
+    });
+    const { screen, nativeApi, queryClient } = await renderStorageSettings(report, {
+      ...cleanupResult(),
+      volumeChanges: [
+        { path: "/volume", freeBeforeBytes: 1000, freeAfterBytes: 1500, netFreeBytes: 500 },
+      ],
+    });
+    try {
+      await expect.element(page.getByRole("button", { name: "Reclaim selected" })).toBeDisabled();
+      expect(nativeApi.cleanup).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain("Bun download cache");
+      document.querySelector<HTMLElement>('[aria-label="Select Download cache"]')!.click();
+      await page.getByRole("button", { name: "Reclaim selected" }).click();
+      const dialog = document.querySelector('[role="dialog"]')!;
+      [...dialog.querySelectorAll("button")]
+        .find((button) => button.textContent?.trim() === "Reclaim")!
+        .click();
+      await expect.element(page.getByText(/Observed net free-space change:/)).toBeVisible();
+      await expect.element(page.getByText(/Estimated storage removed:/)).toBeVisible();
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
+  it("persists explicit machine discovery and repository folders on the server", async () => {
+    const { screen, nativeApi, queryClient } = await renderStorageSettings();
+    try {
+      await page.getByRole("switch", { name: "Scan machine cleanup candidates" }).click();
+      await page
+        .getByRole("textbox", { name: "Repository search folders" })
+        .fill("/work/repos\n/work/other");
+      await page.getByRole("button", { name: "Save and rescan" }).click();
+      await vi.waitFor(() =>
+        expect(nativeApi.updateSettings).toHaveBeenCalledWith({
+          storageDiscovery: {
+            machineCleanupEnabled: true,
+            repositoryRoots: ["/work/repos", "/work/other"],
+          },
+        }),
+      );
+      await vi.waitFor(() => expect(nativeApi.getUsage).toHaveBeenCalledWith({ force: true }));
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
   it("keeps a selected target beyond the first 500 after reconnecting to the same scan", async () => {
     const targets = Array.from({ length: 501 }, (_, id) => ({
       id: `log-${id}`,

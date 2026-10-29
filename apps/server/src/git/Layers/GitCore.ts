@@ -13,7 +13,7 @@ import { makeRefSnapshotCache } from "../refSnapshotCache.ts";
 import { gitMutatesRefSnapshot } from "../refMutation.ts";
 import { makeMoveSnapshotOperations } from "../moveSnapshot.ts";
 import { checkoutFingerprint } from "../checkoutFingerprint.ts";
-import { blockingIgnoredEntries } from "../worktreeIgnoredFiles.ts";
+import { blockingIgnoredEntriesOnDisk } from "../worktreeIgnoredFiles.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { parseCleanupSafetyStatus } from "../cleanupSafety.ts";
 import { basename, dirname } from "node:path";
@@ -3438,7 +3438,9 @@ const makeGitCore = Effect.gen(function* () {
         inspection.operation !== null ||
         (hasChanges && !discardsReviewedChanges) ||
         inspection.ignoredTruncated ||
-        blockingIgnoredEntries(inspection.ignoredEntries, input.ignoredFiles).length > 0
+        (yield* Effect.promise(() =>
+          blockingIgnoredEntriesOnDisk(target, inspection.ignoredEntries, input.ignoredFiles),
+        )).length > 0
       ) {
         return yield* createGitCommandError(
           "GitCore.removeWorktree",

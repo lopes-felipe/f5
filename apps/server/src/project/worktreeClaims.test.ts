@@ -2,7 +2,8 @@ import { WorktreePreparations } from "../persistence/Services/WorktreePreparatio
 import { ThreadId } from "@t3tools/contracts";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as storageActivity from "../storage/storageActivity.ts";
 import { Deferred, Effect, Fiber, Scope } from "effect";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { makeStorageMaintenanceLock } from "../storage/StorageMaintenanceLock.ts";
@@ -16,6 +17,7 @@ import {
   thread,
 } from "../storage/storageAutomation.testHarness.ts";
 import { GitCore } from "../git/Services/GitCore.ts";
+import { GitManager, type GitManagerShape } from "../git/Services/GitManager.ts";
 import { makeFakeGitCore } from "../git/testDoubles.ts";
 import { ProfileRegistryStore } from "../profiles/ProfileRegistryStore.ts";
 import {
@@ -28,7 +30,112 @@ import {
 describe("effective workspace claims and removal gate", () => {
   const cleanups: Array<() => Promise<unknown>> = [];
   afterEach(async () => {
+    vi.restoreAllMocks();
     for (const cleanup of cleanups.splice(0)) await cleanup();
+  });
+  it("reviews idle owned sessions, but rechecks activity and queued work before removal", async () => {
+    const repo = await makeClonedRepo("f5-idle-session-review-");
+    cleanups.push(repo.cleanup);
+    const world = makeWorld();
+    world.projects.push(project("p", repo.root));
+    const probe = vi.spyOn(storageActivity, "inspectStorageActivity");
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const target = path.join((yield* ServerConfig).worktreesDir, "idle");
+        git(repo.root, "worktree", "add", "-q", "-b", "idle", target, "main");
+        const owner = {
+          ...thread({ id: "idle-owner", projectId: "p", worktreePath: target }),
+          archivedAt: null,
+        };
+        world.threads.push(owner);
+        world.sessions.push({ threadId: owner.id, cwd: target, status: "ready" });
+        const input = {
+          projectCwd: repo.root,
+          path: target,
+          policy: {
+            kind: "storageMaintenance" as const,
+            ownThreadId: null,
+            archiveIdleThreads: true,
+            inspectExternalActivity: true,
+          },
+        };
+        probe.mockResolvedValue({ state: "busy", reason: "Process is using this checkout." });
+        expect((yield* evaluateWorktreeRemoval(input)).blockedReasons).toEqual([]);
+        yield* Effect.promise(() =>
+          fs.writeFile(path.join(target, "README.md"), "local changes\n"),
+        );
+        const dirty = yield* evaluateWorktreeRemoval({
+          ...input,
+          policy: { ...input.policy, disposablePaths: ["README.md"] },
+        });
+        expect(dirty.blockedReasons.join(" ")).toContain("requires a clean worktree");
+        yield* Effect.promise(() => fs.writeFile(path.join(target, "README.md"), "hello\n"));
+        world.queuedThreadIds.add(owner.id);
+        expect((yield* evaluateWorktreeRemoval(input)).blockedReasons.join(" ")).toContain(
+          "queued",
+        );
+        world.queuedThreadIds.clear();
+        probe.mockResolvedValue({ state: "unknown", reason: "Inspection unavailable." });
+        expect((yield* evaluateWorktreeRemoval(input)).blockedReasons).toContain(
+          "Inspection unavailable.",
+        );
+        probe.mockResolvedValue({ state: "busy", reason: "Process is using this checkout." });
+        world.sessions = [];
+        world.threads = [{ ...owner, archivedAt: new Date().toISOString() }];
+        const removal = yield* removeWorktreeSafely({
+          ...input,
+          policy: { ...input.policy, archiveIdleThreads: false },
+        });
+        expect(removal.blockedReasons).toContain("Process is using this checkout.");
+        expect((yield* Effect.promise(() => fs.stat(target))).isDirectory()).toBe(true);
+      }).pipe(
+        Effect.provide(automationLayer(world, {}, "f5-idle-session-review-state-")),
+        Effect.scoped,
+      ),
+    );
+  });
+  it("accepts only exact merged PR heads into the default branch after squash merging", async () => {
+    const repo = await makeClonedRepo("f5-squash-evidence-");
+    cleanups.push(repo.cleanup);
+    const world = makeWorld();
+    world.projects.push(project("p", repo.root));
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const target = path.join((yield* ServerConfig).worktreesDir, "squashed");
+        git(repo.root, "worktree", "add", "-q", "-b", "squashed", target, "main");
+        git(target, "commit", "--allow-empty", "-qm", "squashed topic");
+        const head = git(target, "rev-parse", "HEAD");
+        let prHead = head,
+          base = "main";
+        const manager = {
+          branchPullRequest: () =>
+            Effect.succeed({
+              number: 1,
+              title: "Merged",
+              url: "https://example.test/pull/1",
+              baseRefName: base,
+              headRefName: "squashed",
+              headRefOid: prHead,
+              state: "merged" as const,
+            }),
+        } as unknown as GitManagerShape;
+        const inspect = () =>
+          evaluateWorktreeRemoval({
+            projectCwd: repo.root,
+            path: target,
+            policy: { kind: "storageMaintenance", ownThreadId: null, verifyPullRequest: true },
+          }).pipe(Effect.provideService(GitManager, manager));
+        expect((yield* inspect()).blockedReasons).toEqual([]);
+        base = "release";
+        expect((yield* inspect()).headMerged).toBe(false);
+        base = "main";
+        prHead = "a".repeat(40);
+        expect((yield* inspect()).headMerged).toBe(false);
+      }).pipe(
+        Effect.provide(automationLayer(world, {}, "f5-squash-evidence-state-")),
+        Effect.scoped,
+      ),
+    );
   });
   it.each(["autoCleanup", "storageMaintenance"] as const)(
     "ignores manual approval fields injected into %s policy",

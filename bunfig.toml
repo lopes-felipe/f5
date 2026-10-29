@@ -1,0 +1,7 @@
+[install]
+# Keep the configured release-age gate for other packages. Bun 1.3 supports
+# package-name exclusions only; workspace manifests and bun.lock pin the versions.
+minimumReleaseAgeExcludes = [
+  "@muse-code/sdk", # 1.4.8: remove this exception after 2026-10-28.
+  "cronstrue", # 3.37.0: remove this exception after 2026-11-03.
+]

@@ -337,6 +337,12 @@ export const WorktreeCleanup = Schema.Union([
 ]);
 export type WorktreeCleanup = typeof WorktreeCleanup.Type;
 
+export const StorageDiscoverySettings = Schema.Struct({
+  machineCleanupEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  repositoryRoots: Schema.Array(TrimmedNonEmptyString).pipe(Schema.withDecodingDefault(() => [])),
+});
+export type StorageDiscoverySettings = typeof StorageDiscoverySettings.Type;
+
 export const StorageCleanupSettings = Schema.Struct({
   /** Master switch for automatic cleanup. Off by default. */
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
@@ -505,6 +511,7 @@ export const ServerSettings = Schema.Struct({
   sourceControlWriting: SourceControlWritingSettings.pipe(Schema.withDecodingDefault(() => ({}))),
   scheduledBackupsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   storageCleanup: StorageCleanupSettings.pipe(Schema.withDecodingDefault(() => ({}))),
+  storageDiscovery: StorageDiscoverySettings.pipe(Schema.withDecodingDefault(() => ({}))),
   /** Empty uses this profile's default worktrees folder; otherwise absolute or ~/… on this machine. */
   worktreesDirectory: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
   /** Server-maintained history keeps existing worktrees eligible for management. */
@@ -704,6 +711,7 @@ export const ServerSettingsPatch = Schema.Struct({
   sourceControlWriting: Schema.optionalKey(SourceControlWritingSettingsPatch),
   scheduledBackupsEnabled: Schema.optionalKey(Schema.Boolean),
   storageCleanup: Schema.optionalKey(StorageCleanupSettingsPatch),
+  storageDiscovery: Schema.optionalKey(StorageDiscoverySettings),
   worktreesDirectory: Schema.optionalKey(TrimmedString),
   worktreeCleanup: Schema.optionalKey(Schema.NullOr(WorktreeCleanup)),
   worktreeDisposablePaths: Schema.optionalKey(WorktreeDisposablePaths),

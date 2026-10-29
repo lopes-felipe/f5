@@ -172,7 +172,7 @@ function makeOrchestrationEngineStub(input?: {
         const projects =
           yield* sql`SELECT project_id AS id, title, workspace_root AS "workspaceRoot", deleted_at AS "deletedAt" FROM projection_projects`;
         const threads =
-          yield* sql`SELECT thread_id AS id, project_id AS "projectId", worktree_path AS "worktreePath", archived_at AS "archivedAt", deleted_at AS "deletedAt" FROM projection_threads`;
+          yield* sql`SELECT thread_id AS id, title, last_interaction_at AS "lastInteractionAt", project_id AS "projectId", worktree_path AS "worktreePath", archived_at AS "archivedAt", deleted_at AS "deletedAt" FROM projection_threads`;
         return {
           ...input?.getWorkflows?.(),
           projects,
@@ -187,6 +187,9 @@ function makeOrchestrationEngineStub(input?: {
           const sql = yield* SqlClient.SqlClient;
           const now = new Date().toISOString();
           switch (command.type) {
+            case "thread.archive":
+              yield* sql`UPDATE projection_threads SET archived_at = ${command.createdAt}, updated_at = ${now} WHERE thread_id = ${command.threadId}`;
+              return { sequence: 1 };
             case "thread.meta.update":
               yield* sql`
                 UPDATE projection_threads
@@ -3214,16 +3217,127 @@ const registeredPaths = (cwd: string) =>
 it.layer(
   makeStorageTestLayer({
     gitCore: "real",
-    settings: {
-      worktreeDisposablePaths: ["README.md"],
-      providers: {
-        codex: { homePath: NodePath.join(NodeOS.tmpdir(), "f5-storage-real-git-codex-home") },
-      },
-    },
-  }),
+  }).pipe(
+    Layer.provideMerge(
+      ServerSettingsService.layerTest({
+        worktreeDisposablePaths: ["README.md"],
+        providers: {
+          codex: { homePath: NodePath.join(NodeOS.tmpdir(), "f5-storage-real-git-codex-home") },
+        },
+      }),
+    ),
+  ),
 )("StorageMaintenance worktree cleanup against real repositories", (it) => {
+  it.effect("discovers linked worktrees in selected folders without importing a project", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance,
+          settings = yield* ServerSettingsService,
+          sql = yield* SqlClient.SqlClient;
+        const repo = yield* Effect.promise(() => makeClonedRepo("f5-unregistered-discovery-"));
+        yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+        const target = NodePath.join(repo.dir, "unregistered-worktree");
+        runGit(repo.root, "worktree", "add", "-q", "-b", "unregistered-worktree", target, "main");
+        const previous = (yield* settings.getSettings).storageDiscovery;
+        yield* settings.updateSettings({
+          storageDiscovery: { machineCleanupEnabled: false, repositoryRoots: [repo.root, target] },
+        });
+        yield* Effect.addFinalizer(() =>
+          settings.updateSettings({ storageDiscovery: previous }).pipe(Effect.orDie),
+        );
+        const report = yield* storage.inspect({ force: true });
+        const targets = report.categories.find((c) => c.id === "externalWorktrees")?.targets;
+        assert.equal(targets?.filter((t) => t.path === target).length, 1);
+        const reviewed = targets?.find((t) => t.path === target);
+        assert.isTrue(reviewed?.safeToDelete, reviewed?.disabledReason);
+        const result = yield* storage.cleanup({
+          operationId: "unregistered-discovery",
+          scanId: report.scanId,
+          nonce: report.confirmationNonce,
+          categoryIds: ["externalWorktrees"],
+          targetSelections: [{ categoryId: "externalWorktrees", targetIds: [reviewed!.id] }],
+          confirmationText: "DELETE",
+          options: { vacuumAfterDeletes: false },
+        });
+        assert.equal(result.results[0]?.status, "Cleaned", JSON.stringify(result.warnings));
+        assert.isFalse(yield* Effect.promise(() => pathExists(target)));
+        assert.include(localBranches(repo.root), "unregistered-worktree");
+        const projects =
+          yield* sql`SELECT project_id FROM projection_projects WHERE workspace_root = ${repo.root}`;
+        assert.lengthOf(projects, 0);
+      }),
+    ),
+  );
   it.effect(
-    "removes inactive F5 worktrees and deletes only merged, unreferenced branches",
+    "requires explicit archive consent and retains conversation history and branch",
+    () =>
+      withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance,
+            config = yield* ServerConfig,
+            sql = yield* SqlClient.SqlClient;
+          const repo = yield* Effect.promise(() => makeClonedRepo("f5-storage-archive-"));
+          yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+          const target = NodePath.join(config.worktreesDir, "idle-owned");
+          runGit(repo.root, "worktree", "add", "-q", "-b", "idle-owned", target, "main");
+          yield* seedProject({ sql, projectId: "idle-project", workspaceRoot: repo.root });
+          const threadId = ThreadId.makeUnsafe("idle-storage-thread");
+          yield* seedThread({
+            sql,
+            threadId,
+            worktreePath: target,
+            archivedAt: null,
+            deletedAt: null,
+          });
+          const report = yield* storage.inspect({ force: true });
+          const item = report.categories
+            .find((c) => c.id === "inactiveF5Worktrees")
+            ?.targets.find((t) => t.path === target);
+          assert.equal(item?.action, "archiveAndRemove");
+          const request = {
+            operationId: "archive-consent",
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["inactiveF5Worktrees"] as const,
+            targetSelections: [{ categoryId: "inactiveF5Worktrees" as const, targetIds: [target] }],
+            confirmationText: "DELETE",
+          };
+          const denied = yield* storage.cleanup(request).pipe(Effect.result);
+          assert.equal(denied._tag, "Failure");
+          yield* sql`UPDATE projection_threads SET last_interaction_at = '2026-10-29T12:34:56.000Z' WHERE thread_id = ${threadId}`;
+          const changed = yield* storage.cleanup({
+            ...request,
+            options: { archiveIdleThreads: true, vacuumAfterDeletes: false },
+          });
+          assert.isTrue(
+            changed.warnings.some((warning) => warning.reason.includes("conversation changed")),
+          );
+          assert.isTrue(yield* Effect.promise(() => pathExists(target)));
+          const refreshed = yield* storage.inspect({ force: true });
+          const result = yield* storage.cleanup({
+            ...request,
+            operationId: "archive-consent-refreshed",
+            scanId: refreshed.scanId,
+            nonce: refreshed.confirmationNonce,
+            options: { archiveIdleThreads: true, vacuumAfterDeletes: false },
+          });
+          assert.equal(result.results[0]?.status, "Cleaned", JSON.stringify(result.warnings));
+          assert.equal(yield* Effect.promise(() => pathExists(target)), false);
+          assert.include(localBranches(repo.root), "idle-owned");
+          const rows = yield* sql<{
+            deletedAt: string | null;
+            archivedAt: string | null;
+            path: string | null;
+          }>`SELECT deleted_at AS "deletedAt", archived_at AS "archivedAt", worktree_path AS path FROM projection_threads WHERE thread_id = ${threadId}`;
+          assert.isNull(rows[0]?.deletedAt);
+          assert.isNotNull(rows[0]?.archivedAt);
+          assert.equal(rows[0]?.path, target);
+        }),
+      ),
+    30_000,
+  );
+  it.effect(
+    "removes inactive F5 worktrees and preserves every branch during manual cleanup",
     () =>
       withHomeSandbox(
         Effect.gen(function* () {
@@ -3317,16 +3431,16 @@ it.layer(
           const reclaimed = result.results[0]?.perTargetReclaimed ?? [];
           assert.equal(result.results[0]?.status, "Cleaned");
           assert.deepEqual(reclaimed.map((entry) => [entry.path, entry.branch]).toSorted(), [
-            [managed("a"), "deleted"],
+            [managed("a"), "kept"],
             [managed("b"), "kept"],
             [managed("c"), "kept"],
             [managed("m"), "kept"],
             [managed("r"), "kept"],
-            [managed("t"), "deleted"],
+            [managed("t"), "kept"],
           ]);
           const branches = localBranches(repo.root);
-          assert.notInclude(branches, "merged-a");
-          assert.notInclude(branches, "tracks-main");
+          assert.include(branches, "merged-a");
+          assert.include(branches, "tracks-main");
           assert.include(branches, "main");
           assert.include(branches, "release-1");
           assert.include(branches, "pushed-b");
@@ -3412,7 +3526,7 @@ it.layer(
           assert.notInclude(registered, external);
           assert.notInclude(registered, gone);
           assert.include(registered, kept);
-          assert.notInclude(localBranches(repo.root), "external-e");
+          assert.include(localBranches(repo.root), "external-e");
         }),
       ),
   );
@@ -3578,6 +3692,75 @@ it.layer(
         assert.isTrue(report.categories.some((entry) => entry.id === "inactiveF5Worktrees"));
       }),
     ),
+  );
+});
+
+const archiveFailureSessions: Array<{ threadId: ThreadId; cwd: string; status: "ready" }> = [];
+it.layer(
+  makeStorageTestLayer({
+    gitCore: "real",
+    providerService: {
+      ...makeProviderServiceStub({
+        stopSession: () => Effect.die(new Error("Fixture session refused shutdown.")),
+      }),
+      listSessions: () => Effect.sync(() => archiveFailureSessions as never),
+    },
+  }),
+)("StorageMaintenance archive partial completion", (it) => {
+  it.effect(
+    "retains archived conversations, branches and checkout when session shutdown fails",
+    () =>
+      withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance,
+            config = yield* ServerConfig,
+            sql = yield* SqlClient.SqlClient;
+          const repo = yield* Effect.promise(() => makeClonedRepo("f5-storage-stop-failed-"));
+          yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+          const target = NodePath.join(config.worktreesDir, "stop-failed");
+          runGit(repo.root, "worktree", "add", "-q", "-b", "stop-failed", target, "main");
+          yield* seedProject({ sql, projectId: "stop-failed-project", workspaceRoot: repo.root });
+          const threadId = ThreadId.makeUnsafe("stop-failed-thread");
+          yield* seedThread({
+            sql,
+            threadId,
+            worktreePath: target,
+            archivedAt: null,
+            deletedAt: null,
+          });
+          archiveFailureSessions.push({ threadId, cwd: target, status: "ready" });
+          yield* Effect.addFinalizer(() => Effect.sync(() => archiveFailureSessions.splice(0)));
+          const report = yield* storage.inspect({ force: true });
+          const reviewed = report.categories
+            .find((c) => c.id === "inactiveF5Worktrees")
+            ?.targets.find((t) => t.path === target);
+          assert.isTrue(reviewed?.safeToDelete, reviewed?.disabledReason);
+          const result = yield* storage.cleanup({
+            operationId: "stop-failed",
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["inactiveF5Worktrees"],
+            targetSelections: [{ categoryId: "inactiveF5Worktrees", targetIds: [reviewed!.id] }],
+            confirmationText: "DELETE",
+            options: { archiveIdleThreads: true, vacuumAfterDeletes: false },
+          });
+          assert.isTrue(result.warnings.some((w) => w.reason.includes("session shutdown failed")));
+          assert.isTrue(yield* Effect.promise(() => pathExists(target)));
+          assert.include(localBranches(repo.root), "stop-failed");
+          const rows = yield* sql<{
+            archivedAt: string | null;
+            deletedAt: string | null;
+          }>`SELECT archived_at AS "archivedAt", deleted_at AS "deletedAt" FROM projection_threads WHERE thread_id = ${threadId}`;
+          assert.isNotNull(rows[0]?.archivedAt);
+          assert.isNull(rows[0]?.deletedAt);
+          const retry = yield* storage.inspect({ force: true });
+          const remaining = retry.categories
+            .find((c) => c.id === "inactiveF5Worktrees")
+            ?.targets.find((t) => t.path === target);
+          assert.isFalse(remaining?.safeToDelete);
+          assert.include(remaining?.disabledReason ?? "", "session");
+        }),
+      ),
   );
 });
 

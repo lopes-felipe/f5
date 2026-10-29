@@ -122,10 +122,33 @@ export function StorageActionConfirmDialog({
           <DialogTitle>{action?.title ?? "Confirm cleanup"}</DialogTitle>
           <DialogDescription>
             {action?.description ??
-              `This will reclaim up to ${formatByteSize(totalBytes)} from the selected storage targets.`}
+              `The selected targets contain an estimated ${formatByteSize(totalBytes)}. Actual recovered disk space may differ.`}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel className="space-y-4">
+          {action?.categories.some((category) =>
+            category.targets.some((target) => target.action === "archiveAndRemove"),
+          ) ? (
+            <div className="space-y-2 rounded border border-border p-3 text-xs">
+              <p>
+                These idle conversations will be archived before their checkout is removed.
+                Conversations and Git branches are preserved.
+              </p>
+              <ul>
+                {action.categories
+                  .flatMap((category) =>
+                    category.targets.flatMap((target) => target.affectedThreads ?? []),
+                  )
+                  .filter(
+                    (thread, index, all) =>
+                      all.findIndex((t) => t.threadId === thread.threadId) === index,
+                  )
+                  .map((thread) => (
+                    <li key={thread.threadId}>{thread.title}</li>
+                  ))}
+              </ul>
+            </div>
+          ) : null}
           {pending ? (
             <div role="status" aria-live="polite" className="text-xs text-muted-foreground">
               {progress?.message ?? "Starting…"}
@@ -167,6 +190,9 @@ export function StorageActionConfirmDialog({
                           ? ` · ${target.threadTitle}`
                           : ""}
                         {target.path ? <span className="block truncate">{target.path}</span> : null}
+                        {category.id === "f5Backups" && target.detail ? (
+                          <span className="block whitespace-normal">{target.detail}</span>
+                        ) : null}
                       </li>
                     ))}
                     {category.targets.length > 12 ? (

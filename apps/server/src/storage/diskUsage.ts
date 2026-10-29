@@ -2,10 +2,16 @@ import {
   parseAttachmentIdFromRelativePath,
   parseThreadSegmentFromAttachmentId,
 } from "../attachmentStore.ts";
-import * as FS from "node:fs/promises";
+import * as NodeFS from "node:fs/promises";
+import { createRequire } from "node:module";
 import type { Stats, Dirent } from "node:fs";
 import * as Path from "node:path";
 import type { StoragePathWarning } from "@t3tools/contracts";
+// Electron's fs treats *.asar files as directories and retains archive handles.
+// Ordinary filesystem semantics also apply to legacy and per-target measurements.
+const FS: typeof NodeFS = process.versions.electron
+  ? createRequire(import.meta.url)("original-fs").promises
+  : NodeFS;
 
 export interface DiskUsageResult {
   readonly bytes: number;
@@ -215,6 +221,7 @@ export async function measureTree(
   options: DiskUsageOptions & {
     readonly checkpoints: ReadonlyArray<string>;
     readonly onEntry?: (entry: WalkEntry) => void;
+    readonly allowPartial?: boolean;
   },
 ) {
   const byCheckpoint = new Map(
@@ -237,6 +244,12 @@ export async function measureTree(
         }
       }
     },
+  }).catch((error: unknown) => {
+    if (!options.allowPartial || !options.signal?.aborted) throw error;
+    return roots.map((path) => ({
+      path,
+      reason: "Storage measurement time budget reached; results are partial.",
+    }));
   });
   return { totalBytes, entries, byCheckpoint, warnings };
 }

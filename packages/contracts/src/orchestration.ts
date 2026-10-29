@@ -1319,6 +1319,13 @@ const ThreadArchiveCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   createdAt: IsoDateTime,
+  cleanupExpectation: Schema.optional(
+    Schema.Struct({
+      worktreePath: FilesystemPath,
+      lastInteractionAt: IsoDateTime,
+      sessionUpdatedAt: Schema.NullOr(IsoDateTime),
+    }),
+  ),
 });
 
 const ThreadUnarchiveCommand = Schema.Struct({

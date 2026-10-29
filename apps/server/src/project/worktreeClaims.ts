@@ -26,8 +26,10 @@ import {
   assertExclusiveProfileCheckout,
 } from "../profiles/RepositorySharing.ts";
 import { resolveHeadInDefaultBranch } from "./worktreeMerge.ts";
+import { GitManager } from "../git/Services/GitManager.ts";
+import { inspectStorageActivity } from "../storage/storageActivity.ts";
 import {
-  blockingIgnoredEntries,
+  blockingIgnoredEntriesOnDisk,
   type IgnoredFilesRemovalPolicy,
 } from "../git/worktreeIgnoredFiles.ts";
 export { blockingIgnoredEntries } from "../git/worktreeIgnoredFiles.ts";
@@ -292,19 +294,21 @@ export const ignoredFilesBlockRemoval = (
         })),
       )
   ).pipe(
-    Effect.map(({ entries, truncated }) => {
-      if (truncated) return "too many ignored files to check";
-      const blocking = blockingIgnoredEntries(entries, policy);
-      return blocking.length > 0
-        ? policy.kind === "manual"
-          ? policy.approvedEntries === undefined
-            ? "Ignored files and folders require explicit deletion confirmation."
-            : "Ignored files changed since review. Inspect this checkout again."
-          : policy.kind === "rebuildable"
-            ? `ignored files that are not build output (${blocking.slice(0, 3).join(", ")})`
-            : `ignored files other than node_modules/ (${blocking.slice(0, 3).join(", ")})`
-        : null;
-    }),
+    Effect.flatMap(({ entries, truncated }) =>
+      Effect.promise(async () => {
+        if (truncated) return "too many ignored files to check";
+        const blocking = await blockingIgnoredEntriesOnDisk(worktreePath, entries, policy);
+        return blocking.length > 0
+          ? policy.kind === "manual"
+            ? policy.approvedEntries === undefined
+              ? "Ignored files and folders require explicit deletion confirmation."
+              : "Ignored files changed since review. Inspect this checkout again."
+            : policy.kind === "rebuildable"
+              ? `ignored files that are not build output (${blocking.slice(0, 3).join(", ")})`
+              : `ignored files other than node_modules/ (${blocking.slice(0, 3).join(", ")})`
+          : null;
+      }),
+    ),
     Effect.orElseSucceed(() => "ignored files could not be listed"),
   );
 
@@ -364,6 +368,12 @@ export type WorktreeRemovalPolicy = WorktreeRemovalContext &
         readonly kind: "storageMaintenance" | "externalCleanup";
         /** Project globs whose uncommitted changes may be discarded. */
         readonly disposablePaths?: ReadonlyArray<string> | undefined;
+        /** Preview only: explicitly selected idle conversations may be archived before removal. */
+        readonly archiveIdleThreads?: boolean;
+        readonly verifyPullRequest?: boolean;
+        readonly inspectExternalActivity?: boolean;
+        /** Server-selected search folders; never supplied by the cleanup client. */
+        readonly discoveredRepositoryRoots?: ReadonlyArray<string>;
       }
   );
 
@@ -451,7 +461,7 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
       : yield* readManagedWorktreesDirectories(config.worktreesDir);
   if (!target || !roots.length) blockedReasons.push("workspace identity could not be verified");
   else if (input.policy.kind === "externalCleanup") {
-    // External checkouts are only ever linked worktrees of a project's own repository.
+    // External checkouts must belong to a project or an explicitly searched repository.
     const legacyRoot = yield* canonical(Path.join(legacyT3BaseDir(), "worktrees"));
     if (roots.some((root) => root === target || pathContains(root, target)))
       blockedReasons.push("inside the F5 worktrees folder");
@@ -462,8 +472,16 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
       (yield* engine.getReadModel()).projects.filter((project) => project.deletedAt === null),
       (project) => canonical(project.workspaceRoot),
     );
-    if (!projectCwd || !projectRoots.includes(projectCwd))
-      blockedReasons.push("not a worktree of an F5 project");
+    const searchRoots = yield* Effect.forEach(
+      (input.policy.discoveredRepositoryRoots ?? []).filter((root) => Path.isAbsolute(root)),
+      (root) => canonical(root),
+    );
+    if (
+      !projectCwd ||
+      (!projectRoots.includes(projectCwd) &&
+        !searchRoots.some((root) => root !== null && pathContains(root, projectCwd)))
+    )
+      blockedReasons.push("not a worktree of an F5 project or a selected repository search folder");
   } else if (!roots.some((root) => target !== root && pathContains(root, target)))
     blockedReasons.push("outside the allowed worktrees root");
   // Never execute Git in an arbitrary client-supplied checkout.
@@ -528,6 +546,34 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
       blockedReasons.push("it contains a project checkout");
   }
   const claims = yield* readWorktreeClaims(input.path);
+  const archiveableThreadIds =
+    isStorageCleanupPolicy(input.policy) && input.policy.archiveIdleThreads
+      ? (yield* engine.getReadModel()).threads
+          .filter(
+            (thread) =>
+              claims.threadIds.includes(thread.id) &&
+              thread.deletedAt === null &&
+              thread.archivedAt === null,
+          )
+          .map((thread) => thread.id)
+      : [];
+  if (isStorageCleanupPolicy(input.policy) && input.policy.inspectExternalActivity) {
+    const activity = yield* Effect.promise(() => inspectStorageActivity(input.path));
+    // A reviewed archive action stops idle F5 sessions before final removal.
+    // This exception only permits review/preflight; deletion probes again after
+    // session release without archiveIdleThreads, including unrelated activity.
+    const canReleaseIdleSessions =
+      input.policy.archiveIdleThreads &&
+      !claims.unknown &&
+      claims.sessions.length > 0 &&
+      claims.sessions.every(
+        (session) =>
+          archiveableThreadIds.includes(session.threadId as ThreadId) &&
+          !claims.activeThreadIds.includes(session.threadId as ThreadId),
+      );
+    if (activity.state === "unknown" || (activity.state === "busy" && !canReleaseIdleSessions))
+      blockedReasons.push(activity.reason);
+  }
   const defaultRoot = yield* canonical(config.worktreesDir);
   if (
     input.policy.kind !== "externalCleanup" &&
@@ -541,18 +587,6 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
     !input.policy.ownedCreation?.created
   )
     blockedReasons.push("no F5 creation receipt or thread claim owns this custom worktree");
-  if (input.policy.kind === "storageMaintenance") {
-    const model = yield* engine.getReadModel();
-    if (
-      model.threads.some(
-        (thread) =>
-          claims.threadIds.includes(thread.id) &&
-          thread.deletedAt === null &&
-          thread.archivedAt === null,
-      )
-    )
-      blockedReasons.push("Referenced by an active thread.");
-  }
   let ownedTransition = false;
   let originalMoveSnapshot: MoveSnapshot | undefined;
   const transitionStore = yield* Effect.serviceOption(WorkspaceTransitions);
@@ -571,7 +605,7 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
       ["applying", "applied", "needs_recovery"].includes(operation.phase);
     if (ownedTransition) originalMoveSnapshot = operation?.moveData?.snapshot;
   }
-  if (isStorageCleanupPolicy(input.policy)) {
+  if (isStorageCleanupPolicy(input.policy) && !input.policy.archiveIdleThreads) {
     const model = yield* engine.getReadModel();
     if (
       model.threads.some(
@@ -591,7 +625,14 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
           (id) => !ownedTransition || id !== input.policy.ownThreadId,
         ),
         sessions: claims.sessions.filter(
-          (session) => !claims.deletedThreadIds.some((id) => id === session.threadId),
+          (session) =>
+            !claims.deletedThreadIds.some((id) => id === session.threadId) &&
+            !(
+              isStorageCleanupPolicy(input.policy) &&
+              input.policy.archiveIdleThreads &&
+              archiveableThreadIds.includes(session.threadId as ThreadId) &&
+              !claims.activeThreadIds.includes(session.threadId as ThreadId)
+            ),
         ),
         terminals: claims.terminals.filter(
           (terminal) => !claims.deletedThreadIds.some((id) => id === terminal.threadId),
@@ -650,6 +691,27 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
           ? yield* resolveHeadInDefaultBranch(git, input.projectCwd, inspected.headSha)
           : { defaultBranch: null, merged: null };
         headMerged = containment.merged === true;
+        if (
+          !headMerged &&
+          input.policy.verifyPullRequest &&
+          inspected.branch &&
+          inspected.headSha
+        ) {
+          const manager = yield* Effect.serviceOption(GitManager);
+          if (Option.isSome(manager)) {
+            const pr = yield* manager.value
+              .branchPullRequest({ cwd: input.projectCwd, branch: inspected.branch })
+              .pipe(
+                Effect.timeout("8 seconds"),
+                Effect.orElseSucceed(() => null),
+              );
+            headMerged =
+              pr?.state === "merged" &&
+              pr.headRefOid === inspected.headSha &&
+              containment.defaultBranch !== null &&
+              pr.baseRefName === containment.defaultBranch;
+          }
+        }
         branchDeletable =
           headMerged &&
           inspected.branch !== null &&
@@ -675,6 +737,13 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
         blockedReasons.push("HEAD is detached");
       if (inspected.operation) blockedReasons.push(`a ${inspected.operation} is in progress`);
       const changedPaths = inspected.changedPaths;
+      if (
+        archiveableThreadIds.length > 0 &&
+        (inspected.hasTrackedChanges || inspected.hasUntrackedChanges)
+      )
+        blockedReasons.push(
+          "Archive and remove requires a clean worktree; save local changes first.",
+        );
       const discardable =
         (inspected.hasTrackedChanges || inspected.hasUntrackedChanges) &&
         disposablePaths.length > 0 &&
@@ -882,6 +951,13 @@ export const removeWorktreeSafely = Effect.fn("removeWorktreeSafely")(function* 
               "owned or deleted conversation processes still use the checkout",
             );
           if (checked.blockedReasons.length === 0) {
+            if (isStorageCleanupPolicy(input.policy) && input.policy.inspectExternalActivity) {
+              const activity = yield* Effect.promise(() => inspectStorageActivity(input.path));
+              if (activity.state !== "idle") {
+                checked.blockedReasons.push(activity.reason);
+                return checked;
+              }
+            }
             if (input.expectedRootIdentity !== undefined) {
               const stat = yield* Effect.tryPromise(() => FS.lstat(input.path)).pipe(
                 Effect.orElseSucceed(() => null),
