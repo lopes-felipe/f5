@@ -33,6 +33,47 @@ describe("effective workspace claims and removal gate", () => {
     vi.restoreAllMocks();
     for (const cleanup of cleanups.splice(0)) await cleanup();
   });
+  it("runs native activity inspection before acquiring the engine-wide maintenance gate", async () => {
+    const repo = await makeClonedRepo("f5-probe-lock-scope-");
+    cleanups.push(repo.cleanup);
+    const world = makeWorld();
+    world.projects.push(project("p", repo.root));
+    let gateHeld = false;
+    vi.spyOn(storageActivity, "inspectStorageActivity").mockImplementation(async () => {
+      expect(gateHeld).toBe(false);
+      return { state: "idle" };
+    });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const config = yield* ServerConfig;
+        const engine = yield* OrchestrationEngineService;
+        const target = path.join(config.worktreesDir, "probe-scope");
+        git(repo.root, "worktree", "add", "-q", "-b", "probe-scope", target, "main");
+        const result = yield* removeWorktreeSafely({
+          projectCwd: repo.root,
+          path: target,
+          policy: { kind: "storageMaintenance", ownThreadId: null, inspectExternalActivity: true },
+        }).pipe(
+          Effect.provideService(OrchestrationEngineService, {
+            ...engine,
+            acquireMaintenanceLock: () =>
+              Effect.gen(function* () {
+                gateHeld = true;
+                const scope = yield* Scope.make("sequential");
+                yield* Scope.addFinalizer(
+                  scope,
+                  Effect.sync(() => {
+                    gateHeld = false;
+                  }),
+                );
+                return scope;
+              }),
+          }),
+        );
+        expect(result.blockedReasons).toEqual([]);
+      }).pipe(Effect.provide(automationLayer(world, {}, "f5-probe-lock-state-")), Effect.scoped),
+    );
+  });
   it("reviews idle owned sessions, but rechecks activity and queued work before removal", async () => {
     const repo = await makeClonedRepo("f5-idle-session-review-");
     cleanups.push(repo.cleanup);

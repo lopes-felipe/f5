@@ -29,6 +29,7 @@ import {
 } from "../checkpointing/Services/CheckpointStore.ts";
 import { ServerConfig } from "../config.ts";
 import { GitCore, type GitCoreShape } from "../git/Services/GitCore.ts";
+import { GitManager, type GitManagerShape } from "../git/Services/GitManager.ts";
 import { GitServiceLive } from "../git/Layers/GitService.ts";
 import { GitCoreTestLive } from "../git/testLayers.ts";
 import { git as runGit, makeClonedRepo } from "./storageAutomation.testHarness.ts";
@@ -3214,10 +3215,29 @@ const registeredPaths = (cwd: string) =>
     .filter((line) => line.startsWith("worktree "))
     .map((line) => NodePath.normalize(line.slice("worktree ".length)));
 
+const squashEvidence = new Map<string, string>();
 it.layer(
   makeStorageTestLayer({
     gitCore: "real",
   }).pipe(
+    Layer.provideMerge(
+      Layer.succeed(GitManager, {
+        branchPullRequest: ({ cwd, branch }: { cwd: string; branch: string }) =>
+          Effect.succeed(
+            squashEvidence.has(cwd + "|" + branch)
+              ? {
+                  number: 1,
+                  title: "Squash merged",
+                  url: "https://example.test/pull/1",
+                  headRefName: branch,
+                  headRefOid: squashEvidence.get(cwd + "|" + branch)!,
+                  baseRefName: "main",
+                  state: "merged",
+                }
+              : null,
+          ),
+      } as unknown as GitManagerShape),
+    ),
     Layer.provideMerge(
       ServerSettingsService.layerTest({
         worktreeDisposablePaths: ["README.md"],
@@ -3228,6 +3248,43 @@ it.layer(
     ),
   ),
 )("StorageMaintenance worktree cleanup against real repositories", (it) => {
+  it.effect(
+    "removes a reviewed squash-merged orphan without an upstream through the complete workflow",
+    () =>
+      withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance,
+            config = yield* ServerConfig,
+            sql = yield* SqlClient.SqlClient;
+          const repo = yield* Effect.promise(() => makeClonedRepo("f5-storage-squash-workflow-"));
+          yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+          const target = NodePath.join(config.worktreesDir, "squashed-orphan");
+          runGit(repo.root, "worktree", "add", "-q", "-b", "squashed-orphan", target, "main");
+          runGit(target, "commit", "--allow-empty", "-qm", "topic squashed upstream");
+          yield* seedProject({ sql, projectId: "squash-project", workspaceRoot: repo.root });
+          const key = repo.root + "|squashed-orphan";
+          squashEvidence.set(key, runGit(target, "rev-parse", "HEAD"));
+          yield* Effect.addFinalizer(() => Effect.sync(() => squashEvidence.delete(key)));
+          const report = yield* storage.inspect({ force: true });
+          const reviewed = report.categories
+            .find((c) => c.id === "inactiveF5Worktrees")
+            ?.targets.find((t) => t.path === target);
+          assert.isTrue(reviewed?.safeToDelete, reviewed?.disabledReason);
+          const result = yield* storage.cleanup({
+            operationId: "squash-orphan-workflow",
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["inactiveF5Worktrees"],
+            confirmationText: "DELETE",
+            targetSelections: [{ categoryId: "inactiveF5Worktrees", targetIds: [reviewed!.id] }],
+            options: { vacuumAfterDeletes: false },
+          });
+          assert.equal(result.results[0]?.status, "Cleaned", JSON.stringify(result));
+          assert.isFalse(yield* Effect.promise(() => pathExists(target)));
+          assert.include(localBranches(repo.root), "squashed-orphan");
+        }),
+      ),
+  );
   it.effect("discovers linked worktrees in selected folders without importing a project", () =>
     withHomeSandbox(
       Effect.gen(function* () {

@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import * as FS from "node:fs/promises";
 import * as OS from "node:os";
 import * as Path from "node:path";
-import { discoverRepositories } from "./storageDiscovery.ts";
+import { discoverRepositories, normalizeRepositorySearchRoots } from "./storageDiscovery.ts";
 
 it("discovers real repository markers without traversing dependencies, repository internals or symlinks", async () => {
   const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-storage-discovery-"));
@@ -29,6 +29,12 @@ it("rejects relative search roots rather than resolving them against the server 
   const result = await discoverRepositories(["relative/project"]);
   expect(result.repositories).toEqual([]);
   expect(result.warnings[0]?.reason).toContain("must be absolute");
+});
+it("normalizes home paths and rejects relative settings before discovery", () => {
+  expect(normalizeRepositorySearchRoots(["~/code", "~/code"], OS.homedir())).toEqual([
+    Path.join(OS.homedir(), "code"),
+  ]);
+  expect(() => normalizeRepositorySearchRoots(["relative"])).toThrow("absolute");
 });
 
 it("returns partial coverage when a filesystem call stalls", async () => {

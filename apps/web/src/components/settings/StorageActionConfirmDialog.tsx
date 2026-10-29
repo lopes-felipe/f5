@@ -20,6 +20,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
+import { Checkbox } from "../ui/checkbox";
 
 export interface StorageConfirmAction {
   readonly confirmation?: StorageConfirmation | undefined;
@@ -50,9 +51,14 @@ export function StorageActionConfirmDialog({
   readonly onCancelCleanup?: () => void;
   readonly lastResult: StorageCleanupResult | null;
   readonly onOpenChange: (open: boolean) => void;
-  readonly onConfirm: (confirmationText: string | undefined) => void;
+  readonly onConfirm: (confirmationText: string | undefined, archiveIdleThreads?: boolean) => void;
 }) {
   const [confirmationText, setConfirmationText] = useState("");
+  const [archiveConfirmed, setArchiveConfirmed] = useState(false);
+  const requiresArchive =
+    action?.categories.some((category) =>
+      category.targets.some((target) => target.action === "archiveAndRemove"),
+    ) ?? false;
   const expiredNonce = useRef<string | null>(null);
   const selections = useMemo(
     () =>
@@ -80,9 +86,11 @@ export function StorageActionConfirmDialog({
     actionable &&
     !pending &&
     action?.confirmation !== undefined &&
+    (!requiresArchive || archiveConfirmed) &&
     (!requiresDelete || confirmationText === "DELETE");
   useEffect(() => {
     setConfirmationText("");
+    setArchiveConfirmed(false);
   }, [
     JSON.stringify(
       action?.categories.map((category) => ({
@@ -113,6 +121,7 @@ export function StorageActionConfirmDialog({
       onOpenChange={(nextOpen) => {
         if (!nextOpen) {
           setConfirmationText("");
+          setArchiveConfirmed(false);
         }
         onOpenChange(nextOpen);
       }}
@@ -132,7 +141,9 @@ export function StorageActionConfirmDialog({
             <div className="space-y-2 rounded border border-border p-3 text-xs">
               <p>
                 These idle conversations will be archived before their checkout is removed.
-                Conversations and Git branches are preserved.
+                Conversations and Git branches are preserved. If removal fails or is cancelled,
+                these conversations remain archived and the checkout stays on disk. You can reopen
+                the conversations from Archive.
               </p>
               <ul>
                 {action.categories
@@ -147,6 +158,18 @@ export function StorageActionConfirmDialog({
                     <li key={thread.threadId}>{thread.title}</li>
                   ))}
               </ul>
+              <label className="flex items-start gap-2">
+                <Checkbox
+                  checked={archiveConfirmed}
+                  onCheckedChange={(checked) => setArchiveConfirmed(checked === true)}
+                  disabled={pending}
+                  aria-label="Archive the listed conversations"
+                />
+                <span>
+                  I agree to archive every listed conversation, including recently used
+                  conversations.
+                </span>
+              </label>
             </div>
           ) : null}
           {pending ? (
@@ -244,7 +267,11 @@ export function StorageActionConfirmDialog({
           <Button
             variant="destructive"
             disabled={!canSubmit}
-            onClick={() => onConfirm(requiresDelete ? confirmationText : undefined)}
+            onClick={() =>
+              requiresArchive
+                ? onConfirm(requiresDelete ? confirmationText : undefined, archiveConfirmed)
+                : onConfirm(requiresDelete ? confirmationText : undefined)
+            }
           >
             {pending ? "Cleaning..." : "Reclaim"}
           </Button>

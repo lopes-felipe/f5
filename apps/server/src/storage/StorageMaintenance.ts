@@ -42,6 +42,7 @@ import * as Crypto from "node:crypto";
 import * as FS from "node:fs/promises";
 import * as OS from "node:os";
 import * as Path from "node:path";
+import { captureStorageActivity, type StorageActivitySnapshot } from "./storageActivity.ts";
 
 import {
   type CheckpointRef,
@@ -1342,6 +1343,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
       paths: ReadonlyArray<string>;
       byCheckpoint: Map<string, { bytes: number; latestMtimeMs: number }>;
       worktreeReviews: Map<string, WorktreeReview>;
+      activitySnapshot?: StorageActivitySnapshot;
     },
     /** Cleanup re-measures each target as it removes it, so it skips sizing here. */
     options?: { readonly skipSizing?: boolean },
@@ -1428,6 +1430,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
                   archiveIdleThreads: !!scan,
                   verifyPullRequest: !!scan,
                   inspectExternalActivity: !!scan,
+                  ...(scan?.activitySnapshot ? { activitySnapshot: scan.activitySnapshot } : {}),
                 },
               });
               warnings.push(...readiness.warnings);
@@ -1559,6 +1562,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
     readonly threads: ReadonlyArray<ThreadRow>;
     readonly worktreeReviews: Map<string, WorktreeReview>;
     readonly signal?: AbortSignal | undefined;
+    readonly activitySnapshot?: StorageActivitySnapshot;
   }) =>
     Effect.gen(function* () {
       const warnings: StoragePathWarning[] = [];
@@ -1614,6 +1618,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
                   archiveIdleThreads: !!scan,
                   verifyPullRequest: !!scan,
                   inspectExternalActivity: !!scan,
+                  ...(scan?.activitySnapshot ? { activitySnapshot: scan.activitySnapshot } : {}),
                 },
                 commandCwd: projectRoot,
                 disposablePaths: disposablePathsFor,
@@ -1984,17 +1989,20 @@ const makeStorageMaintenance = Effect.gen(function* () {
       warnings.push(...eventsRotationCandidates.warnings);
       phaseDurations.providerLogs = Date.now() - providerLogsStartedAt;
       phase("worktrees", measured.entries);
+      const activitySnapshot = yield* Effect.promise(captureStorageActivity);
       const f5WorktreeCandidates = yield* computeF5WorktreeTargets({
         threads: allThreads,
         paths: listedWorktrees.paths,
         byCheckpoint: measured.byCheckpoint,
         worktreeReviews,
+        activitySnapshot,
       });
       warnings.push(...f5WorktreeCandidates.warnings);
       const externalWorktreeCandidates = yield* computeExternalWorktreeTargets({
         threads: allThreads,
         worktreeReviews,
         signal,
+        activitySnapshot,
       });
       warnings.push(...externalWorktreeCandidates.warnings);
       const staleRegistrationCandidates = yield* computeStaleRegistrationTargets(allThreads);
@@ -3518,7 +3526,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 category: operationLabel,
                 target: homeRelative(targetPath),
                 threadId: thread.threadId,
-                result: "skipped",
+                result: "archiving",
                 reasonCode: "archive-started",
                 reason: "Archive and remove explicitly selected.",
               }).pipe(withSql);
@@ -3560,7 +3568,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 category: operationLabel,
                 target: homeRelative(targetPath),
                 threadId: thread.threadId,
-                result: "skipped",
+                result: "archived",
                 reasonCode: "archived-awaiting-removal",
                 reason: "Conversation archived; checkout removal pending.",
               }).pipe(withSql);
@@ -3645,7 +3653,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
       );
       if (Exit.isFailure(stopped))
         return {
-          kind: "skipped",
+          kind: "skipped" as const,
           warnings: [
             warningFor(
               targetPath,
@@ -3785,7 +3793,34 @@ const makeStorageMaintenance = Effect.gen(function* () {
           }),
         ),
       );
-    });
+    }).pipe(
+      Effect.onExit((exit) =>
+        Effect.gen(function* () {
+          const reviewed = operationReviews.get(input.operationId)?.worktrees.get(input.targetPath);
+          if (!reviewed?.archiveThreads?.length) return;
+          const model = yield* engine.getReadModel();
+          const removed = Exit.isSuccess(exit) && exit.value.kind === "removed";
+          for (const thread of reviewed.archiveThreads) {
+            if (!model.threads.some((t) => t.id === thread.threadId && t.archivedAt !== null))
+              continue;
+            yield* recordStorageAutomationAudit({
+              source: "manual",
+              operationId: input.operationId,
+              category:
+                input.kind === "externalCleanup" ? "externalWorktrees" : "inactiveF5Worktrees",
+              job: "worktree-cleanup",
+              target: homeRelative(input.targetPath),
+              threadId: thread.threadId,
+              result: removed ? "removed" : "failed",
+              reasonCode: removed ? "archived-checkout-removed" : "archived-checkout-retained",
+              reason: removed
+                ? "Conversation archived and checkout removed."
+                : "Conversation remains archived; checkout retained. Review again before retrying.",
+            }).pipe(withSql);
+          }
+        }),
+      ),
+    );
 
   /** Remove reviewed external worktrees, revalidating identity, claims and cancellation. */
   const cleanExternalWorktrees = (
@@ -3992,8 +4027,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
 
         if (
           (!target.safeToDelete &&
-            !operationReviews.get(request.operationId)?.worktrees.get(targetPath ?? "")
-              ?.archiveThreads?.length) ||
+            !operationReviews.get(request.operationId)?.worktrees.has(targetPath ?? "")) ||
           !targetPath
         ) {
           warnings.push(

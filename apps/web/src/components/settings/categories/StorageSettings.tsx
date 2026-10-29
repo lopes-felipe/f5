@@ -704,10 +704,12 @@ export function StorageSettings() {
     mutationFn: async ({
       action,
       confirmationText,
+      archiveIdleThreads,
       id,
     }: {
       readonly action: StorageConfirmAction;
       readonly confirmationText: string | undefined;
+      readonly archiveIdleThreads?: boolean | undefined;
       readonly id: string;
     }) => {
       if (
@@ -725,11 +727,7 @@ export function StorageSettings() {
         nonce: action.confirmation.nonce,
         categoryIds: action.categories.map((category) => category.id),
         ...(action.targetSelections ? { targetSelections: action.targetSelections } : {}),
-        ...(action.categories.some((category) =>
-          category.targets.some((target) => target.action === "archiveAndRemove"),
-        )
-          ? { options: { archiveIdleThreads: true } }
-          : {}),
+        ...(archiveIdleThreads ? { options: { archiveIdleThreads: true } } : {}),
         ...(confirmationText ? { confirmationText } : {}),
       });
     },
@@ -1598,7 +1596,7 @@ export function StorageSettings() {
         onOpenChange={(open) => {
           if (!open) setConfirmAction(null);
         }}
-        onConfirm={(confirmationText) => {
+        onConfirm={(confirmationText, archiveIdleThreads) => {
           if (confirmAction) {
             const id = operationId();
             cancellationRequested.current = null;
@@ -1606,7 +1604,12 @@ export function StorageSettings() {
             currentSubmissionId.current = id;
             setAcceptedOperation(null);
             setPendingOperationId(id);
-            cleanupMutation.mutate({ action: confirmAction, confirmationText, id });
+            cleanupMutation.mutate({
+              action: confirmAction,
+              confirmationText,
+              archiveIdleThreads,
+              id,
+            });
           }
         }}
       />

@@ -72,7 +72,8 @@ export function StorageDiscoverySettings() {
       </label>
       <p className="text-xs text-muted-foreground">
         Repositories are discovered without adding projects. Scans skip dependencies, build output,
-        symlinks, and other mounted volumes.
+        symlinks, and other mounted volumes. Prefer specific source-code folders: selecting an
+        entire home folder or filesystem root can include many unrelated repositories.
       </p>
       <Button size="sm" onClick={() => void save()} disabled={pending}>
         {pending ? "Saving…" : "Save and rescan"}

@@ -447,6 +447,14 @@ describe("StorageSettings", () => {
       await page.getByRole("button", { name: "Archive and remove" }).click();
       await expect.element(page.getByText("Keep this conversation", { exact: true })).toBeVisible();
       await page.getByPlaceholder("DELETE", { exact: true }).fill("DELETE");
+      const archiveConsent = document.querySelector<HTMLElement>(
+        '[aria-label="Archive the listed conversations"]',
+      )!;
+      const reclaim = page
+        .getByRole("dialog")
+        .getByRole("button", { name: "Reclaim", exact: true });
+      await expect.element(reclaim).toBeDisabled();
+      archiveConsent.click();
       const dialog = document.querySelector('[role="dialog"]')!;
       const confirm = [...dialog.querySelectorAll("button")].find(
         (button) => button.textContent?.trim() === "Reclaim",

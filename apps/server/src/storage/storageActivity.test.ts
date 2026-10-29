@@ -4,6 +4,7 @@ import {
   parseLsofProcesses,
   readStorageProcesses,
   inspectStorageActivity,
+  linuxMappedPaths,
 } from "./storageActivity.ts";
 import { spawn } from "node:child_process";
 import * as FS from "node:fs/promises";
@@ -20,6 +21,52 @@ it("detects cwd, open files and browser processes without matching sibling path 
   ).toBe("busy");
   expect(() => parseLsofProcesses("")).toThrow();
 });
+it("matches Chrome executable names without blocking unrelated Chrome-named applications", () => {
+  expect(
+    activityForTarget("/cache", [{ pid: 1, name: "ChatGPT for Chrome", paths: [] }], "chrome")
+      .state,
+  ).toBe("idle");
+  expect(
+    activityForTarget(
+      "/cache",
+      [{ pid: 1, name: "Google Chrome Helper (Renderer)", paths: [] }],
+      "chrome",
+    ).state,
+  ).toBe("busy");
+});
+it("parses Linux file-backed mappings, escaped filenames and deleted mappings", () => {
+  expect(
+    linuxMappedPaths(
+      "7f00-7f01 r--p 0000 08:01 123 /work/lib\\040copy.so (deleted)\n7f01-7f02 rw-p 0000 00:00 0 [heap]\n",
+    ),
+  ).toEqual(["/work/lib copy.so"]);
+});
+it.runIf(process.platform === "linux")(
+  "detects a real running executable outside its working directory",
+  async () => {
+    const directory = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-storage-executable-"));
+    const binary = Path.join(directory, "running-node");
+    await FS.copyFile(process.execPath, binary);
+    await FS.chmod(binary, 0o755);
+    const child = spawn(binary, ["-e", "process.stdout.write('ready');setInterval(()=>{},1000)"], {
+      cwd: OS.tmpdir(),
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.once("error", reject);
+        child.stdout!.once("data", () => resolve());
+      });
+      expect((await inspectStorageActivity(directory)).state).toBe("busy");
+    } finally {
+      const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+      child.kill();
+      await closed;
+      await FS.rm(directory, { recursive: true, force: true });
+    }
+  },
+  25_000,
+);
 it("does not misclassify Electron's cached sample-archive handles as live checkout sessions", () => {
   expect(
     activityForTarget("/old", [
@@ -85,3 +132,39 @@ it("detects a real application holding a cache file open while its cwd is elsewh
     await FS.rm(directory, { recursive: true, force: true });
   }
 }, 25_000);
+
+it.runIf(process.platform === "linux")(
+  "detects a file-backed mapping after its descriptor is closed",
+  async () => {
+    const directory = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-storage-mapping-"));
+    const file = Path.join(directory, "mapped-library");
+    await FS.writeFile(file, Buffer.alloc(4096));
+    const child = spawn(
+      "python3",
+      [
+        "-c",
+        "import ctypes,os,sys,time; lib=ctypes.CDLL(None); lib.mmap.restype=ctypes.c_void_p; fd=os.open(sys.argv[1],os.O_RDONLY); lib.mmap(None,4096,1,2,fd,0); os.close(fd); print('ready',flush=True); time.sleep(60)",
+        file,
+      ],
+      { cwd: OS.tmpdir(), stdio: ["ignore", "pipe", "ignore"] },
+    );
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.once("error", reject);
+        child.stdout!.once("data", () => resolve());
+      });
+      const fds = await FS.readdir("/proc/" + child.pid + "/fd");
+      const openPaths = await Promise.all(
+        fds.map((fd) => FS.readlink("/proc/" + child.pid + "/fd/" + fd).catch(() => "")),
+      );
+      expect(openPaths).not.toContain(file);
+      expect((await inspectStorageActivity(directory)).state).toBe("busy");
+    } finally {
+      const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+      child.kill();
+      await closed;
+      await FS.rm(directory, { recursive: true, force: true });
+    }
+  },
+  25_000,
+);

@@ -40,38 +40,39 @@ $session=(Get-Process -Id $PID).SessionId
 $items=@(Get-CimInstance Win32_Process | Where-Object { $_.SessionId -eq $session -and $_.ExecutablePath } | ForEach-Object {
   $item=$_
   $cwd=$null
-  try { $cwd=[F5StorageProcess]::Cwd($item.ProcessId) } catch {
-    if (!$item.ExecutablePath.StartsWith(($env:SystemRoot.TrimEnd('\')+'\'),[StringComparison]::OrdinalIgnoreCase)) { throw }
-  }
+  # Protected/elevated unrelated processes must not poison the whole snapshot.
+  # Their executable still blocks its own tree; target file handles are checked
+  # separately. Failure of the enumeration itself remains unknown.
+  try { $cwd=[F5StorageProcess]::Cwd($item.ProcessId) } catch {}
   @{pid=[int]$item.ProcessId;name=$item.Name;cwd=$cwd;paths=@($item.ExecutablePath)}
 })
 ConvertTo-Json -InputObject $items -Compress -Depth 4
 `;
 
-/** Restart Manager only enumerates users of files. Never call RmShutdown. */
+/** Read-only native file-sharing checks. Never stops or restarts applications. */
 export const WINDOWS_STORAGE_FILE_PROBE = String.raw`
 $ErrorActionPreference="Stop"
 Add-Type -TypeDefinition @'
 using System;
-using System.Text;
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 public static class F5StorageFiles {
- [DllImport("rstrtmgr.dll",CharSet=CharSet.Unicode)] static extern int RmStartSession(out uint handle,int flags,StringBuilder key);
- [DllImport("rstrtmgr.dll",CharSet=CharSet.Unicode)] static extern int RmRegisterResources(uint handle,uint count,string[] files,uint applications,IntPtr apps,uint services,IntPtr names);
- [DllImport("rstrtmgr.dll")] static extern int RmGetList(uint handle,out uint needed,ref uint count,IntPtr apps,ref uint reboot);
- [DllImport("rstrtmgr.dll")] static extern int RmEndSession(uint handle);
+ [DllImport("kernel32.dll",CharSet=CharSet.Unicode,ExactSpelling=true,SetLastError=true)]
+ static extern SafeFileHandle CreateFileW(string path,uint access,uint sharing,IntPtr security,uint creation,uint flags,IntPtr template);
  public static bool Busy(string[] paths) {
-   if(paths.Length==0) return false;
-   uint handle; int code=RmStartSession(out handle,0,new StringBuilder(33));
-   if(code!=0) throw new Exception("File-use session unavailable: "+code);
-   try {
-     code=RmRegisterResources(handle,(uint)paths.Length,paths,0,IntPtr.Zero,0,IntPtr.Zero);
-     if(code!=0) throw new Exception("File-use registration unavailable: "+code);
-     uint needed,count=0,reboot=0;
-     code=RmGetList(handle,out needed,ref count,IntPtr.Zero,ref reboot);
-     if(code!=0 && code!=234) throw new Exception("File-use inspection unavailable: "+code);
-     return needed>0;
-   } finally { RmEndSession(handle); }
+   foreach(string path in paths) {
+     // FILE_READ_ATTRIBUTES, no sharing, OPEN_EXISTING. This neither writes nor
+     // deletes a file. Sharing/lock violations prove another handle owns it.
+     using(SafeFileHandle handle=CreateFileW(path,0x80,0,IntPtr.Zero,3,0,IntPtr.Zero)) {
+       if(handle.IsInvalid) {
+         int code=Marshal.GetLastWin32Error();
+         if(code==32 || code==33) return true;
+         if(code==2 || code==3) continue;
+         throw new Exception("File-sharing inspection failed: "+code);
+       }
+     }
+   }
+   return false;
  }
 }
 '@

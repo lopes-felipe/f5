@@ -3,11 +3,21 @@ import * as FS from "node:fs/promises";
 import * as OS from "node:os";
 import * as Path from "node:path";
 import {
-  executeStorageTask,
+  executeStorageTask as executeRealStorageTask,
   runStorageTask,
   type StorageFileInspection,
   type StorageMeasurement,
 } from "./storageWorker.ts";
+import type { StorageWorkerTask } from "./storageWorker.ts";
+import { createServer } from "node:http";
+import { execFileSync } from "node:child_process";
+import { runProcess } from "../processRunner.ts";
+import { discoverProviderCandidates } from "./cleanupProviders.ts";
+
+// Filesystem unit fixtures supply their own activity snapshot; native process
+// and file-sharing behavior is exercised independently in storageActivity.test.
+const executeStorageTask = (task: StorageWorkerTask, snapshot: [] = []) =>
+  executeRealStorageTask(task, snapshot, true);
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -44,6 +54,74 @@ it("refuses changed cache contents before deleting anything", async () => {
   await expect(executeStorageTask(f.task, [])).rejects.toThrow("changed since review");
   expect(await FS.readFile(Path.join(f.path, "item"), "utf8")).toContain("different package");
 });
+it("quarantines complete Bun cache entries and a real install remains healthy after partial cleanup", async () => {
+  const f = await fixture();
+  const source = Path.join(f.root, "source", "package");
+  await FS.mkdir(source, { recursive: true });
+  await FS.writeFile(
+    Path.join(source, "package.json"),
+    JSON.stringify({ name: "f5-cache-fixture", version: "1.0.0", main: "index.js" }),
+  );
+  await FS.writeFile(Path.join(source, "index.js"), "module.exports = 'healthy';");
+  // Protected contents deliberately leave a partial quarantine behind.
+  await FS.writeFile(Path.join(source, ".env"), "retained fixture");
+  const archive = Path.join(f.root, "fixture.tgz");
+  execFileSync("tar", ["-czf", archive, "-C", Path.dirname(source), "package"]);
+  const contents = await FS.readFile(archive);
+  let requests = 0;
+  const server = createServer((_req, res) => {
+    requests++;
+    res.end(contents);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const port = (server.address() as { port: number }).port;
+    const install = async (name: string) => {
+      const project = Path.join(f.root, name);
+      await FS.mkdir(project);
+      await FS.writeFile(
+        Path.join(project, "package.json"),
+        JSON.stringify({
+          name,
+          dependencies: { "f5-cache-fixture": "http://127.0.0.1:" + port + "/fixture.tgz" },
+        }),
+      );
+      await runProcess("bun", ["install", "--ignore-scripts"], {
+        cwd: project,
+        env: { ...process.env, BUN_INSTALL_CACHE_DIR: f.path, HOME: f.root, USERPROFILE: f.root },
+        timeoutMs: 30_000,
+      });
+      expect(
+        await FS.readFile(
+          Path.join(project, "node_modules", "f5-cache-fixture", "index.js"),
+          "utf8",
+        ),
+      ).toContain("healthy");
+    };
+    await install("first-project");
+    await FS.writeFile(Path.join(f.path, ".env"), "retained fixture");
+    const downloaded = requests;
+    const review = (await executeStorageTask({
+      kind: "inspect",
+      path: f.path,
+    })) as StorageFileInspection;
+    await executeStorageTask({
+      ...f.task,
+      providerId: "bunDownloadCache",
+      identity: review.identity!,
+      fingerprint: review.fingerprint!,
+    });
+    expect(await FS.readdir(f.path)).toEqual([]);
+    const leftovers = (await discoverProviderCandidates("bunDownloadCache", f.path)).filter(
+      (p) => p !== f.path,
+    );
+    expect(leftovers).toHaveLength(1);
+    await install("second-project");
+    expect(requests).toBeGreaterThan(downloaded);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}, 60_000);
 it("retains databases, credentials, browser identity files and Terraform state inside caches", async () => {
   const f = await fixture();
   const names = [

@@ -41,6 +41,8 @@ const RESULT_LABELS = {
   pulled: "Pulled",
   skipped: "Skipped",
   failed: "Failed",
+  archiving: "Archiving",
+  archived: "Archived",
 } as const satisfies Record<StorageAutomationAuditEntry["result"], string>;
 
 export function describeAutomationTarget(target: StorageAutomationTarget): string {

@@ -59,4 +59,17 @@ describe("cleanup provider locations and boundaries", () => {
       expect(logs.files?.(name, 0)).toBe(false);
     expect(logs.files?.("server.log.1", 9 * 86400_000)).toBe(false);
   });
+  it("uses uv's XDG default on macOS and respects an explicit cache override", () => {
+    const uv = (env: NodeJS.ProcessEnv) =>
+      cleanupProviders({
+        stateDirs: [],
+        enabled: true,
+        platform: "darwin",
+        home: "/home/person",
+        env,
+      }).find((p) => p.id === "uvDiscardedCaches")!;
+    expect(uv({}).roots).toEqual(["/home/person/.cache"]);
+    expect(uv({ XDG_CACHE_HOME: "/custom/cache" }).roots).toEqual(["/custom/cache"]);
+    expect(uv({ UV_CACHE_DIR: "/custom/uv-cache" }).roots).toEqual(["/custom"]);
+  });
 });

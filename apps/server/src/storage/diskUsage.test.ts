@@ -55,6 +55,23 @@ test("concurrent wide walks share at most 16 filesystem calls", async () => {
   expect(second.fileCount).toBe(100);
   expect(maximum).toBe(16);
 });
+test("inspects a cache fixture with more than 100,000 files using bounded traversal", async () => {
+  const root = await fixture();
+  const sample = Path.join(root, "sample");
+  await FS.writeFile(sample, "cached data");
+  const [directoryStat, fileStat] = await Promise.all([FS.lstat(root), FS.lstat(sample)]);
+  const count = 100_001;
+  const fs: DiskUsageFs = {
+    lstat: async (path) => (path === root ? directoryStat : fileStat),
+    readdir: async () =>
+      Array.from({ length: count }, (_, index) => ({
+        name: "package-" + index,
+      })) as Awaited<ReturnType<DiskUsageFs["readdir"]>>,
+  };
+  const result = await enumerateFiles(root, { fs });
+  expect(result.errors).toEqual([]);
+  expect(result.files).toHaveLength(count);
+}, 30_000);
 test("attributes nested checkpoints and counts hard links once without following symlinks", async () => {
   const root = await fixture(),
     child = Path.join(root, "child");

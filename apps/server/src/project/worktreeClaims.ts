@@ -27,7 +27,10 @@ import {
 } from "../profiles/RepositorySharing.ts";
 import { resolveHeadInDefaultBranch } from "./worktreeMerge.ts";
 import { GitManager } from "../git/Services/GitManager.ts";
-import { inspectStorageActivity } from "../storage/storageActivity.ts";
+import {
+  inspectStorageActivity,
+  type StorageActivitySnapshot,
+} from "../storage/storageActivity.ts";
 import {
   blockingIgnoredEntriesOnDisk,
   type IgnoredFilesRemovalPolicy,
@@ -372,6 +375,7 @@ export type WorktreeRemovalPolicy = WorktreeRemovalContext &
         readonly archiveIdleThreads?: boolean;
         readonly verifyPullRequest?: boolean;
         readonly inspectExternalActivity?: boolean;
+        readonly activitySnapshot?: StorageActivitySnapshot;
         /** Server-selected search folders; never supplied by the cleanup client. */
         readonly discoveredRepositoryRoots?: ReadonlyArray<string>;
       }
@@ -558,7 +562,10 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
           .map((thread) => thread.id)
       : [];
   if (isStorageCleanupPolicy(input.policy) && input.policy.inspectExternalActivity) {
-    const activity = yield* Effect.promise(() => inspectStorageActivity(input.path));
+    const activitySnapshot = input.policy.activitySnapshot;
+    const activity = yield* Effect.promise(() =>
+      inspectStorageActivity(input.path, activitySnapshot),
+    );
     // A reviewed archive action stops idle F5 sessions before final removal.
     // This exception only permits review/preflight; deletion probes again after
     // session release without archiveIdleThreads, including unrelated activity.
@@ -875,6 +882,16 @@ export const removeWorktreeSafely = Effect.fn("removeWorktreeSafely")(function* 
               .map((project) => project.workspaceRoot),
           );
           const checked = yield* evaluateWorktreeRemoval(input);
+          // OS enumeration and native file-sharing probes can be slow. Keep
+          // them under this checkout's lifecycle locks, outside the global
+          // orchestration gate, then recheck F5 claims under the gate.
+          if (isStorageCleanupPolicy(input.policy) && input.policy.inspectExternalActivity) {
+            const activity = yield* Effect.promise(() => inspectStorageActivity(input.path));
+            if (activity.state !== "idle") {
+              checked.blockedReasons.push(activity.reason);
+              return checked;
+            }
+          }
           // Git inspection can be slow. Only freeze orchestration writes for the
           // final state/claim check and removal, inside the lifecycle locks.
           const maintenanceGate = isStorageCleanupPolicy(input.policy)
@@ -951,13 +968,6 @@ export const removeWorktreeSafely = Effect.fn("removeWorktreeSafely")(function* 
               "owned or deleted conversation processes still use the checkout",
             );
           if (checked.blockedReasons.length === 0) {
-            if (isStorageCleanupPolicy(input.policy) && input.policy.inspectExternalActivity) {
-              const activity = yield* Effect.promise(() => inspectStorageActivity(input.path));
-              if (activity.state !== "idle") {
-                checked.blockedReasons.push(activity.reason);
-                return checked;
-              }
-            }
             if (input.expectedRootIdentity !== undefined) {
               const stat = yield* Effect.tryPromise(() => FS.lstat(input.path)).pipe(
                 Effect.orElseSucceed(() => null),

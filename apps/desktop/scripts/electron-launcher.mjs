@@ -140,7 +140,6 @@ function buildMacLauncher(electronBinaryPath) {
 
   const expectedMetadata = {
     launcherVersion: LAUNCHER_VERSION,
-    appDisplayName: APP_DISPLAY_NAME,
     sourceAppBundlePath,
     sourceAppMtimeMs: statSync(sourceAppBundlePath).mtimeMs,
     iconMtimeMs: statSync(iconPath).mtimeMs,

@@ -11,7 +11,7 @@ import {
   inspectWindowsFileUse,
 } from "./storageActivity.ts";
 import { removeFileIfSafe, validateDeletablePath } from "./storagePathSafety.ts";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 export type StorageWorkerTask =
   | {
@@ -178,18 +178,76 @@ export async function executeStorageTask(
   }
   let removedBytes = 0;
   const warnings: Array<{ path: string; reason: string }> = [];
+  let deletionRoot = task.path;
+  let allowedRoot = task.allowedRoot;
+  if (task.providerId === "bunDownloadCache") {
+    // Bun treats a package directory's existence as a cache hit. Atomically
+    // detach the complete reviewed cache before touching any package contents.
+    // Cancellation, partial cleanup and protected files then cannot leave a
+    // half-populated package in the live cache. Leftovers are discoverable.
+    deletionRoot = Path.join(Path.dirname(task.path), ".f5-bun-cache-trash-" + randomUUID());
+    await FS.rename(task.path, deletionRoot);
+    const moved = await FS.lstat(deletionRoot);
+    if (moved.dev !== stat.dev || moved.ino !== stat.ino)
+      throw new Error("Bun cache identity changed before quarantine. Files retained.");
+    if (!Path.basename(task.path).startsWith(".f5-bun-cache-trash-"))
+      await FS.mkdir(task.path, { mode: stat.mode & 0o777 }).catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code !== "EEXIST") throw error;
+        },
+      );
+    allowedRoot = Path.dirname(deletionRoot);
+  }
   for (const file of enumerated.files) {
     if (task.providerId !== "f5Backups" && isProtectedCleanupFile(file.path)) {
       warnings.push({ path: file.path, reason: "Protected state or credentials retained." });
       continue;
     }
     const outcome = await removeFileIfSafe({
-      path: file.path,
-      allowedRoot: task.allowedRoot,
+      path:
+        deletionRoot === task.path
+          ? file.path
+          : Path.join(deletionRoot, Path.relative(task.path, file.path)),
+      allowedRoot,
       expectedIdentity: file.identity,
     });
     if (outcome.kind === "removed") removedBytes += outcome.bytes;
     else if (outcome.warning) warnings.push(outcome.warning);
+  }
+  if (deletionRoot !== task.path) {
+    // Prune only ancestors of reviewed files, deepest first. Do not discover
+    // or traverse new directories while deleting the quarantine.
+    const directories = new Set([deletionRoot]);
+    for (const file of enumerated.files) {
+      let directory = Path.dirname(Path.join(deletionRoot, Path.relative(task.path, file.path)));
+      while (directory !== deletionRoot) {
+        directories.add(directory);
+        directory = Path.dirname(directory);
+      }
+    }
+    for (const directory of [...directories].sort((a, b) => b.length - a.length)) {
+      const validated = await validateDeletablePath({
+        path: directory,
+        allowedRoot,
+        ...(directory === deletionRoot
+          ? { expectedIdentity: task.identity, directoryIdentityOnly: true }
+          : {}),
+      });
+      if (validated.kind !== "validated" || !validated.stat.isDirectory()) continue;
+      await FS.rmdir(directory).catch((error: NodeJS.ErrnoException) => {
+        if (!["ENOTEMPTY", "EEXIST", "ENOENT"].includes(error.code ?? ""))
+          warnings.push({
+            path: directory,
+            reason: "Retained quarantine directory: " + String(error),
+          });
+      });
+    }
+    if (warnings.length)
+      warnings.push({
+        path: deletionRoot,
+        reason:
+          "Retained Bun cache files are outside the live cache and remain available for review.",
+      });
   }
   // Preserve directories and files created during cleanup; never recursively remove a cache.
   return { ...result, removedBytes, warnings };
@@ -256,7 +314,11 @@ export async function measureStorageRoots(
 export function runStorageTask<A>(
   task: StorageWorkerTask,
   signal?: AbortSignal,
-  timeoutMs = 30_000,
+  // Cache inspection/removal can involve millions of files. Their lifetime is
+  // controlled by cancellation and the owner pipe, not an absolute 30s cutoff.
+  timeoutMs: number | undefined = ["inspectBatch", "inspect", "remove"].includes(task.kind)
+    ? undefined
+    : 30_000,
 ): Promise<A> {
   const source = import.meta.url.endsWith(".ts");
   const entry = source
@@ -284,7 +346,7 @@ export function runStorageTask<A>(
       failure ??= new Error("Storage discovery cancelled or timed out.");
       child.kill("SIGKILL");
     };
-    const timer = setTimeout(abort, timeoutMs);
+    const timer = timeoutMs === undefined ? undefined : setTimeout(abort, timeoutMs);
     signal?.addEventListener("abort", abort, { once: true });
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {

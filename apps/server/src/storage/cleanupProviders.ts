@@ -113,7 +113,14 @@ export function cleanupProviders(input: {
       title: "Discarded uv caches",
       description:
         "Discarded cache directories older than seven days; active environments and uv's current cache are retained.",
-      roots: [paths.dirname(env.UV_CACHE_DIR ?? join(cache, "uv"))],
+      roots: [
+        paths.dirname(
+          env.UV_CACHE_DIR ??
+            (platform === "win32"
+              ? join(cache, "uv")
+              : join(env.XDG_CACHE_HOME ?? join(home, ".cache"), "uv")),
+        ),
+      ],
       children: /^uv\.trash-[\w.-]+$/,
     },
     {
@@ -131,7 +138,7 @@ export function cleanupProviders(input: {
       : platform === "darwin"
         ? join(cache, "Google", "Chrome")
         : join(cache, "google-chrome");
-  // Only profile cache children, never the browser's User Data directory.
+  // User Data may be a discovery boundary; only its profile cache children are targets.
   result.push({
     id: "chromeCaches",
     title: "Chrome caches",
@@ -148,6 +155,27 @@ export function cleanupProviders(input: {
 export async function discoverProviderCandidates(id: StorageCleanupCategoryId, root: string) {
   const provider = cleanupProviders({ stateDirs: [], enabled: true }).find((p) => p.id === id);
   if (!provider) throw new Error("Unknown cleanup provider.");
+  if (id === "bunDownloadCache") {
+    const candidates: string[] = [];
+    const stat = await FS.lstat(root).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (stat?.isDirectory() && !stat.isSymbolicLink()) candidates.push(root);
+    for (const entry of await FS.readdir(Path.dirname(root), { withFileTypes: true }).catch(
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return [];
+        throw error;
+      },
+    ))
+      if (
+        entry.isDirectory() &&
+        !entry.isSymbolicLink() &&
+        /^\.f5-bun-cache-trash-[a-f0-9-]{36}$/.test(entry.name)
+      )
+        candidates.push(Path.join(Path.dirname(root), entry.name));
+    return candidates;
+  }
   const stat = await FS.lstat(root);
   if (!stat.isDirectory() || stat.isSymbolicLink())
     throw new Error("Cleanup root is not a real directory.");
@@ -190,7 +218,7 @@ export async function scanCleanupProviders(input: {
   })) {
     const targets: StorageCleanupCategoryUsage["targets"][number][] = [],
       warnings: StoragePathWarning[] = [];
-    for (const root of [...new Set(provider.roots)]) {
+    for (const root of new Set(provider.roots)) {
       input.signal?.throwIfAborted();
       try {
         const candidates = await runStorageTask<string[]>(
@@ -241,7 +269,8 @@ export async function scanCleanupProviders(input: {
             reviews.set(path, {
               providerId: provider.id,
               path,
-              allowedRoot: root === path ? Path.dirname(root) : root,
+              allowedRoot:
+                provider.id === "bunDownloadCache" || root === path ? Path.dirname(root) : root,
               identity: inspection.identity,
               fingerprint: inspection.fingerprint,
               ...(provider.application ? { application: provider.application } : {}),

@@ -60,7 +60,7 @@ export const StorageAutomationAuditEntry = Schema.Struct({
   threadId: Schema.NullOr(Schema.String),
   beforeRef: Schema.NullOr(Schema.String),
   afterRef: Schema.NullOr(Schema.String),
-  result: Schema.Literals(["removed", "pulled", "skipped", "failed"]),
+  result: Schema.Literals(["removed", "pulled", "skipped", "failed", "archiving", "archived"]),
   reason: Schema.NullOr(Schema.String),
   createdAt: IsoDateTime,
 });

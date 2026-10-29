@@ -20,7 +20,7 @@ export default Effect.gen(function* () {
         thread_id TEXT,
         before_ref TEXT,
         after_ref TEXT,
-        result TEXT NOT NULL CHECK(result IN ('removed', 'pulled', 'skipped', 'failed')),
+        result TEXT NOT NULL CHECK(result IN ('removed', 'pulled', 'skipped', 'failed', 'archiving', 'archived')),
         reason TEXT,
         created_at TEXT NOT NULL,
         source TEXT NOT NULL DEFAULT 'automatic' CHECK(source IN ('automatic', 'manual')),
