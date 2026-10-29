@@ -17,7 +17,9 @@ export default function UpgradeConnectionDialog(props: UpgradeDialogProps) {
         <DialogPopup
           showCloseButton={false}
           bottomStickOnMobile={false}
-          className="z-[90] w-full max-w-xl overflow-y-auto break-words rounded-[1.75rem] border border-border/80 bg-card/96 p-6 shadow-2xl shadow-black/25 sm:p-8"
+          // Popups sit at z-[130] and portal outside the inert app tree; cover any left open.
+          layerClassName="z-[135]"
+          className="w-full max-w-xl overflow-y-auto break-words rounded-[1.75rem] border border-border/80 bg-card/96 p-6 shadow-2xl shadow-black/25 sm:p-8"
         >
           <div className="flex items-start justify-between gap-4">
             <div>
