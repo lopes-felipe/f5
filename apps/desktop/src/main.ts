@@ -4339,7 +4339,13 @@ app.on("before-quit", () => {
   writeDesktopLogHeader("before-quit received");
   isQuitting = true;
 });
+app.on("quit", (_event, exitCode) => {
+  writeDesktopLogHeader(`quit exitCode=${exitCode}`);
+});
 app.on("will-quit", (event) => {
+  writeDesktopLogHeader(
+    `will-quit received complete=${shutdownComplete} pending=${shutdownPending}`,
+  );
   if (shutdownComplete) return;
   event.preventDefault();
   if (shutdownPending) return;
@@ -4347,6 +4353,7 @@ app.on("will-quit", (event) => {
   isQuitting = true;
   // will-quit is emitted only after all renderer unload checks have succeeded.
   void cleanupBeforeExit().finally(() => {
+    writeDesktopLogHeader("cleanup complete; quitting");
     shutdownComplete = true;
     restoreStdIoCapture?.();
     app.quit();

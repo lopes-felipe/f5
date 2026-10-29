@@ -804,7 +804,13 @@ try {
   // Dispatch both native taps in one synchronous main-process turn: a timer
   // between them can exceed the 500 ms gesture window under streaming load.
   await pressQuit(2);
-  await closed;
+  await closed.catch((error) => {
+    // Tell a main process that never exited from one whose children kept it from closing.
+    throw new Error(
+      `${error.message} (electron pid=${electronProcess.pid} exitCode=${electronProcess.exitCode} signal=${electronProcess.signalCode})`,
+      { cause: error },
+    );
+  });
   // Reopen the same isolated profile after a real app quit with a live PTY.
   application = await _electron.launch({
     executablePath: requireDesktop("electron"),
