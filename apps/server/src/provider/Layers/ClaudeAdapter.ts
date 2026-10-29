@@ -67,8 +67,10 @@ import {
 } from "../claudeToolCompletion.ts";
 import { randomUUID } from "node:crypto";
 import {
+  CLAUDE_PLAN_MODE_EDIT_DENIAL,
   claudeMandatoryPolicyOptions,
   evaluateClaudeMandatoryPolicy,
+  isClaudePlanModeWorkspaceEdit,
 } from "../claudeMandatoryPolicy.ts";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import type { ProviderSessionStartInput } from "@t3tools/contracts";
@@ -6895,6 +6897,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           input.providerOptions?.claudeAgent,
           options?.processEnvironment ?? process.env,
         );
+        const plansDirectory = NodePath.join(
+          resolveClaudeConfigDir(queryEnvironment, input.cwd),
+          "plans",
+        );
         let pendingContextResetReason: string | undefined;
         let resumeFallbackWarning: { requested: string; selected: string } | undefined;
         if (resumeState?.resume && isClaudeTranscriptUnderMaintenance(resumeState.resume)) {
@@ -7578,6 +7584,19 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 } satisfies PermissionResult;
               }
               const inPlanMode = context.configuredBase?.permissionMode === "plan";
+              // Full access never prompts, whatever the approval policy; plan
+              // mode still refuses workspace edits.
+              if (inPlanMode && (input.runtimeMode ?? DEFAULT_RUNTIME_MODE) === "full-access") {
+                return isClaudePlanModeWorkspaceEdit(toolName, toolInput, {
+                  plansDirectory,
+                  cwd: input.cwd,
+                })
+                  ? ({
+                      behavior: "deny",
+                      message: CLAUDE_PLAN_MODE_EDIT_DENIAL,
+                    } satisfies PermissionResult)
+                  : ({ behavior: "allow", updatedInput: toolInput } satisfies PermissionResult);
+              }
               if (inPlanMode && input.approvalPolicy === "never")
                 return {
                   behavior: "deny",
@@ -8083,10 +8102,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   )
                 );
               },
-              plansDirectory: NodePath.join(
-                resolveClaudeConfigDir(queryEnvironment, input.cwd),
-                "plans",
-              ),
+              plansDirectory,
             },
             undefined,
             async (hook, signal) => {
