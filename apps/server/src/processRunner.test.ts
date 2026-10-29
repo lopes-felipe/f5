@@ -7,6 +7,32 @@ import { describe, expect, it, vi } from "vitest";
 import { runProcess, terminateRunningProcesses } from "./processRunner";
 
 describe("runProcess", () => {
+  it.each(["error", "tail"] as const)(
+    "streams complete output with bounded diagnostic tails in %s mode",
+    async (outputMode) => {
+      let stdout = "",
+        stderr = "";
+      const result = await runProcess(
+        process.execPath,
+        ["-e", "process.stdout.write('x'.repeat(12000));process.stderr.write('y'.repeat(9000))"],
+        {
+          env: process.env,
+          outputMode,
+          maxBufferBytes: 64,
+          onStdoutChunk: (chunk) => {
+            stdout += Buffer.from(chunk).toString();
+          },
+          onStderrChunk: (chunk) => {
+            stderr += Buffer.from(chunk).toString();
+          },
+        },
+      );
+      expect(stdout).toBe("x".repeat(12000));
+      expect(stderr).toBe("y".repeat(9000));
+      expect(result.stdout).toBe("x".repeat(4096));
+      expect(result.stderr).toBe("y".repeat(4096));
+    },
+  );
   it("passes the same bare-repository protection to direct Git callers", async () => {
     const result = await runProcess("git", ["config", "--get", "--", "safe.bareRepository"], {
       env: process.env,
