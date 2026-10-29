@@ -39,6 +39,7 @@ import {
 } from "../sharedAssistantContract.ts";
 import {
   buildClaudeQueryEnv,
+  accumulateClaudeThinkingTokens,
   claudeShowThinkingSummaries,
   isClaudeMissingConversationError,
   makeClaudeAdapterLive,
@@ -5264,6 +5265,81 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("reports estimated thinking tokens when each thinking block closes", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "think",
+        attachments: [],
+      });
+      const emit = (message: Record<string, unknown>) =>
+        harness.query.emit({
+          uuid: crypto.randomUUID(),
+          session_id: "sdk-session-thinking-tokens",
+          ...message,
+        } as unknown as SDKMessage);
+      const stream = (event: Record<string, unknown>) =>
+        emit({ type: "stream_event", parent_tool_use_id: null, event });
+      const estimate = (tokens: number) =>
+        emit({ type: "system", subtype: "thinking_tokens", estimated_tokens: tokens });
+
+      stream({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking", thinking: "", signature: "" },
+      });
+      estimate(300);
+      estimate(700);
+      stream({ type: "content_block_stop", index: 0 });
+      stream({
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "thinking", thinking: "", signature: "" },
+      });
+      // The estimate restarts for a new block, even when its first frame
+      // is above the previous block's final estimate.
+      estimate(900);
+      estimate(1_000);
+      stream({ type: "content_block_stop", index: 1 });
+      // A late frame for the closed block is reported when the turn ends.
+      estimate(1_150);
+      emit({ type: "result", subtype: "success", is_error: false, errors: [] });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      const reports = events.flatMap((event) =>
+        event.type === "turn.reasoning-tokens.reported"
+          ? [{ itemId: event.itemId, turnId: String(event.turnId), ...event.payload }]
+          : [],
+      );
+      const turnId = String(turn.turnId);
+      assert.deepEqual(reports, [
+        { itemId: `${turnId}:thinking:1`, turnId, tokens: 700, estimated: true },
+        { itemId: `${turnId}:thinking:2`, turnId, tokens: 1_000, estimated: true },
+        { itemId: undefined, turnId, tokens: 150, estimated: true },
+      ]);
+      const completedIndex = events.findIndex((event) => event.type === "turn.completed");
+      const lastReportIndex = events.findLastIndex(
+        (event) => event.type === "turn.reasoning-tokens.reported",
+      );
+      assert.isTrue(lastReportIndex < completedIndex);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("closes a stale thinking block and ignores thinking after an interrupt", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -5402,6 +5478,20 @@ describe("ClaudeAdapterLive", () => {
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );
+  });
+
+  it("accumulates Claude thinking estimates from deltas, falling back to the running total", () => {
+    // The SDK's per-frame delta wins, even across blocks whose totals are equal.
+    let account = accumulateClaudeThinkingTokens(undefined, 200, 200);
+    account = accumulateClaudeThinkingTokens({ ...account, lastEstimate: 0 }, 200, 200);
+    assert.equal(account.pending, 400);
+    // Without a delta the running total is diffed; a block reset makes an
+    // equal or higher first estimate count in full.
+    let fallback = accumulateClaudeThinkingTokens(undefined, 300);
+    fallback = accumulateClaudeThinkingTokens({ ...fallback, lastEstimate: 0 }, 300);
+    assert.equal(fallback.pending, 600);
+    // A drop without a reset is still read as a new block.
+    assert.equal(accumulateClaudeThinkingTokens(fallback, 50).pending, 650);
   });
 
   it("derives showThinkingSummaries from the typed thinking display", () => {
@@ -12820,12 +12910,131 @@ describe("ClaudeAdapterLive", () => {
   });
 
   it.effect.each([
-    ["full-access", "Write"],
+    ["full-access", "Bash", { command: "bun run test" }, "allow"],
+    ["full-access", "mcp__preview__navigate", { url: "http://localhost:3000" }, "allow"],
+    [
+      "full-access",
+      "Write",
+      { file_path: "/isolated/.claude/plans/x.md", content: "plan" },
+      "allow",
+    ],
+    ["full-access", "Write", { file_path: "/repo/a.ts", content: "work" }, "deny"],
+    ["full-access", "Edit", { file_path: "/repo/a.ts", old_string: "a", new_string: "b" }, "deny"],
+    [
+      "full-access",
+      "MultiEdit",
+      { file_path: "/repo/a.ts", edits: [{ old_string: "a", new_string: "b" }] },
+      "deny",
+    ],
+    [
+      "full-access",
+      "MultiEdit",
+      { file_path: "/isolated/.claude/plans/x.md", edits: [{ old_string: "a", new_string: "b" }] },
+      "allow",
+    ],
+    ["full-access", "NotebookEdit", { notebook_path: "/repo/a.ipynb", new_source: "x" }, "deny"],
+    ["full-access/never", "Bash", { command: "bun run test" }, "allow"],
+    ["full-access/never", "Write", { file_path: "/repo/a.ts", content: "work" }, "deny"],
+  ] as const)(
+    "decides a plan-mode callback in %s mode for %s without asking",
+    ([mode, toolName, toolInput, behavior]) => {
+      const harness = makeHarness({
+        processEnvironment: { CLAUDE_CONFIG_DIR: "/isolated/.claude" },
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events: ProviderRuntimeEvent[] = [];
+        const observer = yield* adapter.streamEvents.pipe(
+          Stream.runForEach((event) =>
+            Effect.sync(() => {
+              events.push(event);
+            }),
+          ),
+          Effect.forkChild,
+        );
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          runtimeMode: "full-access",
+          cwd: "/repo",
+          ...(mode === "full-access/never" ? { approvalPolicy: "never" as const } : {}),
+        });
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "plan",
+          attachments: [],
+          interactionMode: "plan",
+        });
+        const result = yield* Effect.promise(() =>
+          harness.getLastCreateQueryInput()!.options.canUseTool!(toolName, toolInput, {
+            signal: new AbortController().signal,
+            toolUseID: "plan-call",
+            requestId: "plan-call",
+          }),
+        );
+        assert.equal(result?.behavior, behavior);
+        if (result?.behavior === "deny") assert.include(result.message, "Plan mode is read-only");
+        assert.isFalse(events.some((event) => event.type === "request.opened"));
+        yield* Fiber.interrupt(observer);
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect("allows full-access repo edits again after leaving plan mode", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        runtimeMode: "full-access",
+        cwd: "/repo",
+      });
+      const decide = () =>
+        Effect.promise(() =>
+          harness.getLastCreateQueryInput()!.options.canUseTool!(
+            "Write",
+            { file_path: "/repo/a.ts", content: "work" },
+            {
+              signal: new AbortController().signal,
+              toolUseID: "plan-exit",
+              requestId: "plan-exit",
+            },
+          ),
+        );
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "plan",
+        attachments: [],
+        interactionMode: "plan",
+      });
+      assert.equal((yield* decide())?.behavior, "deny");
+      const turnCompletedFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runHead, Effect.forkChild);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-plan-exit",
+        uuid: "result-plan-exit",
+      } as unknown as SDKMessage);
+      yield* Fiber.join(turnCompletedFiber);
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "implement",
+        attachments: [],
+        interactionMode: "default",
+      });
+      assert.equal((yield* decide())?.behavior, "allow");
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect.each([
     ["auto", "Write"],
     ["auto-accept-edits", "Write"],
     ["approval-required", "Write"],
-    ["full-access", "Bash"],
-    ["full-access", "mcp__preview__navigate"],
+    ["approval-required", "Bash"],
   ] as const)("asks before a plan-mode callback in %s mode for %s", ([runtimeMode, toolName]) => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -12881,7 +13090,7 @@ describe("ClaudeAdapterLive", () => {
         const adapter = yield* ClaudeAdapter;
         yield* adapter.startSession({
           threadId: THREAD_ID,
-          runtimeMode: "full-access",
+          runtimeMode: "approval-required",
           approvalPolicy: "never",
         });
         yield* adapter.sendTurn({

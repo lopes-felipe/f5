@@ -1469,6 +1469,16 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           return;
         }
 
+        case "thread.message-reasoning-tokens-added": {
+          yield* projectionThreadMessageRepository.addReasoningTokens({
+            messageId: event.payload.messageId,
+            threadId: event.payload.threadId,
+            tokens: event.payload.tokens,
+            estimated: event.payload.estimated,
+          });
+          return;
+        }
+
         case "thread.reverted": {
           const existingRows = yield* projectionThreadMessageRepository.listByThreadId({
             threadId: event.payload.threadId,
@@ -2619,7 +2629,11 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
     },
     {
       name: ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
-      eventTypes: ["thread.message-sent", "thread.reverted"],
+      eventTypes: [
+        "thread.message-sent",
+        "thread.message-reasoning-tokens-added",
+        "thread.reverted",
+      ],
       apply: applyThreadMessagesProjection,
     },
     {

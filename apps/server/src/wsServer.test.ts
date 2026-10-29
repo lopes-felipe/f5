@@ -26,6 +26,7 @@ import {
   ComputerAutomationBrokerRuntime,
 } from "./computer/ComputerAutomationBroker";
 import { DesktopComputerHost } from "./computer/DesktopComputerHost";
+import { browserOpenSocketPath } from "./browser/BrowserOpenLauncher";
 import { type OpenShape } from "./open";
 import { makeSqlitePersistenceLive } from "./persistence/Layers/Sqlite";
 import { WorkspaceTransition } from "./project/Services/WorkspaceTransition.ts";
@@ -51,6 +52,36 @@ import { SERVER_BOOTSTRAP } from "./wsServer/protocol";
 describe("WebSocket Server", () => {
   const h = createWsServerTestHarness();
   const { connections, makeTempDir, createTestServer, closeTestServer } = h;
+
+  it.skipIf(process.platform !== "darwin")(
+    "starts the real broker when browser socket setup fails",
+    async () => {
+      const stateDir = makeTempDir("f5-browser-broker-blocked-");
+      const socketPath = browserOpenSocketPath(stateDir);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      vi.stubEnv("F5_DESKTOP_COMPUTER_HOST", "ipc");
+      try {
+        fs.mkdirSync(path.dirname(socketPath), { recursive: true });
+        fs.writeFileSync(socketPath, "keep");
+        h.server = await createTestServer({ stateDir, computerAccess: true });
+        const address = h.server.address();
+        const [ws] = await connectAndAwaitWelcome(
+          typeof address === "object" && address ? address.port : 0,
+        );
+        connections.push(ws);
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining("listener unavailable"),
+          expect.any(Error),
+        );
+        expect(fs.readFileSync(socketPath, "utf8")).toBe("keep");
+      } finally {
+        await closeTestServer();
+        fs.rmSync(socketPath, { force: true });
+        vi.unstubAllEnvs();
+        warn.mockRestore();
+      }
+    },
+  );
 
   it.each(['[{"appId":"private-sentinel"', '[{"tier":"future","appId":"x","projectId":"p"}]'])(
     "starts the real headless backend with invalid remembered grants: %s",

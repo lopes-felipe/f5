@@ -72,8 +72,10 @@ import {
 } from "../claudeToolCompletion.ts";
 import { randomUUID } from "node:crypto";
 import {
+  CLAUDE_PLAN_MODE_EDIT_DENIAL,
   claudeMandatoryPolicyOptions,
   evaluateClaudeMandatoryPolicy,
+  isClaudePlanModeWorkspaceEdit,
 } from "../claudeMandatoryPolicy.ts";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import type { ProviderSessionStartInput } from "@t3tools/contracts";
@@ -326,6 +328,36 @@ type PromptQueueItem =
       readonly type: "terminate";
     };
 
+export interface ClaudeThinkingTokenAccount {
+  /** Latest per-block estimate; it restarts from zero for each thinking block. */
+  readonly lastEstimate: number;
+  /** Tokens estimated since the last report. */
+  readonly pending: number;
+}
+
+/**
+ * Folds a live per-block estimate into the account. The SDK's per-frame
+ * delta is used when present; otherwise the running total is diffed, with a
+ * drop treated as a new block.
+ */
+export function accumulateClaudeThinkingTokens(
+  account: ClaudeThinkingTokenAccount | undefined,
+  estimatedTokens: number,
+  estimatedTokensDelta?: number,
+): ClaudeThinkingTokenAccount {
+  const lastEstimate = account?.lastEstimate ?? 0;
+  const pending = account?.pending ?? 0;
+  const added =
+    typeof estimatedTokensDelta === "number" &&
+    Number.isFinite(estimatedTokensDelta) &&
+    estimatedTokensDelta >= 0
+      ? estimatedTokensDelta
+      : estimatedTokens >= lastEstimate
+        ? estimatedTokens - lastEstimate
+        : estimatedTokens;
+  return { lastEstimate: estimatedTokens, pending: pending + added };
+}
+
 interface ClaudeTurnState {
   goalChecked?: boolean;
   userMessageUuids?: Set<string>;
@@ -344,6 +376,8 @@ interface ClaudeTurnState {
   thinkingBlockCount: number;
   /** Open thinking blocks by stream block index, closed on stop or turn end. */
   readonly openThinkingBlocks: Map<number, string>;
+  /** Live `thinking_tokens` accounting, reported when a thinking block closes. */
+  thinkingTokens?: ClaudeThinkingTokenAccount;
   authenticationFailureMessage?: string;
   rateLimitFailure?: true;
   rejectedUsageLimits?: Map<string, ReturnType<typeof claudeLimitState>>;
@@ -3986,6 +4020,34 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           providerRefs: nativeProviderRefs(context),
           raw: { source: "claude.sdk.message", method: raw.method, payload: raw.payload },
         });
+        yield* reportPendingThinkingTokens(context, turnState, raw, itemId);
+      });
+
+    // Claude reports no billed thinking tokens, so the live estimate is all there is.
+    const reportPendingThinkingTokens = (
+      context: ClaudeSessionContext,
+      turnState: ClaudeTurnState,
+      raw: { readonly method: string; readonly payload: unknown },
+      itemId?: string,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const account = turnState.thinkingTokens;
+        if (!account || account.pending <= 0) return;
+        turnState.thinkingTokens = { ...account, pending: 0 };
+        const stamp = yield* makeEventStamp(context);
+        yield* offerRuntimeEvent({
+          type: "turn.reasoning-tokens.reported",
+          ...stamp,
+          eventId: stamp.eventId,
+          provider: PROVIDER,
+          createdAt: stamp.createdAt,
+          threadId: context.session.threadId,
+          turnId: asCanonicalTurnId(turnState.turnId),
+          ...(itemId !== undefined ? { itemId: asRuntimeItemId(itemId) } : {}),
+          payload: { tokens: account.pending, estimated: true },
+          providerRefs: nativeProviderRefs(context),
+          raw: { source: "claude.sdk.message", method: raw.method, payload: raw.payload },
+        });
       });
 
     const completeOpenThinkingBlocks = (
@@ -3997,7 +4059,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         [...turnState.openThinkingBlocks.keys()],
         (index) => completeThinkingBlock(context, turnState, index, raw),
         { discard: true },
-      ).pipe(Effect.andThen(Effect.sync(() => turnState.openThinkingBlocks.clear())));
+      ).pipe(
+        Effect.andThen(Effect.sync(() => turnState.openThinkingBlocks.clear())),
+        // Estimates that arrived after their block closed.
+        Effect.andThen(reportPendingThinkingTokens(context, turnState, raw)),
+      );
 
     const completeTurn = (
       context: ClaudeSessionContext,
@@ -4416,6 +4482,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             if (!turnState) return;
             turnState.thinkingBlockCount += 1;
             const itemId = `${turnState.turnId}:thinking:${turnState.thinkingBlockCount}`;
+            // Each block's estimate restarts from zero; the drop check is only a fallback.
+            if (turnState.thinkingTokens) {
+              turnState.thinkingTokens = { ...turnState.thinkingTokens, lastEstimate: 0 };
+            }
             turnState.openThinkingBlocks.set(index, itemId);
             const stamp = yield* makeEventStamp(context);
             yield* offerRuntimeEvent({
@@ -5809,6 +5879,13 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             // dedicated runtime event; deliberately kept out of the context-token
             // / compaction accounting since it is ephemeral per-thinking-block
             // progress.
+            if (context.turnState) {
+              context.turnState.thinkingTokens = accumulateClaudeThinkingTokens(
+                context.turnState.thinkingTokens,
+                message.estimated_tokens,
+                message.estimated_tokens_delta,
+              );
+            }
             yield* offerRuntimeEvent({
               ...base,
               type: "thread.thinking-tokens.updated",
@@ -6983,6 +7060,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           input.providerOptions?.claudeAgent,
           options?.processEnvironment ?? process.env,
         );
+        const plansDirectory = NodePath.join(
+          resolveClaudeConfigDir(queryEnvironment, input.cwd),
+          "plans",
+        );
         let pendingContextResetReason: string | undefined;
         let resumeFallbackWarning: { requested: string; selected: string } | undefined;
         if (resumeState?.resume && isClaudeTranscriptUnderMaintenance(resumeState.resume)) {
@@ -7702,6 +7783,19 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 } satisfies PermissionResult;
               }
               const inPlanMode = context.configuredBase?.permissionMode === "plan";
+              // Full access never prompts, whatever the approval policy; plan
+              // mode still refuses workspace edits.
+              if (inPlanMode && (input.runtimeMode ?? DEFAULT_RUNTIME_MODE) === "full-access") {
+                return isClaudePlanModeWorkspaceEdit(toolName, toolInput, {
+                  plansDirectory,
+                  cwd: input.cwd,
+                })
+                  ? ({
+                      behavior: "deny",
+                      message: CLAUDE_PLAN_MODE_EDIT_DENIAL,
+                    } satisfies PermissionResult)
+                  : ({ behavior: "allow", updatedInput: toolInput } satisfies PermissionResult);
+              }
               if (inPlanMode && input.approvalPolicy === "never")
                 return {
                   behavior: "deny",
@@ -8207,10 +8301,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   )
                 );
               },
-              plansDirectory: NodePath.join(
-                resolveClaudeConfigDir(queryEnvironment, input.cwd),
-                "plans",
-              ),
+              plansDirectory,
             },
             undefined,
             async (hook, signal) => {
