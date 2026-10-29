@@ -10,6 +10,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import {
+  fetchMissingDefaultBranch,
+  resolveHeadInDefaultBranch,
+} from "../../project/worktreeMerge.ts";
 import { GitCoreTestLive as GitCoreLive } from "../testLayers.ts";
 import { GitCommandError } from "../Errors.ts";
 import { GitServiceLive } from "./GitService.ts";
@@ -1249,6 +1253,49 @@ describe("default branch without a local origin/HEAD ref", () => {
       expect(await Effect.runPromise(core.readAdvertisedDefaultBranch(cwd))).toBe("trunk");
       // No remote to ask: no default, rather than "main".
       expect(await Effect.runPromise(core.readAdvertisedDefaultBranch(unpublished))).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("fetches an advertised default that was never fetched, so merge checks can run", async () => {
+    const root = mkdtempSync(join(tmpdir(), "f5-git-core-default-"));
+    try {
+      const [cwd, remote] = ["local", "remote.git"].map((name) => join(root, name)) as [
+        string,
+        string,
+      ];
+      for (const dir of [cwd, remote]) mkdirSync(dir);
+      runGit(remote, ["init", "--bare", "--initial-branch=trunk"]);
+      runGit(cwd, ["init", "--initial-branch=feature"]);
+      runGit(cwd, ["config", "user.email", "test@test.com"]);
+      runGit(cwd, ["config", "user.name", "Test"]);
+      runGit(cwd, ["config", "commit.gpgsign", "false"]);
+      writeFileSync(join(cwd, "README.md"), "initial\n");
+      runGit(cwd, ["add", "README.md"]);
+      runGit(cwd, ["commit", "-m", "initial"]);
+      const head = runGit(cwd, ["rev-parse", "HEAD"]);
+      runGit(cwd, ["remote", "add", "origin", remote]);
+      runGit(cwd, ["push", "origin", "HEAD:trunk"]);
+      // Integrated upstream, but no origin/HEAD, tracking ref or local trunk.
+      runGit(cwd, ["update-ref", "-d", "refs/remotes/origin/trunk"]);
+
+      const core = await makeCore(
+        await Effect.runPromise(
+          Effect.service(GitService).pipe(
+            Effect.provide(GitServiceLive.pipe(Layer.provide(NodeServices.layer))),
+          ),
+        ),
+      );
+      expect(await Effect.runPromise(resolveHeadInDefaultBranch(core, cwd, head))).toEqual({
+        defaultBranch: "trunk",
+        merged: null,
+      });
+      await Effect.runPromise(fetchMissingDefaultBranch(core, cwd));
+      expect(await Effect.runPromise(resolveHeadInDefaultBranch(core, cwd, head))).toEqual({
+        defaultBranch: "trunk",
+        merged: true,
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

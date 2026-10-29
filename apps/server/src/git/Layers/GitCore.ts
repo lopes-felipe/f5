@@ -123,6 +123,7 @@ interface ExecuteGitOptions {
   env?: NodeJS.ProcessEnv | undefined;
   onStderrChunk?: ((chunk: Uint8Array) => void) | undefined;
   onStdoutChunk?: ((chunk: Uint8Array) => void) | undefined;
+  maxOutputBytes?: number | undefined;
 }
 
 // Streams output past the cap while keeping a bounded tail for failure details.
@@ -366,6 +367,7 @@ const makeGitCore = Effect.gen(function* () {
         ...(options.onStdoutChunk ? { onStdoutChunk: options.onStdoutChunk } : {}),
         allowNonZeroExit: true,
         ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+        ...(options.maxOutputBytes !== undefined ? { maxOutputBytes: options.maxOutputBytes } : {}),
       })
       .pipe(
         Effect.ensuring(
@@ -996,31 +998,34 @@ const makeGitCore = Effect.gen(function* () {
     );
 
   // One remote round trip per repository per TTL, so a cleanup pass over many
-  // worktrees asks once. A failed or unanswered query caches as null.
+  // worktrees asks once. An answer without a HEAD caches as null; a failed
+  // query (offline, auth, timeout) is retried soon.
   const advertisedDefaultBranchCache = yield* Cache.makeWith({
     capacity: STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY,
-    lookup: (cwd: string): Effect.Effect<string | null> =>
+    lookup: (cwd: string): Effect.Effect<string | null, GitCommandError> =>
       executeGit(
         "GitCore.readAdvertisedDefaultBranch",
         cwd,
         ["ls-remote", "--symref", "--", "origin", "HEAD"],
-        { allowNonZeroExit: true, timeoutMs: ADVERTISED_DEFAULT_BRANCH_TIMEOUT_MS },
+        { timeoutMs: ADVERTISED_DEFAULT_BRANCH_TIMEOUT_MS },
       ).pipe(
-        Effect.map((result) =>
-          result.code === 0
-            ? (/^ref: refs\/heads\/(.+)\tHEAD\r?$/m.exec(result.stdout)?.[1] ?? null)
-            : null,
+        Effect.map(
+          (result) => /^ref: refs\/heads\/(.+)\tHEAD\r?$/m.exec(result.stdout)?.[1] ?? null,
         ),
-        Effect.orElseSucceed(() => null),
       ),
-    timeToLive: () => ADVERTISED_DEFAULT_BRANCH_CACHE_TTL,
+    timeToLive: (exit) =>
+      Exit.isSuccess(exit)
+        ? ADVERTISED_DEFAULT_BRANCH_CACHE_TTL
+        : STATUS_STATIC_METADATA_FAILURE_CACHE_TTL,
   });
 
   const readAdvertisedDefaultBranch: GitCoreShape["readAdvertisedDefaultBranch"] = (cwd) =>
     resolveDefaultBranchName(cwd, "origin").pipe(
       Effect.orElseSucceed(() => null),
       Effect.flatMap((branch) =>
-        branch !== null ? Effect.succeed(branch) : Cache.get(advertisedDefaultBranchCache, cwd),
+        branch !== null
+          ? Effect.succeed(branch)
+          : Cache.get(advertisedDefaultBranchCache, cwd).pipe(Effect.orElseSucceed(() => null)),
       ),
     );
 
@@ -3538,6 +3543,8 @@ const makeGitCore = Effect.gen(function* () {
           git: (cwd, args, env) =>
             executeGit("GitCore.removeWorktree", cwd, args, {
               timeoutMs: 300_000,
+              // `ls-files --stage` lists every index entry.
+              maxOutputBytes: 64 * 1024 * 1024,
               ...(env ? { env } : {}),
             }),
           refuse: (detail, cause) =>

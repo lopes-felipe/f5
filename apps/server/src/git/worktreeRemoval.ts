@@ -28,8 +28,9 @@ const pathExists = (path: string) =>
  * Makes the checks a plain `git worktree remove` makes just before deleting
  * (builtin/worktree.c), deletes the folder with Node's `rm`, which unlinks
  * junctions and symlinks without following them, and then has Git drop the
- * now-missing worktree's metadata. Callers have already verified identity,
- * submodules and ignored files under the lifecycle locks.
+ * now-missing worktree's metadata. Callers have already verified identity and
+ * ignored files under the lifecycle locks; submodules, the lock and local
+ * changes are checked again here because terminal Git ignores those locks.
  */
 export const removeWorktreeWithoutFollowingLinks = (input: {
   readonly cwd: string;
@@ -58,15 +59,24 @@ export const removeWorktreeWithoutFollowingLinks = (input: {
       fs(`Cannot inspect ${path}.`, () => pathExists(path)).pipe(Effect.orElseSucceed(() => true));
     if (yield* present(join(adminDir, "locked")))
       return yield* refuse(`The target ${worktreePath} is a locked worktree.`);
-    if (yield* present(join(adminDir, "modules")))
-      return yield* refuse(
-        "Initialized submodules prevent safe removal. Deinitialize them after preserving their local work, then retry.",
-      );
-    // Bound like Git's own check, so `core.worktree` cannot point it elsewhere.
+    // Bound like Git's own checks, so `core.worktree` cannot point them elsewhere.
+    const boundEnv = { GIT_DIR: gitFile, GIT_WORK_TREE: worktreePath };
+    const submodules = refuse(
+      "Initialized submodules prevent safe removal. Deinitialize them after preserving their local work, then retry.",
+    );
+    if (yield* present(join(adminDir, "modules"))) return yield* submodules;
+    // A submodule initialized in place keeps its repository in `<path>/.git`,
+    // which `rm` would delete with any unpushed commits.
+    const index = yield* input.git(worktreePath, ["ls-files", "--stage", "-z"], boundEnv);
+    for (const entry of index.stdout.split("\0")) {
+      if (!entry.startsWith("160000 ")) continue;
+      const submodule = entry.slice(entry.indexOf("\t") + 1);
+      if (yield* present(join(worktreePath, submodule, ".git"))) return yield* submodules;
+    }
     const status = yield* input.git(
       worktreePath,
       ["-c", "status.showUntrackedFiles=all", "status", "--porcelain", "--ignore-submodules=none"],
-      { GIT_DIR: gitFile, GIT_WORK_TREE: worktreePath },
+      boundEnv,
     );
     if (status.stdout !== "") return yield* refuse(input.changedDetail);
 

@@ -1,5 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
@@ -98,6 +106,60 @@ describe("removeWorktreeWithoutFollowingLinks", () => {
     expect(existsSync(join(worktree, "late.txt"))).toBe(true);
     expect(runGit(repo, ["worktree", "list", "--porcelain"])).toContain("feature");
   });
+
+  it("refuses a submodule initialized in place, keeping its repository", async () => {
+    const { repo, worktree } = repositoryWithLinkedWorktree();
+    const submodule = join(repo, "..", "submodule");
+    mkdirSync(submodule);
+    runGit(submodule, ["init", "--initial-branch=main"]);
+    runGit(submodule, [
+      "-c",
+      "user.email=t@t",
+      "-c",
+      "user.name=T",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "s",
+    ]);
+    const sha = runGit(submodule, ["rev-parse", "HEAD"]).trim();
+    // Record the gitlink in the worktree's branch, then clone into it the way
+    // an old-style `submodule update` leaves `sub/.git` as a directory.
+    runGit(worktree, ["update-index", "--add", "--cacheinfo", `160000,${sha},sub`]);
+    runGit(worktree, ["commit", "-m", "gitlink"]);
+    runGit(join(worktree, ".."), ["clone", "-q", submodule, join(worktree, "sub")]);
+    expect(runGit(worktree, ["status", "--porcelain", "--ignore-submodules=none"])).toBe("");
+
+    expect((await remove(repo, worktree))?.detail).toContain("Initialized submodules");
+    expect(existsSync(join(worktree, "sub", ".git", "HEAD"))).toBe(true);
+  });
+
+  it("refuses a worktree with absorbed submodule repositories", async () => {
+    const { repo, worktree } = repositoryWithLinkedWorktree();
+    mkdirSync(join(runGit(worktree, ["rev-parse", "--absolute-git-dir"]).trim(), "modules"));
+    expect((await remove(repo, worktree))?.detail).toContain("Initialized submodules");
+    expect(existsSync(join(worktree, ".git"))).toBe(true);
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "keeps a retryable worktree when the delete stops partway",
+    async () => {
+      const { repo, worktree } = repositoryWithLinkedWorktree();
+      const nested = join(worktree, "nested");
+      mkdirSync(nested);
+      writeFileSync(join(nested, "file.txt"), "tracked\n");
+      runGit(worktree, ["add", "nested/file.txt"]);
+      runGit(worktree, ["commit", "-m", "nested"]);
+      chmodSync(nested, 0o555);
+      try {
+        expect((await remove(repo, worktree))?.detail).toContain("Failed to delete");
+        expect(existsSync(join(worktree, ".git"))).toBe(true);
+        expect(runGit(repo, ["worktree", "list", "--porcelain"])).toContain("feature");
+      } finally {
+        chmodSync(nested, 0o755);
+      }
+    },
+  );
 
   it("refuses a locked worktree", async () => {
     const { repo, worktree } = repositoryWithLinkedWorktree();

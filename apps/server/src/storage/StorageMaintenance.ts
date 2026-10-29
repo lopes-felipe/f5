@@ -950,9 +950,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
       if (!review?.branch) return undefined;
       if (!input.branchDeletable || !review.head || input.referencedByThreads)
         return "kept" as const;
-      const defaultBranch = yield* git
-        .readDefaultBranch(input.cwd)
-        .pipe(Effect.orElseSucceed(() => null));
+      // The same lookup that marked the branch deletable during review.
+      const defaultBranch = yield* git.readAdvertisedDefaultBranch(input.cwd);
       if (defaultBranch === null || defaultBranch === review.branch) return "kept" as const;
       const registrations = yield* git
         .listWorktrees(input.cwd)
