@@ -53,6 +53,28 @@ function readSemanticFailure(output: unknown): { readonly error?: string } | und
     : {};
 }
 
+/**
+ * `tool_result_meta[].non_execution_kind` for one result, such as "cancelled":
+ * the call never ran, even when its result is not an error and its text reads
+ * like a success.
+ */
+export function readClaudeToolNonExecutionKind(
+  message: unknown,
+  toolUseId: string,
+): string | undefined {
+  const meta = (message as { readonly tool_result_meta?: unknown } | null)?.tool_result_meta;
+  if (!Array.isArray(meta)) return undefined;
+  for (const entry of meta) {
+    if (entry === null || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    if (record.id !== toolUseId) continue;
+    return typeof record.non_execution_kind === "string" && record.non_execution_kind.length > 0
+      ? record.non_execution_kind
+      : undefined;
+  }
+  return undefined;
+}
+
 /** Task tools whose subagent calls change the session's shared task list. */
 export const CLAUDE_SUBAGENT_TASK_MUTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
   "TaskCreate",
@@ -100,15 +122,20 @@ export function buildClaudeToolCompletion(input: {
   readonly correlated: boolean;
   readonly isError: boolean;
   readonly nativeSessionId?: string | undefined;
+  /** From {@link readClaudeToolNonExecutionKind}: the call never ran. */
+  readonly nonExecutionKind?: string | undefined;
 }): ClaudeToolCompletionDraft {
   const retained = retainsStructuredOutput(input.toolName);
   const hasOutput = input.structuredOutput !== undefined && input.structuredOutput !== null;
-  // `success: false` is a documented failure signal only for the Task tools;
-  // other tools keep the transport-level status.
-  const failure =
-    retained && input.correlated && hasOutput
-      ? readSemanticFailure(input.structuredOutput)
-      : undefined;
+  // `success: false` and a non-execution kind are failure signals only for the
+  // Task tools; other tools keep the transport-level status.
+  const failure = !retained
+    ? undefined
+    : input.nonExecutionKind !== undefined
+      ? { error: `The ${input.toolName} call did not run (${input.nonExecutionKind}).` }
+      : input.correlated && hasOutput
+        ? readSemanticFailure(input.structuredOutput)
+        : undefined;
 
   let structuredOutput: unknown;
   let outputOmission: ToolCompletionOmission | undefined;

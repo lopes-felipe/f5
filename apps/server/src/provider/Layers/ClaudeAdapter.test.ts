@@ -5853,6 +5853,25 @@ describe("ClaudeAdapterLive", () => {
       childToolResult("child-update", "Updated task #1 status");
       childToolUse("child-update-missing", "TaskUpdate", { taskId: "9", status: "completed" });
       childToolResult("child-update-missing", "Task #9 not found");
+      // A cancelled call never ran, even when its text reads like a success.
+      childToolUse("child-update-cancelled", "TaskUpdate", { taskId: "1", status: "pending" });
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-tasks",
+        uuid: "user-child-update-cancelled",
+        parent_tool_use_id: "agent-tool",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "child-update-cancelled",
+              content: "Updated task #1 status",
+            },
+          ],
+        },
+        tool_result_meta: [{ id: "child-update-cancelled", non_execution_kind: "cancelled" }],
+      } as unknown as SDKMessage);
       childToolUse("child-update-error", "TaskUpdate", { taskId: "1", status: "pending" });
       childToolResult("child-update-error", "<tool_use_error>Denied</tool_use_error>", true);
 
@@ -5865,7 +5884,13 @@ describe("ClaudeAdapterLive", () => {
       const started = events.filter((event) => event.type === "item.started");
       assert.deepEqual(
         started.map((event) => String(event.itemId)),
-        ["child-create", "child-update", "child-update-missing", "child-update-error"],
+        [
+          "child-create",
+          "child-update",
+          "child-update-missing",
+          "child-update-cancelled",
+          "child-update-error",
+        ],
       );
       const completion = (itemId: string) => {
         const event = events.find(
@@ -5889,8 +5914,102 @@ describe("ClaudeAdapterLive", () => {
       // Failed calls changed nothing.
       assert.equal(completion("child-update-missing")?.semanticSuccess, false);
       assert.equal(completion("child-update-missing")?.semanticError, "Task #9 not found");
+      assert.equal(completion("child-update-cancelled")?.semanticSuccess, false);
+      assert.equal(completion("child-update-cancelled")?.transportError, false);
+      assert.match(completion("child-update-cancelled")?.semanticError ?? "", /cancelled/);
       assert.equal(completion("child-update-error")?.semanticSuccess, false);
       assert.equal(completion("child-update-error")?.transportError, true);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("closes foreground subagent Task calls at turn end and keeps background ones", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const eventsFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "item.started" || event.type === "item.completed",
+      ).pipe(
+        Stream.takeUntil(
+          (event) => event.type === "item.completed" && event.itemId === "bg-late-create",
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "delegate",
+        attachments: [],
+      });
+
+      const childToolUse = (parent: string, id: string) =>
+        harness.query.emit({
+          type: "assistant",
+          session_id: BACKGROUND_SESSION_ID,
+          uuid: `assistant-${id}`,
+          parent_tool_use_id: parent,
+          message: {
+            id: `message-${id}`,
+            role: "assistant",
+            content: [{ type: "tool_use", id, name: "TaskCreate", input: { subject: id } }],
+          },
+        } as unknown as SDKMessage);
+      const childToolResult = (parent: string, id: string) =>
+        harness.query.emit({
+          type: "user",
+          session_id: BACKGROUND_SESSION_ID,
+          uuid: `user-${id}`,
+          parent_tool_use_id: parent,
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: id,
+                content: `Task #7 created successfully: ${id}`,
+              },
+            ],
+          },
+        } as unknown as SDKMessage);
+
+      emitClaudeTaskStarted(harness.query, { taskId: "bg-task", toolUseId: "bg-agent" });
+      emitClaudeTaskUpdated(harness.query, {
+        taskId: "bg-task",
+        patch: { is_backgrounded: true },
+      });
+      childToolUse("fg-agent", "fg-create");
+      childToolUse("bg-agent", "bg-create");
+      emitClaudeSuccessResult(harness.query);
+      // After the turn ended, the background subagent keeps working.
+      childToolResult("bg-agent", "bg-create");
+      childToolUse("bg-agent", "bg-late-create");
+      childToolResult("bg-agent", "bg-late-create");
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      const completed = (itemId: string) =>
+        events.find(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "item.completed" }> =>
+            event.type === "item.completed" && event.itemId === itemId,
+        );
+      // The foreground subagent's call is closed without a result.
+      assert.equal(completed("fg-create")?.payload.status, "failed");
+      assert.equal(completed("fg-create")?.payload.completion, undefined);
+      // The background subagent's calls still complete, attributed to the launch turn.
+      assert.equal(completed("bg-create")?.payload.completion?.semanticSuccess, true);
+      assert.equal(completed("bg-create")?.turnId, turn.turnId);
+      const lateStarted = events.find(
+        (event) => event.type === "item.started" && event.itemId === "bg-late-create",
+      );
+      assert.equal(lateStarted?.turnId, turn.turnId);
+      assert.equal(completed("bg-late-create")?.turnId, turn.turnId);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
