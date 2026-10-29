@@ -6,6 +6,7 @@ import {
   requiresDefaultBranchConfirmation,
   resolveAutoFeatureBranchName,
   resolveDefaultBranchActionDialogCopy,
+  resolveFeatureBranchUnavailableReason,
   resolveQuickAction,
   summarizeGitResult,
   shouldSavePullRequestLink,
@@ -805,6 +806,21 @@ describe("requiresDefaultBranchConfirmation", () => {
     assert.isTrue(requiresDefaultBranchConfirmation("commit_push", true));
     assert.isTrue(requiresDefaultBranchConfirmation("commit_push_pr", true));
     assert.isFalse(requiresDefaultBranchConfirmation("commit_push", false));
+  });
+});
+
+describe("resolveFeatureBranchUnavailableReason", () => {
+  it("blocks the feature branch when there is nothing to commit", () => {
+    assert.equal(
+      resolveFeatureBranchUnavailableReason({ branchName: "main", hasWorkingTreeChanges: false }),
+      "There are no changes to commit, so a feature branch can't be named. Create a branch yourself or continue on main.",
+    );
+  });
+
+  it("allows the feature branch when there are changes to commit", () => {
+    assert.isNull(
+      resolveFeatureBranchUnavailableReason({ branchName: "main", hasWorkingTreeChanges: true }),
+    );
   });
 });
 
