@@ -49,6 +49,7 @@ import { resolveAgentBrowserPolicy, type AgentBrowserPolicy } from "../mcp/brows
 import { AutomationQueue } from "../mcp/automationQueue";
 import { AgentControlPause, AgentControlPauseService } from "../mcp/agentControlPause";
 import { DesktopComputerHost } from "./DesktopComputerHost";
+import { startBrowserOpenBridge } from "../browser/BrowserOpenBridge";
 import { computerAccessStorage } from "./computerAccessStorage";
 import { ComputerAccessService } from "./ComputerAccessService";
 
@@ -1769,6 +1770,10 @@ export const ComputerAutomationBrokerLive = Layer.effect(
       Effect.runPromise(effect.pipe(Effect.provide(services)));
     const file = path.join(config.stateDir, "computer-access.json");
     const host = DesktopComputerHost.fromEnvironment(config.profile?.id ?? "default");
+    // Register cleanup before starting any profile-local services.
+    yield* Effect.addFinalizer(() => Effect.sync(() => host.close()));
+    const closeBrowser = yield* Effect.promise(() => startBrowserOpenBridge(config.stateDir, host));
+    yield* Effect.addFinalizer(() => Effect.promise(closeBrowser));
     const pause = yield* Effect.serviceOption(AgentControlPauseService);
     const storage = computerAccessStorage({
       exists: () => run(fs.exists(file)),
@@ -1834,8 +1839,10 @@ export const ComputerAutomationBrokerLive = Layer.effect(
         };
       },
     });
-    yield* Effect.promise(() => broker.initialize());
+    // broker.close owns host.close from here, including initialization failure.
+    // The early host finalizer remains safe because close is idempotent.
     yield* Effect.addFinalizer(() => Effect.sync(() => broker.close()));
+    yield* Effect.promise(() => broker.initialize());
     return broker;
   }),
 );

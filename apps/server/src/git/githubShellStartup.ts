@@ -1,5 +1,10 @@
 import * as FS from "node:fs/promises";
 import * as Path from "node:path";
+import {
+  browserLauncherDir,
+  browserLauncherPath,
+  browserOpenEnabled,
+} from "../browser/BrowserOpenLauncher";
 
 const shellDir = (stateDir: string) => Path.join(stateDir, "github-shells");
 const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
@@ -23,10 +28,17 @@ export function githubShellEnvironment(
   };
 }
 
-export async function prepareGithubShellStartup(stateDir: string): Promise<void> {
+export async function prepareGithubShellStartup(
+  stateDir: string,
+  browserOpen = browserOpenEnabled(),
+): Promise<void> {
   const directory = shellDir(stateDir);
   await FS.mkdir(directory, { recursive: true, mode: 0o700 });
-  const reset = `unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN GH_DEBUG\nexport GH_CONFIG_DIR=${quote(Path.join(stateDir, "github"))}\nexport PATH=${quote(Path.join(stateDir, "github-bin"))}:"$PATH"\n`;
+  const reset =
+    `unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN GH_DEBUG\nexport GH_CONFIG_DIR=${quote(Path.join(stateDir, "github"))}\nexport PATH=${quote(Path.join(stateDir, "github-bin"))}:"$PATH"\n` +
+    (browserOpen
+      ? `export BROWSER=${quote(browserLauncherPath(stateDir))}\nexport PATH=${quote(browserLauncherDir(stateDir))}:"$PATH"\n`
+      : "");
   for (const name of [".zshenv", ".zprofile", ".zshrc", ".zlogin", ".zlogout"]) {
     await FS.writeFile(
       Path.join(directory, name),
@@ -59,6 +71,7 @@ export function githubTerminalStartup(
   args: string[] | undefined,
   env: NodeJS.ProcessEnv,
   stateDir: string,
+  browserOpen = browserOpenEnabled(),
 ): { args: string[]; env: NodeJS.ProcessEnv } {
   const name = shell
     .split(/[\\/]/)
@@ -91,7 +104,10 @@ export function githubTerminalStartup(
         ...original,
         "-NoExit",
         "-Command",
-        `$env:PATH = ${literal(bin)} + [IO.Path]::PathSeparator + $env:PATH; $env:GH_CONFIG_DIR = ${literal(config)}; 'GH_TOKEN','GITHUB_TOKEN','GH_ENTERPRISE_TOKEN','GITHUB_ENTERPRISE_TOKEN','GH_DEBUG' | ForEach-Object { Remove-Item "Env:$_" -ErrorAction SilentlyContinue }`,
+        `$env:PATH = ${literal(bin)} + [IO.Path]::PathSeparator + $env:PATH; $env:GH_CONFIG_DIR = ${literal(config)}; 'GH_TOKEN','GITHUB_TOKEN','GH_ENTERPRISE_TOKEN','GITHUB_ENTERPRISE_TOKEN','GH_DEBUG' | ForEach-Object { Remove-Item "Env:$_" -ErrorAction SilentlyContinue }` +
+          (browserOpen
+            ? `; $env:BROWSER = ${literal(browserLauncherPath(stateDir))}; $env:PATH = ${literal(browserLauncherDir(stateDir))} + [IO.Path]::PathSeparator + $env:PATH`
+            : ""),
       ],
     };
   }
@@ -110,7 +126,10 @@ export function githubTerminalStartup(
       args: [
         ...original,
         "--init-command",
-        `set -gx PATH ${quote(bin)} $PATH; set -gx GH_CONFIG_DIR ${quote(config)}; set -e GH_TOKEN; set -e GITHUB_TOKEN; set -e GH_ENTERPRISE_TOKEN; set -e GITHUB_ENTERPRISE_TOKEN; set -e GH_DEBUG`,
+        `set -gx PATH ${quote(bin)} $PATH; set -gx GH_CONFIG_DIR ${quote(config)}; set -e GH_TOKEN; set -e GITHUB_TOKEN; set -e GH_ENTERPRISE_TOKEN; set -e GITHUB_ENTERPRISE_TOKEN; set -e GH_DEBUG` +
+          (browserOpen
+            ? `; set -gx BROWSER ${quote(browserLauncherPath(stateDir))}; set -gx PATH ${quote(browserLauncherDir(stateDir))} $PATH`
+            : ""),
       ],
     };
   return { env: base, args: original };

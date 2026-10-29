@@ -15,6 +15,11 @@ function setup(
     ) => boolean;
     supervisor?: ChromeProcessSupervisor;
     verifyAdoption?: (parentPid: number, runtimePid: number) => Promise<string | undefined>;
+    openExternalUrl?: (
+      profileId: string,
+      url: string,
+    ) => Promise<import("@t3tools/contracts").OpenExternalUrlStatus>;
+    cancelBrowserOpen?: (profileId: string) => void;
   } = {},
 ) {
   const { notification, supervisor, verifyAdoption } = options;
@@ -42,6 +47,8 @@ function setup(
     },
     undefined,
     {
+      ...(options.openExternalUrl ? { openExternalUrl: options.openExternalUrl } : {}),
+      ...(options.cancelBrowserOpen ? { cancelBrowserOpen: options.cancelBrowserOpen } : {}),
       ...(notification ? { notification } : {}),
       background: () => ({ available: true }),
       ...(advertiseBackground !== undefined ? { advertiseBackground } : {}),
@@ -65,6 +72,48 @@ function setup(
   return { channel, controller, process, hello };
 }
 describe("private computer host channel", () => {
+  it("negotiates browser opening and routes the correlated result to its owning backend", async () => {
+    const openExternalUrl = vi.fn(async () => "opened" as const);
+    const cancelBrowserOpen = vi.fn();
+    const h = setup(false, false, { openExternalUrl, cancelBrowserOpen });
+    h.hello(["open-external-url-v1"]);
+    expect(h.process.send).toHaveBeenCalledWith(
+      {
+        type: "hostCapabilities",
+        capabilities: ["open-external-url-v1"],
+      },
+      expect.any(Function),
+    );
+    h.process.emit("message", {
+      type: "openExternalUrlRequest",
+      id: "login",
+      url: "https://example.com",
+    });
+    await vi.waitFor(() =>
+      expect(h.process.send).toHaveBeenCalledWith(
+        {
+          type: "openExternalUrlResult",
+          id: "login",
+          status: "opened",
+        },
+        expect.any(Function),
+      ),
+    );
+    expect(openExternalUrl).toHaveBeenCalledWith("profile", "https://example.com");
+    h.process.emit("disconnect");
+    expect(cancelBrowserOpen).toHaveBeenCalledWith("profile");
+  });
+  it("never forwards an unnegotiated browser request", () => {
+    const openExternalUrl = vi.fn(async () => "opened" as const);
+    const h = setup(false, false, { openExternalUrl });
+    h.hello();
+    h.process.emit("message", {
+      type: "openExternalUrlRequest",
+      id: "login",
+      url: "https://example.com",
+    });
+    expect(openExternalUrl).not.toHaveBeenCalled();
+  });
   it("keeps thumbnails private and sends other profiles only an anonymous lease", () => {
     const h = setup();
     h.hello();

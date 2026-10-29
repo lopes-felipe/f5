@@ -81,6 +81,9 @@ import { ComputerController } from "./computer/ComputerController";
 import { ComputerOverlay } from "./computer/ComputerOverlay";
 import { ComputerConsentAuthority } from "./computer/ComputerConsentAuthority";
 import { ComputerHostChannel } from "./computer/ComputerHostChannel";
+import { BrowserOpenAuthority } from "./browser/BrowserOpenAuthority";
+import { createBrowserOpenPrompt } from "./browser/BrowserOpenPrompt";
+import { getSafeExternalUrl } from "./browser/externalUrl";
 import { ChromeProcessSupervisor } from "./computer/ChromeProcessSupervisor";
 import { isIntegrationCertified } from "@t3tools/shared/providerIntegrationCertification";
 import { registerComputerIpc } from "./computer/registerComputerIpc";
@@ -321,6 +324,20 @@ const makeBackendRuntime = (profile: ProfileRecord): BackendRuntime => ({
 const defaultBackend = makeBackendRuntime(desktopDefaultProfile(STATE_DIR));
 const backends = new Map<string, BackendRuntime>([[defaultBackend.profile.id, defaultBackend]]);
 const profileByWebContentsId = new Map<number, string>();
+const browserOpenAuthority = new BrowserOpenAuthority({
+  prompt: createBrowserOpenPrompt({
+    window: (profileId) =>
+      BrowserWindow.getAllWindows().find(
+        (window) =>
+          !window.isDestroyed() && profileByWebContentsId.get(window.webContents.id) === profileId,
+      ),
+    openProfile: (profileId) => openProfile(profileId),
+    profileName: (profileId) => backends.get(profileId)?.profile.name ?? profileId,
+    show: (owner, options) => dialog.showMessageBox(owner, options),
+  }),
+  open: (url) => shell.openExternal(url, { activate: true }),
+  copy: (url) => clipboard.writeText(url),
+});
 const appRendererWebContentsIds = new Set<number>();
 const authenticatedSessions = new Set<Electron.Session>();
 const registeredDesktopSessions = new Set<Electron.Session>();
@@ -557,6 +574,13 @@ function initializeComputerSystem(): void {
     },
     undefined,
     {
+      ...(process.platform === "darwin"
+        ? {
+            openExternalUrl: (profileId: string, url: string) =>
+              browserOpenAuthority.request(profileId, url),
+            cancelBrowserOpen: (profileId: string) => browserOpenAuthority.cancelProfile(profileId),
+          }
+        : {}),
       notificationAvailable: () => Notification.isSupported(),
       notification: (profileId, payload) => {
         if (!Notification.isSupported()) return false;
@@ -808,25 +832,6 @@ function writeBackendSessionBoundary(phase: "START" | "END", details: string): v
   backendLogSink.write(
     `[${logTimestamp()}] ---- APP SESSION ${phase} run=${APP_RUN_ID} ${normalizedDetails} ----\n`,
   );
-}
-
-function getSafeExternalUrl(rawUrl: unknown): string | null {
-  if (typeof rawUrl !== "string" || rawUrl.length === 0) {
-    return null;
-  }
-
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(rawUrl);
-  } catch {
-    return null;
-  }
-
-  if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") {
-    return null;
-  }
-
-  return parsedUrl.toString();
 }
 
 function getSafePreviewUrl(
