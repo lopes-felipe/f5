@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect } from "effect";
 
@@ -17,6 +17,11 @@ import {
   resolveInvocation,
 } from "./resolveCommand.ts";
 import { runProviderCliCommand } from "../provider/providerCli.ts";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, statSync: vi.fn(actual.statSync) };
+});
 
 function tempDir(prefix: string): string {
   return mkdtempSync(path.join(tmpdir(), prefix));
@@ -63,6 +68,37 @@ describe("resolveExecutable", () => {
     expect(resolveExecutable("late-agent", env, { platform: "win32" })).toBeNull();
     writeExecutable(executable);
     expect(resolveExecutable("late-agent", env, { platform: "win32" })).toBe(executable);
+  });
+
+  describe("PATH entry deduplication", () => {
+    // Counts the files a miss stats, so the walk runs over every PATH entry.
+    function probedPaths(pathValue: string): string[] {
+      vi.mocked(statSync).mockClear();
+      expect(
+        resolveExecutable(
+          "definitely-not-installed",
+          { PATH: pathValue, PATHEXT: ".COM;.EXE" },
+          { platform: "win32", useCache: false },
+        ),
+      ).toBeNull();
+      return vi.mocked(statSync).mock.calls.map(([filePath]) => String(filePath));
+    }
+
+    it("visits a repeated PATH directory only once", () => {
+      const first = tempDir("f5-resolve-command-");
+      const second = tempDir("f5-resolve-command-");
+      const probed = probedPaths([first, second, first, `"${second}"`].join(";"));
+
+      // Two directories, two extensions, upper and lowercase spellings.
+      expect(probed).toHaveLength(8);
+      expect(new Set(probed).size).toBe(probed.length);
+    });
+
+    it("still visits PATH entries that differ only in case", () => {
+      // Windows can mark a directory case-sensitive, so the two spellings are
+      // not provably one directory.
+      expect(probedPaths("C:\\bin;C:\\BIN")).toHaveLength(8);
+    });
   });
 
   it("resolves extension-less absolute POSIX executables", () => {
