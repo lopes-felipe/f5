@@ -16,6 +16,7 @@ import {
   OpenLive,
   isCommandAvailable,
   launchDetached,
+  launchedAppEnvironment,
   resolveAvailableEditors,
   resolveEditorLaunch,
   resolveFileManagerRevealLaunch,
@@ -306,6 +307,48 @@ it.layer(NodeServices.layer)("launchDetached", (it) => {
       }
     }),
   );
+  it.effect("launched apps do not inherit ELECTRON_RUN_AS_NODE", () =>
+    Effect.gen(function* () {
+      const previous = {
+        runAsNode: process.env.ELECTRON_RUN_AS_NODE,
+        sentinel: process.env.F5_OPEN_TEST_SENTINEL,
+      };
+      process.env.ELECTRON_RUN_AS_NODE = "1";
+      process.env.F5_OPEN_TEST_SENTINEL = "kept";
+      const result = yield* launchDetached({
+        command: process.execPath,
+        args: [
+          "-e",
+          "process.exit(process.env.ELECTRON_RUN_AS_NODE === undefined && process.env.F5_OPEN_TEST_SENTINEL === 'kept' ? 0 : 7)",
+        ],
+      }).pipe(
+        Effect.result,
+        Effect.ensuring(
+          Effect.sync(() => {
+            for (const [key, value] of [
+              ["ELECTRON_RUN_AS_NODE", previous.runAsNode],
+              ["F5_OPEN_TEST_SENTINEL", previous.sentinel],
+            ] as const) {
+              if (value === undefined) delete process.env[key];
+              else process.env[key] = value;
+            }
+          }),
+        ),
+      );
+      assertSuccess(result, undefined);
+    }),
+  );
+
+  vitestIt("strips ELECTRON_RUN_AS_NODE in any case and keeps other variables", () => {
+    expect(
+      launchedAppEnvironment({
+        PATH: "/bin",
+        ELECTRON_RUN_AS_NODE: "1",
+        electron_run_as_node: "1",
+      }),
+    ).toEqual({ PATH: "/bin" });
+  });
+
   it.effect("resolves when command can be spawned", () =>
     Effect.gen(function* () {
       const result = yield* launchDetached({

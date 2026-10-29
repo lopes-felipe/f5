@@ -250,6 +250,17 @@ export const resolveEditorLaunch = Effect.fnUntraced(function* (
   return { command: fileManagerCommandForPlatform(platform), args: [input.cwd] };
 });
 
+/**
+ * The desktop app runs this server with ELECTRON_RUN_AS_NODE. A launched editor
+ * or file manager passes its environment on to everything started from it, so
+ * any Electron app opened from there would start as plain Node and exit.
+ */
+export function launchedAppEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(env).filter(([key]) => key.toUpperCase() !== "ELECTRON_RUN_AS_NODE"),
+  );
+}
+
 export const launchDetached = (launch: EditorLaunch, checkEarlyExit = true) =>
   Effect.gen(function* () {
     yield* Effect.annotateCurrentSpan({
@@ -266,6 +277,7 @@ export const launchDetached = (launch: EditorLaunch, checkEarlyExit = true) =>
         const invocation = resolveInvocation(launch.command, launch.args);
         child = spawn(invocation.file, [...invocation.args], {
           detached: true,
+          env: launchedAppEnvironment(),
           stdio: "ignore",
           windowsHide: true,
         });
