@@ -7116,11 +7116,22 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T19:07:17.211Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/components/BranchToolbar.tsx:53",
+          "apps/web/src/components/BranchToolbar.tsx:74",
+          "apps/web/src/components/ChatView.tsx:1211"
+        ],
+        "f5Refs": [
+          "22df7203f7168e8c7af4e88bbe7dc8d4a3c14723"
+        ]
+      },
       "id": "pr-14753",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "composer",
@@ -13838,11 +13849,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T19:07:17.211Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-17111",
-      "status": "port",
+      "reason": "f5's implementation-actions chevron has no pointerdown focus-prevention handler, so Base UI already opens the menu.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -20672,14 +20685,16 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T19:07:17.211Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-18843",
+      "reason": "f5 composer drafts and prompt stashes have no thread-context records to lose when stashing.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-18841"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -26360,14 +26375,16 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T19:07:17.211Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-20054",
+      "reason": "Upstream reverted the change in #22228, so the final upstream behavior is unchanged.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-16022"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer",
@@ -58855,11 +58872,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T19:07:17.211Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-5782",
-      "status": "port",
+      "reason": "f5's composer stores file mentions as explicit offsets and never regex-parses `[label](path)` tokens from prompt text.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -63648,11 +63667,21 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T19:07:17.210Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/composerDraftStore.ts:96",
+          "apps/web/src/composerDraftStore.ts:233"
+        ],
+        "f5Refs": [
+          "22df7203f7168e8c7af4e88bbe7dc8d4a3c14723"
+        ]
+      },
       "id": "pr-9695",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "composer",
