@@ -30,7 +30,11 @@ import {
   CheckpointStore,
   type CheckpointStoreShape,
 } from "../../checkpointing/Services/CheckpointStore.ts";
-import { CheckpointInvariantError } from "../../checkpointing/Errors.ts";
+import {
+  CheckpointInvariantError,
+  CheckpointUnsupportedError,
+} from "../../checkpointing/Errors.ts";
+import { GitCommandError } from "../../git/Errors.ts";
 import { CheckpointReactorLive } from "./CheckpointReactor.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
@@ -1127,6 +1131,85 @@ describe("CheckpointReactor", () => {
       false,
     );
   });
+
+  it.each(["unsupported", "git-failure"] as const)(
+    "skips an unsupported workspace without reporting a capture failure: %s",
+    async (scenario) => {
+      const captureCheckpoint = vi.fn(({ cwd }: { readonly cwd: string }) =>
+        scenario === "unsupported"
+          ? Effect.fail(
+              new CheckpointUnsupportedError({
+                operation: "test.capture",
+                cwd,
+                detail: "The workspace directory is ignored by its Git repository.",
+              }),
+            )
+          : Effect.fail(
+              new GitCommandError({
+                operation: "test.capture",
+                command: "git add",
+                cwd,
+                detail: "capture failed",
+              }),
+            ),
+      );
+      const harness = await createHarness({
+        seedFilesystemCheckpoints: false,
+        checkpointStore: { ...fakeCheckpointStore, captureCheckpoint },
+      });
+      const threadId = ThreadId.makeUnsafe("thread-1");
+      const createdAt = new Date().toISOString();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.makeUnsafe("cmd-session-set-unsupported"),
+          threadId,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: createdAt,
+          },
+          createdAt,
+        }),
+      );
+
+      harness.provider.emit({
+        type: "turn.started",
+        eventId: EventId.makeUnsafe("evt-turn-started-unsupported"),
+        provider: "codex",
+        createdAt,
+        threadId,
+        turnId: asTurnId("turn-unsupported"),
+      });
+      harness.provider.emit({
+        type: "turn.completed",
+        eventId: EventId.makeUnsafe("evt-turn-completed-unsupported"),
+        provider: "codex",
+        createdAt: new Date().toISOString(),
+        threadId,
+        turnId: asTurnId("turn-unsupported"),
+        payload: { state: "completed" },
+      });
+      await harness.drain();
+
+      const thread = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+        (entry) => entry.id === threadId,
+      );
+      expect(captureCheckpoint).toHaveBeenCalledTimes(2);
+      expect(thread?.checkpoints.filter((checkpoint) => checkpoint.status !== "missing")).toEqual(
+        [],
+      );
+      expect(
+        thread?.activities
+          .filter((activity) => activity.kind === "checkpoint.capture.failed")
+          .map((activity) => activity.tone),
+      ).toEqual(scenario === "unsupported" ? [] : ["error"]);
+    },
+  );
 
   it("continues processing runtime events after a single checkpoint runtime failure", async () => {
     const nonRepositorySessionCwd = fs.mkdtempSync(

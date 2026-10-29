@@ -8,6 +8,7 @@ import { followsCheckoutBranchAtTurnEnd } from "../../project/worktreeReadiness.
 import { GitService } from "../../git/Services/GitService.ts";
 import type { CheckpointStoreError } from "../../checkpointing/Errors.ts";
 import {
+  type CheckpointRef,
   CommandId,
   EventId,
   MessageId,
@@ -230,6 +231,17 @@ const make = Effect.gen(function* () {
     return cwd;
   });
 
+  // Like a non-Git workspace, one its repository ignores gets no checkpoint
+  // instead of a capture failure on every turn.
+  const captureCheckpointIfSupported = (input: {
+    readonly cwd: string;
+    readonly checkpointRef: CheckpointRef;
+  }) =>
+    checkpointStore.captureCheckpoint(input).pipe(
+      Effect.as(true),
+      Effect.catchTag("CheckpointUnsupportedError", () => Effect.succeed(false)),
+    );
+
   // Shared tail for both capture paths: creates the git checkpoint ref, diffs
   // it against the previous turn, then dispatches the domain events to update
   // the orchestration read model.
@@ -278,10 +290,14 @@ const make = Effect.gen(function* () {
       });
     }
 
-    yield* checkpointStore.captureCheckpoint({
-      cwd: input.cwd,
-      checkpointRef: targetCheckpointRef,
-    });
+    if (
+      !(yield* captureCheckpointIfSupported({
+        cwd: input.cwd,
+        checkpointRef: targetCheckpointRef,
+      }))
+    ) {
+      return false;
+    }
 
     if (!fromCheckpointExists) {
       yield* appendCaptureFailureActivity({
@@ -426,6 +442,7 @@ const make = Effect.gen(function* () {
       },
       createdAt: input.createdAt,
     });
+    return true;
   });
 
   // Captures a real git checkpoint when a turn completes via a runtime event.
@@ -483,7 +500,7 @@ const make = Effect.gen(function* () {
       ? existingPlaceholder.checkpointTurnCount
       : currentTurnCount + 1;
 
-    yield* captureAndDispatchCheckpoint({
+    const supported = yield* captureAndDispatchCheckpoint({
       threadId: thread.id,
       turnId,
       thread,
@@ -493,7 +510,7 @@ const make = Effect.gen(function* () {
       assistantMessageId: existingPlaceholder?.assistantMessageId ?? undefined,
       createdAt: input.createdAt,
     });
-    return nextTurnCount;
+    return supported ? nextTurnCount : undefined;
   });
 
   const settleTerminalTurnProcessing = Effect.fnUntraced(function* (input: {
@@ -574,10 +591,14 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    yield* checkpointStore.captureCheckpoint({
-      cwd: checkpointCwd,
-      checkpointRef: baselineCheckpointRef,
-    });
+    if (
+      !(yield* captureCheckpointIfSupported({
+        cwd: checkpointCwd,
+        checkpointRef: baselineCheckpointRef,
+      }))
+    ) {
+      return;
+    }
     yield* receiptBus.publish({
       type: "checkpoint.baseline.captured",
       threadId: thread.id,
@@ -633,10 +654,14 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    yield* checkpointStore.captureCheckpoint({
-      cwd: checkpointCwd,
-      checkpointRef: baselineCheckpointRef,
-    });
+    if (
+      !(yield* captureCheckpointIfSupported({
+        cwd: checkpointCwd,
+        checkpointRef: baselineCheckpointRef,
+      }))
+    ) {
+      return;
+    }
     yield* receiptBus.publish({
       type: "checkpoint.baseline.captured",
       threadId,
