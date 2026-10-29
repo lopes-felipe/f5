@@ -7,6 +7,7 @@
  * @module Open
  */
 import { spawn } from "node:child_process";
+import NodeOs from "node:os";
 import NodePath from "node:path";
 
 import { EDITORS, type EditorId } from "@t3tools/contracts";
@@ -256,9 +257,29 @@ export const resolveEditorLaunch = Effect.fnUntraced(function* (
  * any Electron app opened from there would start as plain Node and exit.
  */
 export function launchedAppEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return Object.fromEntries(
-    Object.entries(env).filter(([key]) => key.toUpperCase() !== "ELECTRON_RUN_AS_NODE"),
-  );
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !isRunAsNodeKey(key)));
+}
+
+function isRunAsNodeKey(key: string): boolean {
+  return key.toUpperCase() === "ELECTRON_RUN_AS_NODE";
+}
+
+/**
+ * `open` always spawns with this process's environment. Under ELECTRON_RUN_AS_NODE
+ * (the desktop `f5` CLI launcher) it would pick the system `open` or `xdg-open`, so
+ * launch that opener here instead, without the variable. Windows, and WSL's
+ * PowerShell handoff, do not pass this environment on, so `open` keeps them.
+ */
+export function resolveBrowserLaunch(
+  target: string,
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  osRelease: string = NodeOs.release(),
+): EditorLaunch | null {
+  if (!Object.keys(env).some(isRunAsNodeKey)) return null;
+  if (platform === "darwin") return { command: "open", args: [target] };
+  if (platform === "win32" || osRelease.toLowerCase().includes("microsoft")) return null;
+  return { command: "xdg-open", args: [target] };
 }
 
 export const launchDetached = (launch: EditorLaunch, checkEarlyExit = true) =>
@@ -406,11 +427,15 @@ const make = Effect.gen(function* () {
   });
 
   return {
-    openBrowser: (target) =>
-      Effect.tryPromise({
-        try: () => open.default(target),
-        catch: (cause) => new OpenError({ message: "Browser auto-open failed", cause }),
-      }),
+    openBrowser: (target) => {
+      const launch = resolveBrowserLaunch(target);
+      return launch
+        ? launchDetached(launch, false)
+        : Effect.tryPromise({
+            try: () => open.default(target),
+            catch: (cause) => new OpenError({ message: "Browser auto-open failed", cause }),
+          }).pipe(Effect.asVoid);
+    },
     openInEditor: (input) => openInEditor(input).pipe(Effect.withSpan("open.in-editor")),
     revealInFileManager: (targetPath) =>
       revealInFileManager(targetPath).pipe(Effect.withSpan("open.reveal-in-file-manager")),

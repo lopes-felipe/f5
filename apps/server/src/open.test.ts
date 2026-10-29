@@ -18,6 +18,7 @@ import {
   launchDetached,
   launchedAppEnvironment,
   resolveAvailableEditors,
+  resolveBrowserLaunch,
   resolveEditorLaunch,
   resolveFileManagerRevealLaunch,
 } from "./open";
@@ -307,6 +308,7 @@ it.layer(NodeServices.layer)("launchDetached", (it) => {
       }
     }),
   );
+  // Mutates the worker's process.env; relies on this file's tests running sequentially.
   it.effect("launched apps do not inherit ELECTRON_RUN_AS_NODE", () =>
     Effect.gen(function* () {
       const previous = {
@@ -347,6 +349,25 @@ it.layer(NodeServices.layer)("launchDetached", (it) => {
         electron_run_as_node: "1",
       }),
     ).toEqual({ PATH: "/bin" });
+  });
+
+  vitestIt("opens the browser without the variable when F5 runs as Node", () => {
+    const runAsNode = { ELECTRON_RUN_AS_NODE: "1" };
+    const url = "http://127.0.0.1:3773/#token=a%26b";
+    expect(resolveBrowserLaunch(url, "darwin", runAsNode, "25.0.0")).toEqual({
+      command: "open",
+      args: [url],
+    });
+    expect(resolveBrowserLaunch(url, "linux", runAsNode, "6.8.0-generic")).toEqual({
+      command: "xdg-open",
+      args: [url],
+    });
+    // `open` keeps the platforms whose launchers do not pass this environment on.
+    expect(resolveBrowserLaunch(url, "win32", runAsNode, "10.0.26100")).toBeNull();
+    expect(
+      resolveBrowserLaunch(url, "linux", runAsNode, "5.15.167.4-microsoft-standard-WSL2"),
+    ).toBeNull();
+    expect(resolveBrowserLaunch(url, "linux", { PATH: "/bin" }, "6.8.0-generic")).toBeNull();
   });
 
   it.effect("resolves when command can be spawned", () =>
@@ -483,6 +504,45 @@ it.layer(NodeServices.layer)("OpenLive observability", (it) => {
         );
       } finally {
         process.env.PATH = originalPath;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }).pipe(Effect.provide(OpenLive)),
+  );
+
+  // Mutates the worker's process.env; relies on this file's tests running sequentially.
+  it.effect.skipIf(
+    process.platform === "win32" || os.release().toLowerCase().includes("microsoft"),
+  )("opens the browser without ELECTRON_RUN_AS_NODE", () =>
+    Effect.gen(function* () {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-open-browser-"));
+      const output = path.join(tempDir, "launch.json");
+      writeCliCommand(
+        path.join(tempDir, process.platform === "darwin" ? "open" : "xdg-open"),
+        `require("node:fs").writeFileSync(process.env.F5_OPEN_TEST_OUTPUT, JSON.stringify({ runAsNode: process.env.ELECTRON_RUN_AS_NODE ?? null, target: process.argv[2] }))`,
+      );
+      const previous = {
+        PATH: process.env.PATH,
+        ELECTRON_RUN_AS_NODE: process.env.ELECTRON_RUN_AS_NODE,
+        F5_OPEN_TEST_OUTPUT: process.env.F5_OPEN_TEST_OUTPUT,
+      };
+      try {
+        process.env.PATH = `${tempDir}${path.delimiter}${previous.PATH ?? ""}`;
+        process.env.ELECTRON_RUN_AS_NODE = "1";
+        process.env.F5_OPEN_TEST_OUTPUT = output;
+        const open = yield* Open;
+        yield* open.openBrowser("http://127.0.0.1:3773/");
+        for (let attempt = 0; attempt < 100 && !fs.existsSync(output); attempt += 1) {
+          yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
+        }
+        assert.deepEqual(JSON.parse(fs.readFileSync(output, "utf8")), {
+          runAsNode: null,
+          target: "http://127.0.0.1:3773/",
+        });
+      } finally {
+        for (const [key, value] of Object.entries(previous)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
     }).pipe(Effect.provide(OpenLive)),
