@@ -553,7 +553,7 @@ const makeCheckpointStore = Effect.gen(function* () {
               "--relative",
               "--src-prefix=a/",
               "--dst-prefix=b/",
-              "--minimal",
+              ...(input.options?.minimal === false ? [] : ["--minimal"]),
               "--no-color",
               ...whitespace,
               fromCommitOid,

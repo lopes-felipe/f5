@@ -596,7 +596,11 @@ describe("CheckpointReactor", () => {
   });
 
   it("captures pre-turn baseline on turn.started and post-turn checkpoint on turn.completed", async () => {
-    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    const diffCheckpoints = vi.fn(fakeCheckpointStore.diffCheckpoints);
+    const harness = await createHarness({
+      seedFilesystemCheckpoints: false,
+      checkpointStore: { ...fakeCheckpointStore, diffCheckpoints },
+    });
     const createdAt = new Date().toISOString();
 
     await Effect.runPromise(
@@ -649,6 +653,10 @@ describe("CheckpointReactor", () => {
       (entry) => entry.latestTurn?.turnId === "turn-1" && entry.checkpoints.length === 1,
     );
     expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
+    // Finalization keeps only per-file totals, so it skips the costly patch minimization.
+    expect(diffCheckpoints).toHaveBeenCalledWith(
+      expect.objectContaining({ options: { excludeGitImports: true, minimal: false } }),
+    );
     expect(
       gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 0)),
     ).toBe(true);
