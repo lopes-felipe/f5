@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { userEvent } from "vitest/browser";
 
 import { createWorkspaceFocusController } from "./workspaceFocus";
 
@@ -20,7 +21,6 @@ function setup() {
     const element = document.createElement("section");
     element.dataset.workspaceArea = name;
     element.dataset.workspaceOrder = String(order);
-    element.tabIndex = -1;
     const button = document.createElement("button");
     button.textContent = name;
     element.append(button);
@@ -172,6 +172,32 @@ describe("workspace area focus", () => {
     fixture.controller.move(-1);
     expect(document.activeElement).toBe(conversation.element);
     expect(timeline.scrollTop).toBe(300);
+  });
+
+  it("keeps keyboard scrolling in the list after a click on an area's text", async () => {
+    const fixture = setup();
+    const conversation = fixture.area("conversation", 1);
+    const composer = fixture.area("composer", 2);
+    const timeline = document.createElement("div");
+    timeline.style.cssText = "height: 100px; overflow-y: auto";
+    const text = document.createElement("p");
+    text.textContent = "Message text";
+    timeline.append(
+      text,
+      Object.assign(document.createElement("div"), { style: "height: 2000px" }),
+    );
+    conversation.element.append(timeline);
+    // F6 focuses the conversation itself, then lets it go once focus leaves.
+    composer.button.focus();
+    fixture.controller.move(-1);
+    expect(document.activeElement).toBe(conversation.element);
+    composer.button.focus();
+    expect(conversation.element.hasAttribute("tabindex")).toBe(false);
+
+    await userEvent.click(text);
+    expect(document.activeElement).not.toBe(conversation.element);
+    await userEvent.keyboard("{PageDown}");
+    await vi.waitFor(() => expect(timeline.scrollTop).toBeGreaterThan(0));
   });
 
   it("starts from the panel when a forwarded key names it", () => {

@@ -179,8 +179,8 @@ export function defaultSnoozeUntil(
 
 /**
  * A menu choice as picked. A duration re-resolves from its setting so it starts at selection.
- * A set time keeps the shown wake while it is ahead, so a menu opened before midnight still
- * means the day it showed. Undefined when the option no longer resolves to a future time.
+ * A set time keeps the wake the menu showed, so a menu opened before midnight still means the
+ * day it showed. Undefined once that time has passed.
  */
 export function pickSnoozePreset(input: {
   readonly shown: ReadonlyArray<SnoozePreset>;
@@ -189,10 +189,11 @@ export function pickSnoozePreset(input: {
   readonly now?: Date;
 }): SnoozePreset | undefined {
   const now = input.now ?? new Date();
-  const setting = input.presets.find((candidate) => snoozePresetId(candidate) === input.id);
-  if (setting?.kind === "after") return resolveSnoozePreset(setting, now) ?? undefined;
   const original = input.shown.find((preset) => preset.id === input.id);
-  if (original && Date.parse(original.snoozedUntil) > now.getTime()) return original;
-  // A shown time that has passed (a menu left open, or a "today" option) resolves again.
-  return setting ? (resolveSnoozePreset(setting, now) ?? undefined) : undefined;
+  const ahead =
+    original && Date.parse(original.snoozedUntil) > now.getTime() ? original : undefined;
+  const setting = input.presets.find(
+    (candidate) => candidate.kind === "after" && snoozePresetId(candidate) === input.id,
+  );
+  return (setting && resolveSnoozePreset(setting, now)) || ahead;
 }

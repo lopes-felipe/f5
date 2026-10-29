@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
 import { updateAppSettings } from "../appSettings";
+import { requestDiffFileReveal } from "../diffFileReveal";
 import { useStore } from "../store";
 import type { Project, Thread, TurnDiffSummary } from "../types";
 import DiffPanel from "./DiffPanel";
@@ -342,6 +343,11 @@ describe("DiffPanel", () => {
       await expect
         .element(page.getByTestId("file-diff-example"))
         .toHaveAttribute("data-collapsed", "true");
+      // Picking the same file from the turn again is a new request, with the same route.
+      requestDiffFileReveal();
+      await expect
+        .element(page.getByTestId("file-diff-example"))
+        .toHaveAttribute("data-collapsed", "false");
     } finally {
       updateAppSettings({ diffFileDefaultState: "auto" });
       await screen.unmount();

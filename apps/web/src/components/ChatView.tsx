@@ -153,6 +153,7 @@ import { agentBrowserPolicyFromSettings } from "@t3tools/shared/projectSettings"
 import { AgentBrowserLiveCard, BrowserCapabilityChip } from "./AgentBrowserLiveCard";
 import { useResolvedThemePalette } from "../hooks/useThemePalette";
 import { clearFileViewSearchParams, clearTurnDiffSearchParams } from "../diffRouteSearch";
+import { requestDiffFileReveal } from "../diffFileReveal";
 import { FileNavigationProvider } from "../fileNavigationContext";
 import { TerminalCommandProvider } from "../terminalCommandContext";
 import {
@@ -2953,6 +2954,7 @@ export default memo(function ChatView({
   );
   const onOpenFileChangeDiff = useCallback(
     (fileChangeId: OrchestrationFileChangeId, filePath?: string) => {
+      if (filePath) requestDiffFileReveal();
       void navigate({
         to: "/$threadId",
         params: { threadId },
@@ -7040,6 +7042,7 @@ export default memo(function ChatView({
   );
   const onOpenTurnDiff = useCallback(
     (turnId: TurnId, filePath?: string) => {
+      if (filePath) requestDiffFileReveal();
       void navigate({
         to: "/$threadId",
         params: { threadId },
@@ -7147,6 +7150,7 @@ export default memo(function ChatView({
           diffFilePathsByTurnId,
         })
       ) {
+        requestDiffFileReveal();
         void navigate({
           to: "/$threadId",
           params: { threadId },

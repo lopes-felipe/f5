@@ -12,7 +12,7 @@ import { SidebarThreadRow } from "./SidebarThreadRow";
 import type { SidebarThreadRowIndicators } from "./SidebarWorkflowItem";
 import type { SidebarThreadActions } from "./useSidebarThreadActions";
 import { ListToggleRow, SectionToggleRow } from "./SidebarSectionRows";
-import { useSidebarTreeRowProps } from "./sidebarTreeRow";
+import { SidebarTreeParentContext, useSidebarTreeRowProps } from "./sidebarTreeRow";
 
 export function SidebarScheduledFolder(props: {
   threads: readonly ThreadListItem[];
@@ -64,6 +64,8 @@ export function SidebarScheduledFolder(props: {
   }
 
   const treeRowProps = useSidebarTreeRowProps();
+  // The folder is a group of its own in the tree; its threads are its children.
+  const folderRowId = "data-sidebar-row" in treeRowProps ? treeRowProps["data-sidebar-row"] : null;
   const renderThread = (thread: ThreadListItem) => {
     const section =
       thread.archivedAt !== null ? "archived" : isSnoozedThread(thread) ? "snoozed" : "active";
@@ -144,29 +146,31 @@ export function SidebarScheduledFolder(props: {
         <span className="text-2xs tabular-nums text-muted-foreground">{props.threads.length}</span>
       </SidebarMenuSubButton>
       {props.expanded && (
-        <SidebarMenuSub className={SIDEBAR_TREE_LEVEL_CLASS_NAME}>
-          {props.visibleThreads.map(renderThread)}
-          {props.currentThreadCount > props.previewLimit && (
-            <ListToggleRow
-              label={props.showingAll ? "Show less" : "Show more"}
-              onSelect={props.onToggleShowAll}
-            />
-          )}
-          {props.archivedThreads.length > 0 && (
-            <SectionToggleRow
-              label="Archived"
-              expanded={props.archivedExpanded}
-              onToggle={props.onToggleArchived}
-            />
-          )}
-          {props.archivedExpanded && props.visibleArchivedThreads.map(renderThread)}
-          {props.archivedExpanded && props.archivedThreads.length > props.previewLimit && (
-            <ListToggleRow
-              label={props.archivedShowingAll ? "Show less" : "Show more"}
-              onSelect={props.onToggleArchivedShowAll}
-            />
-          )}
-        </SidebarMenuSub>
+        <SidebarTreeParentContext.Provider value={folderRowId}>
+          <SidebarMenuSub className={SIDEBAR_TREE_LEVEL_CLASS_NAME}>
+            {props.visibleThreads.map(renderThread)}
+            {props.currentThreadCount > props.previewLimit && (
+              <ListToggleRow
+                label={props.showingAll ? "Show less" : "Show more"}
+                onSelect={props.onToggleShowAll}
+              />
+            )}
+            {props.archivedThreads.length > 0 && (
+              <SectionToggleRow
+                label="Archived"
+                expanded={props.archivedExpanded}
+                onToggle={props.onToggleArchived}
+              />
+            )}
+            {props.archivedExpanded && props.visibleArchivedThreads.map(renderThread)}
+            {props.archivedExpanded && props.archivedThreads.length > props.previewLimit && (
+              <ListToggleRow
+                label={props.archivedShowingAll ? "Show less" : "Show more"}
+                onSelect={props.onToggleArchivedShowAll}
+              />
+            )}
+          </SidebarMenuSub>
+        </SidebarTreeParentContext.Provider>
       )}
     </SidebarMenuSubItem>
   );

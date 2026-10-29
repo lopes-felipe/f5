@@ -10,15 +10,14 @@ import {
 } from "../../composerDraftStore";
 import { isElectron } from "../../env";
 import { useCreateProjectBackedDraftThread } from "../../hooks/useCreateProjectBackedDraftThread";
-import { readAppSettingsSnapshot } from "../../appSettings";
 import {
   nativeThreadActionMenuItems,
+  pickSnoozeMenuPreset,
   resolveSnoozeMenuPresets,
   snoozeThreadActionLabel,
   useThreadActionController,
 } from "../../hooks/useThreadActionController";
 import { partitionDroppedAttachments } from "../../lib/droppedAttachments";
-import { pickSnoozePreset } from "../../lib/snoozePresets";
 import { isMacPlatform } from "../../lib/utils";
 import { readNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
@@ -250,11 +249,7 @@ export function useSidebarThreadActions(input: {
         position,
       );
       const snoozePreset = clickedId?.startsWith("snooze:")
-        ? pickSnoozePreset({
-            shown: snoozePresets,
-            id: clickedId.slice("snooze:".length),
-            presets: readAppSettingsSnapshot().snoozePresets,
-          })
+        ? pickSnoozeMenuPreset(snoozePresets, clickedId as `snooze:${string}`)
         : undefined;
       if (clickedId?.startsWith("snooze:") && !snoozePreset) return;
       const clicked = snoozePreset ? "snooze" : clickedId;

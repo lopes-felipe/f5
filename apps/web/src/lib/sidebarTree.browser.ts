@@ -94,6 +94,49 @@ describe("sidebar keyboard navigation", () => {
     expect(group.getAttribute("aria-expanded")).toBe("false");
   });
 
+  it("walks a group nested in a project and expands it with its own toggle", async () => {
+    const tree = setup();
+    const project = tree.row("project");
+    project.setAttribute("aria-expanded", "true");
+    // A workflow row opens its page on click; only its chevron expands it.
+    const workflow = tree.row("workflow", "project");
+    workflow.setAttribute("aria-expanded", "false");
+    const open = vi.fn();
+    workflow.addEventListener("click", open);
+    const chevron = document.createElement("button");
+    chevron.dataset.sidebarTreeToggle = "";
+    chevron.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const expanded = workflow.getAttribute("aria-expanded") === "true";
+      workflow.setAttribute("aria-expanded", String(!expanded));
+      if (expanded) tree.root.querySelector('[data-sidebar-row="thread"]')?.remove();
+      else workflow.after(tree.row("thread", "workflow"));
+    });
+    workflow.append(chevron);
+    tree.install();
+    workflow.focus();
+    press(workflow, "ArrowRight");
+    expect(open).not.toHaveBeenCalled();
+    expect(workflow.getAttribute("aria-expanded")).toBe("true");
+    await vi.waitFor(() =>
+      expect(
+        tree.root.querySelector('[data-sidebar-row="thread"]')?.getAttribute("aria-level"),
+      ).toBe("3"),
+    );
+    expect(workflow.getAttribute("aria-level")).toBe("2");
+    press(workflow, "ArrowRight");
+    const thread = document.activeElement as HTMLElement;
+    expect(thread.dataset.sidebarRow).toBe("thread");
+    // Left from the thread returns to its group, not straight to the project.
+    press(thread, "ArrowLeft");
+    expect(document.activeElement).toBe(workflow);
+    press(workflow, "ArrowLeft");
+    expect(workflow.getAttribute("aria-expanded")).toBe("false");
+    expect(open).not.toHaveBeenCalled();
+    press(workflow, "ArrowLeft");
+    expect(document.activeElement).toBe(project);
+  });
+
   it("opens the row menu on Shift+F10 release without moving focus", () => {
     const tree = setup();
     tree.row("first");

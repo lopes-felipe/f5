@@ -1,10 +1,13 @@
 import { ProviderInstanceId, ScheduledTaskId, ScheduledTaskRunId } from "@t3tools/contracts";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
+import { updateAppSettings } from "~/appSettings";
+import { DEFAULT_SNOOZE_PRESETS, resolveSnoozePresets } from "~/lib/snoozePresets";
 import {
   buildThreadActionMenuItems,
   canScheduleIntoThread,
   nativeThreadActionMenuItems,
+  resolveSnoozeMenuPresets,
   settlementErrorDetail,
 } from "./useThreadActionController";
 
@@ -181,5 +184,21 @@ describe("scheduled thread actions", () => {
         modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
       }),
     ).toBe(true);
+  });
+});
+
+describe("resolveSnoozeMenuPresets", () => {
+  afterEach(() => updateAppSettings({ snoozePresets: [...DEFAULT_SNOOZE_PRESETS] }));
+
+  it("keeps snooze in menus when no option is left", () => {
+    const now = new Date(2026, 9, 28, 20);
+    const defaults = resolveSnoozePresets(DEFAULT_SNOOZE_PRESETS, now).map((preset) => preset.id);
+    updateAppSettings({ snoozePresets: [] });
+    expect(resolveSnoozeMenuPresets(now).map((preset) => preset.id)).toEqual(defaults);
+    // Only a time today that has already passed.
+    updateAppSettings({ snoozePresets: [{ kind: "at", day: "today", time: "17:00" }] });
+    expect(resolveSnoozeMenuPresets(now).map((preset) => preset.id)).toEqual(defaults);
+    updateAppSettings({ snoozePresets: [{ kind: "at", day: "today", time: "21:00" }] });
+    expect(resolveSnoozeMenuPresets(now).map((preset) => preset.id)).toEqual(["at:today:21:00"]);
   });
 });

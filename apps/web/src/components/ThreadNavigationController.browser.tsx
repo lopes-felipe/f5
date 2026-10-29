@@ -3,8 +3,9 @@ import { afterEach, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
 import { useRightPanelStore } from "../rightPanelStore";
-import { recordThreadUndo } from "../threadUndo";
+import { recordThreadUndo, releaseThreadUndoShortcut } from "../threadUndo";
 import { ThreadNavigationController } from "./ThreadNavigationController";
+import { ToastProvider } from "./ui/toast";
 
 const router = vi.hoisted(() => ({
   state: { location: { pathname: "/settings" } },
@@ -14,6 +15,9 @@ const router = vi.hoisted(() => ({
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   useRouter: () => router,
+  // The toast viewport reads the route's thread to decide which notices to show.
+  useParams: (options: { select: (params: Record<string, unknown>) => unknown }) =>
+    options.select({}),
 }));
 vi.mock("~/keybindings", async (importOriginal) => ({
   ...(await importOriginal<typeof import("~/keybindings")>()),
@@ -28,10 +32,15 @@ vi.mock("~/keybindings", async (importOriginal) => ({
         altKey: false,
         modKey: false,
       },
+      // The default rule: threadUndoAvailable && !editableFocus && !dialogFocus.
       whenAst: {
         type: "and",
-        left: { type: "identifier", name: "threadUndoAvailable" },
-        right: { type: "not", node: { type: "identifier", name: "editableFocus" } },
+        left: {
+          type: "and",
+          left: { type: "identifier", name: "threadUndoAvailable" },
+          right: { type: "not", node: { type: "identifier", name: "editableFocus" } },
+        },
+        right: { type: "not", node: { type: "identifier", name: "dialogFocus" } },
       },
     },
     {
@@ -82,11 +91,12 @@ it("reopens the last closed tab in its own thread from another page", async () =
 
 it("lets a fresh undo notice claim mod+z inside a text field until another key", async () => {
   const undo = vi.fn().mockResolvedValue(undefined);
+  // The real viewport renders the undo notice as a non-modal dialog, which must not block mod+z.
   const screen = await render(
-    <>
+    <ToastProvider>
       <ThreadNavigationController />
       <textarea aria-label="Composer" />
-    </>,
+    </ToastProvider>,
   );
   const textarea = screen.container.querySelector("textarea")!;
   const editorUndo = vi.fn();
@@ -106,6 +116,9 @@ it("lets a fresh undo notice claim mod+z inside a text field until another key",
   try {
     textarea.focus();
     recordThreadUndo("Settled", undo);
+    await vi.waitFor(() =>
+      expect(document.querySelector('[role="dialog"][aria-modal="false"]')).not.toBeNull(),
+    );
     press("z", { metaKey: true });
     expect(undo).toHaveBeenCalledOnce();
     expect(editorUndo).not.toHaveBeenCalled();
@@ -119,6 +132,49 @@ it("lets a fresh undo notice claim mod+z inside a text field until another key",
     expect(undo).toHaveBeenCalledOnce();
     expect(editorUndo).toHaveBeenCalledOnce();
   } finally {
+    await screen.unmount();
+  }
+});
+
+it("leaves mod+z to a focused terminal and to an open modal dialog", async () => {
+  const undo = vi.fn().mockResolvedValue(undefined);
+  const screen = await render(
+    <>
+      <ThreadNavigationController />
+      <div className="xterm">
+        <textarea aria-label="Terminal input" className="xterm-helper-textarea" />
+      </div>
+    </>,
+  );
+  const input = screen.container.querySelector("textarea")!;
+  const press = (target: Element) =>
+    target.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "z",
+        code: "KeyZ",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  const dialog = document.createElement("div");
+  dialog.setAttribute("role", "dialog");
+  try {
+    input.focus();
+    recordThreadUndo("Archived", undo);
+    // The terminal keeps the key for the shell even while a fresh undo claims it.
+    expect(press(input)).toBe(true);
+    expect(undo).not.toHaveBeenCalled();
+
+    document.body.append(dialog);
+    expect(press(document.body)).toBe(true);
+    expect(undo).not.toHaveBeenCalled();
+    dialog.remove();
+    expect(press(document.body)).toBe(false);
+    expect(undo).toHaveBeenCalledOnce();
+  } finally {
+    dialog.remove();
+    releaseThreadUndoShortcut();
     await screen.unmount();
   }
 });

@@ -10,6 +10,11 @@ function setTabIndex(element: HTMLElement, value: number) {
   if (element.tabIndex !== value) element.tabIndex = value;
 }
 
+/** Expands or collapses a group row. A row whose click opens a page marks its own toggle. */
+function toggleRow(row: HTMLElement) {
+  (row.querySelector<HTMLElement>("[data-sidebar-tree-toggle]") ?? row).click();
+}
+
 export const SIDEBAR_TREE_PROPS = { role: "tree", "aria-label": "Threads" } as const;
 
 /** Ref callback for a sidebar list; installs the tree and returns its cleanup. */
@@ -89,16 +94,30 @@ export function installSidebarTree(root: HTMLElement) {
     focusedId = selected?.dataset.sidebarRow;
     tabStop = selected;
     setTabIndex(root, selected ? -1 : 0);
+    const byId = new Map(rows.map((row) => [row.dataset.sidebarRow, row]));
+    // Groups nest (a project's scheduled folder or workflow holds threads), so count the chain.
+    const level = (row: HTMLElement) => {
+      let depth = 1;
+      const seen = new Set<HTMLElement>();
+      for (
+        let parent = byId.get(row.dataset.sidebarParent);
+        parent && !seen.has(parent);
+        parent = byId.get(parent.dataset.sidebarParent)
+      ) {
+        seen.add(parent);
+        depth++;
+      }
+      return depth;
+    };
     const siblings = new Map<string, HTMLElement[]>();
     for (const row of rows) {
       const parent = row.dataset.sidebarParent ?? "";
       const group = siblings.get(parent) ?? [];
       group.push(row);
       siblings.set(parent, group);
-      setAttribute(row, "aria-level", parent ? "2" : "1");
+      setAttribute(row, "aria-level", String(parent ? Math.max(2, level(row)) : 1));
       setTabIndex(row, row === selected ? 0 : -1);
     }
-    const byId = new Map(rows.map((row) => [row.dataset.sidebarRow, row]));
     for (const control of ownTabIndex.keys()) if (!control.isConnected) ownTabIndex.delete(control);
     for (const control of root.querySelectorAll<HTMLElement>(CONTROL)) {
       if (control.matches(ROW) || control.matches(TEXT_ENTRY)) continue;
@@ -183,14 +202,14 @@ export function installSidebarTree(root: HTMLElement) {
         target = rows.at(-1);
         break;
       case "ArrowRight":
-        if (row.getAttribute("aria-expanded") === "false") row.click();
+        if (row.getAttribute("aria-expanded") === "false") toggleRow(row);
         else
           target = rows.find(
             (candidate) => candidate.dataset.sidebarParent === row.dataset.sidebarRow,
           );
         break;
       case "ArrowLeft":
-        if (row.getAttribute("aria-expanded") === "true") row.click();
+        if (row.getAttribute("aria-expanded") === "true") toggleRow(row);
         else
           target = rows.find(
             (candidate) => candidate.dataset.sidebarRow === row.dataset.sidebarParent,

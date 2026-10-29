@@ -76,12 +76,38 @@ export function snoozeThreadActionLabel(preset: SnoozePreset): string {
   return `Snooze: ${preset.label} (${preset.whenLabel})`;
 }
 
-/** The snooze options as a menu opened now shows them, in the user's time format. */
+/**
+ * The snooze options as a menu opened now shows them, in the user's time format. With no
+ * option left (none configured, or only today's times that have passed) menus offer the
+ * defaults, so snooze never disappears from them.
+ */
 export function resolveSnoozeMenuPresets(now = new Date()): ReadonlyArray<SnoozePreset> {
   const settings = readAppSettingsSnapshot();
-  return resolveSnoozePresets(settings.snoozePresets, now, (date) =>
-    formatTimeOfDay(date, settings.timestampFormat),
-  );
+  const formatTime = (date: Date) => formatTimeOfDay(date, settings.timestampFormat);
+  const configured = resolveSnoozePresets(settings.snoozePresets, now, formatTime);
+  return configured.length > 0
+    ? configured
+    : resolveSnoozePresets(DEFAULT_SNOOZE_PRESETS, now, formatTime);
+}
+
+/** A menu's snooze choice as picked now; warns and returns undefined once its time has passed. */
+export function pickSnoozeMenuPreset(
+  shown: ReadonlyArray<SnoozePreset>,
+  actionId: SnoozeThreadActionId,
+): SnoozePreset | undefined {
+  const preset = pickSnoozePreset({
+    shown,
+    id: actionId.slice(SNOOZE_ACTION_PREFIX.length),
+    presets: readAppSettingsSnapshot().snoozePresets,
+  });
+  if (!preset) {
+    toastManager.add({
+      type: "warning",
+      title: "Could not snooze thread",
+      description: "That snooze time has passed. Choose another time.",
+    });
+  }
+  return preset;
 }
 
 export interface ThreadActionMenuItem {
@@ -473,19 +499,8 @@ export function useThreadActionController(input: {
         return;
       }
       if (isSnoozeThreadActionId(actionId)) {
-        const preset = pickSnoozePreset({
-          shown: shownSnoozePresetsRef.current,
-          id: actionId.slice(SNOOZE_ACTION_PREFIX.length),
-          presets: readAppSettingsSnapshot().snoozePresets,
-        });
-        if (!preset) {
-          toastManager.add({
-            type: "warning",
-            title: "Could not snooze thread",
-            description: "That snooze option was removed. Choose another time.",
-          });
-          return;
-        }
+        const preset = pickSnoozeMenuPreset(shownSnoozePresetsRef.current, actionId);
+        if (!preset) return;
         try {
           await snoozeThread(threadId, preset.snoozedUntil);
           if (input.activeThreadId === threadId) {

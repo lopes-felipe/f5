@@ -178,7 +178,7 @@ export function SnoozePresetsSettings() {
         })}
         <p className="text-xs text-muted-foreground">
           {menu.length === 0
-            ? "Menus offer only a custom time."
+            ? "With no option left, menus offer the defaults."
             : `Menu now: ${menu.map((preset) => `${preset.label} (${preset.whenLabel})`).join(" · ")}`}
         </p>
         <div className="flex items-center gap-2">

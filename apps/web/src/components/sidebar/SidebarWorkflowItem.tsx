@@ -41,7 +41,7 @@ import {
 } from "./sidebarLists";
 import { SIDEBAR_ROW_REVEAL_CLASS_NAME, SidebarThreadRow } from "./SidebarThreadRow";
 import type { SidebarThreadActions } from "./useSidebarThreadActions";
-import { useSidebarTreeRowProps } from "./sidebarTreeRow";
+import { SidebarTreeParentContext, useSidebarTreeRowProps } from "./sidebarTreeRow";
 
 export interface SidebarThreadRowIndicators {
   threadStatus: ThreadStatusPill | null;
@@ -130,7 +130,9 @@ export function SidebarWorkflowItem(props: {
   });
   const workflowCollapsed = !workflowExpanded;
   const typeLabel = workflowTypeLabel(type, workflow);
-  const treeRowProps = useSidebarTreeRowProps(`workflow:${workflow.id}`);
+  const workflowRowId = `workflow:${workflow.id}`;
+  const treeRowProps = useSidebarTreeRowProps(workflowRowId);
+  const isTreeRow = "data-sidebar-row" in treeRowProps;
   const openWorkflow = () => {
     void navigate({
       to: workflowRoute,
@@ -141,7 +143,15 @@ export function SidebarWorkflowItem(props: {
   return (
     <SidebarMenuSubItem className="group/workflow-row relative w-full">
       <SidebarMenuSubButton
-        render={<div role="button" tabIndex={0} {...treeRowProps} />}
+        render={
+          <div
+            role="button"
+            tabIndex={0}
+            {...treeRowProps}
+            // In the tree the row is a group of its threads; Right and Left use its chevron.
+            aria-expanded={isTreeRow && workflowThreads.length > 0 ? !workflowCollapsed : undefined}
+          />
+        }
         size="md"
         isActive={isWorkflowActive}
         className={cn(
@@ -172,6 +182,7 @@ export function SidebarWorkflowItem(props: {
               workflowCollapsed ? `Expand ${workflow.title}` : `Collapse ${workflow.title}`
             }
             aria-expanded={!workflowCollapsed}
+            data-sidebar-tree-toggle
             className={cn(
               "absolute inset-0 inline-flex items-center justify-center rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring",
               workflowThreads.length > 0
@@ -224,33 +235,35 @@ export function SidebarWorkflowItem(props: {
       </SidebarMenuSubButton>
       {!workflowCollapsed && workflowThreads.length > 0 ? (
         // Second tree level: the guide line sits under the workflow's type icon.
-        <SidebarMenuSub className={cn(SIDEBAR_TREE_LEVEL_CLASS_NAME, "mt-px")}>
-          {workflowThreads.map((thread) => (
-            <SidebarThreadRow
-              key={thread.id}
-              thread={thread}
-              section="workflow"
-              isActive={routeThreadId === thread.id}
-              orderedIds={orderedWorkflowThreadIds}
-              displayTitle={
-                props.threadLabels.get(thread.id) ??
-                (entry.type === "planning"
-                  ? workflowThreadDisplayTitle(entry.workflow, thread.title)
-                  : thread.title)
-              }
-              trailingMeta={
-                <ModelChip
-                  model={thread.modelSelection?.model ?? thread.model}
-                  sessionProviderName={thread.sessionProvider}
-                  iconOnly
-                />
-              }
-              isRenaming={false}
-              actions={actions}
-              {...props.indicatorsForThread(thread)}
-            />
-          ))}
-        </SidebarMenuSub>
+        <SidebarTreeParentContext.Provider value={isTreeRow ? workflowRowId : null}>
+          <SidebarMenuSub className={cn(SIDEBAR_TREE_LEVEL_CLASS_NAME, "mt-px")}>
+            {workflowThreads.map((thread) => (
+              <SidebarThreadRow
+                key={thread.id}
+                thread={thread}
+                section="workflow"
+                isActive={routeThreadId === thread.id}
+                orderedIds={orderedWorkflowThreadIds}
+                displayTitle={
+                  props.threadLabels.get(thread.id) ??
+                  (entry.type === "planning"
+                    ? workflowThreadDisplayTitle(entry.workflow, thread.title)
+                    : thread.title)
+                }
+                trailingMeta={
+                  <ModelChip
+                    model={thread.modelSelection?.model ?? thread.model}
+                    sessionProviderName={thread.sessionProvider}
+                    iconOnly
+                  />
+                }
+                isRenaming={false}
+                actions={actions}
+                {...props.indicatorsForThread(thread)}
+              />
+            ))}
+          </SidebarMenuSub>
+        </SidebarTreeParentContext.Provider>
       ) : null}
     </SidebarMenuSubItem>
   );

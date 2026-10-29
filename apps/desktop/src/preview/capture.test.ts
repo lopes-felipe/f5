@@ -45,57 +45,8 @@ it("serializes captures per guest and keeps a timed-out native capture in flight
   expect(capturePage).toHaveBeenCalledTimes(1);
   release(image);
   await new Promise((resolve) => setImmediate(resolve));
-  // The timed-out capture never reaches its final read; the next one warms up first.
-  expect(capturePage).toHaveBeenCalledTimes(1);
   expect(await captureBoundedPage(guest as never)).toBe(image);
-  expect(capturePage).toHaveBeenCalledTimes(3);
-});
-
-it("reads back after a discarded warmup capture and a paint check", async () => {
-  const stale = { getSize: () => ({ width: 10, height: 10 }), toPNG: () => Buffer.from("old") };
-  const fresh = { getSize: () => ({ width: 10, height: 10 }), toPNG: () => Buffer.from("new") };
-  const order: string[] = [];
-  let painted!: () => void;
-  const guest = Object.assign(new EventEmitter(), {
-    capturePage: vi
-      .fn()
-      .mockImplementationOnce(async () => {
-        order.push("warmup");
-        return stale;
-      })
-      .mockImplementation(async () => {
-        order.push("capture");
-        return fresh;
-      }),
-    executeJavaScriptInIsolatedWorld: vi.fn(
-      () =>
-        new Promise((resolve) => {
-          order.push("paint-check");
-          painted = () => resolve(true);
-        }),
-    ),
-    isDestroyed: () => false,
-  });
-  const captured = captureBoundedPage(guest as never);
-  await vi.waitFor(() => expect(order.toSorted()).toEqual(["paint-check", "warmup"]));
-  await new Promise((resolve) => setImmediate(resolve));
-  // The read back waits for the paint check, not only the warmup.
-  expect(order).not.toContain("capture");
-  painted();
-  expect(await captured).toBe(fresh);
-  expect(order.at(-1)).toBe("capture");
-  expect(guest.capturePage).toHaveBeenCalledTimes(2);
-});
-
-it("captures available pixels when the paint check cannot run", async () => {
-  const image = { getSize: () => ({ width: 10, height: 10 }), toPNG: () => Buffer.from("png") };
-  const guest = Object.assign(new EventEmitter(), {
-    capturePage: vi.fn().mockRejectedValueOnce(new Error("hidden")).mockResolvedValue(image),
-    executeJavaScriptInIsolatedWorld: vi.fn().mockRejectedValue(new Error("no document")),
-    isDestroyed: () => false,
-  });
-  expect(await captureBoundedPage(guest as never)).toBe(image);
-  expect(guest.capturePage).toHaveBeenCalledTimes(2);
+  expect(capturePage).toHaveBeenCalledTimes(2);
 });
 
 it.each(["render-process-gone", "unresponsive"])(

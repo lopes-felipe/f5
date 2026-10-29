@@ -11,13 +11,18 @@ import {
 } from "~/threadUndo";
 
 const MODIFIER_KEYS = new Set(["Alt", "Control", "Meta", "Shift"]);
+// Toasts, including the undo notice itself, are non-modal dialogs and must not block shortcuts.
+const MODAL_DIALOG_SELECTOR =
+  '[role="dialog"]:not([aria-modal="false"]), [role="alertdialog"]:not([aria-modal="false"])';
 
 function shortcutTargetContext(event: KeyboardEvent) {
   const target = event.target instanceof Element ? event.target : null;
   return {
     editableFocus: Boolean(target?.closest("input, textarea, [contenteditable=true]")),
     terminalFocus: Boolean(target?.closest(".xterm")),
-    dialogFocus: Boolean(document.querySelector('[role="dialog"], [role="alertdialog"]')),
+    dialogFocus: Boolean(
+      target?.closest(MODAL_DIALOG_SELECTOR) ?? document.querySelector(MODAL_DIALOG_SELECTOR),
+    ),
   };
 }
 
@@ -47,7 +52,9 @@ export function ThreadNavigationController() {
       const command = resolveShortcutCommand(event, keybindings, {
         context: {
           ...context,
-          editableFocus: context.editableFocus && !threadUndoClaimsShortcut(),
+          // A terminal keeps its own Ctrl+Z (suspend) even while a fresh undo claims the key.
+          editableFocus:
+            context.editableFocus && (context.terminalFocus || !threadUndoClaimsShortcut()),
           threadUndoAvailable: canUndoThreadAction(),
         },
       });

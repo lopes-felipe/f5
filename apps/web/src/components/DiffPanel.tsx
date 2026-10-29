@@ -34,6 +34,7 @@ import { type AppSettings, updateAppSettings, useAppSettingsSelector } from "../
 import { readNativeApi } from "../nativeApi";
 import { resolvePathLinkTarget } from "../terminal-links";
 import { clearTurnDiffSearchParams, parseDiffRouteSearch } from "../diffRouteSearch";
+import { useDiffFileRevealRequestId } from "../diffFileReveal";
 import { useTheme } from "../hooks/useTheme";
 import { PREFERRED_HIGHLIGHTER, resolveDiffThemeName } from "../lib/diffRendering";
 import {
@@ -330,18 +331,19 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
     [logicalFileKey, renderableFiles],
   );
 
-  // Each route selection reveals once. A refresh that rebuilds the file list must not
-  // expand the file again after the user collapsed it.
+  // Each pick of a file reveals once. A refresh that rebuilds the file list must not
+  // expand the file again after the user collapsed it; picking it again does.
+  const revealRequestId = useDiffFileRevealRequestId();
   const routeRevealKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!selectedFilePath) {
       routeRevealKeyRef.current = null;
       return;
     }
-    const key = JSON.stringify([logicalFileKey(""), selectedFilePath]);
+    const key = JSON.stringify([logicalFileKey(""), selectedFilePath, revealRequestId]);
     if (routeRevealKeyRef.current === key) return;
     if (revealDiffFile(selectedFilePath)) routeRevealKeyRef.current = key;
-  }, [logicalFileKey, revealDiffFile, selectedFilePath]);
+  }, [logicalFileKey, revealDiffFile, revealRequestId, selectedFilePath]);
 
   const openDiffFileInEditor = useCallback(
     (filePath: string) => {

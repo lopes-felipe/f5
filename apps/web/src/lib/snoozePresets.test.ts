@@ -86,17 +86,28 @@ describe("pickSnoozePreset", () => {
     ).toEqual(at(29, 9));
   });
 
-  it("re-resolves a shown time that passed, and refuses a removed option", () => {
+  it("refuses a shown time that has passed", () => {
     const shown = resolveSnoozePresets(presets, at(28, 8));
     expect(
+      pickSnoozePreset({ shown, id: "at:tomorrow:09:00", presets, now: at(29, 10) }),
+    ).toBeUndefined();
+  });
+
+  it("keeps the shown wake of an option removed while its menu was open", () => {
+    const shown = resolveSnoozePresets(presets, at(28, 8));
+    // The menu showed this choice, so it still means what it said.
+    expect(
       new Date(
-        pickSnoozePreset({ shown, id: "at:tomorrow:09:00", presets, now: at(29, 10) })!
+        pickSnoozePreset({ shown, id: "at:tomorrow:09:00", presets: [], now: at(28, 9) })!
           .snoozedUntil,
       ),
-    ).toEqual(at(30, 9));
+    ).toEqual(at(29, 9));
     expect(
-      pickSnoozePreset({ shown, id: "at:tomorrow:09:00", presets: [], now: at(29, 10) }),
-    ).toBeUndefined();
+      new Date(
+        pickSnoozePreset({ shown, id: "after:60", presets: [], now: at(28, 8) })!.snoozedUntil,
+      ),
+    ).toEqual(at(28, 9));
+    expect(pickSnoozePreset({ shown, id: "after:5", presets, now: at(28, 8) })).toBeUndefined();
   });
 });
 

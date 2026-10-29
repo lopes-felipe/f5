@@ -68,7 +68,7 @@ commit, push and pull request actions. Linked pull requests also appear in the
 - **Settings → Threads → Snooze options** sets the choices in every snooze menu: up to 8, either
   a duration ("In 3 hours") or a day and time ("Friday at 6:00 PM"). Menus list them soonest
   first; a weekday means the next one after today. The defaults are 3 hours, tomorrow at 9:00 and
-  a week from today at 9:00.
+  a week from today at 9:00; menus fall back to them when none of your options is left.
 - A turn running during a restart resumes only if **Settings → Threads → Resume active turns after
   restart** is on (off by default).
 - Sending a new message resumes a queue held by Stop or Pause, preserving its order. **Queue at end**,

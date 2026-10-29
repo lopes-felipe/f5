@@ -8,15 +8,37 @@ const FOCUSABLE_SELECTOR =
 const PREFERRED_SELECTOR =
   '[data-workspace-focus-default], [role="treeitem"][tabindex="0"], .xterm-helper-textarea, [contenteditable="true"]';
 
-/** Props that make an element one stop in the F6 cycle; `order` sets its place in the cycle. */
+/**
+ * Props that make an element one stop in the F6 cycle; `order` sets its place in the cycle.
+ * The area is not focusable itself: a click on its text would focus it, and keyboard scrolling
+ * then misses the list inside. F6 makes it focusable only while it holds focus.
+ */
 export function workspaceAreaProps(name: string, order: number, label: string) {
   return {
     "data-workspace-area": name,
     "data-workspace-order": order,
     "aria-label": label,
     role: "region",
-    tabIndex: -1,
   } as const;
+}
+
+/** Focuses an area with no control of its own, until focus or a pointer press leaves it. */
+function focusAreaItself(area: HTMLElement) {
+  if (area.hasAttribute("tabindex")) {
+    area.focus({ preventScroll: true });
+    return;
+  }
+  area.tabIndex = -1;
+  const release = () => {
+    area.removeAttribute("tabindex");
+    area.removeEventListener("blur", release);
+    area.removeEventListener("pointerdown", release, true);
+  };
+  area.addEventListener("blur", release);
+  // A click on the area's text must not keep the area focused.
+  area.addEventListener("pointerdown", release, true);
+  area.focus({ preventScroll: true });
+  if (area.ownerDocument.activeElement !== area) release();
 }
 
 function workspaceArea(element: Element): HTMLElement | null {
@@ -128,7 +150,8 @@ export function createWorkspaceFocusController(doc: Document) {
     ]);
     for (const target of targets) {
       if (!target) continue;
-      target.focus({ preventScroll: true });
+      if (target === area) focusAreaItself(area);
+      else target.focus({ preventScroll: true });
       const root = target.getRootNode();
       const active = root instanceof ShadowRoot ? root.activeElement : doc.activeElement;
       if (active === target || (active && target.contains(active))) {
