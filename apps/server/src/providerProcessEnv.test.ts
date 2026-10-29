@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as Path from "node:path";
 import { fallbackDefaultProfile } from "./profiles/ProfileRegistryStore";
+import { browserOpenEnabled } from "./browser/BrowserOpenLauncher";
 import {
   buildAccountExecutionEnvironment,
   assertAccountEnvironmentOverrides,
@@ -74,7 +75,7 @@ describe("profile account execution", () => {
     expect(env.GH_TOKEN).toBeUndefined();
     expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBeUndefined();
     expect(env.PATH).toBe(
-      (process.platform === "darwin" ? Path.join(stateDir, "browser-bin") + Path.delimiter : "") +
+      (browserOpenEnabled() ? Path.join(stateDir, "browser-bin") + Path.delimiter : "") +
         Path.join(stateDir, "github-bin") +
         Path.delimiter +
         "tools",
@@ -179,35 +180,41 @@ describe("profile account execution", () => {
 });
 
 describe("profile browser environment", () => {
-  afterEach(() => vi.unstubAllGlobals());
-  it.each(["darwin", "linux", "win32"] as const)(
-    "injects the launcher only on macOS (%s)",
-    (platform) => {
-      vi.stubGlobal(
-        "process",
-        new Proxy(process, {
-          get: (target, key) => (key === "platform" ? platform : Reflect.get(target, key)),
-        }),
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+  it.each([
+    ["darwin", "ipc", true],
+    ["darwin", "", false],
+    ["linux", "ipc", false],
+    ["win32", "ipc", false],
+  ] as const)("injects the launcher only for desktop macOS (%s, %s)", (platform, host, enabled) => {
+    vi.stubEnv("F5_DESKTOP_COMPUTER_HOST", host);
+    vi.stubGlobal(
+      "process",
+      new Proxy(process, {
+        get: (target, key) => (key === "platform" ? platform : Reflect.get(target, key)),
+      }),
+    );
+    const stateDir = Path.resolve("browser-env-test");
+    for (const purpose of ["provider", "terminal"] as const) {
+      const env = buildAccountExecutionEnvironment({
+        purpose,
+        stateDir,
+        profile: undefined,
+        baseEnv: { PATH: "/usr/bin", BROWSER: "user-browser" },
+      });
+      expect(env.BROWSER).toBe(
+        enabled ? Path.join(stateDir, "browser-bin", "f5-open-url") : "user-browser",
       );
-      const stateDir = Path.resolve("browser-env-test");
-      for (const purpose of ["provider", "terminal"] as const) {
-        const env = buildAccountExecutionEnvironment({
-          purpose,
-          stateDir,
-          profile: undefined,
-          baseEnv: { PATH: "/usr/bin" },
-        });
-        expect(env.BROWSER).toBe(
-          platform === "darwin" ? Path.join(stateDir, "browser-bin", "f5-open-url") : undefined,
-        );
-        expect(env.PATH?.split(Path.delimiter).slice(0, platform === "darwin" ? 2 : 1)).toEqual(
-          (platform === "darwin" ? ["browser-bin", "github-bin"] : ["github-bin"]).map((name) =>
-            Path.join(stateDir, name),
-          ),
-        );
-      }
-    },
-  );
+      expect(env.PATH?.split(Path.delimiter).slice(0, enabled ? 2 : 1)).toEqual(
+        (enabled ? ["browser-bin", "github-bin"] : ["github-bin"]).map((name) =>
+          Path.join(stateDir, name),
+        ),
+      );
+    }
+  });
 });
 
 it("preserves Default reserved overrides and deliberate telemetry endpoints", () => {

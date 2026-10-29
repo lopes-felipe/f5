@@ -88,8 +88,31 @@ describe.skipIf(process.platform === "win32")("browser launcher", () => {
   it("returns unavailable for a missing socket and invalid for unsupported arguments", async () => {
     const root = await fixture();
     expect((await run(browserLauncherPath(root), ["https://example.com"])).code).toBe(2);
-    for (const args of [[], ["file:///tmp/a"], ["https://example.com", "extra"], ["bad"]])
-      expect((await run(browserLauncherPath(root), args)).code).toBe(1);
+    for (const args of [[], ["file:///tmp/a"], ["https://example.com", "extra"], ["bad"]]) {
+      const invalid = await run(browserLauncherPath(root), args);
+      expect(invalid.code).toBe(1);
+      expect(invalid.stderr).toBe("");
+    }
+  });
+  it("atomically replaces existing scripts and leaves no temporary files", async () => {
+    const root = await fixture();
+    const script = Path.join(browserLauncherDir(root), "open-url.cjs");
+    const previous = await FS.open(script, "r");
+    try {
+      const original = await previous.readFile("utf8");
+      await prepareBrowserOpenLauncher(root, null);
+      expect(await FS.readFile(script, "utf8")).not.toBe(original);
+      // A reader of the previous inode keeps the complete original script.
+      expect((await previous.stat()).size).toBe(Buffer.byteLength(original));
+      expect((await run(browserLauncherPath(root), ["https://example.com"])).code).toBe(2);
+      expect((await FS.readdir(browserLauncherDir(root))).sort()).toEqual([
+        "f5-open-url",
+        "open",
+        "open-url.cjs",
+      ]);
+    } finally {
+      await previous.close();
+    }
   });
   it.each([["https://example.com"], ["http://localhost:3000/callback"], ["HTTPS://EXAMPLE.COM"]])(
     "forwards a single HTTP URL through the open shim: %s",

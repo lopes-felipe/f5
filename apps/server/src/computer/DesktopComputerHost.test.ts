@@ -15,6 +15,15 @@ describe("private desktop host", () => {
     const host = new DesktopComputerHost("p", "i", new Ipc(), false);
     expect(host.status()).toEqual({ available: false, reason: "no-host" });
   });
+  it("notifies listeners only once when multiple owners close the host", () => {
+    const host = new DesktopComputerHost("p", "i", new Ipc(), true);
+    const listener = vi.fn();
+    host.onMessage(listener);
+    host.close();
+    const calls = listener.mock.calls.length;
+    host.close();
+    expect(listener).toHaveBeenCalledTimes(calls);
+  });
   it("sends an incarnation-bound hello and treats invalid host data as loss", () => {
     const ipc = new Ipc();
     const host = new DesktopComputerHost("p", "i", ipc, true);

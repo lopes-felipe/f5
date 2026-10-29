@@ -49,8 +49,7 @@ import { resolveAgentBrowserPolicy, type AgentBrowserPolicy } from "../mcp/brows
 import { AutomationQueue } from "../mcp/automationQueue";
 import { AgentControlPause, AgentControlPauseService } from "../mcp/agentControlPause";
 import { DesktopComputerHost } from "./DesktopComputerHost";
-import { startBrowserOpenListener } from "../browser/BrowserOpenListener";
-import { prepareBrowserOpenLauncher } from "../browser/BrowserOpenLauncher";
+import { startBrowserOpenBridge } from "../browser/BrowserOpenBridge";
 import { computerAccessStorage } from "./computerAccessStorage";
 import { ComputerAccessService } from "./ComputerAccessService";
 
@@ -1773,16 +1772,8 @@ export const ComputerAutomationBrokerLive = Layer.effect(
     const host = DesktopComputerHost.fromEnvironment(config.profile?.id ?? "default");
     // Register cleanup before starting any profile-local services.
     yield* Effect.addFinalizer(() => Effect.sync(() => host.close()));
-    if (process.platform === "darwin") {
-      if (process.env.F5_DESKTOP_COMPUTER_HOST === "ipc") {
-        const closeBrowser = yield* Effect.promise(() =>
-          startBrowserOpenListener(config.stateDir, host),
-        );
-        yield* Effect.addFinalizer(() => Effect.promise(closeBrowser));
-      } else {
-        yield* Effect.promise(() => prepareBrowserOpenLauncher(config.stateDir));
-      }
-    }
+    const closeBrowser = yield* Effect.promise(() => startBrowserOpenBridge(config.stateDir, host));
+    yield* Effect.addFinalizer(() => Effect.promise(closeBrowser));
     const pause = yield* Effect.serviceOption(AgentControlPauseService);
     const storage = computerAccessStorage({
       exists: () => run(fs.exists(file)),
@@ -1848,8 +1839,10 @@ export const ComputerAutomationBrokerLive = Layer.effect(
         };
       },
     });
-    yield* Effect.promise(() => broker.initialize());
+    // broker.close owns host.close from here, including initialization failure.
+    // The early host finalizer remains safe because close is idempotent.
     yield* Effect.addFinalizer(() => Effect.sync(() => broker.close()));
+    yield* Effect.promise(() => broker.initialize());
     return broker;
   }),
 );

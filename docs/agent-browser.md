@@ -44,13 +44,16 @@ obtained F5's permissions. Filesystem/network coding tools retain their existing
 access; shell GUI automation must use F5's consent-mediated computer catalog.
 There is no unsandboxed fallback if the sandbox launcher fails.
 
-On macOS, agents and F5 terminals can request browser logins through the profile's
+In the macOS desktop app, agents and F5 terminals can request browser logins through the profile's
 generated `$BROWSER` launcher or `open https://…` shim. A private Unix socket
 forwards only HTTP(S) URLs to Electron main over desktop IPC. Main rejects userinfo
 and URLs longer than 4096 characters, then shows a native dialog with the profile,
 host and a shortened URL. Choose Open, allow that hostname until F5 quits, Copy
 link, or Cancel. Host approvals are separate per profile, survive backend restarts,
 and disappear when F5 quits; they are never written to disk or Keychain.
+Host approvals include HTTP and HTTPS on every port, including loopback hosts.
+Browser launches share a per-profile limit of ten per rolling minute; excess
+requests return `busy` without launching another tab.
 
 Only one consent dialog is active per profile, with up to three waiting requests.
 Every request expires after five minutes, including queue time. The launcher
@@ -58,7 +61,7 @@ prints the URL for manual copying before connecting, and exits 0 for opened/copi
 1 for denied/busy/invalid, or 2 when the desktop bridge is unavailable. Programs
 that hard-code `/usr/bin/open` cannot use this bridge; other `open` arguments
 (including `open -a`) still reach the system command and remain sandboxed.
-Linux and Windows environments are unchanged.
+Standalone macOS servers, Linux and Windows keep their existing browser environment.
 
 Every included window is audited for secure fields, including background apps and
 second windows. Missing, partial or timed-out accessibility scans mask the nearest

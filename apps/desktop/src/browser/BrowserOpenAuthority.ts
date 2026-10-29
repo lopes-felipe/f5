@@ -1,7 +1,7 @@
 import type { OpenExternalUrlStatus } from "@t3tools/contracts";
 import { getSafeBrowserLoginUrl } from "./externalUrl";
 
-interface BrowserOpenPrompt {
+export interface BrowserOpenPrompt {
   profileId: string;
   host: string;
   url: string;
@@ -24,6 +24,7 @@ interface ProfileQueue {
 export class BrowserOpenAuthority {
   private readonly allowed = new Map<string, Set<string>>();
   private readonly queues = new Map<string, ProfileQueue>();
+  private readonly recentOpens = new Map<string, number[]>();
   constructor(
     private readonly effects: {
       prompt: (request: BrowserOpenPrompt) => Promise<number>;
@@ -32,17 +33,15 @@ export class BrowserOpenAuthority {
     },
   ) {}
 
+  /** Validate before consent; remembered hosts still share a per-profile browser-open budget. */
   request(profileId: string, rawUrl: unknown): Promise<OpenExternalUrlStatus> {
     const url = getSafeBrowserLoginUrl(rawUrl);
     if (!url) return Promise.resolve("invalid");
     const host = new URL(url).hostname.toLowerCase();
     if (this.allowed.get(profileId)?.has(host))
       return Promise.resolve()
-        .then(() => this.effects.open(url))
-        .then(
-          () => "opened" as const,
-          () => "denied" as const,
-        );
+        .then(() => this.open(profileId, url))
+        .catch(() => "denied" as const);
     const queue = this.queues.get(profileId) ?? { waiting: [] };
     if (queue.active && queue.waiting.length >= 3) return Promise.resolve("busy");
     this.queues.set(profileId, queue);
@@ -67,6 +66,7 @@ export class BrowserOpenAuthority {
     });
   }
 
+  /** Revoke pending dialogs on disconnect without forgetting session host approvals. */
   cancelProfile(profileId: string): void {
     const queue = this.queues.get(profileId);
     if (!queue) return;
@@ -130,7 +130,17 @@ export class BrowserOpenAuthority {
       }
     }
     if (request.settled) return "denied";
-    await this.effects.open(request.url);
+    return this.open(profileId, request.url);
+  }
+
+  /** At most ten browser launches per rolling minute, including concurrent requests. */
+  private async open(profileId: string, url: string): Promise<OpenExternalUrlStatus> {
+    const now = Date.now();
+    const recent = (this.recentOpens.get(profileId) ?? []).filter((time) => now - time < 60_000);
+    this.recentOpens.set(profileId, recent);
+    if (recent.length >= 10) return "busy";
+    recent.push(now);
+    await this.effects.open(url);
     return "opened";
   }
 }

@@ -26,6 +26,7 @@ interface Pending {
   mutation: boolean;
 }
 export class DesktopComputerHost {
+  private closed = false;
   private state: ComputerAutomationBackendStatus = { available: false, reason: "no-host" };
   private readonly pending = new Map<string, Pending>();
   private readonly browserPending = new Map<
@@ -224,6 +225,8 @@ export class DesktopComputerHost {
     return () => this.listeners.delete(callback);
   }
   close(): void {
+    if (this.closed) return;
+    this.closed = true;
     this.disconnect();
     this.ipc.off("message", this.receive);
     this.ipc.off("disconnect", this.disconnect);

@@ -82,6 +82,7 @@ import { ComputerOverlay } from "./computer/ComputerOverlay";
 import { ComputerConsentAuthority } from "./computer/ComputerConsentAuthority";
 import { ComputerHostChannel } from "./computer/ComputerHostChannel";
 import { BrowserOpenAuthority } from "./browser/BrowserOpenAuthority";
+import { createBrowserOpenPrompt } from "./browser/BrowserOpenPrompt";
 import { getSafeExternalUrl } from "./browser/externalUrl";
 import { ChromeProcessSupervisor } from "./computer/ChromeProcessSupervisor";
 import { isIntegrationCertified } from "@t3tools/shared/providerIntegrationCertification";
@@ -324,26 +325,16 @@ const defaultBackend = makeBackendRuntime(desktopDefaultProfile(STATE_DIR));
 const backends = new Map<string, BackendRuntime>([[defaultBackend.profile.id, defaultBackend]]);
 const profileByWebContentsId = new Map<number, string>();
 const browserOpenAuthority = new BrowserOpenAuthority({
-  prompt: async ({ profileId, host, url, signal }) => {
-    const owner =
+  prompt: createBrowserOpenPrompt({
+    window: (profileId) =>
       BrowserWindow.getAllWindows().find(
-        (window) => profileByWebContentsId.get(window.webContents.id) === profileId,
-      ) ?? mainWindow;
-    if (!owner || owner.isDestroyed() || signal.aborted) return 3;
-    const options: Electron.MessageBoxOptions = {
-      type: "question",
-      title: "Open login URL",
-      // Native macOS message text is bold; the URL remains in the detail.
-      message: host,
-      detail: `An agent or terminal in profile "${backends.get(profileId)?.profile.name ?? profileId}" wants to open this URL in your browser:\n\n${url.length > 300 ? url.slice(0, 299) + "…" : url}`,
-      buttons: ["Open", `Allow ${host} until F5 quits`, "Copy link", "Cancel"],
-      defaultId: 0,
-      cancelId: 3,
-      noLink: true,
-      signal,
-    };
-    return (await dialog.showMessageBox(owner, options)).response;
-  },
+        (window) =>
+          !window.isDestroyed() && profileByWebContentsId.get(window.webContents.id) === profileId,
+      ),
+    openProfile: (profileId) => openProfile(profileId),
+    profileName: (profileId) => backends.get(profileId)?.profile.name ?? profileId,
+    show: (owner, options) => dialog.showMessageBox(owner, options),
+  }),
   open: (url) => shell.openExternal(url, { activate: true }),
   copy: (url) => clipboard.writeText(url),
 });

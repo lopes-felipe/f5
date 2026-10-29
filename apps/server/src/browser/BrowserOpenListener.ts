@@ -42,14 +42,14 @@ export async function startBrowserOpenListener(
   const server = Net.createServer((socket) => {
     socket.on("error", () => socket.destroy());
     if (sockets.size >= 64) {
-      socket.end('{"status":"busy"}\n');
+      socket.end('{"status":"busy"}\n', () => socket.destroy());
       return;
     }
     sockets.add(socket);
     let input = Buffer.alloc(0);
     let requested = false;
     const reply = (status: BrowserOpenStatus) => {
-      if (!socket.destroyed) socket.end(JSON.stringify({ status }) + "\n");
+      if (!socket.destroyed) socket.end(JSON.stringify({ status }) + "\n", () => socket.destroy());
     };
     socket.setTimeout(5000, () => {
       reply(requested ? "unavailable" : "invalid");

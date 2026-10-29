@@ -94,6 +94,25 @@ describe("browser open authority", () => {
     answer(3);
     await Promise.all(waiting);
   });
+  it("bounds concurrent approved opens per profile without forgetting host consent", async () => {
+    vi.useFakeTimers();
+    const { effects, authority } = setup();
+    effects.prompt.mockResolvedValue(1);
+    await authority.request("p", "https://example.com");
+    const results = await Promise.all(
+      Array.from({ length: 20 }, () => authority.request("p", "https://example.com/again")),
+    );
+    expect(results.filter((status) => status === "opened")).toHaveLength(9);
+    expect(results.filter((status) => status === "busy")).toHaveLength(11);
+    expect(effects.open).toHaveBeenCalledTimes(10);
+    expect(effects.prompt).toHaveBeenCalledOnce();
+    expect(await authority.request("other", "https://example.com")).toBe("opened");
+    authority.cancelProfile("p");
+    expect(await authority.request("p", "https://example.com")).toBe("busy");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await authority.request("p", "https://example.com")).toBe("opened");
+    expect(effects.prompt).toHaveBeenCalledTimes(2);
+  });
   it("shows one dialog per profile, queues three, and permits another profile's dialog", async () => {
     const { effects, authority } = setup();
     const answers: Array<(button: number) => void> = [];

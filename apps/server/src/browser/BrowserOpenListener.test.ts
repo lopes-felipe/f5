@@ -31,6 +31,30 @@ async function fixture(host = { openExternalUrl: vi.fn(async () => "copied" as c
   return { root, socketPath, send, host, close };
 }
 describe.skipIf(process.platform === "win32")("private browser socket", () => {
+  it("closes saturated connections even when clients keep their write side open", async () => {
+    const h = await fixture();
+    const clients: Net.Socket[] = [];
+    cleanup.push(async () => {
+      for (const client of clients) client.destroy();
+    });
+    const connect = () =>
+      new Promise<Net.Socket>((resolve, reject) => {
+        const client = Net.createConnection({ path: h.socketPath, allowHalfOpen: true });
+        clients.push(client);
+        client.on("error", reject);
+        client.once("connect", () => resolve(client));
+      });
+    for (let i = 0; i < 64; i++) await connect();
+    const overflow = await connect();
+    const response = await new Promise<string>((resolve) => {
+      overflow.once("data", (data) => resolve(data.toString()));
+    });
+    expect(JSON.parse(response)).toEqual({ status: "busy" });
+    await h.close();
+    // The closer already ran; retain cleanup for clients and the fixture directory.
+    cleanup.splice(cleanup.length - 2, 1);
+    expect(h.host.openExternalUrl).not.toHaveBeenCalled();
+  });
   it("does not unlink a live listener when the same profile starts twice", async () => {
     const h = await fixture();
     await expect(startBrowserOpenListener(h.root, h.host)).rejects.toThrow("already running");
