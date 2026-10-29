@@ -339,12 +339,13 @@ function codexThreadTokenUsageSnapshot(payload: Record<string, unknown> | undefi
 export function codexReasoningTokensSinceBaseline(
   payload: Record<string, unknown> | undefined,
   baseline: number | undefined,
-): { readonly tokens: number; readonly baseline: number } | undefined {
+): { readonly tokens: number; readonly baseline: number | undefined } | undefined {
   const tokenUsage = asObject(payload?.tokenUsage);
   const total = asNonNegativeInteger(asObject(tokenUsage?.total)?.reasoningOutputTokens);
   const last = asNonNegativeInteger(asObject(tokenUsage?.last)?.reasoningOutputTokens);
   if (total === undefined) {
-    return last === undefined ? undefined : { tokens: last, baseline: baseline ?? 0 };
+    // Keep a missing baseline missing, so a later `total` is never diffed against 0.
+    return last === undefined ? undefined : { tokens: last, baseline };
   }
   if (baseline === undefined || total < baseline) {
     return { tokens: last ?? 0, baseline: total };
@@ -3697,7 +3698,8 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                   reasoningTokenBaselineByThread.get(key),
                 );
                 if (reasoning) {
-                  reasoningTokenBaselineByThread.set(key, reasoning.baseline);
+                  if (reasoning.baseline !== undefined)
+                    reasoningTokenBaselineByThread.set(key, reasoning.baseline);
                   if (reasoning.tokens > 0 && event.turnId) {
                     runtimeEvents = [
                       ...runtimeEvents,

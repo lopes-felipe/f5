@@ -39,6 +39,7 @@ import {
 } from "../sharedAssistantContract.ts";
 import {
   buildClaudeQueryEnv,
+  accumulateClaudeThinkingTokens,
   claudeShowThinkingSummaries,
   isClaudeMissingConversationError,
   makeClaudeAdapterLive,
@@ -5471,6 +5472,20 @@ describe("ClaudeAdapterLive", () => {
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );
+  });
+
+  it("accumulates Claude thinking estimates from deltas, falling back to the running total", () => {
+    // The SDK's per-frame delta wins, even across blocks whose totals are equal.
+    let account = accumulateClaudeThinkingTokens(undefined, 200, 200);
+    account = accumulateClaudeThinkingTokens({ ...account, lastEstimate: 0 }, 200, 200);
+    assert.equal(account.pending, 400);
+    // Without a delta the running total is diffed; a block reset makes an
+    // equal or higher first estimate count in full.
+    let fallback = accumulateClaudeThinkingTokens(undefined, 300);
+    fallback = accumulateClaudeThinkingTokens({ ...fallback, lastEstimate: 0 }, 300);
+    assert.equal(fallback.pending, 600);
+    // A drop without a reset is still read as a new block.
+    assert.equal(accumulateClaudeThinkingTokens(fallback, 50).pending, 650);
   });
 
   it("derives showThinkingSummaries from the typed thinking display", () => {

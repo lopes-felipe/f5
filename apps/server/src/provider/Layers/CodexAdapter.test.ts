@@ -90,6 +90,14 @@ it("diffs Codex reasoning totals against the session baseline", () => {
     baseline: 100,
   });
   assert.equal(codexReasoningTokensSinceBaseline({}, undefined), undefined);
+  // A `last`-only frame keeps a missing baseline missing, so the next `total`
+  // (a resumed thread's whole history) is not attributed.
+  const lastOnly = codexReasoningTokensSinceBaseline(frame(undefined, 120), undefined);
+  assert.deepEqual(lastOnly, { tokens: 120, baseline: undefined });
+  assert.deepEqual(codexReasoningTokensSinceBaseline(frame(64_521, 80), lastOnly?.baseline), {
+    tokens: 80,
+    baseline: 64_521,
+  });
 });
 
 it("maps exact current Codex item types and legacy aliases without substring collisions", () => {

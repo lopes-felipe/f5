@@ -15,7 +15,9 @@ import { truncateMiddleByBytes } from "../orchestration/outputTruncation.ts";
  *   total byte count), so the projection is the one full store.
  * - Streamed messages. A message streams as many `message-sent` deltas. Once
  *   the message is final, its deltas collapse into one non-streaming event
- *   with the folded text, which replays to the same message.
+ *   with the folded text, which replays to the same message. Only events
+ *   before the message's first reasoning-tokens event fold, so the count
+ *   still replays after its message.
  * - Command receipts of removed output events. Output commands get a random
  *   ID each (`provider:cmd-output:<uuid>`), so no redelivery can reuse one.
  *   Message receipts are kept: delta command IDs derive from provider event
@@ -55,6 +57,7 @@ const OUTPUT_COMMAND_ID_PREFIX = "provider:cmd-output:";
 
 const OUTPUT_EVENT = "thread.command-execution-output-appended";
 const MESSAGE_EVENT = "thread.message-sent";
+const REASONING_TOKENS_EVENT = "thread.message-reasoning-tokens-added";
 
 export interface EventCompactionResult {
   readonly threadsCompacted: number;
@@ -177,6 +180,12 @@ interface EventGroup {
   bytes: number;
   lastStreaming: boolean;
   lastPayloadBytes: number;
+  /**
+   * A message group closes at its first reasoning-tokens event: the fold
+   * lands on the group's last sequence, which must stay ahead of the count
+   * or a replay would apply the count before its message exists.
+   */
+  sealed?: boolean;
 }
 
 /**
@@ -426,7 +435,7 @@ export const compactThreadEvents = (input: {
               AND stream_id = ${threadId}
               AND sequence > ${cursor}
               AND sequence <= ${head}
-              AND event_type IN (${OUTPUT_EVENT}, ${MESSAGE_EVENT})
+              AND event_type IN (${OUTPUT_EVENT}, ${MESSAGE_EVENT}, ${REASONING_TOKENS_EVENT})
             ORDER BY sequence ASC
             LIMIT ${SCAN_PAGE_SIZE}
           `;
@@ -440,9 +449,16 @@ export const compactThreadEvents = (input: {
               });
             }
             if (row.groupId === null) continue;
+            if (row.eventType === REASONING_TOKENS_EVENT) {
+              const message = groups.get(`message:${row.groupId}`);
+              if (message) message.sealed = true;
+              continue;
+            }
             const kind = row.eventType === OUTPUT_EVENT ? "output" : "message";
             const key = `${kind}:${row.groupId}`;
             let group = groups.get(key);
+            // Later events (history repair) stay as they are, after the count.
+            if (group?.sealed) continue;
             if (group === undefined) {
               group = {
                 kind,

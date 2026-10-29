@@ -327,14 +327,26 @@ export interface ClaudeThinkingTokenAccount {
   readonly pending: number;
 }
 
-/** Folds a live per-block estimate into the account, treating a drop as a new block. */
+/**
+ * Folds a live per-block estimate into the account. The SDK's per-frame
+ * delta is used when present; otherwise the running total is diffed, with a
+ * drop treated as a new block.
+ */
 export function accumulateClaudeThinkingTokens(
   account: ClaudeThinkingTokenAccount | undefined,
   estimatedTokens: number,
+  estimatedTokensDelta?: number,
 ): ClaudeThinkingTokenAccount {
   const lastEstimate = account?.lastEstimate ?? 0;
   const pending = account?.pending ?? 0;
-  const added = estimatedTokens >= lastEstimate ? estimatedTokens - lastEstimate : estimatedTokens;
+  const added =
+    typeof estimatedTokensDelta === "number" &&
+    Number.isFinite(estimatedTokensDelta) &&
+    estimatedTokensDelta >= 0
+      ? estimatedTokensDelta
+      : estimatedTokens >= lastEstimate
+        ? estimatedTokens - lastEstimate
+        : estimatedTokens;
   return { lastEstimate: estimatedTokens, pending: pending + added };
 }
 
@@ -5781,6 +5793,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               context.turnState.thinkingTokens = accumulateClaudeThinkingTokens(
                 context.turnState.thinkingTokens,
                 message.estimated_tokens,
+                message.estimated_tokens_delta,
               );
             }
             yield* offerRuntimeEvent({

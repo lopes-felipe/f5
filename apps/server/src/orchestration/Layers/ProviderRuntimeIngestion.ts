@@ -67,6 +67,7 @@ import {
   Layer,
   Option,
   Path,
+  Schedule,
   Stream,
 } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -186,10 +187,14 @@ interface ReasoningSection {
  * restored: it would otherwise land on the next message.
  */
 function isPermanentDispatchRejection(cause: Cause.Cause<unknown>): boolean {
-  const error = Cause.squash(cause) as { readonly _tag?: unknown } | null;
+  return isPermanentDispatchError(Cause.squash(cause));
+}
+
+function isPermanentDispatchError(error: unknown): boolean {
+  const tag = (error as { readonly _tag?: unknown } | null)?._tag;
   return (
-    error?._tag === "OrchestrationCommandInvariantError" ||
-    error?._tag === "OrchestrationCommandPreviouslyRejectedError"
+    tag === "OrchestrationCommandInvariantError" ||
+    tag === "OrchestrationCommandPreviouslyRejectedError"
   );
 }
 
@@ -2757,7 +2762,7 @@ const make = Effect.gen(function* () {
   // Counts attributed to a message that is still streaming, dispatched once it completes.
   const deferredReasoningTokensByMessageId = yield* Cache.make<
     MessageId,
-    (PendingReasoningTokens & { readonly turnId: TurnId }) | null
+    (PendingReasoningTokens & { readonly threadId: ThreadId; readonly turnId: TurnId }) | null
   >({
     capacity: REASONING_TOKENS_BY_TURN_KEY_CACHE_CAPACITY,
     timeToLive: REASONING_TOKENS_BY_TURN_KEY_TTL,
@@ -2952,50 +2957,56 @@ const make = Effect.gen(function* () {
       // Event compaction folds a streamed message into its final event, so a
       // count recorded before completion would replay ahead of its message.
       if (message === undefined || message.streaming) {
-        yield* deferReasoningTokens(input.messageId, input.turnId, input.tokens);
+        yield* deferReasoningTokens(input.threadId, input.messageId, input.turnId, input.tokens);
         return;
       }
-      yield* orchestrationEngine
-        .dispatch({
-          type: "thread.message.reasoning-tokens.add",
-          commandId: providerCommandId(
-            input.event,
-            `reasoning-tokens-${input.tag}:${input.messageId}`,
-          ),
-          threadId: input.threadId,
-          messageId: input.messageId,
-          turnId: input.turnId,
-          tokens: input.tokens.tokens,
-          estimated: input.tokens.estimated,
-          createdAt: input.event.createdAt,
-        })
-        .pipe(
-          Effect.asVoid,
-          // Metadata only: a failed count must not block message completion,
-          // turn cleanup or history reconciliation.
-          Effect.catchCause((cause) =>
-            Cause.hasInterrupts(cause)
-              ? Effect.failCause(cause)
-              : isPermanentDispatchRejection(cause)
-                ? Effect.logDebug("provider runtime ingestion dropped reasoning tokens", {
-                    threadId: input.threadId,
-                    messageId: input.messageId,
-                    tokens: input.tokens.tokens,
-                  })
-                : Effect.logWarning(
-                    "provider runtime ingestion failed to record reasoning tokens",
-                    {
-                      threadId: input.threadId,
-                      messageId: input.messageId,
-                      tokens: input.tokens.tokens,
-                      cause: Cause.pretty(cause),
-                    },
-                  ),
-          ),
-        );
+      const command = {
+        type: "thread.message.reasoning-tokens.add",
+        commandId: providerCommandId(
+          input.event,
+          `reasoning-tokens-${input.tag}:${input.messageId}`,
+        ),
+        threadId: input.threadId,
+        messageId: input.messageId,
+        turnId: input.turnId,
+        tokens: input.tokens.tokens,
+        estimated: input.tokens.estimated,
+        createdAt: input.event.createdAt,
+      } as const;
+      // Suspended so each retry issues the dispatch again.
+      yield* Effect.suspend(() => orchestrationEngine.dispatch(command)).pipe(
+        Effect.asVoid,
+        // The count's cache entry is already consumed, so retry transient
+        // failures here. The command id is fixed, so a retry after a commit
+        // that reported failure is deduplicated by its receipt.
+        Effect.retry({
+          times: 3,
+          schedule: Schedule.exponential("50 millis"),
+          while: (error) => !isPermanentDispatchError(error),
+        }),
+        // Metadata only: a failed count must not block message completion,
+        // turn cleanup or history reconciliation.
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.failCause(cause)
+            : isPermanentDispatchRejection(cause)
+              ? Effect.logDebug("provider runtime ingestion dropped reasoning tokens", {
+                  threadId: input.threadId,
+                  messageId: input.messageId,
+                  tokens: input.tokens.tokens,
+                })
+              : Effect.logWarning("provider runtime ingestion failed to record reasoning tokens", {
+                  threadId: input.threadId,
+                  messageId: input.messageId,
+                  tokens: input.tokens.tokens,
+                  cause: Cause.pretty(cause),
+                }),
+        ),
+      );
     });
 
   const deferReasoningTokens = (
+    threadId: ThreadId,
     messageId: MessageId,
     turnId: TurnId,
     tokens: PendingReasoningTokens,
@@ -3004,12 +3015,34 @@ const make = Effect.gen(function* () {
       Effect.flatMap((existing) => {
         const previous = Option.getOrNull(existing);
         return Cache.set(deferredReasoningTokensByMessageId, messageId, {
+          threadId,
           turnId,
           tokens: (previous?.tokens ?? 0) + tokens.tokens,
           estimated: (previous?.estimated ?? false) || tokens.estimated,
         });
       }),
     );
+
+  /** Drops deferred counts whose message never completed, e.g. after an abort or session stop. */
+  const dropDeferredReasoningTokens = (threadId: ThreadId, turnId?: TurnId) =>
+    Effect.gen(function* () {
+      for (const messageId of Array.from(yield* Cache.keys(deferredReasoningTokensByMessageId))) {
+        const deferred = Option.getOrNull(
+          yield* Cache.getOption(deferredReasoningTokensByMessageId, messageId),
+        );
+        if (
+          !deferred ||
+          deferred.threadId !== threadId ||
+          (turnId !== undefined && deferred.turnId !== turnId)
+        )
+          continue;
+        yield* Cache.invalidate(deferredReasoningTokensByMessageId, messageId);
+        yield* Effect.logDebug(
+          "provider runtime ingestion dropped reasoning tokens for an unfinished message",
+          { threadId, messageId, turnId: deferred.turnId, tokens: deferred.tokens },
+        );
+      }
+    });
 
   /** Dispatches counts that waited for this message to complete. */
   const flushDeferredReasoningTokens = (input: {
@@ -3046,11 +3079,13 @@ const make = Effect.gen(function* () {
       if (yield* hasBufferedReasoningText(turnKey)) return;
       const pending = yield* takePendingReasoningTokens(turnKey);
       if (!pending) return;
-      yield* Cache.invalidate(reasoningRecipientByTurnKey, turnKey);
+      // The pending count belongs to earlier reasoning now shown on this
+      // message. The recipient stays set so this message's own count still
+      // reaches it instead of shifting to a later message.
       yield* dispatchReasoningTokens({ ...input, tokens: pending, tag: "flush" });
     });
 
-  /** On turn completion, credits any uncredited count to the turn's last assistant message. */
+  /** On turn completion, credits any uncredited count to the recipient or the turn's last message. */
   const attachLeftoverReasoningTokens = (input: {
     readonly event: ProviderRuntimeEvent;
     readonly thread: Pick<OrchestrationThread, "id" | "messages">;
@@ -3065,9 +3100,10 @@ const make = Effect.gen(function* () {
       const pending = yield* takePendingReasoningTokens(turnKey);
       yield* clearReasoningTokenState(turnKey);
       if (!pending) return;
+      // An uncredited recipient holds the matching reasoning text, so it wins.
       const messageId =
-        [...input.assistantMessageIds].at(-1) ??
         recipient ??
+        [...input.assistantMessageIds].at(-1) ??
         input.thread.messages.findLast(
           (message) => message.role === "assistant" && message.turnId === input.turnId,
         )?.id;
@@ -3524,6 +3560,7 @@ const make = Effect.gen(function* () {
         (key) => (key.startsWith(prefix) ? clearReasoningTokenState(key) : Effect.void),
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
+      yield* dropDeferredReasoningTokens(threadId);
       yield* Effect.forEach(
         proposedPlanKeys,
         (key) =>
@@ -5640,6 +5677,7 @@ const make = Effect.gen(function* () {
             turnId,
             assistantMessageIds,
           });
+          yield* dropDeferredReasoningTokens(thread.id, turnId);
           yield* clearAssistantMessageIdsForTurn(thread.id, turnId);
           if (event.provider === "codex") {
             const reconciliation = yield* backfillCodexAssistantMessagesFromProviderSnapshot({
@@ -5708,6 +5746,15 @@ const make = Effect.gen(function* () {
             commandTag: "assistant-interrupted-finalize",
             finalDeltaCommandTag: "assistant-interrupted-flush",
           });
+        if (event.type === "turn.aborted" && eventTurnId) {
+          yield* attachLeftoverReasoningTokens({
+            event,
+            thread,
+            turnId: eventTurnId,
+            assistantMessageIds: yield* getAssistantMessageIdsForTurn(thread.id, eventTurnId),
+          });
+          yield* dropDeferredReasoningTokens(thread.id, eventTurnId);
+        }
       }
 
       if (event.type === "turn.aborted") {
