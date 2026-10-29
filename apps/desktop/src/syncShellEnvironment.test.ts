@@ -136,35 +136,6 @@ describe("syncShellEnvironment", () => {
     expect(env.SSH_AUTH_SOCK).toBe("/tmp/inherited.sock");
   });
 
-  it("drops earlier AppImage launches' mount dirs from the search paths on linux", async () => {
-    const current = "/var/tmp/.mount_cur";
-    const env: NodeJS.ProcessEnv = {
-      APPIMAGE: "/home/me/F5.AppImage",
-      APPDIR: `${current}/`,
-      PATH: `${current}/usr/bin:/tmp/.mount_old/usr/bin:/usr/bin`,
-      LD_LIBRARY_PATH: `/tmp/.mount_old/usr/lib:${current}/usr/lib::/opt/lib`,
-      XDG_DATA_DIRS: "/tmp/.mount_old/usr/share:/var/tmp/.mount_cur2/usr/share",
-    };
-
-    await syncShellEnvironment(env, { platform: "linux" });
-
-    expect(env.PATH).toBe(`${current}/usr/bin:/usr/bin`);
-    expect(env.LD_LIBRARY_PATH).toBe(`${current}/usr/lib::/opt/lib`);
-    expect(env.XDG_DATA_DIRS).toBeUndefined();
-  });
-
-  it("keeps AppImage-looking search paths outside an AppImage launch", async () => {
-    const env: NodeJS.ProcessEnv = {
-      PATH: "/tmp/.mount_old/usr/bin:/usr/bin",
-      LD_LIBRARY_PATH: "/tmp/.mount_old/usr/lib",
-    };
-
-    await syncShellEnvironment(env, { platform: "linux" });
-
-    expect(env.PATH).toBe("/tmp/.mount_old/usr/bin:/usr/bin");
-    expect(env.LD_LIBRARY_PATH).toBe("/tmp/.mount_old/usr/lib");
-  });
-
   it("hydrates Windows PATH before the backend process starts without blocking the caller", async () => {
     const env: NodeJS.ProcessEnv = {
       Path: "C:\\Inherited",

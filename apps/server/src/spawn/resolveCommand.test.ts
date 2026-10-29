@@ -143,7 +143,9 @@ describe("resolveGitExecutable", () => {
     expect(resolveGitExecutable({ PATH: "/usr/bin" }, "linux")).toBe("git");
   });
 
-  describe("on macOS", () => {
+  // The fixtures are real temp files on a `:`-separated PATH, which a Windows
+  // host's drive-letter paths cannot form.
+  describe.skipIf(process.platform === "win32")("on macOS", () => {
     // A PATH directory whose git stands in for the xcrun shim, and an Xcode git.
     const setup = () => {
       const shimDirectory = tempDir("f5-macos-git-shim-");
@@ -152,14 +154,12 @@ describe("resolveGitExecutable", () => {
       const xcodeGit = path.join(tempDir("f5-xcode-"), "usr", "bin", "git");
       writeExecutable(xcodeGit);
       const host = { located: xcodeGit as string | undefined, calls: 0 };
+      const locateXcodeGit = () => {
+        host.calls += 1;
+        return host.located;
+      };
       const resolve = (env: NodeJS.ProcessEnv = { PATH: shimDirectory }) =>
-        resolveGitExecutable(env, "darwin", {
-          macosGitShim: shim,
-          locateXcodeGit: () => {
-            host.calls += 1;
-            return host.located;
-          },
-        });
+        resolveGitExecutable(env, "darwin", { macosGitShim: shim, locateXcodeGit });
       return { host, resolve, shimDirectory, xcodeGit };
     };
 
@@ -168,6 +168,17 @@ describe("resolveGitExecutable", () => {
       expect(resolve()).toBe(xcodeGit);
       expect(resolve()).toBe(xcodeGit);
       expect(host.calls).toBe(1);
+    });
+
+    it("keeps each locator's answer apart in the cache", () => {
+      const { resolve, shimDirectory, xcodeGit } = setup();
+      expect(resolve()).toBe(xcodeGit);
+      expect(
+        resolveGitExecutable({ PATH: shimDirectory }, "darwin", {
+          macosGitShim: path.join(shimDirectory, "git"),
+          locateXcodeGit: () => undefined,
+        }),
+      ).toBe("git");
     });
 
     it("keeps git when PATH has another git first", () => {

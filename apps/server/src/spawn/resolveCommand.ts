@@ -270,6 +270,19 @@ function locateXcodeGitWithXcrun(env: NodeJS.ProcessEnv): string | undefined {
 const MACOS_GIT_SHIM = "/usr/bin/git";
 const XCODE_GIT_CACHE_TTL_MS = 30_000;
 
+// An injected locator may answer differently for the same PATH, so its entries
+// are kept apart from every other locator's.
+let xcodeGitLocatorIdCount = 0;
+const xcodeGitLocatorIds = new WeakMap<XcodeGitLocator, number>();
+function xcodeGitLocatorId(locator: XcodeGitLocator): number {
+  let id = xcodeGitLocatorIds.get(locator);
+  if (id === undefined) {
+    id = xcodeGitLocatorIdCount++;
+    xcodeGitLocatorIds.set(locator, id);
+  }
+  return id;
+}
+
 export interface GitExecutableOptions {
   readonly locateXcodeGit?: XcodeGitLocator;
   /** The xcrun shim's path; only tests change it. */
@@ -284,9 +297,15 @@ export interface GitExecutableOptions {
  * failure keeps plain `git`.
  */
 function resolveMacosGit(env: NodeJS.ProcessEnv, options: GitExecutableOptions): string {
-  const cacheKey = `${resolutionCacheKey("git", "darwin", env, undefined)}\0xcode-git\0${
-    env.DEVELOPER_DIR ?? ""
-  }`;
+  const locateXcodeGit = options.locateXcodeGit ?? locateXcodeGitWithXcrun;
+  const shim = options.macosGitShim ?? MACOS_GIT_SHIM;
+  const cacheKey = [
+    resolutionCacheKey("git", "darwin", env, undefined),
+    "xcode-git",
+    env.DEVELOPER_DIR ?? "",
+    shim,
+    String(xcodeGitLocatorId(locateXcodeGit)),
+  ].join("\0");
   const cached = resolutionCache.get(cacheKey);
   // An Xcode update or removal deletes the binary; look again instead of failing the spawn.
   if (
@@ -297,9 +316,8 @@ function resolveMacosGit(env: NodeJS.ProcessEnv, options: GitExecutableOptions):
     return cached.value;
   }
   const located =
-    resolveExecutable("git", env, { platform: "darwin" }) ===
-    (options.macosGitShim ?? MACOS_GIT_SHIM)
-      ? (options.locateXcodeGit ?? locateXcodeGitWithXcrun)(env)
+    resolveExecutable("git", env, { platform: "darwin" }) === shim
+      ? locateXcodeGit(env)
       : undefined;
   const resolved = located !== undefined && isExecutableFile(located, "darwin") ? located : "git";
   resolutionCache.set(cacheKey, {
