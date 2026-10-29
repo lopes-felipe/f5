@@ -76,8 +76,6 @@ export function ComposerPrimaryAction(props: {
       {props.leading}
       {activePendingProgress ? (
         <div className="flex items-center gap-2">
-          {/* A question can arrive mid-turn; keep the turn interruptible while it waits. */}
-          {send.phase === "running" ? <ComposerStopButton onInterrupt={onInterrupt} /> : null}
           {activePendingProgress.questionIndex > 0 ? (
             <Button
               size="sm"
@@ -106,6 +104,10 @@ export function ComposerPrimaryAction(props: {
                 ? "Submit answers"
                 : "Next question"}
           </Button>
+          {/* A question can arrive mid-turn; keep the turn interruptible while it waits.
+              Stop stays enabled while answers submit, so a stalled submission can still be
+              stopped; the interrupt settles any pending input server-side. */}
+          {send.phase === "running" ? <ComposerStopButton onInterrupt={onInterrupt} /> : null}
         </div>
       ) : send.phase === "running" ? (
         <ComposerSendControl
