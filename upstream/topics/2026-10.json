@@ -55997,11 +55997,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T19:06:01.899Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-4724",
-      "status": "port",
+      "reason": "The removed sticky-container override and the `itemMetrics`/`layout` options belong to upstream's `AnnotatableCodeView`, which f5 does not use; f5's `Virtualizer`-based DiffPanel has neither.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "diff",
