@@ -3639,11 +3639,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-28T20:53:05.320Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T00:21:06.856Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-12289",
-      "status": "port",
+      "reason": "f5 tags thread notifications with the bare thread UUID, so Electron 44's Windows toast tag (`n#t3://app#<uuid>`, 47 chars) stays under the 64-char limit that dropped upstream's 73-char environment:thread tags.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
@@ -16320,11 +16322,21 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-28T20:58:23.861Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T00:21:07.394Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/components/chat/ComposerPendingApprovalPanel.tsx:106",
+          "apps/web/src/components/chat/ComposerPendingApprovalPanel.tsx:114"
+        ],
+        "f5Refs": [
+          "69454e01d716370ea72fb7a20b968167d7d84b2b"
+        ]
+      },
       "id": "pr-17802",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "composer",
@@ -23297,11 +23309,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T20:53:01.874Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T00:21:07.394Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-19439",
-      "status": "port",
+      "reason": "f5's Lexical composer has no fenced code-block syntax highlighting, so there is no per-keystroke re-highlighting to defer.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"
@@ -27503,11 +27517,20 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-28T20:58:28.737Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T00:21:06.856Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/desktop/src/main.ts:4279"
+        ],
+        "f5Refs": [
+          "69454e01d716370ea72fb7a20b968167d7d84b2b"
+        ]
+      },
       "id": "pr-20300",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "desktop"
