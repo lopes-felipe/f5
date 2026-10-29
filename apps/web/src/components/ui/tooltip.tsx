@@ -127,7 +127,7 @@ function TooltipPopup({
       <TooltipPrimitive.Positioner
         align={align}
         anchor={anchor}
-        className="z-50 h-(--positioner-height) w-(--positioner-width) max-w-(--available-width) transition-[top,left,right,bottom,transform] data-instant:transition-none"
+        className="z-[140] h-(--positioner-height) w-(--positioner-width) max-w-(--available-width) transition-[top,left,right,bottom,transform] data-instant:transition-none"
         collisionPadding={TOOLTIP_COLLISION_PADDING}
         data-slot="tooltip-positioner"
         side={side}
