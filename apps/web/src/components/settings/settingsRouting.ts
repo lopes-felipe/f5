@@ -531,6 +531,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "threads.follow-up": {
     category: "threads",
   },
+  "threads.snooze-options": {
+    category: "threads",
+  },
   "threads.resume-turns": {
     category: "threads",
     scope: "both",

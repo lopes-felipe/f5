@@ -88,6 +88,21 @@ describe("parseSourceControlRemoteUrl", () => {
     });
   });
 
+  it("classifies GitHub Enterprise Cloud data residency hosts on ghe.com as GitHub", () => {
+    expect(parseSourceControlRemoteUrl("https://acme.ghe.com/owner/repo.git")).toEqual({
+      kind: "github",
+      host: "acme.ghe.com",
+      owner: "owner",
+      repository: "repo",
+      webUrl: "https://acme.ghe.com/owner/repo",
+    });
+    expect(parseSourceControlRemoteUrl("git@acme.ghe.com:owner/repo.git").kind).toBe("github");
+    expect(parseSourceControlRemoteUrl("https://ghe.com/owner/repo.git").kind).toBe("unknown");
+    expect(parseSourceControlRemoteUrl("https://acme.notghe.com/owner/repo.git").kind).toBe(
+      "unknown",
+    );
+  });
+
   it("parses Bitbucket remotes", () => {
     expect(parseSourceControlRemoteUrl("git@bitbucket.org:wolt/f5.git")).toEqual({
       kind: "bitbucket",

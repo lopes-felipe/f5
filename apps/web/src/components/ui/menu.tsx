@@ -57,7 +57,7 @@ function MenuPopup({
         align={align}
         alignOffset={alignOffset}
         anchor={anchor}
-        className="z-50"
+        className="z-[130]"
         data-slot="menu-positioner"
         side={side}
         sideOffset={sideOffset}

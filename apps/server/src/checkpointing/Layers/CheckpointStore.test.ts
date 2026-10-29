@@ -292,6 +292,29 @@ describe("CheckpointStoreLive", () => {
     expect(diffCall?.args).not.toContain("--ignore-space-change");
   });
 
+  it.each([
+    [undefined, true],
+    [false, false],
+  ] as const)("minimizes the patch only when wanted (minimal=%s)", async (minimal, expected) => {
+    const calls: ExecuteGitInput[] = [];
+    const layer = makeLayer(calls);
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CheckpointStore;
+        return yield* store.diffCheckpoints({
+          cwd: "/repo",
+          fromCheckpointRef: CheckpointRef.makeUnsafe("refs/t3/checkpoints/thread/0"),
+          toCheckpointRef: CheckpointRef.makeUnsafe("refs/t3/checkpoints/thread/1"),
+          ...(minimal === undefined ? {} : { options: { minimal } }),
+        });
+      }).pipe(Effect.provide(layer)),
+    );
+
+    const diffCall = calls.find((call) => call.args[0] === "diff");
+    expect(diffCall?.args.includes("--minimal")).toBe(expected);
+  });
+
   describe("excluding files Git brought in", () => {
     // Fixture commits predate the captures, as commits a pull brings in do.
     const pastDate = "2020-01-01T00:00:00Z";

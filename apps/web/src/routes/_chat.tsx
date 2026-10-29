@@ -10,6 +10,7 @@ import { ProjectCloneController } from "../components/ProjectCloneController";
 import { ProjectCreateNewController } from "../components/ProjectCreateNewController";
 import { DesktopPromptLinkController } from "../components/promptLinks/DesktopPromptLinkController";
 import { ThreadNavigationController } from "../components/ThreadNavigationController";
+import { WorkspaceFocusController } from "../components/WorkspaceFocusController";
 import { Outlet, createFileRoute, useNavigate, useRouter } from "@tanstack/react-router";
 import { lazy, Suspense, useEffect, useLayoutEffect, useState, type CSSProperties } from "react";
 
@@ -27,6 +28,9 @@ import { SnoozedThreadWakeController } from "../components/SnoozedThreadWakeCont
 import ThreadSidebar from "../components/Sidebar";
 import { useWorkflowCreateDialogStore } from "../workflowCreateDialogStore";
 import { Sidebar, SidebarProvider, SidebarRail } from "~/components/ui/sidebar";
+import { workspaceAreaProps } from "~/lib/workspaceFocus";
+
+const SIDEBAR_WORKSPACE_AREA = workspaceAreaProps("sidebar", 0, "Threads");
 import { resolveSettingsNavigationSearch } from "~/components/settings/settingsRouting";
 import {
   canAcceptThreadSidebarWidth,
@@ -130,6 +134,8 @@ function ChatRouteLayout() {
           variant="inset"
           collapsible="offcanvas"
           className="p-0 text-foreground"
+          {...SIDEBAR_WORKSPACE_AREA}
+          role="navigation"
           resizable={{
             defaultWidth: THREAD_SIDEBAR_DEFAULT_WIDTH_PX,
             storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
@@ -143,6 +149,7 @@ function ChatRouteLayout() {
         </Sidebar>
         <ThreadRecencyController />
         <ThreadNavigationController />
+        <WorkspaceFocusController />
         <ProjectCloneController />
         <ProjectCreateNewController />
         <DesktopPromptLinkController />

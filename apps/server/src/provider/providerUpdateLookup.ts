@@ -38,7 +38,8 @@ export const isBuiltInProviderDriver = (driver: ProviderDriverKind): boolean =>
   driver === "claudeAgent" ||
   driver === "cursor" ||
   driver === "opencode" ||
-  driver === "pi";
+  driver === "pi" ||
+  driver === "grok";
 
 export function extractProviderVersion(
   _driver: ProviderDriverKind,

@@ -40,6 +40,12 @@ export interface DiffCheckpointsInput {
      * no HEAD provenance, or the filter cannot run, the complete diff is returned.
      */
     readonly excludeGitImports?: boolean;
+    /**
+     * Minimize the patch (the default), as a reviewed diff wants. Callers that only count
+     * changed lines pass false: Git's configured algorithm is far cheaper on large,
+     * repetitive changes.
+     */
+    readonly minimal?: boolean;
   };
 }
 

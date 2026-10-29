@@ -36,6 +36,12 @@ import {
   normalizeFontFamilyPreference,
 } from "./appearanceSettings";
 import { DEFAULT_THEME_ID } from "./themePalette";
+import {
+  DEFAULT_SNOOZE_PRESETS,
+  MAX_SNOOZE_PRESETS,
+  normalizeSnoozePresets,
+  SnoozePresetSettingSchema,
+} from "./lib/snoozePresets";
 
 export const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
 const CURRENT_THEME_PALETTE_VERSION = 2 as const;
@@ -408,6 +414,13 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some(false)),
   ),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withConstructorDefault(() => Option.some(true))),
+  /** The choices every snooze menu offers, listed soonest first. */
+  snoozePresets: Schema.Array(SnoozePresetSettingSchema)
+    .check(Schema.isMaxLength(MAX_SNOOZE_PRESETS))
+    .pipe(
+      Schema.withConstructorDefault(() => Option.some(DEFAULT_SNOOZE_PRESETS)),
+      Schema.withDecodingDefault(() => DEFAULT_SNOOZE_PRESETS),
+    ),
   // Legacy persisted flag. The interval is the source of truth; normalizeAppSettings derives this.
   loadRemoteImagesInChat: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(false)),
@@ -840,6 +853,8 @@ export function parsePersistedAppSettings(value: string | null): AppSettings {
           migrated.runtimeWarningVisibility,
         ),
         favoriteModels: normalizeFavoriteModels(migrated.favoriteModels),
+        // One bad stored option must not reset every other setting.
+        snoozePresets: normalizeSnoozePresets(migrated.snoozePresets ?? DEFAULT_SNOOZE_PRESETS),
         uiFontFamily: normalizeFontFamilyPreference(
           migrateRetiredFontFamily(runtimeMetadataMigrated, migrated.uiFontFamily),
         ),

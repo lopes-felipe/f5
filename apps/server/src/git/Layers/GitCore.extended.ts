@@ -1,10 +1,10 @@
 import { ServerConfig } from "../../config.ts";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createServer } from "node:http";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { it } from "@effect/vitest";
+import { it, live as liveIt } from "@effect/vitest";
 import {
   Deferred,
   Effect,
@@ -1316,6 +1316,75 @@ it.layer(TestLayer)("git integration", (it) => {
       }),
     );
 
+    it.effect("treats a missing git executable as outside any repository", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const emptyPath = yield* makeTmpDir("git-missing-path-");
+        const gitService = yield* GitService;
+        const core = yield* makeIsolatedGitCore({
+          ...gitService,
+          execute: (input) =>
+            gitService.execute({ ...input, env: { ...input.env, PATH: emptyPath } }),
+        });
+
+        expect(yield* core.listBranches({ cwd: tmp })).toEqual({
+          branches: [],
+          isRepo: false,
+          hasOriginRemote: false,
+        });
+      }),
+    );
+
+    it.effect("still surfaces other Git failures", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        const gitService = yield* GitService;
+        const core = yield* makeIsolatedGitCore({
+          ...gitService,
+          execute: (input) =>
+            Effect.fail(
+              new GitCommandError({
+                operation: input.operation,
+                command: "git",
+                cwd: input.cwd,
+                detail: "Failed to spawn: permission denied",
+              }),
+            ),
+        });
+
+        const error = yield* core.listBranches({ cwd: tmp }).pipe(Effect.flip);
+        expect(error.detail).toContain("permission denied");
+      }),
+    );
+
+    it.effect.skipIf(process.platform === "win32")(
+      "lists the real repository through a symlinked subfolder when a decoy repo sits at the lexical common dir",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const sandbox = yield* makeTmpDir("git-symlink-subdir-");
+          // Sharing the checked-out branch name keeps a stale snapshot from forcing a rescan.
+          yield* initRepoWithCommit(sandbox);
+          yield* git(sandbox, ["branch", "decoy-only"]);
+          const repo = path.join(sandbox, "repo");
+          const subdir = path.join(repo, "sub", "dir");
+          const link = path.join(sandbox, "nest", "link");
+          yield* fileSystem.makeDirectory(subdir, { recursive: true });
+          yield* fileSystem.makeDirectory(path.dirname(link), { recursive: true });
+          yield* fileSystem.symlink(subdir, link);
+          yield* initRepoWithCommit(repo);
+          yield* git(repo, ["branch", "real-only"]);
+          // Git reports `../../.git` from the link target; resolving it lexically reaches the decoy.
+          yield* listGitBranches({ cwd: sandbox });
+
+          const result = yield* listGitBranches({ cwd: link });
+          expect(result.isRepo).toBe(true);
+          expect(result.branches.some((branch) => branch.name === "decoy-only")).toBe(false);
+          expect(result.branches.some((branch) => branch.name === "real-only")).toBe(true);
+        }),
+    );
+
     it.effect("returns the current branch with current: true", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();
@@ -2338,6 +2407,310 @@ it.layer(TestLayer)("git integration", (it) => {
   // ── createGitWorktree + removeGitWorktree ──
 
   describe("createGitWorktree", () => {
+    const initRepoWithOrigin = Effect.fn("initRepoWithOrigin")(function* () {
+      const remote = yield* makeTmpDir("git-config-lock-remote-");
+      const source = yield* makeTmpDir("git-config-lock-source-");
+      yield* git(remote, ["init", "--bare"]);
+      const { initialBranch } = yield* initRepoWithCommit(source);
+      yield* git(source, ["remote", "add", "origin", remote]);
+      yield* git(source, ["push", "-u", "origin", initialBranch]);
+      return { source, initialBranch };
+    });
+
+    // Live clock: the config-lock retries wait between attempts.
+    liveIt("creates the worktree without an orphan branch while the config stays locked", () =>
+      Effect.gen(function* () {
+        const { source, initialBranch } = yield* initRepoWithOrigin();
+        const lockPath = path.join(source, ".git", "config.lock");
+        yield* writeTextFile(lockPath, "");
+        const worktreePath = path.join(source, "locked-config");
+        const core = yield* GitCore;
+
+        const created = yield* core.createWorktree({
+          cwd: source,
+          branch: initialBranch,
+          baseRefName: `origin/${initialBranch}`,
+          newBranch: "feature/locked-config",
+          path: worktreePath,
+        });
+
+        expect(created.worktree).toEqual({ path: worktreePath, branch: "feature/locked-config" });
+        expect(yield* git(worktreePath, ["branch", "--show-current"])).toBe(
+          "feature/locked-config",
+        );
+        expect(existsSync(path.join(worktreePath, "README.md"))).toBe(true);
+        expect(existsSync(lockPath)).toBe(true);
+        expect(
+          yield* git(source, ["config", "--get", "branch.feature/locked-config.remote"]).pipe(
+            Effect.orElseSucceed(() => ""),
+          ),
+        ).toBe("");
+        yield* (yield* FileSystem.FileSystem).remove(lockPath);
+        yield* core.removeWorktree({ cwd: source, path: worktreePath });
+      }).pipe(Effect.provide(TestLayer)),
+    );
+
+    liveIt("tracks a remote base once a briefly held config lock is released", () =>
+      Effect.gen(function* () {
+        const { source, initialBranch } = yield* initRepoWithOrigin();
+        const lockPath = path.join(source, ".git", "config.lock");
+        yield* writeTextFile(lockPath, "");
+        const worktreePath = path.join(source, "released-config");
+        const core = yield* GitCore;
+        const fileSystem = yield* FileSystem.FileSystem;
+        yield* Effect.sleep("150 millis").pipe(
+          Effect.andThen(fileSystem.remove(lockPath)),
+          Effect.forkScoped,
+        );
+
+        yield* core.createWorktree({
+          cwd: source,
+          branch: initialBranch,
+          baseRefName: `origin/${initialBranch}`,
+          newBranch: "feature/released-config",
+          path: worktreePath,
+        });
+
+        expect(
+          yield* git(worktreePath, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]),
+        ).toBe(`origin/${initialBranch}`);
+        yield* core.removeWorktree({ cwd: source, path: worktreePath });
+      }).pipe(Effect.provide(TestLayer)),
+    );
+
+    it.effect("records no upstream for a remote base when branch.autoSetupMerge is false", () =>
+      Effect.gen(function* () {
+        const { source, initialBranch } = yield* initRepoWithOrigin();
+        yield* git(source, ["config", "branch.autoSetupMerge", "false"]);
+        const worktreePath = path.join(source, "no-tracking");
+        const core = yield* GitCore;
+
+        yield* core.createWorktree({
+          cwd: source,
+          branch: initialBranch,
+          baseRefName: `origin/${initialBranch}`,
+          newBranch: "feature/no-tracking",
+          path: worktreePath,
+        });
+
+        expect(
+          yield* git(source, ["config", "--get", "branch.feature/no-tracking.remote"]).pipe(
+            Effect.orElseSucceed(() => ""),
+          ),
+        ).toBe("");
+        yield* core.removeWorktree({ cwd: source, path: worktreePath });
+      }),
+    );
+
+    it.effect("removes the branch it created when the checkout cannot be added", () =>
+      Effect.gen(function* () {
+        const { source, initialBranch } = yield* initRepoWithOrigin();
+        const core = yield* GitCore;
+        // A missing but still registered checkout makes `worktree add` refuse the path after the
+        // branch exists.
+        const missing = path.join(source, "missing-registration");
+        yield* git(source, ["worktree", "add", "--detach", "--", missing]);
+        yield* (yield* FileSystem.FileSystem).remove(missing, { recursive: true });
+
+        const error = yield* core
+          .createWorktree({
+            cwd: source,
+            branch: initialBranch,
+            newBranch: "feature/orphan",
+            path: missing,
+          })
+          .pipe(Effect.flip);
+
+        expect(error._tag).toBe("GitCommandError");
+        expect(
+          yield* git(source, ["branch", "--list", "feature/orphan"]).pipe(
+            Effect.orElseSucceed(() => ""),
+          ),
+        ).toBe("");
+      }),
+    );
+
+    // Holds `.git/config.lock` from the first matching command until 150 ms later.
+    const lockConfigBriefly = (
+      gitService: GitServiceShape,
+      lockPath: string,
+      matches: (args: ReadonlyArray<string>) => boolean,
+    ): GitServiceShape => {
+      let locked = false;
+      return {
+        ...gitService,
+        execute: (input) =>
+          Effect.suspend(() => {
+            if (!locked && matches(input.args)) {
+              locked = true;
+              writeFileSync(lockPath, "");
+              setTimeout(() => rmSync(lockPath, { force: true }), 150);
+            }
+            return gitService.execute(input);
+          }),
+      };
+    };
+    const tracking = (cwd: string, branch: string) =>
+      git(cwd, ["config", "--get-regexp", `^branch\\.${branch.replaceAll("/", "\\/")}\\.`]).pipe(
+        Effect.orElseSucceed(() => ""),
+      );
+
+    // Live clock: the config-lock retries wait between attempts.
+    liveIt("retries an upstream write while the config lock is briefly held", () =>
+      Effect.gen(function* () {
+        const { source, initialBranch } = yield* initRepoWithOrigin();
+        yield* git(source, ["branch", "--no-track", "feature/retried", initialBranch]);
+        const core = yield* makeIsolatedGitCore(
+          lockConfigBriefly(yield* GitService, path.join(source, ".git", "config.lock"), (args) =>
+            args.some((arg) => arg.startsWith("--set-upstream-to")),
+          ),
+        );
+
+        yield* core.setBranchUpstream({
+          cwd: source,
+          branch: "feature/retried",
+          remoteName: "origin",
+          remoteBranch: initialBranch,
+        });
+
+        expect(
+          yield* git(source, ["rev-parse", "--abbrev-ref", "feature/retried@{upstream}"]),
+        ).toBe(`origin/${initialBranch}`);
+      }).pipe(Effect.provide(TestLayer)),
+    );
+
+    liveIt("registers submodule URLs once a briefly held config lock is released", () =>
+      Effect.gen(function* () {
+        const library = yield* makeTmpDir("git-config-lock-library-");
+        yield* initRepoWithCommit(library);
+        const { source, initialBranch } = yield* initRepoWithOrigin();
+        yield* git(source, [
+          "-c",
+          "protocol.file.allow=always",
+          "submodule",
+          "add",
+          library,
+          "lib",
+        ]);
+        yield* git(source, ["commit", "-m", "add submodule"]);
+        // `submodule add` registers the URL itself; without it, `submodule init` must write it.
+        yield* git(source, ["config", "--remove-section", "submodule.lib"]);
+        const core = yield* makeIsolatedGitCore(
+          lockConfigBriefly(
+            yield* GitService,
+            path.join(source, ".git", "config.lock"),
+            (args) => args[0] === "submodule" && args[1] === "init",
+          ),
+        );
+
+        const worktreePath = path.join(source, "with-submodule");
+        yield* core.createWorktree({
+          cwd: source,
+          branch: initialBranch,
+          newBranch: "feature/with-submodule",
+          path: worktreePath,
+          submodules: "shallow",
+        });
+
+        expect(yield* git(source, ["config", "--get", "submodule.lib.url"])).toBe(library);
+      }).pipe(Effect.provide(TestLayer)),
+    );
+
+    it.effect("removes the branch and its tracking when worktree creation is interrupted", () =>
+      Effect.gen(function* () {
+        const { source, initialBranch } = yield* initRepoWithOrigin();
+        const gitService = yield* GitService;
+        const checkoutStarted = yield* Deferred.make<void>();
+        const core = yield* makeIsolatedGitCore({
+          ...gitService,
+          execute: (input) =>
+            input.args[0] === "worktree" && input.args[1] === "add"
+              ? Deferred.succeed(checkoutStarted, undefined).pipe(Effect.andThen(Effect.never))
+              : gitService.execute(input),
+        });
+
+        const creation = yield* core
+          .createWorktree({
+            cwd: source,
+            branch: initialBranch,
+            baseRefName: `origin/${initialBranch}`,
+            newBranch: "feature/interrupted",
+            path: path.join(source, "interrupted"),
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(checkoutStarted);
+        // The branch and its tracking exist before the checkout does.
+        expect(yield* tracking(source, "feature/interrupted")).toContain("remote origin");
+        yield* Fiber.interrupt(creation);
+
+        expect(yield* git(source, ["branch", "--list", "feature/interrupted"])).toBe("");
+        expect(yield* tracking(source, "feature/interrupted")).toBe("");
+      }),
+    );
+
+    it.effect("keeps a branch that existed before a failed worktree creation", () =>
+      Effect.gen(function* () {
+        const { source, initialBranch } = yield* initRepoWithOrigin();
+        yield* git(source, ["branch", "feature/existing", initialBranch]);
+        const core = yield* GitCore;
+
+        const error = yield* core
+          .createWorktree({
+            cwd: source,
+            branch: initialBranch,
+            newBranch: "feature/existing",
+            path: path.join(source, "existing"),
+          })
+          .pipe(Effect.flip);
+
+        expect(error.detail).toContain("already exists");
+        expect(yield* git(source, ["branch", "--list", "feature/existing"])).toContain(
+          "feature/existing",
+        );
+      }),
+    );
+
+    // The local branch is `trunk`; origin has `main`, which `trunk` tracks.
+    it.effect.each([
+      { mode: null, base: "origin/main", branch: "feature", expected: "origin/main" },
+      { mode: null, base: "trunk", branch: "feature", expected: null },
+      { mode: "simple", base: "origin/main", branch: "feature", expected: null },
+      { mode: "simple", base: "origin/main", branch: "main", expected: "origin/main" },
+      { mode: "always", base: "trunk", branch: "feature", expected: "trunk" },
+      { mode: "inherit", base: "trunk", branch: "feature", expected: "origin/main" },
+      { mode: "no", base: "origin/main", branch: "feature", expected: null },
+    ] as const)(
+      "follows branch.autoSetupMerge=$mode for a $base base and branch $branch",
+      ({ mode, base, branch, expected }) =>
+        Effect.gen(function* () {
+          const remote = yield* makeTmpDir("git-auto-setup-remote-");
+          const source = yield* makeTmpDir("git-auto-setup-source-");
+          yield* git(remote, ["init", "--bare"]);
+          yield* initRepoWithCommit(source);
+          yield* git(source, ["branch", "-M", "trunk"]);
+          yield* git(source, ["remote", "add", "origin", remote]);
+          yield* git(source, ["push", "-u", "origin", "trunk:main"]);
+          if (mode !== null) yield* git(source, ["config", "branch.autoSetupMerge", mode]);
+          const core = yield* GitCore;
+          const worktreePath = path.join(source, "auto-setup");
+
+          yield* core.createWorktree({
+            cwd: source,
+            branch: "trunk",
+            baseRefName: base,
+            newBranch: branch,
+            path: worktreePath,
+          });
+
+          expect(
+            yield* git(worktreePath, ["rev-parse", "--abbrev-ref", "@{upstream}"]).pipe(
+              Effect.orElseSucceed(() => null),
+            ),
+          ).toBe(expected);
+          yield* core.removeWorktree({ cwd: source, path: worktreePath });
+        }),
+    );
+
     it.effect("creates a worktree from the freshly fetched origin commit", () =>
       Effect.gen(function* () {
         const remote = yield* makeTmpDir();
@@ -2997,6 +3370,37 @@ it.layer(TestLayer)("git integration", (it) => {
         }),
     );
 
+    it.effect("reuses a partial-clone remote and avoids its name", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        yield* git(tmp, ["remote", "add", "origin", "https://github.com/pingdotgg/t3code.git"]);
+        yield* git(tmp, ["config", "remote.origin.promisor", "true"]);
+        yield* git(tmp, ["config", "remote.origin.partialclonefilter", "blob:none"]);
+        expect(yield* git(tmp, ["remote", "-v"])).toContain("(fetch) [blob:none]");
+        const core = yield* GitCore;
+
+        expect(
+          yield* core.ensureRemote({
+            cwd: tmp,
+            preferredName: "origin",
+            url: "https://github.com/pingdotgg/t3code.git",
+          }),
+        ).toBe("origin");
+        expect(
+          yield* core.ensureRemote({
+            cwd: tmp,
+            preferredName: "origin",
+            url: "https://github.com/another-owner/t3code.git",
+          }),
+        ).toBe("origin-1");
+        expect(yield* core.listRemotes(tmp)).toEqual([
+          { name: "origin", url: "https://github.com/pingdotgg/t3code.git" },
+          { name: "origin-1", url: "https://github.com/another-owner/t3code.git" },
+        ]);
+      }),
+    );
+
     it.effect("reports status details and dirty state", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();
@@ -3117,6 +3521,77 @@ it.layer(TestLayer)("git integration", (it) => {
         expect(pushed.branch).toBe("feature/no-upstream-no-ahead");
         expect(pushed.setUpstream).toBeUndefined();
       }),
+    );
+
+    // Live clock: the config-lock retries wait between attempts.
+    liveIt("pushes but reports no upstream while another writer holds the config lock", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        const remote = yield* makeTmpDir();
+        yield* git(tmp, ["init", "--initial-branch=trunk"]);
+        yield* git(tmp, ["config", "user.email", "test@test.com"]);
+        yield* git(tmp, ["config", "user.name", "Test"]);
+        yield* writeTextFile(path.join(tmp, "README.md"), "hello\n");
+        yield* git(tmp, ["add", "README.md"]);
+        yield* git(tmp, ["commit", "-m", "initial"]);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(tmp, ["remote", "add", "origin", remote]);
+        yield* git(tmp, ["checkout", "-b", "feature/locked-push"]);
+        const lockPath = path.join(tmp, ".git", "config.lock");
+        yield* writeTextFile(lockPath, "");
+
+        const core = yield* GitCore;
+        const pushed = yield* core.pushCurrentBranch(tmp, null);
+        expect(pushed).toMatchObject({ status: "pushed", setUpstream: false });
+        expect(
+          yield* git(remote, ["--git-dir=.", "rev-parse", "refs/heads/feature/locked-push"]),
+        ).toBe(yield* git(tmp, ["rev-parse", "HEAD"]));
+
+        expect(
+          yield* git(tmp, ["config", "--get", "branch.feature/locked-push.merge"]).pipe(
+            Effect.orElseSucceed(() => ""),
+          ),
+        ).toBe("");
+        yield* (yield* FileSystem.FileSystem).remove(lockPath);
+      }).pipe(Effect.provide(TestLayer)),
+    );
+
+    liveIt("keeps the prior upstream whole when only its remote cannot be rewritten", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        const remote = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(tmp);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(tmp, ["remote", "add", "origin", remote]);
+        yield* git(tmp, ["remote", "add", "fork", remote]);
+        yield* git(tmp, ["push", "-u", "origin", initialBranch]);
+        yield* git(tmp, ["checkout", "-b", "feature/half", "--track", `origin/${initialBranch}`]);
+        yield* git(tmp, ["config", "branch.feature/half.pushRemote", "fork"]);
+        yield* writeTextFile(path.join(tmp, "half.txt"), "half\n");
+        yield* git(tmp, ["add", "."]);
+        yield* git(tmp, ["commit", "-m", "half"]);
+        const gitService = yield* GitService;
+        // Another writer keeps winning the lock whenever the remote is rewritten.
+        const core = yield* makeIsolatedGitCore({
+          ...gitService,
+          execute: (input) =>
+            input.args[0] === "config" && input.args.includes("branch.feature/half.remote")
+              ? Effect.succeed({
+                  code: 255,
+                  stdout: "",
+                  stderr: "error: could not lock config file .git/config: File exists",
+                })
+              : gitService.execute(input),
+        });
+
+        const pushed = yield* core.pushCurrentBranch(tmp, null);
+
+        expect(pushed).toMatchObject({ status: "pushed", setUpstream: false });
+        expect(yield* git(tmp, ["config", "--get", "branch.feature/half.merge"])).toBe(
+          `refs/heads/${initialBranch}`,
+        );
+        expect(yield* git(tmp, ["config", "--get", "branch.feature/half.remote"])).toBe("origin");
+      }).pipe(Effect.provide(TestLayer)),
     );
 
     it.effect("pushes with upstream setup when no comparable base branch exists", () =>

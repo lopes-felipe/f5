@@ -1,9 +1,10 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { runProcess } from "./processRunner";
+import { runProcess, terminateRunningProcesses } from "./processRunner";
 
 describe("runProcess", () => {
   it("passes the same bare-repository protection to direct Git callers", async () => {
@@ -13,6 +14,22 @@ describe("runProcess", () => {
     });
     expect(result.stdout.trim()).toBe("explicit");
   });
+
+  it.skipIf(process.platform === "win32")(
+    "reports a synchronous ENOTDIR spawn failure as a spawn error",
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "f5-process-runner-enotdir-"));
+      try {
+        const file = join(dir, "not-a-directory");
+        writeFileSync(file, "");
+        await expect(
+          runProcess("f5-missing-command", ["--version"], { env: { PATH: file } }),
+        ).rejects.toThrow("Failed to run f5-missing-command --version: spawn ENOTDIR");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("fails when output exceeds max buffer in default mode", async () => {
     await expect(
@@ -187,3 +204,105 @@ for (const exitCode of [0, 7])
       }
     },
   );
+
+describe.skipIf(process.platform === "win32")("helper processes on backend shutdown", () => {
+  const isRunning = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code !== "ESRCH";
+    }
+  };
+  const waitFor = async (label: string, check: () => boolean, timeoutMs = 5_000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (!check()) {
+      if (Date.now() > deadline) throw new Error(`Timed out waiting for ${label}`);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  };
+  const readPid = (pidPath: string) => Number(readFileSync(pidPath, "utf8"));
+  const helperSource = (pidPath: string, onSigterm: string) =>
+    `const fs = require("node:fs");
+process.on("SIGTERM", () => { ${onSigterm} });
+fs.writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));
+setInterval(() => {}, 1000);`;
+
+  const withHelper = async (
+    onSigterm: string,
+    run: (paths: { root: string; script: string; pidPath: string }) => Promise<void>,
+  ) => {
+    const root = mkdtempSync(join(tmpdir(), "f5-process-shutdown-"));
+    const pidPath = join(root, "helper.pid");
+    const script = join(root, "helper.cjs");
+    writeFileSync(script, helperSource(pidPath, onSigterm));
+    try {
+      await run({ root, script, pidPath });
+    } finally {
+      if (existsSync(pidPath) && isRunning(readPid(pidPath)))
+        process.kill(readPid(pidPath), "SIGKILL");
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+
+  it("gives running commands their SIGTERM grace period", () =>
+    withHelper(
+      'setTimeout(() => { fs.writeFileSync(__dirname + "/cleaned-up", ""); process.exit(0); }, 200);',
+      async ({ root, script, pidPath }) => {
+        const pending = runProcess(process.execPath, [script], {
+          env: process.env,
+          allowNonZeroExit: true,
+        });
+        await waitFor("the helper to start", () => existsSync(pidPath));
+
+        await terminateRunningProcesses(Date.now() + 1_500);
+
+        await expect(pending).resolves.toMatchObject({ code: 0 });
+        expect(existsSync(join(root, "cleaned-up"))).toBe(true);
+      },
+    ));
+
+  it("SIGKILLs commands that ignore SIGTERM before the shutdown deadline", () =>
+    withHelper("", async ({ script, pidPath }) => {
+      const pending = runProcess(process.execPath, [script], {
+        env: process.env,
+        allowNonZeroExit: true,
+      });
+      await waitFor("the helper to start", () => existsSync(pidPath));
+
+      const startedAt = Date.now();
+      await terminateRunningProcesses(Date.now() + 1_500);
+
+      expect(Date.now() - startedAt).toBeLessThan(1_500);
+      expect(isRunning(readPid(pidPath))).toBe(false);
+      await expect(pending).resolves.toMatchObject({ signal: "SIGKILL" });
+    }));
+
+  it(
+    "kills stubborn helpers when the backend exits before their SIGKILL timer",
+    () =>
+      withHelper("", async ({ root, script, pidPath }) => {
+        // An interrupted caller aborts the run, then the backend exits at once.
+        const backend = join(root, "backend.ts");
+        writeFileSync(
+          backend,
+          `import { runProcess } from ${JSON.stringify(join(import.meta.dirname, "processRunner.ts"))};
+const controller = new AbortController();
+void runProcess(process.execPath, [${JSON.stringify(script)}], { env: process.env, signal: controller.signal }).catch(() => {});
+process.on("SIGTERM", () => { controller.abort(); process.exit(0); });
+`,
+        );
+        const child = spawn("bun", [backend], { stdio: "ignore" });
+        const exited = new Promise((resolve) => child.once("exit", resolve));
+        try {
+          await waitFor("the helper to start", () => existsSync(pidPath), 15_000);
+          child.kill("SIGTERM");
+          await exited;
+          await waitFor("the helper to exit", () => !isRunning(readPid(pidPath)));
+        } finally {
+          child.kill("SIGKILL");
+        }
+      }),
+    20_000,
+  );
+});

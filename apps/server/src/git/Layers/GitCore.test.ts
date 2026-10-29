@@ -33,20 +33,22 @@ function makeScriptedGitService(resolve: (input: ExecuteGitInput) => ScriptedRes
   return {
     calls,
     service: {
-      execute: (input) => {
-        calls.push(input);
-        // Worktree add/remove take the cross-profile repository lock, which
-        // resolves the git-common-dir on disk; answer with a real directory.
-        if (argsEqual(input, ["rev-parse", "--path-format=absolute", "--git-common-dir"])) {
-          return Effect.succeed({ code: 0, stdout: `${process.cwd()}\n`, stderr: "" });
-        }
-        const scripted = resolve(input);
-        return Effect.succeed({
-          code: scripted.code ?? 0,
-          stdout: scripted.stdout ?? "",
-          stderr: scripted.stderr ?? "",
-        });
-      },
+      // Lazy like the real service, so a retried or deferred command runs, and records, again.
+      execute: (input) =>
+        Effect.sync(() => {
+          calls.push(input);
+          // Worktree add/remove take the cross-profile repository lock, which
+          // resolves the git-common-dir on disk; answer with a real directory.
+          if (argsEqual(input, ["rev-parse", "--path-format=absolute", "--git-common-dir"])) {
+            return { code: 0, stdout: `${process.cwd()}\n`, stderr: "" };
+          }
+          const scripted = resolve(input);
+          return {
+            code: scripted.code ?? 0,
+            stdout: scripted.stdout ?? "",
+            stderr: scripted.stderr ?? "",
+          };
+        }),
     },
   };
 }
@@ -433,7 +435,8 @@ describe("GitCore unit", () => {
   it("limits generated commit context to the selected paths", async () => {
     const indexPath = join(tmpdir(), `f5-fake-index-${crypto.randomUUID()}`);
     const scripted = makeScriptedGitService((input) => {
-      if (argsEqual(input, ["rev-parse", "--git-path", "index"])) return { stdout: indexPath };
+      if (argsEqual(input, ["rev-parse", "--path-format=absolute", "--git-path", "index"]))
+        return { stdout: indexPath };
       if (input.args.includes("--name-status")) return { stdout: "M\tsrc/selected.ts\n" };
       if (input.args.includes("--patch")) return { stdout: "+selected\n" };
       return {};
@@ -476,7 +479,7 @@ describe("GitCore unit", () => {
     const mergeHeadPath = path.join(cwd, "MERGE_HEAD");
     fs.writeFileSync(mergeHeadPath, "0123456789abcdef\n");
     const scripted = makeScriptedGitService((input) => {
-      if (argsEqual(input, ["rev-parse", "--git-path", "MERGE_HEAD"])) {
+      if (argsEqual(input, ["rev-parse", "--path-format=absolute", "--git-path", "MERGE_HEAD"])) {
         return { stdout: `${mergeHeadPath}\n` };
       }
       if (argsEqual(input, ["rev-parse", "HEAD"])) return { stdout: "abc123\n" };
@@ -520,9 +523,6 @@ describe("GitCore unit", () => {
           return { stdout: `${"b".repeat(40)}\n` };
         if (argsEqual(input, ["remote"])) {
           return { stdout: "origin\n" };
-        }
-        if (argsEqual(input, ["rev-parse", "--git-common-dir"])) {
-          return { stdout: ".git\n" };
         }
         if (argsEqual(input, ["status", "--porcelain=2", "--branch", "-z"])) {
           return {
@@ -574,7 +574,9 @@ describe("GitCore unit", () => {
         ),
       ).toHaveLength(1);
       expect(
-        scripted.calls.filter((call) => argsEqual(call, ["rev-parse", "--git-common-dir"])),
+        scripted.calls.filter(
+          (call) => call.operation === "GitCore.statusStaticMetadata.commonDir",
+        ),
       ).toHaveLength(1);
       expect(scripted.calls.filter((call) => argsEqual(call, ["remote"]))).toHaveLength(1);
       expect(scripted.calls.filter((call) => call.args[0] === "fetch")).toHaveLength(
@@ -769,7 +771,7 @@ describe("GitCore unit", () => {
     );
 
     expect(remote).toBe("Octo-Cat-1");
-    expect(scripted.calls.at(-1)?.args).toEqual([
+    expect(scripted.calls.map((call) => call.args)).toContainEqual([
       "remote",
       "add",
       "--",
@@ -921,7 +923,8 @@ it.each(["none", "shallow", "recursive"] as const)(
       }
       return {
         stdout: input.args[0] === "rev-parse" ? "a".repeat(40) : "",
-        code: input.args.includes("submodule") ? 1 : 0,
+        // A failed clone still leaves the created worktree usable.
+        code: input.args.includes("submodule") && input.args.includes("update") ? 1 : 0,
       };
     });
     const core = await makeCore(scripted.service);
@@ -932,16 +935,19 @@ it.each(["none", "shallow", "recursive"] as const)(
     const calls = scripted.calls.filter((call) => call.args.includes("submodule"));
     if (submodules === "none") expect(calls).toHaveLength(0);
     else {
-      expect(calls).toHaveLength(1);
-      expect(calls[0]!.args).toEqual([
-        "-c",
-        "protocol.file.allow=never",
-        "submodule",
-        "update",
-        "--init",
-        ...(submodules === "recursive" ? ["--recursive"] : []),
+      // Registration writes the shared config on its own; the clones run separately.
+      expect(calls.map((call) => call.args)).toEqual([
+        ["submodule", "init"],
+        [
+          "-c",
+          "protocol.file.allow=never",
+          "submodule",
+          "update",
+          "--init",
+          ...(submodules === "recursive" ? ["--recursive"] : []),
+        ],
       ]);
-      expect(calls[0]!.cwd).toBe(result.worktree.path);
+      expect(calls.every((call) => call.cwd === result.worktree.path)).toBe(true);
     }
   },
 );
@@ -1076,7 +1082,7 @@ it.each([true, false])(
       "refs/heads/feature:refs/remotes/origin/feature",
     );
     expect(scripted.calls.find((call) => call.args[0] === "branch")?.args).toEqual(
-      alreadyExists ? undefined : ["branch", "--", "existing", "origin/feature"],
+      alreadyExists ? undefined : ["branch", "--no-track", "--", "existing", "origin/feature"],
     );
     expect(scripted.calls.flatMap((call) => call.args)).not.toContain("--force");
   },
@@ -1209,4 +1215,126 @@ it("terminates option parsing before configuration keys", async () => {
   const core = await makeCore(scripted.service);
   await Effect.runPromise(core.readConfigValue(process.cwd(), "--list"));
   expect(scripted.calls.at(-1)?.args).toEqual(["config", "--get", "--", "--list"]);
+});
+
+describe("shared .git/config writes", () => {
+  const lockMessage = "error: could not lock config file .git/config: File exists";
+
+  it("recognizes a held config lock even when the host locale translates Git", async () => {
+    let attempts = 0;
+    const scripted = makeScriptedGitService((input) => {
+      if (input.args[0] !== "branch") return {};
+      attempts += 1;
+      if (attempts > 1) return {};
+      // Only the untranslated message identifies the lock; a translated Git prints another.
+      return input.env?.LC_ALL === "C"
+        ? { code: 255, stderr: lockMessage }
+        : { code: 255, stderr: "Fehler: konnte Konfigurationsdatei nicht sperren" };
+    });
+    const core = await makeCore(scripted.service);
+
+    await Effect.runPromise(
+      core.setBranchUpstream({
+        cwd: process.cwd(),
+        branch: "feature",
+        remoteName: "origin",
+        remoteBranch: "feature",
+      }),
+    );
+
+    const writes = scripted.calls.filter((call) => call.args[0] === "branch");
+    expect(writes).toHaveLength(2);
+    expect(writes.every((call) => call.env?.LC_ALL === "C")).toBe(true);
+  });
+
+  it("does not retry a config write that failed for another reason", async () => {
+    const scripted = makeScriptedGitService((input) =>
+      input.args[0] === "branch"
+        ? { code: 128, stderr: "fatal: the requested upstream branch 'origin/x' does not exist" }
+        : {},
+    );
+    const core = await makeCore(scripted.service);
+
+    const result = await Effect.runPromise(
+      core
+        .setBranchUpstream({
+          cwd: process.cwd(),
+          branch: "feature",
+          remoteName: "origin",
+          remoteBranch: "x",
+        })
+        .pipe(Effect.result),
+    );
+
+    expect(result._tag).toBe("Failure");
+    expect(scripted.calls.filter((call) => call.args[0] === "branch")).toHaveLength(1);
+  });
+
+  it("returns a remote that a parallel launch added after the listing", async () => {
+    let listings = 0;
+    const scripted = makeScriptedGitService((input) => {
+      if (argsEqual(input, ["remote", "-v"])) {
+        listings += 1;
+        return listings === 1
+          ? { stdout: "" }
+          : { stdout: "fork\thttps://github.com/octocat/f5.git (fetch)\n" };
+      }
+      if (input.args[0] === "remote" && input.args[1] === "add")
+        return { code: 3, stderr: "error: remote octocat already exists." };
+      return {};
+    });
+    const core = await makeCore(scripted.service);
+
+    await expect(
+      Effect.runPromise(
+        core.ensureRemote({
+          cwd: process.cwd(),
+          preferredName: "octocat",
+          url: "https://github.com/octocat/f5.git",
+        }),
+      ),
+    ).resolves.toBe("fork");
+  });
+
+  it("serializes a branch rename with a concurrent config write in the same repository", async () => {
+    const order: string[] = [];
+    const renameGate = Promise.withResolvers<void>();
+    const renameStarted = Promise.withResolvers<void>();
+    const scripted = makeScriptedGitService((input) =>
+      input.args[0] === "show-ref" ? { code: 1 } : {},
+    );
+    const core = await makeCore({
+      execute: (input) => {
+        if (input.args[0] === "branch" && input.args[1] === "-m")
+          return Effect.promise(async () => {
+            order.push("rename:start");
+            renameStarted.resolve();
+            await renameGate.promise;
+            order.push("rename:end");
+            return { code: 0, stdout: "", stderr: "" };
+          });
+        return scripted.service.execute(input);
+      },
+    });
+
+    const rename = Effect.runPromise(
+      core.renameBranch({ cwd: process.cwd(), oldBranch: "t3code/tmp", newBranch: "feature" }),
+    );
+    await renameStarted.promise;
+    const write = Effect.runPromise(
+      core.setBranchUpstream({
+        cwd: process.cwd(),
+        branch: "feature",
+        remoteName: "origin",
+        remoteBranch: "feature",
+      }),
+    );
+    // Give the write every chance to run while the rename still holds the config turn.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(scripted.calls.some((call) => call.args.includes("--set-upstream-to"))).toBe(false);
+    renameGate.resolve();
+    await Promise.all([rename, write]);
+    expect(order).toEqual(["rename:start", "rename:end"]);
+    expect(scripted.calls.some((call) => call.args.includes("--set-upstream-to"))).toBe(true);
+  });
 });

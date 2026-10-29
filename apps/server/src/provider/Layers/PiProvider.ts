@@ -9,7 +9,7 @@ import {
   providerModelsFromSettings,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
-import { probePiCatalog } from "../pi/PiMetadata.ts";
+import { PI_CATALOG_PROBE_TIMEOUT_MS, probePiCatalog } from "../pi/PiMetadata.ts";
 import { PiRpcError } from "../pi/PiRpc.ts";
 import { EMPTY_PI_MODEL_CAPABILITIES } from "../pi/thinkingCapabilities.ts";
 import { buildPiRpcLaunch } from "../pi/launch.ts";
@@ -148,7 +148,7 @@ export const checkPiProviderStatus = (
           message:
             result._tag === "Success"
               ? "Pi is available. Authentication is managed by Pi; a model catalog does not prove credentials are valid."
-              : "Pi RPC discovery failed or exceeded 15 seconds. Check its installation and terminal sign-in.",
+              : `Pi RPC discovery failed or exceeded ${PI_CATALOG_PROBE_TIMEOUT_MS / 1000} seconds. Check its installation and terminal sign-in.`,
         },
       });
     }),

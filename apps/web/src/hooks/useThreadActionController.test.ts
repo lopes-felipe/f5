@@ -1,10 +1,13 @@
 import { ProviderInstanceId, ScheduledTaskId, ScheduledTaskRunId } from "@t3tools/contracts";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
+import { updateAppSettings } from "~/appSettings";
+import { DEFAULT_SNOOZE_PRESETS, resolveSnoozePresets } from "~/lib/snoozePresets";
 import {
   buildThreadActionMenuItems,
   canScheduleIntoThread,
   nativeThreadActionMenuItems,
+  resolveSnoozeMenuPresets,
   settlementErrorDetail,
 } from "./useThreadActionController";
 
@@ -32,9 +35,9 @@ describe("buildThreadActionMenuItems", () => {
       "rename",
       "regenerate-title",
       "pin",
-      "snooze-three-hours",
-      "snooze-tomorrow",
-      "snooze-next-week",
+      "snooze:after:180",
+      "snooze:at:tomorrow:09:00",
+      "snooze:at:next-week:09:00",
       "settle",
       "archive",
       "mark-unread",
@@ -49,7 +52,26 @@ describe("buildThreadActionMenuItems", () => {
       snoozed: true,
     });
     expect(snoozed.some((item) => item.id === "wake")).toBe(true);
-    expect(snoozed.some((item) => item.id.startsWith("snooze-"))).toBe(false);
+    expect(snoozed.some((item) => item.id.startsWith("snooze:"))).toBe(false);
+  });
+
+  it("lists the configured snooze options with their wake times", () => {
+    const items = buildThreadActionMenuItems({
+      thread: { archivedAt: null, titleRegeneration: null },
+      pinned: false,
+      snoozed: false,
+      snoozePresets: [
+        {
+          id: "after:30",
+          label: "In 30 minutes",
+          whenLabel: "10:30",
+          snoozedUntil: "2026-10-28T10:30:00.000Z",
+        },
+      ],
+    });
+    expect(items.filter((item) => item.id.startsWith("snooze:"))).toEqual([
+      { id: "snooze:after:30", label: "Snooze: In 30 minutes (10:30)" },
+    ]);
   });
 
   it("offers an explicit wake and keeps pinned or snoozed work out of manual settlement", () => {
@@ -162,5 +184,21 @@ describe("scheduled thread actions", () => {
         modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
       }),
     ).toBe(true);
+  });
+});
+
+describe("resolveSnoozeMenuPresets", () => {
+  afterEach(() => updateAppSettings({ snoozePresets: [...DEFAULT_SNOOZE_PRESETS] }));
+
+  it("keeps snooze in menus when no option is left", () => {
+    const now = new Date(2026, 9, 28, 20);
+    const defaults = resolveSnoozePresets(DEFAULT_SNOOZE_PRESETS, now).map((preset) => preset.id);
+    updateAppSettings({ snoozePresets: [] });
+    expect(resolveSnoozeMenuPresets(now).map((preset) => preset.id)).toEqual(defaults);
+    // Only a time today that has already passed.
+    updateAppSettings({ snoozePresets: [{ kind: "at", day: "today", time: "17:00" }] });
+    expect(resolveSnoozeMenuPresets(now).map((preset) => preset.id)).toEqual(defaults);
+    updateAppSettings({ snoozePresets: [{ kind: "at", day: "today", time: "21:00" }] });
+    expect(resolveSnoozeMenuPresets(now).map((preset) => preset.id)).toEqual(["at:today:21:00"]);
   });
 });

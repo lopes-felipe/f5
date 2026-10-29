@@ -56,6 +56,7 @@ import {
 
 const SUCCESS_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const EXPLICIT_SUCCESS_TTL_MS = 60_000;
+const UPDATE_FAILURE_LOG_OUTPUT_CHARS = 4_096;
 
 interface SourceCacheEntry {
   readonly lastSuccess?: { readonly latestVersion: string; readonly checkedAt: number };
@@ -699,6 +700,15 @@ export const makeProviderUpdateAdvisor = (
             : "The provider update could not start. Check that the installer is available and idle sessions can stop.",
           outputTruncated: !!(processResult?.stdoutTruncated || processResult?.stderrTruncated),
         };
+        if (outcome === "failed" && processResult)
+          yield* Effect.logWarning("provider update command failed", {
+            instanceId,
+            command: [command.executable.split(/[\\/]/).pop(), ...command.args].join(" "),
+            exitCode: processResult.code,
+            timedOut: processResult.timedOut,
+            // Updaters print their reason last; keep the log bounded.
+            output: response.output.slice(-UPDATE_FAILURE_LOG_OUTPUT_CHARS),
+          });
         yield* Effect.logInfo("provider update finished", {
           instanceId,
           outcome,

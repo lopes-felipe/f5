@@ -1,6 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { ProviderLineReader } from "./lineReader.ts";
+import { CODEX_MAX_INCOMING_MESSAGE_BYTES, ProviderLineReader } from "./lineReader.ts";
 
 import { type CodexMcpServerEntry, type McpServerStartupStatus } from "@t3tools/contracts";
 import { CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS } from "@t3tools/shared/codexOAuthTiming";
@@ -280,7 +280,7 @@ export class CodexControlClient extends EventEmitter<{
       stdio: ["pipe", "pipe", "pipe"],
     });
     child.stderr.resume();
-    const output = new ProviderLineReader(child.stdout);
+    const output = new ProviderLineReader(child.stdout, CODEX_MAX_INCOMING_MESSAGE_BYTES);
     const writer = createJsonRpcStdinWriter({
       stdin: child.stdin,
       closedMessage: "Codex control client is closed.",
@@ -389,10 +389,21 @@ export class CodexControlClient extends EventEmitter<{
           `codex control client exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`,
         ),
       );
+    // The reader stopped at the cap and cannot resynchronize mid-message, so the client ends.
+    const onOverflow = () => {
+      handleExit(
+        new Error(
+          `codex app-server sent a message larger than ${CODEX_MAX_INCOMING_MESSAGE_BYTES} bytes; the control client was closed.`,
+        ),
+      );
+      if (!this.child.killed) killChildTree(this.child);
+    };
     this.child.once("error", onError);
     this.child.once("exit", onExit);
+    this.output.once("overflow", onOverflow);
     this.cleanupProcessListeners = () => {
       this.output.off("line", onLine);
+      this.output.off("overflow", onOverflow);
       this.child.off("error", onError);
       this.child.off("exit", onExit);
     };

@@ -40,6 +40,13 @@ In the terminal, Shift+PageUp and Shift+PageDown page through scrollback. `mod+S
 Cmd+A on macOS and Ctrl+Shift+A elsewhere select all retained output, while Ctrl+A still moves to
 the start of shell input.
 
+F5 starts fish with `no-query-term` in `fish_features`, so fish 4.1+ does not wait for terminal
+replies at startup. This disables optional fish features that depend on those replies, and the
+exported variable hides flags set with `set -U fish_features`. To keep those flags or enable
+queries with `query-term`, set `fish_features` in the environment that launches F5; a shell export
+does not reach a desktop app launched from the Dock or Finder. Enabling queries can restore the
+startup wait.
+
 The Files panel can edit files. If a file changes on disk while you have unsaved edits, F5 marks a
 conflict and keeps your draft. **Open in editor** hands the file to your external editor.
 
@@ -65,6 +72,10 @@ commit, push and pull request actions. Linked pull requests also appear in the
   workflows and commands.
 - Archive a thread from its sidebar menu; archived items are under **Settings → Archive**.
 - A usage-limit notice can be snoozed until a time you pick; snoozed threads show a moon icon.
+- **Settings → Threads → Snooze options** sets the choices in every snooze menu: up to 8, either
+  a duration ("In 3 hours") or a day and time ("Friday at 6:00 PM"). Menus list them soonest
+  first; a weekday means the next one after today. The defaults are 3 hours, tomorrow at 9:00 and
+  a week from today at 9:00; menus fall back to them when none of your options is left.
 - A turn running during a restart resumes only if **Settings → Threads → Resume active turns after
   restart** is on (off by default).
 - Sending a new message resumes a queue held by Stop or Pause, preserving its order. **Queue at end**,

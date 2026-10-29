@@ -2,14 +2,20 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ThreadId } from "@t3tools/contracts";
 import { resolveThreadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { useNavigate } from "@tanstack/react-router";
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 
-import { useAppSettingsSelector } from "~/appSettings";
+import { readAppSettingsSnapshot, useAppSettingsSelector } from "~/appSettings";
 import { deleteThreadsWithCleanup, setThreadArchived } from "~/archiveActions";
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { scheduledTasksQueryOptions } from "~/lib/scheduledTasksQuery";
 import { isSnoozedThread } from "~/lib/threadOrdering";
-import { resolveSnoozePreset } from "~/lib/snoozePresets";
+import {
+  DEFAULT_SNOOZE_PRESETS,
+  pickSnoozePreset,
+  resolveSnoozePresets,
+  type SnoozePreset,
+} from "~/lib/snoozePresets";
+import { formatTimeOfDay } from "~/timestampFormat";
 import { newCommandId } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
 import { useStore } from "~/store";
@@ -46,9 +52,7 @@ export type ThreadActionId =
   | "pin"
   | "unpin"
   | "wake"
-  | "snooze-three-hours"
-  | "snooze-tomorrow"
-  | "snooze-next-week"
+  | SnoozeThreadActionId
   | "settle"
   | "unsettle"
   | "archive"
@@ -57,6 +61,54 @@ export type ThreadActionId =
   | "copy-path"
   | "copy-thread-id"
   | "delete";
+
+/** One per configured snooze option, keyed by its preset id. */
+export type SnoozeThreadActionId = `snooze:${string}`;
+
+const SNOOZE_ACTION_PREFIX = "snooze:";
+
+function isSnoozeThreadActionId(actionId: ThreadActionId): actionId is SnoozeThreadActionId {
+  return actionId.startsWith(SNOOZE_ACTION_PREFIX);
+}
+
+/** The menu label: "Snooze: Tomorrow (9:00 AM)". */
+export function snoozeThreadActionLabel(preset: SnoozePreset): string {
+  return `Snooze: ${preset.label} (${preset.whenLabel})`;
+}
+
+/**
+ * The snooze options as a menu opened now shows them, in the user's time format. With no
+ * option left (none configured, or only today's times that have passed) menus offer the
+ * defaults, so snooze never disappears from them.
+ */
+export function resolveSnoozeMenuPresets(now = new Date()): ReadonlyArray<SnoozePreset> {
+  const settings = readAppSettingsSnapshot();
+  const formatTime = (date: Date) => formatTimeOfDay(date, settings.timestampFormat);
+  const configured = resolveSnoozePresets(settings.snoozePresets, now, formatTime);
+  return configured.length > 0
+    ? configured
+    : resolveSnoozePresets(DEFAULT_SNOOZE_PRESETS, now, formatTime);
+}
+
+/** A menu's snooze choice as picked now; warns and returns undefined once its time has passed. */
+export function pickSnoozeMenuPreset(
+  shown: ReadonlyArray<SnoozePreset>,
+  actionId: SnoozeThreadActionId,
+): SnoozePreset | undefined {
+  const preset = pickSnoozePreset({
+    shown,
+    id: actionId.slice(SNOOZE_ACTION_PREFIX.length),
+    presets: readAppSettingsSnapshot().snoozePresets,
+  });
+  if (!preset) {
+    toastManager.add({
+      type: "warning",
+      title: "Could not snooze thread",
+      description: "That snooze time has passed. Choose another time.",
+    });
+  }
+  return preset;
+}
 
 export interface ThreadActionMenuItem {
   readonly id: ThreadActionId;
@@ -80,6 +132,8 @@ export function buildThreadActionMenuItems(input: {
   >;
   readonly pinned: boolean;
   readonly snoozed: boolean;
+  /** Resolved snooze options, soonest first; defaults to the built-in options. */
+  readonly snoozePresets?: ReadonlyArray<SnoozePreset>;
   readonly schedule?: ScheduledTaskMenuState;
   /** A server thread that a new task can send its runs into. */
   readonly canScheduleInConversation?: boolean;
@@ -125,11 +179,12 @@ export function buildThreadActionMenuItems(input: {
           { id: pinned ? "unpin" : "pin", label: pinned ? "Unpin" : "Pin" } as const,
           ...(snoozed
             ? ([{ id: "wake", label: "Wake" }] as const)
-            : ([
-                { id: "snooze-three-hours", label: "Snooze for 3 hours" },
-                { id: "snooze-tomorrow", label: "Snooze until tomorrow morning" },
-                { id: "snooze-next-week", label: "Snooze until next week" },
-              ] as const)),
+            : (input.snoozePresets ?? resolveSnoozePresets(DEFAULT_SNOOZE_PRESETS)).map(
+                (preset) => ({
+                  id: `${SNOOZE_ACTION_PREFIX}${preset.id}` as const,
+                  label: snoozeThreadActionLabel(preset),
+                }),
+              )),
         ]
       : []),
     ...(thread.archivedAt === null
@@ -229,19 +284,22 @@ export function useThreadActionController(input: {
     },
   });
 
-  const buildMenu = useCallback(
-    (thread: ThreadListItem, schedule: ScheduledTaskMenuState) =>
-      buildThreadActionMenuItems({
-        thread,
-        pinned: orderedPinnedThreadIds(useStore.getState().threads).includes(thread.id),
-        snoozed: isSnoozedThread(thread),
-        schedule,
-        canScheduleInConversation: canScheduleIntoThread(
-          selectThreadById(useStore.getState(), thread.id),
-        ),
-      }),
-    [],
-  );
+  // The options the newest menu showed, so a pick keeps the wake time it displayed.
+  const shownSnoozePresetsRef = useRef<ReadonlyArray<SnoozePreset>>([]);
+  const buildMenu = useCallback((thread: ThreadListItem, schedule: ScheduledTaskMenuState) => {
+    const snoozePresets = resolveSnoozeMenuPresets();
+    shownSnoozePresetsRef.current = snoozePresets;
+    return buildThreadActionMenuItems({
+      thread,
+      pinned: orderedPinnedThreadIds(useStore.getState().threads).includes(thread.id),
+      snoozed: isSnoozedThread(thread),
+      snoozePresets,
+      schedule,
+      canScheduleInConversation: canScheduleIntoThread(
+        selectThreadById(useStore.getState(), thread.id),
+      ),
+    });
+  }, []);
 
   const menuItemsForThread = useCallback(
     (thread: ThreadListItem): ThreadActionMenuItem[] => {
@@ -440,17 +498,11 @@ export function useThreadActionController(input: {
         });
         return;
       }
-      const snoozePreset =
-        actionId === "snooze-three-hours"
-          ? "three-hours"
-          : actionId === "snooze-tomorrow"
-            ? "tomorrow-morning"
-            : actionId === "snooze-next-week"
-              ? "next-week"
-              : null;
-      if (snoozePreset !== null) {
+      if (isSnoozeThreadActionId(actionId)) {
+        const preset = pickSnoozeMenuPreset(shownSnoozePresetsRef.current, actionId);
+        if (!preset) return;
         try {
-          await snoozeThread(threadId, resolveSnoozePreset(snoozePreset));
+          await snoozeThread(threadId, preset.snoozedUntil);
           if (input.activeThreadId === threadId) {
             await navigate({ to: "/", replace: true });
           }

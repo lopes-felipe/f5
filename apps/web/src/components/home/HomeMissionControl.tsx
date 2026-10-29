@@ -59,7 +59,22 @@ const RECENT_THREADS_EXPANDED_LIMIT = 20;
 /** Keep the quick-jump surface focused — more than four is noise. */
 const QUICK_JUMP_PROJECT_LIMIT = 4;
 
-type RecentStatusFilter = "all" | "completed" | "idle";
+type RecentStatusFilter = "all" | "completed" | "failed" | "idle";
+
+export function matchesRecentStatusFilter(
+  status: ThreadStatus,
+  filter: RecentStatusFilter,
+): boolean {
+  switch (filter) {
+    case "all":
+      return true;
+    case "completed":
+    case "failed":
+      return status === filter;
+    case "idle":
+      return status === "none";
+  }
+}
 
 interface MissionControlBuckets {
   attention: ThreadSummary[];
@@ -439,11 +454,9 @@ export function HomeMissionControl() {
     const filteredByStatus =
       statusFilter === "all"
         ? filteredByProject
-        : filteredByProject.filter((thread) => {
-            const status = thread.status;
-            if (statusFilter === "completed") return status === "completed";
-            return status === "none";
-          });
+        : filteredByProject.filter((thread) =>
+            matchesRecentStatusFilter(thread.status, statusFilter),
+          );
     return filteredByStatus.filter((thread) => !pinnedIdSet.has(thread.id));
   }, [pinnedIdSet, projectFilter, recentAll, statusFilter]);
 
@@ -602,6 +615,7 @@ export function HomeMissionControl() {
   }> = [
     { value: "all", label: "Any status" },
     { value: "completed", label: "Completed" },
+    { value: "failed", label: "Failed" },
     { value: "idle", label: "Idle" },
   ];
 

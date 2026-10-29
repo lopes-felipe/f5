@@ -44,7 +44,7 @@ import {
   useStore,
   type AppState,
 } from "./store";
-import { hasUnseenCompletion } from "./threadStatus";
+import { hasUnseenCompletion, resolveThreadStatusForThread } from "./threadStatus";
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Thread } from "./types";
 import { createEmptyThreadHistoryState, ensureThreadHistoryState } from "./lib/threadHistory";
 
@@ -2364,6 +2364,32 @@ describe("persistent thread read acknowledgements", () => {
     );
     expect(useStore.getState().threads[0]?.lastVisitedAt).toBe("2026-03-01T09:02:00.000Z");
     expect(hasUnseenCompletion(useStore.getState().threads[0]!)).toBe(false);
+  });
+  it("keeps a failure this client never saw unseen while history stays read", async () => {
+    const reloaded = await reload(createLocalStorageStub());
+    const failedId = ThreadId.makeUnsafe("never-opened-failure");
+    const snapshot = makeReadModel(
+      makeReadModelThread({
+        latestTurn: completion,
+        lastInteractionAt: "2026-03-01T09:01:30.000Z",
+      }),
+    );
+    const hydrated = reloaded.syncServerReadModel(reloaded.useStore.getState(), {
+      ...snapshot,
+      threads: [
+        ...snapshot.threads,
+        makeReadModelThread({
+          id: failedId,
+          latestTurn: { ...completion, state: "error" },
+          lastInteractionAt: "2026-03-01T09:01:30.000Z",
+        }),
+      ],
+    });
+    const [completed, failed] = hydrated.threads;
+    expect(resolveThreadStatusForThread(completed!)).toBe("none");
+    expect(resolveThreadStatusForThread(failed!)).toBe("failed");
+    const visited = reloaded.markThreadVisited(hydrated, failedId, "2026-03-01T09:02:00.000Z");
+    expect(resolveThreadStatusForThread(visited.threads[1]!)).toBe("none");
   });
   it("restores read state after a fresh renderer load and still notices later completions", async () => {
     const localStorage = createLocalStorageStub();

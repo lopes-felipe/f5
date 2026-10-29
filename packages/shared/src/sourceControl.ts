@@ -29,7 +29,8 @@ function stripGitSuffix(value: string): string {
 export function providerKindFromHost(host: string): SourceControlProviderKind {
   const normalized = host.toLowerCase();
   const labels = normalized.split(".").filter(Boolean);
-  if (normalized === "github.com") return "github";
+  // `<tenant>.ghe.com` is GitHub Enterprise Cloud with data residency, one subdomain per enterprise.
+  if (normalized === "github.com" || normalized.endsWith(".ghe.com")) return "github";
   if (normalized === "gitlab.com" || labels.includes("gitlab")) return "gitlab";
   if (normalized === "bitbucket.org") return "bitbucket";
   if (normalized === "codeberg.org" || labels.includes("forgejo") || labels.includes("gitea"))

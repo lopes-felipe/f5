@@ -176,6 +176,28 @@ it("reuses usage initialization for capabilities waiting behind it, without anot
   expect(createQuery).toHaveBeenCalledOnce();
 });
 
+it("does not cache a failed capabilities probe", async () => {
+  let fail = true;
+  const createQuery = vi.fn<typeof query>(
+    () =>
+      ({
+        initializationResult: async () => {
+          if (fail) throw new Error("signed out");
+          return { commands: [], account: { subscriptionType: "max" } };
+        },
+      }) as unknown as Query,
+  );
+  const probes = await run(
+    makeClaudeInstanceProbes(settings, process.env, { cwd: process.cwd(), createQuery }),
+  );
+  expect(await Effect.runPromise(probes.capabilities)).toBeUndefined();
+  fail = false;
+  expect((await Effect.runPromise(probes.capabilities))?.subscriptionType).toBe("max");
+  expect(createQuery).toHaveBeenCalledTimes(2);
+  await Effect.runPromise(probes.capabilities);
+  expect(createQuery).toHaveBeenCalledTimes(2);
+});
+
 it("ordinary capabilities checks never request usage", async () => {
   const usage = vi.fn();
   const createQuery: typeof query = () =>

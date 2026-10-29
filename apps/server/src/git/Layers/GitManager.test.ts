@@ -793,6 +793,56 @@ describe("GitManager unit", () => {
     expect(git.calls.createWorktree).toHaveLength(1);
   });
 
+  it.each([
+    ["an unrelated worktree that shares the fork head name", "main", 0],
+    ["the fork PR's own worktree", "t3code/pr-42/main", 1],
+  ] as const)(
+    "configures tracking only when reusing %s",
+    async (_label, branchName, upstreamWrites) => {
+      const worktreePath = "/tmp/f5-existing-main-worktree";
+      const { manager, git } = await makeManager({
+        gitCore: {
+          statusDetails: () => Effect.succeed({ ...cleanStatus, branch: branchName }),
+          listBranches: () =>
+            Effect.succeed({
+              branches: [
+                {
+                  name: branchName,
+                  isRemote: false,
+                  current: false,
+                  isDefault: false,
+                  worktreePath,
+                },
+              ],
+              isRepo: true,
+              hasOriginRemote: true,
+            }),
+        },
+        gitHub: {
+          pullRequest: {
+            number: 42,
+            title: "Fork PR",
+            url: "https://github.com/t3tools/f5/pull/42",
+            baseRefName: "main",
+            headRefName: "main",
+            isCrossRepository: true,
+            headRepositoryNameWithOwner: "contributor/f5",
+            headRepositoryOwnerLogin: "contributor",
+          },
+        },
+      });
+
+      const result = await Effect.runPromise(
+        manager.preparePullRequestThread({ cwd, reference: "42", mode: "worktree" }),
+      );
+
+      expect(result).toMatchObject({ branch: "t3code/pr-42/main", worktreePath });
+      expect(git.calls.setBranchUpstream).toHaveLength(upstreamWrites);
+      expect(git.calls.fetchPullRequestBranch).toHaveLength(0);
+      expect(git.calls.createWorktree).toHaveLength(0);
+    },
+  );
+
   it("skips the project's setup script when the caller opts out", async () => {
     const projectId = ProjectId.makeUnsafe("setup-project");
     const prepare = (runSetupScript?: boolean) =>

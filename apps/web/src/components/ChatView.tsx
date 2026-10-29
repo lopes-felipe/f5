@@ -49,6 +49,7 @@ import { workspaceBasenameMatch } from "../lib/workspaceBasename";
 import { resolveChatAssetTarget } from "../lib/chatAssetTarget";
 import { isExternalTextPreviewPath, resolveFilePreviewTarget } from "../lib/filePreviewTarget";
 import { WorkspaceMediaView } from "./WorkspaceMediaView";
+import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { Dialog, DialogPopup, DialogTitle } from "./ui/dialog";
 import { PROVIDER_DISPLAY_NAMES, type ProjectIssueAssetUrlInput } from "@t3tools/contracts";
 import { partitionDroppedAttachments } from "../lib/droppedAttachments";
@@ -130,6 +131,7 @@ import {
 import { areProviderModelOptionsEqual } from "@t3tools/shared/providerOptions";
 import {
   type ComponentProps,
+  type SetStateAction,
   lazy,
   memo,
   Suspense,
@@ -152,6 +154,7 @@ import { agentBrowserPolicyFromSettings } from "@t3tools/shared/projectSettings"
 import { AgentBrowserLiveCard, BrowserCapabilityChip } from "./AgentBrowserLiveCard";
 import { useResolvedThemePalette } from "../hooks/useThemePalette";
 import { clearFileViewSearchParams, clearTurnDiffSearchParams } from "../diffRouteSearch";
+import { requestDiffFileReveal } from "../diffFileReveal";
 import { FileNavigationProvider } from "../fileNavigationContext";
 import { TerminalCommandProvider } from "../terminalCommandContext";
 import {
@@ -208,6 +211,14 @@ import {
   togglePendingUserInputOption,
   type PendingUserInputDraftAnswer,
 } from "../pendingUserInput";
+import {
+  EMPTY_PENDING_USER_INPUT_ANSWERS_BY_REQUEST_ID,
+  EMPTY_PENDING_USER_INPUT_QUESTION_INDEX_BY_REQUEST_ID,
+  prunableUserInputRequestIds,
+  usePendingUserInputDraftStore,
+  type PendingUserInputAnswersByRequestId,
+  type PendingUserInputQuestionIndexByRequestId,
+} from "../pendingUserInputDraftStore";
 import { nextRewindDraftReadTicket, useStore } from "../store";
 import { selectThreadIndexById, useThread, useThreadSummaries } from "../threadSelectors";
 import { useTestRenderCountProps } from "../lib/testRenderCount";
@@ -481,6 +492,9 @@ const WorkflowImplementDialog = lazy(() =>
   })),
 );
 const ThreadTerminalDrawer = lazy(() => import("./ThreadTerminalDrawer"));
+// The composer dock floats inside the conversation; the nearest area wins.
+const CONVERSATION_WORKSPACE_AREA = workspaceAreaProps("conversation", 1, "Conversation");
+const COMPOSER_WORKSPACE_AREA = workspaceAreaProps("composer", 2, "Message input");
 
 type NativeApiClient = NonNullable<ReturnType<typeof readNativeApi>>;
 type PendingTurnDispatch = PendingTurnDispatchState;
@@ -920,11 +934,25 @@ export default memo(function ChatView({
   const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
     ApprovalRequestId[]
   >([]);
-  const [pendingUserInputAnswersByRequestId, setPendingUserInputAnswersByRequestId] = useState<
-    Record<string, Record<string, PendingUserInputDraftAnswer>>
-  >({});
-  const [pendingUserInputQuestionIndexByRequestId, setPendingUserInputQuestionIndexByRequestId] =
-    useState<Record<string, number>>({});
+  // Kept outside the view so leaving the thread does not drop a typed answer.
+  const pendingUserInputAnswersByRequestId = usePendingUserInputDraftStore(
+    (store) => store.answersByThreadId[threadId] ?? EMPTY_PENDING_USER_INPUT_ANSWERS_BY_REQUEST_ID,
+  );
+  const pendingUserInputQuestionIndexByRequestId = usePendingUserInputDraftStore(
+    (store) =>
+      store.questionIndexByThreadId[threadId] ??
+      EMPTY_PENDING_USER_INPUT_QUESTION_INDEX_BY_REQUEST_ID,
+  );
+  const setPendingUserInputAnswersByRequestId = useCallback(
+    (update: SetStateAction<PendingUserInputAnswersByRequestId>) =>
+      usePendingUserInputDraftStore.getState().setAnswers(threadId, update),
+    [threadId],
+  );
+  const setPendingUserInputQuestionIndexByRequestId = useCallback(
+    (update: SetStateAction<PendingUserInputQuestionIndexByRequestId>) =>
+      usePendingUserInputDraftStore.getState().setQuestionIndex(threadId, update),
+    [threadId],
+  );
   const [expandedWorkGroups, setExpandedWorkGroups] = useState<Record<string, number>>({});
   const [workGroupCollapseOverrides, setWorkGroupCollapseOverrides] = useState<
     Readonly<Record<string, boolean>>
@@ -2100,6 +2128,9 @@ export default memo(function ChatView({
         : derivePendingUserInputs(threadActivities),
     [threadActivities, activeThread?.pendingUserInputs],
   );
+  // The projected list is complete only once the server thread's details loaded.
+  const pendingUserInputsLoaded =
+    serverThread?.detailsLoaded === true && serverThread.pendingUserInputs !== undefined;
   // Provider forms render in their own panel and never feed the question drafts.
   const blockingUserInputs = pendingUserInputs.filter(
     (input) => !input.elicitation && isBlockingUserInput(input),
@@ -2108,10 +2139,13 @@ export default memo(function ChatView({
   const activePendingUserInput = blockingUserInputs[0] ?? null;
   const preservedDismissedAnswers = useRef(new Set<string>());
   useEffect(() => {
+    const resolvedRequestIds: string[] = [];
     for (const activity of threadActivities) {
       if (activity.kind !== "user-input.resolved") continue;
       const payload = activity.payload as { requestId?: string; resolution?: string } | null;
-      if (payload?.resolution !== "dismissed" || !payload.requestId) continue;
+      if (!payload?.requestId) continue;
+      resolvedRequestIds.push(payload.requestId);
+      if (payload.resolution !== "dismissed") continue;
       const key = `${threadId}:${payload.requestId}`;
       if (preservedDismissedAnswers.current.has(key)) continue;
       const answers = pendingUserInputAnswersByRequestId[payload.requestId];
@@ -2124,7 +2158,25 @@ export default memo(function ChatView({
       );
       if (restored !== original) setComposerDraftPrompt(threadId, restored);
     }
-  }, [threadActivities, threadId, pendingUserInputAnswersByRequestId, setComposerDraftPrompt]);
+    // Prune after a dismissed answer was carried into the draft. A request
+    // missing from a partly loaded thread is not resolved.
+    const drafts = usePendingUserInputDraftStore.getState();
+    drafts.pruneRequests(
+      threadId,
+      prunableUserInputRequestIds(drafts, threadId, {
+        pendingRequestIds: pendingUserInputs.map((input) => input.requestId),
+        resolvedRequestIds,
+        threadLoaded: pendingUserInputsLoaded,
+      }),
+    );
+  }, [
+    threadActivities,
+    threadId,
+    pendingUserInputs,
+    pendingUserInputsLoaded,
+    pendingUserInputAnswersByRequestId,
+    setComposerDraftPrompt,
+  ]);
 
   useEffect(() => {
     if (!activePendingUserInput) return;
@@ -2135,7 +2187,7 @@ export default memo(function ChatView({
         ? existing
         : { ...existing, [activePendingUserInput.requestId]: seeded };
     });
-  }, [activePendingUserInput]);
+  }, [activePendingUserInput, setPendingUserInputAnswersByRequestId]);
 
   const activePendingDraftAnswers = useMemo(
     () =>
@@ -2949,6 +3001,7 @@ export default memo(function ChatView({
   );
   const onOpenFileChangeDiff = useCallback(
     (fileChangeId: OrchestrationFileChangeId, filePath?: string) => {
+      if (filePath) requestDiffFileReveal();
       void navigate({
         to: "/$threadId",
         params: { threadId },
@@ -5802,7 +5855,7 @@ export default memo(function ChatView({
         [activePendingUserInput.requestId]: nextQuestionIndex,
       }));
     },
-    [activePendingUserInput],
+    [activePendingUserInput, setPendingUserInputQuestionIndexByRequestId],
   );
 
   const onSelectActivePendingUserInputOption = useCallback(
@@ -5831,7 +5884,13 @@ export default memo(function ChatView({
       setComposerCursor(0);
       setComposerTrigger(null);
     },
-    [activePendingUserInput, pendingUserInputAnswersByRequestId, threadId, setComposerDraftPrompt],
+    [
+      activePendingUserInput,
+      pendingUserInputAnswersByRequestId,
+      threadId,
+      setComposerDraftPrompt,
+      setPendingUserInputAnswersByRequestId,
+    ],
   );
 
   const onToggleActivePendingUserInputOption = useCallback(
@@ -5860,7 +5919,13 @@ export default memo(function ChatView({
       setComposerCursor(0);
       setComposerTrigger(null);
     },
-    [activePendingUserInput, pendingUserInputAnswersByRequestId, threadId, setComposerDraftPrompt],
+    [
+      activePendingUserInput,
+      pendingUserInputAnswersByRequestId,
+      threadId,
+      setComposerDraftPrompt,
+      setPendingUserInputAnswersByRequestId,
+    ],
   );
 
   const onChangeActivePendingUserInputCustomAnswer = useCallback(
@@ -5892,7 +5957,7 @@ export default memo(function ChatView({
         cursorAdjacentToMention ? null : detectComposerTrigger(value, expandedCursor),
       );
     },
-    [activePendingUserInput],
+    [activePendingUserInput, setPendingUserInputAnswersByRequestId],
   );
 
   const onAdvanceActivePendingUserInput = useCallback(() => {
@@ -6693,7 +6758,12 @@ export default memo(function ChatView({
       });
       return true;
     },
-    [activePendingProgress, activePendingUserInput, setPrompt],
+    [
+      activePendingProgress,
+      activePendingUserInput,
+      setPendingUserInputAnswersByRequestId,
+      setPrompt,
+    ],
   );
 
   const insertComposerFileMention = useCallback(
@@ -7036,6 +7106,7 @@ export default memo(function ChatView({
   );
   const onOpenTurnDiff = useCallback(
     (turnId: TurnId, filePath?: string) => {
+      if (filePath) requestDiffFileReveal();
       void navigate({
         to: "/$threadId",
         params: { threadId },
@@ -7143,6 +7214,7 @@ export default memo(function ChatView({
           diffFilePathsByTurnId,
         })
       ) {
+        requestDiffFileReveal();
         void navigate({
           to: "/$threadId",
           params: { threadId },
@@ -7946,7 +8018,11 @@ export default memo(function ChatView({
               style={composerRedesign ? { containerType: "size" } : undefined}
             >
               {/* Messages Wrapper */}
-              <div className="relative flex min-h-0 flex-1 flex-col" data-composer-dock-host>
+              <div
+                {...CONVERSATION_WORKSPACE_AREA}
+                className="relative flex min-h-0 flex-1 flex-col"
+                data-composer-dock-host
+              >
                 <ChatStatusAnnouncer
                   threadId={activeThread.id}
                   turnId={activeLatestTurn?.turnId ?? null}
@@ -8046,7 +8122,7 @@ export default memo(function ChatView({
                 />
 
                 {/* Composer dock: tray, composer and branch line float over the timeline end */}
-                <ComposerDock redesign={composerRedesign}>
+                <ComposerDock redesign={composerRedesign} workspaceArea={COMPOSER_WORKSPACE_AREA}>
                   <ComposerDockColumn
                     redesign={composerRedesign}
                     className={isGitRepo ? "pb-0.5" : "pb-3 sm:pb-4"}

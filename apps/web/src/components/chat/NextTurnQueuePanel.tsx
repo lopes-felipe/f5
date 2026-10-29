@@ -118,7 +118,12 @@ function QueueAnnouncer({ announcement }: { readonly announcement: string }) {
  */
 export function NextTurnQueueSync({ threadId }: { readonly threadId: ThreadId }) {
   useNextTurnQueueHydration(threadId, true);
-  return <QueueAnnouncer announcement={useQueueAnnouncement(threadId, true)} />;
+  // Anchored here too, so the live region cannot escape to the timeline scroller.
+  return (
+    <div className="relative">
+      <QueueAnnouncer announcement={useQueueAnnouncement(threadId, true)} />
+    </div>
+  );
 }
 
 export function NextTurnQueuePanel({
@@ -346,10 +351,12 @@ export function NextTurnQueuePanel({
     <section
       id="next-turn-queue-panel"
       tabIndex={-1}
+      // Relative anchors the sr-only live region; unanchored, it escapes to the timeline
+      // scroller and scrolls the chat column.
       className={
         variant === "tray"
-          ? `${COMPOSER_TRAY_PANEL_CLASS_NAME} outline-none`
-          : "mx-auto mb-2 w-full max-w-(--chat-content-max-width) rounded-xl border border-border bg-card px-2.5 py-2 shadow-sm"
+          ? `${COMPOSER_TRAY_PANEL_CLASS_NAME} relative outline-none`
+          : "relative mx-auto mb-2 w-full max-w-(--chat-content-max-width) rounded-xl border border-border bg-card px-2.5 py-2 shadow-sm"
       }
       aria-label="Queued turns"
     >

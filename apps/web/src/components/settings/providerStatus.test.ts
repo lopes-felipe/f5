@@ -117,6 +117,75 @@ describe("installation update presentations", () => {
       ),
     ).toContain("timed out");
   });
+  it("names the updater's last output line when an update fails", () => {
+    const result = {
+      instanceId: baseProvider.instanceId,
+      outcome: "failed" as const,
+      previousVersion: "1.0.0",
+      currentVersion: "1.0.0",
+      exitCode: 1,
+      timedOut: false,
+      outputTruncated: false,
+      providers: [],
+    };
+    expect(
+      getProviderUpdateResultMessage(
+        {
+          ...result,
+          output: "added 0 packages\n\x1b[31mnpm error\x1b[39m code   EACCES\r\n\n",
+        },
+        "npm",
+        "1.1.0",
+      ),
+    ).toBe("Update failed (exit 1): npm error code EACCES");
+    // npm ends with a pointer to its debug log; the cause comes before it.
+    expect(
+      getProviderUpdateResultMessage(
+        {
+          ...result,
+          output:
+            "npm error code EACCES\nnpm error syscall rename\nnpm error\nnpm error A complete log of this run can be found in: /Users/me/.npm/_logs/2026-debug-0.log\n",
+        },
+        "npm",
+        "1.1.0",
+      ),
+    ).toBe("Update failed (exit 1): npm error syscall rename");
+    expect(
+      getProviderUpdateResultMessage(
+        {
+          ...result,
+          output:
+            "npm ERR! code EACCES\nnpm ERR! A complete log of this run can be found in:\nnpm ERR!     /Users/me/.npm/_logs/2026-debug-0.log\n",
+        },
+        "npm",
+        "1.1.0",
+      ),
+    ).toBe("Update failed (exit 1): npm ERR! code EACCES");
+    expect(
+      getProviderUpdateResultMessage(
+        {
+          ...result,
+          exitCode: null,
+          output: "The provider update could not start. Check that the installer is available.",
+        },
+        "npm",
+        "1.1.0",
+      ),
+    ).toBe("Update failed (could not start).");
+    expect(
+      getProviderUpdateResultMessage({ ...result, output: "Upgrading codex\n" }, "npm", "1.1.0"),
+    ).toBe("Update failed (exit 1): Upgrading codex");
+    expect(getProviderUpdateResultMessage({ ...result, output: "\n \n" }, "npm", "1.1.0")).toBe(
+      "Update failed (exit 1).",
+    );
+    expect(
+      getProviderUpdateResultMessage(
+        { ...result, timedOut: true, exitCode: null, output: "still downloading\n" },
+        "npm",
+        "1.1.0",
+      ),
+    ).toBe("Update failed (timed out).");
+  });
 });
 
 it("routes a copied npm command through the installation's Node before the terminal PATH", () => {

@@ -10,6 +10,7 @@
 import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { resolveClaudeCliInvocation } from "../../provider/claudeSdkExecutable.ts";
+import { terminateOnRelease } from "../../spawn/terminateOnRelease.ts";
 import { hasClaudeManagedMcpConfig } from "../../provider/claudeInventory.ts";
 import {
   claudeThinkingCliArgs,
@@ -242,13 +243,13 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         },
       });
 
-      const child = yield* commandSpawner
-        .spawn(command)
-        .pipe(
-          Effect.mapError((cause) =>
-            normalizeCliError("claude", operation, cause, "Failed to spawn Claude CLI process"),
-          ),
-        );
+      const child = yield* commandSpawner.spawn(command).pipe(
+        Effect.mapError((cause) =>
+          normalizeCliError("claude", operation, cause, "Failed to spawn Claude CLI process"),
+        ),
+        Effect.tap(terminateOnRelease),
+        Effect.uninterruptible,
+      );
 
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [

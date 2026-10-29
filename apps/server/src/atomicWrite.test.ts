@@ -1,8 +1,200 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it, assert } from "@effect/vitest";
-import { Effect, FileSystem, Path } from "effect";
+import { Deferred, Effect, Exit, Fiber, FileSystem, Path, PlatformError } from "effect";
+import * as TestClock from "effect/testing/TestClock";
 
 import { writeFileBytesAtomically, writeFileStringAtomically } from "./atomicWrite.ts";
+
+// Retries stat the real target between waits, and that I/O finishes outside the
+// test clock, so the clock moves one wait at a time until the write settles.
+const advanceUntilDone = <A, E>(fiber: Fiber.Fiber<A, E>) =>
+  Effect.gen(function* () {
+    while (fiber.pollUnsafe() === undefined) {
+      yield* TestClock.adjust("100 millis");
+      yield* Effect.promise(() => new Promise((resolve) => setImmediate(resolve)));
+    }
+    return yield* Fiber.join(fiber);
+  });
+
+const renameError = (code: string, path: string) =>
+  PlatformError.systemError({
+    _tag: "Unknown",
+    module: "FileSystem",
+    method: "rename",
+    pathOrDescriptor: path,
+    cause: Object.assign(new Error(`${code}, rename`), { code }),
+  });
+
+it.layer(NodeServices.layer)("Windows atomic writes", (it) => {
+  it.effect("waits out a scanner holding the target, then replaces it", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "f5-atomic-lock-" });
+      const filePath = path.join(root, "settings.json");
+      yield* fs.writeFileString(filePath, "before");
+      const firstAttempt = yield* Deferred.make<void>();
+      let attempts = 0;
+      const lockedTwice: FileSystem.FileSystem = {
+        ...fs,
+        rename: (from, to) =>
+          Effect.suspend(() => {
+            attempts += 1;
+            return attempts <= 2
+              ? Deferred.succeed(firstAttempt, undefined).pipe(
+                  Effect.andThen(Effect.fail(renameError("EBUSY", to))),
+                )
+              : fs.rename(from, to);
+          }),
+      };
+
+      const writing = yield* writeFileStringAtomically({
+        filePath,
+        contents: "after",
+        platform: "win32",
+      }).pipe(Effect.provideService(FileSystem.FileSystem, lockedTwice), Effect.forkChild);
+      yield* Deferred.await(firstAttempt);
+      yield* advanceUntilDone(writing);
+
+      assert.strictEqual(attempts, 3);
+      assert.strictEqual(yield* fs.readFileString(filePath), "after");
+      assert.deepStrictEqual(yield* fs.readDirectory(root), ["settings.json"]);
+    }),
+  );
+
+  it.effect("gives up on a lock that does not clear and keeps the old contents", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "f5-atomic-lock-" });
+      const filePath = path.join(root, "settings.json");
+      yield* fs.writeFileString(filePath, "before");
+      const firstAttempt = yield* Deferred.make<void>();
+      let attempts = 0;
+      const locked: FileSystem.FileSystem = {
+        ...fs,
+        rename: (_from, to) =>
+          Effect.suspend(() => {
+            attempts += 1;
+            return Deferred.succeed(firstAttempt, undefined).pipe(
+              Effect.andThen(Effect.fail(renameError("EPERM", to))),
+            );
+          }),
+      };
+
+      const writing = yield* writeFileStringAtomically({
+        filePath,
+        contents: "after",
+        platform: "win32",
+      }).pipe(Effect.provideService(FileSystem.FileSystem, locked), Effect.exit, Effect.forkChild);
+      yield* Deferred.await(firstAttempt);
+
+      assert.isTrue(Exit.isFailure(yield* advanceUntilDone(writing)));
+      assert.strictEqual(attempts, 21);
+      assert.strictEqual(yield* fs.readFileString(filePath), "before");
+      assert.deepStrictEqual(yield* fs.readDirectory(root), ["settings.json"]);
+    }),
+  );
+
+  it.effect("does not replace a newer save that landed while the lock was held", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "f5-atomic-lock-" });
+      const filePath = path.join(root, "settings.json");
+      yield* fs.writeFileString(filePath, "before");
+      const firstAttempt = yield* Deferred.make<void>();
+      let attempts = 0;
+      const lockedOnce: FileSystem.FileSystem = {
+        ...fs,
+        rename: (from, to) =>
+          Effect.suspend(() => {
+            attempts += 1;
+            return attempts === 1
+              ? Deferred.succeed(firstAttempt, undefined).pipe(
+                  Effect.andThen(Effect.fail(renameError("EBUSY", to))),
+                )
+              : fs.rename(from, to);
+          }),
+      };
+
+      const stale = yield* writeFileStringAtomically({
+        filePath,
+        contents: "stale",
+        platform: "win32",
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, lockedOnce),
+        Effect.exit,
+        Effect.forkChild,
+      );
+      yield* Deferred.await(firstAttempt);
+      // Another process saves once the lock clears, before the waiting write retries.
+      yield* writeFileStringAtomically({ filePath, contents: "newer!" });
+
+      assert.isTrue(Exit.isFailure(yield* advanceUntilDone(stale)));
+      assert.strictEqual(yield* fs.readFileString(filePath), "newer!");
+      assert.deepStrictEqual(yield* fs.readDirectory(root), ["settings.json"]);
+    }),
+  );
+
+  it.effect("fails at once on a read-only target", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "f5-atomic-lock-" });
+      const filePath = path.join(root, "settings.json");
+      yield* fs.writeFileString(filePath, "before");
+      yield* Effect.acquireRelease(fs.chmod(filePath, 0o444), () =>
+        fs.chmod(filePath, 0o644).pipe(Effect.ignore),
+      );
+      let attempts = 0;
+      const denied: FileSystem.FileSystem = {
+        ...fs,
+        rename: (_from, to) =>
+          Effect.suspend(() => {
+            attempts += 1;
+            return Effect.fail(renameError("EPERM", to));
+          }),
+      };
+
+      const writing = yield* writeFileStringAtomically({
+        filePath,
+        contents: "after",
+        platform: "win32",
+      }).pipe(Effect.provideService(FileSystem.FileSystem, denied), Effect.exit, Effect.forkChild);
+      assert.isTrue(Exit.isFailure(yield* advanceUntilDone(writing)));
+      assert.strictEqual(attempts, 1);
+      assert.strictEqual(yield* fs.readFileString(filePath), "before");
+    }),
+  );
+
+  it.effect("fails at once on other platforms", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "f5-atomic-lock-" });
+      const filePath = path.join(root, "settings.json");
+      yield* fs.writeFileString(filePath, "before");
+      let attempts = 0;
+      const locked: FileSystem.FileSystem = {
+        ...fs,
+        rename: (_from, to) =>
+          Effect.suspend(() => {
+            attempts += 1;
+            return Effect.fail(renameError("EBUSY", to));
+          }),
+      };
+
+      const result = yield* writeFileStringAtomically({
+        filePath,
+        contents: "after",
+        platform: "darwin",
+      }).pipe(Effect.provideService(FileSystem.FileSystem, locked), Effect.exit);
+      assert.isTrue(Exit.isFailure(result));
+      assert.strictEqual(attempts, 1);
+    }),
+  );
+});
 
 it.layer(NodeServices.layer)("atomic writes", (it) => {
   it.effect("writes long filenames without duplicating them in the temporary path", () =>

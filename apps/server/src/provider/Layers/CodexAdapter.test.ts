@@ -1967,6 +1967,105 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("classifies Codex retry exhaustion on HTTP 429 as a usage limit", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      for (const httpStatusCode of [429, 503]) {
+        const first = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+        lifecycleManager.emit("event", {
+          id: asEventId(`retry-exhaustion-${httpStatusCode}`),
+          kind: "notification",
+          provider: "codex",
+          threadId: asThreadId("thread-1"),
+          createdAt: "2026-10-01T00:00:00Z",
+          method: "turn/completed",
+          turnId: asTurnId(`retry-exhaustion-${httpStatusCode}`),
+          payload: {
+            turn: {
+              id: `retry-exhaustion-${httpStatusCode}`,
+              status: "failed",
+              error: {
+                message: `exceeded retry limit, last status: ${httpStatusCode}`,
+                codexErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode } },
+              },
+            },
+          },
+        } satisfies ProviderEvent);
+        const event = yield* Fiber.join(first);
+        if (event._tag !== "Some" || event.value.type !== "turn.completed") {
+          assert.fail("Expected a failed turn completion");
+        }
+        assert.equal(
+          event.value.payload.usageLimit?.evidence,
+          httpStatusCode === 429 ? "typed" : undefined,
+        );
+      }
+    }),
+  );
+
+  it.effect("keeps a terminal 429 notification's usage limit when the completion omits it", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const exhaustion = (httpStatusCode: number | null) => ({
+        responseTooManyFailedAttempts: { httpStatusCode },
+      });
+      const cases = [
+        { name: "null-status", willRetry: false, completion: exhaustion(null), limited: true },
+        { name: "no-info", willRetry: false, completion: undefined, limited: true },
+        { name: "explicit-503", willRetry: false, completion: exhaustion(503), limited: false },
+        { name: "retrying", willRetry: true, completion: exhaustion(null), limited: false },
+      ] as const;
+      for (const testCase of cases) {
+        const turnId = `cached-429-${testCase.name}`;
+        const message = "exceeded retry limit, last status: 429 Too Many Requests";
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        const base = {
+          kind: "notification",
+          provider: "codex",
+          threadId: asThreadId("thread-1"),
+          createdAt: "2026-10-01T00:00:00Z",
+          turnId: asTurnId(turnId),
+        } as const;
+        lifecycleManager.emit("event", {
+          ...base,
+          id: asEventId(`${turnId}-error`),
+          method: "error",
+          payload: {
+            error: { message, codexErrorInfo: exhaustion(429) },
+            willRetry: testCase.willRetry,
+          },
+        } satisfies ProviderEvent);
+        lifecycleManager.emit("event", {
+          ...base,
+          id: asEventId(`${turnId}-completed`),
+          method: "turn/completed",
+          payload: {
+            turn: {
+              id: turnId,
+              status: "failed",
+              error: {
+                message,
+                ...(testCase.completion ? { codexErrorInfo: testCase.completion } : {}),
+              },
+            },
+          },
+        } satisfies ProviderEvent);
+        const events = Array.from(yield* Fiber.join(eventsFiber));
+        const completed = events.at(-1);
+        if (completed?.type !== "turn.completed") assert.fail("Expected a turn completion");
+        assert.equal(
+          completed.payload.usageLimit?.evidence,
+          testCase.limited ? "typed" : undefined,
+          testCase.name,
+        );
+      }
+    }),
+  );
+
   it.effect("maps hook/started notifications to hook.started runtime events", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;

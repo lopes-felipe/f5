@@ -24,6 +24,13 @@ export const THREADS_SETTINGS_DESCRIPTORS = [
     targetSelector: '[aria-label="Follow-up behavior"]',
   },
   {
+    ...SETTINGS_ITEM_ROUTES["threads.snooze-options"],
+    label: "Snooze options",
+    description: "Choose up to 8 times every snooze menu offers.",
+    keywords: ["snooze", "remind", "later", "wake", "tomorrow", "next week"],
+    targetSelector: '[data-settings-search-target="threads.snooze-options"]',
+  },
+  {
     ...SETTINGS_ITEM_ROUTES["threads.resume-turns"],
     label: "Resume active turns after restart",
     description: "Continue turns that were running when the app restarted.",

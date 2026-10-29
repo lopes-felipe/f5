@@ -249,8 +249,14 @@ to Claude; it applies tool results as they arrive:
   (checksum-verified, up to 8 MiB) so a large `TaskList` still resynchronizes. Other
   tools record ids and transport success only; `success: false` marks only Task tools
   as failed.
-- Only the main session's Task tools drive the panel; child-agent task lists stay with
-  the child.
+- Subagents write to the session's shared task store, so their successful `TaskCreate`
+  and `TaskUpdate` calls also drive the panel. Their results are text only, so F5 reads
+  the task id and subject from that text; failed or unrecognized results, and calls
+  Claude marks as never run (`tool_result_meta` `non_execution_kind`, such as
+  `cancelled`), change nothing. Their tasks are attributed to the turn that launched the
+  subagent. Calls still open when a foreground subagent's turn ends, or when the session
+  stops, are released and the panel waits for the next `TaskList`. Subagent `TaskList`
+  and `TaskGet` reads stay with the child.
 
 Tracking state is stored with the thread (`tasks_tracking_json`). `TodoWrite`
 snapshots keep their previous behavior and clear on revert; a `TodoWrite` snapshot in a

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   CommandId,
   type AttachmentUpload,
@@ -8,10 +8,24 @@ import {
 } from "@t3tools/contracts";
 import { ArrowRightIcon } from "lucide-react";
 import { readNativeApi } from "~/nativeApi";
+import {
+  type AsyncUserInputDraft,
+  usePendingUserInputDraftStore,
+} from "../../pendingUserInputDraftStore";
 import { Button } from "../ui/button";
 import { COMPOSER_TRAY_PANEL_CLASS_NAME, type ComposerPanelVariant } from "./composer/ComposerTray";
 import { UserInputAttachments } from "./UserInputAttachments";
 import { UserInputQuestionStep } from "./UserInputQuestionStep";
+
+function initialAsyncDraft(questions: ReadonlyArray<UserInputQuestion>): AsyncUserInputDraft {
+  const prefilled = questions.filter((question) => question.initialAnswer !== undefined);
+  return {
+    answers: {},
+    custom: Object.fromEntries(prefilled.map((question) => [question.id, question.initialAnswer!])),
+    customOpen: Object.fromEntries(prefilled.map((question) => [question.id, true])),
+    questionIndex: 0,
+  };
+}
 
 /** Message questions keep their drafts mounted while the conversation continues. */
 export function AsyncUserInputPanel({
@@ -25,22 +39,25 @@ export function AsyncUserInputPanel({
   cwd?: string | undefined;
   variant?: ComposerPanelVariant;
 }) {
-  const [answers, setAnswers] = useState<Record<string, string[]>>({});
-  const [custom, setCustom] = useState<Record<string, string>>(() =>
-    Object.fromEntries(
-      input.questions.flatMap((question) =>
-        question.initialAnswer === undefined ? [] : [[question.id, question.initialAnswer]],
-      ),
-    ),
+  // Kept outside the panel so leaving the thread does not drop a typed answer.
+  const storedDraft = usePendingUserInputDraftStore(
+    (store) => store.asyncDraftsByThreadId[threadId]?.[input.requestId],
   );
-  const [customOpen, setCustomOpen] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(
-      input.questions
-        .filter((question) => question.initialAnswer !== undefined)
-        .map((question) => [question.id, true]),
-    ),
-  );
-  const [questionIndex, setQuestionIndex] = useState(0);
+  const initialDraft = useMemo(() => initialAsyncDraft(input.questions), [input.questions]);
+  const { answers, custom, customOpen, questionIndex } = storedDraft ?? initialDraft;
+  const updateDraft =
+    <K extends keyof AsyncUserInputDraft>(key: K) =>
+    (update: (current: AsyncUserInputDraft[K]) => AsyncUserInputDraft[K]) =>
+      usePendingUserInputDraftStore
+        .getState()
+        .updateAsyncDraft(threadId, input.requestId, (current) => {
+          const draft = current ?? initialDraft;
+          return { ...draft, [key]: update(draft[key]) };
+        });
+  const setAnswers = updateDraft("answers");
+  const setCustom = updateDraft("custom");
+  const setCustomOpen = updateDraft("customOpen");
+  const setQuestionIndex = (index: number) => updateDraft("questionIndex")(() => index);
   const [attachments, setAttachments] = useState<AttachmentUpload[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -105,9 +122,9 @@ export function AsyncUserInputPanel({
             },
       );
       setAttachments([]);
-      setAnswers({});
-      setCustom({});
-      setCustomOpen({});
+      usePendingUserInputDraftStore
+        .getState()
+        .updateAsyncDraft(threadId, input.requestId, () => undefined);
       setResolved(true);
     } catch (error) {
       setError(error instanceof Error ? error.message : String(error));

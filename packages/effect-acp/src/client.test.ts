@@ -405,7 +405,7 @@ it.layer(NodeServices.layer)("effect-acp client", (it) => {
     }),
   );
 
-  it.effect("uses distinct ids for RPC calls and extension requests", () =>
+  it.effect("keeps RPC ids within int32 and apart from extension ids", () =>
     Effect.gen(function* () {
       const { stdio, input, output } = yield* makeInMemoryStdio();
       const scope = yield* Scope.make();
@@ -446,6 +446,10 @@ it.layer(NodeServices.layer)("effect-acp client", (it) => {
         : yield* decodedExt(firstOutbound);
 
       assert.notEqual(initializeRequest.id, extRequest.id);
+      // Kotlin ACP SDK agents decode ids as signed int32.
+      assert.equal(Number(initializeRequest.id), 2 ** 30);
+      assert.isAtMost(Number(initializeRequest.id), 2 ** 31 - 1);
+      assert.equal(Number(extRequest.id), 1);
 
       yield* Queue.offer(
         input,
@@ -473,6 +477,23 @@ it.layer(NodeServices.layer)("effect-acp client", (it) => {
 
       yield* Fiber.join(initializeFiber);
       assert.deepEqual(yield* Fiber.join(extFiber), { ok: true });
+
+      const sessionFiber = yield* acp.agent
+        .createSession({ cwd: "/tmp", mcpServers: [] })
+        .pipe(Effect.forkScoped);
+      const sessionRequest = yield* Schema.decodeEffect(
+        Schema.fromJsonString(jsonRpcRequest("session/new", AcpSchema.NewSessionRequest)),
+      )(yield* Queue.take(output));
+      assert.equal(Number(sessionRequest.id), 2 ** 30 + 1);
+      yield* Queue.offer(
+        input,
+        yield* encodeJsonl(jsonRpcResponse(AcpSchema.NewSessionResponse), {
+          jsonrpc: "2.0",
+          id: sessionRequest.id,
+          result: { sessionId: "session-1" },
+        }),
+      );
+      assert.equal((yield* Fiber.join(sessionFiber)).sessionId, "session-1");
       yield* Scope.close(scope, Exit.void);
     }),
   );

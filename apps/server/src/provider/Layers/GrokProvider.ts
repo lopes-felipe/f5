@@ -230,17 +230,28 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
     });
   }
 
-  const modelsResult = yield* runGrokCliCommand(grokSettings, ["models"], environment).pipe(
+  const probeModels = runGrokCliCommand(grokSettings, ["models"], environment).pipe(
     Effect.timeoutOption(GROK_MODELS_TIMEOUT_MS),
     Effect.result,
+    Effect.map((modelsResult) => {
+      const result =
+        Result.isSuccess(modelsResult) && Option.isSome(modelsResult.success)
+          ? modelsResult.success.value
+          : undefined;
+      return result?.code === 0
+        ? parseGrokModelsCliOutput(`${result.stdout}\n${result.stderr}`)
+        : undefined;
+    }),
   );
-  const result =
-    Result.isSuccess(modelsResult) && Option.isSome(modelsResult.success)
-      ? modelsResult.success.value
-      : undefined;
-  const parsed =
-    result?.code === 0 ? parseGrokModelsCliOutput(`${result.stdout}\n${result.stderr}`) : undefined;
-  const authenticated = environment.XAI_API_KEY?.trim() ? true : parsed?.authenticated;
+  const hasApiKey = !!environment.XAI_API_KEY?.trim();
+  let parsed = yield* probeModels;
+  // An expired access token prints the logged-out line, then the CLI refreshes it in the same
+  // process. Probing again after that process exited tells a refresh from a real logout.
+  if (parsed?.authenticated === false && !hasApiKey) {
+    const recheck = yield* probeModels;
+    if (recheck && recheck.authenticated !== null) parsed = recheck;
+  }
+  const authenticated = hasApiKey ? true : parsed?.authenticated;
   return buildServerProvider({
     presentation: GROK_PRESENTATION,
     enabled: true,

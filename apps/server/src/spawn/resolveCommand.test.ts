@@ -1,21 +1,27 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect } from "effect";
 
 import {
   clearCommandResolutionCache,
   CommandNotFoundError,
+  npmShimExecutable,
   preferGitForWindowsBinary,
   resolveExecutable,
   resolveGitExecutable,
   resolveInvocation,
 } from "./resolveCommand.ts";
 import { runProviderCliCommand } from "../provider/providerCli.ts";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, statSync: vi.fn(actual.statSync) };
+});
 
 function tempDir(prefix: string): string {
   return mkdtempSync(path.join(tmpdir(), prefix));
@@ -62,6 +68,44 @@ describe("resolveExecutable", () => {
     expect(resolveExecutable("late-agent", env, { platform: "win32" })).toBeNull();
     writeExecutable(executable);
     expect(resolveExecutable("late-agent", env, { platform: "win32" })).toBe(executable);
+  });
+
+  describe("PATH entry deduplication", () => {
+    // Records the files a miss stats, so the walk runs over every PATH entry.
+    // Assertions compare against a lookup over the distinct entries rather
+    // than a fixed count, so they don't depend on how candidates are spelled.
+    function probedPaths(pathValue: string): string[] {
+      vi.mocked(statSync).mockClear();
+      expect(
+        resolveExecutable(
+          "definitely-not-installed",
+          { PATH: pathValue, PATHEXT: ".COM;.EXE" },
+          { platform: "win32", useCache: false },
+        ),
+      ).toBeNull();
+      return vi.mocked(statSync).mock.calls.map(([filePath]) => String(filePath));
+    }
+
+    it("visits a repeated PATH directory only once", () => {
+      const first = tempDir("f5-resolve-command-");
+      const second = tempDir("f5-resolve-command-");
+      const distinct = probedPaths([first, second].join(";"));
+      const probed = probedPaths([first, second, first, `"${second}"`].join(";"));
+
+      expect(distinct.length).toBeGreaterThan(0);
+      expect(probed).toEqual(distinct);
+      expect(new Set(probed).size).toBe(probed.length);
+    });
+
+    it("still visits PATH entries that differ only in case", () => {
+      // Windows can mark a directory case-sensitive, so the two spellings are
+      // not provably one directory.
+      const lower = probedPaths("C:\\bin");
+      const upper = probedPaths("C:\\BIN");
+
+      expect(lower.length).toBeGreaterThan(0);
+      expect(probedPaths("C:\\bin;C:\\BIN")).toEqual([...lower, ...upper]);
+    });
   });
 
   it("resolves extension-less absolute POSIX executables", () => {
@@ -138,8 +182,77 @@ describe("preferGitForWindowsBinary", () => {
 });
 
 describe("resolveGitExecutable", () => {
-  it("leaves the lookup to the platform off Windows", () => {
-    expect(resolveGitExecutable({ PATH: "/usr/bin" }, "darwin")).toBe("git");
+  it("leaves the lookup to the platform on Linux", () => {
+    expect(resolveGitExecutable({ PATH: "/usr/bin" }, "linux")).toBe("git");
+  });
+
+  // The fixtures are real temp files on a `:`-separated PATH, which a Windows
+  // host's drive-letter paths cannot form.
+  describe.skipIf(process.platform === "win32")("on macOS", () => {
+    // A PATH directory whose git stands in for the xcrun shim, and an Xcode git.
+    const setup = () => {
+      const shimDirectory = tempDir("f5-macos-git-shim-");
+      const shim = path.join(shimDirectory, "git");
+      writeExecutable(shim);
+      const xcodeGit = path.join(tempDir("f5-xcode-"), "usr", "bin", "git");
+      writeExecutable(xcodeGit);
+      const host = { located: xcodeGit as string | undefined, calls: 0 };
+      const locateXcodeGit = () => {
+        host.calls += 1;
+        return host.located;
+      };
+      const resolve = (env: NodeJS.ProcessEnv = { PATH: shimDirectory }) =>
+        resolveGitExecutable(env, "darwin", { macosGitShim: shim, locateXcodeGit });
+      return { host, resolve, shimDirectory, xcodeGit };
+    };
+
+    it("runs the git behind the xcrun shim and looks it up once", () => {
+      const { host, resolve, xcodeGit } = setup();
+      expect(resolve()).toBe(xcodeGit);
+      expect(resolve()).toBe(xcodeGit);
+      expect(host.calls).toBe(1);
+    });
+
+    it("keeps each locator's answer apart in the cache", () => {
+      const { resolve, shimDirectory, xcodeGit } = setup();
+      expect(resolve()).toBe(xcodeGit);
+      expect(
+        resolveGitExecutable({ PATH: shimDirectory }, "darwin", {
+          macosGitShim: path.join(shimDirectory, "git"),
+          locateXcodeGit: () => undefined,
+        }),
+      ).toBe("git");
+    });
+
+    it("keeps git when PATH has another git first", () => {
+      const { host, resolve, shimDirectory } = setup();
+      const homebrew = tempDir("f5-homebrew-");
+      writeExecutable(path.join(homebrew, "git"));
+      expect(resolve({ PATH: `${homebrew}:${shimDirectory}` })).toBe("git");
+      expect(host.calls).toBe(0);
+    });
+
+    it("keeps git when xcrun fails or names a missing file", () => {
+      const failed = setup();
+      failed.host.located = undefined;
+      expect(failed.resolve()).toBe("git");
+
+      const missing = setup();
+      missing.host.located = path.join(tempDir("f5-xcode-"), "git");
+      expect(missing.resolve()).toBe("git");
+    });
+
+    it("looks again when the resolved git disappears", () => {
+      const { host, resolve, xcodeGit } = setup();
+      expect(resolve()).toBe(xcodeGit);
+
+      rmSync(xcodeGit);
+      const betaGit = path.join(tempDir("f5-xcode-beta-"), "git");
+      writeExecutable(betaGit);
+      host.located = betaGit;
+      expect(resolve()).toBe(betaGit);
+      expect(host.calls).toBe(2);
+    });
   });
 
   it("spawns a git.exe found on PATH directly, but leaves a git.cmd wrapper to Node", () => {
@@ -152,6 +265,78 @@ describe("resolveGitExecutable", () => {
     const cmdDirectory = tempDir("f5-resolve-git-");
     writeExecutable(path.join(cmdDirectory, "git.CMD"));
     expect(resolveGitExecutable({ PATH: cmdDirectory, PATHEXT: ".CMD;.EXE" }, "win32")).toBe("git");
+  });
+});
+
+// Byte for byte what `npm install -g opencode-ai` writes as `opencode.cmd`.
+const NPM_OPENCODE_SHIM = [
+  "@ECHO off",
+  "GOTO start",
+  ":find_dp0",
+  "SET dp0=%~dp0",
+  "EXIT /b",
+  ":start",
+  "SETLOCAL",
+  "CALL :find_dp0",
+  '"%dp0%\\node_modules\\opencode-ai\\bin\\opencode.exe"   %*',
+  "",
+].join("\r\n");
+
+describe("npmShimExecutable", () => {
+  const shimPath = "C:\\Users\\me\\AppData\\Roaming\\npm\\opencode.cmd";
+  const executable =
+    "C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe";
+  const exists = (filePath: string) => filePath === executable;
+  const everything = () => true;
+
+  it("finds the executable npm's shim runs", () => {
+    expect(npmShimExecutable(shimPath, () => NPM_OPENCODE_SHIM, exists)).toBe(executable);
+    expect(
+      npmShimExecutable(shimPath.replace(".cmd", ".CMD"), () => NPM_OPENCODE_SHIM, exists),
+    ).toBe(executable);
+  });
+
+  it("keeps a shim that does more than run the executable", () => {
+    const withSetting = NPM_OPENCODE_SHIM.replace(
+      "SETLOCAL",
+      "SETLOCAL\r\nSET OPENCODE_CONFIG=C:\\x",
+    );
+    expect(npmShimExecutable(shimPath, () => withSetting, exists)).toBeUndefined();
+    const nodeScript = NPM_OPENCODE_SHIM.replace(
+      '"%dp0%\\node_modules\\opencode-ai\\bin\\opencode.exe"   %*',
+      '"%_prog%"  "%dp0%\\node_modules\\opencode-ai\\bin\\opencode.js" %*',
+    );
+    expect(npmShimExecutable(shimPath, () => nodeScript, everything)).toBeUndefined();
+  });
+
+  it("keeps a shim CMD would read differently", () => {
+    // CMD keeps trailing characters in an unquoted `SET` value, so these point
+    // `dp0`, and with it the executable, somewhere else.
+    for (const suffix of ["\u00a0", "\t", " "]) {
+      const altered = NPM_OPENCODE_SHIM.replace("SET dp0=%~dp0", `SET dp0=%~dp0${suffix}`);
+      expect(npmShimExecutable(shimPath, () => altered, everything)).toBeUndefined();
+    }
+    const nonBreakingSeparator = NPM_OPENCODE_SHIM.replace(
+      'opencode.exe"   %*',
+      'opencode.exe"\u00a0%*',
+    );
+    expect(npmShimExecutable(shimPath, () => nonBreakingSeparator, everything)).toBeUndefined();
+    const indented = NPM_OPENCODE_SHIM.replace("SETLOCAL", "  SETLOCAL");
+    expect(npmShimExecutable(shimPath, () => indented, everything)).toBeUndefined();
+  });
+
+  it("keeps the shim when its executable is missing or it is not a .cmd", () => {
+    expect(
+      npmShimExecutable(
+        shimPath,
+        () => NPM_OPENCODE_SHIM,
+        () => false,
+      ),
+    ).toBeUndefined();
+    expect(npmShimExecutable(shimPath, () => undefined, everything)).toBeUndefined();
+    expect(
+      npmShimExecutable(shimPath.replace(".cmd", ".bat"), () => NPM_OPENCODE_SHIM, everything),
+    ).toBeUndefined();
   });
 });
 
@@ -268,6 +453,22 @@ describe("resolveInvocation", () => {
       args: [script, "value & literal"],
       kind: "npmShim",
     });
+  });
+
+  it("runs the executable behind an npm shim directly", () => {
+    const directory = tempDir("f5 npm exe shim & ");
+    const executable = path.join(directory, "node_modules", "opencode-ai", "bin", "opencode.exe");
+    writeExecutable(executable);
+    writeFileSync(path.join(directory, "opencode.CMD"), NPM_OPENCODE_SHIM);
+
+    expect(
+      resolveInvocation(
+        "opencode",
+        ["serve", "--port=4096"],
+        { PATH: directory, PATHEXT: ".CMD" },
+        { platform: "win32", useCache: false },
+      ),
+    ).toEqual({ file: executable, args: ["serve", "--port=4096"], kind: "native" });
   });
 
   it.each([".bat", ".ps1"])("rejects unsupported %s scripts", (extension) => {

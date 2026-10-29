@@ -8,6 +8,7 @@ import { ServerSecretStore } from "../../auth/Services/ServerSecretStore";
 import { profileGitEnvironment } from "../profileGitEnvironment";
 import { managedGitProcessEnvironment } from "../gitProcessEnvironment.ts";
 import { resolveGitExecutable } from "../../spawn/resolveCommand.ts";
+import { terminateOnRelease } from "../../spawn/terminateOnRelease.ts";
 /**
  * Git process helpers - Effect-native git execution with typed errors.
  *
@@ -184,7 +185,12 @@ const makeGitService = Effect.gen(function* () {
               : { stdin: Stream.make(new TextEncoder().encode(input.stdin)) }),
           }),
         )
-        .pipe(Effect.mapError(toGitCommandError(commandInput, "failed to spawn.")));
+        .pipe(
+          Effect.mapError(toGitCommandError(commandInput, "failed to spawn.")),
+          // Hooks, credential helpers and ssh can ignore SIGTERM on timeout.
+          Effect.tap(terminateOnRelease),
+          Effect.uninterruptible,
+        );
 
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [

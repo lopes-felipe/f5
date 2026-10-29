@@ -38,6 +38,7 @@ import {
   pinnedThreadSortableId,
 } from "./sidebarLists";
 import type { SidebarThreadActions } from "./useSidebarThreadActions";
+import { useSidebarTreeRowProps } from "./sidebarTreeRow";
 
 /**
  * Which list a row lives in. Each list keeps its own affordances:
@@ -112,6 +113,7 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
         ? `attention-thread-row-${thread.id}`
         : undefined;
   const canRename = section === "active" || section === "archived" || section === "settled";
+  const treeRowProps = useSidebarTreeRowProps(`thread:${section}:${thread.id}`);
   const action =
     section === "active" && !isDraft
       ? {
@@ -156,7 +158,9 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
       {...(section === "attention" ? {} : { "data-thread-item": true })}
     >
       <SidebarMenuSubButton
-        render={<div role="button" tabIndex={0} />}
+        // Inside a project the row is a tree item, reached with the arrow keys from the
+        // tree's single Tab stop; attention rows outside the tree keep their own stop.
+        render={<div role="button" tabIndex={0} {...treeRowProps} />}
         size="md"
         isActive={isActive}
         {...(testId ? { "data-testid": testId } : {})}
@@ -203,7 +207,7 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
                   actions.openThread(thread.id);
                   return;
                 }
-                actions.handleThreadRowKeyDown(event, thread.id, { isDraft });
+                actions.handleThreadRowKeyDown(event, thread.id, { isDraft, canRename });
               },
             }
           : {})}
