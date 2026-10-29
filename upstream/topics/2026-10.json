@@ -10323,11 +10323,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T20:52:56.092Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T09:03:44.910Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-15839",
-      "status": "port",
+      "reason": "f5's Codex thread config never sends `mcp_servers` (apps/server/src/codexAppServerManager.ts:657) and launch arguments reject `-c`/`--config` (apps/server/src/provider/codexLaunchArgs.ts:23), so launch-argument MCP servers can't be overwritten.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -52205,11 +52207,23 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
-      "decidedAt": "2026-10-28T20:58:11.898Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T09:03:44.910Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/orchestration/Layers/ProviderCommandReactor.ts:1015",
+          "apps/server/src/orchestration/Layers/ProviderCommandReactor.ts:1123",
+          "apps/server/src/provider/Layers/OpenCodeAdapter.ts:1417",
+          "apps/server/src/provider/Layers/OpenCodeAdapter.ts:1049"
+        ],
+        "f5Refs": [
+          "cadca681821f5a91acb962ed0f5155a8b9109d61"
+        ]
+      },
       "id": "pr-26182",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -52252,11 +52266,13 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
-      "decidedAt": "2026-10-28T20:58:10.081Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T09:03:44.910Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-26184",
-      "status": "port",
+      "reason": "f5's ACP runtime turns off client file read/write (apps/server/src/provider/acp/AcpSessionRuntime.ts:483) and Antigravity never enables it (apps/server/src/provider/acp/AntigravityAcpSupport.ts:201), so f5 has no Antigravity client file-write handler to fix.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -52319,11 +52335,22 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
-      "decidedAt": "2026-10-28T20:58:13.514Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T09:03:44.910Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/codexAppServerManager.ts:1275",
+          "apps/server/src/codexAppServerManager.ts:3261",
+          "apps/server/src/codexAppServerManager.ts:3263"
+        ],
+        "f5Refs": [
+          "cadca681821f5a91acb962ed0f5155a8b9109d61"
+        ]
+      },
       "id": "pr-26188",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -54023,11 +54050,13 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
-      "decidedAt": "2026-10-28T20:58:33.976Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T09:03:44.910Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-4168",
-      "status": "port",
+      "reason": "f5 deliberately folds Claude custom-model aliases into built-ins so they don't duplicate live models or bring back hidden or version-gated ones; the user chose to keep that behavior.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
