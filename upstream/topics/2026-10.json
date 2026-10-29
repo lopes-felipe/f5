@@ -20249,11 +20249,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T20:52:59.686Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T09:19:13.405Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-18808",
-      "status": "port",
+      "reason": "Upstream reverted it in pingdotgg/t3code#22222 (8fc72daee4), and final upstream behavior wins.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
