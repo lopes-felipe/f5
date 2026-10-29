@@ -77,3 +77,18 @@ it("ignores stale workspace blocks while retaining fresh spend-block suppression
   expect(detectCodexUsageLimit(input)?.resetsAt).toBe("2026-10-02T00:00:00.000Z");
   expect(detectCodexUsageLimit({ ...input, snapshotNotBefore: "2026-09-30T00:00:00Z" })).toBeNull();
 });
+
+it("treats retry exhaustion on HTTP 429 as a usage limit, but not other statuses", () => {
+  const exhausted = (httpStatusCode: number | null) => ({
+    message: "exceeded retry limit, last status: 429 Too Many Requests",
+    errorInfo: { responseTooManyFailedAttempts: { httpStatusCode } },
+    at: "2026-10-01T00:00:03Z",
+  });
+
+  expect(detectCodexUsageLimit(exhausted(429))).toMatchObject({ evidence: "typed" });
+  expect(detectCodexUsageLimit(exhausted(500))).toBeNull();
+  expect(detectCodexUsageLimit(exhausted(null))).toBeNull();
+  expect(
+    detectCodexUsageLimit({ ...exhausted(429), errorInfo: { httpConnectionFailed: {} } }),
+  ).toBeNull();
+});

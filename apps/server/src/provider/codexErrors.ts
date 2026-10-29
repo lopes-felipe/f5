@@ -101,6 +101,22 @@ export function parseCodexTryAgainAt(message: string, at: string): string | null
   return reset && Date.parse(reset) > now && Date.parse(reset) <= now + 8 * 86400000 ? reset : null;
 }
 
+/**
+ * Retry exhaustion only says why it failed through the last attempt's HTTP
+ * status. Exhaustion on 429 is a usage or rate limit; other statuses stay
+ * provider or transport errors.
+ */
+function isCodexRateLimitRetryExhaustion(errorInfo: unknown): boolean {
+  if (errorInfo === null || typeof errorInfo !== "object") return false;
+  const exhaustion = (errorInfo as { responseTooManyFailedAttempts?: unknown })
+    .responseTooManyFailedAttempts;
+  return (
+    exhaustion !== null &&
+    typeof exhaustion === "object" &&
+    (exhaustion as { httpStatusCode?: unknown }).httpStatusCode === 429
+  );
+}
+
 export function detectCodexUsageLimit(input: {
   message: string;
   errorInfo?: unknown;
@@ -131,7 +147,8 @@ export function detectCodexUsageLimit(input: {
     input.errorInfo === "usageLimitReached" ||
     (input.errorInfo !== null &&
       typeof input.errorInfo === "object" &&
-      ("usageLimitReached" in input.errorInfo || "usageLimitExceeded" in input.errorInfo));
+      ("usageLimitReached" in input.errorInfo || "usageLimitExceeded" in input.errorInfo)) ||
+    isCodexRateLimitRetryExhaustion(input.errorInfo);
   if (
     !typed &&
     !/\b(?:hit|reached) your usage limit\b|\busage limit reached\b/i.test(input.message)

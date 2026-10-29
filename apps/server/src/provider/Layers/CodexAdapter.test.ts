@@ -1967,6 +1967,42 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("classifies Codex retry exhaustion on HTTP 429 as a usage limit", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      for (const httpStatusCode of [429, 503]) {
+        const first = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+        lifecycleManager.emit("event", {
+          id: asEventId(`retry-exhaustion-${httpStatusCode}`),
+          kind: "notification",
+          provider: "codex",
+          threadId: asThreadId("thread-1"),
+          createdAt: "2026-10-01T00:00:00Z",
+          method: "turn/completed",
+          turnId: asTurnId(`retry-exhaustion-${httpStatusCode}`),
+          payload: {
+            turn: {
+              id: `retry-exhaustion-${httpStatusCode}`,
+              status: "failed",
+              error: {
+                message: `exceeded retry limit, last status: ${httpStatusCode}`,
+                codexErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode } },
+              },
+            },
+          },
+        } satisfies ProviderEvent);
+        const event = yield* Fiber.join(first);
+        if (event._tag !== "Some" || event.value.type !== "turn.completed") {
+          assert.fail("Expected a failed turn completion");
+        }
+        assert.equal(
+          event.value.payload.usageLimit?.evidence,
+          httpStatusCode === 429 ? "typed" : undefined,
+        );
+      }
+    }),
+  );
+
   it.effect("maps hook/started notifications to hook.started runtime events", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;

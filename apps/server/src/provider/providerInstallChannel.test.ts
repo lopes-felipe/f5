@@ -418,6 +418,36 @@ it("only gives each updater its own tooling variables and never provider credent
   });
 });
 
+it("updates Grok through `grok update` with the instance's Grok home", () => {
+  const { target } = fixture("/home/test/.grok/bin/grok", {
+    driver: "grok",
+    environment: { HOME: "/isolated", GROK_HOME: "/custom/grok", XAI_API_KEY: "secret" },
+  });
+  expect(target).toMatchObject({
+    channel: "self-update",
+    installKey: "grok-self-update:/home/test/.grok/bin/grok",
+    latestSource: { kind: "npm", pkg: "@xai-official/grok", tag: "latest" },
+  });
+  expect(target?.blockedReason).toBeUndefined();
+  expect(buildProviderUpdateCommand(target!, "linux", "1.2.3")).toMatchObject({
+    executable: "/bin/cli",
+    args: ["update"],
+    env: { GROK_HOME: "/custom/grok" },
+    channel: "self-update",
+  });
+  expect(canRunInApp(target!, "darwin", undefined)).toBe(true);
+  expect(filterProviderUpdateEnvironment(target!.updateEnvironment, "self-update")).toEqual({
+    HOME: "/isolated",
+    GROK_HOME: "/custom/grok",
+  });
+});
+
+it("updates a Homebrew-installed Grok through its own updater", () => {
+  const { target } = fixture("/opt/homebrew/Cellar/grok/1.0.0/bin/grok", { driver: "grok" });
+  expect(target?.channel).toBe("self-update");
+  expect(buildProviderUpdateCommand(target!, "linux")?.args).toEqual(["update"]);
+});
+
 it("uses Pi's native self-updater and canonical executable identity", () => {
   const { target } = fixture("/pi/install/bin/pi", { driver: "pi" });
   expect(target).toMatchObject({

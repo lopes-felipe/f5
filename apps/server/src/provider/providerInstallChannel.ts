@@ -16,7 +16,12 @@ export const NPM_UPDATE_SOURCES: Readonly<Record<string, string>> = {
   claudeAgent: "@anthropic-ai/claude-code",
   opencode: "opencode-ai",
   pi: "@earendil-works/pi-coding-agent",
+  // npm's `latest` tracks Grok's stable channel, the one `grok update` installs by default.
+  grok: "@xai-official/grok",
 };
+
+/** Self-updaters that install under a provider home must see the instance's home override. */
+const SELF_UPDATE_HOME_VARIABLES = ["CLAUDE_CONFIG_DIR", "GROK_HOME"] as const;
 
 export type ProviderLatestSource =
   | { readonly kind: "npm"; readonly pkg: string; readonly tag: "latest" | "stable" }
@@ -185,6 +190,18 @@ export function detectProviderInstallTarget(
           ? { blockedReason: "permissions" as const }
           : {}),
       },
+    );
+  // `grok update` finds the installer that owns the binary itself, so any
+  // resolved executable is its own updater.
+  if (input.driver === "grok")
+    return make(
+      "self-update",
+      executable,
+      resolved,
+      `grok-self-update:${resolved}`,
+      npmSource,
+      "Update with Grok's built-in updater: grok update.",
+      { selfUpdateArgs: ["update"] },
     );
   const unmanaged = (
     guidance = "Update this CLI using its original installer, then refresh and verify.",
@@ -370,7 +387,8 @@ export function filterProviderUpdateEnvironment(
       upper.startsWith("LC_") ||
       ((channel === undefined || channel === "npm") && upper.startsWith("NPM_CONFIG_")) ||
       ((channel === undefined || channel === "homebrew") && upper.startsWith("HOMEBREW_")) ||
-      ((channel === undefined || channel === "self-update") && upper === "CLAUDE_CONFIG_DIR")
+      ((channel === undefined || channel === "self-update") &&
+        (SELF_UPDATE_HOME_VARIABLES as ReadonlyArray<string>).includes(upper))
     )
       result[upper.startsWith("NPM_CONFIG_") ? upper : key] = value;
   }
@@ -425,16 +443,21 @@ export function buildProviderUpdateCommand(
       channel: "homebrew",
       shell,
     };
-  if (target.channel === "self-update" && target.selfUpdateArgs)
+  if (target.channel === "self-update" && target.selfUpdateArgs) {
+    const env = Object.fromEntries(
+      SELF_UPDATE_HOME_VARIABLES.flatMap((name) => {
+        const value = target.updateEnvironment[name];
+        return value ? [[name, value]] : [];
+      }),
+    );
     return {
       executable: target.executablePath,
       args: target.selfUpdateArgs,
-      ...(target.updateEnvironment.CLAUDE_CONFIG_DIR
-        ? { env: { CLAUDE_CONFIG_DIR: target.updateEnvironment.CLAUDE_CONFIG_DIR } }
-        : {}),
+      ...(Object.keys(env).length > 0 ? { env } : {}),
       channel: "self-update",
       shell,
     };
+  }
   return null;
 }
 

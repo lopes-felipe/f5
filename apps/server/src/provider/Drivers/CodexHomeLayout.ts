@@ -26,18 +26,26 @@ const KNOWN_SHARED_DIRECTORIES = [
   "plugins",
   "cache",
   "logs",
+  "thread-writer-locks",
 ] as const;
 
-const PRIVATE_ENTRY_NAMES = new Set(["auth.json", "models_cache.json"]);
+// auth.lock guards the shadow home's private auth.json.
+const PRIVATE_ENTRY_NAMES = new Set(["auth.json", "auth.lock", "models_cache.json"]);
 // Codex creates these runtime locks itself when it starts in a shadow home before
 // the shared home has one. They guard shared state, so a local copy is replaced
 // with the shared link.
-const REPLACEABLE_SHARED_RUNTIME_ENTRIES = new Set(["mcp-oauth-locks", ".sqlite-maintenance.lock"]);
+const REPLACEABLE_SHARED_RUNTIME_ENTRIES = new Set([
+  "mcp-oauth-locks",
+  "thread-writer-locks",
+  ".sqlite-maintenance.lock",
+]);
 export const CODEX_SHADOW_MANAGED_FILES_MANIFEST = ".f5-managed-codex-files.json";
+// Finder maintains .DS_Store separately for each directory, including shadow homes.
 const SHADOW_LOCAL_ENTRY_NAMES = new Set([
   "log",
   "memories",
   "tmp",
+  ".DS_Store",
   CODEX_SHADOW_MANAGED_FILES_MANIFEST,
 ]);
 
@@ -472,6 +480,17 @@ const ensureSymlink = Effect.fn("CodexHomeLayout.ensureSymlink")(function* (inpu
       return yield* new CodexShadowHomeError({
         detail: `Cannot create Codex shadow home because '${link}' already exists and is not an F5-managed link or copy.`,
       });
+    }
+    if (input.entryName === "thread-writer-locks") {
+      const lockNames = yield* normalizeShadowHomeError(input.fileSystem.readDirectory(link));
+      // Codex deletes a thread lock on release, so one that is left may still guard a live
+      // writer. Keep the local directory until a later setup finds none.
+      if (lockNames.some((name) => name.endsWith(".lock") && name !== ".coordination.lock")) {
+        return yield* Effect.logWarning(
+          "Codex shadow home still has thread writer locks; it will share them on a later setup.",
+          { path: link },
+        );
+      }
     }
     yield* normalizeShadowHomeError(input.fileSystem.remove(link, { recursive: true }));
     if (input.platform === "win32") {
