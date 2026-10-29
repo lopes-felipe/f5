@@ -494,7 +494,7 @@ describe("CheckpointStoreLive", () => {
     const liveStore = CheckpointStoreLiveWithoutCredentials.pipe(
       Layer.provideMerge(NodeServices.layer),
     );
-    const makeRepository = () => {
+    const makeRepository = (options?: { readonly unborn?: boolean }) => {
       const root = mkdtempSync(path.join(os.tmpdir(), "f5-checkpoint-ignored-"));
       const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
       git("init", "-q", "-b", "main");
@@ -502,7 +502,7 @@ describe("CheckpointStoreLive", () => {
       git("config", "user.name", "Test");
       writeFileSync(path.join(root, "file.txt"), "base\n");
       git("add", ".");
-      git("commit", "-q", "-m", "base");
+      if (!options?.unborn) git("commit", "-q", "-m", "base");
       return { root, git };
     };
     const capture = (cwd: string, checkpointRef: CheckpointRef) =>
@@ -513,6 +513,77 @@ describe("CheckpointStoreLive", () => {
           }).pipe(Effect.provide(liveStore)),
         ),
       );
+
+    it.each([
+      { staged: true, expected: "Success" },
+      { staged: false, expected: "CheckpointUnsupportedError" },
+    ])(
+      "before the first commit, staged=$staged captures only staged files or reports unsupported",
+      async ({ staged, expected }) => {
+        const { root, git } = makeRepository({ unborn: true });
+        try {
+          const cwd = path.join(root, "sub");
+          mkdirSync(cwd);
+          if (staged) {
+            writeFileSync(path.join(cwd, "staged.txt"), "staged\n");
+            git("add", "sub/staged.txt");
+          }
+          writeFileSync(path.join(root, ".gitignore"), "sub/\n");
+          if (staged) writeFileSync(path.join(cwd, "staged.txt"), "staged working\n");
+          writeFileSync(path.join(cwd, "secret.txt"), "private\n");
+          const originalIndex = readFileSync(path.join(root, ".git", "index"));
+          const checkpointRef = CheckpointRef.makeUnsafe("refs/t3/checkpoints/unborn/0");
+
+          const captured = await capture(cwd, checkpointRef);
+
+          expect(captured._tag === "Success" ? "Success" : captured.failure._tag).toBe(expected);
+          expect(readFileSync(path.join(root, ".git", "index"))).toEqual(originalIndex);
+          if (staged) {
+            // file.txt is staged outside the workspace, so it stays out.
+            expect(git("ls-tree", "-r", "--name-only", checkpointRef)).toBe("sub/staged.txt\n");
+            expect(git("show", `${checkpointRef}:sub/staged.txt`)).toBe("staged working\n");
+          } else {
+            expect(git("for-each-ref", "--format=%(refname)", checkpointRef)).toBe("");
+          }
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      },
+    );
+
+    it("reports unsupported before copying or rebuilding the index", async () => {
+      const calls: ExecuteGitInput[] = [];
+      const layer = CheckpointStoreLiveWithGitService.pipe(
+        Layer.provide(
+          Layer.succeed(GitService, {
+            execute: (input) =>
+              Effect.sync(() => {
+                calls.push(input);
+                if (input.args[0] === "check-ignore") return { code: 0, stdout: ".\0", stderr: "" };
+                if (input.args.includes("HEAD^{commit}"))
+                  return { code: 0, stdout: "head-oid\n", stderr: "" };
+                if (input.args.includes("head-oid:./")) return { code: 1, stdout: "", stderr: "" };
+                return { code: 0, stdout: "", stderr: "" };
+              }),
+          }),
+        ),
+        Layer.provide(NodeServices.layer),
+      );
+      const result = await Effect.runPromise(
+        Effect.result(
+          Effect.gen(function* () {
+            yield* (yield* CheckpointStore).captureCheckpoint({
+              cwd: "/repo/ignored",
+              checkpointRef: CheckpointRef.makeUnsafe("refs/t3/checkpoints/ignored/0"),
+            });
+          }).pipe(Effect.provide(layer)),
+        ),
+      );
+      expect(result._tag === "Failure" && result.failure._tag).toBe("CheckpointUnsupportedError");
+      for (const command of ["read-tree", "ls-files", "add", "write-tree"]) {
+        expect(calls.some((call) => call.args.includes(command))).toBe(false);
+      }
+    });
 
     it("reports unsupported while its allowed sibling still captures", async () => {
       const { root, git } = makeRepository();

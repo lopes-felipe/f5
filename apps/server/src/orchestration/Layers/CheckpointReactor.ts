@@ -267,6 +267,16 @@ const make = Effect.gen(function* () {
     const fromCheckpointRef = checkpointRefForThreadTurn(input.threadId, fromTurnCount);
     const targetCheckpointRef = checkpointRefForThreadTurn(input.threadId, input.turnCount);
 
+    // An unsupported workspace never has a baseline; skip it before warning about one.
+    if (
+      !(yield* captureCheckpointIfSupported({
+        cwd: input.cwd,
+        checkpointRef: targetCheckpointRef,
+      }))
+    ) {
+      return false;
+    }
+
     const fromCheckpointExists = yield* checkpointStore
       .hasCheckpointRef({
         cwd: input.cwd,
@@ -288,15 +298,6 @@ const make = Effect.gen(function* () {
         turnId: input.turnId,
         fromTurnCount,
       });
-    }
-
-    if (
-      !(yield* captureCheckpointIfSupported({
-        cwd: input.cwd,
-        checkpointRef: targetCheckpointRef,
-      }))
-    ) {
-      return false;
     }
 
     if (!fromCheckpointExists) {

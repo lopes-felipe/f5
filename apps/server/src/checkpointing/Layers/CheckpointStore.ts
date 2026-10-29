@@ -155,6 +155,69 @@ const makeCheckpointStore = Effect.gen(function* () {
             // tell files a pull, merge or rebase brought in from the turn's own edits.
             const capturedHead = yield* resolveHeadCommit(input.cwd);
             const headExists = capturedHead !== null;
+            // An ignored workspace is a normal outcome, so settle it before any index work.
+            const ignoreCheck = yield* executeCapture({
+              operation,
+              cwd: input.cwd,
+              args: ["check-ignore", "--no-index", "-z", "--stdin"],
+              stdin: ".\0",
+              allowNonZeroExit: true,
+            });
+            if (ignoreCheck.code !== 0 && ignoreCheck.code !== 1) {
+              return yield* new GitCommandError({
+                operation,
+                command: "git check-ignore",
+                cwd: input.cwd,
+                detail: ignoreCheck.stderr.trim() || "git check-ignore failed.",
+              });
+            }
+            const workspaceIgnored = ignoreCheck.code === 0 && ignoreCheck.stdout === ".\0";
+            // HEAD omits staged-only paths. Seed just this workspace's additions so
+            // unrelated staged changes elsewhere in the repository stay out.
+            const ignoredAdditions = workspaceIgnored
+              ? (yield* executeCapture({
+                  operation,
+                  cwd: input.cwd,
+                  args: [
+                    ...gitConfigArgs([["core.quotePath", "true"]]),
+                    "diff",
+                    "--cached",
+                    "--raw",
+                    "--no-abbrev",
+                    "--no-renames",
+                    "--no-relative",
+                    "--ignore-submodules=none",
+                    "--no-color",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--ita-visible-in-index",
+                    "--diff-filter=A",
+                    "--",
+                    ".",
+                  ],
+                  maxOutputBytes: AUTHORED_PATHS_MAX_OUTPUT_BYTES,
+                })).stdout
+              : "";
+            if (workspaceIgnored && ignoredAdditions.length === 0) {
+              // The scratch index is HEAD plus these additions, so HEAD holding a tree
+              // here is the only other way the workspace can have tracked files.
+              const headTree =
+                capturedHead === null
+                  ? null
+                  : yield* executeCapture({
+                      operation,
+                      cwd: input.cwd,
+                      args: ["rev-parse", "--verify", "--quiet", `${capturedHead}:./`],
+                      allowNonZeroExit: true,
+                    });
+              if (headTree === null || headTree.code !== 0) {
+                return yield* new CheckpointUnsupportedError({
+                  operation,
+                  cwd: input.cwd,
+                  detail: "The workspace directory is ignored by its Git repository.",
+                });
+              }
+            }
             const sparseResult = yield* executeCapture({
               operation,
               cwd: input.cwd,
@@ -274,82 +337,23 @@ const makeCheckpointStore = Effect.gen(function* () {
               }
             }
 
-            const ignoreCheck = yield* executeCapture({
-              operation,
-              cwd: input.cwd,
-              args: ["check-ignore", "--no-index", "-z", "--stdin"],
-              stdin: ".\0",
-              allowNonZeroExit: true,
-            });
-            if (ignoreCheck.code !== 0 && ignoreCheck.code !== 1) {
-              return yield* new GitCommandError({
-                operation,
-                command: "git check-ignore",
-                cwd: input.cwd,
-                detail: ignoreCheck.stderr.trim() || "git check-ignore failed.",
-              });
-            }
-            const workspaceIgnored = ignoreCheck.code === 0 && ignoreCheck.stdout === ".\0";
-            if (workspaceIgnored) {
-              // HEAD omits staged-only paths. Seed just this workspace's additions so
-              // unrelated staged changes elsewhere in the repository stay out.
-              const additions = yield* executeCapture({
-                operation,
-                cwd: input.cwd,
-                args: [
-                  ...gitConfigArgs([["core.quotePath", "true"]]),
-                  "diff",
-                  "--cached",
-                  "--raw",
-                  "--no-abbrev",
-                  "--no-renames",
-                  "--no-relative",
-                  "--ignore-submodules=none",
-                  "--no-color",
-                  "--no-ext-diff",
-                  "--no-textconv",
-                  "--ita-visible-in-index",
-                  "--diff-filter=A",
-                  "--",
-                  ".",
-                ],
-                maxOutputBytes: AUTHORED_PATHS_MAX_OUTPUT_BYTES,
-              });
-              if (additions.stdout.length > 0) {
-                // Quoted paths round-trip through index-info, including non-UTF-8 names.
-                yield* executeCapture({
-                  operation,
-                  cwd: input.cwd,
-                  args: [
-                    ...indexConfig,
-                    ...gitConfigArgs([["index.sparse", "false"]]),
-                    "update-index",
-                    "--index-info",
-                  ],
-                  stdin: additions.stdout.replace(
-                    /^:000000 ([0-7]{6}) 0+ ([0-9a-f]+) A\t/gm,
-                    "$1 $2\t",
-                  ),
-                  env: commitEnv,
-                });
-              }
-              let tracked = false;
+            if (ignoredAdditions.length > 0) {
+              // Quoted paths round-trip through index-info, including non-UTF-8 names.
               yield* executeCapture({
                 operation,
                 cwd: input.cwd,
-                args: [...indexConfig, "ls-files", "--cached", "-z", "--", "."],
+                args: [
+                  ...indexConfig,
+                  ...gitConfigArgs([["index.sparse", "false"]]),
+                  "update-index",
+                  "--index-info",
+                ],
+                stdin: ignoredAdditions.replace(
+                  /^:000000 ([0-7]{6}) 0+ ([0-9a-f]+) A\t/gm,
+                  "$1 $2\t",
+                ),
                 env: commitEnv,
-                onStdoutChunk: (chunk) => {
-                  if (chunk.length > 0) tracked = true;
-                },
               });
-              if (!tracked) {
-                return yield* new CheckpointUnsupportedError({
-                  operation,
-                  cwd: input.cwd,
-                  detail: "The workspace directory is ignored by its Git repository.",
-                });
-              }
             }
 
             const stageFiles = (exclusions: ReadonlyArray<string>) =>

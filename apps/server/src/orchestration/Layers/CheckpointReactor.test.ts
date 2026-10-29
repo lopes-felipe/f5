@@ -40,6 +40,10 @@ import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { RuntimeReceiptBusLive } from "./RuntimeReceiptBus.ts";
+import {
+  RuntimeReceiptBus,
+  type OrchestrationRuntimeReceipt,
+} from "../Services/RuntimeReceiptBus.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -381,6 +385,8 @@ describe("CheckpointReactor", () => {
     readonly threadWorktreePath?: string | null;
     readonly providerSessionCwd?: string;
     readonly stallStartupQuiescence?: boolean;
+    /** Records published receipts instead of using the live bus. */
+    readonly receipts?: Array<OrchestrationRuntimeReceipt>;
   }) {
     const cwd = createGitRepository(options?.initiallyGit ?? true);
     tempDirs.push(cwd);
@@ -424,7 +430,14 @@ describe("CheckpointReactor", () => {
         options?.gitService ? Layer.succeed(GitService, options.gitService) : GitServiceLive,
       ),
       Layer.provideMerge(orchestrationLayer),
-      Layer.provideMerge(RuntimeReceiptBusLive),
+      Layer.provideMerge(
+        options?.receipts
+          ? Layer.succeed(RuntimeReceiptBus, {
+              publish: (receipt) => Effect.sync(() => options.receipts!.push(receipt)),
+              stream: Stream.empty,
+            })
+          : RuntimeReceiptBusLive,
+      ),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(
         Layer.succeed(CheckpointStore, options?.checkpointStore ?? fakeCheckpointStore),
@@ -1132,9 +1145,12 @@ describe("CheckpointReactor", () => {
     );
   });
 
-  it.each(["unsupported", "git-failure"] as const)(
-    "skips an unsupported workspace without reporting a capture failure: %s",
-    async (scenario) => {
+  it.each([
+    { scenario: "unsupported", failureTones: [] },
+    { scenario: "git-failure", failureTones: ["error"] },
+  ] as const)(
+    "settles the turn without a checkpoint and reports only real failures: $scenario",
+    async ({ scenario, failureTones }) => {
       const captureCheckpoint = vi.fn(({ cwd }: { readonly cwd: string }) =>
         scenario === "unsupported"
           ? Effect.fail(
@@ -1153,12 +1169,40 @@ describe("CheckpointReactor", () => {
               }),
             ),
       );
+      const hasCheckpointRef = vi.fn(fakeCheckpointStore.hasCheckpointRef);
+      const receipts: Array<OrchestrationRuntimeReceipt> = [];
       const harness = await createHarness({
         seedFilesystemCheckpoints: false,
-        checkpointStore: { ...fakeCheckpointStore, captureCheckpoint },
+        checkpointStore: { ...fakeCheckpointStore, captureCheckpoint, hasCheckpointRef },
+        receipts,
       });
       const threadId = ThreadId.makeUnsafe("thread-1");
-      const createdAt = new Date().toISOString();
+      const turnId = asTurnId("turn-unsupported");
+
+      harness.provider.emit({
+        type: "turn.started",
+        eventId: EventId.makeUnsafe("evt-turn-started-unsupported"),
+        provider: "codex",
+        createdAt: "2026-04-23T10:00:00.000Z",
+        threadId,
+        turnId,
+      });
+      await harness.drain();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.makeUnsafe("cmd-unsupported-placeholder"),
+          threadId,
+          turnId,
+          completedAt: "2026-04-23T10:00:01.000Z",
+          checkpointRef: checkpointRefForThreadTurn(threadId, 1),
+          status: "missing",
+          files: [],
+          checkpointTurnCount: 1,
+          assistantMessageId: MessageId.makeUnsafe("assistant-unsupported"),
+          createdAt: "2026-04-23T10:00:01.000Z",
+        }),
+      );
       await Effect.runPromise(
         harness.engine.dispatch({
           type: "thread.session.set",
@@ -1171,43 +1215,37 @@ describe("CheckpointReactor", () => {
             runtimeMode: "approval-required",
             activeTurnId: null,
             lastError: null,
-            updatedAt: createdAt,
+            updatedAt: "2026-04-23T10:00:02.000Z",
           },
-          createdAt,
+          createdAt: "2026-04-23T10:00:02.000Z",
         }),
       );
-
-      harness.provider.emit({
-        type: "turn.started",
-        eventId: EventId.makeUnsafe("evt-turn-started-unsupported"),
-        provider: "codex",
-        createdAt,
-        threadId,
-        turnId: asTurnId("turn-unsupported"),
-      });
-      harness.provider.emit({
-        type: "turn.completed",
-        eventId: EventId.makeUnsafe("evt-turn-completed-unsupported"),
-        provider: "codex",
-        createdAt: new Date().toISOString(),
-        threadId,
-        turnId: asTurnId("turn-unsupported"),
-        payload: { state: "completed" },
-      });
+      await waitForEvent(
+        harness.engine,
+        (event) => event.type === "thread.turn-processing-quiesced",
+      );
       await harness.drain();
 
       const thread = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
         (entry) => entry.id === threadId,
       );
       expect(captureCheckpoint).toHaveBeenCalledTimes(2);
-      expect(thread?.checkpoints.filter((checkpoint) => checkpoint.status !== "missing")).toEqual(
-        [],
-      );
+      // Only the turn-start lookup; the turn capture fails before reading a baseline.
+      expect(hasCheckpointRef).toHaveBeenCalledTimes(1);
+      expect(receipts).toEqual([
+        {
+          type: "turn.processing.quiesced",
+          threadId,
+          turnId,
+          createdAt: "2026-04-23T10:00:01.000Z",
+        },
+      ]);
+      expect(thread?.checkpoints.map((checkpoint) => checkpoint.status)).toEqual(["missing"]);
       expect(
         thread?.activities
           .filter((activity) => activity.kind === "checkpoint.capture.failed")
           .map((activity) => activity.tone),
-      ).toEqual(scenario === "unsupported" ? [] : ["error"]);
+      ).toEqual(failureTones);
     },
   );
 
