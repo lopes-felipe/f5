@@ -3,6 +3,7 @@ import { assert, it } from "@effect/vitest";
 import { Effect } from "effect";
 
 import {
+  ForwardCompatibleKeybindingsConfig,
   KeybindingsConfig,
   KeybindingRule,
   MAX_KEYBINDINGS_COUNT,
@@ -21,9 +22,7 @@ const decode = <S extends Schema.Top>(
   >;
 
 const decodeResolvedRule = Schema.decodeUnknownEffect(ResolvedKeybindingRule as never);
-const encodeResolvedKeybindings = Schema.encodeUnknownEffect(
-  ResolvedKeybindingsConfig as never,
-) as (input: ResolvedKeybindingsConfig) => Effect.Effect<unknown, Schema.SchemaError, never>;
+const encodeResolvedKeybindings = Schema.encodeEffect(ResolvedKeybindingsConfig);
 
 it.effect("parses keybinding rules", () =>
   Effect.gen(function* () {
@@ -255,6 +254,31 @@ it.effect("still enforces the resolved keybindings count limit", () =>
       ),
     );
     assert.strictEqual(result._tag, "Failure");
+  }),
+);
+
+it.effect("counts dropped entries against the resolved keybindings limit", () =>
+  Effect.gen(function* () {
+    const result = yield* Effect.exit(
+      decode(ResolvedKeybindingsConfig, [
+        { command: "terminal.toggle", shortcut },
+        ...Array.from({ length: MAX_KEYBINDINGS_COUNT }, () => ({
+          command: "someFuture.toggle",
+          shortcut,
+        })),
+      ]),
+    );
+    assert.strictEqual(result._tag, "Failure");
+  }),
+);
+
+it.effect("drops customized rules with commands this build does not know", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decode(ForwardCompatibleKeybindingsConfig, [
+      { key: "mod+p", command: "someFuture.toggle" },
+      { key: "mod+j", command: "terminal.toggle" },
+    ]);
+    assert.deepEqual(parsed, [{ key: "mod+j", command: "terminal.toggle" }]);
   }),
 );
 

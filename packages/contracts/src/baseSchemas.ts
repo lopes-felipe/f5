@@ -25,14 +25,26 @@ export type IsoDateTime = typeof IsoDateTime.Type;
  * (new literal members, new struct variants). Decoding drops elements this
  * build cannot decode instead of failing the whole payload: a client has to
  * keep decoding configs sent by servers newer than itself, and rejecting the
- * payload would take down the connection over data the client couldn't act
- * on anyway. Encoding is the plain array encoding.
+ * payload would discard data it can act on over data it can't. Encoding is the
+ * plain array encoding.
+ *
+ * `maxItems` bounds the wire array, before unknown elements are dropped, so the
+ * cap limits what the client decodes rather than what survives.
  */
-export const ForwardCompatibleArray = <Element extends Schema.Top>(element: Element) => {
+export const ForwardCompatibleArray = <Element extends Schema.Top>(
+  element: Element,
+  options: { readonly maxItems?: number } = {},
+) => {
   const decodeElement = Schema.decodeUnknownOption(element as never);
-  return Schema.Array(Schema.Unknown).pipe(
+  const wire = Schema.Array(Schema.Unknown);
+  const decoded = Schema.Array(element);
+  return (
+    options.maxItems === undefined ? wire : wire.check(Schema.isMaxLength(options.maxItems))
+  ).pipe(
     Schema.decodeTo(
-      Schema.Array(element),
+      options.maxItems === undefined
+        ? decoded
+        : decoded.check(Schema.isMaxLength(options.maxItems)),
       SchemaTransformation.transform<ReadonlyArray<Element["Encoded"]>, ReadonlyArray<unknown>>({
         decode: (values) =>
           values.filter((value) => Option.isSome(decodeElement(value))) as ReadonlyArray<

@@ -1,7 +1,11 @@
 import { FilesystemPath, ForwardCompatibleArray, NonNegativeInt } from "./baseSchemas";
 import { Schema } from "effect";
 import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas";
-import { KeybindingRule, KeybindingsConfig, ResolvedKeybindingsConfig } from "./keybindings";
+import {
+  ForwardCompatibleKeybindingsConfig,
+  KeybindingRule,
+  ResolvedKeybindingsConfig,
+} from "./keybindings";
 import { EditorId } from "./editor";
 import { ModelCapabilities } from "./model";
 import { ProviderKind, ProviderStartOptions } from "./orchestration";
@@ -298,11 +302,17 @@ export const DiagnosticsConfiguration = Schema.Struct({
   traces: DiagnosticsSignal,
   metrics: DiagnosticsSignal,
 });
+// Older servers omit customized rules; newer ones may echo commands this build
+// does not know.
+const ServerCustomKeybindings = ForwardCompatibleKeybindingsConfig.pipe(
+  Schema.withDecodingDefault(() => []),
+);
+
 export const ServerConfig = Schema.Struct({
   cwd: FilesystemPath,
   keybindingsConfigPath: TrimmedNonEmptyString,
   keybindings: ResolvedKeybindingsConfig,
-  customKeybindings: KeybindingsConfig.pipe(Schema.withDecodingDefault(() => [])),
+  customKeybindings: ServerCustomKeybindings,
   issues: ServerConfigIssues,
   providers: ServerProviders,
   // Editor ids grow over time; drop ones this build does not know rather than
@@ -313,12 +323,25 @@ export const ServerConfig = Schema.Struct({
 });
 export type ServerConfig = typeof ServerConfig.Type;
 
+/**
+ * The `ServerConfig` arrays whose element unions grow over time. Clients
+ * decode these from `server.getConfig` so values a newer server sends but this
+ * build cannot represent are dropped before they reach the UI. The other fields
+ * are left as sent, so decoding never rejects a config the client used to accept.
+ */
+export const ServerConfigForwardCompatibleFields = Schema.Struct({
+  keybindings: ServerConfig.fields.keybindings,
+  customKeybindings: ServerConfig.fields.customKeybindings,
+  issues: ServerConfig.fields.issues,
+  availableEditors: ServerConfig.fields.availableEditors,
+});
+
 export const ServerUpsertKeybindingInput = KeybindingRule;
 export type ServerUpsertKeybindingInput = typeof ServerUpsertKeybindingInput.Type;
 
 export const ServerUpsertKeybindingResult = Schema.Struct({
   keybindings: ResolvedKeybindingsConfig,
-  customKeybindings: KeybindingsConfig.pipe(Schema.withDecodingDefault(() => [])),
+  customKeybindings: ServerCustomKeybindings,
   issues: ServerConfigIssues,
 });
 export type ServerUpsertKeybindingResult = typeof ServerUpsertKeybindingResult.Type;

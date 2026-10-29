@@ -156,6 +156,16 @@ export const KeybindingsConfig = Schema.Array(KeybindingRule).check(
 );
 export type KeybindingsConfig = typeof KeybindingsConfig.Type;
 
+/**
+ * Server->client view of the user's customized rules. A newer server may have
+ * accepted rules whose command this build does not know; decoding drops them
+ * instead of failing the payload. Input and persistence keep the strict
+ * `KeybindingsConfig`.
+ */
+export const ForwardCompatibleKeybindingsConfig = ForwardCompatibleArray(KeybindingRule, {
+  maxItems: MAX_KEYBINDINGS_COUNT,
+});
+
 export const KeybindingShortcut = Schema.Struct({
   key: KeybindingValue,
   metaKey: Schema.Boolean,
@@ -166,24 +176,24 @@ export const KeybindingShortcut = Schema.Struct({
 });
 export type KeybindingShortcut = typeof KeybindingShortcut.Type;
 
-export const KeybindingWhenNode: Schema.Schema<KeybindingWhenNode> = Schema.Union([
+export const KeybindingWhenNode: Schema.Codec<KeybindingWhenNode> = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("identifier"),
     name: Schema.NonEmptyString,
   }),
   Schema.Struct({
     type: Schema.Literal("not"),
-    node: Schema.suspend((): Schema.Schema<KeybindingWhenNode> => KeybindingWhenNode),
+    node: Schema.suspend((): Schema.Codec<KeybindingWhenNode> => KeybindingWhenNode),
   }),
   Schema.Struct({
     type: Schema.Literal("and"),
-    left: Schema.suspend((): Schema.Schema<KeybindingWhenNode> => KeybindingWhenNode),
-    right: Schema.suspend((): Schema.Schema<KeybindingWhenNode> => KeybindingWhenNode),
+    left: Schema.suspend((): Schema.Codec<KeybindingWhenNode> => KeybindingWhenNode),
+    right: Schema.suspend((): Schema.Codec<KeybindingWhenNode> => KeybindingWhenNode),
   }),
   Schema.Struct({
     type: Schema.Literal("or"),
-    left: Schema.suspend((): Schema.Schema<KeybindingWhenNode> => KeybindingWhenNode),
-    right: Schema.suspend((): Schema.Schema<KeybindingWhenNode> => KeybindingWhenNode),
+    left: Schema.suspend((): Schema.Codec<KeybindingWhenNode> => KeybindingWhenNode),
+    right: Schema.suspend((): Schema.Codec<KeybindingWhenNode> => KeybindingWhenNode),
   }),
 ]);
 export type KeybindingWhenNode =
@@ -202,11 +212,10 @@ export type ResolvedKeybindingRule = typeof ResolvedKeybindingRule.Type;
 /**
  * The command set grows over time, so a client may receive rules it cannot
  * represent (a command or `when` node added after that client shipped).
- * Decoding drops those rules instead of failing the whole payload, since
- * rejecting the config would take down the connection over a shortcut the
- * client couldn't dispatch anyway.
+ * Decoding drops those rules instead of failing the whole payload: a
+ * shortcut the client couldn't dispatch is not worth losing the config over.
  */
-export const ResolvedKeybindingsConfig = ForwardCompatibleArray(ResolvedKeybindingRule).check(
-  Schema.isMaxLength(MAX_KEYBINDINGS_COUNT),
-);
+export const ResolvedKeybindingsConfig = ForwardCompatibleArray(ResolvedKeybindingRule, {
+  maxItems: MAX_KEYBINDINGS_COUNT,
+});
 export type ResolvedKeybindingsConfig = typeof ResolvedKeybindingsConfig.Type;

@@ -731,6 +731,80 @@ describe("wsNativeApi", () => {
     ).rejects.toThrow();
   });
 
+  it("drops config values a newer server sends that this build does not know", async () => {
+    const shortcut = {
+      key: "p",
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      modKey: true,
+    };
+    const settings = { opaque: { kept: "as sent" } };
+    requestMock.mockResolvedValueOnce({
+      cwd: "/repo",
+      keybindingsConfigPath: "/repo/.f5/keybindings.json",
+      keybindings: [
+        { command: "someFuture.toggle", shortcut },
+        { command: "terminal.toggle", shortcut },
+      ],
+      customKeybindings: [
+        { key: "mod+p", command: "someFuture.toggle" },
+        { key: "mod+j", command: "terminal.toggle" },
+      ],
+      issues: [{ kind: "keybindings.future-issue", message: "From a newer server" }],
+      providers: [{ driver: "some-future-provider" }],
+      availableEditors: ["some-future-editor", "zed"],
+      settings,
+    });
+    const { createWsNativeApi } = await import("./wsNativeApi");
+
+    const config = await createWsNativeApi().server.getConfig();
+
+    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.serverGetConfig);
+    expect(config.keybindings).toEqual([{ command: "terminal.toggle", shortcut }]);
+    expect(config.customKeybindings).toEqual([{ key: "mod+j", command: "terminal.toggle" }]);
+    expect(config.issues).toEqual([]);
+    expect(config.availableEditors).toEqual(["zed"]);
+    // Fields outside the forward-compatible arrays pass through untouched.
+    expect(config.providers).toEqual([{ driver: "some-future-provider" }]);
+    expect(config.settings).toBe(settings);
+  });
+
+  it("drops unknown commands from keybinding mutation results", async () => {
+    const shortcut = {
+      key: "j",
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      modKey: true,
+    };
+    requestMock.mockResolvedValue({
+      keybindings: [
+        { command: "someFuture.toggle", shortcut },
+        { command: "terminal.toggle", shortcut },
+      ],
+      customKeybindings: [{ key: "mod+p", command: "someFuture.toggle" }],
+      issues: [{ kind: "keybindings.future-issue", message: "From a newer server" }],
+    });
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const api = createWsNativeApi();
+    const expected = {
+      keybindings: [{ command: "terminal.toggle", shortcut }],
+      customKeybindings: [],
+      issues: [],
+    };
+    const rule = { key: "mod+j", command: "terminal.toggle" } as const;
+
+    await expect(api.server.upsertKeybinding(rule)).resolves.toEqual(expected);
+    await expect(api.server.addKeybinding({ rule })).resolves.toEqual(expected);
+    await expect(api.server.updateKeybinding({ target: rule, rule })).resolves.toEqual(expected);
+    await expect(api.server.removeKeybinding({ target: rule })).resolves.toEqual(expected);
+    await expect(api.server.resetKeybindings()).resolves.toEqual(expected);
+    expect(requestMock).toHaveBeenLastCalledWith(WS_METHODS.serverResetKeybindings, {});
+  });
+
   it("treats an older server's void code-review retry response as started", async () => {
     requestMock.mockResolvedValueOnce(undefined);
     const { createWsNativeApi } = await import("./wsNativeApi");

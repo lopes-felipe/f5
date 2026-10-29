@@ -51,6 +51,9 @@ import {
   type PrHubChanged,
   type ServerProviderAdvisoriesUpdatedPayload,
   ServerConfigUpdatedPayload,
+  type ServerConfig,
+  ServerConfigForwardCompatibleFields,
+  ServerKeybindingMutationResult,
   type DiskSpaceStatus,
   type StorageStatus,
   type StorageInvalidatedPayload,
@@ -118,6 +121,21 @@ function decodeRetryWorkflowResult(result: unknown) {
   return result === undefined
     ? ({ status: "started" } as const)
     : Schema.decodeUnknownSync(OrchestrationRetryWorkflowResult)(result);
+}
+
+// A newer server can send keybinding commands, config issue kinds and editor
+// ids this build does not know. Decoding drops them here so they never reach
+// the UI typed as known values.
+const decodeServerConfigForwardCompatibleFields = Schema.decodeUnknownSync(
+  ServerConfigForwardCompatibleFields,
+);
+const decodeKeybindingMutationResult = Schema.decodeUnknownSync(ServerKeybindingMutationResult);
+
+function decodeServerConfig(result: unknown): ServerConfig {
+  return {
+    ...(result as ServerConfig),
+    ...decodeServerConfigForwardCompatibleFields(result),
+  };
 }
 
 /**
@@ -485,6 +503,11 @@ export function createWsNativeApi(): NativeApi {
     (input: Input): Promise<Result> =>
       transport.request(method, input);
 
+  const requestKeybindingMutation =
+    <Input>(method: string) =>
+    async (input: Input): Promise<ServerKeybindingMutationResult> =>
+      decodeKeybindingMutationResult(await transport.request(method, input));
+
   const api: NativeApi = {
     profiles: {
       githubLoginStart: () => transport.request(WS_METHODS.githubLoginStart, {}),
@@ -791,7 +814,8 @@ export function createWsNativeApi(): NativeApi {
         transport.request(WS_METHODS.serverRepairClaudeTranscript, input),
       undoClaudeTranscriptRepair: (input) =>
         transport.request(WS_METHODS.serverUndoClaudeTranscriptRepair, input),
-      getConfig: () => transport.request(WS_METHODS.serverGetConfig),
+      getConfig: async () =>
+        decodeServerConfig(await transport.request(WS_METHODS.serverGetConfig)),
       getProjectSettings: requestMethod(WS_METHODS.serverGetProjectSettings),
       migrateClientSetting: (input) =>
         transport.request(WS_METHODS.serverMigrateClientSetting, input),
@@ -804,11 +828,12 @@ export function createWsNativeApi(): NativeApi {
       getProviderInventory: (input) =>
         transport.request(WS_METHODS.serverGetProviderInventory, input),
       validateHarnesses: requestMethod(WS_METHODS.serverValidateHarnesses),
-      upsertKeybinding: requestMethod(WS_METHODS.serverUpsertKeybinding),
-      addKeybinding: requestMethod(WS_METHODS.serverAddKeybinding),
-      updateKeybinding: requestMethod(WS_METHODS.serverUpdateKeybinding),
-      removeKeybinding: requestMethod(WS_METHODS.serverRemoveKeybinding),
-      resetKeybindings: (input = {}) => transport.request(WS_METHODS.serverResetKeybindings, input),
+      upsertKeybinding: requestKeybindingMutation(WS_METHODS.serverUpsertKeybinding),
+      addKeybinding: requestKeybindingMutation(WS_METHODS.serverAddKeybinding),
+      updateKeybinding: requestKeybindingMutation(WS_METHODS.serverUpdateKeybinding),
+      removeKeybinding: requestKeybindingMutation(WS_METHODS.serverRemoveKeybinding),
+      resetKeybindings: (input = {}) =>
+        requestKeybindingMutation(WS_METHODS.serverResetKeybindings)(input),
     },
     mcp: {
       getCommonConfig: requestMethod(WS_METHODS.mcpGetCommonConfig),
