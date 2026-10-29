@@ -22631,11 +22631,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T09:31:44.691Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-19306",
-      "status": "port",
+      "reason": "f5's Muse adapter never automatically approves workflow child approvals in Full access, so they never flash.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -22883,14 +22885,16 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T09:31:44.692Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-19367",
+      "reason": "f5 does not run provider processes in systemd scopes, so there is no shared OpenCode scope to set an OOM policy on.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-18329"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
