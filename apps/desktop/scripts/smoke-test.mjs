@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+  rmSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -623,6 +631,30 @@ try {
   };
   const recoveryTerminalMarker = "F5_BACKEND_RECOVERY_OUTPUT";
   await startTerminalStream(recoveryTerminalMarker);
+  // Recovery restores persisted history. On Windows the profile Stop below is a
+  // hard taskkill with no final flush, so wait until the debounced history write
+  // has reached disk rather than racing it.
+  const terminalLogs = join(state, "logs", "terminals");
+  const persistedDeadline = Date.now() + 15_000;
+  const historyPersisted = () => {
+    try {
+      return readdirSync(terminalLogs, { withFileTypes: true }).some(
+        (entry) =>
+          entry.isFile() &&
+          readFileSync(join(terminalLogs, entry.name), "utf8").split(recoveryTerminalMarker)
+            .length -
+            1 >=
+            3,
+      );
+    } catch {
+      // Not created yet, or an atomic replace is in progress (EPERM on Windows).
+      return false;
+    }
+  };
+  while (!historyPersisted()) {
+    if (Date.now() > persistedDeadline) throw new Error("Terminal history was never persisted");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
   const retainedWsUrl = await page.evaluate(() => window.desktopBridge.getWsUrl());
   const retainedRendererUrl = page.url();
   const recoveryCount = () =>
