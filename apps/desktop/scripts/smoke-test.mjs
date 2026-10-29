@@ -800,11 +800,39 @@ try {
   await pressQuit();
   await new Promise((resolve) => setTimeout(resolve, 650));
   if (electronProcess.exitCode !== null) throw new Error("A single quit tap closed the app");
-  const closed = application.waitForEvent("close", { timeout: 30_000 });
+  const shutdowns = () =>
+    readFileSync(join(state, "logs", "desktop-main.log"), "utf8").split("shutdown complete")
+      .length - 1;
+  const shutdownsBeforeQuit = shutdowns();
+  let exited = false;
+  const closed = application.waitForEvent("close", { timeout: 0 }).then(() => {
+    exited = true;
+  });
   // Dispatch both native taps in one synchronous main-process turn: a timer
   // between them can exceed the 500 ms gesture window under streaming load.
   await pressQuit(2);
-  await closed;
+  // F5's own completed shutdown is the evidence that the gesture quit. Node can
+  // then hold the exited main process open for Playwright's attached inspector
+  // ("Waiting for the debugger to disconnect..."), intermittently on Windows;
+  // only that hold is released here.
+  const quitDeadline = Date.now() + 10_000;
+  while (!exited && shutdowns() <= shutdownsBeforeQuit) {
+    if (Date.now() > quitDeadline) throw new Error("The double-tap quit did not shut F5 down");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 5_000))]);
+  if (!exited) {
+    if (!output.includes("Waiting for the debugger to disconnect"))
+      throw new Error("F5 completed shutdown but its process did not exit");
+    console.error("Desktop smoke: releasing an exited main process held by the inspector");
+    electronProcess.kill();
+    await Promise.race([
+      closed,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("F5 did not exit after its shutdown")), 10_000),
+      ),
+    ]);
+  }
   // Reopen the same isolated profile after a real app quit with a live PTY.
   application = await _electron.launch({
     executablePath: requireDesktop("electron"),
