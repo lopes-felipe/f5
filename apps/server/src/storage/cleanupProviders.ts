@@ -176,7 +176,11 @@ export async function discoverProviderCandidates(id: StorageCleanupCategoryId, r
         candidates.push(Path.join(Path.dirname(root), entry.name));
     return candidates;
   }
-  const stat = await FS.lstat(root);
+  const stat = await FS.lstat(root).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!stat) return [];
   if (!stat.isDirectory() || stat.isSymbolicLink())
     throw new Error("Cleanup root is not a real directory.");
   const candidates: string[] = [];

@@ -98,7 +98,12 @@ export function StorageActionConfirmDialog({
         bytes: category.bytes,
         reclaimableBytes: category.reclaimableBytes,
         impact: category.impact,
-        targets: category.targets.map((target) => ({ id: target.id, bytes: target.bytes })),
+        targets: category.targets.map((target) => ({
+          id: target.id,
+          bytes: target.bytes,
+          action: target.action,
+          affectedThreads: target.affectedThreads,
+        })),
       })),
     ),
   ]);

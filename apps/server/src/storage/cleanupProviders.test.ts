@@ -1,7 +1,36 @@
 import { describe, expect, it } from "vitest";
 import { cleanupProviders } from "./cleanupProviders.ts";
+import { runStorageTask } from "./storageWorker.ts";
+import * as FS from "node:fs/promises";
+import * as OS from "node:os";
+import * as Path from "node:path";
 
 describe("cleanup provider locations and boundaries", () => {
+  it.each([
+    "f5Backups",
+    "f5ApplicationLogs",
+    "bunDownloadCache",
+    "npmDownloadCache",
+    "uvDiscardedCaches",
+    "chromeCaches",
+    "bambuStudioLogs",
+  ] as const)(
+    "returns no candidates for a missing %s root through worker IPC",
+    async (providerId) => {
+      const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-provider-absent-"));
+      try {
+        expect(
+          await runStorageTask({
+            kind: "providerCandidates",
+            providerId,
+            root: Path.join(root, "not-installed"),
+          }),
+        ).toEqual([]);
+      } finally {
+        await FS.rm(root, { recursive: true, force: true });
+      }
+    },
+  );
   it.each(["darwin", "linux", "win32"] as const)(
     "keeps machine discovery opt-in on %s",
     (platform) => {

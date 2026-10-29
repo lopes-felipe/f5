@@ -415,6 +415,64 @@ function getDisabledState(element: Element | null) {
 }
 
 describe("StorageSettings", () => {
+  it.each(["conversations", "action"] as const)(
+    "resets archive consent when reviewed %s change without changing IDs or sizes",
+    async (change) => {
+      const dialog = (updated: boolean) => (
+        <StorageActionConfirmDialog
+          action={{
+            title: "Archive and remove",
+            confirmation: { scanId: "scan", nonce: "nonce", expiresAt: "2099-01-01T00:00:00.000Z" },
+            categories: [
+              category({
+                id: "inactiveF5Worktrees",
+                section: "worktrees",
+                title: "Idle worktrees",
+                impact: "low",
+                bytes: 10,
+                reclaimableBytes: 10,
+                targets: ["a", "b"].map((id) => ({
+                  id,
+                  label: id,
+                  bytes: 5,
+                  safeToDelete: true,
+                  ...(updated && change === "action" && id === "a"
+                    ? {}
+                    : { action: "archiveAndRemove" as const }),
+                  affectedThreads: [
+                    {
+                      threadId: ThreadId.makeUnsafe(
+                        updated && change === "conversations" ? id + "-new" : id,
+                      ),
+                      title: id,
+                    },
+                  ],
+                })),
+              }),
+            ],
+          }}
+          open
+          pending={false}
+          lastResult={null}
+          onOpenChange={() => {}}
+          onConfirm={() => {}}
+        />
+      );
+      const screen = await render(dialog(false));
+      try {
+        const consent = page.getByRole("checkbox", { name: "Archive the listed conversations" });
+        const reclaim = page.getByRole("button", { name: "Reclaim", exact: true });
+        await consent.click();
+        await expect.element(consent).toBeChecked();
+        await expect.element(reclaim).not.toBeDisabled();
+        await screen.rerender(dialog(true));
+        await expect.element(consent).not.toBeChecked();
+        await expect.element(reclaim).toBeDisabled();
+      } finally {
+        await screen.unmount();
+      }
+    },
+  );
   it("reviews idle conversations and sends explicit archive-and-remove consent", async () => {
     const report = usageReport({
       categories: [
