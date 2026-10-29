@@ -23,7 +23,8 @@ function UpgradeFallback(props: UpgradeDialogProps) {
   return (
     <aside
       role="alert"
-      className="fixed inset-0 z-[90] grid place-content-center gap-4 bg-background p-8"
+      // Above open popups (z-[130]), which portal outside the inert app tree.
+      className="fixed inset-0 z-[135] grid place-content-center gap-4 bg-background p-8"
     >
       <h2>{props.title}</h2>
       <p>{props.description}</p>
