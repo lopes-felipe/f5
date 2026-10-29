@@ -22009,11 +22009,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T09:49:55.955Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-19161",
-      "status": "port",
+      "reason": "f5 has no agent-session import scanner (`AgentSessionScanner`) for local Claude/Codex transcripts, so there is no history budget or metadata folding to fix.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "session import",
