@@ -178,7 +178,9 @@ export function getProviderUpdateResultMessage(
       return "The update finished, but F5 couldn't confirm the new version. Check the provider status.";
     case "failed": {
       const summary = `Update failed (${result.timedOut ? "timed out" : result.exitCode === null ? "could not start" : `exit ${result.exitCode}`})`;
-      const reason = result.timedOut ? null : lastUpdateOutputLine(result.output);
+      // A spawn failure's output is the server's own explanation, already shown in the panel.
+      const reason =
+        result.timedOut || result.exitCode === null ? null : lastUpdateOutputLine(result.output);
       return reason ? `${summary}: ${reason}` : `${summary}.`;
     }
   }
@@ -186,12 +188,16 @@ export function getProviderUpdateResultMessage(
 
 const UPDATE_REASON_MAX_LENGTH = 240;
 
+// npm always ends a failure by pointing at its debug log; the cause is printed before it.
+const NPM_LOG_POINTER =
+  /^npm (?:error|ERR!)(?: A complete log of this run can be found in:?.*| \S+\.log)?$/;
+
 // Updaters print their reason last, usually on stderr, which the server appends after stdout.
 function lastUpdateOutputLine(output: string): string | null {
   const line = stripTerminalControls(output)
     .split(/\r\n|\r|\n/)
     .map((candidate) => candidate.replace(/\s+/g, " ").trim())
-    .findLast(Boolean);
+    .findLast((candidate) => candidate && !NPM_LOG_POINTER.test(candidate));
   if (!line) return null;
   return line.length <= UPDATE_REASON_MAX_LENGTH
     ? line

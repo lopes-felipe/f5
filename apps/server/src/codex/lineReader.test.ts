@@ -55,3 +55,14 @@ it("reports a line over the byte cap once and stops reading instead of buffering
   expect(source.listenerCount("data")).toBe(0);
   source.destroy();
 });
+it("delivers complete lines that share a chunk with an oversized line before reporting overflow", () => {
+  const source = new PassThrough();
+  const reader = new ProviderLineReader(source, 8);
+  const events: string[] = [];
+  reader.on("line", (line) => events.push(line));
+  reader.on("overflow", () => events.push("overflow"));
+  reader.on("close", () => events.push("closed"));
+  source.write("ok\nnext\n" + "x".repeat(9));
+  expect(events).toEqual(["ok", "next", "overflow", "closed"]);
+  source.destroy();
+});

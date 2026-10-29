@@ -138,6 +138,40 @@ describe("installation update presentations", () => {
         "1.1.0",
       ),
     ).toBe("Update failed (exit 1): npm error code EACCES");
+    // npm ends with a pointer to its debug log; the cause comes before it.
+    expect(
+      getProviderUpdateResultMessage(
+        {
+          ...result,
+          output:
+            "npm error code EACCES\nnpm error syscall rename\nnpm error\nnpm error A complete log of this run can be found in: /Users/me/.npm/_logs/2026-debug-0.log\n",
+        },
+        "npm",
+        "1.1.0",
+      ),
+    ).toBe("Update failed (exit 1): npm error syscall rename");
+    expect(
+      getProviderUpdateResultMessage(
+        {
+          ...result,
+          output:
+            "npm ERR! code EACCES\nnpm ERR! A complete log of this run can be found in:\nnpm ERR!     /Users/me/.npm/_logs/2026-debug-0.log\n",
+        },
+        "npm",
+        "1.1.0",
+      ),
+    ).toBe("Update failed (exit 1): npm ERR! code EACCES");
+    expect(
+      getProviderUpdateResultMessage(
+        {
+          ...result,
+          exitCode: null,
+          output: "The provider update could not start. Check that the installer is available.",
+        },
+        "npm",
+        "1.1.0",
+      ),
+    ).toBe("Update failed (could not start).");
     expect(
       getProviderUpdateResultMessage({ ...result, output: "Upgrading codex\n" }, "npm", "1.1.0"),
     ).toBe("Update failed (exit 1): Upgrading codex");

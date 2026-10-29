@@ -1,6 +1,9 @@
 import { EventEmitter } from "node:events";
 import type { Readable } from "node:stream";
-import { Utf8Lines } from "@t3tools/shared/utf8Lines";
+import { Utf8LineOverflowError, Utf8Lines } from "@t3tools/shared/utf8Lines";
+
+/** One codex app-server JSONL message is bounded before it is joined and parsed, so a runaway line cannot exhaust the heap. */
+export const CODEX_MAX_INCOMING_MESSAGE_BYTES = 128 * 1024 * 1024;
 
 /** Node source wiring stays server-side; the decoder/framer is shared with ACP. */
 export class ProviderLineReader extends EventEmitter<{
@@ -48,6 +51,9 @@ export class ProviderLineReader extends EventEmitter<{
   };
   private overflow(error: unknown): void {
     if (this.closed) return;
+    // Messages completed before the oversized one in the same chunk are still delivered.
+    if (error instanceof Utf8LineOverflowError)
+      for (const line of error.lines) this.emit("line", line);
     this.emit("overflow", error instanceof Error ? error : new Error(String(error)));
     this.close();
   }

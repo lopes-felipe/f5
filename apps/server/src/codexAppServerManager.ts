@@ -3,7 +3,9 @@ import { findMcpAppToolPolicy } from "@t3tools/shared/mcpApp";
 import { raceWithAbort } from "@t3tools/shared/abortSignal";
 import { probeCodexCliVersion } from "./codex/cliVersionProbe.ts";
 import { Utf8Lines } from "@t3tools/shared/utf8Lines";
-import { ProviderLineReader } from "./codex/lineReader.ts";
+import { CODEX_MAX_INCOMING_MESSAGE_BYTES, ProviderLineReader } from "./codex/lineReader.ts";
+
+export { CODEX_MAX_INCOMING_MESSAGE_BYTES };
 import type { ProviderAdapterSessionStartInput } from "./provider/Services/ProviderAdapter.ts";
 import { readBoundedPages } from "./codex/readBoundedPages.ts";
 import {
@@ -355,8 +357,6 @@ export interface CodexThreadSnapshot {
 }
 
 const CODEX_JSON_RPC_TIMEOUT_MS = 20_000;
-/** One JSONL message is bounded before it is joined and parsed, so a runaway line cannot exhaust the heap. */
-export const CODEX_MAX_INCOMING_MESSAGE_BYTES = 128 * 1024 * 1024;
 export const CODEX_THREAD_OPEN_TIMEOUT_MS = 60_000;
 /** Internal event methods for private MCP form/URL requests (value-free payloads). */
 export const CODEX_ELICITATION_OPENED_METHOD = "f5/elicitation/opened";
