@@ -1,25 +1,62 @@
 import { EventEmitter } from "node:events";
 import type { Readable } from "node:stream";
-import { Utf8Lines } from "@t3tools/shared/utf8Lines";
+import { Utf8LineOverflowError, Utf8Lines } from "@t3tools/shared/utf8Lines";
+
+/** One codex app-server JSONL message is bounded before it is joined and parsed, so a runaway line cannot exhaust the heap. */
+export const CODEX_MAX_INCOMING_MESSAGE_BYTES = 128 * 1024 * 1024;
 
 /** Node source wiring stays server-side; the decoder/framer is shared with ACP. */
-export class ProviderLineReader extends EventEmitter<{ line: [string]; close: [] }> {
-  private readonly lines = new Utf8Lines();
+export class ProviderLineReader extends EventEmitter<{
+  line: [string];
+  overflow: [Error];
+  close: [];
+}> {
+  private readonly lines: Utf8Lines;
   private closed = false;
-  constructor(private readonly source: Readable) {
+  /**
+   * `maxLineBytes` bounds one line's UTF-8 bytes (the LF is excluded). A longer
+   * line emits `overflow` and closes the reader instead of buffering it.
+   */
+  constructor(
+    private readonly source: Readable,
+    maxLineBytes = Infinity,
+  ) {
     super();
+    this.lines = new Utf8Lines(maxLineBytes);
     source.on("data", this.data);
     source.on("end", this.end);
     source.on("close", this.end);
   }
   private readonly data = (chunk: Buffer | string) => {
-    for (const line of this.lines.push(chunk)) this.emit("line", line);
+    let lines: string[];
+    try {
+      lines = this.lines.push(chunk);
+    } catch (error) {
+      this.overflow(error);
+      return;
+    }
+    for (const line of lines) this.emit("line", line);
   };
   private readonly end = () => {
     if (this.closed) return;
-    for (const line of this.lines.finish()) this.emit("line", line);
+    let lines: string[];
+    try {
+      lines = this.lines.finish();
+    } catch (error) {
+      this.overflow(error);
+      return;
+    }
+    for (const line of lines) this.emit("line", line);
     this.close();
   };
+  private overflow(error: unknown): void {
+    if (this.closed) return;
+    // Messages completed before the oversized one in the same chunk are still delivered.
+    if (error instanceof Utf8LineOverflowError)
+      for (const line of error.lines) this.emit("line", line);
+    this.emit("overflow", error instanceof Error ? error : new Error(String(error)));
+    this.close();
+  }
   /** Flush an already received final fragment before releasing a draining source. */
   finish(): void {
     this.end();

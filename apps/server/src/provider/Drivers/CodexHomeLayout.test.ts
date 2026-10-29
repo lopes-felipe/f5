@@ -251,6 +251,203 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
         }),
     );
 
+    it.effect.skipIf(process.platform === "win32")(
+      "keeps the shadow auth.lock private instead of rejecting it as a conflict",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");
+          const shadowHome = path.join(shadowRoot, "shadow");
+          yield* writeTextFile(path.join(sharedHome, "auth.lock"), "");
+          yield* writeTextFile(path.join(shadowHome, "auth.lock"), "");
+          yield* writeTextFile(path.join(shadowHome, "auth.json"), '{"shadow":true}\n');
+
+          const layout = yield* resolveCodexHomeLayout(
+            decodeCodexSettings({ homePath: sharedHome, shadowHomePath: shadowHome }),
+          );
+          yield* materializeCodexShadowHome(layout);
+
+          const authLockLinkResult = yield* fileSystem
+            .readLink(path.join(shadowHome, "auth.lock"))
+            .pipe(Effect.result);
+          expect(authLockLinkResult._tag).toBe("Failure");
+          expect(yield* fileSystem.exists(path.join(shadowHome, "auth.lock"))).toBe(true);
+        }),
+    );
+
+    it.effect.skipIf(process.platform === "win32")(
+      "detaches an auth.lock symlink left by an earlier shared setup",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");
+          const shadowHome = path.join(shadowRoot, "shadow");
+          yield* writeTextFile(path.join(sharedHome, "auth.lock"), "");
+          yield* writeTextFile(path.join(shadowHome, "auth.json"), '{"shadow":true}\n');
+          yield* fileSystem.symlink(
+            path.join(sharedHome, "auth.lock"),
+            path.join(shadowHome, "auth.lock"),
+          );
+
+          const layout = yield* resolveCodexHomeLayout(
+            decodeCodexSettings({ homePath: sharedHome, shadowHomePath: shadowHome }),
+          );
+          yield* materializeCodexShadowHome(layout);
+
+          expect(yield* fileSystem.exists(path.join(shadowHome, "auth.lock"))).toBe(false);
+          expect(yield* fileSystem.exists(path.join(sharedHome, "auth.lock"))).toBe(true);
+        }),
+    );
+
+    it.effect("detaches and untracks an F5-managed Windows copy of auth.lock", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+        const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");
+        const shadowHome = path.join(shadowRoot, "shadow");
+        const shadowLock = path.join(shadowHome, "auth.lock");
+        const manifestPath = path.join(shadowHome, CODEX_SHADOW_MANAGED_FILES_MANIFEST);
+        yield* writeTextFile(path.join(sharedHome, "auth.lock"), "");
+        yield* writeTextFile(shadowLock, "");
+        const info = yield* fileSystem.stat(shadowLock);
+        // An earlier setup copied auth.lock as a shared file and recorded it.
+        yield* fileSystem.writeFileString(
+          manifestPath,
+          JSON.stringify({
+            version: 1,
+            files: {
+              "auth.lock": {
+                target: normalizeWindowsLinkPath(path.join(sharedHome, "auth.lock")),
+                kind: "copy",
+                fingerprint: {
+                  dev: String(info.dev),
+                  ino: info.ino === undefined ? null : String(info.ino),
+                  size: String(info.size),
+                  mtimeMs: info.mtime?.getTime() ?? null,
+                },
+              },
+            },
+          }),
+        );
+
+        const layout = yield* resolveCodexHomeLayout(
+          decodeCodexSettings({ homePath: sharedHome, shadowHomePath: shadowHome }),
+        );
+        yield* materializeCodexShadowHome(layout, {
+          platform: "win32",
+          forceWindowsFileCopy: true,
+        });
+
+        expect(yield* fileSystem.exists(shadowLock)).toBe(false);
+        const manifest = JSON.parse(yield* fileSystem.readFileString(manifestPath)) as {
+          files: Record<string, unknown>;
+        };
+        expect(manifest.files["auth.lock"]).toBeUndefined();
+      }),
+    );
+
+    it.effect.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+      "keeps local thread writer locks when a live writer blocks their replacement",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");
+          const shadowHome = path.join(shadowRoot, "shadow");
+          const shadowLocks = path.join(shadowHome, "thread-writer-locks");
+          const blocked = path.join(shadowLocks, "blocked");
+          yield* writeTextFile(path.join(blocked, "entry"), "");
+          yield* fileSystem.chmod(blocked, 0o500);
+          yield* Effect.addFinalizer(() => fileSystem.chmod(blocked, 0o700).pipe(Effect.ignore));
+
+          const layout = yield* resolveCodexHomeLayout(
+            decodeCodexSettings({ homePath: sharedHome, shadowHomePath: shadowHome }),
+          );
+          yield* materializeCodexShadowHome(layout);
+
+          expect((yield* fileSystem.readLink(shadowLocks).pipe(Effect.result))._tag).toBe(
+            "Failure",
+          );
+          expect(yield* fileSystem.exists(path.join(blocked, "entry"))).toBe(true);
+          expect(yield* fileSystem.readLink(path.join(shadowHome, "sessions"))).toBe(
+            path.join(sharedHome, "sessions"),
+          );
+        }),
+    );
+
+    it.effect.skipIf(process.platform === "win32")(
+      "shares local thread writer locks once no writer still holds one",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");
+          const shadowHome = path.join(shadowRoot, "shadow");
+          const shadowLocks = path.join(shadowHome, "thread-writer-locks");
+          const threadLock = path.join(shadowLocks, "019a0000-0000-7000-8000-000000000000.lock");
+
+          yield* writeTextFile(path.join(shadowLocks, ".coordination.lock"), "");
+          yield* writeTextFile(path.join(shadowLocks, ".DS_Store"), "");
+          yield* writeTextFile(threadLock, "");
+
+          const layout = yield* resolveCodexHomeLayout(
+            decodeCodexSettings({ homePath: sharedHome, shadowHomePath: shadowHome }),
+          );
+
+          yield* materializeCodexShadowHome(layout);
+          expect(yield* fileSystem.exists(threadLock)).toBe(true);
+
+          yield* fileSystem.remove(threadLock);
+          yield* materializeCodexShadowHome(layout);
+          expect(yield* fileSystem.readLink(shadowLocks)).toBe(
+            path.join(sharedHome, "thread-writer-locks"),
+          );
+        }),
+    );
+
+    it.effect.skipIf(process.platform === "win32")(
+      "keeps Finder metadata local across repeated shadow home setup",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const shadowHome = yield* makeTempDir("t3code-codex-shadow-");
+          const sharedMetadata = path.join(sharedHome, ".DS_Store");
+          const shadowMetadata = path.join(shadowHome, ".DS_Store");
+
+          yield* writeTextFile(sharedMetadata, "shared Finder metadata");
+          yield* writeTextFile(shadowMetadata, "shadow Finder metadata");
+          yield* writeTextFile(path.join(shadowHome, "auth.json"), '{"shadow":true}\n');
+          const layout = yield* resolveCodexHomeLayout(
+            decodeCodexSettings({ homePath: sharedHome, shadowHomePath: shadowHome }),
+          );
+
+          yield* materializeCodexShadowHome(layout);
+          expect(yield* fileSystem.readFileString(shadowMetadata)).toBe("shadow Finder metadata");
+          yield* fileSystem.remove(shadowMetadata);
+          yield* materializeCodexShadowHome(layout);
+          expect(yield* fileSystem.exists(shadowMetadata)).toBe(false);
+
+          yield* writeTextFile(shadowMetadata, "shadow Finder metadata");
+          yield* materializeCodexShadowHome(layout);
+          yield* materializeCodexShadowHome(layout);
+
+          expect(yield* fileSystem.readFileString(sharedMetadata)).toBe("shared Finder metadata");
+          expect(yield* fileSystem.readFileString(shadowMetadata)).toBe("shadow Finder metadata");
+          expect(yield* fileSystem.readLink(path.join(shadowHome, "sessions"))).toBe(
+            path.join(sharedHome, "sessions"),
+          );
+        }),
+    );
+
     it.effect("refreshes an F5-managed cross-volume copy on later materializations", () =>
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;

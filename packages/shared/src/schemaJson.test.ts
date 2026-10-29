@@ -19,4 +19,15 @@ describe("lenient JSON strings", () => {
     });
     expect(() => decode('{"enabled": true,,}')).toThrow();
   });
+
+  it("keeps a URL inside a block comment from swallowing the rest of the line", () => {
+    expect(
+      decode(`{
+        "enabled": /* See "https://example.com/config" // still in the block */ true,
+        "values": [1, 2,],
+      }`),
+    ).toEqual({ enabled: true, values: [1, 2] });
+    expect(() => decode("[1/* https://example.com */2]")).toThrow();
+    expect(decode('"1/* https://example.com */2"')).toBe("1/* https://example.com */2");
+  });
 });

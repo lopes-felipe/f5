@@ -43,6 +43,15 @@ describe("parseCheckedInProjectFile", () => {
     ]);
   });
 
+  it("reads project defaults from JSONC with a URL in a block comment", () => {
+    expect(
+      parseCheckedInProjectFile(`{
+        /* See https://example.com/schema/project.json */
+        "defaultThreadEnvMode": "worktree"
+      }`).defaultThreadEnvMode,
+    ).toBe("worktree");
+  });
+
   it("rejects malformed documents without throwing", () => {
     expect(parseCheckedInProjectFile("{ nope").diagnostics).toEqual([
       { field: "file", message: "Project configuration is not a valid JSON object." },

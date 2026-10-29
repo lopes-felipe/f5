@@ -24,7 +24,7 @@ import {
 } from "../Services/PTY";
 import { TerminalManager } from "../Services/Manager";
 import { TERMINAL_HISTORY_MAX_BYTES } from "../BoundedTerminalHistory";
-import { TerminalManagerLive, TerminalManagerRuntime } from "./Manager";
+import { disableFishTerminalQueries, TerminalManagerLive, TerminalManagerRuntime } from "./Manager";
 import { Effect, Encoding, Layer, Metric } from "effect";
 import { ServerConfig, type ServerConfigShape } from "../../config";
 
@@ -410,6 +410,46 @@ describe("TerminalManager", () => {
       }
     },
   );
+
+  it("turns off fish terminal queries unless the session chose query-term", async () => {
+    // Session env overrides any fish_features inherited from the test host.
+    for (const [fishFeatures, expected] of [
+      ["qmark-noglob", "qmark-noglob,no-query-term"],
+      ["qmark-noglob,query-term", "qmark-noglob,query-term"],
+      ["qmark-noglob,no-query-term", "qmark-noglob,no-query-term"],
+    ] as const) {
+      const { manager, ptyAdapter } = makeManager();
+      try {
+        await manager.open({ ...openInput(), env: { fish_features: fishFeatures } });
+        expect(ptyAdapter.spawnInputs[0]?.env.fish_features).toBe(expected);
+      } finally {
+        await manager.dispose();
+      }
+    }
+  });
+
+  it.each([
+    ["linux", {}, { fish_features: "no-query-term" }],
+    ["linux", { fish_features: "qmark-noglob" }, { fish_features: "qmark-noglob,no-query-term" }],
+    ["linux", { fish_features: "query-term" }, { fish_features: "query-term" }],
+    [
+      "linux",
+      { FISH_FEATURES: "query-term" },
+      { FISH_FEATURES: "query-term", fish_features: "no-query-term" },
+    ],
+    ["win32", { FISH_FEATURES: "qmark-noglob" }, { FISH_FEATURES: "qmark-noglob,no-query-term" }],
+    [
+      "win32",
+      { Fish_Features: "qmark-noglob,query-term" },
+      { Fish_Features: "qmark-noglob,query-term" },
+    ],
+    ["win32", { FISH_FEATURES: "no-query-term" }, { FISH_FEATURES: "no-query-term" }],
+    ["win32", {}, { fish_features: "no-query-term" }],
+  ] as const)("updates fish_features on %s from %j", (platform, env, expected) => {
+    const spawnEnv: NodeJS.ProcessEnv = { ...env };
+    disableFishTerminalQueries(spawnEnv, platform);
+    expect(spawnEnv).toEqual(expected);
+  });
 
   it("supports asynchronous PTY spawn effects", async () => {
     const { manager, ptyAdapter } = makeManager(5, { ptyAdapter: new FakePtyAdapter("async") });

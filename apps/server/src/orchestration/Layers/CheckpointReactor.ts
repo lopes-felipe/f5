@@ -347,7 +347,8 @@ const make = Effect.gen(function* () {
             fromCheckpointRef,
             toCheckpointRef: targetCheckpointRef,
             fallbackFromToHead: false,
-            options: { excludeGitImports: true },
+            // Only the per-file totals are kept, so the patch needs no minimization.
+            options: { excludeGitImports: true, minimal: false },
           })
         : Effect.succeed("")
     ).pipe(

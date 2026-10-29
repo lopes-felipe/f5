@@ -59,7 +59,10 @@ import {
 import { buildElicitationDescriptor } from "@t3tools/shared/elicitationForm";
 import {
   buildClaudeToolCompletion,
+  CLAUDE_SUBAGENT_TASK_MUTATION_TOOL_NAMES,
+  claudeSubagentTaskToolOutput,
   isClaudeTaskToolName,
+  readClaudeToolNonExecutionKind,
   storeClaudeToolCompletionArtifact,
 } from "../claudeToolCompletion.ts";
 import { randomUUID } from "node:crypto";
@@ -80,6 +83,10 @@ import { isProviderResumeFailureText } from "../resumeFailure.ts";
 import { appendClaudeStderrTail, parseClaudeProcessExit } from "../claudeProcessExit.ts";
 import { makeClaudeProcessGroupSpawner } from "../claudeProcessGroup.ts";
 import { resolveClaudeToolSearchOverride } from "../claudeToolSearch.ts";
+import {
+  joinClaudeSystemPromptAppend,
+  resolveClaudeLaunchAppendSystemPrompt,
+} from "../claudeAppendSystemPrompt.ts";
 import * as Path from "effect/Path";
 /**
  * ClaudeAdapterLive - Scoped live implementation for the Claude Agent provider adapter.
@@ -169,7 +176,10 @@ import {
   supportsClaudeContextWindow,
   claudeModelSupportsAdaptiveThinking,
 } from "@t3tools/shared/model";
-import { filterReservedClaudeLaunchArgs } from "@t3tools/shared/cliArgs";
+import {
+  CLAUDE_APPEND_SYSTEM_PROMPT_FLAG_NAMES,
+  filterReservedClaudeLaunchArgs,
+} from "@t3tools/shared/cliArgs";
 import { assertNever } from "@t3tools/shared/exhaustive";
 import { isImagePreviewPath } from "@t3tools/shared/filePreview";
 import {
@@ -401,6 +411,14 @@ interface ToolInFlight {
   readonly lastEmittedInputFingerprint?: string;
 }
 
+interface SubagentTaskToolInFlight {
+  readonly tool: ToolInFlight;
+  /** The Agent tool call that launched the subagent. */
+  readonly parentToolUseId: string;
+  /** The turn that launched the subagent, so a revert of it drops the task. */
+  readonly turnId?: TurnId;
+}
+
 type ClaudeTaskTerminalStatus = "completed" | "failed" | "stopped";
 type ClaudeBackgroundStatus = "running" | ClaudeTaskTerminalStatus;
 
@@ -510,6 +528,8 @@ interface ClaudeSessionContext {
   readonly taskStates: Map<string, ClaudeTaskState>;
   readonly taskModelsByTool: Map<string, string>;
   readonly taskLaunchesByTool: Map<string, ClaudeSubagentLaunch>;
+  /** Subagent TaskCreate/TaskUpdate calls awaiting their result, by tool_use id. */
+  readonly subagentTaskTools: Map<string, SubagentTaskToolInFlight>;
   readonly lifecycle: ClaudeTurnLifecycle;
   settlementWatchdog: { resultId: string; cancel: Deferred.Deferred<void> } | undefined;
   turnState: ClaudeTurnState | undefined;
@@ -1669,7 +1689,14 @@ const SUPPORTED_CLAUDE_IMAGE_MIME_TYPES = new Set([
   "image/png",
   "image/webp",
 ]);
-const CLAUDE_ONE_OFF_SELECTION_FLAGS = new Set(["model", "effort", "fallback-model"]);
+// Inline append text is for chat sessions; one-off prompts never received it.
+const CLAUDE_ONE_OFF_EXCLUDED_FLAGS = new Set(["append-system-prompt"]);
+const CLAUDE_ONE_OFF_SELECTION_FLAGS = new Set([
+  ...CLAUDE_ONE_OFF_EXCLUDED_FLAGS,
+  "model",
+  "effort",
+  "fallback-model",
+]);
 const CLAUDE_SETTING_SOURCES = [
   "user",
   "project",
@@ -4046,6 +4073,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
         // Clear any remaining stale entries (e.g. from interrupted content blocks)
         context.inFlightTools.clear();
+        // A foreground subagent ends with its turn; dropped child results after
+        // an interrupt would otherwise leave its Task calls pending forever.
+        yield* abandonSubagentTaskTools(context, {
+          all: false,
+          rawPayload: result ?? { status },
+        });
         yield* completeOpenThinkingBlocks(context, turnState, {
           method: "claude/result",
           payload: result ?? { status },
@@ -4464,6 +4497,178 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
       });
 
+    /**
+     * Subagents write to the session's shared task store, so their TaskCreate
+     * and TaskUpdate calls feed the parent thread's task list. Child reads and
+     * every other child tool stay out of the parent's events.
+     */
+    const startSubagentTaskTools = (
+      context: ClaudeSessionContext,
+      message: SDKMessage,
+      parentToolUseId: string,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        if (message.type !== "assistant") return;
+        // Background subagents outlive the parent turn; attribute their tasks
+        // to the turn that launched them so reverting it drops them.
+        const turnId =
+          findTaskStateEntryByToolUseId(context, parentToolUseId)?.[1].turnId ??
+          context.turnState?.turnId;
+        for (const block of Array.isArray(message.message?.content)
+          ? message.message.content
+          : []) {
+          const record = asUnknownRecord(block);
+          if (
+            record?.type !== "tool_use" ||
+            typeof record.id !== "string" ||
+            typeof record.name !== "string" ||
+            !CLAUDE_SUBAGENT_TASK_MUTATION_TOOL_NAMES.has(record.name) ||
+            context.subagentTaskTools.has(record.id)
+          )
+            continue;
+          const toolInput = asUnknownRecord(record.input) ?? {};
+          const itemType = classifyToolItemType(record.name, { input: toolInput });
+          const detail = summarizeToolRequest(record.name, toolInput);
+          const tool: ToolInFlight = {
+            itemId: record.id,
+            itemType,
+            toolName: record.name,
+            title: titleForTool(itemType, toolInput, record.name),
+            detail,
+            input: toolInput,
+            partialInputJson: "",
+          };
+          context.subagentTaskTools.set(tool.itemId, {
+            tool,
+            parentToolUseId,
+            ...(turnId ? { turnId } : {}),
+          });
+          const stamp = yield* makeEventStamp(context);
+          yield* offerRuntimeEvent({
+            type: "item.started",
+            ...stamp,
+            eventId: stamp.eventId,
+            provider: PROVIDER,
+            createdAt: stamp.createdAt,
+            threadId: context.session.threadId,
+            ...(turnId ? { turnId: asCanonicalTurnId(turnId) } : {}),
+            itemId: asRuntimeItemId(tool.itemId),
+            payload: {
+              itemType: tool.itemType,
+              status: "inProgress",
+              title: tool.title,
+              ...(tool.detail ? { detail: tool.detail } : {}),
+              data: buildToolLifecycleData({ toolName: tool.toolName, toolInput }),
+            },
+            providerRefs: nativeProviderRefs(context, { providerItemId: tool.itemId }),
+            raw: {
+              source: "claude.sdk.message",
+              method: "claude/assistant",
+              payload: message,
+            },
+          });
+        }
+      });
+
+    const completeSubagentTaskTool = (
+      context: ClaudeSessionContext,
+      message: SDKMessage,
+      entry: SubagentTaskToolInFlight,
+      toolResult: ReturnType<typeof toolResultBlocksFromUserMessage>[number],
+      correlated: boolean,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        if (message.type !== "user") return;
+        const { tool } = entry;
+        context.subagentTaskTools.delete(tool.itemId);
+        const structured = (message as { readonly tool_use_result?: unknown }).tool_use_result;
+        const { envelope: completion } = buildClaudeToolCompletion({
+          toolUseId: tool.itemId,
+          toolName: tool.toolName,
+          toolInput: tool.input,
+          structuredOutput:
+            correlated && structured !== undefined && structured !== null
+              ? structured
+              : claudeSubagentTaskToolOutput(tool.toolName, toolResult.text),
+          // The text fallback belongs to this result block.
+          correlated: true,
+          isError: toolResult.isError,
+          nativeSessionId: message.session_id,
+          nonExecutionKind: readClaudeToolNonExecutionKind(message, tool.itemId),
+        });
+        const stamp = yield* makeEventStamp(context);
+        yield* offerRuntimeEvent({
+          type: "item.completed",
+          ...stamp,
+          eventId: stamp.eventId,
+          provider: PROVIDER,
+          createdAt: stamp.createdAt,
+          threadId: context.session.threadId,
+          ...(entry.turnId ? { turnId: asCanonicalTurnId(entry.turnId) } : {}),
+          itemId: asRuntimeItemId(tool.itemId),
+          payload: {
+            itemType: tool.itemType,
+            status: completion.semanticSuccess ? "completed" : "failed",
+            title: tool.title,
+            ...(tool.detail ? { detail: tool.detail } : {}),
+            data: buildToolLifecycleData({
+              toolName: tool.toolName,
+              toolInput: tool.input,
+              result: toolResult.block,
+            }),
+            completion,
+          },
+          providerRefs: nativeProviderRefs(context, { providerItemId: tool.itemId }),
+          raw: {
+            source: "claude.sdk.message",
+            method: "claude/user",
+            payload: message,
+          },
+        });
+      });
+
+    /**
+     * Close subagent Task calls that can no longer deliver a result, without
+     * one, so the projection releases them and asks for a resync. Calls whose
+     * subagent still runs in the background keep waiting unless `all` is set.
+     */
+    const abandonSubagentTaskTools = (
+      context: ClaudeSessionContext,
+      options: { readonly all: boolean; readonly rawPayload: unknown },
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        for (const [itemId, entry] of context.subagentTaskTools) {
+          if (!options.all && hasBackgroundTaskStateForTool(context, entry.parentToolUseId))
+            continue;
+          context.subagentTaskTools.delete(itemId);
+          const { tool } = entry;
+          const stamp = yield* makeEventStamp(context);
+          yield* offerRuntimeEvent({
+            type: "item.completed",
+            ...stamp,
+            eventId: stamp.eventId,
+            provider: PROVIDER,
+            createdAt: stamp.createdAt,
+            threadId: context.session.threadId,
+            ...(entry.turnId ? { turnId: asCanonicalTurnId(entry.turnId) } : {}),
+            itemId: asRuntimeItemId(tool.itemId),
+            payload: {
+              itemType: tool.itemType,
+              status: "failed",
+              title: tool.title,
+              ...(tool.detail ? { detail: tool.detail } : {}),
+              data: { toolName: tool.toolName, input: tool.input },
+            },
+            providerRefs: nativeProviderRefs(context, { providerItemId: tool.itemId }),
+            raw: {
+              source: "claude.sdk.message",
+              method: "claude/result",
+              payload: options.rawPayload,
+            },
+          });
+        }
+      });
+
     const handleUserMessage = (
       context: ClaudeSessionContext,
       message: SDKMessage,
@@ -4481,6 +4686,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         for (const toolResult of toolResultBlocks) {
           const toolEntry = findInFlightToolEntryByItemId(context, toolResult.toolUseId);
           if (!toolEntry) {
+            const subagentTool = context.subagentTaskTools.get(toolResult.toolUseId);
+            if (subagentTool)
+              yield* completeSubagentTaskTool(
+                context,
+                message,
+                subagentTool,
+                toolResult,
+                toolResultBlocks.length === 1,
+              );
             continue;
           }
 
@@ -4590,6 +4804,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             correlated: toolResultBlocks.length === 1,
             isError: toolResult.isError,
             nativeSessionId: message.session_id,
+            nonExecutionKind: readClaudeToolNonExecutionKind(message, tool.itemId),
           });
           const completion = completionDraft.oversizeOutput
             ? yield* Effect.tryPromise(() =>
@@ -4784,6 +4999,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           });
         }
         if (parentToolUseId) {
+          yield* startSubagentTaskTools(context, message, parentToolUseId);
           const model = childModel;
           if (model) {
             for (const [taskId, task] of context.taskStates) {
@@ -6387,6 +6603,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             },
           });
         }
+        yield* abandonSubagentTaskTools(context, {
+          all: true,
+          rawPayload: { status: "stopped" },
+        });
         context.taskStates.clear();
         context.taskModelsByTool.clear();
         context.taskLaunchesByTool.clear();
@@ -6586,7 +6806,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   ...(() => {
                     const filtered = filterReservedClaudeLaunchArgs(
                       providerOptions?.launchArgs,
-                      input.modelSelection ? CLAUDE_ONE_OFF_SELECTION_FLAGS : undefined,
+                      input.modelSelection
+                        ? CLAUDE_ONE_OFF_SELECTION_FLAGS
+                        : CLAUDE_ONE_OFF_EXCLUDED_FLAGS,
                     );
                     return filtered ? { extraArgs: filtered } : {};
                   })(),
@@ -6710,6 +6932,22 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               issue: mcpConfigErrorMessage(cause),
             }),
         });
+        // Read before this adapter stops a live session for the same thread.
+        // ProviderService runs the same check before its own replacement stops.
+        const launchAppendSystemPrompt = yield* resolveClaudeLaunchAppendSystemPrompt({
+          launchArgs: input.providerOptions?.claudeAgent?.launchArgs,
+          cwd: input.cwd,
+        }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "startSession",
+                issue: cause.message,
+                cause,
+              }),
+          ),
+        );
         const startedAt = yield* nowIso;
         let resumeState = readClaudeResumeState(input.resumeCursor);
         const threadId = input.threadId;
@@ -7796,10 +8034,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         });
         // Rebuild on every launch: Claude appends are not persisted developer
         // instructions. Omit turnCount to preserve the prompt cache on resumes.
+        // Claude Code replaces its CLI append text with this value, so the
+        // append launch arguments travel here, after F5's instructions.
         const systemPrompt = {
           type: "preset",
           preset: "claude_code",
-          append: appendInstructionText,
+          append: joinClaudeSystemPromptAppend(appendInstructionText, launchAppendSystemPrompt),
           snapshot: false,
         } satisfies NonNullable<ClaudeQueryOptions["systemPrompt"]>;
         // Sent on every launch: Claude Code applies it only while the permission
@@ -7859,7 +8099,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           // each SDK bump).
           // F5 settings decide Claude in Chrome; any user chrome flag is replaced.
           extraArgs: forceClaudeChromeFlag(
-            filterReservedClaudeLaunchArgs(providerOptions?.launchArgs),
+            filterReservedClaudeLaunchArgs(
+              providerOptions?.launchArgs,
+              CLAUDE_APPEND_SYSTEM_PROMPT_FLAG_NAMES,
+            ),
             chromeAllowed,
           ),
           ...(Object.keys(settings).length > 0 ? { settings } : {}),
@@ -8265,6 +8508,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           taskStates,
           taskModelsByTool: new Map(),
           taskLaunchesByTool: new Map(),
+          subagentTaskTools: new Map(),
           lifecycle: createClaudeTurnLifecycle(),
           settlementWatchdog: undefined,
           turnState: undefined,
@@ -8276,8 +8520,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           availableSlashCommands: [],
           slashCommandsLoaded: false,
           supportedCommandsFingerprint: fingerprintSupportedSlashCommands([]),
-          baseContextChars:
-            resumeState?.baseContextChars ?? Math.max(0, appendInstructionText?.length ?? 0),
+          baseContextChars: resumeState?.baseContextChars ?? systemPrompt.append.length,
           approximateConversationChars: resumeState?.approximateConversationChars ?? 0,
           resumeCompactionDialogShown: false,
           compactionRecommendationEmitted: resumeState?.compactionRecommendationEmitted ?? false,

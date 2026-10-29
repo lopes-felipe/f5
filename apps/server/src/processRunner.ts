@@ -1,4 +1,8 @@
-import { type ChildProcess as ChildProcessHandle, spawn } from "node:child_process";
+import {
+  type ChildProcess as ChildProcessHandle,
+  type ChildProcessWithoutNullStreams,
+  spawn,
+} from "node:child_process";
 import { killProcessTree } from "@t3tools/shared/processTree";
 import { ensureWindowsPathHydrated } from "@t3tools/shared/windowsPath";
 
@@ -108,6 +112,52 @@ function killChild(child: ChildProcessHandle, signal: NodeJS.Signals = "SIGTERM"
   killProcessTree(child, { isGroupLeader: process.platform !== "win32", signal });
 }
 
+interface LiveRun {
+  readonly child: ChildProcessHandle;
+  /** SIGTERM the group, escalating to SIGKILL after the grace period. */
+  readonly terminate: () => void;
+  readonly settled: Promise<void>;
+}
+
+// Children run detached in their own process group, so nothing reaches them
+// when the backend stops. Callers that are interrupted abort the run, but do
+// not wait for it, so the backend can exit before the SIGKILL timer fires.
+const liveRuns = new Set<LiveRun>();
+let exitHookInstalled = false;
+
+function trackRun(run: LiveRun): void {
+  if (!exitHookInstalled) {
+    exitHookInstalled = true;
+    // Last resort, and synchronous: the event loop is gone once "exit" fires.
+    process.on("exit", killRunningProcessGroups);
+  }
+  liveRuns.add(run);
+}
+
+/** SIGKILL every running command's process group. */
+export function killRunningProcessGroups(): void {
+  for (const run of liveRuns) killChild(run.child, "SIGKILL");
+}
+
+/**
+ * Stop every running command during backend shutdown: SIGTERM now, SIGKILL
+ * after the usual grace period, and SIGKILL whatever remains at `deadline`.
+ */
+export async function terminateRunningProcesses(deadline: number): Promise<void> {
+  const runs = [...liveRuns];
+  if (runs.length === 0) return;
+  for (const run of runs) run.terminate();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    Promise.all(runs.map((run) => run.settled)),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  for (const run of runs) if (liveRuns.has(run)) killChild(run.child, "SIGKILL");
+}
+
 function appendChunkWithinLimit(
   target: string,
   currentBytes: number,
@@ -163,12 +213,20 @@ export async function runProcess(
     : environment;
 
   return new Promise<ProcessRunResult>((resolve, reject) => {
-    const child = spawn(invocation.file, [...invocation.args], {
-      cwd: options.cwd,
-      env: spawnEnvironment,
-      stdio: "pipe",
-      detached: process.platform !== "win32",
-    });
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawn(invocation.file, [...invocation.args], {
+        cwd: options.cwd,
+        env: spawnEnvironment,
+        stdio: "pipe",
+        detached: process.platform !== "win32",
+      });
+    } catch (error) {
+      // Node throws some spawn failures synchronously, e.g. ENOTDIR when a
+      // PATH entry or cwd component is a file. Report them like async ones.
+      reject(normalizeSpawnError(command, args, error));
+      return;
+    }
 
     let stdout = "";
     let stderr = "";
@@ -188,10 +246,21 @@ export async function runProcess(
     let terminating = false;
     let exitCode: number | null = null;
     let exitSignal: NodeJS.Signals | null = null;
+    let markSettled!: () => void;
+    const run: LiveRun = {
+      child,
+      terminate: () => terminateProcessGroup(),
+      settled: new Promise<void>((resolve) => {
+        markSettled = resolve;
+      }),
+    };
+    trackRun(run);
 
     const finalize = (callback: () => void): void => {
       if (settled) return;
       settled = true;
+      liveRuns.delete(run);
+      markSettled();
       clearTimeout(timeoutTimer);
       if (forceKillTimer) clearTimeout(forceKillTimer);
       if (drainTimer) clearTimeout(drainTimer);

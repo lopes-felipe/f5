@@ -6,6 +6,7 @@ import { HttpClient, HttpClientError, HttpClientResponse } from "effect/unstable
 import {
   extractProviderVersion,
   compareProviderVersions,
+  isBuiltInProviderDriver,
   NPM_UPDATE_SOURCES,
   lookupLatestVersion,
   lookupNpmLatestVersion,
@@ -265,4 +266,11 @@ it("preserves the complete prerelease suffix without changing generic health-pro
     );
   }
   assert.ok(compareProviderVersions("1.0.0-beta-2", "1.0.0-beta-1") > 0);
+});
+
+it("publishes version advisories for Grok alongside the other updatable providers", () => {
+  for (const driver of ["codex", "claudeAgent", "cursor", "opencode", "pi", "grok"]) {
+    assert.ok(isBuiltInProviderDriver(ProviderDriverKind.make(driver)), driver);
+  }
+  assert.ok(!isBuiltInProviderDriver(ProviderDriverKind.make("antigravity")));
 });

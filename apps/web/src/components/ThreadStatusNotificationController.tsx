@@ -223,7 +223,7 @@ export function ThreadStatusNotificationControllerContent({
               description: [transition.projectName, transition.threadTitle]
                 .filter(Boolean)
                 .join(" · "),
-              type: "info",
+              type: transition.status === "failed" ? "error" : "info",
               data: { threadStatus: transition.status },
               actionProps: {
                 children: "View",

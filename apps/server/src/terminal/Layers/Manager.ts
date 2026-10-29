@@ -250,7 +250,26 @@ function createTerminalSpawnEnv(
   }
   // Both terminal clients support 24-bit color; preserve explicit overrides.
   if (!spawnEnv.COLORTERM) spawnEnv.COLORTERM = "truecolor";
+  disableFishTerminalQueries(spawnEnv);
   return spawnEnv;
+}
+
+/**
+ * fish 4.1+ can wait 10s at startup for a DA1 reply before a renderer attaches.
+ * Skip the query unless the user or provider already chose `query-term` or `no-query-term`.
+ */
+export function disableFishTerminalQueries(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): void {
+  const key =
+    platform === "win32"
+      ? (Object.keys(env).find((candidate) => candidate.toLowerCase() === "fish_features") ??
+        "fish_features")
+      : "fish_features";
+  const features = env[key];
+  if (features?.includes("query-term")) return;
+  env[key] = features ? `${features},no-query-term` : "no-query-term";
 }
 
 function explicitTerminalRuntimeEnvOf(

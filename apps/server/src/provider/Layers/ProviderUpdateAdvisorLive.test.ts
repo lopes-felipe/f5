@@ -9,7 +9,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, it } from "@effect/vitest";
 import { expect, vi } from "vitest";
-import { Deferred, Effect, Exit, Fiber, Layer, PubSub, Scope, Stream } from "effect";
+import { Deferred, Effect, Exit, Fiber, Layer, Logger, PubSub, Scope, Stream } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { withAccountAdmission } from "../../profiles/ProviderAccountGuard.ts";
@@ -798,6 +798,25 @@ describe("provider update advisor", () => {
       expect(state.refreshed).toEqual([id]);
     }),
   );
+  it.effect("logs the failed update command with its exit code and output tail", () => {
+    const logs: Array<{ message: unknown }> = [];
+    return Effect.gen(function* () {
+      const { advisor, state } = yield* makeHarness();
+      state.run = async () => ({ ...processSuccess, code: 1, stderr: "npm error code EACCES" });
+      expect((yield* advisor.runUpdate(id)).outcome).toBe("failed");
+      const failure = logs.find((log) =>
+        JSON.stringify(log.message).includes("provider update command failed"),
+      );
+      expect(JSON.stringify(failure?.message)).toContain("npm error code EACCES");
+      expect(JSON.stringify(failure?.message)).toContain('"exitCode":1');
+    }).pipe(
+      Effect.provide(
+        Logger.layer([Logger.make(({ message }) => logs.push({ message }))], {
+          mergeWithExisting: false,
+        }),
+      ),
+    );
+  });
   it.effect("handles a rejected spawn without losing the lock or refresh", () =>
     Effect.gen(function* () {
       const { advisor, state } = yield* makeHarness();

@@ -29,6 +29,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import type { OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
 import {
+  buildOpenCodePermissionRules,
   OpenCodeRuntime,
   OpenCodeRuntimeError,
   type OpenCodeRuntimeShape,
@@ -65,6 +66,7 @@ const runtimeMock = {
     permissionReplies: [] as Array<{ requestID: string; reply: string }>,
     permissionReplyError: null as Error | null,
     children: {} as Record<string, string[]>,
+    childPermissions: {} as Record<string, unknown[]>,
     parents: {} as Record<string, string>,
     closeCalls: [] as string[],
     revertCalls: [] as Array<{ sessionID: string; messageID?: string }>,
@@ -109,6 +111,7 @@ const runtimeMock = {
     this.state.permissionReplies.length = 0;
     this.state.permissionReplyError = null;
     this.state.children = {};
+    this.state.childPermissions = {};
     this.state.parents = {};
     this.state.closeCalls.length = 0;
     this.state.revertCalls.length = 0;
@@ -204,7 +207,14 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         },
         children: async ({ sessionID }: { sessionID: string }) => {
           if (runtimeMock.state.childrenError) throw new Error("discovery unavailable");
-          return { data: (runtimeMock.state.children[sessionID] ?? []).map((id) => ({ id })) };
+          return {
+            data: (runtimeMock.state.children[sessionID] ?? []).map((id) => ({
+              id,
+              ...(runtimeMock.state.childPermissions[id]
+                ? { permission: runtimeMock.state.childPermissions[id] }
+                : {}),
+            })),
+          };
         },
         abort: async ({ sessionID }: { sessionID: string }) => {
           runtimeMock.state.abortCalls.push(sessionID);
@@ -574,6 +584,40 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       assert.deepEqual(permission[0], { permission: "*", pattern: "*", action: "ask" });
       assert.deepEqual(runtimeMock.state.sessionCreateUrls, []);
       assert.equal(runtimeMock.state.closeCalls.length, 1);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("applies the resumed runtime mode to existing subagent sessions", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("resume-subagent-permissions");
+      const root = "ses_parent";
+      const agentRestriction = { permission: "todowrite", pattern: "*", action: "deny" };
+      // OpenCode copied the full-access era's rules into these children at creation.
+      runtimeMock.state.children[root] = ["ses_child"];
+      runtimeMock.state.children.ses_child = ["ses_grandchild"];
+      runtimeMock.state.childPermissions.ses_child = [
+        { permission: "*", pattern: "*", action: "allow" },
+        agentRestriction,
+      ];
+      runtimeMock.state.childPermissions.ses_grandchild = [
+        { permission: "*", pattern: "*", action: "deny" },
+        { permission: "edit", pattern: "*", action: "deny" },
+      ];
+      yield* adapter.startSession({
+        threadId,
+        provider: "opencode",
+        runtimeMode: "approval-required",
+        resumeCursor: { schemaVersion: 1, sessionId: root },
+      });
+      const updates = new Map(
+        runtimeMock.state.sessionUpdateCalls.map((call) => [call.sessionID, call.permission]),
+      );
+      const parentRules = buildOpenCodePermissionRules("approval-required");
+      assert.deepEqual(updates.get(root), parentRules);
+      assert.deepEqual(updates.get("ses_child"), [...parentRules, agentRestriction]);
+      assert.deepEqual(updates.get("ses_grandchild"), parentRules);
       yield* adapter.stopSession(threadId);
     }),
   );

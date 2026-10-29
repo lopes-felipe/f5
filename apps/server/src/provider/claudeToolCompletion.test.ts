@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   buildClaudeToolCompletion,
+  claudeSubagentTaskToolOutput,
   isClaudeTaskToolName,
+  readClaudeToolNonExecutionKind,
   storeClaudeToolCompletionArtifact,
 } from "./claudeToolCompletion.ts";
 
@@ -114,6 +116,68 @@ describe("buildClaudeToolCompletion", () => {
       buildClaudeToolCompletion({ ...base, toolName: "TaskList", structuredOutput: cyclic })
         .envelope.outputOmission,
     ).toEqual({ reason: "unserializable" });
+  });
+});
+
+describe("claudeSubagentTaskToolOutput", () => {
+  it("rebuilds structured results from subagent text", () => {
+    expect(
+      claudeSubagentTaskToolOutput("TaskCreate", "Task #3 created successfully: Run tests\n"),
+    ).toEqual({ task: { id: "3", subject: "Run tests" } });
+    expect(claudeSubagentTaskToolOutput("TaskUpdate", "Updated task #3 status")).toEqual({
+      success: true,
+      taskId: "3",
+    });
+  });
+
+  it("reads the non-execution kind of one result and fails Task calls that never ran", () => {
+    const message = {
+      tool_result_meta: [
+        { id: "other", non_execution_kind: "skipped" },
+        { id: "toolu_1", non_execution_kind: "cancelled" },
+      ],
+    };
+    expect(readClaudeToolNonExecutionKind(message, "toolu_1")).toBe("cancelled");
+    expect(readClaudeToolNonExecutionKind(message, "missing")).toBeUndefined();
+    expect(readClaudeToolNonExecutionKind({}, "toolu_1")).toBeUndefined();
+    expect(
+      readClaudeToolNonExecutionKind(
+        { tool_result_meta: [{ id: "toolu_1", non_execution_kind: null }] },
+        "toolu_1",
+      ),
+    ).toBeUndefined();
+    const { envelope } = buildClaudeToolCompletion({
+      ...base,
+      toolName: "TaskUpdate",
+      structuredOutput: { success: true, taskId: "1" },
+      nonExecutionKind: "cancelled",
+    });
+    expect(envelope.semanticSuccess).toBe(false);
+    expect(envelope.transportError).toBe(false);
+    // Non-Task tools keep the transport-level status.
+    expect(
+      buildClaudeToolCompletion({
+        ...base,
+        toolName: "Read",
+        structuredOutput: undefined,
+        nonExecutionKind: "cancelled",
+      }).envelope.semanticSuccess,
+    ).toBe(true);
+  });
+
+  it("treats any other text as a failed call", () => {
+    expect(claudeSubagentTaskToolOutput("TaskUpdate", "Task #9 not found")).toEqual({
+      success: false,
+      error: "Task #9 not found",
+    });
+    expect(claudeSubagentTaskToolOutput("TaskCreate", "")).toEqual({ success: false });
+    const failed = buildClaudeToolCompletion({
+      ...base,
+      toolName: "TaskUpdate",
+      structuredOutput: claudeSubagentTaskToolOutput("TaskUpdate", "Task #9 not found"),
+    });
+    expect(failed.envelope.semanticSuccess).toBe(false);
+    expect(failed.envelope.semanticError).toBe("Task #9 not found");
   });
 });
 

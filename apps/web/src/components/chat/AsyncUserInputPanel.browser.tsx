@@ -4,6 +4,7 @@ import { page, userEvent } from "vitest/browser";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AsyncUserInputPanel } from "./AsyncUserInputPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
+import { usePendingUserInputDraftStore } from "../../pendingUserInputDraftStore";
 const mocks = vi.hoisted(() => ({ dispatch: vi.fn(), release: vi.fn() }));
 vi.mock("~/nativeApi", () => ({
   readNativeApi: () => ({
@@ -58,6 +59,39 @@ describe("async questions", () => {
   beforeEach(() => {
     mocks.dispatch.mockReset().mockResolvedValue({ sequence: 1 });
     mocks.release.mockReset().mockResolvedValue(undefined);
+    usePendingUserInputDraftStore.setState({
+      answersByThreadId: {},
+      questionIndexByThreadId: {},
+      asyncDraftsByThreadId: {},
+    });
+  });
+  it("keeps a typed answer and the question position after a remount", async () => {
+    const first = await render(<AsyncUserInputPanel threadId={threadId} input={twoQuestions} />);
+    await page.getByRole("button", { name: "Ready", exact: true }).click();
+    await page.getByRole("button", { name: "Next", exact: true }).click();
+    await expect.element(page.getByText("Did a dialog open?")).toBeVisible();
+    await page.getByRole("button", { name: "Other…" }).click();
+    await page.getByRole("textbox", { name: "Other answer: Did a dialog open?" }).fill("Typed");
+    await first.unmount();
+
+    const second = await render(<AsyncUserInputPanel threadId={threadId} input={twoQuestions} />);
+    try {
+      await expect
+        .element(page.getByRole("textbox", { name: "Other answer: Did a dialog open?" }))
+        .toHaveValue("Typed");
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      await vi.waitFor(() =>
+        expect(mocks.dispatch).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "thread.user-input.respond",
+            answers: { retry: { answers: ["Ready"] }, dialog: { answers: ["Typed"] } },
+          }),
+        ),
+      );
+      expect(usePendingUserInputDraftStore.getState().asyncDraftsByThreadId).toEqual({});
+    } finally {
+      await second.unmount();
+    }
   });
   it("links URLs and files in the question text", async () => {
     const url = "https://accounts.example.com/device?user_code=RTJS-TQGS";

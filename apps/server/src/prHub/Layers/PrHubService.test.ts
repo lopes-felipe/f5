@@ -1955,6 +1955,84 @@ it.effect("loads GitHub detail surfaces and retains cached data on transient fai
   );
 });
 
+it.effect("loads GitHub detail when GitHub refuses a requested reviewer", () => {
+  const calls = makeCalls();
+  const pr = makePrNode({ id: "PR_detail", number: 30, author: "me" });
+  const refused = {
+    ...prDetailResponse({ title: "Partial detail" }),
+    errors: [
+      {
+        type: "FORBIDDEN",
+        message: "Resource not accessible by integration",
+        path: ["repository", "pullRequest", "reviewRequests", "nodes", 0, "requestedReviewer"],
+      },
+    ],
+  };
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    const tracked = snapshot.pullRequests[0];
+    assert.ok(tracked);
+
+    const detail = yield* service.getDetail({ key: tracked.key });
+    assert.equal(detail.detail.title, "Fresh detail");
+    const reads = calls.graphql.filter((request) => request.query.includes("F5PrDetail("));
+    assert.deepStrictEqual(
+      reads.map(
+        (request) => (request.variables as { requestedReviewers?: number }).requestedReviewers,
+      ),
+      [50, 0],
+    );
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchResponses: [searchResponse("author", [pr])],
+        prDetailResponses: [refused, prDetailResponse({ title: "Fresh detail" })],
+      }),
+    ),
+  );
+});
+
+it.effect("does not retry GitHub detail for other GraphQL errors", () => {
+  const calls = makeCalls();
+  const pr = makePrNode({ id: "PR_detail", number: 30, author: "me" });
+  const failed = {
+    ...prDetailResponse(),
+    errors: [
+      {
+        type: "FORBIDDEN",
+        message: "Resource not accessible by integration",
+        path: ["repository", "pullRequest", "reviewRequests", "nodes", 0, "requestedReviewer"],
+      },
+      { type: "FORBIDDEN", message: "denied", path: ["repository", "pullRequest", "labels"] },
+    ],
+  };
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    const tracked = snapshot.pullRequests[0];
+    assert.ok(tracked);
+
+    const exit = yield* Effect.exit(service.getDetail({ key: tracked.key }));
+    assert.equal(Exit.isFailure(exit), true);
+    assert.equal(
+      calls.graphql.filter((request) => request.query.includes("F5PrDetail(")).length,
+      1,
+    );
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchResponses: [searchResponse("author", [pr])],
+        prDetailResponses: [failed, prDetailResponse({ title: "Fresh detail" })],
+      }),
+    ),
+  );
+});
+
 it.effect("reconciles detail mutations and forwards provider-native arguments", () => {
   const calls = makeCalls();
   const pr = makePrNode({ id: "PR_detail", number: 30, author: "me" });

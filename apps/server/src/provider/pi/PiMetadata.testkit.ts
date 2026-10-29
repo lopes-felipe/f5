@@ -14,7 +14,11 @@ const emit=record=>process.stdout.write(JSON.stringify(record)+'\n');
 const reply=(record,data)=>emit({type:'response',id:record.id,command:record.type,success:true,data});
 let pending='';
 process.stdin.on('data',chunk=>{pending+=chunk.toString('utf8');for(;;){const end=pending.indexOf('\n');if(end<0)break;const record=JSON.parse(pending.slice(0,end));pending=pending.slice(end+1);trace(record);
- if(record.type==='get_state')reply(record,{model:{provider:'one',id:'shared'},thinkingLevel:'high'});
+ if(record.type==='get_state'&&process.env.F5_PI_GATE){
+  // Simulates a slow cold start: answers only once the test opens the gate.
+  const timer=setInterval(()=>{if(fs.existsSync(process.env.F5_PI_GATE)){clearInterval(timer);reply(record,{model:{provider:'one',id:'shared'},thinkingLevel:'high'});}},10);
+ }
+ else if(record.type==='get_state')reply(record,{model:{provider:'one',id:'shared'},thinkingLevel:'high'});
  else if(record.type==='get_available_models')reply(record,{models:[{provider:'one',id:'shared',reasoning:true},{provider:'two',id:'shared',reasoning:true}]});
  else if(record.type==='get_commands'){
   if(process.env.F5_PI_CASE==='catalog-failure')emit({type:'response',id:record.id,success:false,error:'PRIVATE_FAILURE'});

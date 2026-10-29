@@ -15,6 +15,7 @@ import { assertWorktreeReady } from "../../project/worktreeReadiness.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { assertMcpRuntimeConfig, mcpConfigErrorMessage } from "@t3tools/shared/mcpValidation";
 import { readCodexMcpOAuthCallbackConfig } from "@t3tools/shared/mcpTranslation";
+import { resolveClaudeLaunchAppendSystemPrompt } from "../claudeAppendSystemPrompt.ts";
 import { DeliveryAttemptContext } from "../deliveryAttemptContext";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
 import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
@@ -312,6 +313,28 @@ function mergeResolvedMcpProviderOptions(input: {
     ...input.providerOptions,
     mcpServers: input.projectMcpServers,
   };
+}
+
+/**
+ * Claude resolves its append launch arguments at start. Check them before any
+ * stop, so a replacement with a bad path leaves the live session running.
+ */
+function checkClaudeAppendSystemPrompt(
+  operation: string,
+  input: {
+    readonly provider: string | undefined;
+    readonly providerOptions?: ProviderStartOptions | undefined;
+    readonly cwd?: string | undefined;
+  },
+): Effect.Effect<void, ProviderValidationError> {
+  if (input.provider !== "claudeAgent") return Effect.void;
+  return resolveClaudeLaunchAppendSystemPrompt({
+    launchArgs: input.providerOptions?.claudeAgent?.launchArgs,
+    cwd: input.cwd,
+  }).pipe(
+    Effect.asVoid,
+    Effect.mapError((error) => toValidationError(operation, error.message, error)),
+  );
 }
 
 function resolveStartInstanceId(input: {
@@ -1278,6 +1301,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           },
           catch: (cause) => toValidationError(input.operation, mcpConfigErrorMessage(cause)),
         });
+        yield* checkClaudeAppendSystemPrompt(input.operation, {
+          provider: input.binding.provider,
+          providerOptions: resumedProviderOptions,
+          cwd: persistedCwd,
+        });
 
         const recoveredRuntimeMode = input.binding.runtimeMode ?? DEFAULT_RUNTIME_MODE;
         const unsupportedRuntimeMode = runtimeModeUnsupportedReason(
@@ -1795,6 +1823,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             },
             catch: (cause) =>
               toValidationError("ProviderService.startSession", mcpConfigErrorMessage(cause)),
+          });
+          yield* checkClaudeAppendSystemPrompt("ProviderService.startSession", {
+            provider: resolvedProvider,
+            providerOptions: adapterInput.providerOptions,
+            cwd: adapterInput.cwd,
           });
           const launchFingerprint = computeProviderLaunchFingerprint({
             provider: resolvedProvider,
@@ -2891,6 +2924,16 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               readPersistedSessionGeneration(current.runtimePayload) !== expected.generation
             )
               return null;
+            // startSession checks again; this copy runs before the stop.
+            const target = yield* registry
+              .getInstanceInfo(resolveStartInstanceId(input))
+              .pipe(Effect.option);
+            if (Option.isSome(target))
+              yield* checkClaudeAppendSystemPrompt("ProviderService.replaceSession", {
+                provider: target.value.driverKind,
+                providerOptions: input.providerOptions,
+                cwd: input.cwd,
+              });
             yield* stopSessionUnlocked({ threadId });
             return yield* startSession(threadId, input);
           }),

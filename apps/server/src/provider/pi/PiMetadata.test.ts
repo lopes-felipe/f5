@@ -1,7 +1,8 @@
-import { stat } from "node:fs/promises";
-import { Effect } from "effect";
-import { expect, it } from "vitest";
-import { probePiCatalog } from "./PiMetadata.ts";
+import { stat, writeFile } from "node:fs/promises";
+import { type Duration, Effect, Fiber } from "effect";
+import * as TestClock from "effect/testing/TestClock";
+import { expect, it, vi } from "vitest";
+import { PI_CATALOG_PROBE_TIMEOUT_MS, probePiCatalog } from "./PiMetadata.ts";
 import { makePiTextGeneration, runPiMetadataPrompt } from "../../git/Layers/PiTextGeneration.ts";
 import { PiRpcError } from "./PiRpc.ts";
 import { fixture, run } from "./PiMetadata.testkit.ts";
@@ -21,6 +22,33 @@ it("probes in a disposable workspace with extensions, tools and inherited MCP cr
     expect(spawn.privateEnvironment).toBe(false);
     await expect(stat(String(spawn.cwd))).rejects.toThrow();
   }));
+const probeAfterSlowStart = (elapsed: Duration.Input, expected: "Success" | "Failure") =>
+  fixture(async (settings, environment, trace) => {
+    const gate = `${environment.F5_PI_TRACE}.gate`;
+    const result = await run(
+      Effect.gen(function* () {
+        const fiber = yield* probePiCatalog(settings, { ...environment, F5_PI_GATE: gate }).pipe(
+          Effect.result,
+          Effect.forkChild,
+        );
+        yield* Effect.promise(() =>
+          vi.waitFor(
+            async () => expect((await trace()).some((record) => record.type === "get_state")),
+            { timeout: 10_000 },
+          ),
+        );
+        yield* TestClock.adjust(elapsed);
+        yield* Effect.promise(() => writeFile(gate, ""));
+        return yield* Fiber.join(fiber);
+      }).pipe(Effect.provide(TestClock.layer()), Effect.scoped),
+    );
+    expect(result._tag).toBe(expected);
+  });
+it("gives a cold Pi start 30 seconds to answer catalog discovery", async () => {
+  expect(PI_CATALOG_PROBE_TIMEOUT_MS).toBe(30_000);
+  await probeAfterSlowStart("20 seconds", "Success");
+  await probeAfterSlowStart("31 seconds", "Failure");
+});
 it("fails a broken catalog read instead of replacing a usable catalog with an empty one", async () =>
   fixture(async (settings, environment) => {
     const result = await run(

@@ -37,7 +37,13 @@ import {
   Stream,
   Schedule,
 } from "effect";
-import type { OpencodeClient, Part, PermissionRequest, QuestionRequest } from "@opencode-ai/sdk/v2";
+import type {
+  OpencodeClient,
+  Part,
+  PermissionRequest,
+  PermissionRuleset,
+  QuestionRequest,
+} from "@opencode-ai/sdk/v2";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
@@ -57,8 +63,10 @@ import {
 import { type OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
 import {
   loadOpenCodeSkills,
+  buildOpenCodeChildPermissionRules,
   buildOpenCodePermissionRules,
   buildOpenCodeWorkflowPermissionRules,
+  permissionRulesetEquals,
   OpenCodeRuntime,
   OpenCodeRuntimeError,
   openCodeQuestionId,
@@ -474,6 +482,45 @@ function updateProviderSession(
   context.session = nextSession;
   return nextSession;
 }
+
+const MAX_SUBAGENT_PERMISSION_SESSIONS = 256;
+
+/**
+ * Resume and fork apply the current rules to the root only. OpenCode copied the
+ * parent's rules into each subagent session when it was created, so a subagent
+ * resumed by task id would keep an earlier mode's rules. Rewrite the whole tree.
+ */
+export const updateOpenCodeSubagentPermissions = Effect.fn("updateOpenCodeSubagentPermissions")(
+  function* (client: OpencodeClient, rootSessionId: string, parentRules: PermissionRuleset) {
+    const seen = new Set([rootSessionId]);
+    const pending = [rootSessionId];
+    for (let parentId = pending.pop(); parentId !== undefined; parentId = pending.pop()) {
+      const children = yield* runOpenCodeSdk("session.children", (signal) =>
+        client.session.children({ sessionID: parentId! }, { signal }),
+      ).pipe(
+        Effect.map((response) => response.data ?? []),
+        Effect.catchIf(isOpenCodeNotFound, () => Effect.succeed([])),
+      );
+      for (const child of children) {
+        if (seen.has(child.id)) continue;
+        if (seen.size >= MAX_SUBAGENT_PERMISSION_SESSIONS) {
+          return yield* new OpenCodeRuntimeError({
+            operation: "session.update",
+            detail: `OpenCode session '${rootSessionId}' has more than ${MAX_SUBAGENT_PERMISSION_SESSIONS} subagent sessions to update.`,
+          });
+        }
+        seen.add(child.id);
+        pending.push(child.id);
+        const current = child.permission ?? [];
+        const permission = buildOpenCodeChildPermissionRules(parentRules, current);
+        if (permissionRulesetEquals(permission, current)) continue;
+        yield* runOpenCodeSdk("session.update", (signal) =>
+          client.session.update({ sessionID: child.id, permission }, { signal }),
+        ).pipe(Effect.catchIf(isOpenCodeNotFound, () => Effect.void));
+      }
+    }
+  },
+);
 
 const abortOpenCodeTree = Effect.fn("abortOpenCodeTree")(function* (
   context: OpenCodeSessionContext,
@@ -1418,6 +1465,7 @@ export function makeOpenCodeAdapter(
                 yield* runOpenCodeSdk("session.update", (signal) =>
                   client.session.update({ sessionID: resolved.id, permission }, { signal }),
                 );
+                yield* updateOpenCodeSubagentPermissions(client, resolved.id, permission);
                 return {
                   sessionScope,
                   server,

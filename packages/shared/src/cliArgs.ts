@@ -72,7 +72,6 @@ const RESERVED_FLAG_NAMES: ReadonlySet<string> = new Set([
   "continue",
   "mcp-config",
   "add-dir",
-  "append-system-prompt",
   "system-prompt",
   "settings",
   "setting-sources",
@@ -88,6 +87,40 @@ const RESERVED_FLAG_NAMES: ReadonlySet<string> = new Set([
 
 export function isReservedClaudeLaunchArgName(name: string): boolean {
   return RESERVED_FLAG_NAMES.has(name);
+}
+
+/**
+ * Append flags the session adapter folds into the SDK's `systemPrompt.append`
+ * after F5's instructions. Claude Code replaces its CLI append text with the
+ * SDK's initialize value, so forwarding these through `extraArgs` would drop
+ * them silently.
+ */
+export const CLAUDE_APPEND_SYSTEM_PROMPT_FLAG_NAMES: ReadonlySet<string> = new Set([
+  "append-system-prompt",
+  "append-system-prompt-file",
+]);
+
+export interface ClaudeAppendSystemPromptArgs {
+  /** `null` when the flag is present without a value. */
+  readonly text?: string | null;
+  readonly file?: string | null;
+}
+
+/** Read the append flags from parsed launch args, with or without a `--` prefix. */
+export function readClaudeAppendSystemPromptArgs(
+  args: Record<string, string | null> | undefined | null,
+): ClaudeAppendSystemPromptArgs {
+  let text: string | null | undefined;
+  let file: string | null | undefined;
+  for (const [key, value] of Object.entries(args ?? {})) {
+    const name = key.replace(/^--/, "");
+    if (name === "append-system-prompt") text = value;
+    else if (name === "append-system-prompt-file") file = value;
+  }
+  return {
+    ...(text !== undefined ? { text } : {}),
+    ...(file !== undefined ? { file } : {}),
+  };
 }
 
 /**

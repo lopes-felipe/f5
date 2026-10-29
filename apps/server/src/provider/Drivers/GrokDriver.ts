@@ -31,6 +31,7 @@ import {
 } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
+import { makeInstanceInstallTargetResolver } from "../providerInstallChannel.ts";
 
 const DRIVER_KIND = ProviderDriverKind.make("grok");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
@@ -148,6 +149,13 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
       return {
         instanceId,
         driverKind: DRIVER_KIND,
+        resolveInstallTarget: makeInstanceInstallTargetResolver({
+          driver: DRIVER_KIND,
+          binaryPath: effectiveConfig.binaryPath,
+          resolutionEnvironment: processEnv,
+          instanceEnvironment: environment,
+          instanceId,
+        }),
         continuationIdentity,
         displayName,
         accentColor,
