@@ -160,6 +160,10 @@ export function formatKeybindingCommandLabel(
 
   const staticCommand = command as StaticKeybindingCommand;
   switch (staticCommand) {
+    case "workspace.focusNext":
+      return "Focus next workspace area";
+    case "workspace.focusPrevious":
+      return "Focus previous workspace area";
     case "thread.stop":
       return "Stop active turn";
     case "thread.toggleSettled":

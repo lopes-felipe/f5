@@ -7,11 +7,12 @@ import {
   makeAccountUsageCapability as makeCapability,
   emptyAccountSection,
 } from "./AccountUsageService.ts";
+import { AccountUsageReadError } from "../accountUsageErrors.ts";
 
 const makeAccountUsageCapability = <E>(
   account: UsageAccount,
   read: Effect.Effect<ReadonlyArray<AccountUsageSection>, E>,
-  options: { readonly readerOwnsTimeout?: boolean } = {},
+  options: { readonly readerOwnsTimeout?: boolean; readonly retryFailedReads?: boolean } = {},
 ) => makeCapability(account, read, { identity: `test:${account.key}`, ...options });
 
 const initial = (key = "claude:test", enabled = true): UsageAccount => ({
@@ -351,6 +352,119 @@ it.effect("awaited failed reads do not call a retained snapshot fresh", () =>
     const result = yield* capability.refreshAccount!(permits);
     expect(result.fresh).toBe(false);
     expect(result.snapshot.sections[0]?.snapshot).toEqual(sections[0]?.snapshot);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("retries failed reads when only fresh usage holds the attempt TTL", () =>
+  Effect.gen(function* () {
+    const permits = yield* Semaphore.make(2);
+    const calls = yield* Ref.make(0);
+    let failed = true;
+    const capability = yield* makeAccountUsageCapability(
+      initial(),
+      Ref.update(calls, (n) => n + 1).pipe(
+        Effect.andThen(
+          Effect.suspend(() =>
+            failed ? Effect.fail(new Error("signed out")) : Effect.succeed(sections),
+          ),
+        ),
+      ),
+      { retryFailedReads: true },
+    );
+    yield* capability.refreshAccount!(permits, "if-stale");
+    // A failed read holds briefly, not for the attempt TTL.
+    yield* capability.refreshAccount!(permits, "if-stale");
+    expect(yield* Ref.get(calls)).toBe(1);
+    yield* TestClock.adjust("30 seconds");
+    const retried = yield* capability.refreshAccount!(permits, "if-stale");
+    expect(yield* Ref.get(calls)).toBe(2);
+    expect(retried.fresh).toBe(false);
+    failed = false;
+    yield* TestClock.adjust("30 seconds");
+    const recovered = yield* capability.refreshAccount!(permits, "if-stale");
+    expect(yield* Ref.get(calls)).toBe(3);
+    expect(recovered.fresh).toBe(true);
+    // Fresh usage keeps the TTL.
+    yield* TestClock.adjust("1 minute");
+    yield* capability.refreshAccount!(permits, "if-stale");
+    expect(yield* Ref.get(calls)).toBe(3);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("keeps unsupported reads for the attempt TTL even when failed reads retry", () =>
+  Effect.gen(function* () {
+    const permits = yield* Semaphore.make(2);
+    const calls = yield* Ref.make(0);
+    const capability = yield* makeAccountUsageCapability(
+      initial(),
+      Ref.update(calls, (n) => n + 1).pipe(
+        Effect.andThen(Effect.fail(new AccountUsageReadError("unsupported"))),
+      ),
+      { retryFailedReads: true },
+    );
+    const result = yield* capability.refreshAccount!(permits, "if-stale");
+    expect(result.snapshot.sections[0]?.outcome).toBe("unsupported");
+    yield* TestClock.adjust("1 minute");
+    yield* capability.refreshAccount!(permits, "if-stale");
+    expect(yield* Ref.get(calls)).toBe(1);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("keeps failed reads for the attempt TTL by default", () =>
+  Effect.gen(function* () {
+    const permits = yield* Semaphore.make(2);
+    const calls = yield* Ref.make(0);
+    const capability = yield* makeAccountUsageCapability(
+      initial(),
+      Ref.update(calls, (n) => n + 1).pipe(Effect.andThen(Effect.fail(new Error("signed out")))),
+    );
+    yield* capability.refreshAccount!(permits, "if-stale");
+    yield* capability.refreshAccount!(permits, "if-stale");
+    expect(yield* Ref.get(calls)).toBe(1);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("invalidate drops a cached read so the next refresh probes again", () =>
+  Effect.gen(function* () {
+    const permits = yield* Semaphore.make(2);
+    const calls = yield* Ref.make(0);
+    const capability = yield* makeAccountUsageCapability(
+      initial(),
+      Ref.update(calls, (n) => n + 1).pipe(Effect.as(sections)),
+    );
+    yield* capability.refreshAccount!(permits, "if-stale");
+    yield* capability.refreshAccount!(permits, "if-stale");
+    expect(yield* Ref.get(calls)).toBe(1);
+    yield* capability.invalidate;
+    yield* capability.refreshAccount!(permits, "if-stale");
+    expect(yield* Ref.get(calls)).toBe(2);
+    // Invalidation does not lift the forced-refresh throttle.
+    yield* capability.invalidate;
+    const throttled = yield* capability.refreshAccount!(permits, "force");
+    expect(yield* Ref.get(calls)).toBe(2);
+    expect(throttled.nextAllowedAt).toBeDefined();
+  }).pipe(Effect.scoped),
+);
+
+it.effect("a read running during invalidate cannot restore the attempt hold", () =>
+  Effect.gen(function* () {
+    const permits = yield* Semaphore.make(2);
+    const calls = yield* Ref.make(0);
+    const gate = yield* Deferred.make<void>();
+    const capability = yield* makeAccountUsageCapability(
+      initial(),
+      Ref.updateAndGet(calls, (n) => n + 1).pipe(
+        Effect.tap((n) => (n === 1 ? Deferred.await(gate) : Effect.void)),
+        Effect.as(sections),
+      ),
+    );
+    const running = yield* capability.refreshAccount!(permits, "if-stale").pipe(Effect.forkChild);
+    yield* settle;
+    yield* capability.invalidate;
+    yield* Deferred.succeed(gate, undefined);
+    yield* Fiber.join(running);
+    yield* capability.refreshAccount!(permits, "if-stale");
+    expect(yield* Ref.get(calls)).toBe(2);
   }).pipe(Effect.scoped),
 );
 

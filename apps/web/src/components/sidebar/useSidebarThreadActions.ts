@@ -12,10 +12,12 @@ import { isElectron } from "../../env";
 import { useCreateProjectBackedDraftThread } from "../../hooks/useCreateProjectBackedDraftThread";
 import {
   nativeThreadActionMenuItems,
+  pickSnoozeMenuPreset,
+  resolveSnoozeMenuPresets,
+  snoozeThreadActionLabel,
   useThreadActionController,
 } from "../../hooks/useThreadActionController";
 import { partitionDroppedAttachments } from "../../lib/droppedAttachments";
-import { resolveSnoozePreset } from "../../lib/snoozePresets";
 import { isMacPlatform } from "../../lib/utils";
 import { readNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
@@ -230,18 +232,27 @@ export function useSidebarThreadActions(input: {
       const ids = [...useThreadSelectionStore.getState().selectedThreadIds];
       if (ids.length === 0) return;
       const count = ids.length;
+      const snoozePresets = resolveSnoozeMenuPresets();
 
-      const clicked = await api.contextMenu.show(
+      const clickedId = await api.contextMenu.show(
         [
           { id: "mark-unread", label: `Mark unread (${count})` },
           { id: "pin", label: `Pin (${count})` },
           { id: "unpin", label: `Unpin (${count})` },
-          { id: "snooze", label: `Snooze for 3 hours (${count})` },
+          ...snoozePresets.map((preset) => ({
+            id: `snooze:${preset.id}`,
+            label: `${snoozeThreadActionLabel(preset)} (${count})`,
+          })),
           { id: "archive", label: `Archive (${count})` },
           { id: "delete", label: `Delete (${count})`, destructive: true },
         ],
         position,
       );
+      const snoozePreset = clickedId?.startsWith("snooze:")
+        ? pickSnoozeMenuPreset(snoozePresets, clickedId as `snooze:${string}`)
+        : undefined;
+      if (clickedId?.startsWith("snooze:") && !snoozePreset) return;
+      const clicked = snoozePreset ? "snooze" : clickedId;
 
       if (clicked === "mark-unread") {
         for (const id of ids) {
@@ -261,7 +272,7 @@ export function useSidebarThreadActions(input: {
           const result = await applyBulkThreadAction(
             ids,
             clicked,
-            clicked === "snooze" ? resolveSnoozePreset("three-hours") : undefined,
+            clicked === "snooze" ? snoozePreset?.snoozedUntil : undefined,
           );
           removeFromSelection(result.succeeded);
           if (result.failures.length)
@@ -399,7 +410,21 @@ export function useSidebarThreadActions(input: {
 
   /** Enter / Space on a focused row. */
   const handleThreadRowKeyDown = useCallback(
-    (event: React.KeyboardEvent, threadId: ThreadId, options?: { isDraft?: boolean }) => {
+    (
+      event: React.KeyboardEvent,
+      threadId: ThreadId,
+      options?: { isDraft?: boolean; canRename?: boolean },
+    ) => {
+      if (
+        event.key === "F2" &&
+        options?.canRename === true &&
+        options.isDraft !== true &&
+        renamingThreadId !== threadId
+      ) {
+        event.preventDefault();
+        startThreadRename(threadId);
+        return;
+      }
       if (event.key !== "Enter" && event.key !== " ") {
         return;
       }
@@ -416,7 +441,7 @@ export function useSidebarThreadActions(input: {
         params: { threadId },
       });
     },
-    [clearSelection, navigate, setSelectionAnchor],
+    [clearSelection, navigate, renamingThreadId, setSelectionAnchor, startThreadRename],
   );
 
   const handleThreadRowDoubleClick = useCallback(

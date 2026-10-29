@@ -190,10 +190,14 @@ export function resolveExecutable(
         .map((candidate) => resolveQualifiedCandidate(candidate, platform, options.cwd))
         .find((candidate) => isExecutableFile(candidate, platform)) ?? null;
   } else {
-    const pathEntries = resolvePathValue(env)
-      .split(platform === "win32" ? ";" : ":")
-      .map(stripWrappingQuotes)
-      .filter(Boolean);
+    // Skip exact repeats only. Windows can make a directory case-sensitive, so
+    // entries that differ in case are not provably the same directory.
+    const pathEntries = new Set(
+      resolvePathValue(env)
+        .split(platform === "win32" ? ";" : ":")
+        .map(stripWrappingQuotes)
+        .filter(Boolean),
+    );
     search: for (const pathEntry of pathEntries) {
       for (const candidate of candidates) {
         const candidatePath = joinForPlatform(pathEntry, candidate, platform);

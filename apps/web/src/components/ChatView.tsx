@@ -49,6 +49,7 @@ import { workspaceBasenameMatch } from "../lib/workspaceBasename";
 import { resolveChatAssetTarget } from "../lib/chatAssetTarget";
 import { isExternalTextPreviewPath, resolveFilePreviewTarget } from "../lib/filePreviewTarget";
 import { WorkspaceMediaView } from "./WorkspaceMediaView";
+import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { Dialog, DialogPopup, DialogTitle } from "./ui/dialog";
 import { PROVIDER_DISPLAY_NAMES, type ProjectIssueAssetUrlInput } from "@t3tools/contracts";
 import { partitionDroppedAttachments } from "../lib/droppedAttachments";
@@ -153,6 +154,7 @@ import { agentBrowserPolicyFromSettings } from "@t3tools/shared/projectSettings"
 import { AgentBrowserLiveCard, BrowserCapabilityChip } from "./AgentBrowserLiveCard";
 import { useResolvedThemePalette } from "../hooks/useThemePalette";
 import { clearFileViewSearchParams, clearTurnDiffSearchParams } from "../diffRouteSearch";
+import { requestDiffFileReveal } from "../diffFileReveal";
 import { FileNavigationProvider } from "../fileNavigationContext";
 import { TerminalCommandProvider } from "../terminalCommandContext";
 import {
@@ -490,6 +492,9 @@ const WorkflowImplementDialog = lazy(() =>
   })),
 );
 const ThreadTerminalDrawer = lazy(() => import("./ThreadTerminalDrawer"));
+// The composer dock floats inside the conversation; the nearest area wins.
+const CONVERSATION_WORKSPACE_AREA = workspaceAreaProps("conversation", 1, "Conversation");
+const COMPOSER_WORKSPACE_AREA = workspaceAreaProps("composer", 2, "Message input");
 
 type NativeApiClient = NonNullable<ReturnType<typeof readNativeApi>>;
 type PendingTurnDispatch = PendingTurnDispatchState;
@@ -2996,6 +3001,7 @@ export default memo(function ChatView({
   );
   const onOpenFileChangeDiff = useCallback(
     (fileChangeId: OrchestrationFileChangeId, filePath?: string) => {
+      if (filePath) requestDiffFileReveal();
       void navigate({
         to: "/$threadId",
         params: { threadId },
@@ -7100,6 +7106,7 @@ export default memo(function ChatView({
   );
   const onOpenTurnDiff = useCallback(
     (turnId: TurnId, filePath?: string) => {
+      if (filePath) requestDiffFileReveal();
       void navigate({
         to: "/$threadId",
         params: { threadId },
@@ -7207,6 +7214,7 @@ export default memo(function ChatView({
           diffFilePathsByTurnId,
         })
       ) {
+        requestDiffFileReveal();
         void navigate({
           to: "/$threadId",
           params: { threadId },
@@ -8010,7 +8018,11 @@ export default memo(function ChatView({
               style={composerRedesign ? { containerType: "size" } : undefined}
             >
               {/* Messages Wrapper */}
-              <div className="relative flex min-h-0 flex-1 flex-col" data-composer-dock-host>
+              <div
+                {...CONVERSATION_WORKSPACE_AREA}
+                className="relative flex min-h-0 flex-1 flex-col"
+                data-composer-dock-host
+              >
                 <ChatStatusAnnouncer
                   threadId={activeThread.id}
                   turnId={activeLatestTurn?.turnId ?? null}
@@ -8110,7 +8122,7 @@ export default memo(function ChatView({
                 />
 
                 {/* Composer dock: tray, composer and branch line float over the timeline end */}
-                <ComposerDock redesign={composerRedesign}>
+                <ComposerDock redesign={composerRedesign} workspaceArea={COMPOSER_WORKSPACE_AREA}>
                   <ComposerDockColumn
                     redesign={composerRedesign}
                     className={isGitRepo ? "pb-0.5" : "pb-3 sm:pb-4"}

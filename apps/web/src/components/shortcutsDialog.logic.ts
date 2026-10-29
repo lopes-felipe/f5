@@ -82,6 +82,8 @@ const SHORTCUT_SECTION_DEFINITIONS: ReadonlyArray<{
     id: "navigation",
     title: "Navigation",
     commands: [
+      "workspace.focusNext",
+      "workspace.focusPrevious",
       "navigation.back",
       "navigation.forward",
       "thread.switchRecentNext",

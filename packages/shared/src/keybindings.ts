@@ -46,6 +46,11 @@ const UPSTREAM_DEFAULT_KEYS = [
 ] as const satisfies { readonly length: (typeof UPSTREAM_KEYBINDING_COMMANDS)["length"] };
 
 export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
+  { key: "f6", command: "workspace.focusNext" },
+  { key: "shift+f6", command: "workspace.focusPrevious" },
+  // Some browsers keep plain F6 for their own toolbars; mod+F6 reaches the page in all of them.
+  { key: "mod+f6", command: "workspace.focusNext" },
+  { key: "mod+shift+f6", command: "workspace.focusPrevious" },
   { key: "mod+t", command: "rightPanel.tabMenu", when: "!terminalFocus && !dialogFocus" },
   {
     key: "mod+shift+t",

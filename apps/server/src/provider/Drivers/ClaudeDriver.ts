@@ -28,7 +28,7 @@ import {
 } from "@t3tools/contracts";
 import { normalizeModelSlug } from "@t3tools/shared/model";
 import { Duration, Effect, FileSystem, Path, Ref, Schema, Stream } from "effect";
-import { makeClaudeInstanceProbes } from "./ClaudeProbeCache.ts";
+import { makeClaudeInstanceProbes, makeClaudeSignOutInvalidation } from "./ClaudeProbeCache.ts";
 import {
   emptyAccountSection,
   makeAccountUsageCapability,
@@ -256,14 +256,23 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             claudeProcessEnvironment,
           ),
           readerOwnsTimeout: true,
+          // A failed or signed-out usage read retries instead of holding the TTL.
+          retryFailedReads: true,
         },
       );
 
-      const checkProvider = checkClaudeProviderStatus(
-        effectiveConfig,
-        () => probes.capabilities,
-        processEnv,
-        serverConfig.stateDir,
+      // Signing out drops cached account probes, so limits return as soon as the user signs back in.
+      const withSignOutInvalidation = yield* makeClaudeSignOutInvalidation({
+        invalidateProbes: probes.invalidate,
+        invalidateUsage: accountUsage.invalidate,
+      });
+      const checkProvider = withSignOutInvalidation(
+        checkClaudeProviderStatus(
+          effectiveConfig,
+          () => probes.capabilities,
+          processEnv,
+          serverConfig.stateDir,
+        ),
       ).pipe(
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),

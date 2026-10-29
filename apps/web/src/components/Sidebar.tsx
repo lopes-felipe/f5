@@ -1,5 +1,6 @@
 import { ArrowLeftIcon, FolderPlusIcon, KeyboardIcon, PlusIcon, SettingsIcon } from "lucide-react";
 import { useShortcutsDialogStore } from "../shortcutsDialogStore";
+import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../lib/sidebarTree";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStableCallback } from "../hooks/useStableCallback";
 import {
@@ -1126,7 +1127,12 @@ export default function Sidebar() {
             onDragEnd={handleProjectDragEnd}
             onDragCancel={handleProjectDragCancel}
           >
-            <SidebarMenu className="gap-px">
+            <SidebarMenu
+              {...SIDEBAR_TREE_PROPS}
+              aria-label="Projects"
+              ref={attachSidebarTree}
+              className="gap-px"
+            >
               <SortableContext
                 items={projects.map((project) => project.id)}
                 strategy={verticalListSortingStrategy}

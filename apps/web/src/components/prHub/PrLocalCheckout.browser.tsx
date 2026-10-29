@@ -30,7 +30,8 @@ vi.mock("../../nativeApi", () => ({
   }),
 }));
 vi.mock("../../hooks/useSettings", () => ({ useSettings: () => null }));
-vi.mock("../../appSettings", () => ({
+vi.mock("../../appSettings", async (original) => ({
+  ...(await original<typeof import("../../appSettings")>()),
   useAppSettings: () => ({
     settings: { addProjectBaseDirectory: api.baseDirectory, prHubLastMergeMethods: {} },
   }),
