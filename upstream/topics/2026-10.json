@@ -890,6 +890,24 @@
       "upstreamPrs": []
     },
     {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "c-f855f016b3fe",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "chore(release): prepare v0.1.4",
+      "upstreamPrs": []
+    },
+    {
       "createdAt": "2026-10-26T17:34:07.879Z",
       "decidedAt": "2026-10-26T17:34:07.879Z",
       "decidedBy": "llm",
@@ -26769,6 +26787,26 @@
       ]
     },
     {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-20145",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(claude): command approvals show the command, not Claude's description of it (#20145)",
+      "upstreamPrs": [
+        20145
+      ]
+    },
+    {
       "createdAt": "2026-10-26T17:22:32.389Z",
       "decidedAt": "2026-10-28T21:02:45.718Z",
       "decidedBy": "user",
@@ -31228,6 +31266,26 @@
       "title": "Claude status recovers after a failed capability probe",
       "upstreamPrs": [
         21042
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-21046",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): publish local git status before remote lookup (#21046)",
+      "upstreamPrs": [
+        21046
       ]
     },
     {
@@ -45415,6 +45473,26 @@
       ]
     },
     {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-24937",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): keep tool groups collapsed after a usage-limit pause (#24937)",
+      "upstreamPrs": [
+        24937
+      ]
+    },
+    {
       "createdAt": "2026-10-27T16:29:26.968Z",
       "decidedAt": "2026-10-27T16:29:26.968Z",
       "decidedBy": "rule",
@@ -49370,6 +49448,26 @@
       ]
     },
     {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-25588",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "feat(pull-requests): manage GitHub maintainer edits (#25588)",
+      "upstreamPrs": [
+        25588
+      ]
+    },
+    {
       "createdAt": "2026-10-27T16:29:26.968Z",
       "epoch": 1,
       "id": "pr-25593",
@@ -52008,6 +52106,26 @@
       ]
     },
     {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26164",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "feat(server,web,mobile): fall back when the default provider is out of usage (#26164)",
+      "upstreamPrs": [
+        26164
+      ]
+    },
+    {
       "createdAt": "2026-10-28T20:56:34.441Z",
       "decidedAt": "2026-10-28T20:56:34.441Z",
       "decidedBy": "llm",
@@ -52034,6 +52152,26 @@
       "title": "Testing rules and a test-signal eval and review agent",
       "upstreamPrs": [
         26166
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26167",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "chore: make agent mistakes fail early (#26167)",
+      "upstreamPrs": [
+        26167
       ]
     },
     {
@@ -52542,6 +52680,26 @@
       ]
     },
     {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26234",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server,cursor,opencode): refresh provider usage when a turn hits its usage limit (#26234)",
+      "upstreamPrs": [
+        26234
+      ]
+    },
+    {
       "createdAt": "2026-10-28T20:56:34.441Z",
       "decidedAt": "2026-10-28T20:56:34.441Z",
       "decidedBy": "llm",
@@ -52825,6 +52983,26 @@
       "title": "Codex shadow homes share thread-writer locks and keep auth.lock private",
       "upstreamPrs": [
         26286
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26288",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "feat(updates): switch your whole fleet between Stable and Nightly in one step (#26288)",
+      "upstreamPrs": [
+        26288
       ]
     },
     {
@@ -53152,6 +53330,26 @@
       ]
     },
     {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26348",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(desktop): bump Electron to 44.10.0 for the Node.js Brotli fix (CVE-2026-111497) (#26348)",
+      "upstreamPrs": [
+        26348
+      ]
+    },
+    {
       "createdAt": "2026-10-28T20:56:34.441Z",
       "epoch": 1,
       "id": "pr-26349",
@@ -53375,6 +53573,26 @@
       ]
     },
     {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26379",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): image chips drop the pill and match other chips (#26379)",
+      "upstreamPrs": [
+        26379
+      ]
+    },
+    {
       "createdAt": "2026-10-28T20:56:34.441Z",
       "epoch": 1,
       "id": "pr-26387",
@@ -53574,6 +53792,76 @@
       ]
     },
     {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "decidedAt": "2026-10-29T11:02:55.890Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-26522",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): photo-library PNGs no longer fail after resizing (#26522)",
+      "upstreamPrs": [
+        26522
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26529",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(claude): Open diff shows Claude edits as a diff instead of raw JSON (#26529)",
+      "upstreamPrs": [
+        26529
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26538",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): guest links no longer return file diffs (#26538)",
+      "upstreamPrs": [
+        26538
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "decidedAt": "2026-10-29T11:02:55.890Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-26565",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): a thread opened while reconnecting no longer turns into a new draft (#26565)",
+      "upstreamPrs": [
+        26565
+      ]
+    },
+    {
       "createdAt": "2026-10-28T20:56:34.441Z",
       "decidedAt": "2026-10-28T20:56:34.441Z",
       "decidedBy": "rule",
@@ -53601,6 +53889,26 @@
       "title": "fix(mobile): overlay sidebar header blurs content scrolling under it (#26580)",
       "upstreamPrs": [
         26580
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26592",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(cursor): subagent ls, lint and MCP results no longer fail the parent run (#26592)",
+      "upstreamPrs": [
+        26592
       ]
     },
     {
@@ -53634,6 +53942,21 @@
       ]
     },
     {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "decidedAt": "2026-10-29T11:02:55.890Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-26622",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): align settled and active thread rows (#26622)",
+      "upstreamPrs": [
+        26622
+      ]
+    },
+    {
       "createdAt": "2026-10-28T20:56:34.441Z",
       "decidedAt": "2026-10-28T20:56:34.441Z",
       "decidedBy": "rule",
@@ -53646,6 +53969,231 @@
       "title": "docs(agents): agents verify in a browser or simulator without asking (#26637)",
       "upstreamPrs": [
         26637
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26639",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): double-click selects the whole inline code span (#26639)",
+      "upstreamPrs": [
+        26639
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26642",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(server): outside MCP clients get thread links they can open (#26642)",
+      "upstreamPrs": [
+        26642
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26647",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(acp): ID-only command approvals keep the tracked command and grant the terminal (#26647)",
+      "upstreamPrs": [
+        26647
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26706",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "feat(devices): Simlock setup uses each machine's agent-device token, checks tokens, and lists the p…",
+      "upstreamPrs": [
+        26706
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26727",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "perf(web): long-thread timeline rebuilds 45 → 9 ms, tool updates 12 → 0.3 ms (#26727)",
+      "upstreamPrs": [
+        26727
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26730",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): pull request diff follows the file tree, with a hide-tests filter (#26730)",
+      "upstreamPrs": [
+        26730
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26736",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): keep settled drop hint inside the sidebar viewport (#26736)",
+      "upstreamPrs": [
+        26736
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26739",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(mobile): delivered messages no longer reappear at the bottom of long threads (#26739)",
+      "upstreamPrs": [
+        26739
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "decidedAt": "2026-10-29T11:02:55.890Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-26750",
+      "reason": "No user-visible behavior change",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "summary": "",
+      "title": "docs: add nixpkgs installation instructions (#26750)",
+      "upstreamPrs": [
+        26750
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "decidedAt": "2026-10-29T11:02:55.890Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-26755",
+      "reason": "Upstream release or CI only",
+      "reasonKey": "release-ci",
+      "status": "skip",
+      "summary": "",
+      "title": "ci(mobile): fork PRs now get the Native Change label (#26755)",
+      "upstreamPrs": [
+        26755
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26767",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "feat: turn a No project thread into a project (#26767)",
+      "upstreamPrs": [
+        26767
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "decidedAt": "2026-10-29T11:02:55.890Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-26779",
+      "reason": "Upstream release or CI only",
+      "reasonKey": "release-ci",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(ci): fork PRs now resolve in workflow_run PR lookups (#26779)",
+      "upstreamPrs": [
+        26779
       ]
     },
     {
@@ -53670,6 +54218,116 @@
       "title": "Less idle work and disk churn, with a native resource monitor for diagnostics",
       "upstreamPrs": [
         2679
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "decidedAt": "2026-10-29T11:02:55.890Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-26812",
+      "reason": "Upstream release or CI only",
+      "reasonKey": "release-ci",
+      "status": "skip",
+      "summary": "",
+      "title": "chore: vouch nexxeln (#26812)",
+      "upstreamPrs": [
+        26812
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26859",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "feat(web): Labs toggle keeps 5h, weekly, and context limits in view (#26859)",
+      "upstreamPrs": [
+        26859
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26874",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "fix(web): undo notice moves to the sidebar footer so it never covers a thread (#26874)",
+      "upstreamPrs": [
+        26874
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "decidedAt": "2026-10-29T11:02:55.890Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-26875",
+      "reason": "Marketing site only",
+      "reasonKey": "marketing",
+      "status": "skip",
+      "summary": "",
+      "title": "feat(marketing): hero shows four agents running at once (#26875)",
+      "upstreamPrs": [
+        26875
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26876",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "feat(antigravity): Claude and GPT models, thinking levels, and diff edits (#26876)",
+      "upstreamPrs": [
+        26876
+      ]
+    },
+    {
+      "createdAt": "2026-10-29T11:02:55.890Z",
+      "epoch": 1,
+      "id": "pr-26904",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [],
+        "confidence": 0,
+        "model": "claude-opus-5-5",
+        "reason": "Triage did not classify this commit; review it manually.",
+        "status": "port",
+        "triageError": "triage failed: Text generation failed in upstreamTriage: Claude CLI command failed: You've hit your session limit · resets 2:30pm (Europe/Berlin)",
+        "userImpact": "medium"
+      },
+      "summary": "",
+      "title": "feat(web): choose what the thread details card shows (#26904)",
+      "upstreamPrs": [
+        26904
       ]
     },
     {
