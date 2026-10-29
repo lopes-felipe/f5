@@ -39429,11 +39429,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-29T00:02:54.666Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-22898",
-      "status": "port",
+      "reason": "f5 has neither type-to-focus composer redirection nor a letter-key right-panel launcher, so the key conflict this fixes cannot occur.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "panels",
