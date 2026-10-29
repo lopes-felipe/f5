@@ -1,4 +1,7 @@
-import { Effect, FileSystem, Path, Schema } from "effect";
+import * as NodeFs from "node:fs/promises";
+import * as NodePath from "node:path";
+
+import { Effect, Schema } from "effect";
 import { readClaudeAppendSystemPromptArgs } from "@t3tools/shared/cliArgs";
 
 export class ClaudeAppendSystemPromptError extends Schema.TaggedErrorClass<ClaudeAppendSystemPromptError>()(
@@ -41,19 +44,16 @@ export const resolveClaudeLaunchAppendSystemPrompt = Effect.fn(
     if (args.file === null || args.file === "") {
       return yield* new ClaudeAppendSystemPromptError({ flag: "--append-system-prompt-file" });
     }
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const filePath = path.resolve(input.cwd ?? process.cwd(), args.file);
-    fileText = yield* fs.readFileString(filePath).pipe(
-      Effect.mapError(
-        (cause) =>
-          new ClaudeAppendSystemPromptError({
-            flag: "--append-system-prompt-file",
-            path: filePath,
-            cause,
-          }),
-      ),
-    );
+    const filePath = NodePath.resolve(input.cwd ?? process.cwd(), args.file);
+    fileText = yield* Effect.tryPromise({
+      try: () => NodeFs.readFile(filePath, "utf8"),
+      catch: (cause) =>
+        new ClaudeAppendSystemPromptError({
+          flag: "--append-system-prompt-file",
+          path: filePath,
+          cause,
+        }),
+    });
   }
   return [fileText?.replace(/\r?\n$/, ""), args.text].filter(
     (text): text is string => typeof text === "string" && text.length > 0,
