@@ -559,7 +559,7 @@ describe("CheckpointStoreLive", () => {
             execute: (input) =>
               Effect.sync(() => {
                 calls.push(input);
-                if (input.args[0] === "check-ignore") return { code: 0, stdout: ".\0", stderr: "" };
+                if (input.args[0] === "check-ignore") return { code: 0, stdout: ".\n", stderr: "" };
                 if (input.args.includes("HEAD^{commit}"))
                   return { code: 0, stdout: "head-oid\n", stderr: "" };
                 if (input.args.includes("head-oid:./")) return { code: 1, stdout: "", stderr: "" };
@@ -580,6 +580,8 @@ describe("CheckpointStoreLive", () => {
         ),
       );
       expect(result._tag === "Failure" && result.failure._tag).toBe("CheckpointUnsupportedError");
+      // Git exits before reading stdin outside a repository; a late write raised EPIPE.
+      expect(calls.find((call) => call.args[0] === "check-ignore")?.stdin).toBeUndefined();
       for (const command of ["read-tree", "ls-files", "add", "write-tree"]) {
         expect(calls.some((call) => call.args.includes(command))).toBe(false);
       }
