@@ -28,7 +28,7 @@ import {
 } from "@t3tools/contracts";
 import { normalizeModelSlug } from "@t3tools/shared/model";
 import { Duration, Effect, FileSystem, Path, Ref, Schema, Stream } from "effect";
-import { makeClaudeInstanceProbes } from "./ClaudeProbeCache.ts";
+import { makeClaudeInstanceProbes, makeClaudeSignOutInvalidation } from "./ClaudeProbeCache.ts";
 import {
   emptyAccountSection,
   makeAccountUsageCapability,
@@ -261,18 +261,19 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         },
       );
 
-      const checkProvider = checkClaudeProviderStatus(
-        effectiveConfig,
-        () => probes.capabilities,
-        processEnv,
-        serverConfig.stateDir,
-      ).pipe(
-        // Signing out drops cached account probes, so limits return as soon as the user signs back in.
-        Effect.tap((provider) =>
-          provider.auth.status === "unauthenticated"
-            ? probes.invalidate.pipe(Effect.andThen(accountUsage.invalidate))
-            : Effect.void,
+      // Signing out drops cached account probes, so limits return as soon as the user signs back in.
+      const withSignOutInvalidation = yield* makeClaudeSignOutInvalidation({
+        invalidateProbes: probes.invalidate,
+        invalidateUsage: accountUsage.invalidate,
+      });
+      const checkProvider = withSignOutInvalidation(
+        checkClaudeProviderStatus(
+          effectiveConfig,
+          () => probes.capabilities,
+          processEnv,
+          serverConfig.stateDir,
         ),
+      ).pipe(
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(Path.Path, path),
