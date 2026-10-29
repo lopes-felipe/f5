@@ -153,7 +153,9 @@ describe("parseClaudeLaunchArgs", () => {
 
   it("accepts the append system prompt flags", () => {
     expect(
-      parseClaudeLaunchArgs('--append-system-prompt "Be brief." --append-system-prompt-file ./a.md'),
+      parseClaudeLaunchArgs(
+        '--append-system-prompt "Be brief." --append-system-prompt-file ./a.md',
+      ),
     ).toEqual({
       ok: true,
       args: { "append-system-prompt": "Be brief.", "append-system-prompt-file": "./a.md" },

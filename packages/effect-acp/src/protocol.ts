@@ -123,7 +123,7 @@ function preserveZeroValuedRequestIds(
  */
 export const RPC_REQUEST_ID_START = 1n << 30n;
 
-export const makeAcpPatchedProtocol =Effect.fn("makeAcpPatchedProtocol")(function* (
+export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(function* (
   options: AcpPatchedProtocolOptions,
 ): Effect.fn.Return<AcpPatchedProtocol, never, Scope.Scope> {
   const parser = parserFactory.makeUnsafe();
