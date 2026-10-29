@@ -6,7 +6,8 @@ build from source, see [Quick start](quick-start.md).
 
 ## How to
 
-1. Download the installer from [GitHub Releases](https://github.com/lopes-felipe/f5/releases/latest).
+1. Download the installer from [GitHub Releases](https://github.com/lopes-felipe/f5/releases)
+   (see [Availability](#availability) for which release to pick).
 2. Install it (see your platform below).
 3. Install Git and at least one provider, then sign in. See
    [Provider prerequisites](provider-prerequisites.md).
@@ -16,15 +17,16 @@ F5 still opens if Git or a provider is missing, and shows what needs fixing.
 
 ## Availability
 
-| Platform              | Status                                                                                                                   |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| Windows x64           | First stable desktop platform, from `v0.1.0`, with in-app updates                                                        |
-| macOS (Apple Silicon) | Only the unsigned [computer use preview](https://github.com/lopes-felipe/f5/releases/tag/v0.0.11-computer-use-preview.1) |
-| macOS (Intel), Linux  | No desktop build yet                                                                                                     |
-| `f5` CLI              | All five targets in every release                                                                                        |
+| Platform                     | Status                                    |
+| ---------------------------- | ----------------------------------------- |
+| macOS (Apple Silicon, Intel) | Signed and notarized, with in-app updates |
+| Windows x64                  | Unsigned installer, with in-app updates   |
+| Linux x64                    | AppImage, with in-app updates             |
+| `f5` CLI                     | All five targets in every release         |
 
-If the latest release lists no `F5-<version>-x64.exe`, the first Windows release hasn't been
-published yet.
+Desktop builds start with the `v0.1.1` betas, published as prereleases; `v0.1.1` is the first
+stable release. Until it is published, download a `v0.1.1-beta.N` release from the
+[releases page](https://github.com/lopes-felipe/f5/releases).
 
 ## Windows
 
@@ -40,11 +42,17 @@ Check the download before running it: compare
 `Get-FileHash F5-<version>-x64.exe -Algorithm SHA256` with the matching line in the release's
 `SHA256SUMS`.
 
-## macOS and Linux
+## macOS
 
-The macOS preview is Apple Silicon only, unsigned, not notarized and doesn't update automatically;
-follow its release notes. Once stable builds ship, macOS installs from a DMG (drag F5 to
-Applications) and Linux from an x64 AppImage.
+Open `F5-<version>-arm64.dmg` (Apple Silicon) or `F5-<version>-x64.dmg` (Intel) and drag F5 to
+Applications. Builds are signed with Developer ID and notarized, so Gatekeeper opens them after
+the usual first-launch confirmation. The older `v0.0.11-computer-use-preview.1` preview is unsigned and doesn't update; see
+"Upgrade from F5 (Alpha)" below.
+
+## Linux
+
+Download `F5-<version>-x86_64.AppImage`, make it executable (`chmod +x`) and run it from a folder
+you can write to, so updates can replace it. Some distributions need FUSE.
 
 ## Updates
 
@@ -67,8 +75,8 @@ your version until a newer stable release; F5 never downgrades.
 **Signing.** A later signed Windows release updates unsigned installs normally; from then on, F5
 checks that each update is signed by the same publisher. Signing alone doesn't guarantee immediate
 SmartScreen reputation ([Microsoft guidance](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation)).
-Stable macOS releases will use Developer ID signing and notarization; launched from a mounted disk,
-choose **Move to Applications** so updates work. AppImages need a writable folder for updates, and
+macOS releases use Developer ID signing and notarization; launched from a mounted disk, choose
+**Move to Applications** so updates work. AppImages need a writable folder for updates, and
 some distributions need FUSE.
 
 **Upgrade from F5 (Alpha).** The `v0.0.11-computer-use-preview.1` preview can't update in place.
