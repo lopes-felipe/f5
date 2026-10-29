@@ -2003,6 +2003,69 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("keeps a terminal 429 notification's usage limit when the completion omits it", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const exhaustion = (httpStatusCode: number | null) => ({
+        responseTooManyFailedAttempts: { httpStatusCode },
+      });
+      const cases = [
+        { name: "null-status", willRetry: false, completion: exhaustion(null), limited: true },
+        { name: "no-info", willRetry: false, completion: undefined, limited: true },
+        { name: "explicit-503", willRetry: false, completion: exhaustion(503), limited: false },
+        { name: "retrying", willRetry: true, completion: exhaustion(null), limited: false },
+      ] as const;
+      for (const testCase of cases) {
+        const turnId = `cached-429-${testCase.name}`;
+        const message = "exceeded retry limit, last status: 429 Too Many Requests";
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        const base = {
+          kind: "notification",
+          provider: "codex",
+          threadId: asThreadId("thread-1"),
+          createdAt: "2026-10-01T00:00:00Z",
+          turnId: asTurnId(turnId),
+        } as const;
+        lifecycleManager.emit("event", {
+          ...base,
+          id: asEventId(`${turnId}-error`),
+          method: "error",
+          payload: {
+            error: { message, codexErrorInfo: exhaustion(429) },
+            willRetry: testCase.willRetry,
+          },
+        } satisfies ProviderEvent);
+        lifecycleManager.emit("event", {
+          ...base,
+          id: asEventId(`${turnId}-completed`),
+          method: "turn/completed",
+          payload: {
+            turn: {
+              id: turnId,
+              status: "failed",
+              error: {
+                message,
+                ...(testCase.completion ? { codexErrorInfo: testCase.completion } : {}),
+              },
+            },
+          },
+        } satisfies ProviderEvent);
+        const events = Array.from(yield* Fiber.join(eventsFiber));
+        const completed = events.at(-1);
+        if (completed?.type !== "turn.completed") assert.fail("Expected a turn completion");
+        assert.equal(
+          completed.payload.usageLimit?.evidence,
+          testCase.limited ? "typed" : undefined,
+          testCase.name,
+        );
+      }
+    }),
+  );
+
   it.effect("maps hook/started notifications to hook.started runtime events", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;

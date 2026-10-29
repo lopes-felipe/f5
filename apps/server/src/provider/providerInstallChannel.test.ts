@@ -442,6 +442,49 @@ it("updates Grok through `grok update` with the instance's Grok home", () => {
   });
 });
 
+it("updates Grok with the instance's GROK_HOME instead of the host's", () => {
+  const { input, dependencies } = fixture("/home/test/.grok/bin/grok", { driver: "grok" });
+  vi.stubEnv("GROK_HOME", "/host/grok");
+  vi.stubEnv("CLAUDE_CONFIG_DIR", "/host/claude");
+  try {
+    const { updateEnvironment: _update, ...resolution } = input;
+    const target = makeInstanceInstallTargetResolver(
+      {
+        ...resolution,
+        instanceEnvironment: [{ name: "GROK_HOME", value: "/instance/grok", sensitive: false }],
+      },
+      dependencies,
+    )();
+    expect(target?.updateEnvironment.GROK_HOME).toBe("/instance/grok");
+    expect(target?.updateEnvironment.CLAUDE_CONFIG_DIR).toBeUndefined();
+    expect(buildProviderUpdateCommand(target!, "linux")?.env).toEqual({
+      GROK_HOME: "/instance/grok",
+    });
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
+it("gives each self-updater only its own provider home", () => {
+  const environment = { HOME: "/isolated", GROK_HOME: "/grok", CLAUDE_CONFIG_DIR: "/claude" };
+  const grok = fixture("/home/test/.grok/bin/grok", { driver: "grok", environment }).target!;
+  expect(grok.updateEnvironment).toEqual({ HOME: "/isolated", GROK_HOME: "/grok" });
+  expect(buildProviderUpdateCommand(grok, "linux")?.env).toEqual({ GROK_HOME: "/grok" });
+
+  const claude = fixture("/home/test/.local/share/claude/versions/2.0.0", {
+    driver: "claudeAgent",
+    environment,
+    files: { "/claude/settings.json": "{}" },
+  }).target!;
+  expect(buildProviderUpdateCommand(claude, "linux")?.env).toEqual({
+    CLAUDE_CONFIG_DIR: "/claude",
+  });
+
+  const pi = fixture("/pi/install/bin/pi", { driver: "pi", environment }).target!;
+  expect(pi.updateEnvironment).toEqual({ HOME: "/isolated" });
+  expect(buildProviderUpdateCommand(pi, "linux")?.env).toBeUndefined();
+});
+
 it("updates a Homebrew-installed Grok through its own updater", () => {
   const { target } = fixture("/opt/homebrew/Cellar/grok/1.0.0/bin/grok", { driver: "grok" });
   expect(target?.channel).toBe("self-update");

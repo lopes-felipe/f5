@@ -27,7 +27,9 @@ import {
   formatCodexUsageError,
   detectCodexUsageLimit,
   mergeCodexLimitSnapshot,
+  resolveCodexCompletionErrorInfo,
   type CodexLimitSnapshot,
+  type CodexTerminalFailureEvidence,
 } from "../codexErrors.ts";
 import {
   codexCommandApprovalOptions,
@@ -1286,6 +1288,7 @@ function mapToRuntimeEvents(
   limits?: CodexLimitSnapshot,
   snapshots?: ReadonlyArray<{ snapshot: CodexLimitSnapshot; observedAt: string }>,
   snapshotNotBefore?: string,
+  previousFailure?: CodexTerminalFailureEvidence,
 ): ReadonlyArray<ProviderRuntimeEvent> {
   const payload = asObject(event.payload);
   const turn = asObject(payload?.turn);
@@ -1569,11 +1572,16 @@ function mapToRuntimeEvents(
 
   if (event.method === "turn/completed") {
     const rawErrorMessage = asString(asObject(turn?.error)?.message);
+    const errorInfo = resolveCodexCompletionErrorInfo({
+      message: rawErrorMessage,
+      errorInfo: asObject(turn?.error)?.codexErrorInfo,
+      previous: previousFailure,
+    });
     const usageLimit =
       toTurnStatus(turn?.status) === "failed"
         ? detectCodexUsageLimit({
-            message: rawErrorMessage ?? "",
-            errorInfo: asObject(turn?.error)?.codexErrorInfo,
+            message: rawErrorMessage ?? previousFailure?.message ?? "",
+            errorInfo,
             snapshots: snapshots ?? (limits ? [limits] : []),
             ...(snapshotNotBefore ? { snapshotNotBefore } : {}),
             at: event.createdAt,
@@ -1581,12 +1589,7 @@ function mapToRuntimeEvents(
           })
         : null;
     const errorMessage = rawErrorMessage
-      ? formatCodexUsageError(
-          rawErrorMessage,
-          limits,
-          event.createdAt,
-          asObject(turn?.error)?.codexErrorInfo,
-        )
+      ? formatCodexUsageError(rawErrorMessage, limits, event.createdAt, errorInfo)
       : undefined;
     return [
       {
@@ -3444,6 +3447,10 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     const eventPreparation = new Map<string, Promise<void>>();
     const preparationControllers = new Set<AbortController>();
     const turnStartedAtByThread = new Map<string, string>();
+    const terminalFailureByThread = new Map<
+      string,
+      { readonly turnId: string; readonly evidence: CodexTerminalFailureEvidence }
+    >();
     const limitsByThread = new Map<
       string,
       Map<string, { snapshot: CodexLimitSnapshot; observedAt: string }>
@@ -3598,7 +3605,29 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 return;
               }
               yield* writeNativeEvent(event);
-              if (event.method === "turn/started") turnStartedAtByThread.set(key, event.createdAt);
+              if (event.method === "turn/started") {
+                turnStartedAtByThread.set(key, event.createdAt);
+                terminalFailureByThread.delete(key);
+              }
+              const eventPayload = asObject(event.payload);
+              if (event.method === "error" && event.turnId && eventPayload?.willRetry !== true) {
+                const error = asObject(eventPayload?.error);
+                terminalFailureByThread.set(key, {
+                  turnId: event.turnId,
+                  evidence: {
+                    message: asString(error?.message) ?? event.message ?? "",
+                    errorInfo: error?.codexErrorInfo,
+                  },
+                });
+              }
+              const cachedFailure = terminalFailureByThread.get(key);
+              const previousFailure =
+                event.method === "turn/completed" &&
+                cachedFailure !== undefined &&
+                cachedFailure.turnId === event.turnId
+                  ? cachedFailure.evidence
+                  : undefined;
+              if (event.method === "turn/completed") terminalFailureByThread.delete(key);
               if (event.method === "account/rateLimits/updated") {
                 const snapshot = asObject(asObject(event.payload)?.rateLimits);
                 if (snapshot) {
@@ -3632,6 +3661,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                   limitsByThread.get(key)?.get("codex")?.snapshot,
                   [...(limitsByThread.get(key)?.values() ?? [])],
                   turnStartedAtByThread.get(key),
+                  previousFailure,
                 ),
                 previewServerName,
                 ownsAutomation ? computerMcpSessions.get(event.threadId)?.serverName : undefined,
@@ -3724,6 +3754,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 incompleteContexts.delete(key);
                 limitsByThread.delete(key);
                 turnStartedAtByThread.delete(key);
+                terminalFailureByThread.delete(key);
               }
               if (runtimeEvents.length === 0) {
                 yield* Effect.logDebug("ignoring unhandled Codex provider event", {

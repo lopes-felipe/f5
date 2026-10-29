@@ -390,18 +390,64 @@ export function hasKnownFileIdentity(ino: unknown): boolean {
     : typeof ino === "number" && Number.isSafeInteger(ino) && ino > 0;
 }
 
-const removePrivateSymlink = Effect.fn("CodexHomeLayout.removePrivateSymlink")(function* (input: {
-  readonly fileSystem: FileSystem.FileSystem;
-  readonly shadowPath: string;
-  readonly entryName: string;
-}): Effect.fn.Return<void, CodexShadowHomeError, Path.Path> {
-  const path = yield* Path.Path;
-  const privatePath = path.join(input.shadowPath, input.entryName);
-  const state = yield* readLinkState(input.fileSystem, privatePath);
-  if (state._tag === "Symlink") {
-    yield* normalizeShadowHomeError(input.fileSystem.remove(privatePath));
-  }
-});
+const untrackManagedWindowsFile = Effect.fn("CodexHomeLayout.untrackManagedWindowsFile")(
+  function* (input: {
+    readonly fileSystem: FileSystem.FileSystem;
+    readonly shadowPath: string;
+    readonly entryName: string;
+  }): Effect.fn.Return<void, CodexShadowHomeError, Path.Path> {
+    const path = yield* Path.Path;
+    const manifest = yield* readManagedFileManifest(input.fileSystem, input.shadowPath);
+    if (!manifest.files[input.entryName]) return;
+    const { [input.entryName]: _removed, ...files } = manifest.files;
+    yield* normalizeShadowHomeError(
+      writeFileStringAtomically({
+        filePath: path.join(input.shadowPath, CODEX_SHADOW_MANAGED_FILES_MANIFEST),
+        contents: `${JSON.stringify({ version: 1, files }, null, 2)}\n`,
+      }).pipe(Effect.provideService(FileSystem.FileSystem, input.fileSystem)),
+    );
+  },
+);
+
+/** Private entries must not stay tied to the shared home after an upgrade made them private. */
+const removePrivateSharedLink = Effect.fn("CodexHomeLayout.removePrivateSharedLink")(
+  function* (input: {
+    readonly fileSystem: FileSystem.FileSystem;
+    readonly shadowPath: string;
+    readonly sharedPath: string;
+    readonly entryName: string;
+    readonly platform: NodeJS.Platform;
+  }): Effect.fn.Return<void, CodexShadowHomeError, Path.Path> {
+    const path = yield* Path.Path;
+    const privatePath = path.join(input.shadowPath, input.entryName);
+    const state = yield* readLinkState(input.fileSystem, privatePath);
+    if (state._tag === "Symlink") {
+      return yield* normalizeShadowHomeError(input.fileSystem.remove(privatePath));
+    }
+    if (input.platform !== "win32" || state._tag === "Missing") return;
+    const manifest = yield* readManagedFileManifest(input.fileSystem, input.shadowPath);
+    if (!manifest.files[input.entryName]) return;
+    const owned = yield* isOwnedManagedWindowsFile({
+      ...input,
+      target: path.join(input.sharedPath, input.entryName),
+      link: privatePath,
+    });
+    if (owned) {
+      // Codex may hold the old lock open; keep it and retry on a later setup.
+      const removed = yield* input.fileSystem.remove(privatePath).pipe(
+        Effect.as(true),
+        Effect.catch(() =>
+          Effect.logWarning(
+            "Codex shadow home could not detach a private entry from the shared home; it will retry on a later setup.",
+            { path: privatePath },
+          ).pipe(Effect.as(false)),
+        ),
+      );
+      if (!removed) return;
+    }
+    yield* untrackManagedWindowsFile(input);
+  },
+);
 
 const createWindowsSharedLink = Effect.fn("CodexHomeLayout.createWindowsSharedLink")(
   function* (input: {
@@ -481,27 +527,37 @@ const ensureSymlink = Effect.fn("CodexHomeLayout.ensureSymlink")(function* (inpu
         detail: `Cannot create Codex shadow home because '${link}' already exists and is not an F5-managed link or copy.`,
       });
     }
-    if (input.entryName === "thread-writer-locks") {
-      const lockNames = yield* normalizeShadowHomeError(input.fileSystem.readDirectory(link));
-      // Codex deletes a thread lock on release, so one that is left may still guard a live
-      // writer. Keep the local directory until a later setup finds none.
-      if (lockNames.some((name) => name.endsWith(".lock") && name !== ".coordination.lock")) {
-        return yield* Effect.logWarning(
-          "Codex shadow home still has thread writer locks; it will share them on a later setup.",
-          { path: link },
-        );
+    const replaceWithSharedLink = Effect.gen(function* () {
+      yield* normalizeShadowHomeError(input.fileSystem.remove(link, { recursive: true }));
+      if (input.platform === "win32") {
+        return yield* createWindowsSharedLink({
+          ...input,
+          target,
+          link,
+          forceFileCopy: input.forceWindowsFileCopy,
+        });
       }
+      return yield* normalizeShadowHomeError(input.fileSystem.symlink(target, link));
+    }).pipe(Effect.asVoid);
+    if (input.entryName !== "thread-writer-locks") return yield* replaceWithSharedLink;
+    const lockNames = yield* normalizeShadowHomeError(input.fileSystem.readDirectory(link));
+    // Codex deletes a thread lock on release, so one that is left may still guard a live
+    // writer. Keep the local directory until a later setup finds none.
+    if (lockNames.some((name) => name.endsWith(".lock") && name !== ".coordination.lock")) {
+      return yield* Effect.logWarning(
+        "Codex shadow home still has thread writer locks; it will share them on a later setup.",
+        { path: link },
+      );
     }
-    yield* normalizeShadowHomeError(input.fileSystem.remove(link, { recursive: true }));
-    if (input.platform === "win32") {
-      return yield* createWindowsSharedLink({
-        ...input,
-        target,
-        link,
-        forceFileCopy: input.forceWindowsFileCopy,
-      });
-    }
-    return yield* normalizeShadowHomeError(input.fileSystem.symlink(target, link));
+    // A running app-server can take a lock between the check and the replacement.
+    return yield* replaceWithSharedLink.pipe(
+      Effect.catch((error) =>
+        Effect.logWarning(
+          "Codex shadow home could not share its thread writer locks yet; it will retry on a later setup.",
+          { path: link, detail: error.detail },
+        ),
+      ),
+    );
   }
 
   if (state._tag === "Missing") {
@@ -599,10 +655,12 @@ export const materializeCodexShadowHome = Effect.fn("materializeCodexShadowHome"
     (entryName) =>
       entryName === "auth.json"
         ? Effect.void
-        : removePrivateSymlink({
+        : removePrivateSharedLink({
             fileSystem,
             shadowPath: effectiveHomePath,
+            sharedPath: layout.sharedHomePath,
             entryName,
+            platform: options.platform ?? process.platform,
           }),
     { discard: true },
   );

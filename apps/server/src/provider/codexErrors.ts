@@ -107,14 +107,50 @@ export function parseCodexTryAgainAt(message: string, at: string): string | null
  * provider or transport errors.
  */
 function isCodexRateLimitRetryExhaustion(errorInfo: unknown): boolean {
-  if (errorInfo === null || typeof errorInfo !== "object") return false;
+  return codexExhaustionHttpStatus(errorInfo) === 429;
+}
+
+function codexErrorInfoCode(errorInfo: unknown): string | null {
+  if (typeof errorInfo === "string") return errorInfo;
+  if (errorInfo === null || typeof errorInfo !== "object") return null;
+  return Object.keys(errorInfo)[0] ?? null;
+}
+
+function codexExhaustionHttpStatus(errorInfo: unknown): unknown {
+  if (errorInfo === null || typeof errorInfo !== "object") return undefined;
   const exhaustion = (errorInfo as { responseTooManyFailedAttempts?: unknown })
     .responseTooManyFailedAttempts;
-  return (
-    exhaustion !== null &&
-    typeof exhaustion === "object" &&
-    (exhaustion as { httpStatusCode?: unknown }).httpStatusCode === 429
-  );
+  return exhaustion !== null && typeof exhaustion === "object"
+    ? (exhaustion as { httpStatusCode?: unknown }).httpStatusCode
+    : undefined;
+}
+
+/** The terminal (non-retrying) `error` notification seen for the active turn. */
+export interface CodexTerminalFailureEvidence {
+  readonly message: string;
+  readonly errorInfo: unknown;
+}
+
+/**
+ * A failed completion often repeats the turn's terminal `error` notification
+ * without its retry-exhaustion status. An explicit status on the completion
+ * wins; a missing one is not evidence, so the notification's errorInfo stays.
+ */
+export function resolveCodexCompletionErrorInfo(input: {
+  readonly message: string | undefined;
+  readonly errorInfo: unknown;
+  readonly previous: CodexTerminalFailureEvidence | undefined;
+}): unknown {
+  const previous = input.previous;
+  if (!previous || (input.message !== undefined && input.message !== previous.message)) {
+    return input.errorInfo;
+  }
+  if (input.errorInfo === undefined || input.errorInfo === null) return previous.errorInfo;
+  if (codexErrorInfoCode(input.errorInfo) !== codexErrorInfoCode(previous.errorInfo)) {
+    return input.errorInfo;
+  }
+  const status = codexExhaustionHttpStatus(input.errorInfo);
+  return typeof status === "number" ? input.errorInfo : previous.errorInfo;
 }
 
 export function detectCodexUsageLimit(input: {

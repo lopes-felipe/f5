@@ -22,6 +22,26 @@ export const NPM_UPDATE_SOURCES: Readonly<Record<string, string>> = {
 
 /** Self-updaters that install under a provider home must see the instance's home override. */
 const SELF_UPDATE_HOME_VARIABLES = ["CLAUDE_CONFIG_DIR", "GROK_HOME"] as const;
+const SELF_UPDATE_HOME_VARIABLE_BY_DRIVER: Readonly<Record<string, string>> = {
+  claudeAgent: "CLAUDE_CONFIG_DIR",
+  grok: "GROK_HOME",
+};
+
+/** Each updater sees only its own provider's home override. */
+function withoutForeignHomeVariables(
+  environment: NodeJS.ProcessEnv,
+  driver: ProviderDriverKind,
+): NodeJS.ProcessEnv {
+  const own = SELF_UPDATE_HOME_VARIABLE_BY_DRIVER[driver];
+  return Object.fromEntries(
+    Object.entries(environment).filter(([key]) => {
+      const upper = key.toUpperCase();
+      return (
+        upper === own || !(SELF_UPDATE_HOME_VARIABLES as ReadonlyArray<string>).includes(upper)
+      );
+    }),
+  );
+}
 
 export type ProviderLatestSource =
   | { readonly kind: "npm"; readonly pkg: string; readonly tag: "latest" | "stable" }
@@ -125,7 +145,7 @@ export function detectProviderInstallTarget(
     installKey,
     latestSource,
     sourceKey: latestSource ? JSON.stringify(latestSource) : null,
-    updateEnvironment: input.updateEnvironment,
+    updateEnvironment: withoutForeignHomeVariables(input.updateEnvironment, input.driver),
     guidance,
     ...extra,
   });
