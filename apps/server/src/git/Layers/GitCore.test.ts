@@ -2,7 +2,7 @@ import { holdsWorktreeLifecycleLock } from "../../project/Layers/WorktreeLifecyc
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Cause, Effect, Layer, ManagedRuntime, Metric, Stream } from "effect";
+import { Cause, Effect, Layer, ManagedRuntime, Metric, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -1204,6 +1204,107 @@ describe("pull output beyond the output cap", () => {
       const error = await Effect.runPromise(Effect.flip(core.pullCurrentBranch(cwd)));
       expect(error.operation).toBe("GitCore.pullCurrentBranch.pull");
       expect(error.detail).not.toContain("exceeded");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe("default branch without a local origin/HEAD ref", () => {
+  const runGit = (cwd: string, args: string[]) =>
+    execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
+
+  it("asks origin for its advertised HEAD once and never guesses", async () => {
+    const root = mkdtempSync(join(tmpdir(), "f5-git-core-default-"));
+    try {
+      const [cwd, remote, unpublished] = ["local", "remote.git", "unpublished"].map((name) =>
+        join(root, name),
+      ) as [string, string, string];
+      for (const dir of [cwd, remote, unpublished]) mkdirSync(dir);
+      runGit(remote, ["init", "--bare", "--initial-branch=trunk"]);
+      for (const repo of [cwd, unpublished]) {
+        runGit(repo, ["init", "--initial-branch=main"]);
+        runGit(repo, ["config", "user.email", "test@test.com"]);
+        runGit(repo, ["config", "user.name", "Test"]);
+        runGit(repo, ["config", "commit.gpgsign", "false"]);
+        writeFileSync(join(repo, "README.md"), "initial\n");
+        runGit(repo, ["add", "README.md"]);
+        runGit(repo, ["commit", "-m", "initial"]);
+      }
+      runGit(cwd, ["remote", "add", "origin", remote]);
+      // `push -u` does not create refs/remotes/origin/HEAD.
+      runGit(cwd, ["push", "-u", "origin", "main:trunk", "main:main"]);
+
+      const core = await makeCore(
+        await Effect.runPromise(
+          Effect.service(GitService).pipe(
+            Effect.provide(GitServiceLive.pipe(Layer.provide(NodeServices.layer))),
+          ),
+        ),
+      );
+      expect(await Effect.runPromise(core.readDefaultBranch(cwd))).toBeNull();
+      expect(await Effect.runPromise(core.readAdvertisedDefaultBranch(cwd))).toBe("trunk");
+      // Cached: the remote is not asked again within the pass.
+      runGit(remote, ["symbolic-ref", "HEAD", "refs/heads/main"]);
+      expect(await Effect.runPromise(core.readAdvertisedDefaultBranch(cwd))).toBe("trunk");
+      // No remote to ask: no default, rather than "main".
+      expect(await Effect.runPromise(core.readAdvertisedDefaultBranch(unpublished))).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe.skipIf(process.platform === "win32")("pushes the remote refuses", () => {
+  const runGit = (cwd: string, args: string[]) =>
+    execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+
+  it("says the remote rejected the push without quoting the server", async () => {
+    const root = mkdtempSync(join(tmpdir(), "f5-git-core-push-"));
+    try {
+      const [cwd, remote] = ["local", "remote.git"].map((name) => join(root, name)) as [
+        string,
+        string,
+      ];
+      for (const dir of [cwd, remote]) mkdirSync(dir);
+      runGit(remote, ["init", "--bare", "--initial-branch=main"]);
+      runGit(cwd, ["init", "--initial-branch=main"]);
+      runGit(cwd, ["config", "user.email", "test@test.com"]);
+      runGit(cwd, ["config", "user.name", "Test"]);
+      runGit(cwd, ["config", "commit.gpgsign", "false"]);
+      writeFileSync(join(cwd, "README.md"), "initial\n");
+      runGit(cwd, ["add", "README.md"]);
+      runGit(cwd, ["commit", "-m", "initial"]);
+      runGit(cwd, ["remote", "add", "origin", remote]);
+      runGit(cwd, ["push", "-u", "origin", "main"]);
+      writeFileSync(
+        join(remote, "hooks", "pre-receive"),
+        "#!/bin/sh\necho secret-policy >&2\nexit 1\n",
+        {
+          mode: 0o755,
+        },
+      );
+      writeFileSync(join(cwd, "README.md"), "changed\n");
+      runGit(cwd, ["commit", "-am", "change"]);
+
+      const layer = GitCoreLive.pipe(
+        Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "f5-git-core-push-" })),
+        Layer.provide(GitServiceLive),
+        Layer.provide(NodeServices.layer),
+      );
+      const error = await Effect.runPromise(
+        Effect.flip(
+          Effect.service(GitCore).pipe(
+            Effect.flatMap((core) => core.pushCurrentBranch(cwd, null)),
+            Effect.provide(layer),
+          ),
+        ),
+      );
+      if (!Schema.is(GitCommandError)(error)) throw error;
+      expect(error.detail).toContain(
+        "The remote rejected the push. Push this branch from a terminal to see the server's message.",
+      );
+      expect(error.detail).not.toContain("secret-policy");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

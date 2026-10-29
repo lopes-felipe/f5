@@ -5,7 +5,21 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it, assert } from "@effect/vitest";
 import { expect, vi } from "vitest";
 import * as GitProcessEnvironment from "../gitProcessEnvironment.ts";
-import { Effect, Fiber, FileSystem, Layer, Path, Schema, Scope } from "effect";
+import {
+  Deferred,
+  Effect,
+  Fiber,
+  FileSystem,
+  Layer,
+  Path,
+  Queue,
+  Schema,
+  Scope,
+  Sink,
+  Stream,
+} from "effect";
+import { TestClock } from "effect/testing";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { GitCommandError } from "../Errors.ts";
 import { GitServiceLive } from "./GitService.ts";
@@ -264,3 +278,121 @@ layer("GitServiceLive", (it) => {
     }),
   );
 });
+
+/** A spawner whose children print "ok" and exit once `gateFor(command)` opens. */
+const gatedSpawner = (
+  gateFor: (command: ChildProcess.Command) => Deferred.Deferred<void>,
+  starts: Queue.Queue<void>,
+  counters: { active: number; peak: number },
+) =>
+  ChildProcessSpawner.make((command) =>
+    Effect.acquireRelease(
+      Effect.gen(function* () {
+        counters.peak = Math.max(counters.peak, ++counters.active);
+        yield* Queue.offer(starts, undefined);
+        return ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(1),
+          exitCode: Deferred.await(gateFor(command)).pipe(
+            Effect.as(ChildProcessSpawner.ExitCode(0)),
+          ),
+          isRunning: Effect.succeed(false),
+          kill: () => Effect.void,
+          stdin: Sink.drain,
+          stdout: Stream.make(new TextEncoder().encode("ok")),
+          stderr: Stream.empty,
+          all: Stream.empty,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+        });
+      }),
+      () => Effect.sync(() => counters.active--),
+    ),
+  );
+
+const gitServiceWith = (spawner: ChildProcessSpawner.ChildProcessSpawner["Service"]) =>
+  Effect.gen(function* () {
+    return yield* GitService;
+  }).pipe(
+    Effect.provide(
+      GitServiceLive.pipe(
+        Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
+      ),
+    ),
+  );
+
+it.effect("bounds Git bursts across services without timing out queued commands", () =>
+  Effect.gen(function* () {
+    const gate = yield* Deferred.make<void>();
+    const starts = yield* Queue.unbounded<void>();
+    const counters = { active: 0, peak: 0 };
+    const spawner = gatedSpawner(() => gate, starts, counters);
+    const services = yield* Effect.all(Array.from({ length: 16 }, () => gitServiceWith(spawner)));
+    const burst = yield* Effect.forEach(
+      services,
+      (service, index) =>
+        service.execute({
+          operation: "GitService.test.burst",
+          cwd: process.cwd(),
+          args: ["rev-parse", "HEAD"],
+          ...(index < 4 ? {} : { timeoutMs: index < 8 ? 30_000 : 1_000 }),
+        }),
+      { concurrency: "unbounded" },
+    ).pipe(Effect.forkChild);
+
+    // The queued commands' one-second deadline has passed; they have not started.
+    yield* TestClock.adjust("2 seconds");
+    assert.equal(yield* Queue.size(starts), 8);
+    assert.equal(counters.peak, 8);
+    yield* Deferred.succeed(gate, undefined);
+    const results = yield* Fiber.join(burst);
+    assert.equal(results.length, 16);
+    assert.isTrue(results.every((result) => result.stdout === "ok" && result.code === 0));
+    assert.equal(counters.peak, 8);
+    assert.equal(counters.active, 0);
+  }),
+);
+
+it.effect.each([{ timeoutMs: null }, { timeoutMs: 30_001 }])(
+  "keeps every Git slot free while a command with timeout $timeoutMs runs",
+  ({ timeoutMs }) =>
+    Effect.gen(function* () {
+      const slowGate = yield* Deferred.make<void>();
+      const fastGate = yield* Deferred.make<void>();
+      const starts = yield* Queue.unbounded<void>();
+      const counters = { active: 0, peak: 0 };
+      const service = yield* gitServiceWith(
+        gatedSpawner(
+          (command) =>
+            ChildProcess.isStandardCommand(command) && command.args[0] === "gc"
+              ? slowGate
+              : fastGate,
+          starts,
+          counters,
+        ),
+      );
+      const slow = yield* service
+        .execute({ operation: "GitService.test.slow", cwd: process.cwd(), args: ["gc"], timeoutMs })
+        .pipe(Effect.forkChild);
+      yield* Queue.take(starts);
+      const burst = yield* Effect.all(
+        Array.from({ length: 8 }, () =>
+          service.execute({
+            operation: "GitService.test.fast",
+            cwd: process.cwd(),
+            args: ["status"],
+          }),
+        ),
+        { concurrency: "unbounded" },
+      ).pipe(Effect.forkChild);
+
+      yield* TestClock.adjust("0 seconds");
+      assert.equal(yield* Queue.size(starts), 8);
+      assert.equal(counters.active, 9);
+      yield* Deferred.succeed(fastGate, undefined);
+      assert.equal((yield* Fiber.join(burst)).length, 8);
+      assert.equal(counters.active, 1);
+      yield* Deferred.succeed(slowGate, undefined);
+      assert.equal((yield* Fiber.join(slow)).stdout, "ok");
+      assert.equal(counters.active, 0);
+    }),
+);

@@ -13,14 +13,12 @@ export interface DefaultBranchContainment {
  * hide merged work, and falls back to the local branch without a remote.
  */
 export const resolveHeadInDefaultBranch = (
-  git: Pick<GitCoreShape, "readDefaultBranch" | "resolveCommit" | "isAncestor">,
+  git: Pick<GitCoreShape, "readAdvertisedDefaultBranch" | "resolveCommit" | "isAncestor">,
   projectRoot: string,
   headSha: string,
 ): Effect.Effect<DefaultBranchContainment> =>
   Effect.gen(function* () {
-    const defaultBranch = yield* git
-      .readDefaultBranch(projectRoot)
-      .pipe(Effect.orElseSucceed(() => null));
+    const defaultBranch = yield* git.readAdvertisedDefaultBranch(projectRoot);
     if (defaultBranch === null) return { defaultBranch, merged: null };
     const defaultSha =
       (yield* git
@@ -41,13 +39,11 @@ export const resolveHeadInDefaultBranch = (
  * warning message on failure; merge checks then use the last fetched refs.
  */
 export const refreshDefaultBranch = (
-  git: Pick<GitCoreShape, "readDefaultBranch" | "fetchRemoteBranchCommit">,
+  git: Pick<GitCoreShape, "readAdvertisedDefaultBranch" | "fetchRemoteBranchCommit">,
   projectRoot: string,
 ): Effect.Effect<string | null> =>
   Effect.gen(function* () {
-    const defaultBranch = yield* git
-      .readDefaultBranch(projectRoot)
-      .pipe(Effect.orElseSucceed(() => null));
+    const defaultBranch = yield* git.readAdvertisedDefaultBranch(projectRoot);
     if (defaultBranch === null) return null;
     return yield* git
       .fetchRemoteBranchCommit({ cwd: projectRoot, branch: defaultBranch, remoteName: "origin" })

@@ -22,6 +22,10 @@ export function networkFailureDetail(stderr: string): string {
     return "The remote branch has newer commits. Fetch and reconcile them before retrying.";
   if (/protected branch|protected branch hook|GH006|GH013/i.test(stderr))
     return "The remote rejected this write under its branch protection rules.";
+  // Only a push prints `[remote rejected]`. The server's reason follows it, and
+  // server text is never persisted.
+  if (/^[ \t]*![ \t]+\[remote rejected\]/im.test(stderr))
+    return "The remote rejected the push. Push this branch from a terminal to see the server's message.";
   if (/Host key verification failed/i.test(stderr))
     return "SSH host verification failed. Configure trusted host keys on the server.";
   if (

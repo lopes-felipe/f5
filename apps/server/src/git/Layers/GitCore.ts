@@ -25,6 +25,11 @@ import { lstat as inspectPath, readFile, writeFile, rm, stat, utimes } from "nod
 import { parseWorktreeListPorcelain, stripPathTerminator } from "../worktreeList.ts";
 import { isRefLockFailure, networkFailureDetail } from "../networkFailureDetail.ts";
 import {
+  gitDeletesWorktreeFiles,
+  removeLeftoverLinks,
+  removeWorktreeWithoutFollowingLinks,
+} from "../worktreeRemoval.ts";
+import {
   withWorktreeLifecycleLock,
   withoutLifecycleLocks,
   withRepositoryLifecycleLock,
@@ -87,6 +92,8 @@ const STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY = 2_048;
 const STATUS_UPSTREAM_REFRESH_GENERATION_CAPACITY = STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY;
 const STATUS_STATIC_METADATA_CACHE_TTL = Duration.seconds(15);
 const STATUS_STATIC_METADATA_FAILURE_CACHE_TTL = Duration.seconds(5);
+const ADVERTISED_DEFAULT_BRANCH_CACHE_TTL = Duration.minutes(10);
+const ADVERTISED_DEFAULT_BRANCH_TIMEOUT_MS = 20_000;
 const DEFAULT_BASE_BRANCH_CANDIDATES = ["main", "master"] as const;
 
 class StatusUpstreamRefreshCacheKey extends Data.Class<{
@@ -985,6 +992,35 @@ const makeGitCore = Effect.gen(function* () {
                   : null,
               ),
             ),
+      ),
+    );
+
+  // One remote round trip per repository per TTL, so a cleanup pass over many
+  // worktrees asks once. A failed or unanswered query caches as null.
+  const advertisedDefaultBranchCache = yield* Cache.makeWith({
+    capacity: STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY,
+    lookup: (cwd: string): Effect.Effect<string | null> =>
+      executeGit(
+        "GitCore.readAdvertisedDefaultBranch",
+        cwd,
+        ["ls-remote", "--symref", "--", "origin", "HEAD"],
+        { allowNonZeroExit: true, timeoutMs: ADVERTISED_DEFAULT_BRANCH_TIMEOUT_MS },
+      ).pipe(
+        Effect.map((result) =>
+          result.code === 0
+            ? (/^ref: refs\/heads\/(.+)\tHEAD\r?$/m.exec(result.stdout)?.[1] ?? null)
+            : null,
+        ),
+        Effect.orElseSucceed(() => null),
+      ),
+    timeToLive: () => ADVERTISED_DEFAULT_BRANCH_CACHE_TTL,
+  });
+
+  const readAdvertisedDefaultBranch: GitCoreShape["readAdvertisedDefaultBranch"] = (cwd) =>
+    resolveDefaultBranchName(cwd, "origin").pipe(
+      Effect.orElseSucceed(() => null),
+      Effect.flatMap((branch) =>
+        branch !== null ? Effect.succeed(branch) : Cache.get(advertisedDefaultBranchCache, cwd),
       ),
     );
 
@@ -3476,26 +3512,62 @@ const makeGitCore = Effect.gen(function* () {
             { timeoutMs: 60_000 },
           );
       }
-      yield* executeGit(
-        "GitCore.removeWorktree",
-        input.cwd,
-        [
-          ...gitConfigArgs([["status.showUntrackedFiles", "all"]]),
-          "worktree",
-          "remove",
-          "--",
-          entry.path,
-        ],
-        {
-          timeoutMs: 300_000,
-          ...(discardsReviewedChanges
-            ? {
-                fallbackErrorMessage:
-                  "The reviewed changes were discarded, but new local changes appeared, so the worktree was kept.",
-              }
-            : {}),
-        },
-      );
+      const changedDetail = discardsReviewedChanges
+        ? "The reviewed changes were discarded, but new local changes appeared, so the worktree was kept."
+        : undefined;
+      if (gitDeletesWorktreeFiles()) {
+        yield* executeGit(
+          "GitCore.removeWorktree",
+          input.cwd,
+          [
+            ...gitConfigArgs([["status.showUntrackedFiles", "all"]]),
+            "worktree",
+            "remove",
+            "--",
+            entry.path,
+          ],
+          {
+            timeoutMs: 300_000,
+            ...(changedDetail ? { fallbackErrorMessage: changedDetail } : {}),
+          },
+        );
+      } else {
+        yield* removeWorktreeWithoutFollowingLinks({
+          cwd: input.cwd,
+          worktreePath: entry.path,
+          git: (cwd, args, env) =>
+            executeGit("GitCore.removeWorktree", cwd, args, {
+              timeoutMs: 300_000,
+              ...(env ? { env } : {}),
+            }),
+          refuse: (detail, cause) =>
+            createGitCommandError(
+              "GitCore.removeWorktree",
+              input.cwd,
+              ["worktree", "remove", "--", input.path],
+              detail,
+              cause,
+            ),
+          changedDetail: changedDetail ?? `${input.path} contains modified or untracked files.`,
+        });
+      }
+      // Git has unregistered the worktree, so a leftover link cannot block a
+      // retry; log instead of failing.
+      if (yield* checkoutExists(target).pipe(Effect.orElseSucceed(() => false))) {
+        const removed = yield* Effect.tryPromise(() => removeLeftoverLinks(target)).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("GitCore.removeWorktree: failed to delete leftover links", {
+              path: target,
+              cause: String(cause),
+            }).pipe(Effect.as(true)),
+          ),
+        );
+        if (!removed)
+          yield* Effect.logWarning(
+            "GitCore.removeWorktree: kept files written after Git removed the worktree",
+            { path: target },
+          );
+      }
       yield* finishRemoval;
     });
 
@@ -3799,6 +3871,7 @@ const makeGitCore = Effect.gen(function* () {
     initRepo,
     listLocalBranchNames,
     readDefaultBranch: (cwd) => resolveDefaultBranchName(cwd, "origin"),
+    readAdvertisedDefaultBranch,
     drainUpstreamRefreshes: (cwd) =>
       Effect.suspend(() =>
         Effect.forEach([...(upstreamRefreshJobs.get(cwd) ?? [])], Fiber.await, {
