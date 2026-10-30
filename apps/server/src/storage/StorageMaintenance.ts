@@ -1,4 +1,5 @@
 import { assertScheduledThreadPurgeable, purgeThreadRows } from "./threadPurgePolicy.ts";
+import { removeScratchThreadFolder } from "../project/scratchFolderCleanup.ts";
 import {
   retainedWorkflowThreadIds as workflowRetention,
   workflowEntries,
@@ -312,6 +313,8 @@ interface ThreadRow {
   readonly archivedAt: string | null;
   readonly deletedAt: string | null;
   readonly workspaceRoot: string | null;
+  readonly projectKind: string | null;
+  readonly scratchPath: string | null;
 }
 
 interface OrphanAttachmentRow {
@@ -864,6 +867,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
         thread.last_interaction_at AS "lastInteractionAt",
         project.title AS "projectName",
         thread.worktree_path AS "worktreePath",
+        thread.scratch_path AS "scratchPath",
+        project.kind AS "projectKind",
         thread.archived_at AS "archivedAt",
         thread.deleted_at AS "deletedAt",
         project.workspace_root AS "workspaceRoot"
@@ -3286,6 +3291,29 @@ const makeStorageMaintenance = Effect.gen(function* () {
                         operation: "purge.recheck",
                         message: finalBlock ?? "Provider became busy.",
                       });
+                    if (thread.projectKind === "scratch" || thread.scratchPath) {
+                      const readModel = yield* engine.getReadModel();
+                      const cleanup = yield* Effect.tryPromise({
+                        try: () =>
+                          removeScratchThreadFolder({
+                            readModel,
+                            threadId: thread.threadId,
+                            allowArchived: true,
+                          }),
+                        catch: (cause) =>
+                          new StorageMaintenanceError({
+                            operation: "purge.scratchFolder",
+                            message: String(cause),
+                          }),
+                      });
+                      if (cleanup.kind === "refused") {
+                        return yield* new StorageMaintenanceError({
+                          operation: "purge.scratchFolder",
+                          message: cleanup.reason,
+                        });
+                      }
+                      if (cleanup.kind === "removed") markStorageMutation(request.operationId);
+                    }
                     const transactionExit = yield* Effect.exit(
                       sql.withTransaction(
                         Effect.gen(function* () {
