@@ -1543,9 +1543,11 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-10429",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "timeline",
@@ -2100,12 +2102,14 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-10987",
       "relatedTopics": [
         "pr-20977"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "pr-hub",
@@ -4113,9 +4117,11 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-12583",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "pr hub",
@@ -4446,12 +4452,14 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-13129",
       "relatedTopics": [
         "pr-19202"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "sidebar",
@@ -4920,9 +4928,11 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-13538",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "checkpoints",
@@ -5421,9 +5431,11 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-13835",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "pr hub",
@@ -6217,9 +6229,11 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-14411",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "checkpoints",
@@ -6536,9 +6550,11 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-14538",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "composer",
@@ -7046,9 +7062,11 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-14705",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "panels",
@@ -7410,9 +7428,11 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-14887",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "threads",
@@ -7742,9 +7762,11 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-14984",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "settings",
@@ -8106,9 +8128,11 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15054",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -8355,9 +8379,11 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15116",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "usage",
@@ -8377,9 +8403,11 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.819Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15163",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "sidebar",
@@ -8448,9 +8476,11 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.819Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15253",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -8750,12 +8780,14 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.819Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15393",
       "relatedTopics": [
         "pr-16453"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "git",
@@ -9934,9 +9966,11 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.819Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15687",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -10239,9 +10273,11 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.819Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-15816",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -12090,9 +12126,11 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.819Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-16448",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -12113,9 +12151,11 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.819Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-16453",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "git",
@@ -12422,9 +12462,11 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.819Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-16581",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "settings",
@@ -12540,9 +12582,11 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.819Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-16623",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "threads",
@@ -12900,9 +12944,11 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.819Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-16691",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "preview-browser"
@@ -13467,9 +13513,11 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
+      "decidedAt": "2026-10-30T00:20:18.819Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-16955",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "panels",
@@ -32730,9 +32778,11 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21273",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "desktop",
@@ -32782,12 +32832,14 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21291",
       "relatedTopics": [
         "pr-14411"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "checkpoints",
@@ -34413,9 +34465,11 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21560",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "timeline",
@@ -34724,9 +34778,11 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21762",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -34767,9 +34823,11 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-21771",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "desktop",
@@ -36121,9 +36179,11 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22072",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "composer",
@@ -36307,9 +36367,11 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22106",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "terminal"
@@ -36482,9 +36544,11 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-22131",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "timeline",
@@ -40931,9 +40995,11 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23160",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -41305,9 +41371,11 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23313",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -41769,9 +41837,11 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-23626",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "composer",
@@ -43419,9 +43489,11 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24015",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -44064,9 +44136,11 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24258",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "git",
@@ -44791,9 +44865,11 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24472",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "settings"
@@ -45017,9 +45093,11 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24556",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "server",
@@ -45851,9 +45929,11 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24698",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "git",
@@ -48994,9 +49074,11 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25193",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "terminal"
@@ -49102,9 +49184,11 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25207",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "git"
@@ -49144,9 +49228,11 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25212",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "worktrees",
@@ -49428,9 +49514,11 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-25235",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -53344,9 +53432,11 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26038",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "worktrees",
@@ -55973,12 +56063,14 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26769",
       "relatedTopics": [
         "pr-26308"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "timeline",
@@ -56198,12 +56290,14 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-26910",
       "relatedTopics": [
         "pr-26876"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -63509,12 +63603,14 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-7894",
       "relatedTopics": [
         "pr-11275"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "desktop",
@@ -65118,9 +65214,11 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-9221",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "terminal"
@@ -66791,9 +66889,11 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
+      "decidedAt": "2026-10-30T00:20:18.818Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-9867",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "terminal"
