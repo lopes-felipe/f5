@@ -3,6 +3,15 @@ import type { ComputerActivity, ComputerAppTier, ComputerBackendKind } from "@t3
 
 export type ComputerStatusTone = "ok" | "pending" | "warning" | "error" | "off";
 
+/** Status dot colors shared by the live strip and the timeline session cards. */
+export const COMPUTER_STATUS_TONE_CLASS: Record<ComputerStatusTone, string> = {
+  ok: "bg-success",
+  pending: "bg-info animate-pulse",
+  warning: "bg-warning",
+  error: "bg-destructive",
+  off: "bg-muted-foreground",
+};
+
 export const COMPUTER_TIER_LABEL: Record<ComputerAppTier, string> = {
   view: "View only",
   click: "Click",

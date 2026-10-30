@@ -230,6 +230,111 @@ function preloadThreadFileChange(input: {
 }
 
 describe("MessagesTimeline", () => {
+  it("groups computer and preview runs into session rows even when MCP calls expand", async () => {
+    const { buildTimelineRows, createTimelineRowCache } = await import("./MessagesTimeline");
+    const createdAt = "2026-03-17T19:12:28.000Z";
+    const work = (id: string, entry: Partial<Extract<TimelineEntry, { kind: "work" }>["entry"]>) =>
+      ({
+        id,
+        kind: "work",
+        createdAt,
+        entry: { id, createdAt, tone: "tool", label: id, ...entry },
+      }) satisfies TimelineEntry;
+    const computerCall = (id: string) =>
+      work(id, {
+        itemType: "mcp_tool_call",
+        mcpServerName: "f5_computer",
+        mcpToolName: "computer_click",
+        computerTool: true,
+      });
+    const previewCall = (id: string) =>
+      work(id, {
+        itemType: "mcp_tool_call",
+        mcpServerName: "f5_preview",
+        mcpToolName: "preview_click",
+      });
+    const thought = (id: string) => work(id, { tone: "thinking" });
+    const timelineEntries: TimelineEntry[] = [
+      work("before", { tone: "info" }),
+      computerCall("c1"),
+      thought("t1"),
+      computerCall("c2"),
+      thought("t2"),
+      previewCall("p1"),
+      previewCall("p2"),
+      work("other", { itemType: "mcp_tool_call", mcpServerName: "docs", mcpToolName: "read" }),
+      computerCall("c3"),
+    ];
+    const rows = buildTimelineRows({
+      timelineEntries,
+      completionDividerBeforeEntryId: null,
+      completionSummary: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      liveActivity: null,
+      expandMcpToolCalls: true,
+      cache: createTimelineRowCache(),
+    });
+    expect(
+      rows.flatMap((row) =>
+        row.kind === "work"
+          ? [[row.automationSurface ?? null, row.groupedEntries.map((entry) => entry.id)]]
+          : [],
+      ),
+    ).toEqual([
+      [null, ["before"]],
+      ["computer", ["c1", "t1", "c2"]],
+      [null, ["t2"]],
+      ["preview", ["p1", "p2"]],
+      [null, ["other"]],
+      ["computer", ["c3"]],
+    ]);
+    const computerRow = rows.find((row) => row.kind === "work" && row.automationSurface);
+    expect(computerRow?.kind === "work" && computerRow.workSummary).toBe(
+      "Used the computer · 2 actions",
+    );
+
+    // A prior turn's lost completion is not a running action, even while a new turn works.
+    const orphan = work("orphan", {
+      itemType: "mcp_tool_call",
+      mcpServerName: "f5_computer",
+      mcpToolName: "computer_click",
+      computerTool: true,
+      status: "inProgress",
+    });
+    const live = { ...orphan, id: "live", entry: { ...orphan.entry, id: "live" } };
+    const userMessage: TimelineEntry = {
+      id: "next",
+      kind: "message",
+      createdAt,
+      message: {
+        id: MessageId.makeUnsafe("next"),
+        role: "user",
+        text: "Next",
+        createdAt,
+        streaming: false,
+      },
+    };
+    const workingRows = buildTimelineRows({
+      timelineEntries: [orphan, userMessage, live],
+      completionDividerBeforeEntryId: null,
+      completionSummary: null,
+      isWorking: true,
+      activeTurnStartedAt: createdAt,
+      liveActivity: null,
+      expandMcpToolCalls: false,
+      cache: createTimelineRowCache(),
+    });
+    expect(
+      workingRows.flatMap((row) =>
+        row.kind === "work" ? [[row.automationActive, row.workSummary]] : [],
+      ),
+    ).toEqual([
+      [false, "Used the computer · 1 action"],
+      [true, "Clicking… · 1 action"],
+    ]);
+  });
+
   it("keeps answered questions visible outside collapsed work from previous turns", async () => {
     const { MessagesTimeline, buildTimelineRows, createTimelineRowCache } =
       await import("./MessagesTimeline");

@@ -131,6 +131,65 @@ describe("computer event queue admission", () => {
       '"mcpImagesOmitted":2',
     );
   });
+  it.each([
+    [
+      "computer_key",
+      { keys: ["Meta+L"], repeat: 2 },
+      { appName: "Google Chrome", keyChord: "Meta+L", repeat: 2 },
+    ],
+    [
+      "computer_type",
+      { text: "PRIVATE_TYPED_SENTINEL" },
+      { appName: "Google Chrome", typedLength: 22 },
+    ],
+  ])("summarizes %s without its raw input", async (tool, input, expected) => {
+    automationEventSanitizer.register(threadId, {
+      serverName: "f5_computer",
+      verified: true,
+      kind: "f5-computer",
+    });
+    const structuredContent = { appName: "Google Chrome" };
+    const event: ProviderRuntimeEvent = {
+      type: "item.completed",
+      eventId: EventId.makeUnsafe(`step-${tool}`),
+      threadId,
+      itemId: RuntimeItemId.makeUnsafe(`step-${tool}`),
+      provider: "claudeAgent",
+      createdAt: new Date().toISOString(),
+      payload: {
+        itemType: "mcp_tool_call",
+        computerStep: { keyChord: "Escape" },
+        data: {
+          toolName: `mcp__f5_computer__${tool}`,
+          input,
+          result: {
+            structuredContent,
+            content: [{ type: "text", text: JSON.stringify(structuredContent) }],
+          },
+        },
+      },
+    };
+    const queued = await Effect.runPromise(
+      createAutomationRuntimeEventPreparer(() => Effect.succeed(null))(event),
+    );
+    if (queued.type !== "item.completed") throw new Error("Unexpected event type");
+    expect(queued.payload.computerStep).toEqual(expected);
+    const logged = automationEventSanitizer.sanitize(threadId, queued) as typeof queued;
+    const activity = compactThreadActivityPayload({
+      kind: "tool.completed",
+      payload: logged.payload,
+    });
+    expect(activity).toMatchObject({ computerTool: true, computerStep: expected });
+    expect(JSON.stringify(logged)).not.toContain("PRIVATE_");
+    expect(JSON.stringify(activity)).not.toContain("PRIVATE_");
+    expect(
+      runtimeEventToActivities(queued).some(
+        (entry) =>
+          JSON.stringify((entry.payload as Record<string, unknown>).computerStep) ===
+          JSON.stringify(expected),
+      ),
+    ).toBe(true);
+  });
   it("does not treat look-alike project servers as F5 computer tools", async () => {
     automationEventSanitizer.register(threadId, {
       serverName: "f5_computer",
@@ -170,6 +229,7 @@ it("ignores a third-party computer tool name and a provider-supplied computer ma
     payload: {
       itemType: "mcp_tool_call",
       computerTool: true,
+      computerStep: { keyChord: "Enter" },
       data: { toolName: "mcp__third_party__computer_click", status: "completed" },
     },
   };
@@ -178,6 +238,13 @@ it("ignores a third-party computer tool name and a provider-supplied computer ma
   );
   if (queued.type !== "item.completed") throw new Error("Unexpected event");
   expect(queued.payload.computerTool).toBeUndefined();
+  expect(queued.payload.computerStep).toBeUndefined();
+  // Ingestion carries a step only beside its own computerTool verdict, even from a raw event.
+  expect(
+    runtimeEventToActivities(event).every(
+      (entry) => (entry.payload as Record<string, unknown>)?.computerStep === undefined,
+    ),
+  ).toBe(true);
   expect(
     runtimeEventToActivities(event).every(
       (entry) => !(entry.payload as Record<string, unknown>)?.computerTool,

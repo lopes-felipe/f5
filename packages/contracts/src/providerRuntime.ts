@@ -20,7 +20,11 @@ import {
   ProviderApprovalPresentation,
 } from "./orchestration";
 import { ProviderInstanceId } from "./providerInstance";
-import { TOOL_LIFECYCLE_ITEM_TYPES, ToolCompletionEnvelope } from "./toolLifecycle";
+import {
+  ComputerStepSummary,
+  TOOL_LIFECYCLE_ITEM_TYPES,
+  ToolCompletionEnvelope,
+} from "./toolLifecycle";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -424,6 +428,8 @@ export type TurnDiffUpdatedPayload = typeof TurnDiffUpdatedPayload.Type;
 export const ItemLifecyclePayload = Schema.Struct({
   /** Assigned by F5 at authenticated event admission, never inferred from a server name. */
   computerTool: Schema.optional(Schema.Boolean),
+  /** Assigned with computerTool from the raw call; see sanitizeComputerStep. */
+  computerStep: Schema.optional(ComputerStepSummary),
   itemType: CanonicalItemType,
   status: Schema.optional(RuntimeItemStatus),
   title: Schema.optional(TrimmedNonEmptyStringSchema),

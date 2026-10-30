@@ -24,20 +24,13 @@ import {
   computerGrantLabel,
   computerStatusTone,
   describeComputerAction,
-  type ComputerStatusTone,
+  COMPUTER_STATUS_TONE_CLASS,
 } from "./AgentComputerLiveCard.logic";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "./ui/popover";
 import { pauseComputerThread, stopComputerTurn } from "./computerControls";
 const EMPTY_GRANTS: ReadonlyArray<ComputerGrant> = [];
-const TONE_CLASS: Record<ComputerStatusTone, string> = {
-  ok: "bg-success",
-  pending: "bg-info animate-pulse",
-  warning: "bg-warning",
-  error: "bg-destructive",
-  off: "bg-muted-foreground",
-};
 type AccessRequest = typeof ComputerAccessPush.Type & { settled?: boolean; allowed?: boolean };
 const KIND_LABEL: Record<AccessRequest["kind"], string> = {
   apps: "Apps",
@@ -143,7 +136,9 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
       )}
       <div className="min-w-40 flex-1 space-y-1">
         <p className="flex items-center gap-1.5 truncate font-medium" aria-live="polite">
-          <span className={cn("size-1.5 shrink-0 rounded-full", TONE_CLASS[tone])} />
+          <span
+            className={cn("size-1.5 shrink-0 rounded-full", COMPUTER_STATUS_TONE_CLASS[tone])}
+          />
           <span className="truncate">
             {stopUnconfirmed
               ? "Stop unconfirmed"

@@ -14,6 +14,21 @@ export const TOOL_LIFECYCLE_ITEM_TYPES = [
   "sleep",
 ] as const;
 
+/**
+ * Display-only facts about one F5 computer action, built by F5 from the raw call and
+ * re-validated by `sanitizeComputerStep`. Never carries typed text.
+ */
+export const ComputerStepSummary = Schema.Struct({
+  appName: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
+  x: Schema.optional(Schema.Number),
+  y: Schema.optional(Schema.Number),
+  keyChord: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
+  repeat: Schema.optional(Schema.Number),
+  typedLength: Schema.optional(Schema.Number),
+  outcome: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
+});
+export type ComputerStepSummary = typeof ComputerStepSummary.Type;
+
 /** Inline limit for a retained structured tool output (serialized JSON bytes). */
 export const TOOL_COMPLETION_INLINE_OUTPUT_MAX_BYTES = 64 * 1024;
 /** Inline limit for the correlated tool input carried with a completion. */
