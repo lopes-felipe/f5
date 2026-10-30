@@ -43,7 +43,7 @@ The rehearsal job builds two unpublished installers from the release commit, on 
 
 What the rehearsal does **not** prove:
 
-- **Published clients:** both builds contain the release commit's updater, so it cannot show that already-published clients can update to the new release. That matters from the second published Windows release on. Before tagging any release after `v0.1.1-beta.1`, change the job to use the latest published installer on the release's channel as the baseline (beta.1 for beta.2 and for `v0.1.1`) and the `desktop-win-x64` build artifact as the target.
+- **Published clients:** both builds contain the release commit's updater, so it cannot show that already-published clients can update to the new release. The first published Windows release has no published baseline; beta.1 remains a draft, so beta.2 uses the same-commit rehearsal. Starting with the second published Windows release, use the latest published installer on the release's channel as the baseline and the `desktop-win-x64` build artifact as the target.
 - **Signed builds:** its builds are always unsigned. When Windows signing is enabled, extend it to signed-to-signed upgrades and to rejecting unsigned or wrongly signed updates.
 
 A green dry run with the release's profile is a hard precondition for tagging. The rehearsal has no non-blocking mode; a flaky failure means re-running the job.
@@ -104,7 +104,7 @@ bun run dist:cli:manifest release-cli/f5-cli-release.json release-cli/f5-0.0.10-
 
 The merge script requires all five targets and matching versions. Release publishing automation and credentials belong in a separate PR; these scripts do not publish, change secrets, or configure repository access.
 
-The macOS signing hook runs the bundled server's `claude-runtime-smoke.mjs` through the packaged Electron binary with `ELECTRON_RUN_AS_NODE=1` before submitting the signed application for notarization. It checks Claude CLI discovery and SDK initialization through F5's process-group wrapper, using a disposable home without a prompt or account credentials. Native Claude platform packages are explicitly unpacked, and both launch paths must resolve the same physical executable under `app.asar.unpacked`. A failed or timed-out smoke check blocks notarization and release packaging.
+The packaged Claude runtime check runs the bundled server's `claude-runtime-smoke.mjs` through Electron with `ELECTRON_RUN_AS_NODE=1`. Windows and Linux run it from `afterPack`; signed macOS builds run it after signing and before notarization. It checks CLI discovery and SDK initialization using a disposable home without a prompt or account credentials. macOS/Linux use F5's process-group wrapper; Windows uses the SDK's native spawn. The check rejects virtual ASAR executable paths, and native Claude platform packages are explicitly unpacked. A failed or timed-out smoke check blocks release packaging.
 
 Validation in the CLI PR: macOS arm64 archive build and smoke with a disposable home and restricted PATH; native PTY and native file search; update rollback after a failing migration; interrupted trial/restoration and durable-commit recovery; architecture rejection; required workspace and real-Git checks. Packaged Windows/Linux and clean-machine VM smoke runs remain release gates and are not certified by a macOS-only run.
 

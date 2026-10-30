@@ -3,6 +3,7 @@ const { mkdtempSync, rmSync } = require("node:fs");
 const { tmpdir } = require("node:os");
 const { basename, dirname, join } = require("node:path");
 const verifyComputerHelper = require("./verify-computer-helper.cjs").default;
+const { verifyClaudeRuntime } = require("./verify-claude-runtime.cjs");
 
 // Apple's notary and ticket services drop connections from CI runners (NSURLErrorDomain
 // -1005), and @electron/notarize retries stapling for only a few seconds.
@@ -93,32 +94,10 @@ async function notarizeAndStaple(app, env, { run = defaultRun, sleep = defaultSl
 }
 exports.notarizeAndStaple = notarizeAndStaple;
 
-/** Exercise ASAR resolution and the production process wrapper after signing. */
-function verifyClaudeRuntime(app, { run = defaultRun } = {}) {
-  const executable = join(app, "Contents", "MacOS", basename(app, ".app"));
-  const entry = join(
-    app,
-    "Contents",
-    "Resources",
-    "app.asar",
-    "apps",
-    "server",
-    "dist",
-    "claude-runtime-smoke.mjs",
-  );
-  const result = run(executable, [entry], {
-    env: { PATH: process.env.PATH, ELECTRON_RUN_AS_NODE: "1" },
-    timeout: 45_000,
-    killSignal: "SIGKILL",
-  });
-  if (result.status !== 0) throw new Error(`Bundled Claude runtime smoke failed for ${app}`);
-}
-exports.verifyClaudeRuntime = verifyClaudeRuntime;
-
 exports.default = async (context) => {
   await verifyComputerHelper(context);
   if (context.electronPlatformName !== "darwin") return;
   const app = join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`);
-  verifyClaudeRuntime(app);
+  verifyClaudeRuntime(context);
   await notarizeAndStaple(app, process.env);
 };

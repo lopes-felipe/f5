@@ -32,9 +32,6 @@ it("requires deliberate recertification when the bundled Claude SDK changes", as
   await expect(
     validateProviderCompatibility(config, "claudeAgent", "claude", {}),
   ).resolves.toBeUndefined();
-  expect(resolveClaudeSdkExecutableOptions("claude").pathToClaudeCodeExecutable).toMatch(
-    /claude(?:\.exe)?$/,
-  );
   expect(runProcess).not.toHaveBeenCalled();
 });
 

@@ -18,6 +18,22 @@ describe("resolveAsarExecutablePath", () => {
     ["/repo/app.asar-backup/claude", "/repo/app.asar-backup/claude"],
     ["/repo/app.asar", "/repo/app.asar"],
   ])("resolves %s to %s", (input, expected) => {
-    expect(resolveAsarExecutablePath(input)).toBe(expected);
+    expect(resolveAsarExecutablePath(input, { electron: true, fileExists: () => true })).toBe(
+      expected,
+    );
+  });
+
+  it("preserves ASAR-named directories outside Electron even if a sibling exists", () => {
+    const executable = "/opt/tools/foo.asar/claude";
+    expect(resolveAsarExecutablePath(executable, { electron: false, fileExists: () => true })).toBe(
+      executable,
+    );
+  });
+
+  it("preserves the original path when no unpacked sibling exists", () => {
+    const executable = "/opt/tools/foo.asar/claude";
+    expect(resolveAsarExecutablePath(executable, { electron: true, fileExists: () => false })).toBe(
+      executable,
+    );
   });
 });

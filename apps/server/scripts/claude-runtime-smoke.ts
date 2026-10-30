@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { isAsarExecutablePath } from "../src/spawn/asarExecutable.ts";
 import { makeClaudeProcessGroupSpawner } from "../src/provider/claudeProcessGroup.ts";
 import { appendClaudeStderrTail } from "../src/provider/claudeProcessExit.ts";
 import {
@@ -44,11 +45,14 @@ async function smokeClaudeRuntime(): Promise<void> {
     stderr = appendClaudeStderrTail(stderr, data);
   };
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20_000);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   let session: ReturnType<typeof query> | undefined;
   try {
     const invocation = resolveClaudeCliInvocation("claude", ["--version"], environment);
     const sdkOptions = resolveClaudeSdkExecutableOptions("claude", environment);
+    if (isAsarExecutablePath(invocation.file)) {
+      throw new Error("Claude native executable must be outside the ASAR archive.");
+    }
     if (invocation.file !== sdkOptions.pathToClaudeCodeExecutable) {
       throw new Error("Claude CLI discovery and SDK launch resolved different executables.");
     }
@@ -61,6 +65,7 @@ async function smokeClaudeRuntime(): Promise<void> {
     if (!/^\d+\.\d+\.\d+/.test(version)) {
       throw new Error("Claude --version did not report a CLI version.");
     }
+    timeout = setTimeout(() => controller.abort(), 20_000);
     const spawnClaudeCodeProcess = makeClaudeProcessGroupSpawner(recordStderr);
     session = query({
       prompt,
@@ -85,7 +90,7 @@ async function smokeClaudeRuntime(): Promise<void> {
     if (stderr) console.error(stderr);
     process.exitCode = 1;
   } finally {
-    clearTimeout(timeout);
+    if (timeout) clearTimeout(timeout);
     endInput();
     session?.close();
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

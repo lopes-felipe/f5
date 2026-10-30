@@ -3,7 +3,7 @@ import { statSync } from "node:fs";
 import { createRequire } from "node:module";
 import * as NodePath from "node:path";
 
-import { resolveAsarExecutablePath } from "../spawn/asarExecutable.ts";
+import { isAsarExecutablePath, resolveAsarExecutablePath } from "../spawn/asarExecutable.ts";
 import {
   CommandNotFoundError,
   resolveExecutable,
@@ -33,31 +33,70 @@ function isFile(filePath: string): boolean {
   }
 }
 
+function prefersMusl(): boolean {
+  if (process.platform !== "linux") return false;
+  try {
+    const report = process.report?.getReport() as
+      | { header?: { glibcVersionRuntime?: string } }
+      | undefined;
+    return report != null && report.header?.glibcVersionRuntime === undefined;
+  } catch {
+    return false;
+  }
+}
+
 export function resolveBundledClaudeExecutable(
   platform: NodeJS.Platform = process.platform,
   arch: string = process.arch,
+  options: {
+    readonly preferMusl?: boolean;
+    readonly resolve?: (specifier: string) => string;
+    readonly fileExists?: (filePath: string) => boolean;
+    readonly electron?: boolean;
+  } = {},
 ): string {
   const packageName = `@anthropic-ai/claude-agent-sdk-${platform}-${arch}`;
   const executableName = platform === "win32" ? "claude.exe" : "claude";
-  const require = createRequire(import.meta.url);
-  let executable: string;
+  // Match the pinned SDK's libc preference and fallback order, including npm
+  // installs where both Linux variants are present.
+  const packages =
+    platform === "linux"
+      ? (options.preferMusl ?? prefersMusl())
+        ? [`${packageName}-musl`, packageName]
+        : [packageName, `${packageName}-musl`]
+      : platform === "android"
+        ? [`@anthropic-ai/claude-agent-sdk-linux-${arch}-android`]
+        : [packageName];
+  const fileExists = options.fileExists ?? isFile;
+  const electron = options.electron ?? Boolean(process.versions.electron);
+  let resolvePackage = options.resolve;
   try {
-    const sdkEntry = require.resolve("@anthropic-ai/claude-agent-sdk");
-    const sdkRequire = createRequire(sdkEntry);
-    executable = resolveAsarExecutablePath(sdkRequire.resolve(`${packageName}/${executableName}`));
+    if (!resolvePackage) {
+      const require = createRequire(import.meta.url);
+      const sdkEntry = require.resolve("@anthropic-ai/claude-agent-sdk");
+      resolvePackage = createRequire(sdkEntry).resolve;
+    }
+    for (const candidate of packages) {
+      try {
+        const executable = resolveAsarExecutablePath(
+          resolvePackage(`${candidate}/${executableName}`),
+          { electron, fileExists },
+        );
+        // Electron's virtual fs.stat can report an archived file as present
+        // even when the physical sibling required by a native spawn is absent.
+        if (electron && isAsarExecutablePath(executable)) continue;
+        if (fileExists(executable)) return executable;
+      } catch {
+        // The SDK also tries the other libc variant when a package is missing.
+      }
+    }
   } catch {
-    throw new CommandNotFoundError(
-      DEFAULT_CLAUDE_BINARY,
-      `Bundled Claude Agent SDK executable for ${platform}-${arch} is unavailable. Reinstall dependencies with optional packages enabled.`,
-    );
+    // Report dependency-resolution failures with the same actionable error.
   }
-  if (!isFile(executable)) {
-    throw new CommandNotFoundError(
-      DEFAULT_CLAUDE_BINARY,
-      `Bundled Claude Agent SDK executable is missing at '${executable}'.`,
-    );
-  }
-  return executable;
+  throw new CommandNotFoundError(
+    DEFAULT_CLAUDE_BINARY,
+    `Bundled Claude Agent SDK executable for ${platform}-${arch} is unavailable or not unpacked. Reinstall F5, or reinstall dependencies with optional packages enabled.`,
+  );
 }
 
 export function resolveClaudeSdkExecutableOptions(
