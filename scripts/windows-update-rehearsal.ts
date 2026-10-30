@@ -1,13 +1,17 @@
 // @effect-diagnostics nodeBuiltinImport:off
 /**
- * Installs an unpublished baseline build on a fresh Windows runner, points the
- * installation at a loopback GitHub emulator and drives the real updater through
- * the renderer bridge (Chromium remote debugging; Node inspector fuses stay off).
+ * Installs a baseline build (the newest published release on the channel, or an
+ * unpublished one) on a fresh Windows runner, points the installation at a loopback
+ * GitHub emulator and drives the real updater through the renderer bridge (Chromium
+ * remote debugging; Node inspector fuses stay off). A published baseline runs that
+ * release's own renderer, so the bridge calls below must keep working against it.
  *
  * Node and Bun are hidden from every PATH source F5 hydrates at startup, so this
  * script must run from a copied `node.exe` outside them.
  * Usage: node scripts/windows-update-rehearsal.ts --baseline-dir D --target-dir D
- *   --baseline V --target V --channel latest|beta [--log-dir D]
+ *   --baseline V --target V --channel latest|beta [--baseline-channel latest|beta]
+ *   [--log-dir D]
+ * `--channel` is the target's; a beta baseline may update to a stable target.
  */
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import {
@@ -40,6 +44,7 @@ const { values } = parseArgs({
     baseline: { type: "string" },
     target: { type: "string" },
     channel: { type: "string" },
+    "baseline-channel": { type: "string" },
     "log-dir": { type: "string", default: "rehearsal-logs" },
   },
 });
@@ -49,6 +54,10 @@ const channel = values.channel!;
 if (!baseline || !target || !values["baseline-dir"] || !values["target-dir"])
   throw new Error("Usage: --baseline-dir D --target-dir D --baseline V --target V --channel C");
 if (channel !== "latest" && channel !== "beta") throw new Error(`Invalid channel: ${channel}`);
+const baselineChannel = values["baseline-channel"] ?? channel;
+// Stable clients never see betas, so only a beta baseline may change channel.
+if (baselineChannel !== channel && baselineChannel !== "beta")
+  throw new Error(`A ${baselineChannel} baseline cannot update to a ${channel} target`);
 const logDir = values["log-dir"]!;
 mkdirSync(logDir, { recursive: true });
 
@@ -449,6 +458,7 @@ function listFiles(root: string, prefix = ""): string[] {
   );
 }
 
+const baselineManifest = `${baselineChannel}.yml`;
 const manifest = `${channel}.yml`;
 const artifact = (dir: string, version: string, suffix = "") =>
   join(dir, `F5-${version}-x64.exe${suffix}`);
@@ -462,7 +472,7 @@ const feed = await startUpdateFeedEmulator({
       assets: {
         [`F5-${baseline}-x64.exe`]: artifact(baselineDir, baseline),
         [`F5-${baseline}-x64.exe.blockmap`]: artifact(baselineDir, baseline, ".blockmap"),
-        [manifest]: join(baselineDir, manifest),
+        [baselineManifest]: join(baselineDir, baselineManifest),
       },
     },
     {
@@ -512,7 +522,10 @@ try {
   const appUpdatePath = join(dir, "resources", "app-update.yml");
   const productionFeed = parseAppUpdateConfig(readFileSync(appUpdatePath, "utf8"));
   assert(!("publisherName" in productionFeed), "Unsigned build has publisherName");
-  assert(productionFeed.channel === channel, `Packaged channel ${String(productionFeed.channel)}`);
+  assert(
+    productionFeed.channel === baselineChannel,
+    `Packaged channel ${String(productionFeed.channel)}`,
+  );
   const cacheDirName = productionFeed.updaterCacheDirName;
   assert(typeof cacheDirName === "string", "app-update.yml lacks updaterCacheDirName");
   const redirectFeed = () =>
@@ -529,7 +542,7 @@ try {
   assert(initial.enabled, `Updates disabled: ${initial.message}`);
   assert(initial.currentVersion === baseline, `Running ${initial.currentVersion}`);
   assert(
-    initial.channel === (channel === "beta" ? "beta" : "stable"),
+    initial.channel === (baselineChannel === "beta" ? "beta" : "stable"),
     `Channel ${initial.channel}`,
   );
   // The startup check (15 seconds after launch) runs offline first, so it cannot race the steps below.

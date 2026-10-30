@@ -31,7 +31,12 @@ First public release: `v0.1.1` stable with the `all` profile, rehearsed as `v0.1
 
 The Windows CLI archives and the rehearsal live in `.github/workflows/windows-release-checks.yml`. The release workflow calls it, and pull requests that touch packaging, distribution, desktop or release files run it as well, with no secrets or environment approval. Get it green on the pull request before merging; a release dry run then only has to confirm the signed and cross-platform parts.
 
-The rehearsal job builds two unpublished installers from the release commit, on the release channel. Stable pairs are the base version and its next patch; beta pairs are `<base>-beta.1` and `<base>-beta.2`, which resolve through the Atom feed. It then runs `scripts/windows-update-rehearsal.ts` on a fresh Windows runner, which:
+The rehearsal job updates an installer that clients already run to a build of the release commit. `scripts/rehearsal-baseline.ts` picks the baseline:
+
+- **Beta releases:** the newest published beta.
+- **Stable releases:** the newest published stable. Before any stable exists, the newest beta, whose clients take stable releases from the Atom feed and fall back from `beta.yml` to `latest.yml`.
+
+It downloads that release's installer, blockmap and manifest and checks them against its `SHA256SUMS`. The target is the release version, or, for pull-request checks and dry runs, the next version on the channel above the baseline. Before any Windows release is published, both builds are unpublished: stable pairs are the base version and its next patch, and beta pairs are `<base>-beta.1` and `<base>-beta.2`. Pull requests rehearse the stable channel; run the workflow manually with `channel=beta` to rehearse a beta update. The job then runs `scripts/windows-update-rehearsal.ts` on a fresh Windows runner, which:
 
 - installs the baseline silently and redirects that installation's `app-update.yml` to a loopback GitHub emulator, so the real GitHub provider code path runs;
 - renames every directory providing Node or Bun on F5's effective PATH (inherited, registry machine/user, and the known install folders F5 adds at startup), then launches the app and checks that no Node or Bun process starts;
@@ -43,7 +48,8 @@ The rehearsal job builds two unpublished installers from the release commit, on 
 
 What the rehearsal does **not** prove:
 
-- **Published clients:** both builds contain the release commit's updater, so it cannot show that already-published clients can update to the new release. That matters from the second published Windows release on. Before tagging any release after `v0.1.1-beta.1`, change the job to use the latest published installer on the release's channel as the baseline (beta.1 for beta.2 and for `v0.1.1`) and the `desktop-win-x64` build artifact as the target.
+- **Older clients:** only the newest published release on the channel is rehearsed. Clients still on older releases rely on electron-updater's compatibility.
+- **The shipped installer:** the target is a separate build of the release commit, not the `desktop-win-x64` artifact that ships.
 - **Signed builds:** its builds are always unsigned. When Windows signing is enabled, extend it to signed-to-signed upgrades and to rejecting unsigned or wrongly signed updates.
 
 A green dry run with the release's profile is a hard precondition for tagging. The rehearsal has no non-blocking mode; a flaky failure means re-running the job.

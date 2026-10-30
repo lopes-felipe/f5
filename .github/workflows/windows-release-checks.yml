@@ -32,8 +32,15 @@ on:
       - scripts/lib/**
       - scripts/update-release-package-versions.ts
       - scripts/verify-staged-lockfile.ts
+      - scripts/rehearsal-baseline.ts
       - scripts/windows-update-rehearsal.ts
   workflow_dispatch:
+    inputs:
+      channel:
+        description: Rehearsal channel (beta rehearses from the newest published beta)
+        type: choice
+        options: [latest, beta]
+        default: latest
 permissions:
   contents: read
 concurrency:
@@ -109,31 +116,39 @@ jobs:
           bun-version: 1.3.9
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - run: bun install --frozen-lockfile
-      - id: versions
+      # Published clients must update to this commit, so the baseline is the newest
+      # published installer on the channel; unpublished builds stand in before one exists.
+      - name: Choose the rehearsal baseline
+        id: versions
         env:
+          GH_TOKEN: ${{ github.token }}
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           version="${INPUT_VERSION:-$(node -p 'require("./apps/desktop/package.json").version.split("-")[0]')-check.$GITHUB_RUN_NUMBER}"
-          VERSION="$version" node --input-type=module -e 'import { rehearsalVersions } from "./scripts/lib/update-rehearsal.ts"; const v = rehearsalVersions(process.env.VERSION, process.env.CHANNEL); console.log(`baseline=${v.baseline}\ntarget=${v.target}`)' >> "$GITHUB_OUTPUT"
-      - name: Build unpublished baseline and target installers
+          node scripts/rehearsal-baseline.ts --version "$version" --channel "$CHANNEL" --output-dir rehearsal >> "$GITHUB_OUTPUT"
+      - name: Build rehearsal installers
         env:
           BASELINE: ${{ steps.versions.outputs.baseline }}
           TARGET: ${{ steps.versions.outputs.target }}
+          PUBLISHED: ${{ steps.versions.outputs.published }}
         run: |
-          node scripts/update-release-package-versions.ts "$BASELINE"
+          versions=("$TARGET")
+          [[ "$PUBLISHED" == true ]] || versions=("$BASELINE" "$TARGET")
+          node scripts/update-release-package-versions.ts "${versions[0]}"
           bun run build:desktop
-          for version in "$BASELINE" "$TARGET"; do
+          for version in "${versions[@]}"; do
             node scripts/build-desktop-artifact.ts --skip-build --platform win --arch x64 --target nsis --build-version "$version" --output-dir "rehearsal/$version"
           done
       - name: Install, upgrade and uninstall through a loopback feed
         env:
           BASELINE: ${{ steps.versions.outputs.baseline }}
+          BASELINE_CHANNEL: ${{ steps.versions.outputs.baseline_channel }}
           TARGET: ${{ steps.versions.outputs.target }}
         # The script hides every Node/Bun directory F5 could find, so it runs from a copy.
         run: |
           mkdir -p "$RUNNER_TEMP/rehearsal-node"
           cp "$(command -v node)" "$RUNNER_TEMP/rehearsal-node/node.exe"
-          "$RUNNER_TEMP/rehearsal-node/node.exe" scripts/windows-update-rehearsal.ts --baseline-dir "rehearsal/$BASELINE" --target-dir "rehearsal/$TARGET" --baseline "$BASELINE" --target "$TARGET" --channel "$CHANNEL" --log-dir rehearsal-logs
+          "$RUNNER_TEMP/rehearsal-node/node.exe" scripts/windows-update-rehearsal.ts --baseline-dir "rehearsal/$BASELINE" --target-dir "rehearsal/$TARGET" --baseline "$BASELINE" --baseline-channel "$BASELINE_CHANNEL" --target "$TARGET" --channel "$CHANNEL" --log-dir rehearsal-logs
       - if: always()
         uses: actions/upload-artifact@v4
         with:
