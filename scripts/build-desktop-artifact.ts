@@ -11,7 +11,11 @@ import rootPackageJson from "../package.json" with { type: "json" };
 import desktopPackageJson from "../apps/desktop/package.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
-import { seedStagedLockfile, verifyStagedLockfile } from "./verify-staged-lockfile.ts";
+import {
+  seedStagedLockfile,
+  verifyAppliedPatches,
+  verifyStagedLockfile,
+} from "./verify-staged-lockfile.ts";
 import { RELEASE_UPDATE_REPOSITORY, verifyAppUpdateConfig } from "./lib/app-update-config.ts";
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
 import { stagedDesktopDependencies } from "./lib/desktop-stage.ts";
@@ -185,6 +189,7 @@ interface StagePackageJson {
     readonly electron: string;
   };
   readonly overrides?: Record<string, string>;
+  readonly patchedDependencies?: Record<string, string>;
 }
 
 const AzureTrustedSigningOptionsConfig = Config.all({
@@ -721,10 +726,17 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       electron: electronVersion,
     },
     ...(rootPackageJson.overrides ? { overrides: rootPackageJson.overrides } : {}),
+    // Patched transitive packages (e.g. the server's Effect child-process fixes)
+    // must ship in the app, not only in the repository install.
+    ...(rootPackageJson.patchedDependencies
+      ? { patchedDependencies: rootPackageJson.patchedDependencies }
+      : {}),
   };
 
   const stagePackageJsonString = yield* encodeJsonString(stagePackageJson);
   yield* fs.writeFileString(path.join(stageAppDir, "package.json"), `${stagePackageJsonString}\n`);
+  if (stagePackageJson.patchedDependencies)
+    yield* fs.copy(path.join(repoRoot, "patches"), path.join(stageAppDir, "patches"));
 
   const stagedBun = (args: TemplateStringsArray) =>
     runCommand(
@@ -757,6 +769,13 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   });
   yield* Effect.log("[desktop-artifact] Installing staged production dependencies...");
   yield* stagedBun`bun install --production --frozen-lockfile`;
+  const { patchedDependencies } = stagePackageJson;
+  if (patchedDependencies)
+    yield* Effect.try({
+      try: () => verifyAppliedPatches(stageAppDir, patchedDependencies),
+      catch: (error) =>
+        new BuildScriptError({ message: `Staged dependency patch check failed: ${String(error)}` }),
+    });
   yield* fs.makeDirectory(options.outputDir, { recursive: true });
   yield* fs.copyFile(
     path.join(stageAppDir, "bun.lock"),
