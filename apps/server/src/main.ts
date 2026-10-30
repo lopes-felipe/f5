@@ -11,6 +11,7 @@ import {
   isProfilePortBindable,
 } from "./profiles/ProfileRegistryStore";
 import { instanceLock } from "./profiles/InstanceLock";
+import { watchLauncherPipes } from "./launcherPipes";
 /**
  * CliConfig - CLI/runtime bootstrap service definitions.
  *
@@ -539,6 +540,14 @@ const makeServerProgram = (input: CliInput) =>
     const openDeps = yield* Open;
 
     const config = yield* withStartupPhaseTiming("config.resolve", ServerConfig.asEffect());
+    if (config.mode === "desktop" && !isTestRuntime()) {
+      // A dead launcher shuts down through the signal path, which runs finalizers and exits.
+      yield* Effect.sync(() =>
+        watchLauncherPipes([process.stdout, process.stderr], () =>
+          process.kill(process.pid, "SIGTERM"),
+        ),
+      );
+    }
     yield* Effect.logInfo("server instrumentation flags", {
       threadOpenTimingsEnv: process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS ?? null,
       threadOpenTimingsEnabled:

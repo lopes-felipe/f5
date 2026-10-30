@@ -223,6 +223,7 @@ const MAX_DESKTOP_WINDOWS = 12;
 const OPEN_THREAD_WINDOW_MIN_INTERVAL_MS = 500;
 const lastOpenThreadWindowAtByRenderer = new Map<number, number>();
 const MENU_ACTION_CHANNEL = "desktop:menu-action";
+const TRACKPAD_SCROLL_CHANNEL = "desktop:trackpad-scroll";
 const UPDATE_STATE_CHANNEL = "desktop:update-state";
 const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
 const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
@@ -4203,6 +4204,15 @@ function createWindow(
       void shell.openExternal(externalUrl);
     }
     return { action: "deny" };
+  });
+
+  // Wheel events carry no phase; the renderer's swipe navigation needs to know when fingers lift.
+  window.webContents.on("input-event", (_event, input) => {
+    if (input.type === "gestureScrollBegin") {
+      window.webContents.send(TRACKPAD_SCROLL_CHANNEL, "begin");
+    } else if (input.type === "gestureScrollEnd") {
+      window.webContents.send(TRACKPAD_SCROLL_CHANNEL, "end");
+    }
   });
 
   const rendererWebContentsId = window.webContents.id;

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useRouter } from "@tanstack/react-router";
 import { resolveShortcutCommand, useServerKeybindings } from "~/keybindings";
+import { navigateHistory } from "~/navigationHistory";
 import { setSearchParamsForSurface } from "~/rightPanelNavigation";
 import { useRightPanelStore } from "~/rightPanelStore";
 import {
@@ -85,10 +86,10 @@ export function ThreadNavigationController() {
       });
       if (command === "navigation.back") {
         event.preventDefault();
-        router.history.back();
+        navigateHistory(router.history, "back");
       } else if (command === "navigation.forward") {
         event.preventDefault();
-        router.history.forward();
+        navigateHistory(router.history, "forward");
       } else if (command === "rightPanel.reopenClosed") {
         event.preventDefault();
         // History is app-wide, so this also returns to the tab's thread from

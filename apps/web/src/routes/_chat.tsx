@@ -11,6 +11,8 @@ import { ProjectCloneController } from "../components/ProjectCloneController";
 import { ProjectCreateNewController } from "../components/ProjectCreateNewController";
 import { DesktopPromptLinkController } from "../components/promptLinks/DesktopPromptLinkController";
 import { ThreadNavigationController } from "../components/ThreadNavigationController";
+import { HistorySwipeNavigation } from "../components/HistorySwipeNavigation";
+import { isElectron } from "../env";
 import { WorkspaceFocusController } from "../components/WorkspaceFocusController";
 import { Outlet, createFileRoute, useNavigate, useRouter } from "@tanstack/react-router";
 import { lazy, Suspense, useEffect, useLayoutEffect, useState, type CSSProperties } from "react";
@@ -150,6 +152,7 @@ function ChatRouteLayout() {
         </Sidebar>
         <ThreadRecencyController />
         <ThreadNavigationController />
+        {isElectron ? <HistorySwipeNavigation /> : null}
         <WorkspaceFocusController />
         <ProjectCloneController />
         <ProjectCreateNewController />

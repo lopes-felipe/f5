@@ -735,6 +735,8 @@ export interface DesktopBridge {
   revealFile?: (filePath: string) => Promise<void>;
   openThreadInNewWindow?: (threadId: string) => Promise<boolean>;
   onMenuAction: (listener: (action: string) => void) => () => void;
+  /** Chromium brackets each trackpad scroll, momentum included, with a begin and an end. */
+  onTrackpadScroll?: (listener: (phase: "begin" | "end") => void) => () => void;
   checkForUpdates?: () => Promise<DesktopUpdateActionResult>;
   setUpdateChannel?: (channel: DesktopUpdateChannel) => Promise<DesktopUpdateActionResult>;
   getUpdateState: () => Promise<DesktopUpdateState>;

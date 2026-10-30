@@ -12,6 +12,7 @@ const DOWNLOAD_IMAGE_CHANNEL = "desktop:download-image";
 const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
 const OPEN_THREAD_WINDOW_CHANNEL = "desktop:open-thread-window";
 const MENU_ACTION_CHANNEL = "desktop:menu-action";
+const TRACKPAD_SCROLL_CHANNEL = "desktop:trackpad-scroll";
 const UPDATE_STATE_CHANNEL = "desktop:update-state";
 const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
 const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
@@ -190,6 +191,15 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.on(MENU_ACTION_CHANNEL, wrappedListener);
     return () => {
       ipcRenderer.removeListener(MENU_ACTION_CHANNEL, wrappedListener);
+    };
+  },
+  onTrackpadScroll: (listener) => {
+    const wrappedListener = (_event: Electron.IpcRendererEvent, phase: unknown) => {
+      if (phase === "begin" || phase === "end") listener(phase);
+    };
+    ipcRenderer.on(TRACKPAD_SCROLL_CHANNEL, wrappedListener);
+    return () => {
+      ipcRenderer.removeListener(TRACKPAD_SCROLL_CHANNEL, wrappedListener);
     };
   },
   checkForUpdates: () => ipcRenderer.invoke(UPDATE_CHECK_CHANNEL),
