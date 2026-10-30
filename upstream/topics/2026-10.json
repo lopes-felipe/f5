@@ -32563,11 +32563,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T20:53:04.802Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-30T00:15:27.155Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-21258",
-      "status": "port",
+      "reason": "f5's Files panel has no expand-all control and only auto-expands top-level folders one level deep, with ignored entries hidden by default.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "files panel"
@@ -42222,11 +42224,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-30T00:15:28.566Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-23803",
-      "status": "port",
+      "reason": "f5's usage-limit notice has no snooze-until-reset action (it resumes through the next-turn queue), so there is no Wake now button to keep visible.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "threads",
@@ -59867,11 +59871,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-30T00:15:28.566Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-5379",
-      "status": "port",
+      "reason": "f5 rejects settling a snoozed thread with \"Wake it before settling\", so a settle can never leave the row in Snoozed, and f5 deliberately requires waking first instead of waking on settle.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "threads",
