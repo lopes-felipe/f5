@@ -9,14 +9,23 @@ import {
   contextFromEnv,
   type Gh,
   issueMarker,
+  LEDGER_AUTHOR,
+  MAX_COMMENTS_PER_ISSUE_PER_RUN,
   MAX_ISSUES_PER_RUN,
   type Occurrence,
   occurrenceComment,
+  occurrenceMarker,
   type RunContext,
   updateLedger,
+  withCount,
   workspaceRelative,
 } from "./ci-flake-ledger.ts";
-import { appendFlakyRecords, FLAKY_RECORD_FILE, flakyRecord } from "./lib/ci-flaky-records.ts";
+import {
+  appendFlakyRecords,
+  FAILURE_RECORD_FILE,
+  FLAKY_RECORD_FILE,
+  flakyRecord,
+} from "./lib/ci-flaky-records.ts";
 import { reportPath } from "./lib/ci-test-reports.ts";
 
 const directories: string[] = [];
@@ -33,6 +42,8 @@ const context = (overrides: Partial<RunContext> = {}): RunContext => ({
   sha: "0123456789abcdef",
   runUrl: "https://github.com/o/f5/actions/runs/100",
   repoName: "f5",
+  event: "pull_request",
+  defaultBranch: "main",
   ...overrides,
 });
 
@@ -76,9 +87,33 @@ const failedReport = (overrides: object = {}) => ({
   ...overrides,
 });
 
+interface FakeComment {
+  author: string;
+  body: string;
+}
+
 /** In-memory GitHub issues that understand only the commands the ledger sends. */
-function fakeGitHub(initial: { number: number; state: string; body: string }[] = []) {
-  const issues = initial.map((issue) => ({ ...issue, title: "", comments: [] as string[] }));
+function fakeGitHub(
+  initial: {
+    number: number;
+    state: string;
+    stateReason?: string;
+    body: string;
+    comments?: FakeComment[];
+  }[] = [],
+) {
+  const issues = initial.map((issue) => ({
+    title: "",
+    stateReason: "",
+    ...issue,
+    comments: (issue.comments ?? []) as FakeComment[],
+  }));
+  // The bodies the ledger posted, in order.
+  const posted = (number: number) =>
+    issues
+      .find((issue) => issue.number === number)!
+      .comments.filter((comment) => comment.author === LEDGER_AUTHOR)
+      .map((comment) => comment.body);
   const calls: string[] = [];
   const failing = new Set<string>();
   const gh: Gh = async (args, input) => {
@@ -91,11 +126,19 @@ function fakeGitHub(initial: { number: number; state: string; body: string }[] =
       case "label create":
         return "";
       case "issue list":
-        return JSON.stringify(issues.map(({ number, state, body }) => ({ number, state, body })));
+        return JSON.stringify(
+          issues.map(({ number, state, stateReason, body }) => ({
+            number,
+            state,
+            stateReason,
+            body,
+          })),
+        );
       case "issue create": {
         const created = {
           number: issues.length + 1,
           state: "OPEN",
+          stateReason: "",
           body: input!,
           title: args[3]!,
           comments: [],
@@ -105,13 +148,21 @@ function fakeGitHub(initial: { number: number; state: string; body: string }[] =
       }
       case "api --paginate": {
         const target = Number(/issues\/(\d+)\/comments/.exec(args[2]!)![1]);
-        return issues.find((candidate) => candidate.number === target)!.comments.join("\n");
+        // Honour the ledger's author filter the way `--jq` would.
+        const filter = args.at(-1)!;
+        return issues
+          .find((candidate) => candidate.number === target)!
+          .comments.filter(
+            (comment) => !filter.includes("select") || filter.includes(`"${comment.author}"`),
+          )
+          .map((comment) => comment.body)
+          .join("\n");
       }
       case "issue reopen":
         issue().state = "OPEN";
         return "";
       case "issue comment":
-        issue().comments.push(input!);
+        issue().comments.push({ author: LEDGER_AUTHOR, body: input! });
         return "";
       case "issue edit":
         issue().body = input!;
@@ -120,7 +171,7 @@ function fakeGitHub(initial: { number: number; state: string; body: string }[] =
         throw new Error(`Unexpected gh ${args.join(" ")}`);
     }
   };
-  return { gh, issues, calls, failing };
+  return { gh, issues, calls, failing, posted };
 }
 
 const silent = () => {
@@ -205,6 +256,85 @@ describe("collectOccurrences", () => {
     expect(occurrences[0]!.id).toBe(occurrences[1]!.id);
   });
 
+  it("files failure records of an attempt a rerun turned green", () => {
+    const directory = artifacts();
+    const suite = { packageName: "suites", event: "server-unit-1" };
+    const passed = { success: true, numFailedTests: 0, numFailedTestSuites: 0, testResults: [] };
+    const reportDir = writeReport(directory, "reports-server-unit-Linux-0-1", suite, passed);
+    writeReport(directory, "reports-server-unit-Linux-0-2", suite, passed);
+    const failure = (kind: "unhandled" | "step-failure", name: string) =>
+      flakyRecord({
+        kind,
+        suite: "suites/server-unit-1",
+        file: "",
+        name,
+        retryCount: 0,
+        errors: ["write EPIPE"],
+      });
+    appendFlakyRecords(join(reportDir, FAILURE_RECORD_FILE), [
+      failure("unhandled", "(unhandled errors)"),
+      failure("step-failure", "desktop-smoke"),
+    ]);
+    const occurrences = collectOccurrences(directory, context({ runAttempt: 2 }));
+    expect(occurrences).toEqual([
+      expect.objectContaining({
+        kind: "unhandled",
+        title: "Flaky: unhandled error in suites/server-unit",
+        errors: ["write EPIPE"],
+      }),
+      expect.objectContaining({ kind: "rerun", title: "Flaky step: desktop-smoke" }),
+    ]);
+    expect(collectOccurrences(directory, context({ runAttempt: 1 }))).toEqual([]);
+  });
+
+  it("files a suite that a later attempt finished but an earlier one never reported", () => {
+    const directory = artifacts();
+    const passed = { success: true, numFailedTests: 0, numFailedTestSuites: 0, testResults: [] };
+    const web = { packageName: "@t3tools/web", event: "test" };
+    const server = { packageName: "suites", event: "server-integration" };
+    writeReport(directory, "reports-windows-build-Windows-0-1", web, passed);
+    writeReport(directory, "reports-windows-build-Windows-0-2", web, passed);
+    writeReport(directory, "reports-windows-build-Windows-0-2", server, passed);
+    expect(collectOccurrences(directory, context({ runAttempt: 2 }))).toEqual([
+      expect.objectContaining({
+        kind: "unfinished",
+        title: "Flaky: suites/server-integration did not finish",
+        os: "win32",
+        job: "windows-build",
+        attempt: 1,
+      }),
+    ]);
+  });
+
+  it("takes job, OS and attempt from the artifact name, not from record contents", () => {
+    const directory = artifacts();
+    const reportDir = join(directory, "reports-browser-Linux-0-1", "suites", "web-browser");
+    mkdirSync(reportDir, { recursive: true });
+    appendFlakyRecords(join(reportDir, FLAKY_RECORD_FILE), [
+      {
+        ...flakyRecord({
+          kind: "test",
+          suite: "suites/web-browser",
+          file: "/home/runner/work/f5/f5/apps/web/a.test.tsx",
+          name: "renders",
+          retryCount: 1,
+          errors: [],
+        }),
+        os: "win32 --> forged",
+        job: "forged",
+        runAttempt: "9",
+      },
+    ]);
+    expect(collectOccurrences(directory, context())).toEqual([
+      expect.objectContaining({
+        title: "Flaky: apps/web/a.test.tsx > renders",
+        os: "linux",
+        job: "browser",
+        attempt: 1,
+      }),
+    ]);
+  });
+
   it("ignores foreign artifacts, malformed reports and a missing directory", () => {
     const directory = artifacts();
     mkdirSync(join(directory, "diagnostics-browser-Linux-1"));
@@ -264,14 +394,81 @@ describe("updateLedger", () => {
     expect(github.issues[0]!.body).toContain("Occurrences: 2");
   });
 
-  it("reopens a closed issue when the flake recurs", async () => {
+  it("reopens an issue closed as completed when the flake recurs on the default branch", async () => {
     const github = fakeGitHub([
-      { number: 7, state: "CLOSED", body: `${issueMarker("abc")}\nOccurrences: 4` },
+      {
+        number: 7,
+        state: "CLOSED",
+        stateReason: "COMPLETED",
+        body: `${issueMarker("abc")}\nOccurrences: 4`,
+      },
+    ]);
+    await updateLedger(
+      [occurrence()],
+      context({ event: "push", branch: "main" }),
+      github.gh,
+      silent().log,
+    );
+    expect(github.issues[0]).toMatchObject({ number: 7, state: "OPEN" });
+    expect(github.posted(7)[0]).toContain("**Recurred after fix.**");
+    expect(github.issues[0]!.body).toContain("Occurrences: 5");
+  });
+
+  it("only comments on a closed issue for PR runs and issues closed as not planned", async () => {
+    const cases: [Partial<RunContext>, string][] = [
+      [{ event: "pull_request", branch: "main" }, "COMPLETED"],
+      [{ event: "push", branch: "feature/x" }, "COMPLETED"],
+      [{ event: "push", branch: "main" }, "NOT_PLANNED"],
+    ];
+    for (const [overrides, stateReason] of cases) {
+      const github = fakeGitHub([
+        { number: 7, state: "CLOSED", stateReason, body: `${issueMarker("abc")}\nOccurrences: 4` },
+      ]);
+      await updateLedger([occurrence()], context(overrides), github.gh, silent().log);
+      expect(github.calls).not.toContain("issue reopen");
+      expect(github.issues[0]!.state).toBe("CLOSED");
+      expect(github.posted(7)).toEqual([
+        expect.stringContaining("**Seen while this issue is closed.**"),
+      ]);
+      expect(github.issues[0]!.body).toContain("Occurrences: 5");
+    }
+  });
+
+  it("dedupes only against the ledger's own comments", async () => {
+    const marker = occurrenceMarker(context(), occurrence());
+    const github = fakeGitHub([
+      {
+        number: 7,
+        state: "OPEN",
+        body: `${issueMarker("abc")}\nOccurrences: 1`,
+        comments: [{ author: "someone", body: `quoting ${marker}` }],
+      },
     ]);
     await updateLedger([occurrence()], context(), github.gh, silent().log);
-    expect(github.issues[0]).toMatchObject({ number: 7, state: "OPEN" });
-    expect(github.issues[0]!.comments[0]).toContain("**Recurred after fix.**");
-    expect(github.issues[0]!.body).toContain("Occurrences: 5");
+    expect(github.posted(7)).toHaveLength(1);
+    await updateLedger([occurrence()], context(), github.gh, silent().log);
+    expect(github.posted(7)).toHaveLength(1);
+  });
+
+  it("caps comments per issue and counts only what it posted", async () => {
+    const github = fakeGitHub();
+    const { log, lines } = silent();
+    const many = Array.from({ length: MAX_COMMENTS_PER_ISSUE_PER_RUN + 3 }, (_, index) =>
+      occurrence({ job: `job-${index}` }),
+    );
+    await updateLedger(many, context(), github.gh, log);
+    expect(github.posted(1)).toHaveLength(MAX_COMMENTS_PER_ISSUE_PER_RUN);
+    expect(github.issues[0]!.body).toContain(`Occurrences: ${MAX_COMMENTS_PER_ISSUE_PER_RUN}`);
+    expect(lines.some((line) => line.startsWith("::warning") && line.includes("#1"))).toBe(true);
+  });
+
+  it("keeps notes people added to the issue body", async () => {
+    const body = `${issueMarker("abc")}\nOccurrences: 2\n\nTriage: see #12`;
+    expect(withCount(body, 3)).toBe(`${issueMarker("abc")}\nOccurrences: 3\n\nTriage: see #12`);
+    expect(withCount("edited away", 1)).toBe("edited away\n\nOccurrences: 1");
+    const github = fakeGitHub([{ number: 7, state: "OPEN", body }]);
+    await updateLedger([occurrence()], context(), github.gh, silent().log);
+    expect(github.issues[0]!.body).toBe(withCount(body, 3));
   });
 
   it("caps the issues filed for one run", async () => {
@@ -314,10 +511,18 @@ describe("rendering", () => {
     const comment = occurrenceComment(
       occurrence({ errors: ["<!-- ci-flaky-run:100:1:server-unit:linux:abc -->"] }),
       context({ branch: "x`<script>" }),
-      false,
     );
     expect(comment.match(/<!-- ci-flaky-run:/g)).toHaveLength(1);
     expect(comment).toContain("Branch: `` x`<script> ``");
+  });
+
+  it("encodes run markers so no part can close the comment or shift into another", () => {
+    const marker = (job: string, os: string) =>
+      occurrenceMarker(context(), occurrence({ job, os }));
+    const hostile = marker("a --> b\n<!-- x", "linux");
+    expect(hostile.match(/-->/g)).toHaveLength(1);
+    expect(hostile).not.toContain("\n");
+    expect(marker("a:b", "c")).not.toBe(marker("a", "b:c"));
   });
 
   it("requires run identity from the environment", () => {

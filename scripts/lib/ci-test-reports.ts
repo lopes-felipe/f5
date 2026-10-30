@@ -1,5 +1,5 @@
 import { appendFileSync, mkdirSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { InlineConfig, Reporter, TestModule } from "vitest/node";
 
 // No relative imports: Node runs this file directly through CI scripts, and the
@@ -57,13 +57,21 @@ export function ciTestRetry(env: NodeJS.ProcessEnv = process.env): number {
 
 /** Not `.json`: the CI summary treats every `.json` file as a suite report. */
 export const FLAKY_RECORD_FILE = "flaky.jsonl";
+/**
+ * Failures a retry cannot recover (an unhandled error, or a step that failed every
+ * attempt). The ledger files them only when a manual rerun later turned the run green.
+ */
+export const FAILURE_RECORD_FILE = "failures.jsonl";
 export const MAX_FLAKY_ERROR_BYTES = 2048;
 const MAX_FLAKY_ERRORS = 3;
 
-/** A test or CI step that failed and then passed within one job. */
+/**
+ * `test`/`step`: failed, then passed on the automatic retry (in `flaky.jsonl`).
+ * `unhandled`/`step-failure`: not recovered within the job (in `failures.jsonl`).
+ */
 export interface FlakyRecord {
   version: 1;
-  kind: "test" | "step";
+  kind: "test" | "step" | "unhandled" | "step-failure";
   suite: string;
   file: string;
   name: string;
@@ -104,10 +112,11 @@ export function appendFlakyRecords(file: string, records: readonly FlakyRecord[]
   appendFileSync(file, records.map((record) => JSON.stringify(record) + "\n").join(""));
 }
 
-const repoRoot = resolve(import.meta.dirname, "../..");
-
-/** Repository-relative with `/`, so one test maps to one ledger issue on every OS and shard. */
-export const repoRelativePath = (path: string) => relative(repoRoot, path).split(sep).join("/");
+/**
+ * Absolute with `/` separators, as Vitest's JSON report also records it. The ledger
+ * normalizes both sources with one function, so one test maps to one issue.
+ */
+export const posixPath = (path: string) => path.replaceAll("\\", "/");
 
 /** Records each test that passed only on a CI retry, so the retry never hides it. */
 export class CiFlakyReporter implements Reporter {
@@ -120,7 +129,25 @@ export class CiFlakyReporter implements Reporter {
     this.suite = suite;
   }
 
-  onTestRunEnd(modules: readonly TestModule[]) {
+  onTestRunEnd(
+    modules: readonly TestModule[],
+    unhandledErrors: ReadonlyArray<{ message?: string }> = [],
+  ) {
+    // Vitest's JSON report still says `success: true` for a run that failed only on
+    // unhandled errors, so record them explicitly.
+    if (unhandledErrors.length)
+      appendFlakyRecords(join(dirname(this.file), FAILURE_RECORD_FILE), [
+        flakyRecord({
+          kind: "unhandled",
+          suite: this.suite,
+          file: "",
+          name: "unhandled error",
+          retryCount: 0,
+          errors: unhandledErrors
+            .slice(0, MAX_FLAKY_ERRORS)
+            .map((error) => error.message || String(error)),
+        }),
+      ]);
     const records: FlakyRecord[] = [];
     for (const module of modules)
       for (const test of module.children.allTests()) {
@@ -134,7 +161,7 @@ export class CiFlakyReporter implements Reporter {
           flakyRecord({
             kind: "test",
             suite: this.suite,
-            file: repoRelativePath(module.moduleId),
+            file: posixPath(module.moduleId),
             name: test.fullName,
             retryCount: diagnostic.retryCount,
             errors,

@@ -91,11 +91,21 @@ const escapeData = (text: string) =>
 const escapeProperty = (text: string) =>
   escapeData(text).replaceAll(":", "%3A").replaceAll(",", "%2C");
 
+/** Records keep absolute test paths; show them relative to the checkout. */
+export const displayPath = (file: string, workspace = process.env.GITHUB_WORKSPACE) => {
+  const root = workspace?.replaceAll("\\", "/").replace(/\/?$/, "/");
+  return root && file.startsWith(root) ? file.slice(root.length) : file;
+};
+
 /** Flaky passes stay visible on the PR without changing the job verdict. */
-export function renderFlaky(records: readonly FlakyRecord[]): {
+export function renderFlaky(
+  flaky: readonly FlakyRecord[],
+  workspace = process.env.GITHUB_WORKSPACE,
+): {
   markdown: string;
   annotations: string[];
 } {
+  const records = flaky.map((record) => ({ ...record, file: displayPath(record.file, workspace) }));
   if (!records.length) return { markdown: "", annotations: [] };
   const markdown =
     "\n**Passed on retry (flaky)**: recorded for the flake ledger; please fix rather than rerun.\n\n" +

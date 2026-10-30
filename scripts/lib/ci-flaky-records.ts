@@ -4,6 +4,7 @@ import { FLAKY_RECORD_FILE, type FlakyRecord } from "./ci-test-reports.ts";
 
 export {
   appendFlakyRecords,
+  FAILURE_RECORD_FILE,
   FLAKY_RECORD_FILE,
   type FlakyRecord,
   flakyRecord,
@@ -25,7 +26,7 @@ export function parseFlakyRecord(line: string): FlakyRecord | undefined {
   const record = value as Record<string, unknown>;
   if (
     record.version !== 1 ||
-    (record.kind !== "test" && record.kind !== "step") ||
+    !["test", "step", "unhandled", "step-failure"].includes(record.kind as string) ||
     !["suite", "file", "name", "os", "job", "runId", "runAttempt"].every((key) =>
       isString(record[key]),
     ) ||
@@ -37,8 +38,11 @@ export function parseFlakyRecord(line: string): FlakyRecord | undefined {
   return record as unknown as FlakyRecord;
 }
 
-/** Every flaky record below `directory`, in a stable path order. */
-export function readFlakyRecords(directory: string): FlakyRecord[] {
+/** Every record in `fileName` files below `directory`, in a stable path order. */
+export function readFlakyRecords(
+  directory: string,
+  fileName: string = FLAKY_RECORD_FILE,
+): FlakyRecord[] {
   const files: string[] = [];
   const walk = (dir: string) => {
     let entries;
@@ -51,7 +55,7 @@ export function readFlakyRecords(directory: string): FlakyRecord[] {
     for (const entry of entries) {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) walk(path);
-      else if (entry.isFile() && entry.name === FLAKY_RECORD_FILE) files.push(path);
+      else if (entry.isFile() && entry.name === fileName) files.push(path);
     }
   };
   walk(directory);

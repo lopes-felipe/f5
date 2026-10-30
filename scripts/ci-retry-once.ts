@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   appendFlakyRecords,
+  FAILURE_RECORD_FILE,
   FLAKY_RECORD_FILE,
   flakyRecord,
   truncateUtf8,
@@ -81,10 +82,42 @@ export async function runWithRetryOnce(options: RetryOnceOptions): Promise<numbe
       return 0;
     }
     first ??= result;
-    if (attempt === attempts) return result.code;
+    if (attempt === attempts) {
+      // Lets the ledger file it if a manual rerun turns this job green later.
+      writeStepRecord("step-failure", options.step, first, env, write);
+      return result.code;
+    }
     write(`\n::warning title=Retrying ${options.step}::First attempt exited ${result.code}\n`);
   }
   return 1;
+}
+
+function writeStepRecord(
+  kind: "step" | "step-failure",
+  step: string,
+  first: AttemptResult,
+  env: NodeJS.ProcessEnv,
+  write: (text: string) => void,
+) {
+  const reportDir = env.F5_CI_REPORT_DIR;
+  if (!reportDir) {
+    write(`::warning::F5_CI_REPORT_DIR is unset; ${step} was not recorded\n`);
+    return;
+  }
+  const file = kind === "step" ? FLAKY_RECORD_FILE : FAILURE_RECORD_FILE;
+  appendFlakyRecords(join(reportDir, "steps", step, file), [
+    flakyRecord(
+      {
+        kind,
+        suite: `step/${step}`,
+        file: env.GITHUB_JOB || "ci",
+        name: step,
+        retryCount: kind === "step" ? 1 : 0,
+        errors: [truncateUtf8(first.output, FAILURE_EXCERPT_BYTES, "end")],
+      },
+      env,
+    ),
+  ]);
 }
 
 function recordRecovery(
@@ -96,24 +129,7 @@ function recordRecovery(
   write(
     `::warning title=Flaky step::${step} failed with exit ${first.code} and passed on retry; recorded for the flake ledger\n`,
   );
-  const reportDir = env.F5_CI_REPORT_DIR;
-  if (!reportDir) {
-    write("::warning::F5_CI_REPORT_DIR is unset; the flaky step was not recorded\n");
-    return;
-  }
-  appendFlakyRecords(join(reportDir, "steps", step, FLAKY_RECORD_FILE), [
-    flakyRecord(
-      {
-        kind: "step",
-        suite: `step/${step}`,
-        file: env.GITHUB_JOB || "ci",
-        name: step,
-        retryCount: 1,
-        errors: [truncateUtf8(first.output, FAILURE_EXCERPT_BYTES, "end")],
-      },
-      env,
-    ),
-  ]);
+  writeStepRecord("step", step, first, env, write);
   if (env.GITHUB_STEP_SUMMARY) {
     mkdirSync(dirname(env.GITHUB_STEP_SUMMARY), { recursive: true });
     appendFileSync(

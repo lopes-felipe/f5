@@ -192,6 +192,18 @@ const readWorkflow = (file: string) =>
   };
 
 describe("flake workflows", () => {
+  it("passes every variable the CI reporter reads through Turbo's strict env", () => {
+    const turbo = JSON.parse(readFileSync(new URL("../turbo.json", import.meta.url), "utf8")) as {
+      globalPassThroughEnv: string[];
+      tasks: { test: { passThroughEnv: string[] } };
+    };
+    const allowed = new Set([...turbo.globalPassThroughEnv, ...turbo.tasks.test.passThroughEnv]);
+    const source = readFileSync(new URL("./lib/ci-test-reports.ts", import.meta.url), "utf8");
+    const read = [...new Set([...source.matchAll(/\benv\.([A-Z][A-Z0-9_]*)/g)].map((m) => m[1]!))];
+    expect(read).toEqual(expect.arrayContaining(["F5_CI_REPORT_DIR", "F5_CI_TEST_RETRY"]));
+    expect(read.filter((name) => !allowed.has(name))).toEqual([]);
+  });
+
   it("files flakes after CI with least privilege and never runs PR code", () => {
     const ledger = readWorkflow("ci-flakes.yml");
     expect(ledger.on).toEqual({ workflow_run: { workflows: ["CI"], types: ["completed"] } });
@@ -203,6 +215,10 @@ describe("flake workflows", () => {
     expect(job.permissions).toEqual({ contents: "read", actions: "read", issues: "write" });
     expect(job["timeout-minutes"]).toBeGreaterThan(0);
     expect(job.concurrency).toBeUndefined();
+    // Fork PRs control their artifacts; only same-repo runs may write issues.
+    expect(job.if).toContain(
+      "github.event.workflow_run.head_repository.full_name == github.repository",
+    );
     const checkout = job.steps!.find((step) => step.uses?.startsWith("actions/checkout@")) as {
       with?: Record<string, unknown>;
     };

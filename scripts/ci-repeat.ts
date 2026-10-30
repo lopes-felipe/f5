@@ -3,7 +3,7 @@
 //
 //   node scripts/ci-repeat.ts --times 30 [--fail-fast] -- bun run --cwd apps/server test:file x.test.ts
 import { appendFileSync, mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runCommand } from "./ci-retry-once.ts";
 
@@ -28,12 +28,16 @@ export async function repeat(options: RepeatOptions): Promise<RepeatResult> {
   const write = options.write ?? ((text: string) => process.stdout.write(text));
   const now = options.now ?? Date.now;
   // Every iteration must see the test's own outcome, not a retry's.
-  const env = { ...(options.env ?? process.env), F5_CI_TEST_RETRY: "0" };
+  const env: NodeJS.ProcessEnv = { ...(options.env ?? process.env), F5_CI_TEST_RETRY: "0" };
   const runs: RepeatResult["runs"] = [];
   for (let iteration = 1; iteration <= options.times; iteration++) {
     write(`::group::Iteration ${iteration}/${options.times}\n`);
     const started = now();
-    const { code } = await runCommand(options.command, env, write);
+    // A later passing iteration must not overwrite a failure's diagnostics.
+    const iterationEnv = env.F5_CI_ARTIFACT_DIR
+      ? { ...env, F5_CI_ARTIFACT_DIR: join(env.F5_CI_ARTIFACT_DIR, `iteration-${iteration}`) }
+      : env;
+    const { code } = await runCommand(options.command, iterationEnv, write);
     runs.push({ iteration, code, durationMs: now() - started });
     write(
       `::endgroup::\n${code === 0 ? "passed" : `FAILED (exit ${code})`}: iteration ${iteration}\n`,

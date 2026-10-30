@@ -1,12 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { collectOccurrences } from "./ci-flake-ledger.ts";
 import {
   appendFlakyRecords,
+  FAILURE_RECORD_FILE,
   FLAKY_RECORD_FILE,
   flakyRecord,
   readFlakyRecords,
@@ -18,14 +20,35 @@ const vitestCli = join(
   dirname(createRequire(import.meta.url).resolve("vitest/package.json")),
   "vitest.mjs",
 );
-const runFixture = (root: string) => {
+/** A fixture project using the real CI reporters, as `ciTestReports()` would configure them. */
+const writeFixture = (root: string) => {
+  const reports = pathToFileURL(resolve(import.meta.dirname, "lib/ci-test-reports.ts")).href;
+  // Globals keep the fixture free of a `vitest` import it could not resolve from tmp.
+  writeFileSync(
+    join(root, "vitest.config.mjs"),
+    `import { ciTestReports } from ${JSON.stringify(reports)};
+const reports = ciTestReports();
+export default { test: { ...reports, globals: true, include: ["*.test.mjs"],
+  reporters: reports.reporters.filter((reporter) => reporter !== "junit") } };`,
+  );
+};
+const runFixture = (root: string, reportDir: string, retry: number) => {
   const result = spawnSync(
     process.execPath,
     [vitestCli, "run", "--root", root, "--config", join(root, "vitest.config.mjs")],
     {
       encoding: "utf8",
-      // The fixture must not inherit this run's CI report identity.
-      env: { PATH: process.env.PATH, HOME: process.env.HOME, SystemRoot: process.env.SystemRoot },
+      // Only the identity under test: nothing from this run's own CI environment.
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        SystemRoot: process.env.SystemRoot,
+        F5_CI_REPORT_DIR: reportDir,
+        F5_CI_SUITE_ID: "",
+        F5_CI_TEST_RETRY: String(retry),
+        npm_package_name: "fixture",
+        npm_lifecycle_event: "test",
+      },
     },
   );
   return { status: result.status, output: `${result.stdout}\n${result.stderr}` };
@@ -82,22 +105,17 @@ describe("CI reports", () => {
     for (const invalid of ["-1", "1.5", "x", "4"])
       expect(() => ciTestRetry({ F5_CI_TEST_RETRY: invalid })).toThrow("F5_CI_TEST_RETRY");
   });
-  it("records exactly the tests that passed on retry", () => {
+  it("records exactly the tests that passed on retry, under the ledger's rerun identity", () => {
     const directory = mkdtempSync(join(tmpdir(), "f5-flaky-reporter-"));
     directories.push(directory);
-    const records = join(directory, "out", FLAKY_RECORD_FILE);
-    const reporter = pathToFileURL(resolve(import.meta.dirname, "lib/ci-test-reports.ts")).href;
-    // Globals keep the fixture free of a `vitest` import it could not resolve from tmp.
+    const suite = { packageName: "fixture", event: "test" };
+    const fixtureFile = join(directory, "fixture.test.mjs");
+    const marker = join(directory, "attempted");
+    writeFixture(directory);
     writeFileSync(
-      join(directory, "vitest.config.mjs"),
-      `import { CiFlakyReporter } from ${JSON.stringify(reporter)};
-export default { test: { globals: true, retry: 1, include: ["*.test.mjs"],
-  reporters: ["default", new CiFlakyReporter(${JSON.stringify(records)}, "fixture/test")] } };`,
-    );
-    writeFileSync(
-      join(directory, "fixture.test.mjs"),
+      fixtureFile,
       `import { existsSync, writeFileSync } from "node:fs";
-const marker = ${JSON.stringify(join(directory, "attempted"))};
+const marker = ${JSON.stringify(marker)};
 describe("group", () => {
   test("fails once", () => {
     if (!existsSync(marker)) { writeFileSync(marker, ""); throw new Error("first attempt <b>"); }
@@ -105,26 +123,75 @@ describe("group", () => {
   test("always passes", () => {});
 });`,
     );
-    const passing = runFixture(directory);
+    // Attempt 1 has no retry and fails, as before a manual rerun; attempt 2 retries.
+    const firstAttempt = join(directory, "artifacts", "reports-test-Linux-0-1");
+    expect(runFixture(directory, firstAttempt, 0).status).not.toBe(0);
+    rmSync(marker);
+    const secondAttempt = join(directory, "artifacts", "reports-test-Linux-0-2");
+    const passing = runFixture(directory, secondAttempt, 1);
     expect(passing.status, passing.output).toBe(0);
-    expect(readFlakyRecords(join(directory, "out"))).toEqual([
+    expect(readFlakyRecords(firstAttempt)).toEqual([]);
+    expect(readFlakyRecords(secondAttempt)).toEqual([
       expect.objectContaining({
         version: 1,
         kind: "test",
         suite: "fixture/test",
-        file: expect.stringMatching(/^(\.\.\/)+.*\/fixture\.test\.mjs$/),
+        file: fixtureFile.replaceAll("\\", "/"),
         name: "group > fails once",
         retryCount: 1,
         errors: ["first attempt <b>"],
       }),
     ]);
-    rmSync(records);
+    expect(readFileSync(join(secondAttempt, reportPath(suite)), "utf8")).toContain("passed");
+    // Real Vitest output from both sources must land on one ledger issue.
+    const occurrences = collectOccurrences(join(directory, "artifacts"), {
+      runId: "1",
+      runAttempt: 2,
+      conclusion: "success",
+      branch: "main",
+      sha: "",
+      runUrl: "",
+      repoName: "f5",
+      event: "push",
+      defaultBranch: "main",
+    });
+    expect(occurrences.map((occurrence) => occurrence.kind).sort()).toEqual(["rerun", "test"]);
+    expect(new Set(occurrences.map((occurrence) => occurrence.id)).size).toBe(1);
+  }, 60_000);
+  it("records an unhandled error, which Vitest's JSON report does not count as a failure", () => {
+    const directory = mkdtempSync(join(tmpdir(), "f5-unhandled-reporter-"));
+    directories.push(directory);
+    writeFixture(directory);
+    writeFileSync(
+      join(directory, "fixture.test.mjs"),
+      `test("passes but leaks an error", async () => {
+  setTimeout(() => { throw new Error("late failure"); }, 0);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+});`,
+    );
+    const out = join(directory, "out");
+    expect(runFixture(directory, out, 1).status).not.toBe(0);
+    expect(readFlakyRecords(out)).toEqual([]);
+    expect(readFlakyRecords(out, FAILURE_RECORD_FILE)).toEqual([
+      expect.objectContaining({
+        kind: "unhandled",
+        suite: "fixture/test",
+        errors: [expect.stringContaining("late failure")],
+      }),
+    ]);
+  }, 60_000);
+  it("records nothing for a test that fails every attempt", () => {
+    const directory = mkdtempSync(join(tmpdir(), "f5-failing-reporter-"));
+    directories.push(directory);
+    writeFixture(directory);
     writeFileSync(
       join(directory, "fixture.test.mjs"),
       `test("always fails", () => { throw new Error("broken"); });`,
     );
-    expect(runFixture(directory).status).not.toBe(0);
-    expect(readFlakyRecords(join(directory, "out"))).toEqual([]);
+    const out = join(directory, "out");
+    expect(runFixture(directory, out, 1).status).not.toBe(0);
+    expect(readFlakyRecords(out)).toEqual([]);
+    expect(readFlakyRecords(out, FAILURE_RECORD_FILE)).toEqual([]);
   }, 60_000);
   it("renders flaky passes without treating their records as suite reports", () => {
     const directory = mkdtempSync(join(tmpdir(), "f5-flaky-summary-"));

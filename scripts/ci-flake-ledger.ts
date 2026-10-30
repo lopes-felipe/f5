@@ -1,6 +1,7 @@
 // Files every recorded CI flake as a `ci-flaky` issue, one issue per test.
-// Runs from `.github/workflows/ci-flakes.yml` after each CI run. Artifacts can come
-// from any PR, so they are parsed as untrusted data and never executed.
+// Runs from `.github/workflows/ci-flakes.yml` after each of this repository's CI
+// runs (never forks). The run's own code wrote the artifacts, so they are parsed
+// as untrusted data, never executed, and never trusted for markers or metadata.
 //
 //   node scripts/ci-flake-ledger.ts <downloaded-artifacts-dir>
 import { spawn } from "node:child_process";
@@ -8,7 +9,7 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { readFlakyRecords, truncateUtf8 } from "./lib/ci-flaky-records.ts";
+import { FAILURE_RECORD_FILE, readFlakyRecords, truncateUtf8 } from "./lib/ci-flaky-records.ts";
 
 export const LABEL = "ci-flaky";
 export const MAX_ISSUES_PER_RUN = 20;
@@ -25,9 +26,12 @@ export interface RunContext {
   runUrl: string;
   /** The repository name, which GitHub repeats in its runners' workspace path. */
   repoName: string;
+  /** The CI run's trigger, e.g. `push` or `pull_request`. */
+  event: string;
+  defaultBranch: string;
 }
 
-export type OccurrenceKind = "test" | "step" | "rerun" | "unhandled";
+export type OccurrenceKind = "test" | "step" | "rerun" | "unhandled" | "unfinished";
 
 export interface Occurrence {
   id: string;
@@ -99,12 +103,38 @@ function walk(directory: string, name: string): string[] {
   return found.sort();
 }
 
+// Unit shards rebalance over time; one issue per suite, not per shard.
+const unshardedSuite = (suite: string) => suite.replace(/\/(server-unit)-\d+$/, "/$1");
+
 function suiteName(artifactDir: string, report: string): string {
   const parts = relative(artifactDir, report).split(sep).slice(0, -1).map(decodeURIComponent);
   const [packageName = "unknown", event = "unknown"] = parts;
-  // Unit shards rebalance over time; one issue per suite, not per shard.
-  return `${packageName}/${event.replace(/^(server-unit)-\d+$/, "$1")}`;
+  return unshardedSuite(`${packageName}/${event}`);
 }
+
+const unhandledOccurrence = (
+  suite: string,
+  fields: Pick<Occurrence, "os" | "job" | "attempt" | "errors">,
+): Occurrence => ({
+  id: hash(`unhandled|${unshardedSuite(suite)}`),
+  kind: "unhandled",
+  title: `Flaky: unhandled error in ${unshardedSuite(suite)}`,
+  subject: `unhandled error in ${unshardedSuite(suite)}`,
+  ...fields,
+});
+
+/** A flaky pass and a failed attempt of the same step share one issue. */
+const stepOccurrence = (
+  kind: "step" | "rerun",
+  step: string,
+  fields: Pick<Occurrence, "os" | "job" | "attempt" | "errors">,
+): Occurrence => ({
+  id: hash(`step|${step}`),
+  kind,
+  title: `Flaky step: ${step}`,
+  subject: step,
+  ...fields,
+});
 
 /** Failures that an earlier attempt reported before a later attempt of the run passed. */
 function rerunOccurrences(
@@ -160,67 +190,87 @@ function rerunOccurrences(
         failures++;
       }
     }
-    if (json.success === false && !failures) {
-      const suite = suiteName(artifactDir, report);
-      occurrences.push({
-        id: hash(`unhandled|${suite}`),
-        kind: "unhandled",
-        title: `Flaky: unhandled error in ${suite}`,
-        subject: `unhandled error in ${suite}`,
-        ...fields,
-        errors: [],
-      });
-    }
+    // Kept for older reports; current Vitest reports success here, so the
+    // reporter's explicit `unhandled` record is what normally catches this.
+    if (json.success === false && !failures)
+      occurrences.push(
+        unhandledOccurrence(suiteName(artifactDir, report), { ...fields, errors: [] }),
+      );
+  }
+  for (const record of readFlakyRecords(artifactDir, FAILURE_RECORD_FILE)) {
+    if (record.kind === "unhandled")
+      occurrences.push(unhandledOccurrence(record.suite, { ...fields, errors: record.errors }));
+    else if (record.kind === "step-failure")
+      occurrences.push(stepOccurrence("rerun", record.name, { ...fields, errors: record.errors }));
   }
   return occurrences;
+}
+
+/** Suite reports present in `later` but absent in `earlier`: killed before reporting. */
+function unfinishedSuites(earlier: string, later: string): string[] {
+  const suites = (dir: string) =>
+    new Set(walk(dir, "results.json").map((report) => relative(dir, report)));
+  const finished = suites(earlier);
+  return [...suites(later)].filter((report) => !finished.has(report));
 }
 
 const OS_NAMES: Record<string, string> = { Linux: "linux", Windows: "win32", macOS: "darwin" };
 
 export function collectOccurrences(directory: string, context: RunContext): Occurrence[] {
   const occurrences: Occurrence[] = [];
-  let artifacts: string[];
+  let artifacts: { name: string; job: string; os: string; key: string; attempt: number }[];
   try {
     artifacts = readdirSync(directory, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .sort();
+      .flatMap((entry) => {
+        const match = ARTIFACT.exec(entry.name);
+        if (!match) return [];
+        const [, job = "", runnerOs = "", index = "", attempt = ""] = match;
+        const os = OS_NAMES[runnerOs] ?? runnerOs;
+        return [
+          { name: entry.name, job, os, key: `${job}|${os}|${index}`, attempt: Number(attempt) },
+        ];
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
   } catch {
     return [];
   }
   const recoveredByRerun = context.conclusion === "success" && context.runAttempt > 1;
   for (const artifact of artifacts) {
-    const match = ARTIFACT.exec(artifact);
-    if (!match) continue;
-    const [, job = "", runnerOs = "", , attemptText = ""] = match;
-    const artifactDir = join(directory, artifact);
-    const attempt = Number(attemptText);
+    const artifactDir = join(directory, artifact.name);
+    // Job, OS and attempt come from the artifact name the workflow sets, never
+    // from record contents, which the run's own code writes.
+    const fields = { os: artifact.os, job: artifact.job, attempt: artifact.attempt };
     for (const record of readFlakyRecords(artifactDir)) {
-      const fields = {
-        os: record.os,
-        job: record.job || job,
-        attempt: Number(record.runAttempt) || attempt,
-        errors: record.errors,
-      };
       if (record.kind === "test")
-        occurrences.push(testOccurrence("test", record.file, record.name, fields));
-      else
-        occurrences.push({
-          id: hash(`step|${record.name}`),
-          kind: "step",
-          title: `Flaky step: ${record.name}`,
-          subject: record.name,
-          ...fields,
-        });
+        occurrences.push(
+          testOccurrence("test", workspaceRelative(record.file, context.repoName), record.name, {
+            ...fields,
+            errors: record.errors,
+          }),
+        );
+      else if (record.kind === "step")
+        occurrences.push(stepOccurrence("step", record.name, { ...fields, errors: record.errors }));
     }
-    if (recoveredByRerun && attempt < context.runAttempt)
-      occurrences.push(
-        ...rerunOccurrences(
-          artifactDir,
-          { os: OS_NAMES[runnerOs] ?? runnerOs, job, attempt },
-          context,
-        ),
-      );
+    if (!recoveredByRerun || artifact.attempt >= context.runAttempt) continue;
+    occurrences.push(...rerunOccurrences(artifactDir, fields, context));
+    const later = artifacts
+      .filter((other) => other.key === artifact.key && other.attempt > artifact.attempt)
+      .sort((a, b) => b.attempt - a.attempt)[0];
+    if (later)
+      for (const report of unfinishedSuites(artifactDir, join(directory, later.name))) {
+        const suite = unshardedSuite(
+          report.split(sep).slice(0, -1).map(decodeURIComponent).join("/"),
+        );
+        occurrences.push({
+          id: hash(`unfinished|${suite}`),
+          kind: "unfinished",
+          title: `Flaky: ${suite} did not finish`,
+          subject: `${suite} did not finish`,
+          ...fields,
+          errors: [],
+        });
+      }
   }
   return occurrences;
 }
@@ -244,8 +294,18 @@ export function codeBlock(text: string): string {
 }
 
 export const issueMarker = (id: string) => `<!-- ci-flaky:${id} -->`;
+// encodeURIComponent is injective and emits no `>` or `:`, so a part can neither
+// close the comment nor collide with a neighbouring part.
 export const occurrenceMarker = (context: RunContext, occurrence: Occurrence) =>
-  `<!-- ci-flaky-run:${context.runId}:${occurrence.attempt}:${occurrence.job}:${occurrence.os}:${occurrence.id} -->`;
+  `<!-- ci-flaky-run:${[
+    context.runId,
+    occurrence.attempt,
+    occurrence.job,
+    occurrence.os,
+    occurrence.id,
+  ]
+    .map((part) => encodeURIComponent(String(part)))
+    .join(":")} -->`;
 
 export function issueTitle(occurrence: Occurrence): string {
   const title = oneLine(occurrence.title);
@@ -257,6 +317,8 @@ const KIND_LABELS: Record<OccurrenceKind, string> = {
   step: "CI step failed, then passed on the automatic retry",
   rerun: "Failed in an attempt that a manual rerun turned green",
   unhandled: "Suite failed on an unhandled error in an attempt that a manual rerun turned green",
+  unfinished:
+    "Suite did not finish (killed before reporting) in an attempt that a manual rerun turned green",
 };
 
 export function issueBody(occurrence: Occurrence, count: number): string {
@@ -272,14 +334,22 @@ export function issueBody(occurrence: Occurrence, count: number): string {
   ].join("\n");
 }
 
+export type Recurrence = "none" | "reopened" | "closed";
+
 export function occurrenceComment(
   occurrence: Occurrence,
   context: RunContext,
-  reopened: boolean,
+  recurrence: Recurrence = "none",
 ): string {
   const lines = [
     occurrenceMarker(context, occurrence),
-    ...(reopened ? ["**Recurred after fix.**", ""] : []),
+    ...(recurrence === "reopened" ? ["**Recurred after fix.**", ""] : []),
+    ...(recurrence === "closed"
+      ? [
+          "**Seen while this issue is closed.** Not reopened: only a default-branch run reopens an issue closed as completed.",
+          "",
+        ]
+      : []),
     `**${KIND_LABELS[occurrence.kind]}**`,
     "",
     `- OS: ${codeSpan(occurrence.os)}, job: ${codeSpan(occurrence.job)}, attempt ${occurrence.attempt}`,
@@ -321,10 +391,27 @@ export const runGh: Gh = (args, input) =>
 interface Issue {
   number: number;
   state: string;
+  stateReason?: string | null;
   body: string;
 }
 
-const countIn = (body: string) => Number(/^Occurrences: (\d+)$/m.exec(body)?.[1] ?? 0);
+/** The ledger's own comments; anyone can comment, so only these count as recorded. */
+export const LEDGER_AUTHOR = "github-actions[bot]";
+export const MAX_COMMENTS_PER_ISSUE_PER_RUN = 5;
+
+const COUNT_LINE = /^Occurrences: (\d+)$/m;
+const countIn = (body: string) => Number(COUNT_LINE.exec(body)?.[1] ?? 0);
+/** Updates only the count line, keeping any triage notes people added to the body. */
+export const withCount = (body: string, count: number) =>
+  COUNT_LINE.test(body)
+    ? body.replace(COUNT_LINE, `Occurrences: ${count}`)
+    : `${body}\n\nOccurrences: ${count}`;
+
+/** Stale PR branches must not reopen an issue whose fix they predate. */
+const mayReopen = (issue: Issue, context: RunContext) =>
+  context.event !== "pull_request" &&
+  context.branch === context.defaultBranch &&
+  (issue.stateReason || "COMPLETED").toUpperCase() === "COMPLETED";
 
 /** Never throws: an API failure must not turn a CI result red. */
 export async function updateLedger(
@@ -369,7 +456,7 @@ export async function updateLedger(
         "--limit",
         "1000",
         "--json",
-        "number,state,body",
+        "number,state,stateReason,body",
       ]),
     ) as Issue[];
   } catch (error) {
@@ -381,7 +468,7 @@ export async function updateLedger(
     try {
       const matches = issues.filter((issue) => issue.body?.includes(issueMarker(id)));
       let issue = matches.find((candidate) => candidate.state === "OPEN") ?? matches[0];
-      let reopened = false;
+      let recurrence: Recurrence = "none";
       let existingComments = "";
       if (!issue) {
         const url = await gh(
@@ -407,7 +494,7 @@ export async function updateLedger(
           "--paginate",
           `repos/{owner}/{repo}/issues/${issue.number}/comments`,
           "--jq",
-          ".[].body",
+          `.[] | select(.user.login == "${LEDGER_AUTHOR}") | .body`,
         ]);
       }
       // Each CI attempt re-triggers the ledger with all earlier attempts' artifacts.
@@ -420,18 +507,28 @@ export async function updateLedger(
       });
       if (!fresh.length) continue;
       if (issue.state !== "OPEN") {
-        await gh(["issue", "reopen", String(issue.number)]);
-        issue.state = "OPEN";
-        reopened = true;
+        if (mayReopen(issue, context)) {
+          await gh(["issue", "reopen", String(issue.number)]);
+          issue.state = "OPEN";
+          recurrence = "reopened";
+        } else recurrence = "closed";
       }
-      for (const [index, occurrence] of fresh.entries())
+      const commented = fresh.slice(0, MAX_COMMENTS_PER_ISSUE_PER_RUN);
+      if (fresh.length > commented.length)
+        warn(
+          `#${issue.number}: ${fresh.length} occurrences in one run; commenting on ${commented.length}.`,
+        );
+      for (const [index, occurrence] of commented.entries())
         await gh(
           ["issue", "comment", String(issue.number), "--body-file", "-"],
-          occurrenceComment(occurrence, context, reopened && index === 0),
+          occurrenceComment(occurrence, context, index === 0 ? recurrence : "none"),
         );
-      issue.body = issueBody(group[0]!, countIn(issue.body) + fresh.length);
+      // Uncommented occurrences are not deduplicated later, so count only what was posted.
+      issue.body = withCount(issue.body, countIn(issue.body) + commented.length);
       await gh(["issue", "edit", String(issue.number), "--body-file", "-"], issue.body);
-      log(`Recorded ${fresh.length} occurrence(s) on #${issue.number}: ${issueTitle(group[0]!)}`);
+      log(
+        `Recorded ${commented.length} occurrence(s) on #${issue.number}: ${issueTitle(group[0]!)}`,
+      );
     } catch (error) {
       warn(`Could not record ${issueTitle(group[0]!)}: ${(error as Error).message}`);
     }
@@ -450,6 +547,8 @@ export function contextFromEnv(env: NodeJS.ProcessEnv = process.env): RunContext
     sha: env.HEAD_SHA ?? "",
     runUrl: env.RUN_URL ?? "",
     repoName: env.REPO_NAME ?? "",
+    event: env.RUN_EVENT ?? "",
+    defaultBranch: env.DEFAULT_BRANCH ?? "",
   };
 }
 

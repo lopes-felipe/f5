@@ -242,16 +242,29 @@ and the PR shows a warning annotation. Desktop smoke is the only non-Vitest step
 that retries: `scripts/ci-retry-once.ts` reruns it once, keeps each attempt's
 diagnostics in `attempt-1`/`attempt-2`, and records a recovered attempt the same
 way. `F5_CI_TEST_RETRY=0` restores single attempts. An unhandled error fails the
-whole suite and is never retried; it is always a bug.
+whole suite and is never retried; it is always a bug. The reporter writes it, and a
+smoke step that failed both attempts, to `failures.jsonl` so a later manual rerun
+can still be attributed.
 
-After every CI run, `.github/workflows/ci-flakes.yml` downloads that run's
-`reports-*` artifacts and `scripts/ci-flake-ledger.ts` files one `ci-flaky` issue per
-test (keyed by repository path and full name, across OSes and shards). Each
-occurrence comments once with OS, job, branch, commit, run and the first failure; a
-closed issue reopens when the flake recurs. The ledger also files failures from an
-earlier attempt that a manual "Re-run failed jobs" turned green, and suites that
-failed on an unhandled error. It runs the default branch's scripts only, reads
-artifacts as data, and never fails the CI verdict.
+A retry spends time inside the job's `timeout-minutes` and the suite's own time
+caps. Those were not raised: a suite slow enough to need them for retries is
+itself the problem, and a job killed at its limit uploads no report for the
+unfinished suite, which the ledger files as "did not finish" once a rerun passes.
+`ci-repeat.ts` gives each repro iteration its own `iteration-N` artifact directory.
+
+After every CI run from this repository (never a fork),
+`.github/workflows/ci-flakes.yml` downloads that run's `reports-*` artifacts and
+`scripts/ci-flake-ledger.ts` files one `ci-flaky` issue per test (keyed by
+repository path and full name, across OSes and shards). Each occurrence comments
+once with OS, job, branch, commit, run and the first failure; job, OS and attempt
+come from the artifact name, and only the ledger's own comments count for
+deduplication. It edits only the issue's `Occurrences:` line, so triage notes in
+the body survive. An issue closed as completed reopens when the flake recurs on a
+default-branch run; a PR or stale branch only comments, and an issue closed as not
+planned never reopens. The ledger also files failures from an earlier attempt
+that a manual "Re-run failed jobs" turned green, suites that failed on an unhandled
+error, and suites that never reported. It runs the default branch's scripts only,
+reads artifacts as data, and never fails the CI verdict.
 
 Rules:
 

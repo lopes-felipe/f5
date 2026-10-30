@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseArgs, runWithRetryOnce } from "./ci-retry-once.ts";
-import { readFlakyRecords } from "./lib/ci-flaky-records.ts";
+import { FAILURE_RECORD_FILE, readFlakyRecords } from "./lib/ci-flaky-records.ts";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -86,6 +86,14 @@ describe("ci-retry-once", () => {
     ).toBe(5);
     expect(attempts(directory)).toHaveLength(2);
     expect(readFlakyRecords(env.F5_CI_REPORT_DIR)).toEqual([]);
+    // Not flaky yet, but a later manual rerun that passes makes it one.
+    expect(readFlakyRecords(env.F5_CI_REPORT_DIR, FAILURE_RECORD_FILE)).toEqual([
+      expect.objectContaining({
+        kind: "step-failure",
+        name: "smoke",
+        errors: [expect.stringContaining("attempt 1 output")],
+      }),
+    ]);
   });
 
   it("runs a single attempt when CI retries are disabled", async () => {
