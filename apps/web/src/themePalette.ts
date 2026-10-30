@@ -7,6 +7,7 @@ import {
   parse,
   wcagContrast,
 } from "culori";
+import { THEME_TOKEN_NAMES } from "@t3tools/shared/themeTokens";
 
 export const THEME_DEFINITION_VERSION = 1 as const;
 export const DEFAULT_THEME_ID = "f5-black";
@@ -17,33 +18,7 @@ export const MAX_THEME_DEFINITION_BYTES = 64 * 1024;
 export const MIN_BODY_TEXT_CONTRAST = 4.5;
 export const MIN_DECORATIVE_CONTRAST = 3;
 
-export const THEME_TOKEN_NAMES = [
-  "background",
-  "foreground",
-  "card",
-  "card-foreground",
-  "popover",
-  "popover-foreground",
-  "primary",
-  "primary-foreground",
-  "secondary",
-  "secondary-foreground",
-  "muted",
-  "muted-foreground",
-  "accent",
-  "accent-foreground",
-  "destructive",
-  "destructive-foreground",
-  "border",
-  "input",
-  "ring",
-  "info",
-  "info-foreground",
-  "success",
-  "success-foreground",
-  "warning",
-  "warning-foreground",
-] as const;
+export { THEME_TOKEN_NAMES };
 
 /**
  * Tokens computed from every theme after overrides merge. They are not
