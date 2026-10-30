@@ -946,6 +946,163 @@ describe("ProviderCommandReactor", () => {
     };
   }
 
+  async function scratchThread(harness: Awaited<ReturnType<typeof createHarness>>) {
+    const projectId = asProjectId("scratch");
+    const threadId = ThreadId.makeUnsafe("scratch-thread");
+    const now = new Date().toISOString();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "project.scratch.create",
+        commandId: CommandId.makeUnsafe("create-scratch"),
+        projectId,
+        workspaceRoot: path.join(harness.stateDir, "scratch"),
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.makeUnsafe("create-scratch-thread"),
+        threadId,
+        projectId,
+        title: "Research",
+        model: "gpt-5-codex",
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdAt: now,
+      }),
+    );
+    return threadId;
+  }
+
+  async function pendingTurn(
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    threadId: ThreadId,
+    suffix: string,
+  ) {
+    const messageId = asMessageId(`scratch-message-${suffix}`);
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe(`scratch-turn-${suffix}`),
+        threadId,
+        message: { messageId, role: "user", text: "Research the topic", attachments: [] },
+        provider: "codex",
+        model: "gpt-5-codex",
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        createdAt: new Date().toISOString(),
+      }),
+    );
+    const events = await Effect.runPromise(Stream.runCollect(harness.engine.readEvents(0)));
+    const intent = events.find(
+      (event) =>
+        event.type === "thread.turn-start-requested" && event.payload.messageId === messageId,
+    );
+    if (!intent || intent.type !== "thread.turn-start-requested")
+      throw new Error("Missing scratch intent");
+    return intent;
+  }
+
+  it.each([
+    { scratchPath: null },
+    { scratchPath: "/outside/wrong" },
+    { branch: "main" },
+    { worktreePath: "/wrong" },
+  ])("rejects seeded malformed scratch state before adapter startup: %j", async (malformed) => {
+    const harness = await createHarness({ bridgeTurnDelivery: false });
+    const threadId = await scratchThread(harness);
+    const intent = await pendingTurn(harness, threadId, "bad");
+    const model = await Effect.runPromise(harness.engine.getReadModel());
+    // Simulate persisted corruption that predates the decider invariant.
+    Object.assign(model.threads.find((thread) => thread.id === threadId)!, malformed);
+    const failure = await Effect.runPromise(
+      harness.reactor.deliverTurnStart(intent).pipe(Effect.flip, Effect.scoped),
+    );
+    expect(failure).toMatchObject({
+      _tag: "ProviderTurnDeliveryError",
+      certainty: "not_sent",
+      retryable: false,
+    });
+    expect(harness.startSession).not.toHaveBeenCalled();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+    const failed = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+      (thread) => thread.id === threadId,
+    )!;
+    expect(
+      failed.activities.some((activity) => activity.kind === "provider.turn.start.failed"),
+    ).toBe(true);
+    const other = await pendingTurn(harness, ThreadId.makeUnsafe("thread-1"), "good");
+    await Effect.runPromise(harness.reactor.deliverTurnStart(other).pipe(Effect.scoped));
+    expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("omits scratch project title and memories and validates reused sessions before sending", async () => {
+    const harness = await createHarness({ bridgeTurnDelivery: false });
+    const threadId = await scratchThread(harness);
+    const first = await pendingTurn(harness, threadId, "first");
+    await Effect.runPromise(harness.reactor.deliverTurnStart(first).pipe(Effect.scoped));
+    const binding = harness.getBinding(threadId);
+    expect(binding).toBeDefined();
+    const context = (
+      binding!.runtimePayload as {
+        instructionContext: Record<string, unknown>;
+      }
+    ).instructionContext;
+    expect(context.projectTitle).toBeUndefined();
+    expect(context.projectMemories).toBeUndefined();
+    expect(context.cwd).toContain("/scratch/");
+    expect(harness.ensureWorktree).not.toHaveBeenCalled();
+    const second = await pendingTurn(harness, threadId, "second");
+    const model = await Effect.runPromise(harness.engine.getReadModel());
+    Object.assign(model.threads.find((thread) => thread.id === threadId)!, { scratchPath: null });
+    const failure = await Effect.runPromise(
+      harness.reactor.deliverTurnStart(second).pipe(Effect.flip, Effect.scoped),
+    );
+    expect(failure).toMatchObject({ certainty: "not_sent", retryable: false });
+    expect(harness.startSession).toHaveBeenCalledTimes(1);
+    expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["steer", "continuation"] as const)(
+    "reports malformed scratch workspace failures for the %s operation",
+    async (operation) => {
+      const harness = await createHarness({ bridgeTurnDelivery: false });
+      const threadId = await scratchThread(harness);
+      const intent = await pendingTurn(harness, threadId, operation);
+      const model = await Effect.runPromise(harness.engine.getReadModel());
+      Object.assign(model.threads.find((thread) => thread.id === threadId)!, {
+        scratchPath: null,
+      });
+      const request =
+        operation === "steer"
+          ? {
+              ...intent,
+              type: "thread.turn-steer-requested" as const,
+              payload: { ...intent.payload, expectedTurnId: TurnId.makeUnsafe("active-turn") },
+            }
+          : {
+              ...intent,
+              payload: { ...intent.payload, continuationRequestId: "native-wake" },
+            };
+      const failure = await Effect.runPromise(
+        harness.reactor.deliverTurnStart(request).pipe(Effect.flip, Effect.scoped),
+      );
+      expect(failure).toMatchObject({ certainty: "not_sent", retryable: false });
+      const failed = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+        (thread) => thread.id === threadId,
+      )!;
+      expect(failed.activities.at(-1)).toMatchObject({
+        kind: `provider.turn.${operation}.failed`,
+        summary: `Provider turn ${operation} failed`,
+      });
+      expect(harness.startSession).not.toHaveBeenCalled();
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(["native", "summary"] as const)(
     "recovers missing native history only when the latest compaction is %s",
     async (kind) => {

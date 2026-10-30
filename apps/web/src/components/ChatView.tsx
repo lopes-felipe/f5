@@ -20,7 +20,13 @@ import { pickPreferredModel } from "../providerModels";
 import { AgentComputerLiveCard } from "./AgentComputerLiveCard";
 import { parseNativeReviewTarget } from "@t3tools/shared/nativeReviewTarget";
 import { isScratchProject } from "@t3tools/shared/scratchProject";
-import { resolveThreadWorkspaceCwd, threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
+import {
+  resolveThreadWorkspaceCwd,
+  threadWorkspaceCwd,
+  threadAttachmentWorkspaceRoots,
+  threadTerminalCommandCwd,
+  threadTerminalRuntimeEnv as workspaceTerminalRuntimeEnv,
+} from "@t3tools/shared/threadWorkspace";
 import { NativeRuntimePanel } from "./chat/NativeRuntimePanel";
 import { NativeRuntimeTray } from "./chat/NativeRuntimeTray";
 import { McpSignInTray } from "./chat/McpSignInTray";
@@ -301,8 +307,6 @@ import { type NewProjectScriptInput } from "./ProjectScriptsControl";
 import {
   commandForProjectScript,
   nextProjectScriptId,
-  projectScriptCwd,
-  projectScriptRuntimeEnv,
   projectScriptIdFromCommand,
 } from "~/projectScripts";
 import { AppTitlebar } from "./AppTitlebar";
@@ -2944,16 +2948,16 @@ export default memo(function ChatView({
     sessionProvider,
   ]);
   const activeProjectCwd = activeProject?.cwd ?? null;
+  const activeProjectKind = activeProject?.kind;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
+  const activeThreadScratchPath = activeThread?.scratchPath ?? null;
   const threadTerminalRuntimeEnv = useMemo(() => {
     if (!activeProjectCwd) return {};
-    return projectScriptRuntimeEnv({
-      project: {
-        cwd: activeProjectCwd,
-      },
-      worktreePath: activeThreadWorktreePath,
-    });
-  }, [activeProjectCwd, activeThreadWorktreePath]);
+    return workspaceTerminalRuntimeEnv(
+      { worktreePath: activeThreadWorktreePath, scratchPath: activeThreadScratchPath },
+      { cwd: activeProjectCwd, kind: activeProjectKind },
+    );
+  }, [activeProjectCwd, activeProjectKind, activeThreadWorktreePath, activeThreadScratchPath]);
   // Default true while loading to avoid toolbar flicker.
   const isGitRepo =
     !isScratchProject(activeProject) &&
@@ -3391,12 +3395,11 @@ export default memo(function ChatView({
       if (!api || !activeThreadId || !activeProject || !activeThread || !isServerThread) {
         throw new Error("The thread terminal is unavailable.");
       }
-      const targetCwd =
-        options?.cwd ??
-        projectScriptCwd({
-          project: { cwd: activeProject.cwd },
-          worktreePath: options?.worktreePath ?? activeThread.worktreePath ?? null,
-        });
+      const terminalThread = {
+        worktreePath: options?.worktreePath ?? activeThread.worktreePath,
+        scratchPath: activeThread.scratchPath,
+      };
+      const targetCwd = threadTerminalCommandCwd(terminalThread, activeProject, options?.cwd);
       const baseTerminalId =
         terminalState.activeTerminalId ||
         terminalState.terminalIds[0] ||
@@ -3416,13 +3419,7 @@ export default memo(function ChatView({
       }
       setTerminalFocusRequestId((value) => value + 1);
 
-      const runtimeEnv = projectScriptRuntimeEnv({
-        project: {
-          cwd: activeProject.cwd,
-        },
-        worktreePath: options?.worktreePath ?? activeThread.worktreePath ?? null,
-        ...(options?.env ? { extraEnv: options.env } : {}),
-      });
+      const runtimeEnv = workspaceTerminalRuntimeEnv(terminalThread, activeProject, options?.env);
       const openTerminalInput: Parameters<typeof api.terminal.open>[0] = shouldCreateNewTerminal
         ? {
             threadId: activeThreadId,
@@ -4797,7 +4794,7 @@ export default memo(function ChatView({
       return;
     }
 
-    const workspaceRoots = [activeThread?.worktreePath, activeProject.cwd];
+    const workspaceRoots = threadAttachmentWorkspaceRoots(activeThread, activeProject);
     const normalizeAbsolutePathForComparison = createCachedAbsolutePathComparisonNormalizer(
       window.desktopBridge?.resolveRealPath ?? identityAbsolutePathNormalizer,
     );
@@ -5485,7 +5482,7 @@ export default memo(function ChatView({
     const { filePaths: composerFilePathsSnapshot, invalidPathCount: invalidComposerFilePathCount } =
       sanitizeAttachedFileReferencePaths({
         filePaths: composerFilePathsSnapshotBeforePreflight,
-        workspaceRoots: [activeThread.worktreePath, activeProject.cwd],
+        workspaceRoots: threadAttachmentWorkspaceRoots(activeThread, activeProject),
         normalizeAbsolutePathForComparison,
       });
     if (invalidComposerFilePathCount > 0) {
@@ -7879,10 +7876,13 @@ export default memo(function ChatView({
                 nativeGoal ? `Goal: ${nativeGoal.objective} · ${nativeGoal.status}` : undefined
               }
               activeProjectId={activeProject?.id}
+              activeProjectKind={activeProject?.kind}
               activeProjectIcon={activeProject?.icon}
               activeProjectName={activeProject?.name}
               onNewThreadInProject={projectBreadcrumbActions.createThread}
-              onOpenProjectSettings={projectBreadcrumbActions.openSettings}
+              onOpenProjectSettings={
+                isScratchProject(activeProject) ? undefined : projectBreadcrumbActions.openSettings
+              }
               workflowTitle={activeWorkflow?.workflow.title}
               workflowType={
                 activeWorkflow
@@ -7910,13 +7910,15 @@ export default memo(function ChatView({
               onOpenWorkflow={activeWorkflow ? handleOpenActiveWorkflow : undefined}
               isGitRepo={isGitRepo}
               openInCwd={threadWorkspaceCwd(activeThread, activeProject) ?? null}
-              activeProjectScripts={activeProject?.scripts}
+              activeProjectScripts={
+                isScratchProject(activeProject) ? undefined : activeProject?.scripts
+              }
               preferredScriptId={
                 activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
               }
               keybindings={keybindings}
               availableEditors={availableEditors}
-              terminalAvailable={activeProject != null}
+              terminalAvailable={workspaceRoot !== undefined}
               terminalOpen={terminalState.terminalOpen}
               workspaceFilesAvailable={workspaceRoot !== undefined}
               previewAvailable={Boolean(window.desktopBridge?.preview)}

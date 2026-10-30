@@ -26,6 +26,8 @@ import type {
 } from "../src/provider/Services/ProviderAdapter.ts";
 
 export interface TestTurnResponse {
+  /** Fixtures spanning sessions/restarts can supply globally unique provider turn ids. */
+  readonly turnId?: TurnId;
   readonly events: ReadonlyArray<FixtureProviderRuntimeEvent>;
   readonly beforeEvent?: (index: number) => Effect.Effect<void>;
   readonly mutateWorkspace?: (input: {
@@ -321,8 +323,6 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
 
         state.turnCount += 1;
         const turnCount = state.turnCount;
-        const turnId = TurnId.makeUnsafe(`turn-${turnCount}`);
-
         const response = state.queuedResponses.shift();
         if (!response) {
           return yield* new ProviderAdapterValidationError({
@@ -331,6 +331,7 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
             issue: `No queued turn response for thread ${input.threadId}.`,
           });
         }
+        const turnId = response.turnId ?? TurnId.makeUnsafe(`turn-${turnCount}`);
 
         const assistantDeltas: string[] = [];
         const deferredTurnCompletedEvents: ProviderRuntimeEvent[] = [];
