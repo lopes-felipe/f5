@@ -39,20 +39,52 @@ function isSafeCheckpointRef(ref: string): boolean {
   return true;
 }
 
-const makeCheckpointStore = Effect.gen(function* () {
+// On macOS, Git's fsync uses F_FULLFSYNC; writeout-only still uses fsync(2).
+// Network mounts can reject F_FULLFSYNC. Ref writes omit errno, so retry their
+// bare write error too; explicit unrelated errors remain failures.
+// Linux writeout-only only starts writeback, so it must not use this fallback.
+const FULL_FSYNC_ARG = "core.fsyncMethod=fsync";
+const BATCH_FSYNC_ARG = "core.fsyncMethod=batch";
+const WRITEOUT_ONLY_FSYNC_ARG = "core.fsyncMethod=writeout-only";
+const isFullFsyncArg = (arg: string) => arg === FULL_FSYNC_ARG || arg === BATCH_FSYNC_ARG;
+const canRetryFullFsync = (detail: string) =>
+  /fsync error on [^\r\n]+: operation not supported\r?$/im.test(detail) ||
+  /cannot update ref [^\r\n]+: couldn't write '[^\r\n]+\.lock'\r?$/im.test(detail);
+
+const makeCheckpointStore = Effect.fn("makeCheckpointStore")(function* (platform: NodeJS.Platform) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const git = yield* GitService;
   /** The git-import filter's answer per checkpoint pair, oldest first. */
   const authoredPathsCache = new Map<string, ReadonlyArray<ReadonlyArray<string>> | null>();
 
+  // Set fsync first: Git 2.36 ignores an unknown batch without resetting the method.
+  // Git documents batch/fsync equivalence on macOS HFS+/APFS and Windows NTFS/ReFS;
+  // keep per-object fsync on other platforms. Batch still fully flushes refs.
   const durableWrite = gitConfigArgs([
     ["core.fsync", "objects,reference"],
-    ["core.fsyncMethod", "batch"],
+    ["core.fsyncMethod", "fsync"],
+    ...(platform === "darwin" || platform === "win32"
+      ? [["core.fsyncMethod", "batch"] as const]
+      : []),
   ]);
+  const executeCaptureOnce = (input: ExecuteGitInput) => {
+    const env = { ...input.env, LC_ALL: "C", LANGUAGE: "C" };
+    return git.execute({ ...input, env }).pipe(
+      Effect.catch((error) =>
+        platform === "darwin" && input.args.some(isFullFsyncArg) && canRetryFullFsync(error.detail)
+          ? git.execute({
+              ...input,
+              args: input.args.map((arg) => (isFullFsyncArg(arg) ? WRITEOUT_ONLY_FSYNC_ARG : arg)),
+              env,
+            })
+          : Effect.fail(error),
+      ),
+    );
+  };
   // Retry only capture commands with recognizable lock/file disappearance races.
   const executeCapture = (input: ExecuteGitInput) =>
-    git.execute({ ...input, env: { ...input.env, LC_ALL: "C", LANGUAGE: "C" } }).pipe(
+    executeCaptureOnce(input).pipe(
       Effect.retry({
         times: 3,
         schedule: Schedule.exponential("75 millis"),
@@ -376,7 +408,7 @@ const makeCheckpointStore = Effect.gen(function* () {
                 // Durable object writes on NTFS can exceed the normal command
                 // deadline for large checkpoints. Keep staging bounded without
                 // weakening fsync or changing deadlines for other Git commands.
-                timeoutMs: process.platform === "win32" ? 120_000 : 30_000,
+                timeoutMs: platform === "win32" ? 120_000 : 30_000,
               });
             yield* stageFiles([]).pipe(
               Effect.catch((error) => {
@@ -824,7 +856,10 @@ const makeCheckpointStore = Effect.gen(function* () {
   } satisfies CheckpointStoreShape;
 });
 
-export const CheckpointStoreLiveWithGitService = Layer.effect(CheckpointStore, makeCheckpointStore);
+export const makeCheckpointStoreLayer = (platform: NodeJS.Platform = process.platform) =>
+  Layer.effect(CheckpointStore, makeCheckpointStore(platform));
+
+export const CheckpointStoreLiveWithGitService = makeCheckpointStoreLayer();
 
 /** Credential-free test harness; production runtimes must supply their configured Git service. */
 export const CheckpointStoreLiveWithoutCredentials = CheckpointStoreLiveWithGitService.pipe(
