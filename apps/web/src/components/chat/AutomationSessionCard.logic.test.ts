@@ -150,6 +150,27 @@ describe("buildAutomationRun", () => {
     ).toMatchObject({ title: "Clicking… · Chrome", status: "running" });
   });
 
+  it("treats an idle turn's in-progress call as interrupted, not running", () => {
+    const entries = [
+      computer("key", { computerStep: { appName: "Chrome" } }),
+      computer("click", { status: "inProgress", computerStep: { appName: "Chrome" } }),
+    ];
+    const run = buildAutomationRun("computer", entries, false);
+    expect(run).toMatchObject({ status: "done", title: "Used Chrome" });
+    expect(run.chips.at(-1)).toMatchObject({ running: false, title: "Clicking interrupted" });
+    expect(summarizeAutomationRun("computer", entries, false)).toBe("Used Chrome · 2 actions");
+  });
+
+  it("leaves entries with embedded UI out of runs", () => {
+    expect(
+      classifyAutomationEntry(
+        preview("snapshot", undefined, {
+          htmlRender: { title: "Snapshot", height: 200, attachmentId: "a" },
+        }),
+      ),
+    ).toBeUndefined();
+  });
+
   it("marks a run whose last action failed", () => {
     expect(
       buildAutomationRun("computer", [computer("click"), computer("key", { status: "failed" })])

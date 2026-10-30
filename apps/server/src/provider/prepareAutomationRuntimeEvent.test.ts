@@ -239,6 +239,12 @@ it("ignores a third-party computer tool name and a provider-supplied computer ma
   if (queued.type !== "item.completed") throw new Error("Unexpected event");
   expect(queued.payload.computerTool).toBeUndefined();
   expect(queued.payload.computerStep).toBeUndefined();
+  // Ingestion carries a step only beside its own computerTool verdict, even from a raw event.
+  expect(
+    runtimeEventToActivities(event).every(
+      (entry) => (entry.payload as Record<string, unknown>)?.computerStep === undefined,
+    ),
+  ).toBe(true);
   expect(
     runtimeEventToActivities(event).every(
       (entry) => !(entry.payload as Record<string, unknown>)?.computerTool,

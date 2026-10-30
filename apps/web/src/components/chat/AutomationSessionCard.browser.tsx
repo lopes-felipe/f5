@@ -50,6 +50,7 @@ describe("AutomationSessionCard", () => {
         timestampFormat="24-hour"
         markdownCwd={undefined}
         onImageExpand={onImageExpand}
+        active={false}
       />,
     );
 
@@ -95,6 +96,7 @@ describe("AutomationSessionCard", () => {
         timestampFormat="24-hour"
         markdownCwd={undefined}
         onImageExpand={() => {}}
+        active
       />,
     );
     await expect
@@ -105,5 +107,56 @@ describe("AutomationSessionCard", () => {
         .querySelector('[data-testid="automation-session-card"]')
         ?.getAttribute("data-status"),
     ).toBe("running");
+  });
+
+  it("marks a lost completion as interrupted once the turn is idle", async () => {
+    render(
+      <AutomationSessionCard
+        surface="computer"
+        entries={[step("1", "key"), step("2", "click", { status: "inProgress" })]}
+        timestampFormat="24-hour"
+        markdownCwd={undefined}
+        onImageExpand={() => {}}
+        active={false}
+      />,
+    );
+    await expect
+      .element(page.getByTestId("automation-session-title"))
+      .toHaveTextContent("Used Google Chrome");
+    expect(
+      document
+        .querySelector('[data-testid="automation-session-card"]')
+        ?.getAttribute("data-status"),
+    ).toBe("done");
+    expect(document.querySelector('[title="Clicking interrupted"]')).not.toBeNull();
+  });
+
+  it("keeps diagnostics correlated with the run's calls visible", async () => {
+    const hook: WorkLogEntry = {
+      id: "hook",
+      createdAt: "2026-10-30T18:00:02.000Z",
+      tone: "error",
+      label: "PreToolUse hook failed",
+    };
+    render(
+      <AutomationSessionCard
+        surface="computer"
+        entries={[step("1", "click", { nestedDiagnostics: [hook] })]}
+        timestampFormat="24-hour"
+        markdownCwd={undefined}
+        onImageExpand={() => {}}
+        active={false}
+        renderDiagnostics={(diagnostics) => (
+          <ul>
+            {diagnostics.map((diagnostic) => (
+              <li key={diagnostic.id}>{diagnostic.label}</li>
+            ))}
+          </ul>
+        )}
+      />,
+    );
+    await expect
+      .element(page.getByTestId("automation-diagnostics").getByText("PreToolUse hook failed"))
+      .toBeVisible();
   });
 });

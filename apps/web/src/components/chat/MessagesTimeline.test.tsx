@@ -293,6 +293,46 @@ describe("MessagesTimeline", () => {
     expect(computerRow?.kind === "work" && computerRow.workSummary).toBe(
       "Used the computer · 2 actions",
     );
+
+    // A prior turn's lost completion is not a running action, even while a new turn works.
+    const orphan = work("orphan", {
+      itemType: "mcp_tool_call",
+      mcpServerName: "f5_computer",
+      mcpToolName: "computer_click",
+      computerTool: true,
+      status: "inProgress",
+    });
+    const live = { ...orphan, id: "live", entry: { ...orphan.entry, id: "live" } };
+    const userMessage: TimelineEntry = {
+      id: "next",
+      kind: "message",
+      createdAt,
+      message: {
+        id: MessageId.makeUnsafe("next"),
+        role: "user",
+        text: "Next",
+        createdAt,
+        streaming: false,
+      },
+    };
+    const workingRows = buildTimelineRows({
+      timelineEntries: [orphan, userMessage, live],
+      completionDividerBeforeEntryId: null,
+      completionSummary: null,
+      isWorking: true,
+      activeTurnStartedAt: createdAt,
+      liveActivity: null,
+      expandMcpToolCalls: false,
+      cache: createTimelineRowCache(),
+    });
+    expect(
+      workingRows.flatMap((row) =>
+        row.kind === "work" ? [[row.automationActive, row.workSummary]] : [],
+      ),
+    ).toEqual([
+      [false, "Used the computer · 1 action"],
+      [true, "Clicking… · 1 action"],
+    ]);
   });
 
   it("keeps answered questions visible outside collapsed work from previous turns", async () => {

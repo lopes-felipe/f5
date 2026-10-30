@@ -1,3 +1,5 @@
+import type { ComputerStepSummary } from "@t3tools/contracts";
+
 export const COMPUTER_ACTION_VERB: Record<string, readonly [ongoing: string, done: string]> = {
   wait: ["Waiting", "Waited"],
   requestForeground: ["Requesting foreground", "Requested foreground"],
@@ -74,7 +76,7 @@ export const PREVIEW_ACTION_VERB: Record<string, readonly [ongoing: string, done
 };
 
 // Claude names it f5_preview (suffixed on collision), ACP f5_preview_<hex>, Codex __f5_preview.
-const PREVIEW_SERVER_NAME = /^_*f5_preview(?:_[0-9a-z]+)?$/;
+const PREVIEW_SERVER_NAME = /^(?:__)?f5_preview(?:_(?:[0-9]+|[0-9a-f]{8}))?$/;
 
 /**
  * The preview op for an F5 browser preview tool. Matched by name only: preview payloads are
@@ -93,6 +95,24 @@ export function previewToolOp(
   return PREVIEW_ACTION_VERB[op] ? op : undefined;
 }
 
+export type AutomationToolSurface = "computer" | "preview";
+
+/** Computer calls need F5's provenance marker; preview calls are matched by server and tool name. */
+export function automationToolSurface(payload: {
+  readonly computerTool?: boolean | undefined;
+  readonly itemType?: string | undefined;
+  readonly mcpServerName?: string | undefined;
+  readonly mcpToolName?: string | undefined;
+}): AutomationToolSurface | undefined {
+  if (payload.computerTool === true && computerToolOp(payload.mcpToolName)) return "computer";
+  if (
+    payload.itemType === "mcp_tool_call" &&
+    previewToolOp(payload.mcpServerName, payload.mcpToolName)
+  )
+    return "preview";
+  return undefined;
+}
+
 export function previewToolHeading(
   toolName: string | undefined,
   status: string | undefined,
@@ -104,81 +124,82 @@ export function previewToolHeading(
   return words ? actionHeading(words, status) : undefined;
 }
 
-/** Bounded, display-only facts about one computer action. Never carries typed text. */
-export interface ComputerStepSummary {
-  readonly appName?: string;
-  readonly x?: number;
-  readonly y?: number;
-  readonly keyChord?: string;
-  readonly repeat?: number;
-  readonly typedLength?: number;
-  readonly outcome?: string;
+export type { ComputerStepSummary };
+
+const lowerSet = (keys: ReadonlyArray<string>) => new Set(keys.map((key) => key.toLowerCase()));
+const MODIFIER_KEYS = lowerSet([
+  "Meta",
+  "Cmd",
+  "Command",
+  "Control",
+  "Ctrl",
+  "Alt",
+  "Option",
+  "Shift",
+  "Fn",
+]);
+// Keys that insert no character, so naming them reveals nothing that was typed.
+const NON_PRINTING_KEYS = lowerSet([
+  "Enter",
+  "Return",
+  "Tab",
+  "Escape",
+  "Esc",
+  "Backspace",
+  "Delete",
+  "Up",
+  "Down",
+  "Left",
+  "Right",
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+  ...Array.from({ length: 12 }, (_, index) => `F${index + 1}`),
+]);
+const NAMED_PRINTING_KEYS = lowerSet([
+  "Space",
+  "Minus",
+  "Equal",
+  "Plus",
+  "Comma",
+  "Period",
+  "Slash",
+  "Backslash",
+  "Semicolon",
+  "Quote",
+  "Backquote",
+  "BracketLeft",
+  "BracketRight",
+]);
+
+/**
+ * A chord is shown only when it cannot spell text: a non-printing key (with any modifiers), or
+ * a printing key held with a command modifier. Bare letters, and Shift+letter, are typing.
+ */
+function isShortcutChord(chord: string): boolean {
+  // "Meta++" names the plus key; split would otherwise leave an empty trailing token.
+  const tokens = chord.replace(/\+\+$/, "+Plus").split("+");
+  const base = tokens.at(-1) ?? "";
+  const modifiers = tokens.slice(0, -1).map((token) => token.toLowerCase());
+  if (!modifiers.every((modifier) => MODIFIER_KEYS.has(modifier))) return false;
+  if (NON_PRINTING_KEYS.has(base.toLowerCase())) return true;
+  const printing =
+    NAMED_PRINTING_KEYS.has(base.toLowerCase()) ||
+    ([...base].length === 1 && base.trim().length === 1);
+  return printing && modifiers.some((modifier) => modifier !== "shift");
 }
 
-const NAMED_KEYS = new Set(
-  [
-    "Meta",
-    "Cmd",
-    "Command",
-    "Control",
-    "Ctrl",
-    "Alt",
-    "Option",
-    "Shift",
-    "Fn",
-    "Enter",
-    "Return",
-    "Tab",
-    "Escape",
-    "Esc",
-    "Space",
-    "Backspace",
-    "Delete",
-    "Up",
-    "Down",
-    "Left",
-    "Right",
-    "ArrowUp",
-    "ArrowDown",
-    "ArrowLeft",
-    "ArrowRight",
-    "Home",
-    "End",
-    "PageUp",
-    "PageDown",
-    "Minus",
-    "Equal",
-    "Plus",
-    "Comma",
-    "Period",
-    "Slash",
-    "Backslash",
-    "Semicolon",
-    "Quote",
-    "Backquote",
-    "BracketLeft",
-    "BracketRight",
-    ...Array.from({ length: 12 }, (_, index) => `F${index + 1}`),
-  ].map((key) => key.toLowerCase()),
-);
-
-function isKeyToken(token: string): boolean {
-  return [...token].length === 1 ? token.trim().length === 1 : NAMED_KEYS.has(token.toLowerCase());
-}
-
-/** Each chord is `+`-joined key names; anything else could be free text, so it is dropped. */
+/** Every chord must be a shortcut; one typing-like chord drops the whole sequence. */
 function keyChordFromKeys(keys: unknown): string | undefined {
   const chords = typeof keys === "string" ? [keys] : Array.isArray(keys) ? keys : [];
   if (chords.length === 0 || chords.length > 16) return undefined;
   const valid = chords.every(
-    (chord) =>
-      typeof chord === "string" &&
-      chord.length <= 64 &&
-      // "Meta++" names the plus key; split keeps it as an empty trailing token.
-      chord
-        .replace(/\+\+$/, "+Plus")
-        .split("+")
-        .every((token) => isKeyToken(token)),
+    (chord) => typeof chord === "string" && chord.length <= 64 && isShortcutChord(chord),
   );
   if (!valid) return undefined;
   const joined = (chords as string[]).join(", ");
@@ -249,6 +270,17 @@ function resultContent(result: unknown): {
   return { structured, isError };
 }
 
+/** The app an action ran in, from `ComputerActionResult` or an explicit `appName`. */
+function actionAppName(structured: Record<string, unknown> | undefined): unknown {
+  if (!structured) return undefined;
+  if (typeof structured.appName === "string") return structured.appName;
+  const frontmost = isRecord(structured.frontmostApp) ? structured.frontmostApp : undefined;
+  const target = isRecord(structured.target) ? structured.target : undefined;
+  // A background action leaves the user's own app in front, so it names the target only on a match.
+  if (structured.delivery === "background" && frontmost?.appId !== target?.appId) return undefined;
+  return frontmost?.name;
+}
+
 /** Builds the summary from a raw (unsanitized) tool event `data` envelope. */
 export function extractComputerStep(
   toolName: string | undefined,
@@ -263,7 +295,7 @@ export function extractComputerStep(
   const error = isRecord(structured?.error) ? structured.error : undefined;
   const textLength = typeof input?.text === "string" ? [...input.text].length : undefined;
   return sanitizeComputerStep({
-    appName: structured?.appName,
+    appName: actionAppName(structured),
     ...(op === "click" || op === "move" || op === "scroll" ? { x: input?.x, y: input?.y } : {}),
     ...(op === "key" && rawResult !== undefined && !isError
       ? { keyChord: keyChordFromKeys(input?.keys), repeat: input?.repeat }

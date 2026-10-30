@@ -19,13 +19,13 @@ export const TOOL_LIFECYCLE_ITEM_TYPES = [
  * re-validated by `sanitizeComputerStep`. Never carries typed text.
  */
 export const ComputerStepSummary = Schema.Struct({
-  appName: Schema.optional(Schema.String),
+  appName: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
   x: Schema.optional(Schema.Number),
   y: Schema.optional(Schema.Number),
-  keyChord: Schema.optional(Schema.String),
+  keyChord: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
   repeat: Schema.optional(Schema.Number),
   typedLength: Schema.optional(Schema.Number),
-  outcome: Schema.optional(Schema.String),
+  outcome: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
 });
 export type ComputerStepSummary = typeof ComputerStepSummary.Type;
 

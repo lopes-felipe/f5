@@ -1,14 +1,16 @@
 import {
   COMPUTER_ACTION_VERB,
   PREVIEW_ACTION_VERB,
+  automationToolSurface,
   computerToolHeading,
   computerToolOp,
   previewToolHeading,
   previewToolOp,
+  type AutomationToolSurface,
 } from "@t3tools/shared/computerAction";
 import { formatElapsed, type WorkLogEntry } from "../../session-logic";
 
-export type AutomationSurface = "computer" | "preview";
+export type AutomationSurface = AutomationToolSurface;
 export type AutomationRunStatus = "running" | "failed" | "done";
 
 type Entry = Pick<
@@ -27,16 +29,31 @@ type Entry = Pick<
   | "mcpInput"
   | "mcpImages"
   | "mcpImagesOmitted"
+  | "mcpApp"
+  | "htmlRender"
 >;
 
-/** Computer calls need F5's provenance marker; preview calls are matched by name. */
+/** Entries with their own embedded UI keep their normal rows instead of joining a card. */
 export function classifyAutomationEntry(
-  entry: Pick<Entry, "computerTool" | "itemType" | "mcpServerName" | "mcpToolName">,
+  entry: Pick<
+    Entry,
+    "computerTool" | "itemType" | "mcpServerName" | "mcpToolName" | "mcpApp" | "htmlRender"
+  >,
 ): AutomationSurface | undefined {
-  if (entry.computerTool && computerToolOp(entry.mcpToolName)) return "computer";
-  if (entry.itemType === "mcp_tool_call" && previewToolOp(entry.mcpServerName, entry.mcpToolName))
-    return "preview";
-  return undefined;
+  if (entry.mcpApp || entry.htmlRender) return undefined;
+  return automationToolSurface(entry);
+}
+
+/**
+ * A call is live only while its turn is. An idle turn's leftover in-progress snapshot is a
+ * lost completion (interrupt, crash), not a running action.
+ */
+export function isAutomationEntryRunning(entry: Pick<Entry, "status">, active: boolean): boolean {
+  return active && entry.status === "inProgress";
+}
+
+function isAutomationEntryInterrupted(entry: Pick<Entry, "status">, active: boolean): boolean {
+  return !active && entry.status === "inProgress";
 }
 
 export function automationEntryOp(entry: Entry): string | undefined {
@@ -71,13 +88,25 @@ export function isAutomationEntryFailed(entry: Pick<Entry, "status" | "tone">): 
   return entry.status === "failed" || entry.tone === "error";
 }
 
-export function automationStepHeading(entry: Entry): string {
+export function automationStepHeading(entry: Entry, active = true): string {
+  if (isAutomationEntryInterrupted(entry, active)) {
+    const verb = automationVerbs(entry)?.[0];
+    if (verb) return `${verb} interrupted`;
+  }
   const status = isAutomationEntryFailed(entry) ? "failed" : entry.status;
   return (
     (classifyAutomationEntry(entry) === "computer"
       ? computerToolHeading(entry.mcpToolName, status)
       : previewToolHeading(entry.mcpToolName, status)) ?? entry.label
   );
+}
+
+function automationVerbs(entry: Entry): readonly [string, string] | undefined {
+  const op = automationEntryOp(entry);
+  if (!op) return undefined;
+  return classifyAutomationEntry(entry) === "computer"
+    ? COMPUTER_ACTION_VERB[op]
+    : PREVIEW_ACTION_VERB[op];
 }
 
 function parseInput(entry: Entry): Record<string, unknown> | undefined {
@@ -182,13 +211,14 @@ export const AUTOMATION_CHIP_LIMIT = 24;
 export function coalesceAutomationChips(
   entries: ReadonlyArray<Entry>,
   limit = AUTOMATION_CHIP_LIMIT,
+  active = true,
 ): { chips: AutomationChip[]; hiddenCount: number } {
   const chips: AutomationChip[] = [];
   for (const entry of entries) {
     const op = automationEntryOp(entry);
     if (!op) continue;
     const failed = isAutomationEntryFailed(entry);
-    const running = entry.status === "inProgress";
+    const running = isAutomationEntryRunning(entry, active);
     const previous = chips.at(-1);
     if (
       previous &&
@@ -206,7 +236,7 @@ export function coalesceAutomationChips(
       count: 1,
       failed,
       running,
-      title: automationStepHeading(entry),
+      title: automationStepHeading(entry, active),
     });
   }
   const hidden = chips.slice(0, Math.max(0, chips.length - limit));
@@ -286,14 +316,18 @@ function runTitle(
   return host ? `Used browser preview · ${host}` : "Used browser preview";
 }
 
+/** `active`: the run belongs to the turn that is still working. */
 export function buildAutomationRun(
   surface: AutomationSurface,
   entries: ReadonlyArray<Entry>,
+  active = true,
 ): AutomationRun {
   const actions = entries.filter((entry) => classifyAutomationEntry(entry) === surface);
   const failedCount = actions.filter(isAutomationEntryFailed).length;
   const latest = actions.at(-1);
-  const status: AutomationRunStatus = actions.some((entry) => entry.status === "inProgress")
+  const status: AutomationRunStatus = actions.some((entry) =>
+    isAutomationEntryRunning(entry, active),
+  )
     ? "running"
     : latest && isAutomationEntryFailed(latest)
       ? "failed"
@@ -301,7 +335,7 @@ export function buildAutomationRun(
   const first = actions[0];
   const duration =
     first && latest && first !== latest ? formatElapsed(first.createdAt, latest.createdAt) : null;
-  const { chips, hiddenCount } = coalesceAutomationChips(actions);
+  const { chips, hiddenCount } = coalesceAutomationChips(actions, AUTOMATION_CHIP_LIMIT, active);
   const images = actions.flatMap((entry) =>
     (entry.mcpImages ?? []).map((image) => ({
       attachmentId: image.attachmentId,
@@ -326,8 +360,9 @@ export function buildAutomationRun(
 export function summarizeAutomationRun(
   surface: AutomationSurface,
   entries: ReadonlyArray<Entry>,
+  active = true,
 ): string {
-  const run = buildAutomationRun(surface, entries);
+  const run = buildAutomationRun(surface, entries, active);
   const parts = [run.title, plural(run.actionCount, "action")];
   if (run.failedCount) parts.push(`${run.failedCount} failed`);
   return parts.join(" · ");

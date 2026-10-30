@@ -1171,6 +1171,60 @@ describe("deriveWorkLogEntries", () => {
     expect(regressed[0]?.status).toBe("completed");
   });
 
+  it("folds a computer call's start, update and completion into one action", () => {
+    const call = (kind: string, second: number, payload: Record<string, unknown>) =>
+      makeActivity({
+        id: `computer-${kind}`,
+        createdAt: `2026-02-23T00:00:0${second}.000Z`,
+        turnId: "turn-1",
+        kind,
+        summary: "Computer",
+        payload: {
+          itemType: "mcp_tool_call",
+          providerItemId: "computer-item",
+          mcpServerName: "f5_computer",
+          mcpToolName: "computer_key",
+          computerTool: true,
+          ...payload,
+        },
+      });
+    const started = call("tool.started", 1, { status: "inProgress" });
+    // A start alone is the live call Codex reports before its completion.
+    expect(deriveWorkLogEntries([started], undefined)).toMatchObject([
+      { id: "computer-tool.started", status: "inProgress" },
+    ]);
+    const entries = deriveWorkLogEntries(
+      [
+        started,
+        call("tool.updated", 2, { status: "inProgress", detail: "pressing" }),
+        call("tool.completed", 3, {
+          status: "completed",
+          computerStep: { appName: "Google Chrome", keyChord: "Meta+L" },
+        }),
+      ],
+      undefined,
+    );
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "computer-tool.started",
+      createdAt: "2026-02-23T00:00:01.000Z",
+      status: "completed",
+      computerStep: { appName: "Google Chrome", keyChord: "Meta+L" },
+    });
+    // Starts of other tools stay hidden.
+    expect(
+      deriveWorkLogEntries(
+        [
+          makeActivity({
+            kind: "tool.started",
+            payload: { itemType: "mcp_tool_call", providerItemId: "docs", mcpToolName: "read" },
+          }),
+        ],
+        undefined,
+      ),
+    ).toHaveLength(0);
+  });
+
   it("keeps collaboration rows without provider item ids on the generic path", () => {
     const entries = deriveWorkLogEntries(
       [

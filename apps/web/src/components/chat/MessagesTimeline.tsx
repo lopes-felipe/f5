@@ -1855,6 +1855,8 @@ type TimelineRow =
       isPriorTurn: boolean;
       /** Set when the row is one computer or browser-preview run. */
       automationSurface?: AutomationSurface;
+      /** The run belongs to the turn that is still working, so its calls may be live. */
+      automationActive?: boolean;
       workSummary: string;
     }
   | {
@@ -3784,6 +3786,11 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
   );
 });
 
+// Session cards fold their calls' rows, so correlated hook and review results move into the card.
+const renderAutomationDiagnostics = (diagnostics: ReadonlyArray<TimelineWorkEntry>) => (
+  <NestedDiagnosticList diagnostics={diagnostics} className="ml-0" />
+);
+
 // ── Timeline rows ────────────────────────────────────────────────────
 
 type TimelineRevertImpact = ReturnType<typeof computeRevertImpact>;
@@ -4023,6 +4030,8 @@ function WorkGroupRowContent(props: {
         <AutomationSessionCard
           surface={row.automationSurface}
           entries={row.groupedEntries}
+          active={row.automationActive ?? false}
+          renderDiagnostics={renderAutomationDiagnostics}
           timestampFormat={timestampFormat}
           markdownCwd={markdownCwd}
           onImageExpand={actions.onImageExpand}
@@ -4788,19 +4797,23 @@ export function buildTimelineRows(input: {
       const isPriorTurn =
         index < lastUserMessageEntryIndex &&
         !groupedEntries.some((entry) => entry.subagentType && entry.status === "inProgress");
+      // Only the working turn's calls can still be running; elsewhere an in-progress
+      // snapshot is a completion that never arrived.
+      const automationActive =
+        automationSurface !== undefined && input.isWorking && index > lastUserMessageEntryIndex;
       nextRows.push(
         reuse(
           timelineEntry.id,
-          ["work", isPriorTurn, automationSurface, ...groupedEntries],
+          ["work", isPriorTurn, automationSurface, automationActive, ...groupedEntries],
           () => ({
             kind: "work",
             id: timelineEntry.id,
             createdAt: timelineEntry.createdAt,
             groupedEntries,
             isPriorTurn,
-            ...(automationSurface ? { automationSurface } : {}),
+            ...(automationSurface ? { automationSurface, automationActive } : {}),
             workSummary: automationSurface
-              ? summarizeAutomationRun(automationSurface, groupedEntries)
+              ? summarizeAutomationRun(automationSurface, groupedEntries, automationActive)
               : summarizeWorkGroup(groupedEntries),
           }),
         ),

@@ -23,7 +23,7 @@ import {
   ZoomInIcon,
   type LucideIcon,
 } from "lucide-react";
-import { memo, useMemo, useState } from "react";
+import { memo, useMemo, useState, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 import type { TimestampFormat } from "../../appSettings";
@@ -120,11 +120,23 @@ export const AutomationSessionCard = memo(function AutomationSessionCard(props: 
   timestampFormat: TimestampFormat;
   markdownCwd: string | undefined;
   onImageExpand: (preview: ExpandedImagePreview) => void;
+  /** The run belongs to the working turn; otherwise in-progress calls read as interrupted. */
+  active: boolean;
+  /** Renders the hook/review diagnostics correlated with the run's calls. */
+  renderDiagnostics?: ((diagnostics: ReadonlyArray<WorkLogEntry>) => ReactNode) | undefined;
   /** Present when a finished turn's card can fold back into its summary line. */
   onCollapse?: (() => void) | undefined;
 }) {
-  const { surface, entries, timestampFormat, markdownCwd, onImageExpand, onCollapse } = props;
-  const run = useMemo(() => buildAutomationRun(surface, entries), [surface, entries]);
+  const { surface, entries, timestampFormat, markdownCwd, onImageExpand, onCollapse, active } =
+    props;
+  const run = useMemo(
+    () => buildAutomationRun(surface, entries, active),
+    [surface, entries, active],
+  );
+  const diagnostics = useMemo(
+    () => entries.flatMap((entry) => entry.nestedDiagnostics ?? []),
+    [entries],
+  );
   const [stepsOpen, setStepsOpen] = useState(false);
   const SurfaceIcon = SURFACE_ICON[surface];
   const firstEntry = entries[0];
@@ -258,6 +270,12 @@ export const AutomationSessionCard = memo(function AutomationSessionCard(props: 
         </div>
       ) : null}
 
+      {diagnostics.length > 0 && props.renderDiagnostics ? (
+        <div className="px-3 pt-2.5" data-testid="automation-diagnostics">
+          {props.renderDiagnostics(diagnostics)}
+        </div>
+      ) : null}
+
       <Collapsible open={stepsOpen} onOpenChange={setStepsOpen}>
         <CollapsibleTrigger className="flex items-center gap-1 rounded-b-xl px-3 py-2 text-2xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
           {stepsOpen ? (
@@ -276,6 +294,7 @@ export const AutomationSessionCard = memo(function AutomationSessionCard(props: 
                 <AutomationStepRow
                   key={entry.id}
                   entry={entry}
+                  active={active}
                   timestampFormat={timestampFormat}
                   markdownCwd={markdownCwd}
                   onImageExpand={onImageExpand}
@@ -298,11 +317,12 @@ export const AutomationSessionCard = memo(function AutomationSessionCard(props: 
 
 function AutomationStepRow(props: {
   entry: WorkLogEntry;
+  active: boolean;
   timestampFormat: TimestampFormat;
   markdownCwd: string | undefined;
   onImageExpand: (preview: ExpandedImagePreview) => void;
 }) {
-  const { entry, timestampFormat, markdownCwd, onImageExpand } = props;
+  const { entry, active, timestampFormat, markdownCwd, onImageExpand } = props;
   const [open, setOpen] = useState(false);
   const StepIcon = opIcon(automationEntryOp(entry));
   const failed = isAutomationEntryFailed(entry);
@@ -335,7 +355,7 @@ function AutomationStepRow(props: {
               failed ? "text-destructive-foreground" : "text-foreground",
             )}
           >
-            {automationStepHeading(entry)}
+            {automationStepHeading(entry, active)}
           </span>
           {detail ? <span className="min-w-0 truncate text-muted-foreground">{detail}</span> : null}
           <time

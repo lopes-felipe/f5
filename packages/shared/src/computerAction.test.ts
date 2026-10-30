@@ -34,6 +34,8 @@ describe("previewToolOp", () => {
 
   it("rejects lookalike servers and unknown tools", () => {
     expect(previewToolOp("my_f5_preview", "preview_click")).toBeUndefined();
+    expect(previewToolOp("f5_preview_evil", "preview_click")).toBeUndefined();
+    expect(previewToolOp("___f5_preview", "preview_click")).toBeUndefined();
     expect(previewToolOp("f5_preview", "preview_teleport")).toBeUndefined();
     expect(previewToolOp("f5_preview", "computer_click")).toBeUndefined();
     expect(previewToolOp(undefined, "preview_click")).toBeUndefined();
@@ -65,6 +67,28 @@ describe("extractComputerStep", () => {
     ).toEqual({ keyChord: "Meta++" });
   });
 
+  it.each([
+    [["s", "e", "c", "r", "e", "t"]],
+    [["Shift+S", "Shift+E", "Shift+C"]],
+    [["Enter", "a"]],
+    ["Space"],
+    ["Comma"],
+    ["Shift"],
+  ])("drops key sequences that spell text: %j", (keys) => {
+    expect(
+      extractComputerStep("computer_key", { input: { keys }, result: ok({}) }),
+    ).toBeUndefined();
+    expect(sanitizeComputerStep({ keyChord: [keys].flat().join(", ") })).toBeUndefined();
+  });
+
+  it("keeps shortcuts and non-printing keys", () => {
+    for (const keys of [["Enter"], ["Shift+Tab"], ["Meta+Shift+T"], ["Control+C", "Down"]]) {
+      expect(
+        extractComputerStep("computer_key", { input: { keys }, result: ok({}) })?.keyChord,
+      ).toBe(keys.join(", "));
+    }
+  });
+
   it("drops chords that could be free text, and chords of failed calls", () => {
     expect(
       extractComputerStep("computer_key", { input: { keys: "hunter2" }, result: ok({}) }),
@@ -85,6 +109,43 @@ describe("extractComputerStep", () => {
     });
     expect(step).toEqual({ typedLength: 9 });
     expect(JSON.stringify(step)).not.toContain("PRIVATE");
+  });
+
+  it("names the app from a native action result", () => {
+    const chrome = {
+      appId: "com.google.Chrome",
+      name: "Google Chrome",
+      running: true,
+      frontmost: true,
+      tier: "full",
+    };
+    const action = (extra: Record<string, unknown>) => ({
+      input: { keys: "Meta+L" },
+      result: ok({
+        displayId: "1",
+        geometryGeneration: "g1",
+        frontmostApp: chrome,
+        cursor: null,
+        actionCompleted: true,
+        ...extra,
+      }),
+    });
+    expect(extractComputerStep("computer_key", action({}))).toEqual({
+      appName: "Google Chrome",
+      keyChord: "Meta+L",
+    });
+    expect(
+      extractComputerStep(
+        "computer_key",
+        action({ delivery: "background", target: { appId: "com.apple.finder" } }),
+      ),
+    ).toEqual({ keyChord: "Meta+L" });
+    expect(
+      extractComputerStep(
+        "computer_key",
+        action({ delivery: "background", target: { appId: "com.google.Chrome" } }),
+      ),
+    ).toEqual({ appName: "Google Chrome", keyChord: "Meta+L" });
   });
 
   it("reads app and outcome from text JSON when structured content is absent", () => {
