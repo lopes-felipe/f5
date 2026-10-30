@@ -864,6 +864,32 @@ describe("settings route", () => {
     }
   });
 
+  it("counts only project overrides this version can show", async () => {
+    const { screen } = await renderSettingsRoute(
+      `/settings?category=project&project=${PROJECT_ONE}`,
+      {
+        serverConfig: {
+          settings: {
+            ...DEFAULT_SERVER_SETTINGS,
+            projectSettingsOverrides: {
+              [PROJECT_ONE]: {
+                defaultRuntimeMode: "approval-required",
+                addedByNewerServer: 3,
+              } as never,
+            },
+          },
+        },
+      },
+    );
+    try {
+      await expect
+        .element(page.getByText("This project overrides 1 setting.", { exact: false }))
+        .toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("sends project-scope search results to the project version of an item", async () => {
     const { screen, router } = await renderSettingsRoute(
       `/settings?category=project&project=${PROJECT_ONE}`,

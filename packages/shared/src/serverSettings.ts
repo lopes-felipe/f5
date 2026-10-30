@@ -197,10 +197,15 @@ function preserveRedactedProviderSecrets(
 
 const knownProjectOverrideKeys = new Set(Object.keys(ProjectSettingsOverrides.fields));
 
+/** False for override keys a newer version stored that this build round-trips but cannot show. */
+export function isKnownProjectOverrideKey(key: string): boolean {
+  return knownProjectOverrideKeys.has(key);
+}
+
 function pickOverrideKeys(entry: ProjectSettingsOverrides | undefined, known: boolean) {
   return Object.fromEntries(
     Object.entries<unknown>(entry ?? {}).filter(
-      ([key]) => knownProjectOverrideKeys.has(key) === known,
+      ([key]) => isKnownProjectOverrideKey(key) === known,
     ),
   );
 }

@@ -47,6 +47,26 @@ describe("ServerSettings project overrides across versions", () => {
     expect(result.overrides).toEqual({ autoPullDefaultBranch: true, addedByNewerServer: 3 });
   });
 
+  it("keeps a known key's transformed value next to an unknown key", () => {
+    const entry = decodeServerSettings({
+      projectSettingsOverrides: {
+        [projectId]: {
+          textGenerationModelSelection: { provider: "codex", model: "gpt-5.4" },
+          addedByNewerServer: 3,
+        },
+      },
+    }).projectSettingsOverrides[projectId];
+    expect(entry).toEqual({
+      textGenerationModelSelection: { instanceId: "codex", model: "gpt-5.4" },
+      addedByNewerServer: 3,
+    });
+    expect(
+      decodeServerSettingsPatch(
+        encodeServerSettingsPatch({ projectSettingsOverrides: { [projectId]: entry! } }),
+      ).projectSettingsOverrides?.[projectId],
+    ).toEqual(entry);
+  });
+
   it("still rejects an invalid known override key", () => {
     expect(() =>
       decodeServerSettings({
