@@ -84,11 +84,11 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "electron-builder": "26.15.3",
-    "node-gyp": "12.4.0",
-    "oxfmt": "^0.40.0",
-    "oxlint": "^1.55.0",
-    "turbo": "^2.9.5",
+    "electron-builder": "26.18.0",
+    "node-gyp": "13.1.0",
+    "oxfmt": "^0.74.0",
+    "oxlint": "^1.89.0",
+    "turbo": "^2.11.10",
     "vitest": "catalog:"
   },
   "overrides": {
