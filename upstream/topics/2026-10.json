@@ -12959,11 +12959,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T00:20:18.819Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-30T00:31:42.889Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-16691",
-      "status": "port",
+      "reason": "f5's preview is an Electron webview where user input and navigation never go through a server-side viewer-input queue, so the blocking that upstream fixed in its Playwright ServerBrowser/SessionControl can't happen here.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview-browser"
