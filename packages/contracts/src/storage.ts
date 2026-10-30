@@ -18,6 +18,7 @@ export const StorageAutomationJob = Schema.Literals([
   "event-compaction",
   "thread-purge",
   "database-vacuum",
+  "machine-cleanup",
 ]);
 export type StorageAutomationJob = typeof StorageAutomationJob.Type;
 
@@ -59,7 +60,7 @@ export const StorageAutomationAuditEntry = Schema.Struct({
   threadId: Schema.NullOr(Schema.String),
   beforeRef: Schema.NullOr(Schema.String),
   afterRef: Schema.NullOr(Schema.String),
-  result: Schema.Literals(["removed", "pulled", "skipped", "failed"]),
+  result: Schema.Literals(["removed", "pulled", "skipped", "failed", "archiving", "archived"]),
   reason: Schema.NullOr(Schema.String),
   createdAt: IsoDateTime,
 });
@@ -102,6 +103,13 @@ export const StorageCleanupCategoryId = Schema.Literals([
   "legacyT3Caches",
   "legacyT3Root",
   "f5UserdataEmpty",
+  "f5Backups",
+  "f5ApplicationLogs",
+  "bunDownloadCache",
+  "npmDownloadCache",
+  "uvDiscardedCaches",
+  "chromeCaches",
+  "bambuStudioLogs",
 ]);
 export type StorageCleanupCategoryId = typeof StorageCleanupCategoryId.Type;
 
@@ -118,6 +126,7 @@ export const StorageCleanupSectionId = Schema.Literals([
   "attachments",
   "providers",
   "legacy",
+  "machine",
 ]);
 export type StorageCleanupSectionId = typeof StorageCleanupSectionId.Type;
 
@@ -138,6 +147,13 @@ export const StorageCleanupTarget = Schema.Struct({
   threadTitle: Schema.optional(Schema.String),
   projectName: Schema.optional(Schema.String),
   latestMtime: Schema.optional(IsoDateTime),
+  action: Schema.optional(Schema.Literals(["remove", "archiveAndRemove"])),
+  affectedThreads: Schema.optional(
+    Schema.Array(Schema.Struct({ threadId: ThreadId, title: Schema.String })),
+  ),
+  blockingReasons: Schema.optional(
+    Schema.Array(Schema.Struct({ code: Schema.String, message: Schema.String })),
+  ),
 });
 export type StorageCleanupTarget = typeof StorageCleanupTarget.Type;
 
@@ -161,6 +177,9 @@ export const StorageCleanupCategoryUsage = Schema.Struct({
 export type StorageCleanupCategoryUsage = typeof StorageCleanupCategoryUsage.Type;
 
 export const StorageUsageReport = Schema.Struct({
+  serverName: Schema.optional(Schema.String),
+  discoveryRoots: Schema.optional(Schema.Array(Schema.String)),
+  machineCleanupScanned: Schema.optional(Schema.Boolean),
   scanId: TrimmedNonEmptyString,
   scannedAt: IsoDateTime,
   stateDir: TrimmedNonEmptyString,
@@ -177,6 +196,7 @@ export const StorageUsageReport = Schema.Struct({
     Schema.Literals(["complete", "partial", "unavailable"]),
   ),
   otherBytes: NonNegativeInt,
+  machineBytes: Schema.optional(NonNegativeInt),
   providerHomes: Schema.Array(
     Schema.Struct({ name: Schema.String, path: Schema.String, bytes: NonNegativeInt }),
   ),
@@ -199,6 +219,7 @@ export type StorageGetUsageRequest = typeof StorageGetUsageRequest.Type;
 
 export const StorageCleanupOptions = Schema.Struct({
   vacuumAfterDeletes: Schema.optional(Schema.Boolean),
+  archiveIdleThreads: Schema.optional(Schema.Boolean),
 });
 export type StorageCleanupOptions = typeof StorageCleanupOptions.Type;
 
@@ -321,6 +342,16 @@ export const StorageCleanupResult = Schema.Struct({
   results: Schema.Array(StorageCleanupCategoryResult),
   warnings: Schema.Array(StoragePathWarning),
   cancelled: Schema.Boolean,
+  volumeChanges: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        path: Schema.String,
+        freeBeforeBytes: NonNegativeInt,
+        freeAfterBytes: NonNegativeInt,
+        netFreeBytes: Schema.Int,
+      }),
+    ),
+  ),
 });
 export type StorageCleanupResult = typeof StorageCleanupResult.Type;
 

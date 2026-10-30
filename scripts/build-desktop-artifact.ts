@@ -11,7 +11,11 @@ import rootPackageJson from "../package.json" with { type: "json" };
 import desktopPackageJson from "../apps/desktop/package.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
-import { seedStagedLockfile, verifyStagedLockfile } from "./verify-staged-lockfile.ts";
+import {
+  seedStagedLockfile,
+  verifyAppliedPatches,
+  verifyStagedLockfile,
+} from "./verify-staged-lockfile.ts";
 import { RELEASE_UPDATE_REPOSITORY, verifyAppUpdateConfig } from "./lib/app-update-config.ts";
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
 import { stagedDesktopDependencies } from "./lib/desktop-stage.ts";
@@ -24,7 +28,10 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
 const BuildArch = Schema.Literals(["arm64", "x64", "universal"]);
-export const DESKTOP_ASAR_UNPACK = ["node_modules/@ff-labs/fff-bin-*/**/*"] as const;
+export const DESKTOP_ASAR_UNPACK = [
+  "node_modules/@ff-labs/fff-bin-*/**/*",
+  "node_modules/@anthropic-ai/claude-agent-sdk-*/**/*",
+] as const;
 
 const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("..", import.meta.url))),
@@ -185,6 +192,7 @@ interface StagePackageJson {
     readonly electron: string;
   };
   readonly overrides?: Record<string, string>;
+  readonly patchedDependencies?: Record<string, string>;
 }
 
 const AzureTrustedSigningOptionsConfig = Config.all({
@@ -464,6 +472,7 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     protocols: DESKTOP_PROTOCOLS,
     artifactName: "F5-${version}-${arch}.${ext}",
     asarUnpack: DESKTOP_ASAR_UNPACK,
+    ...(platform !== "mac" ? { afterPack: "verify-claude-runtime.cjs" } : {}),
     ...(platform !== "linux"
       ? {
           extraResources: [{ from: "apps/desktop/native-bin", to: "native" }],
@@ -695,6 +704,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       yield* fs.copyFile(path.join(repoRoot, "scripts", hook), path.join(stageAppDir, hook));
   }
 
+  yield* fs.copyFile(
+    path.join(repoRoot, "scripts", "verify-claude-runtime.cjs"),
+    path.join(stageAppDir, "verify-claude-runtime.cjs"),
+  );
   yield* assertPlatformBuildResources(options.platform, stageResourcesDir, options.verbose);
 
   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
@@ -721,10 +734,17 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       electron: electronVersion,
     },
     ...(rootPackageJson.overrides ? { overrides: rootPackageJson.overrides } : {}),
+    // Patched transitive packages (e.g. the server's Effect child-process fixes)
+    // must ship in the app, not only in the repository install.
+    ...(rootPackageJson.patchedDependencies
+      ? { patchedDependencies: rootPackageJson.patchedDependencies }
+      : {}),
   };
 
   const stagePackageJsonString = yield* encodeJsonString(stagePackageJson);
   yield* fs.writeFileString(path.join(stageAppDir, "package.json"), `${stagePackageJsonString}\n`);
+  if (stagePackageJson.patchedDependencies)
+    yield* fs.copy(path.join(repoRoot, "patches"), path.join(stageAppDir, "patches"));
 
   const stagedBun = (args: TemplateStringsArray) =>
     runCommand(
@@ -757,6 +777,13 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   });
   yield* Effect.log("[desktop-artifact] Installing staged production dependencies...");
   yield* stagedBun`bun install --production --frozen-lockfile`;
+  const { patchedDependencies } = stagePackageJson;
+  if (patchedDependencies)
+    yield* Effect.try({
+      try: () => verifyAppliedPatches(stageAppDir, patchedDependencies),
+      catch: (error) =>
+        new BuildScriptError({ message: `Staged dependency patch check failed: ${String(error)}` }),
+    });
   yield* fs.makeDirectory(options.outputDir, { recursive: true });
   yield* fs.copyFile(
     path.join(stageAppDir, "bun.lock"),

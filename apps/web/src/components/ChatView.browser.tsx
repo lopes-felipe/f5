@@ -1318,6 +1318,8 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
     return { entries: [], generatedAt: NOW_ISO };
   }
   if (tag === NATIVE_OPERATION_WS_METHODS.list) return [];
+  // `null` means the provider history is complete; `{}` would show the recovery banner.
+  if (tag === NATIVE_OPERATION_WS_METHODS.historyRecovery) return null;
   // The chat header lists the conversation's automations from the shared task list.
   if (tag === WS_METHODS.scheduledTasksList) return { tasks: [], revision: 0 };
   if (tag === WS_METHODS.scheduledTasksFindRunForTurn) return { runId: null };

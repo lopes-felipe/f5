@@ -40,8 +40,13 @@ const recordDuration = (
   startedAt: number,
 ): Effect.Effect<void> => Metric.update(metric, Duration.millis(performance.now() - startedAt));
 
+/** Statements slower than this also log process RSS, to tell memory pressure from lock waits. */
+const VERY_SLOW_SQL_MS = 10_000;
+
+/** `startedAt` comes from `performance.now()`, `startedAtWall` from `Date.now()`. */
 const recordExecution = (
   startedAt: number,
+  startedAtWall: number,
   outcome: "success" | "failure",
   sourceSQL: string,
   probe?: ((stage: string, durationMs: number) => void) | null,
@@ -56,7 +61,13 @@ const recordExecution = (
   return durationMs > 100
     ? Effect.andThen(
         metric,
-        Effect.logWarning("slow sql statement", { durationMs, sql: sourceSQL.slice(0, 160) }),
+        Effect.logWarning("slow sql statement", {
+          durationMs,
+          // Wall-clock time; far above durationMs means the host slept during the statement.
+          wallMs: Date.now() - startedAtWall,
+          ...(durationMs > VERY_SLOW_SQL_MS ? { rss: process.memoryUsage.rss() } : {}),
+          sql: sourceSQL.slice(0, 160),
+        }),
       )
     : metric;
 };
@@ -226,8 +237,12 @@ const makeWithDatabase = (
         Effect.withFiber<ReadonlyArray<any>, SqlError>((fiber) => {
           statement.setReadBigInts(Boolean(ServiceMap.get(fiber.services, Client.SafeIntegers)));
           const startedAt = performance.now();
+          const startedAtWall = Date.now();
           const executed = (result: ReadonlyArray<any>) =>
-            Effect.as(recordExecution(startedAt, "success", statement.sourceSQL, probe), result);
+            Effect.as(
+              recordExecution(startedAt, startedAtWall, "success", statement.sourceSQL, probe),
+              result,
+            );
           try {
             if (hasRows(statement)) {
               return executed(statement.all(...(params as any)));
@@ -244,7 +259,7 @@ const makeWithDatabase = (
           } catch (cause) {
             // Failures are timed too: a busy-timeout stall ends in SQLITE_BUSY.
             return Effect.andThen(
-              recordExecution(startedAt, "failure", statement.sourceSQL, probe),
+              recordExecution(startedAt, startedAtWall, "failure", statement.sourceSQL, probe),
               Effect.fail(sqlError(cause, "Failed to execute statement")),
             );
           }
@@ -265,6 +280,7 @@ const makeWithDatabase = (
                 Boolean(ServiceMap.get(fiber.services, Client.SafeIntegers)),
               );
               const startedAt = performance.now();
+              const startedAtWall = Date.now();
               return Effect.try({
                 try: () => {
                   if (hasRows(statement)) {
@@ -282,6 +298,7 @@ const makeWithDatabase = (
                 Effect.onExit((exit) =>
                   recordExecution(
                     startedAt,
+                    startedAtWall,
                     Exit.isSuccess(exit) ? "success" : "failure",
                     sql,
                     probe,

@@ -123,7 +123,22 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 144, name: "UpstreamOutcomeRetries" },
       { migration_id: 145, name: "UpstreamPortReviews" },
       { migration_id: 146, name: "ProjectionThreadMessagesReasoningTokens" },
+      { migration_id: 147, name: "StorageMachineCleanupAudit" },
+      { migration_id: 148, name: "ProjectionThreadActivitiesRankIndex" },
     ]);
+    const activityIndexes = yield* sql<{
+      name: string;
+    }>`PRAGMA index_list(projection_thread_activities)`;
+    expect(
+      activityIndexes.some(
+        (index) => index.name === "idx_projection_thread_activities_thread_rank",
+      ),
+    ).toBe(true);
+    expect(
+      activityIndexes.some(
+        (index) => index.name === "idx_projection_thread_activities_thread_sequence",
+      ),
+    ).toBe(true);
     expect(
       yield* sql`SELECT event_id,attempt,origin_session_generation,next_due_at IS NOT NULL AS retry FROM provider_terminal_events`,
     ).toEqual([{ event_id: "receipt", attempt: 2, origin_session_generation: null, retry: 1 }]);

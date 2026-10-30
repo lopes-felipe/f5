@@ -60,6 +60,7 @@ const systemLocale = argument("f5-system-locale");
 
 // The isolated preload observes actual DOM gestures; renderer-supplied booleans are ignored.
 let computerGestureAt = -Infinity;
+let browserOpenGestureAt = -Infinity;
 const takeFileActionGesture = createFileActionGesture(window);
 for (const eventName of ["click", "keydown"] as const) {
   window.addEventListener(
@@ -67,6 +68,7 @@ for (const eventName of ["click", "keydown"] as const) {
     (event) => {
       if (event.isTrusted) {
         computerGestureAt = performance.now();
+        browserOpenGestureAt = computerGestureAt;
       }
     },
     true,
@@ -74,6 +76,28 @@ for (const eventName of ["click", "keydown"] as const) {
 }
 contextBridge.exposeInMainWorld("desktopBridge", {
   htmlPreview: (input) => ipcRenderer.invoke("desktop:html-preview", input),
+  browserOpen: {
+    current: () => ipcRenderer.invoke("desktop:browser-open-current"),
+    onRequested: (listener) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        request: Parameters<typeof listener>[0],
+      ) => listener(request);
+      ipcRenderer.on("desktop:browser-open-requested", handler);
+      return () => ipcRenderer.removeListener("desktop:browser-open-requested", handler);
+    },
+    onSettled: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, requestId: string) => listener(requestId);
+      ipcRenderer.on("desktop:browser-open-settled", handler);
+      return () => ipcRenderer.removeListener("desktop:browser-open-settled", handler);
+    },
+    acknowledge: (requestId) => ipcRenderer.invoke("desktop:browser-open-shown", requestId),
+    answer: (requestId, choice) => {
+      const trusted = performance.now() - browserOpenGestureAt < 1000;
+      browserOpenGestureAt = -Infinity;
+      return ipcRenderer.invoke("desktop:browser-open-answer", requestId, choice, trusted);
+    },
+  },
   cliCommand: {
     state: () => ipcRenderer.invoke("desktop:cli-command-state"),
     install: () => ipcRenderer.invoke("desktop:cli-command-install"),
@@ -103,6 +127,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   getSystemLocale: () => systemLocale,
   setQuitShortcutMode: (mode) => ipcRenderer.invoke("desktop:quit-mode", mode),
   setAttentionBadge: (count) => ipcRenderer.invoke("desktop:attention-badge", count),
+  markStartup: (marker) => ipcRenderer.send("desktop:startup-marker", marker),
   onQuitShortcut: (listener) => {
     const wrapped = (_event: Electron.IpcRendererEvent, hint: Parameters<typeof listener>[0]) =>
       listener(hint);

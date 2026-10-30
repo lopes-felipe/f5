@@ -71,6 +71,7 @@ import {
   warmThreadBundle,
   type ThreadWarmProfile,
 } from "../lib/threadPreload";
+import { hydrateUnarchivedThreadPlans } from "../lib/useThreadPlansHydrated";
 
 import {
   invalidateAllWorkspaceQueries,
@@ -391,6 +392,7 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
     // These side effects must remain idempotent because the same event can
     // be observed both live and again during recovery after a transport gap.
     applyDomainEvent(event);
+    hydrateUnarchivedThreadPlans(queryClient, [event]);
     switch (event.type) {
       case "thread.deleted":
       case "thread.reverted":
@@ -421,6 +423,7 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
 
   const applyBatchToStore = (batch: ReadonlyArray<OrchestrationEvent>) => {
     applyDomainEventBatch(batch);
+    hydrateUnarchivedThreadPlans(queryClient, batch);
     // Replicate the side-effects guarded by applyEventToStore, but only run
     // each side effect once per flush even if the batch contained multiple
     // matching events. The query-invalidation side effect has moved here

@@ -535,6 +535,9 @@ export const makeMetricSnapshotWriter = Effect.fn("makeMetricSnapshotWriter")(fu
 export const rpcBusyTotal = Metric.counter("f5_rpc_busy_total", {
   description: "RPCs rejected before execution because their lane or byte budget is full.",
 });
+export const rpcServerStartingTotal = Metric.counter("f5_rpc_server_starting_total", {
+  description: "Runtime-dependent RPCs rejected before admission while the runtime starts.",
+});
 export const terminalSnapshotsTotal = Metric.counter("f5_terminal_snapshots_total", {
   description: "Read-only terminal recovery snapshots.",
 });

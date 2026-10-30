@@ -5,6 +5,7 @@ import {
   buildRenderedProjectThreadIds,
   getVisibleSidebarThreadIds,
   isTrailingDoubleClick,
+  polledSidebarGitStatusCwds,
   reconcileFrozenOrder,
   resolveSidebarComposerDraftPreview,
   resolvePrimaryNewThreadProjectId,
@@ -18,6 +19,45 @@ import {
   toggleWorkflowThreadListExpansion,
   threadBucketExpansionKey,
 } from "./Sidebar.logic";
+
+describe("polledSidebarGitStatusCwds", () => {
+  const target = (
+    id: string,
+    cwd: string | null,
+    archived: boolean,
+    branch: string | null = "f5/x",
+  ) => ({
+    threadId: ThreadId.makeUnsafe(id),
+    branch,
+    archived,
+    cwd,
+  });
+
+  it("polls live branch threads and the open thread, never other archived ones", () => {
+    const targets = [
+      target("live", "/repo/live", false),
+      target("archived", "/repo/archived", true),
+      target("open-archived", "/repo/open", true),
+      target("no-branch", "/repo/no-branch", false, null),
+      target("no-cwd", null, false),
+    ];
+
+    expect([...polledSidebarGitStatusCwds(targets, ThreadId.makeUnsafe("open-archived"))]).toEqual([
+      "/repo/live",
+      "/repo/open",
+    ]);
+    expect([...polledSidebarGitStatusCwds(targets, null)]).toEqual(["/repo/live"]);
+  });
+
+  it("keeps polling a workspace shared by a live and an archived thread", () => {
+    const targets = [
+      target("archived", "/repo/shared", true),
+      target("live", "/repo/shared", false),
+    ];
+
+    expect([...polledSidebarGitStatusCwds(targets, null)]).toEqual(["/repo/shared"]);
+  });
+});
 
 describe("resolveSidebarComposerDraftPreview", () => {
   const emptyDraft = {

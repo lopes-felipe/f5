@@ -20,6 +20,8 @@ export function detailEntityKey(event: OrchestrationEvent): string | null {
       return `message:${event.payload.messageId}`;
     case "thread.turn-diff-completed":
       return `checkpoint:${event.payload.turnId}`;
+    case "thread.proposed-plan-upserted":
+      return `plan:${event.payload.proposedPlan.id}`;
     case "thread.command-execution-recorded":
       return `command:${event.payload.commandExecution.id}`;
     case "thread.activity-appended":
@@ -86,12 +88,14 @@ export function tailEntityKeys(details: {
   readonly activities: ReadonlyArray<{ readonly id: string }>;
   readonly commandExecutions: ReadonlyArray<{ readonly id: string }>;
   readonly checkpoints: ReadonlyArray<{ readonly turnId: string }>;
+  readonly proposedPlans?: ReadonlyArray<{ readonly id: string }>;
 }): Set<string> {
   return new Set([
     ...details.messages.map((row) => `message:${row.id}`),
     ...(details.activities ?? []).map((row) => `activity:${row.id}`),
     ...details.commandExecutions.map((row) => `command:${row.id}`),
     ...details.checkpoints.map((row) => `checkpoint:${row.turnId}`),
+    ...(details.proposedPlans ?? []).map((row) => `plan:${row.id}`),
   ]);
 }
 

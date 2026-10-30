@@ -382,7 +382,7 @@ describe("StorageCleanupWorker", { timeout: 60_000 }, () => {
             target: path.join("project", "feature"),
             result: "removed",
             threadId: "thread-1",
-            policyVersion: 2,
+            policyVersion: 3,
           });
           expect(audit[0]!.target).not.toContain(worktreePath);
         }),

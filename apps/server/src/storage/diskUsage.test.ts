@@ -4,6 +4,9 @@ import * as Path from "node:path";
 import { afterEach, expect, test } from "vitest";
 import {
   allocatedBytes,
+  fileIdentity,
+  sameFileIdentity,
+  normalizeStorageStat,
   enumerateFiles,
   measureTree,
   recursiveSize,
@@ -21,6 +24,28 @@ async function fixture() {
   roots.push(root);
   return root;
 }
+test("preserves fractional timestamp identity across Node and Bun maintenance children", async () => {
+  const root = await fixture();
+  const path = Path.join(root, "precise");
+  await FS.writeFile(path, "cache");
+  const stat = await FS.lstat(path, { bigint: true });
+  // Reproduce Bun 1.3.9's numeric truncation while retaining the exact ns value.
+  const precise = normalizeStorageStat(
+    Object.assign(await FS.lstat(path, { bigint: true }), {
+      mtimeMs: 1_793_302_815_000n,
+      mtimeNs: 1_793_302_815_000_700_221n,
+    }),
+  );
+  expect(precise.mtimeMs).toBe(1_793_302_815_000.7002);
+  expect(precise.isFile()).toBe(true);
+  expect(fileIdentity(normalizeStorageStat(stat))).toEqual(fileIdentity(await FS.lstat(path)));
+  expect(
+    sameFileIdentity(fileIdentity(precise), {
+      ...fileIdentity(precise),
+      mtimeMs: 1_793_302_815_000.7004,
+    }),
+  ).toBe(false);
+});
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((path) => FS.rm(path, { recursive: true, force: true })));
 });
@@ -55,6 +80,23 @@ test("concurrent wide walks share at most 16 filesystem calls", async () => {
   expect(second.fileCount).toBe(100);
   expect(maximum).toBe(16);
 });
+test("inspects a cache fixture with more than 100,000 files using bounded traversal", async () => {
+  const root = await fixture();
+  const sample = Path.join(root, "sample");
+  await FS.writeFile(sample, "cached data");
+  const [directoryStat, fileStat] = await Promise.all([FS.lstat(root), FS.lstat(sample)]);
+  const count = 100_001;
+  const fs: DiskUsageFs = {
+    lstat: async (path) => (path === root ? directoryStat : fileStat),
+    readdir: async () =>
+      Array.from({ length: count }, (_, index) => ({
+        name: "package-" + index,
+      })) as Awaited<ReturnType<DiskUsageFs["readdir"]>>,
+  };
+  const result = await enumerateFiles(root, { fs });
+  expect(result.errors).toEqual([]);
+  expect(result.files).toHaveLength(count);
+}, 30_000);
 test("attributes nested checkpoints and counts hard links once without following symlinks", async () => {
   const root = await fixture(),
     child = Path.join(root, "child");

@@ -23,7 +23,7 @@ export function usageResumeTargetAfterCredit(
         windows.set(window.key, { used: window.utilization, reset: window.resetsAt });
     } else if (section.kind === "codex-limits") {
       for (const bucket of section.snapshot.data.rateLimits)
-        for (const name of ["primary", "secondary"] as const) {
+        for (const name of ["primary", "secondary", "individual"] as const) {
           const window = bucket[name];
           if (window)
             windows.set(`${bucket.id}:${name}`, {

@@ -22,14 +22,18 @@ export const MAX_READ_MODEL_ACTIVITIES = 200_000;
 import { READ_MODEL_MESSAGE_WARNING_THRESHOLD } from "@t3tools/shared/orchestrationRetention";
 import { Effect } from "effect";
 
-export const observeReadModelRetention = (model: {
-  readonly threads: ReadonlyArray<{
-    readonly messages: ReadonlyArray<{
-      readonly text: string;
-      readonly reasoningText?: string | undefined;
+export const observeReadModelRetention = (
+  model: {
+    readonly threads: ReadonlyArray<{
+      readonly messages: ReadonlyArray<{
+        readonly text: string;
+        readonly reasoningText?: string | undefined;
+      }>;
     }>;
-  }>;
-}) => {
+  },
+  /** `heapUsed` sampled before hydrate; the log reports the change across it. */
+  heapUsedBeforeBytes?: number,
+) => {
   let messages = 0;
   let characters = 0;
   for (const thread of model.threads)
@@ -37,7 +41,14 @@ export const observeReadModelRetention = (model: {
       messages++;
       characters += message.text.length + (message.reasoningText?.length ?? 0);
     }
-  const fields = { threads: model.threads.length, messages, characters };
+  const fields = {
+    threads: model.threads.length,
+    messages,
+    characters,
+    ...(heapUsedBeforeBytes === undefined
+      ? {}
+      : { heapUsedDeltaBytes: process.memoryUsage().heapUsed - heapUsedBeforeBytes }),
+  };
   return messages > READ_MODEL_MESSAGE_WARNING_THRESHOLD
     ? Effect.logWarning("orchestration read model exceeds message warning threshold", fields)
     : Effect.logInfo("orchestration read model hydrated", fields);

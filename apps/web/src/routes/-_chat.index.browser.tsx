@@ -16,7 +16,7 @@ import { render } from "vitest-browser-react";
 
 import { displayProfilePatchFor, parsePersistedAppSettings, useAppSettings } from "../appSettings";
 import { ProjectId, ThreadId } from "@t3tools/contracts";
-import { ChatIndexRouteView } from "./_chat.index";
+import { ChatIndexRouteView } from "../components/home/ChatIndexRouteView";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useRecoveryStateStore } from "../recoveryStateStore";

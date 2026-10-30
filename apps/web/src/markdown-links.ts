@@ -158,6 +158,25 @@ export function resolveMarkdownFileLinkMeta(
 }
 
 /**
+ * The editor target for a chip. A chip naming only a file (`main.ts:12`)
+ * resolves against the workspace root, where the file rarely lives; open the
+ * file the workspace index finds by that name, as the file panel does, and
+ * keep the line and column.
+ */
+export async function resolveMarkdownFileEditorTarget(
+  meta: MarkdownFileLinkMeta,
+  cwd: string | undefined,
+  findWorkspaceFile: (name: string) => Promise<string | null>,
+): Promise<string> {
+  const name = cwd ? workspaceRelativeFilePath(meta.filePath, cwd) : null;
+  if (!cwd || !name || /[\\/]/u.test(name)) return meta.targetPath;
+  const match = await findWorkspaceFile(name).catch(() => null);
+  if (!match || match === name) return meta.targetPath;
+  const position = meta.line ? `:${meta.line}${meta.column ? `:${meta.column}` : ""}` : "";
+  return `${resolvePathLinkTarget(match, cwd)}${position}`;
+}
+
+/**
  * Whether a file link's text only names its destination (`example.ts`, `src/example.ts:12`),
  * so the chip can replace it. Any other text is prose the reader still needs.
  */

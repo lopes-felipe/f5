@@ -1,6 +1,7 @@
 import { useScheduledInvalidation } from "../hooks/useScheduledInvalidation";
 import { ScheduledNotificationController } from "../components/scheduled/ScheduledNotificationController";
 import { WorktreeRemovalDialogHost } from "../components/WorktreeRemovalDialogHost";
+import { BrowserOpenRequestCard } from "../components/BrowserOpenRequestCard";
 import { ComputerAccessInbox } from "../components/ComputerAccessCard";
 import { useServerUpdateOutcome } from "../hooks/useServerUpdateOutcome";
 import { useSnapShotRouting } from "../hooks/useSnapShotRouting";
@@ -166,6 +167,7 @@ function ChatRouteLayout() {
           <Outlet />
         </PreviewBrowserHost>
         <ComputerAccessInbox />
+        <BrowserOpenRequestCard />
         <ComputerUseBanner />
         <WorkflowCreateDialogHost />
         <WorktreeRemovalDialogHost />

@@ -32,6 +32,11 @@ export interface CodexLimitSnapshot {
     resetsAt?: number | null;
     windowDurationMins?: number | null;
   } | null;
+  /** Enterprise monthly credit allowance; an update replaces it whole and null clears it. */
+  individualLimit?: {
+    remainingPercent: number;
+    resetsAt?: number | null;
+  } | null;
 }
 
 export function mergeCodexLimitSnapshot(
@@ -67,7 +72,22 @@ export function formatCodexUsageError(
 }
 
 export function exhaustedCodexWindows(snapshot: CodexLimitSnapshot): RuntimeUsageLimit["windows"] {
-  return (["primary", "secondary"] as const).flatMap((name) => {
+  // The credit allowance is account-wide; Spark repeats it, so only the main bucket owns it.
+  const individual = (snapshot.limitId ?? "codex") === "codex" ? snapshot.individualLimit : null;
+  const monthly =
+    individual &&
+    typeof individual.remainingPercent === "number" &&
+    Number.isFinite(individual.remainingPercent) &&
+    individual.remainingPercent <= 0
+      ? [
+          {
+            id: `${snapshot.limitId ?? "codex"}:individual`,
+            label: "monthly credit",
+            resetsAt: resetDate(individual.resetsAt, "s"),
+          },
+        ]
+      : [];
+  const rolling = (["primary", "secondary"] as const).flatMap((name) => {
     const window = snapshot[name];
     if (!window || !Number.isFinite(window.usedPercent) || window.usedPercent < 100) return [];
     const minutes = window.windowDurationMins;
@@ -89,6 +109,7 @@ export function exhaustedCodexWindows(snapshot: CodexLimitSnapshot): RuntimeUsag
       },
     ];
   });
+  return [...rolling, ...monthly];
 }
 
 /** Codex inherits the server timezone; per-instance TZ overrides cannot be inferred here. */

@@ -19,6 +19,12 @@ const renderView = (view: ReactNode) =>
   );
 
 import { useStore } from "../../store";
+import {
+  noteWsConnectionClosed,
+  noteWsConnectionOpened,
+  noteWsSynchronized,
+  resetWsConnectionStateForTests,
+} from "../../wsConnectionState";
 import { toastManager } from "../ui/toast";
 import { createPlanningWorkflow, createDocumentReaderPass } from "../../test/workflowFixtures";
 
@@ -59,6 +65,13 @@ vi.mock("@tanstack/react-router", async () => {
     ),
   };
 });
+
+const threadPreloadMocks = vi.hoisted(() => ({ warmThreadBundle: vi.fn() }));
+
+vi.mock("../../lib/threadPreload", async () => ({
+  ...(await vi.importActual<typeof import("../../lib/threadPreload")>("../../lib/threadPreload")),
+  warmThreadBundle: threadPreloadMocks.warmThreadBundle,
+}));
 
 vi.mock("./WorkflowRunInspector", () => ({ WorkflowRunInspector: () => null }));
 vi.mock("./WorkflowImplementDialog", () => ({ WorkflowImplementDialog: () => null }));
@@ -218,6 +231,157 @@ describe("WorkflowView retry", () => {
     } finally {
       await screen.unmount();
     }
+  });
+
+  describe("archived merge thread whose plans the startup snapshot omitted", () => {
+    const archivedMergeThread = (
+      id: ThreadId,
+      workflow: ReturnType<typeof createPlanningWorkflow>,
+    ) =>
+      ({
+        id,
+        codexThreadId: null,
+        projectId: workflow.projectId,
+        title: "Merge",
+        model: "gpt-5",
+        runtimeMode: "full-access",
+        interactionMode: "plan",
+        session: null,
+        messages: [],
+        commandExecutions: [],
+        error: null,
+        createdAt: workflow.createdAt,
+        archivedAt: workflow.updatedAt,
+        lastInteractionAt: workflow.updatedAt,
+        estimatedContextTokens: null,
+        estimatedThinkingTokens: null,
+        modelContextWindowTokens: null,
+        latestTurn: null,
+        branch: null,
+        worktreePath: null,
+        turnDiffSummaries: [],
+        activities: [],
+        detailsLoaded: false,
+        tasks: [],
+        tasksTurnId: null,
+        tasksUpdatedAt: null,
+        proposedPlans: [],
+        proposedPlansOmitted: true,
+      }) satisfies Thread;
+    const mergedPlan = (workflow: ReturnType<typeof createPlanningWorkflow>) => ({
+      id: "final-plan",
+      turnId: TurnId.makeUnsafe("merge-turn"),
+      planMarkdown: "# Archived proposal\n## Summary\nRecovered body",
+      implementedAt: null,
+      implementationThreadId: null,
+      createdAt: workflow.createdAt,
+      updatedAt: workflow.updatedAt,
+    });
+
+    beforeEach(() => {
+      resetWsConnectionStateForTests();
+      noteWsConnectionOpened();
+      noteWsSynchronized();
+    });
+    afterEach(() => {
+      threadPreloadMocks.warmThreadBundle.mockReset();
+      resetWsConnectionStateForTests();
+    });
+
+    it("shows loading while the plans hydrate, then the merged plan", async () => {
+      const mergeId = ThreadId.makeUnsafe("archived-merge-loaded");
+      const workflow = createPlanningWorkflow({
+        id: workflowId,
+        merge: { threadId: mergeId, status: "manual_review", approvedPlanId: "final-plan" },
+      });
+      const thread = archivedMergeThread(mergeId, workflow);
+      let finishLoad!: () => void;
+      threadPreloadMocks.warmThreadBundle.mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            finishLoad = () => {
+              const { proposedPlansOmitted: _omitted, ...loaded } = thread;
+              useStore.setState({
+                threads: [{ ...loaded, proposedPlans: [mergedPlan(workflow)] }],
+              });
+              resolve();
+            };
+          }),
+      );
+      useStore.setState({ threads: [thread], planningWorkflows: [workflow] });
+      const screen = await renderView(<WorkflowView workflowId={workflowId} />);
+      try {
+        await expect
+          .element(page.getByText("Loading the merged plan…", { exact: true }))
+          .toBeInTheDocument();
+        expect(threadPreloadMocks.warmThreadBundle).toHaveBeenCalledWith(
+          expect.anything(),
+          mergeId,
+          { forceThreadDetails: true },
+        );
+        finishLoad();
+        await expect
+          .element(page.getByRole("heading", { name: "Merged plan", exact: true }))
+          .toBeInTheDocument();
+        expect(document.body.textContent).toContain("Recovered body");
+      } finally {
+        await screen.unmount();
+      }
+    });
+
+    it("reports a load that left the plans omitted instead of loading forever", async () => {
+      const mergeId = ThreadId.makeUnsafe("archived-merge-still-omitted");
+      const workflow = createPlanningWorkflow({
+        id: workflowId,
+        merge: { threadId: mergeId, status: "manual_review", approvedPlanId: "final-plan" },
+      });
+      threadPreloadMocks.warmThreadBundle.mockResolvedValue(undefined);
+      useStore.setState({
+        threads: [archivedMergeThread(mergeId, workflow)],
+        planningWorkflows: [workflow],
+      });
+      const screen = await renderView(<WorkflowView workflowId={workflowId} />);
+      try {
+        await expect
+          .element(page.getByText("The merged plan could not be loaded.", { exact: true }))
+          .toBeInTheDocument();
+      } finally {
+        await screen.unmount();
+      }
+    });
+
+    it("retries a failed load once the connection synchronizes again", async () => {
+      const mergeId = ThreadId.makeUnsafe("archived-merge-retried");
+      const workflow = createPlanningWorkflow({
+        id: workflowId,
+        merge: { threadId: mergeId, status: "manual_review", approvedPlanId: "final-plan" },
+      });
+      const thread = archivedMergeThread(mergeId, workflow);
+      threadPreloadMocks.warmThreadBundle
+        .mockRejectedValueOnce(new Error("WebSocket connection closed."))
+        .mockImplementationOnce(async () => {
+          const { proposedPlansOmitted: _omitted, ...loaded } = thread;
+          useStore.setState({ threads: [{ ...loaded, proposedPlans: [mergedPlan(workflow)] }] });
+        });
+      useStore.setState({ threads: [thread], planningWorkflows: [workflow] });
+      const screen = await renderView(<WorkflowView workflowId={workflowId} />);
+      try {
+        await expect
+          .element(page.getByText("The merged plan could not be loaded.", { exact: true }))
+          .toBeInTheDocument();
+        noteWsConnectionClosed();
+        // A real reconnect renders while it opens and synchronizes the new socket.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        noteWsConnectionOpened();
+        noteWsSynchronized();
+        await expect
+          .element(page.getByRole("heading", { name: "Merged plan", exact: true }))
+          .toBeInTheDocument();
+        expect(threadPreloadMocks.warmThreadBundle).toHaveBeenCalledTimes(2);
+      } finally {
+        await screen.unmount();
+      }
+    });
   });
 
   it("confirms finishing without reader review and leaves cancel harmless", async () => {

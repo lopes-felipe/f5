@@ -20,6 +20,7 @@ describe("buildDesktopBackendEnv", () => {
         stateDir: "/tmp/t3-state",
         stateDirSource: "explicit-state",
         authToken: "token-123",
+        shellEnvironmentPrepared: true,
       },
     );
 
@@ -34,6 +35,24 @@ describe("buildDesktopBackendEnv", () => {
       T3CODE_AUTH_TOKEN: "token-123",
       T3CODE_OBSERVABILITY_ENABLED: "true",
     });
+  });
+
+  it("lets the server repair PATH when the desktop shell probe captured none", () => {
+    for (const shellEnvironmentPrepared of [false, undefined]) {
+      const env = buildDesktopBackendEnv(
+        { PATH: "/usr/bin", F5_SHELL_ENVIRONMENT_PREPARED: "1" },
+        {
+          backendPort: 3773,
+          stateDir: "/tmp/t3-state",
+          stateDirSource: "default",
+          authToken: "token-123",
+          ...(shellEnvironmentPrepared === undefined ? {} : { shellEnvironmentPrepared }),
+        },
+      );
+
+      expect(env).not.toHaveProperty("F5_SHELL_ENVIRONMENT_PREPARED");
+      expect(env.PATH).toBe("/usr/bin");
+    }
   });
 
   it("does not add observability enablement when it is absent", () => {

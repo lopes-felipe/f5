@@ -45,7 +45,7 @@ import {
   WorktreeStatusChip,
 } from "./chat/composer/StatusStripChips";
 import { isWorktreeSetupChip, summarizeQueueChip } from "./chat/composer/ComposerStatusStrip.logic";
-import { workspaceBasenameMatch } from "../lib/workspaceBasename";
+import { findWorkspaceBasenameFile, isWorkspaceBasenameLookup } from "../lib/workspaceBasename";
 import { resolveChatAssetTarget } from "../lib/chatAssetTarget";
 import { isExternalTextPreviewPath, resolveFilePreviewTarget } from "../lib/filePreviewTarget";
 import { WorkspaceMediaView } from "./WorkspaceMediaView";
@@ -7229,12 +7229,9 @@ export default memo(function ChatView({
       }
 
       const api = readNativeApi();
-      if (workspaceRoot && api && !/[\\/]/u.test(parsed.path) && parsed.path.length <= 256) {
-        void api.projects
-          .searchEntries({ cwd: workspaceRoot, query: parsed.path, limit: 25 })
-          .then((result) =>
-            openFile(workspaceBasenameMatch(parsed.path, result.entries) ?? parsed.path),
-          )
+      if (workspaceRoot && api && isWorkspaceBasenameLookup(parsed.path)) {
+        void findWorkspaceBasenameFile(api, workspaceRoot, parsed.path)
+          .then((match) => openFile(match ?? parsed.path))
           .catch(() => openFile(parsed.path));
       } else openFile(parsed.path);
       return true;

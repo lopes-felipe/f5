@@ -1,7 +1,11 @@
-import { FilesystemPath, NonNegativeInt } from "./baseSchemas";
+import { FilesystemPath, ForwardCompatibleArray, NonNegativeInt } from "./baseSchemas";
 import { Schema } from "effect";
 import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas";
-import { KeybindingRule, KeybindingsConfig, ResolvedKeybindingsConfig } from "./keybindings";
+import {
+  ForwardCompatibleKeybindingsConfig,
+  KeybindingRule,
+  ResolvedKeybindingsConfig,
+} from "./keybindings";
 import { EditorId } from "./editor";
 import { ModelCapabilities } from "./model";
 import { ProviderKind, ProviderStartOptions } from "./orchestration";
@@ -25,7 +29,9 @@ export const ServerConfigIssue = Schema.Union([
 ]);
 export type ServerConfigIssue = typeof ServerConfigIssue.Type;
 
-const ServerConfigIssues = Schema.Array(ServerConfigIssue);
+// Issue kinds grow over time; older clients must not fail the whole config
+// decode over a kind they cannot render.
+const ServerConfigIssues = ForwardCompatibleArray(ServerConfigIssue);
 const ServerProviderLatestVersionString = TrimmedNonEmptyString.check(Schema.isMaxLength(64));
 
 export const ServerProviderStatusState = Schema.Literals(["ready", "warning", "error"]);
@@ -296,25 +302,46 @@ export const DiagnosticsConfiguration = Schema.Struct({
   traces: DiagnosticsSignal,
   metrics: DiagnosticsSignal,
 });
+// Older servers omit customized rules; newer ones may echo commands this build
+// does not know.
+const ServerCustomKeybindings = ForwardCompatibleKeybindingsConfig.pipe(
+  Schema.withDecodingDefault(() => []),
+);
+
 export const ServerConfig = Schema.Struct({
   cwd: FilesystemPath,
   keybindingsConfigPath: TrimmedNonEmptyString,
   keybindings: ResolvedKeybindingsConfig,
-  customKeybindings: KeybindingsConfig.pipe(Schema.withDecodingDefault(() => [])),
+  customKeybindings: ServerCustomKeybindings,
   issues: ServerConfigIssues,
   providers: ServerProviders,
-  availableEditors: Schema.Array(EditorId),
+  // Editor ids grow over time; drop ones this build does not know rather than
+  // failing the whole config decode.
+  availableEditors: ForwardCompatibleArray(EditorId),
   settings: Schema.optional(ServerSettings),
   diagnostics: Schema.optionalKey(DiagnosticsConfiguration),
 });
 export type ServerConfig = typeof ServerConfig.Type;
+
+/**
+ * The `ServerConfig` arrays whose element unions grow over time. Clients
+ * decode these from `server.getConfig` so values a newer server sends but this
+ * build cannot represent are dropped before they reach the UI. The other fields
+ * are left as sent, so decoding never rejects a config the client used to accept.
+ */
+export const ServerConfigForwardCompatibleFields = Schema.Struct({
+  keybindings: ServerConfig.fields.keybindings,
+  customKeybindings: ServerConfig.fields.customKeybindings,
+  issues: ServerConfig.fields.issues,
+  availableEditors: ServerConfig.fields.availableEditors,
+});
 
 export const ServerUpsertKeybindingInput = KeybindingRule;
 export type ServerUpsertKeybindingInput = typeof ServerUpsertKeybindingInput.Type;
 
 export const ServerUpsertKeybindingResult = Schema.Struct({
   keybindings: ResolvedKeybindingsConfig,
-  customKeybindings: KeybindingsConfig.pipe(Schema.withDecodingDefault(() => [])),
+  customKeybindings: ServerCustomKeybindings,
   issues: ServerConfigIssues,
 });
 export type ServerUpsertKeybindingResult = typeof ServerUpsertKeybindingResult.Type;
@@ -386,6 +413,17 @@ export const ClientDiagnosticsCounters = Schema.Struct({
   connectedMs: NonNegativeInt,
 });
 export type ClientDiagnosticsCounters = typeof ClientDiagnosticsCounters.Type;
+/** Transport scheduling outcomes, cumulative per page session. */
+export const ClientRpcDiagnosticsCounters = Schema.Struct({
+  rpcBusy: NonNegativeInt,
+  rpcServerStarting: NonNegativeInt,
+  rpcTimeouts: NonNegativeInt,
+  rpcQueueExpired: NonNegativeInt,
+  rpcBackgroundShed: NonNegativeInt,
+  rpcOrphanReleased: NonNegativeInt,
+  rpcConnectionNotReady: NonNegativeInt,
+});
+export type ClientRpcDiagnosticsCounters = typeof ClientRpcDiagnosticsCounters.Type;
 export const ReportClientDiagnosticsInput = Schema.Struct({
   sessionId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
   reportSeq: NonNegativeInt,
@@ -394,6 +432,11 @@ export const ReportClientDiagnosticsInput = Schema.Struct({
   applyBatchBuckets: Schema.Array(NonNegativeInt).check(
     Schema.isMinLength(9),
     Schema.isMaxLength(9),
+  ),
+  rpcCounters: Schema.optional(ClientRpcDiagnosticsCounters),
+  /** Send wait buckets with lower edges 0, 50, 100, 250, 500, 1k, 2.5k, 10k and 30k ms. */
+  rpcQueueWaitBuckets: Schema.optional(
+    Schema.Array(NonNegativeInt).check(Schema.isMinLength(9), Schema.isMaxLength(9)),
   ),
 });
 export type ReportClientDiagnosticsInput = typeof ReportClientDiagnosticsInput.Type;

@@ -6,6 +6,16 @@ import {
 import { storageLstat, storageReadDir } from "./diskUsage.ts";
 import { recordStorageAutomationAudit, pruneStorageAutomationAudit } from "./automationAudit.ts";
 import { databaseMaintenanceEffect } from "./databaseMaintenance.ts";
+import {
+  MACHINE_CATEGORY_IDS,
+  scanCleanupProviders,
+  type CleanupFileReview,
+} from "./cleanupProviders.ts";
+import {
+  runStorageTask,
+  measureStorageRoots,
+  type StorageFileInspection,
+} from "./storageWorker.ts";
 import { canonicalJsonHash } from "../canonicalJsonHash.ts";
 import { makeUsageScanCoordinator } from "./usageScanCoordinator.ts";
 import { withProviderThreadAccess } from "../provider/providerThreadAccess.ts";
@@ -17,6 +27,7 @@ import {
   removeWorktreeSafely,
   readWorktreeClaims,
   stopDeletedWorktreeClaims,
+  stopWorktreeSession,
   type WorktreeRemovalPolicy,
 } from "../project/worktreeClaims.ts";
 import { refreshDefaultBranch } from "../project/worktreeMerge.ts";
@@ -31,12 +42,14 @@ import * as Crypto from "node:crypto";
 import * as FS from "node:fs/promises";
 import * as OS from "node:os";
 import * as Path from "node:path";
+import { captureStorageActivity, type StorageActivitySnapshot } from "./storageActivity.ts";
 
 import {
   type CheckpointRef,
   CommandId,
   type DiskSpaceReclaimableItem,
   type StorageCleanupCategoryId,
+  type StorageAutomationJob,
   type StorageCleanupCategoryResult,
   type StorageCleanupCategoryUsage,
   type StorageCleanupProgressPayload,
@@ -108,7 +121,6 @@ import {
 import {
   enumerateFiles,
   recursiveSize,
-  measureTree,
   indexFilesBySegment,
   fileIdentity,
   allocatedBytes,
@@ -324,6 +336,12 @@ type LegacyCleanupCategoryId = Extract<
 type PerTargetReclaimed = Array<StorageCleanupCategoryResult["perTargetReclaimed"][number]>;
 
 interface WorktreeReview {
+  readonly archiveThreads?: ReadonlyArray<{
+    readonly threadId: ThreadId;
+    readonly title: string;
+    readonly lastInteractionAt: string;
+    readonly sessionUpdatedAt: string | null;
+  }>;
   readonly canonicalRoot: string;
   readonly commonDir: string;
   readonly head: string | null;
@@ -335,6 +353,7 @@ interface WorktreeReview {
   readonly projectRoot?: string;
 }
 interface StorageReview {
+  readonly files?: ReadonlyMap<string, CleanupFileReview>;
   readonly worktrees: ReadonlyMap<string, WorktreeReview>;
   readonly identities: ReadonlyMap<string, FileIdentity | null>;
   readonly threads: ReadonlyMap<string, ThreadRow>;
@@ -361,6 +380,35 @@ interface WorktreeRemovalReadiness {
    * review: a fetch between scan and confirmation must not invalidate it.
    */
   readonly branchDeletable?: boolean;
+}
+function isArchivePolicy(policy: WorktreeRemovalPolicy): boolean {
+  return (
+    (policy.kind === "storageMaintenance" || policy.kind === "externalCleanup") &&
+    policy.archiveIdleThreads === true
+  );
+}
+function manualAuditJob(category: StorageCleanupCategoryId): StorageAutomationJob {
+  if (MACHINE_CATEGORY_IDS.has(category)) return "machine-cleanup";
+  if (category.startsWith("purge")) return "thread-purge";
+  if (category === "databaseVacuum") return "database-vacuum";
+  if (category === "codexMarketplaceStaging") return "codex-marketplace-staging";
+  if (category.startsWith("providerLog")) return "provider-logs";
+  return "worktree-cleanup";
+}
+function blockingReasons(reason: string | undefined) {
+  if (!reason) return {};
+  const code = /uncommitted/.test(reason)
+    ? "local_changes"
+    : /ignored files/.test(reason)
+      ? "protected_ignored_files"
+      : /queued/.test(reason)
+        ? "queued_work"
+        : /active|session|terminal|using/.test(reason)
+          ? "workspace_in_use"
+          : /commits|pushed/.test(reason)
+            ? "merge_unverified"
+            : "verification_unavailable";
+  return { blockingReasons: [{ code, message: reason }] };
 }
 
 function storageCauseMessage(cause: Cause.Cause<unknown>): string {
@@ -713,6 +761,16 @@ const makeStorageMaintenance = Effect.gen(function* () {
   const eventStore = yield* OrchestrationEventStore;
   const settingsService = yield* Effect.serviceOption(ServerSettingsService);
   const readWorktreesSettings = yield* makeWorktreesSettingsReader;
+  const readDiscovery =
+    settingsService._tag === "Some"
+      ? settingsService.value.getSettings.pipe(
+          Effect.map((settings) => settings.storageDiscovery),
+          Effect.orElseSucceed(() => ({
+            machineCleanupEnabled: false,
+            repositoryRoots: [] as string[],
+          })),
+        )
+      : Effect.succeed({ machineCleanupEnabled: false, repositoryRoots: [] as string[] });
   const managedWorktreesRoots = readWorktreesSettings.pipe(
     Effect.flatMap((settings) => validManagedWorktreesDirectories(settings, config.worktreesDir)),
   );
@@ -950,9 +1008,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
       if (!review?.branch) return undefined;
       if (!input.branchDeletable || !review.head || input.referencedByThreads)
         return "kept" as const;
-      const defaultBranch = yield* git
-        .readDefaultBranch(input.cwd)
-        .pipe(Effect.orElseSucceed(() => null));
+      // The same lookup that marked the branch deletable during review.
+      const defaultBranch = yield* git.readAdvertisedDefaultBranch(input.cwd);
       if (defaultBranch === null || defaultBranch === review.branch) return "kept" as const;
       const registrations = yield* git
         .listWorktrees(input.cwd)
@@ -1023,10 +1080,15 @@ const makeStorageMaintenance = Effect.gen(function* () {
         };
       }
 
-      const basePolicy: WorktreeRemovalPolicy = input.policy ?? {
+      let basePolicy: WorktreeRemovalPolicy = input.policy ?? {
         kind: input.metadataOperation.includes("legacy") ? "legacyCleanup" : "storageMaintenance",
         ownThreadId: null,
       };
+      if (basePolicy.kind === "externalCleanup")
+        basePolicy = {
+          ...basePolicy,
+          discoveredRepositoryRoots: (yield* readDiscovery).repositoryRoots,
+        };
       const policy: WorktreeRemovalPolicy =
         (basePolicy.kind === "storageMaintenance" || basePolicy.kind === "externalCleanup") &&
         input.disposablePaths
@@ -1058,6 +1120,23 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 head: gate.registration.headSha,
                 registration: gate.registration.path,
                 branch: gate.branch,
+                ...(isArchivePolicy(policy)
+                  ? {
+                      archiveThreads: (yield* engine.getReadModel()).threads
+                        .filter(
+                          (thread) =>
+                            gate.linkedThreads.includes(thread.id) &&
+                            thread.deletedAt === null &&
+                            thread.archivedAt === null,
+                        )
+                        .map((thread) => ({
+                          threadId: thread.id,
+                          title: thread.title,
+                          lastInteractionAt: thread.lastInteractionAt,
+                          sessionUpdatedAt: thread.session?.updatedAt ?? null,
+                        })),
+                    }
+                  : {}),
                 ...(gate.discardChanges ? { discardChanges: gate.discardChanges } : {}),
                 ...(policy.kind === "externalCleanup" ? { projectRoot: commandCwd } : {}),
               },
@@ -1263,6 +1342,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
       paths: ReadonlyArray<string>;
       byCheckpoint: Map<string, { bytes: number; latestMtimeMs: number }>;
       worktreeReviews: Map<string, WorktreeReview>;
+      activitySnapshot?: StorageActivitySnapshot;
     },
     /** Cleanup re-measures each target as it removes it, so it skips sizing here. */
     options?: { readonly skipSizing?: boolean },
@@ -1335,7 +1415,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
               !managedRoots.some((root) => isPathWithinRoot({ root, target: targetPath }))
             ) {
               disabledReason = "Worktree is outside the configured F5 worktrees root.";
-            } else if (activeReferences.length > 0) {
+            } else if (activeReferences.length > 0 && !scan) {
               disabledReason = "Referenced by an active thread.";
             } else {
               const readiness = yield* inspectWorktreeRemovalReadiness({
@@ -1343,6 +1423,14 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 metadataOperation: "StorageMaintenance.inspect.f5Worktrees.cwd",
                 metadataDisabledReason: GIT_WORKTREE_METADATA_UNRESOLVED,
                 disposablePaths: disposablePathsFor,
+                policy: {
+                  kind: "storageMaintenance",
+                  ownThreadId: null,
+                  archiveIdleThreads: !!scan,
+                  verifyPullRequest: !!scan,
+                  inspectExternalActivity: !!scan,
+                  ...(scan?.activitySnapshot ? { activitySnapshot: scan.activitySnapshot } : {}),
+                },
               });
               warnings.push(...readiness.warnings);
               disabledReason = readiness.disabledReason;
@@ -1373,6 +1461,10 @@ const makeStorageMaintenance = Effect.gen(function* () {
               path: targetPath,
               bytes,
               safeToDelete: disabledReason === undefined,
+              ...blockingReasons(disabledReason),
+              ...(review?.archiveThreads?.length
+                ? { action: "archiveAndRemove" as const, affectedThreads: review.archiveThreads }
+                : {}),
               ...(disabledReason ? { disabledReason } : {}),
               detail: [
                 archivedReferences.length > 0
@@ -1396,8 +1488,32 @@ const makeStorageMaintenance = Effect.gen(function* () {
   const listProjectRegistrations = () =>
     Effect.gen(function* () {
       const warnings: StoragePathWarning[] = [];
-      const projects = yield* listProjectRoots();
+      const projects = [...(yield* listProjectRoots())];
+      const protectedProjectRoots = projects.flatMap((entry) => (entry.root ? [entry.root] : []));
+      const discovery = yield* readDiscovery;
+      for (const root of discovery.repositoryRoots) {
+        const found = yield* Effect.tryPromise(() =>
+          runStorageTask<{ repositories: string[]; warnings: StoragePathWarning[] }>({
+            kind: "repositories",
+            roots: [root],
+          }),
+        ).pipe(
+          Effect.catch((error) =>
+            Effect.succeed({ repositories: [], warnings: [warningFor(root, String(error))] }),
+          ),
+        );
+        warnings.push(...found.warnings);
+        for (const workspaceRoot of found.repositories)
+          projects.push({
+            project: {
+              workspaceRoot,
+              title: Path.basename(workspaceRoot),
+            } as (typeof projects)[number]["project"],
+            root: workspaceRoot,
+          });
+      }
       const seen = new Set<string>();
+      const seenRepositories = new Set<string>();
       const registrations: Array<{
         readonly entry: RegisteredWorktree;
         readonly projectRoot: string;
@@ -1405,6 +1521,9 @@ const makeStorageMaintenance = Effect.gen(function* () {
       }> = [];
       for (const { project, root } of projects) {
         if (root === null) continue;
+        const common = yield* commonDirOf(project.workspaceRoot);
+        if (!common || seenRepositories.has(common)) continue;
+        seenRepositories.add(common);
         const entries = yield* git.listWorktrees(project.workspaceRoot).pipe(
           Effect.catch((error) =>
             Effect.sync(() => {
@@ -1428,7 +1547,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
       }
       return {
         registrations,
-        projectRoots: projects.flatMap((entry) => (entry.root ? [entry.root] : [])),
+        projectRoots: protectedProjectRoots,
         warnings,
       };
     });
@@ -1442,6 +1561,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
     readonly threads: ReadonlyArray<ThreadRow>;
     readonly worktreeReviews: Map<string, WorktreeReview>;
     readonly signal?: AbortSignal | undefined;
+    readonly activitySnapshot?: StorageActivitySnapshot;
   }) =>
     Effect.gen(function* () {
       const warnings: StoragePathWarning[] = [];
@@ -1484,14 +1604,21 @@ const makeStorageMaintenance = Effect.gen(function* () {
             );
             let disabledReason: string | undefined;
             let review: WorktreeReview | undefined;
-            if (references.some(isActiveStorageThread)) {
+            if (references.some(isActiveStorageThread) && !scan) {
               disabledReason = "Referenced by an active thread.";
             } else {
               const readiness = yield* inspectWorktreeRemovalReadiness({
                 targetPath,
                 metadataOperation: "StorageMaintenance.inspect.externalWorktrees.cwd",
                 metadataDisabledReason: GIT_WORKTREE_METADATA_UNRESOLVED,
-                policy: { kind: "externalCleanup", ownThreadId: null },
+                policy: {
+                  kind: "externalCleanup",
+                  ownThreadId: null,
+                  archiveIdleThreads: !!scan,
+                  verifyPullRequest: !!scan,
+                  inspectExternalActivity: !!scan,
+                  ...(scan?.activitySnapshot ? { activitySnapshot: scan.activitySnapshot } : {}),
+                },
                 commandCwd: projectRoot,
                 disposablePaths: disposablePathsFor,
               });
@@ -1511,6 +1638,10 @@ const makeStorageMaintenance = Effect.gen(function* () {
               path: targetPath,
               bytes: usage?.bytes ?? 0,
               safeToDelete: disabledReason === undefined,
+              ...blockingReasons(disabledReason),
+              ...(review?.archiveThreads?.length
+                ? { action: "archiveAndRemove" as const, affectedThreads: review.archiveThreads }
+                : {}),
               ...(disabledReason ? { disabledReason } : {}),
               detail: [
                 `External · ${entry.branch ?? "detached"}`,
@@ -1702,55 +1833,33 @@ const makeStorageMaintenance = Effect.gen(function* () {
       const attachmentFiles: EnumeratedFile[] = [];
       const scannedProviderFiles: EnumeratedFile[] = [];
       const persistenceBytes = { file: 0, directory: 0 };
-      let visited = 0,
-        lastProgressAt = 0;
-      const measured = yield* Effect.tryPromise(() =>
-        measureTree([config.stateDir, ...managedRoots], {
-          ...(signal ? { signal } : {}),
-          checkpoints: [
-            config.stateDir,
-            config.logsDir,
-            config.providerLogsDir,
-            config.attachmentsDir,
-            ...managedRoots,
-            providerHomesDir,
+      const rawMeasurement = yield* Effect.tryPromise(() =>
+        measureStorageRoots(
+          [config.stateDir, ...managedRoots],
+          [
+            ...checkpointPaths,
             ...providerChildren,
-            ...listedWorktrees.paths,
+            Path.join(config.stateDir, "storage-usage.json"),
           ],
-          onEntry: ({ path, stat, bytes, checkpoints }) => {
-            if (path === Path.join(config.stateDir, "storage-usage.json"))
-              persistenceBytes.file = bytes;
-            if (path === config.stateDir) persistenceBytes.directory = bytes;
-            visited++;
-            if (Date.now() - lastProgressAt >= 500) {
-              lastProgressAt = Date.now();
-              phase("files", visited);
-            }
-            if (
-              checkpointPaths.has(path) ||
-              checkpoints.includes(config.attachmentsDir) ||
-              checkpoints.includes(config.providerLogsDir)
-            )
-              identities.set(path, fileIdentity(stat));
-            if (stat.isFile() && checkpoints.includes(config.providerLogsDir))
-              scannedProviderFiles.push({
-                path,
-                name: Path.basename(path),
-                bytes,
-                mtimeMs: stat.mtimeMs,
-                identity: fileIdentity(stat),
-              });
-            if (stat.isFile() && checkpoints.includes(config.attachmentsDir))
-              attachmentFiles.push({
-                path,
-                name: Path.basename(path),
-                bytes,
-                mtimeMs: stat.mtimeMs,
-                identity: fileIdentity(stat),
-              });
-          },
-        }),
+          [config.attachmentsDir, config.providerLogsDir],
+          signal,
+          (entries) => phase("files", entries),
+        ),
       );
+      const measured = { ...rawMeasurement, byCheckpoint: new Map(rawMeasurement.byCheckpoint) };
+      for (const entry of rawMeasurement.checkpointEntries) {
+        identities.set(entry.path, entry.identity);
+        if (entry.path === config.stateDir) persistenceBytes.directory = entry.bytes;
+        if (entry.path === Path.join(config.stateDir, "storage-usage.json"))
+          persistenceBytes.file = entry.bytes;
+      }
+      for (const file of rawMeasurement.files) {
+        if (file.identity) identities.set(file.path, file.identity);
+        if (isPathWithinRoot({ root: config.providerLogsDir, target: file.path }))
+          scannedProviderFiles.push(file);
+        if (isPathWithinRoot({ root: config.attachmentsDir, target: file.path }))
+          attachmentFiles.push(file);
+      }
       phaseDurations.rootTraversal = Date.now() - rootTraversalStartedAt;
       phase("files", measured.entries);
       warnings.push(...measured.warnings, ...listedWorktrees.warnings);
@@ -1879,17 +1988,20 @@ const makeStorageMaintenance = Effect.gen(function* () {
       warnings.push(...eventsRotationCandidates.warnings);
       phaseDurations.providerLogs = Date.now() - providerLogsStartedAt;
       phase("worktrees", measured.entries);
+      const activitySnapshot = yield* Effect.promise(captureStorageActivity);
       const f5WorktreeCandidates = yield* computeF5WorktreeTargets({
         threads: allThreads,
         paths: listedWorktrees.paths,
         byCheckpoint: measured.byCheckpoint,
         worktreeReviews,
+        activitySnapshot,
       });
       warnings.push(...f5WorktreeCandidates.warnings);
       const externalWorktreeCandidates = yield* computeExternalWorktreeTargets({
         threads: allThreads,
         worktreeReviews,
         signal,
+        activitySnapshot,
       });
       warnings.push(...externalWorktreeCandidates.warnings);
       const staleRegistrationCandidates = yield* computeStaleRegistrationTargets(allThreads);
@@ -1942,7 +2054,21 @@ const makeStorageMaintenance = Effect.gen(function* () {
             ].reduce((sum, file) => sum + file.bytes, 0)
           : 0;
       };
+      const discoverySettings = yield* readDiscovery;
+      const providerScan = yield* Effect.tryPromise(() =>
+        scanCleanupProviders({
+          stateDirs: [
+            ...new Set([
+              config.stateDir,
+              ...(config.defaultStateDir ? [config.defaultStateDir] : []),
+            ]),
+          ],
+          settings: discoverySettings,
+          ...(signal ? { signal } : {}),
+        }),
+      );
       const categories: StorageCleanupCategoryUsage[] = [
+        ...providerScan.categories,
         categoryUsage({
           id: "purgeDeletedThreads",
           section: "database",
@@ -2007,7 +2133,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
           section: "worktrees",
           title: "Delete inactive F5 worktrees",
           description:
-            "Removes merged or pushed F5 worktrees that are orphaned or referenced only by archived threads. Build output is deleted; other uncommitted work keeps a worktree. Merged branches are deleted unless an archived thread needs them.",
+            "Removes merged or pushed F5 checkouts, preserving branches and conversations. Idle conversations can be explicitly archived first. Local work remains protected.",
           bytes: worktreesUsage.bytes,
           reclaimableBytes: f5WorktreeReclaimableBytes,
           defaultSelected: false,
@@ -2019,7 +2145,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
           section: "worktrees",
           title: "Delete external worktrees",
           description:
-            "Removes merged or pushed worktrees of your projects that live outside F5's worktrees folder, such as temporary or other tools' checkouts, with git worktree remove. Merged branches are deleted.",
+            "Removes reviewed merged or pushed checkouts of registered and discovered repositories with git worktree remove. Branches and conversations are preserved.",
           bytes: externalWorktreeCandidates.targets.reduce(
             (total, target) => total + target.bytes,
             0,
@@ -2205,8 +2331,9 @@ const makeStorageMaintenance = Effect.gen(function* () {
                   : category.section === "legacy"
                     ? legacyT3BaseDir()
                     : config.stateDir;
-        const measurementRoots =
-          category.id === "databaseVacuum"
+        const measurementRoots = MACHINE_CATEGORY_IDS.has(category.id)
+          ? category.targets.flatMap((target) => (target.path ? [target.path] : []))
+          : category.id === "databaseVacuum"
             ? [
                 config.dbPath,
                 `${config.dbPath}-wal`,
@@ -2258,7 +2385,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
           (category) =>
             category.section === "worktrees" ||
             category.section === "legacy" ||
-            category.section === "providers",
+            category.section === "providers" ||
+            MACHINE_CATEGORY_IDS.has(category.id),
         )
         .flatMap((category) =>
           category.availability === "ready"
@@ -2297,10 +2425,38 @@ const makeStorageMaintenance = Effect.gen(function* () {
             .map((root) => ({ path: root, bytes: usageAt(root).bytes })),
         );
       const legacyBytes = Math.max(0, sumNonOverlappingPathUsages(legacyUsages) - legacyOverlap);
+      const outsideMeasuredRoots = (path: string) =>
+        ![config.stateDir, ...managedRoots, ...legacyUsages.map((entry) => entry.path)].some(
+          (root) => pathContainsOrEquals(root, path),
+        );
+      const externalBytes = sumNonOverlappingPathUsages(
+        externalWorktreeCandidates.targets.flatMap((target) =>
+          target.path && outsideMeasuredRoots(target.path)
+            ? [{ path: target.path, bytes: target.bytes }]
+            : [],
+        ),
+      );
+      const machineBytes = sumNonOverlappingPathUsages(
+        providerScan.categories
+          .flatMap((category) => category.targets)
+          .flatMap((target) =>
+            target.path &&
+            outsideMeasuredRoots(target.path) &&
+            !externalWorktreeCandidates.targets.some(
+              (tree) => tree.path && pathContainsOrEquals(tree.path, target.path!),
+            )
+              ? [{ path: target.path, bytes: target.bytes }]
+              : [],
+          ),
+      );
       const usage: Omit<StorageUsageReport, "scanId"> = {
+        machineBytes,
+        serverName: OS.hostname(),
+        discoveryRoots: discoverySettings.repositoryRoots,
+        machineCleanupScanned: discoverySettings.machineCleanupEnabled,
         scannedAt: nowIso(),
         stateDir: config.stateDir,
-        totalUsedBytes: measured.totalBytes + legacyBytes,
+        totalUsedBytes: measured.totalBytes + legacyBytes + externalBytes + machineBytes,
         reclaimableBytes,
         providerHomesBytes: providerHomesUsage.bytes,
         providerHomesMeasurement: providerHomesListingFailed
@@ -2326,7 +2482,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
         ),
         warningsTruncated: warnings.length > 200,
         databaseBytes,
-        worktreesBytes: worktreesUsage.bytes,
+        worktreesBytes: worktreesUsage.bytes + externalBytes,
         logsBytes: logsUsage.bytes,
         attachmentsBytes: attachmentsUsage.bytes,
         legacyBytes,
@@ -2367,6 +2523,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
         usage,
         persistenceBytes,
         review: {
+          files: providerScan.reviews,
           identities,
           worktrees: worktreeReviews,
           threads: new Map(allThreads.map((thread) => [thread.threadId, thread])),
@@ -2601,7 +2758,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
         if (
           (categoryId === "legacyT3Worktrees" ||
             categoryId === "inactiveF5Worktrees" ||
-            categoryId === "externalWorktrees") &&
+            categoryId === "externalWorktrees" ||
+            MACHINE_CATEGORY_IDS.has(categoryId)) &&
           !targetSelections.has(categoryId)
         ) {
           return yield* new StorageMaintenanceError({
@@ -2617,6 +2775,28 @@ const makeStorageMaintenance = Effect.gen(function* () {
           ? { ...category, targets: category.targets.filter((target) => selected.has(target.id)) }
           : category;
       });
+      for (const category of requestedCategories) {
+        for (const target of category.targets) {
+          if (
+            MACHINE_CATEGORY_IDS.has(category.id) &&
+            targetSelections.get(category.id)?.has(target.id) &&
+            !target.safeToDelete
+          )
+            return yield* new StorageMaintenanceError({
+              operation: "cleanup.validate",
+              message: target.disabledReason ?? "Target is blocked.",
+            });
+          if (
+            target.action === "archiveAndRemove" &&
+            targetSelections.get(category.id)?.has(target.id) &&
+            !request.options?.archiveIdleThreads
+          )
+            return yield* new StorageMaintenanceError({
+              operation: "cleanup.validate",
+              message: "Explicit archive-and-remove confirmation is required.",
+            });
+        }
+      }
       for (const category of requestedCategories)
         if (!targetSelections.has(category.id))
           targetSelections.set(
@@ -3293,6 +3473,167 @@ const makeStorageMaintenance = Effect.gen(function* () {
       const { operationId, targetPath } = input;
       const operationLabel =
         input.kind === "externalCleanup" ? "externalWorktrees" : "inactiveF5Worktrees";
+      const originalReview = operationReviews.get(operationId)?.worktrees.get(targetPath);
+      if (originalReview?.archiveThreads?.length) {
+        const reviewedArchiveThreads = originalReview.archiveThreads;
+        const archived = yield* withWorktreeLifecycleLock(
+          targetPath,
+          Effect.gen(function* () {
+            const preflight = yield* inspectWorktreeRemovalReadiness({
+              targetPath,
+              ...(originalReview.projectRoot ? { commandCwd: originalReview.projectRoot } : {}),
+              metadataOperation: "cleanup.archive.preflight",
+              metadataDisabledReason: GIT_WORKTREE_METADATA_UNRESOLVED,
+              policy: {
+                kind: input.kind,
+                ownThreadId: null,
+                archiveIdleThreads: true,
+                verifyPullRequest: true,
+                inspectExternalActivity: true,
+              },
+              disposablePaths: yield* makeDisposablePathsLookup,
+            });
+            const withoutArchive = (review: WorktreeReview | undefined) =>
+              review ? { ...review, archiveThreads: undefined } : undefined;
+            if (
+              preflight.disabledReason ||
+              canonicalJsonHash(withoutArchive(preflight.review)) !==
+                canonicalJsonHash(withoutArchive(originalReview))
+            )
+              return preflight.disabledReason ?? "Worktree changed since review. Rescan.";
+            const current = preflight.review?.archiveThreads ?? [];
+            if (
+              current.length !== reviewedArchiveThreads.length ||
+              current.some(
+                (thread) =>
+                  !reviewedArchiveThreads.some(
+                    (expected) =>
+                      expected.threadId === thread.threadId &&
+                      expected.title === thread.title &&
+                      expected.lastInteractionAt === thread.lastInteractionAt &&
+                      expected.sessionUpdatedAt === thread.sessionUpdatedAt,
+                  ),
+              )
+            )
+              return "A referencing conversation changed since review. Rescan.";
+            for (const thread of current) {
+              if (checkCancelled(operationId)) return "Cleanup cancelled before archiving.";
+              const recorded = yield* recordStorageAutomationAudit({
+                source: "manual",
+                operationId,
+                job: "worktree-cleanup",
+                category: operationLabel,
+                target: homeRelative(targetPath),
+                threadId: thread.threadId,
+                result: "archiving",
+                reasonCode: "archive-started",
+                reason: "Archive and remove explicitly selected.",
+              }).pipe(withSql);
+              if (!recorded)
+                return "Could not durably record archive operation. Nothing further was archived.";
+              const currentThread = (yield* engine.getReadModel()).threads.find(
+                (entry) => entry.id === thread.threadId,
+              );
+              if (!currentThread || currentThread.worktreePath === null)
+                return "Conversation workspace changed before archiving.";
+              const freshClaims = yield* readWorktreeClaims(targetPath).pipe(
+                Effect.provideServices(removalServices),
+              );
+              if (
+                freshClaims.unknown ||
+                freshClaims.activeThreadIds.length ||
+                freshClaims.queuedThreadIds.length ||
+                freshClaims.terminals.length ||
+                freshClaims.setupThreadIds.length ||
+                freshClaims.transitionThreadIds.length
+              )
+                return "Workspace activity changed before archiving. Rescan.";
+              yield* engine.dispatch({
+                type: "thread.archive",
+                commandId: CommandId.makeUnsafe("storage:archive:" + Crypto.randomUUID()),
+                threadId: thread.threadId,
+                createdAt: nowIso(),
+                cleanupExpectation: {
+                  worktreePath: currentThread.worktreePath,
+                  lastInteractionAt: thread.lastInteractionAt,
+                  sessionUpdatedAt: thread.sessionUpdatedAt,
+                },
+              });
+              markStorageMutation(operationId);
+              yield* recordStorageAutomationAudit({
+                source: "manual",
+                operationId,
+                job: "worktree-cleanup",
+                category: operationLabel,
+                target: homeRelative(targetPath),
+                threadId: thread.threadId,
+                result: "archived",
+                reasonCode: "archived-awaiting-removal",
+                reason: "Conversation archived; checkout removal pending.",
+              }).pipe(withSql);
+            }
+            return null;
+          }),
+        ).pipe(Effect.mapError(toStorageMaintenanceError("cleanup.archive")));
+        if (archived)
+          return { kind: "skipped" as const, warnings: [warningFor(targetPath, archived)] };
+        // Session shutdown must not wait inside lifecycle locks.
+        for (const thread of reviewedArchiveThreads) {
+          const stopped = yield* withProviderThreadAccess(
+            thread.threadId,
+            Effect.gen(function* () {
+              const current = (yield* engine.getReadModel()).threads.find(
+                (entry) => entry.id === thread.threadId,
+              );
+              const claims = yield* readWorktreeClaims(targetPath);
+              const providers = yield* ProviderService;
+              const sessions = (yield* providers.listSessions()).filter(
+                (session) => session.threadId === thread.threadId && session.status !== "closed",
+              );
+              for (const session of sessions) {
+                const cwd = session.cwd
+                  ? yield* Effect.tryPromise(() => canonicalWorktreePath(session.cwd!))
+                  : null;
+                if (!cwd || !pathContains(targetPath, cwd))
+                  return yield* Effect.fail(
+                    new Error("Session workspace changed before shutdown."),
+                  );
+              }
+              if (
+                !current ||
+                current.archivedAt === null ||
+                current.worktreePath !== targetPath ||
+                claims.unknown ||
+                claims.activeThreadIds.length ||
+                claims.queuedThreadIds.length ||
+                claims.setupThreadIds.length ||
+                claims.transitionThreadIds.length ||
+                claims.terminals.length
+              )
+                return yield* Effect.fail(
+                  new Error("Workspace activity changed before session shutdown."),
+                );
+              // Provider dispatch shares this gate, so shutdown cannot interrupt
+              // a newly started turn between the idle check and stopSession.
+              yield* stopWorktreeSession(thread.threadId);
+            }),
+          ).pipe(
+            Effect.provideServices(removalServices),
+            Effect.timeout("15 seconds"),
+            Effect.exit,
+          );
+          if (Exit.isFailure(stopped))
+            return {
+              kind: "skipped" as const,
+              warnings: [
+                warningFor(
+                  targetPath,
+                  "Conversations archived, but session shutdown failed. Checkout retained; rescan to retry.",
+                ),
+              ],
+            };
+        }
+      }
       const before = yield* Effect.tryPromise({
         try: () => recursiveSize(targetPath),
         catch: (cause) =>
@@ -3311,7 +3652,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
       );
       if (Exit.isFailure(stopped))
         return {
-          kind: "skipped",
+          kind: "skipped" as const,
           warnings: [
             warningFor(
               targetPath,
@@ -3352,7 +3693,12 @@ const makeStorageMaintenance = Effect.gen(function* () {
             targetPath,
             metadataOperation: `StorageMaintenance.cleanup.${operationLabel}.cwd`,
             metadataDisabledReason: GIT_WORKTREE_METADATA_UNRESOLVED,
-            policy: { kind: input.kind, ownThreadId: null },
+            policy: {
+              kind: input.kind,
+              ownThreadId: null,
+              verifyPullRequest: !!originalReview,
+              inspectExternalActivity: !!originalReview,
+            },
             ...(input.commandCwd ? { commandCwd: input.commandCwd } : {}),
             // Fresh under the lock, so a settings change since the scan applies.
             disposablePaths: yield* makeDisposablePathsLookup,
@@ -3368,7 +3714,13 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 ),
               ],
             };
-          if (reviewed && canonicalJsonHash(readiness.review) !== canonicalJsonHash(reviewed))
+          const withoutArchive = (review: WorktreeReview | undefined) =>
+            review ? { ...review, archiveThreads: undefined } : undefined;
+          if (
+            reviewed &&
+            canonicalJsonHash(withoutArchive(readiness.review)) !==
+              canonicalJsonHash(withoutArchive(reviewed))
+          )
             return {
               kind: "skipped" as const,
               warnings: [
@@ -3390,17 +3742,21 @@ const makeStorageMaintenance = Effect.gen(function* () {
               ...(review ? { expectedHead: review.head } : {}),
               expectedDiscardChanges: review?.discardChanges,
               afterRemoval: () =>
-                deleteMergedBranch({
-                  cwd: commandCwd,
-                  review,
-                  // Re-evaluated under the lock just now, not taken from the scan.
-                  branchDeletable: readiness.branchDeletable === true,
-                  referencedByThreads: claims.threadIds.length > 0,
-                }).pipe(
-                  Effect.map((outcome) => {
-                    branch = outcome;
-                  }),
-                ),
+                originalReview
+                  ? Effect.sync(() => {
+                      branch = "kept";
+                    })
+                  : deleteMergedBranch({
+                      cwd: commandCwd,
+                      review,
+                      // Re-evaluated under the lock just now, not taken from the scan.
+                      branchDeletable: readiness.branchDeletable === true,
+                      referencedByThreads: claims.threadIds.length > 0,
+                    }).pipe(
+                      Effect.map((outcome) => {
+                        branch = outcome;
+                      }),
+                    ),
             }).pipe(
               Effect.provideServices(removalServices),
               Effect.flatMap((result) =>
@@ -3436,7 +3792,34 @@ const makeStorageMaintenance = Effect.gen(function* () {
           }),
         ),
       );
-    });
+    }).pipe(
+      Effect.onExit((exit) =>
+        Effect.gen(function* () {
+          const reviewed = operationReviews.get(input.operationId)?.worktrees.get(input.targetPath);
+          if (!reviewed?.archiveThreads?.length) return;
+          const model = yield* engine.getReadModel();
+          const removed = Exit.isSuccess(exit) && exit.value.kind === "removed";
+          for (const thread of reviewed.archiveThreads) {
+            if (!model.threads.some((t) => t.id === thread.threadId && t.archivedAt !== null))
+              continue;
+            yield* recordStorageAutomationAudit({
+              source: "manual",
+              operationId: input.operationId,
+              category:
+                input.kind === "externalCleanup" ? "externalWorktrees" : "inactiveF5Worktrees",
+              job: "worktree-cleanup",
+              target: homeRelative(input.targetPath),
+              threadId: thread.threadId,
+              result: removed ? "removed" : "failed",
+              reasonCode: removed ? "archived-checkout-removed" : "archived-checkout-retained",
+              reason: removed
+                ? "Conversation archived and checkout removed."
+                : "Conversation remains archived; checkout retained. Review again before retrying.",
+            }).pipe(withSql);
+          }
+        }),
+      ),
+    );
 
   /** Remove reviewed external worktrees, revalidating identity, claims and cancellation. */
   const cleanExternalWorktrees = (
@@ -3641,7 +4024,11 @@ const makeStorageMaintenance = Effect.gen(function* () {
           totalTargets: targets.length,
         });
 
-        if (!target.safeToDelete || !targetPath) {
+        if (
+          (!target.safeToDelete &&
+            !operationReviews.get(request.operationId)?.worktrees.has(targetPath ?? "")) ||
+          !targetPath
+        ) {
           warnings.push(
             warningFor(
               targetPath ?? target.id,
@@ -4192,6 +4579,83 @@ const makeStorageMaintenance = Effect.gen(function* () {
       });
     });
 
+  const cleanProviderTargets = (
+    request: CleanupOperation,
+    context: StorageCleanupContext | undefined,
+    categoryId: StorageCleanupCategoryId,
+    selected: ReadonlySet<string> | undefined,
+  ) =>
+    Effect.gen(function* () {
+      const warnings: StoragePathWarning[] = [];
+      const perTargetReclaimed: PerTargetReclaimed = [];
+      const settings = yield* readDiscovery;
+      if (
+        categoryId !== "f5Backups" &&
+        categoryId !== "f5ApplicationLogs" &&
+        !settings.machineCleanupEnabled
+      )
+        return resultFor({
+          categoryId,
+          status: "Skipped",
+          message: "Machine cleanup was disabled. Rescan before retrying.",
+        });
+      const targets = [...(selected ?? [])];
+      for (const [index, id] of targets.entries()) {
+        if (checkCancelled(request.operationId)) break;
+        const review = operationReviews.get(request.operationId)?.files?.get(id);
+        if (!review) {
+          warnings.push(warningFor(id, "No reviewed target identity. Rescan."));
+          continue;
+        }
+        yield* publishProgress(request, context, {
+          categoryId,
+          phase: "deleting",
+          message: "Cleaning " + homeRelative(review.path),
+          completedTargets: index,
+          totalTargets: targets.length,
+        });
+        const controller = new AbortController();
+        markStorageMutation(request.operationId);
+        const timer = setInterval(() => {
+          if (checkCancelled(request.operationId)) controller.abort();
+        }, 100);
+        const outcome = yield* Effect.tryPromise(() =>
+          runStorageTask<StorageFileInspection>({ kind: "remove", ...review }, controller.signal),
+        ).pipe(Effect.ensuring(Effect.sync(() => clearInterval(timer))), Effect.result);
+        if (outcome._tag === "Failure") {
+          warnings.push(
+            warningFor(
+              review.path,
+              "Cleanup interrupted or failed; files may have been partially removed. Rescan. " +
+                String(outcome.failure),
+            ),
+          );
+          continue;
+        }
+        if (outcome.success.activity.state !== "idle") {
+          warnings.push(warningFor(review.path, outcome.success.activity.reason));
+          continue;
+        }
+        warnings.push(...(outcome.success.warnings ?? []));
+        if (outcome.success.removedBytes) {
+          markStorageMutation(request.operationId);
+          perTargetReclaimed.push({
+            id,
+            path: review.path,
+            reclaimedBytes: outcome.success.removedBytes,
+            status: "Removed",
+          });
+        }
+      }
+      return resultFor({
+        categoryId,
+        status: perTargetReclaimed.length ? "Cleaned" : "Skipped",
+        warnings,
+        perTargetReclaimed,
+        reclaimedBytes: perTargetReclaimed.reduce((sum, target) => sum + target.reclaimedBytes, 0),
+      });
+    });
+
   const cleanup = (
     request: CleanupInput,
     context?: StorageCleanupContext,
@@ -4207,6 +4671,30 @@ const makeStorageMaintenance = Effect.gen(function* () {
       if (!prepared) cancelledOperations.delete(request.operationId);
       cancellableOperations.add(request.operationId);
       const startedAt = nowIso();
+      const volumeRoots = [
+        ...new Set([
+          config.stateDir,
+          ...requestedCategories.flatMap((c) =>
+            c.targets.flatMap((t) => (t.path ? [Path.dirname(t.path)] : [])),
+          ),
+        ]),
+      ];
+      const volumes = yield* Effect.promise(async () => {
+        const found = new Map<number, { path: string; freeBeforeBytes: number }>();
+        for (const path of volumeRoots) {
+          try {
+            const [stat, space] = await Promise.all([FS.stat(path), FS.statfs(path)]);
+            if (!found.has(stat.dev))
+              found.set(stat.dev, {
+                path,
+                freeBeforeBytes: clampBytes(space.bavail * space.bsize),
+              });
+          } catch {
+            /* A missing/inaccessible volume is not a fabricated measurement. */
+          }
+        }
+        return [...found.values()];
+      });
       const requestedCategoryById = new Map(
         requestedCategories.map((category) => [category.id, category] as const),
       );
@@ -4229,6 +4717,13 @@ const makeStorageMaintenance = Effect.gen(function* () {
           });
 
           const result = yield* (() => {
+            if (MACHINE_CATEGORY_IDS.has(categoryId))
+              return cleanProviderTargets(
+                request,
+                context,
+                categoryId,
+                targetSelections.get(categoryId),
+              );
             switch (categoryId) {
               case "purgeArchivedThreads":
                 return purgeDeletedThreads(request, context, {
@@ -4288,6 +4783,14 @@ const makeStorageMaintenance = Effect.gen(function* () {
                   context,
                   categoryId,
                   targetSelections.get(categoryId),
+                );
+              default:
+                return Effect.succeed(
+                  resultFor({
+                    categoryId,
+                    status: "Skipped",
+                    message: "Unsupported cleanup category.",
+                  }),
                 );
             }
           })().pipe(
@@ -4374,15 +4877,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
             source: "manual",
             category: result.categoryId,
             operationId: request.operationId,
-            job: result.categoryId.startsWith("purge")
-              ? "thread-purge"
-              : result.categoryId === "databaseVacuum"
-                ? "database-vacuum"
-                : result.categoryId === "codexMarketplaceStaging"
-                  ? "codex-marketplace-staging"
-                  : result.categoryId.startsWith("providerLog")
-                    ? "provider-logs"
-                    : "worktree-cleanup",
+            job: manualAuditJob(result.categoryId),
             target: requestedCategoryById.get(result.categoryId)?.title ?? result.categoryId,
             result:
               result.status === "Failed"
@@ -4402,11 +4897,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
               source: "manual",
               category: result.categoryId,
               operationId: request.operationId,
-              job: result.categoryId.startsWith("purge")
-                ? "thread-purge"
-                : result.categoryId === "databaseVacuum"
-                  ? "database-vacuum"
-                  : "worktree-cleanup",
+              job: manualAuditJob(result.categoryId),
               target: isPathWithinRoot({ root: config.stateDir, target: warning.path })
                 ? Path.relative(config.stateDir, warning.path)
                 : Path.basename(warning.path),
@@ -4425,7 +4916,24 @@ const makeStorageMaintenance = Effect.gen(function* () {
             warningFor("storage activity", "Cleanup finished, but history could not be recorded."),
           );
         const completedAt = nowIso();
+        const volumeChanges = yield* Effect.promise(async () => {
+          const changes: NonNullable<StorageCleanupResult["volumeChanges"]>[number][] = [];
+          for (const volume of volumes)
+            try {
+              const stat = await FS.statfs(volume.path);
+              const freeAfterBytes = clampBytes(stat.bavail * stat.bsize);
+              changes.push({
+                ...volume,
+                freeAfterBytes,
+                netFreeBytes: freeAfterBytes - volume.freeBeforeBytes,
+              });
+            } catch {
+              /* Report only observed values. */
+            }
+          return changes;
+        });
         return {
+          volumeChanges,
           operationId: request.operationId,
           startedAt,
           completedAt,

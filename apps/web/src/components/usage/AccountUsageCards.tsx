@@ -8,7 +8,11 @@ import type {
   UsageQuotaSample,
   UsageRange,
 } from "@t3tools/contracts";
-import { codexRateLimitWindowLabel, quotaWindowsFromSection } from "@t3tools/shared/usageLimit";
+import {
+  CLAUDE_MONTHLY_SPEND_WINDOW_KEY,
+  codexRateLimitWindowLabel,
+  quotaWindowsFromSection,
+} from "@t3tools/shared/usageLimit";
 
 import { formatAbsoluteTimeLabel } from "../../lib/relativeTime";
 import { QuotaMeter } from "./charts/QuotaMeter";
@@ -154,7 +158,7 @@ function CodexLimits(props: {
               </span>
             ) : null}
           </div>
-          {(["primary", "secondary"] as const).map((slot) => {
+          {(["primary", "secondary", "individual"] as const).map((slot) => {
             const window = windows.get(`${limit.id}:${slot}`);
             if (!window) return null;
             return (
@@ -350,14 +354,18 @@ export function AccountUsageCards({
                           Extra usage{" "}
                           {section.snapshot.data.extraUsage.enabled ? "enabled" : "disabled"}
                         </p>
-                        {section.snapshot.data.extraUsage.enabled && (
-                          <QuotaMeter
-                            label="Extra usage"
-                            accessibleName={`${account.displayName} · Extra usage`}
-                            utilization={section.snapshot.data.extraUsage.utilization}
-                            resetsAt={null}
-                          />
-                        )}
+                        {/* The monthly spend window already meters enabled extra usage. */}
+                        {section.snapshot.data.extraUsage.enabled &&
+                          !section.snapshot.data.windows.some(
+                            (window) => window.key === CLAUDE_MONTHLY_SPEND_WINDOW_KEY,
+                          ) && (
+                            <QuotaMeter
+                              label="Extra usage"
+                              accessibleName={`${account.displayName} · Extra usage`}
+                              utilization={section.snapshot.data.extraUsage.utilization}
+                              resetsAt={null}
+                            />
+                          )}
                       </div>
                     )}
                   </div>

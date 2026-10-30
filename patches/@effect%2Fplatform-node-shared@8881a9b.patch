@@ -1,0 +1,211 @@
+diff --git a/dist/NodeChildProcessSpawner.js b/dist/NodeChildProcessSpawner.js
+index 7e51c00..9e76e0e 100644
+--- a/dist/NodeChildProcessSpawner.js
++++ b/dist/NodeChildProcessSpawner.js
+@@ -147,6 +147,8 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+             // Create a sink to write to for input file descriptors
+             let sink = Sink.drain;
+             if (nodeStream && "write" in nodeStream) {
++              // F5 patch: same EPIPE guard as stdin.
++              nodeStream.on("error", () => {});
+               sink = NodeSink.fromWritable({
+                 evaluate: () => nodeStream,
+                 onError: error => toPlatformError(`fromWritable(fd${fd})`, toError(error), command)
+@@ -188,6 +190,10 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+     // sink that will attached to the process handle
+     let sink = Sink.drain;
+     if (Predicate.isNotNull(childProcess.stdin)) {
++      // F5 patch: a write still pending when the child exits or closes its stdin
++      // fails with EPIPE. NodeSink would otherwise leave that error unhandled and
++      // Node would crash the process; NodeSink now fails the pending write instead.
++      childProcess.stdin.on("error", () => {});
+       sink = NodeSink.fromWritable({
+         evaluate: () => childProcess.stdin,
+         onError: error => toPlatformError("fromWritable(stdin)", toError(error), command),
+diff --git a/dist/NodeSink.js b/dist/NodeSink.js
+index bd84652..2076cd2 100644
+--- a/dist/NodeSink.js
++++ b/dist/NodeSink.js
+@@ -24,14 +24,46 @@ export const fromWritableChannel = options => Channel.fromTransform(pull => {
+ /**
+  * @since 1.0.0
+  */
++// F5 patch helpers.
++const writableFailure = writable => writable.errored ?? (writable.destroyed ? new Error("Cannot write to a destroyed stream") : undefined);
++const awaitWritable = (writable, event, onEvent, onFailure) => {
++  const cleanup = () => {
++    writable.off(event, handleEvent);
++    writable.off("error", handleError);
++    writable.off("close", handleClose);
++  };
++  const handleEvent = () => {
++    cleanup();
++    onEvent();
++  };
++  const handleError = error => {
++    cleanup();
++    onFailure(error);
++  };
++  const handleClose = () => {
++    cleanup();
++    onFailure(writableFailure(writable) ?? new Error(`Stream closed before ${event}`));
++  };
++  writable.once(event, handleEvent);
++  writable.once("error", handleError);
++  writable.once("close", handleClose);
++  // Interruption removes the listeners.
++  return Effect.sync(cleanup);
++};
+ export const pullIntoWritable = options => options.pull.pipe(Effect.flatMap(chunk => {
+   let i = 0;
+   return Effect.callback(function loop(resume) {
++    // F5 patch: a destroyed or errored writable never emits drain or finish, so
++    // fail the pull instead of waiting forever (e.g. a child that closed stdin).
++    const failure = writableFailure(options.writable);
++    if (failure !== undefined) {
++      resume(Effect.fail(options.onError(failure)));
++      return;
++    }
+     for (; i < chunk.length;) {
+       const success = options.writable.write(chunk[i++], options.encoding);
+       if (!success) {
+-        options.writable.once("drain", () => loop(resume));
+-        return;
++        return awaitWritable(options.writable, "drain", () => loop(resume), error => resume(Effect.fail(options.onError(error))));
+       }
+     }
+     resume(Effect.void);
+@@ -43,8 +75,14 @@ export const pullIntoWritable = options => options.pull.pipe(Effect.flatMap(chun
+     return Cause.done(_);
+   }
+   return Effect.callback(resume => {
+-    options.writable.once("finish", () => resume(Cause.done(_)));
++    const failure = writableFailure(options.writable);
++    if (failure !== undefined) {
++      resume(Effect.fail(options.onError(failure)));
++      return;
++    }
++    const cleanup = awaitWritable(options.writable, "finish", () => resume(Cause.done(_)), error => resume(Effect.fail(options.onError(error))));
+     options.writable.end();
++    return cleanup;
+   });
+ }) : identity);
+ //# sourceMappingURL=NodeSink.js.map
+\ No newline at end of file
+diff --git a/src/NodeChildProcessSpawner.ts b/src/NodeChildProcessSpawner.ts
+index dc53baf..765b635 100644
+--- a/src/NodeChildProcessSpawner.ts
++++ b/src/NodeChildProcessSpawner.ts
+@@ -187,6 +187,8 @@ const make = Effect.gen(function*() {
+           // Create a sink to write to for input file descriptors
+           let sink: Sink.Sink<void, Uint8Array, never, PlatformError.PlatformError> = Sink.drain
+           if (nodeStream && "write" in nodeStream) {
++            // F5 patch: same EPIPE guard as stdin.
++            nodeStream.on("error", () => {})
+             sink = NodeSink.fromWritable({
+               evaluate: () => nodeStream,
+               onError: (error) => toPlatformError(`fromWritable(fd${fd})`, toError(error), command)
+@@ -240,6 +242,10 @@ const make = Effect.gen(function*() {
+       // sink that will attached to the process handle
+       let sink: Sink.Sink<void, unknown, never, PlatformError.PlatformError> = Sink.drain
+       if (Predicate.isNotNull(childProcess.stdin)) {
++        // F5 patch: a write still pending when the child exits or closes its stdin
++        // fails with EPIPE. NodeSink would otherwise leave that error unhandled and
++        // Node would crash the process; NodeSink now fails the pending write instead.
++        childProcess.stdin.on("error", () => {})
+         sink = NodeSink.fromWritable({
+           evaluate: () => childProcess.stdin!,
+           onError: (error) => toPlatformError("fromWritable(stdin)", toError(error), command),
+diff --git a/src/NodeSink.ts b/src/NodeSink.ts
+index b467655..781d425 100644
+--- a/src/NodeSink.ts
++++ b/src/NodeSink.ts
+@@ -41,6 +41,40 @@ export const fromWritableChannel = <IE, E, A = Uint8Array | string>(
+     return Effect.succeed(pullIntoWritable({ ...options, writable, pull }))
+   })
+ 
++// F5 patch helpers.
++const writableFailure = (writable: Writable): unknown =>
++  writable.errored ?? (writable.destroyed ? new Error("Cannot write to a destroyed stream") : undefined)
++
++const awaitWritable = (
++  writable: Writable,
++  event: "drain" | "finish",
++  onEvent: () => void,
++  onFailure: (error: unknown) => void
++): Effect.Effect<void> => {
++  const cleanup = () => {
++    writable.off(event, handleEvent)
++    writable.off("error", handleError)
++    writable.off("close", handleClose)
++  }
++  const handleEvent = () => {
++    cleanup()
++    onEvent()
++  }
++  const handleError = (error: unknown) => {
++    cleanup()
++    onFailure(error)
++  }
++  const handleClose = () => {
++    cleanup()
++    onFailure(writableFailure(writable) ?? new Error(`Stream closed before ${event}`))
++  }
++  writable.once(event, handleEvent)
++  writable.once("error", handleError)
++  writable.once("close", handleClose)
++  // Interruption removes the listeners.
++  return Effect.sync(cleanup)
++}
++
+ /**
+  * @since 1.0.0
+  */
+@@ -54,12 +88,23 @@ export const pullIntoWritable = <A, IE, E>(options: {
+   options.pull.pipe(
+     Effect.flatMap((chunk) => {
+       let i = 0
+-      return Effect.callback<void, E>(function loop(resume) {
++      return Effect.callback<void, E>(function loop(resume): Effect.Effect<void> | undefined {
++        // F5 patch: a destroyed or errored writable never emits drain or finish, so
++        // fail the pull instead of waiting forever (e.g. a child that closed stdin).
++        const failure = writableFailure(options.writable)
++        if (failure !== undefined) {
++          resume(Effect.fail(options.onError(failure)))
++          return
++        }
+         for (; i < chunk.length;) {
+           const success = options.writable.write(chunk[i++], options.encoding as any)
+           if (!success) {
+-            options.writable.once("drain", () => (loop as any)(resume))
+-            return
++            return awaitWritable(
++              options.writable,
++              "drain",
++              () => loop(resume),
++              (error) => resume(Effect.fail(options.onError(error)))
++            )
+           }
+         }
+         resume(Effect.void)
+@@ -72,8 +117,19 @@ export const pullIntoWritable = <A, IE, E>(options: {
+           return Cause.done(_)
+         }
+         return Effect.callback<never, E | Cause.Done<unknown>>((resume) => {
+-          options.writable.once("finish", () => resume(Cause.done(_)))
++          const failure = writableFailure(options.writable)
++          if (failure !== undefined) {
++            resume(Effect.fail(options.onError(failure)))
++            return
++          }
++          const cleanup = awaitWritable(
++            options.writable,
++            "finish",
++            () => resume(Cause.done(_)),
++            (error) => resume(Effect.fail(options.onError(error)))
++          )
+           options.writable.end()
++          return cleanup
+         })
+       }) :
+       identity

@@ -17,6 +17,7 @@ import { Data, Effect } from "effect";
 
 import { runProcess, type ProcessRunResult } from "../processRunner.ts";
 import { REVIEW_PATCH_LIMIT_BYTES, truncatePatchAtFileBoundary } from "./patchTruncation.ts";
+import { branchNameFromHeadRef } from "./headBranch.ts";
 
 const STDERR_LIMIT_BYTES = 32 * 1024;
 const UNTRACKED_LIMIT_PATHS = 512;
@@ -120,33 +121,106 @@ function resolveCommit(cwd: string, ref: string, execution: ReviewDiffExecutionO
   ).pipe(Effect.map((result) => (result.code === 0 ? result.stdout.trim() : null)));
 }
 
-function resolveDefaultBaseRef(cwd: string, execution: ReviewDiffExecutionOptions) {
+// Qualify a base branch name to the exact ref it names, so a local branch or tag cannot shadow
+// it. A remote-tracking ref such as `upstream/main` wins, then `remote`'s copy, then the local
+// branch. Returns null when none exists.
+function qualifyBaseRef(
+  cwd: string,
+  name: string,
+  execution: ReviewDiffExecutionOptions,
+  remote?: string,
+) {
   return Effect.gen(function* () {
+    if (name.startsWith("refs/")) return null;
+    const candidates = [
+      ...(name.includes("/") ? [`refs/remotes/${name}`] : []),
+      ...(remote ? [`refs/remotes/${remote}/${name}`] : []),
+      `refs/heads/${name}`,
+    ];
+    for (const candidate of candidates) {
+      if ((yield* resolveCommit(cwd, candidate, execution)) !== null) return candidate;
+    }
+    return null;
+  });
+}
+
+// The branch's configured base (`gh-merge-base`), compared by its exact ref.
+function resolveConfiguredBaseRef(
+  cwd: string,
+  currentBranch: string,
+  execution: ReviewDiffExecutionOptions,
+) {
+  return Effect.gen(function* () {
+    const configured = yield* runGit(
+      cwd,
+      ["config", "--get", "--", `branch.${currentBranch}.gh-merge-base`],
+      undefined,
+      execution,
+    );
+    const baseRef = configured.code === 0 ? configured.stdout.trim() : "";
+    if (!baseRef || baseRef === currentBranch) return null;
+    return yield* qualifyBaseRef(cwd, baseRef, execution, "origin");
+  });
+}
+
+// The default branch may track a different remote than origin, such as a fork's
+// `upstream/main`. A lagging origin would otherwise add commits that are already upstream.
+function resolveTrackedRemoteBaseRef(cwd: string, execution: ReviewDiffExecutionOptions) {
+  return runGit(
+    cwd,
+    ["rev-parse", "--symbolic-full-name", "@{upstream}"],
+    undefined,
+    execution,
+  ).pipe(
+    Effect.map((result) => {
+      const ref = result.stdout.trim();
+      return result.code === 0 && ref.startsWith("refs/remotes/") ? ref : null;
+    }),
+  );
+}
+
+function resolveDefaultBaseRef(
+  cwd: string,
+  currentBranchName: string | null,
+  execution: ReviewDiffExecutionOptions,
+) {
+  return Effect.gen(function* () {
+    if (currentBranchName) {
+      const configuredBase = yield* resolveConfiguredBaseRef(cwd, currentBranchName, execution);
+      if (configuredBase !== null) return configuredBase;
+    }
+
+    let defaultBase: string | null = null;
     const remoteHead = yield* runGit(
       cwd,
       ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
       undefined,
       execution,
     );
-    if (remoteHead.code === 0 && remoteHead.stdout.trim()) return remoteHead.stdout.trim();
-
+    if (remoteHead.code === 0 && remoteHead.stdout.trim()) defaultBase = remoteHead.stdout.trim();
     for (const candidate of ["origin/main", "origin/master", "main", "master"]) {
-      if ((yield* resolveCommit(cwd, candidate, execution)) !== null) return candidate;
+      if (defaultBase !== null) break;
+      if ((yield* resolveCommit(cwd, candidate, execution)) !== null) defaultBase = candidate;
+    }
+    if (defaultBase !== null) {
+      const onDefaultBranch =
+        currentBranchName !== null &&
+        [
+          currentBranchName,
+          `origin/${currentBranchName}`,
+          `refs/remotes/origin/${currentBranchName}`,
+        ].includes(defaultBase);
+      return (
+        (onDefaultBranch ? yield* resolveTrackedRemoteBaseRef(cwd, execution) : null) ?? defaultBase
+      );
     }
 
-    const currentBranch = yield* runGit(
-      cwd,
-      ["symbolic-ref", "--quiet", "--short", "HEAD"],
-      undefined,
-      execution,
-    );
     const upstream = yield* runGit(
       cwd,
       ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
       undefined,
       execution,
     );
-    const currentBranchName = currentBranch.code === 0 ? currentBranch.stdout.trim() : "";
     const upstreamName = upstream.code === 0 ? upstream.stdout.trim() : "";
     if (
       upstreamName &&
@@ -331,18 +405,23 @@ export function getReviewPreviewDiff(
       return success;
     }
 
-    const branch = yield* runGit(
-      cwd,
-      ["symbolic-ref", "--quiet", "--short", "HEAD"],
-      undefined,
-      execution,
-    );
+    const branch = yield* runGit(cwd, ["symbolic-ref", "--quiet", "HEAD"], undefined, execution);
     if (!input.request.baseRef && branch.code !== 0) {
       return failure("detached_head", "Choose a base ref while HEAD is detached.");
     }
-    const baseRef = input.request.baseRef ?? (yield* resolveDefaultBaseRef(cwd, execution));
+    const baseRef =
+      input.request.baseRef ??
+      (yield* resolveDefaultBaseRef(
+        cwd,
+        branch.code === 0 ? branchNameFromHeadRef(branch.stdout) : null,
+        execution,
+      ));
     if (!baseRef) return failure("missing_base", "No branch-range base ref could be resolved.");
-    const baseCommit = yield* resolveCommit(cwd, baseRef, execution);
+    // An explicitly chosen branch is compared by its exact ref; other revisions resolve as given.
+    const comparisonRef = input.request.baseRef
+      ? ((yield* qualifyBaseRef(cwd, input.request.baseRef, execution)) ?? input.request.baseRef)
+      : baseRef;
+    const baseCommit = yield* resolveCommit(cwd, comparisonRef, execution);
     if (!baseCommit)
       return failure("invalid_ref", `Base ref does not resolve to a commit: ${baseRef}`);
 

@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Option, Schema, SchemaTransformation } from "effect";
 
 /** A filesystem path is opaque: never trim whitespace or accept NUL. */
 export const FilesystemPath = Schema.String.check(
@@ -19,6 +19,42 @@ export const PositiveInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
 
 export const IsoDateTime = Schema.String;
 export type IsoDateTime = typeof IsoDateTime.Type;
+
+/**
+ * Wire codec for server->client arrays whose element unions grow over time
+ * (new literal members, new struct variants). Decoding drops elements this
+ * build cannot decode instead of failing the whole payload: a client has to
+ * keep decoding configs sent by servers newer than itself, and rejecting the
+ * payload would discard data it can act on over data it can't. Encoding is the
+ * plain array encoding.
+ *
+ * `maxItems` bounds the wire array, before unknown elements are dropped, so the
+ * cap limits what the client decodes rather than what survives.
+ */
+export const ForwardCompatibleArray = <Element extends Schema.Top>(
+  element: Element,
+  options: { readonly maxItems?: number } = {},
+) => {
+  const decodeElement = Schema.decodeUnknownOption(element as never);
+  const wire = Schema.Array(Schema.Unknown);
+  const decoded = Schema.Array(element);
+  return (
+    options.maxItems === undefined ? wire : wire.check(Schema.isMaxLength(options.maxItems))
+  ).pipe(
+    Schema.decodeTo(
+      options.maxItems === undefined
+        ? decoded
+        : decoded.check(Schema.isMaxLength(options.maxItems)),
+      SchemaTransformation.transform<ReadonlyArray<Element["Encoded"]>, ReadonlyArray<unknown>>({
+        decode: (values) =>
+          values.filter((value) => Option.isSome(decodeElement(value))) as ReadonlyArray<
+            Element["Encoded"]
+          >,
+        encode: (values) => values,
+      }),
+    ),
+  );
+};
 
 /**
  * Construct a branded identifier. Enforces non-empty trimmed strings

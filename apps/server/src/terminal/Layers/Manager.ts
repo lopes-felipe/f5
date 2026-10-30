@@ -4,8 +4,8 @@ import { writeFileStringAtomically } from "../../atomicWrite.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { killProcessTreeAsync } from "@t3tools/shared/processTree";
 import { PROJECT_SCRIPT_ENV_NAMES } from "@t3tools/shared/projectScripts";
-import { BoundedTerminalHistory } from "../BoundedTerminalHistory";
-import { readTerminalHistory } from "../historyPersistence";
+import { BoundedTerminalHistory, TERMINAL_HISTORY_MAX_BYTES } from "../BoundedTerminalHistory";
+import { neutralizeInheritedHistory, readTerminalHistory } from "../historyPersistence";
 import { readTerminalProcessTable, type TerminalProcessTable } from "../processTable";
 import { githubTerminalStartup } from "../../git/githubShellStartup";
 import { buildAccountExecutionEnvironment } from "../../providerProcessEnv";
@@ -384,7 +384,18 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       const existing = this.sessions.get(sessionKey);
       if (!existing) {
         await this.flushPersistQueue(input.threadId, input.terminalId);
-        const history = await this.readHistory(input.threadId, input.terminalId);
+        const inherited = await this.readHistory(input.threadId, input.terminalId);
+        // The previous shell is gone; reset the terminal modes its history leaves on.
+        const neutralized = neutralizeInheritedHistory(
+          inherited.value(),
+          this.historyLineLimit,
+          TERMINAL_HISTORY_MAX_BYTES,
+        );
+        let history = inherited;
+        if (neutralized !== inherited.value()) {
+          history = new BoundedTerminalHistory(this.historyLineLimit);
+          history.append(neutralized);
+        }
         const cols = input.cols ?? DEFAULT_OPEN_COLS;
         const rows = input.rows ?? DEFAULT_OPEN_ROWS;
         const session: TerminalSessionState = {

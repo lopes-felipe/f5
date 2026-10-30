@@ -1394,6 +1394,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       const reverting = dimmed && pendingRevert !== null;
       const externalsEntry = rowExternals.get(item.id);
       return (
+        // Keep `overflow-x-clip`: `hidden` computes `overflow-y: auto`, so ChangedFilesTree would
+        // take this row as its scroller and mount every row of a large tree.
         <div
           className="mx-auto w-full min-w-0 max-w-(--chat-content-max-width) overflow-x-clip"
           data-timeline-root="true"

@@ -21,7 +21,7 @@ export interface HydrateWindowsPathOptions {
 }
 
 let cachedRegistryPathsPromise: Promise<WindowsRegistryPaths | undefined> | undefined;
-let processWindowsPathHydrationPromise: Promise<string | undefined> | undefined;
+let processWindowsPathHydrationPromise: Promise<WindowsPathHydration> | undefined;
 
 function environmentValue(environment: NodeJS.ProcessEnv, name: string): string | undefined {
   const normalized = name.toLowerCase();
@@ -180,11 +180,26 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+export interface WindowsPathHydration {
+  readonly path: string | undefined;
+  /** False when the registry PATH could not be read and only inherited entries were kept. */
+  readonly registryRead: boolean;
+}
+
 export async function hydrateWindowsPath(
   environment: NodeJS.ProcessEnv = process.env,
   options: HydrateWindowsPathOptions = {},
 ): Promise<string | undefined> {
-  if ((options.platform ?? process.platform) !== "win32") return undefined;
+  return (await hydrateWindowsPathWithStatus(environment, options)).path;
+}
+
+async function hydrateWindowsPathWithStatus(
+  environment: NodeJS.ProcessEnv,
+  options: HydrateWindowsPathOptions,
+): Promise<WindowsPathHydration> {
+  if ((options.platform ?? process.platform) !== "win32") {
+    return { path: undefined, registryRead: false };
+  }
 
   const reader = options.readRegistryPaths ?? cachedReadRegistryPaths;
   const [registryPaths, knownDirectories] = await Promise.all([
@@ -208,22 +223,33 @@ export async function hydrateWindowsPath(
   ]);
 
   installPath(environment, merged);
-  return merged;
+  return { path: merged, registryRead: registryPaths !== undefined };
 }
 
 export function ensureWindowsPathHydrated(
   environment: NodeJS.ProcessEnv = process.env,
   options: HydrateWindowsPathOptions = {},
 ): Promise<string | undefined> {
+  return ensureWindowsPathHydration(environment, options).then((result) => result.path);
+}
+
+/** Like ensureWindowsPathHydrated, but also reports whether the registry PATH was read. */
+export function ensureWindowsPathHydration(
+  environment: NodeJS.ProcessEnv = process.env,
+  options: HydrateWindowsPathOptions = {},
+): Promise<WindowsPathHydration> {
   const platform = options.platform ?? process.platform;
-  if (platform !== "win32") return Promise.resolve(undefined);
+  if (platform !== "win32") return Promise.resolve({ path: undefined, registryRead: false });
   if (options.readRegistryPaths !== undefined || options.pathExists !== undefined) {
-    return hydrateWindowsPath(environment, options);
+    return hydrateWindowsPathWithStatus(environment, options);
   }
-  processWindowsPathHydrationPromise ??= hydrateWindowsPath(process.env, options);
+  processWindowsPathHydrationPromise ??= hydrateWindowsPathWithStatus(process.env, options);
   if (environment === process.env) return processWindowsPathHydrationPromise;
   // A caller-supplied environment is an explicit execution boundary. Await
   // process hydration so startup remains serialized, but never widen or mutate
   // a deliberately restricted PATH with user-writable global install folders.
-  return processWindowsPathHydrationPromise.then(() => inheritedPath(environment) || undefined);
+  return processWindowsPathHydrationPromise.then(({ registryRead }) => ({
+    path: inheritedPath(environment) || undefined,
+    registryRead,
+  }));
 }

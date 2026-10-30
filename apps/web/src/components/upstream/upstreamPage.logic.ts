@@ -19,6 +19,7 @@ import {
   type UpstreamTopicFilter,
   type UpstreamTopicHistoryEntry,
   type UpstreamTopicList,
+  type UpstreamTopicRow,
   type UpstreamTopicSort,
   type UpstreamTopicStatus,
   type UpstreamTopicSuggestion,
@@ -805,4 +806,15 @@ export function activeFilterChips(search: FilterSearch): FilterChip[] {
 export function toggleValue<T extends string>(values: ReadonlyArray<T> | undefined, value: T): T[] {
   const current = values ?? [];
   return current.includes(value) ? current.filter((entry) => entry !== value) : [...current, value];
+}
+
+/**
+ * Queue membership comes from the overview, which queue events refresh; a
+ * row's own flag is only a fallback until the overview loads.
+ */
+export function isUpstreamTopicQueued(
+  row: UpstreamTopicRow,
+  queuedTopicIds: ReadonlySet<string> | null,
+): boolean {
+  return queuedTopicIds ? queuedTopicIds.has(row.topic.id) : row.queued;
 }
