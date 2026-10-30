@@ -31,6 +31,10 @@ import {
 import { CLI_TARGETS } from "@t3tools/shared/cliRelease";
 import { promotionProblems, remoteTagCommit } from "../lib/release-promotion.ts";
 import { parseDesktopUpdateManifest } from "../desktop-update-manifest.ts";
+import {
+  validatePublicationQualification,
+  type PublicationQualification,
+} from "./release-upgrade-proof.ts";
 
 interface RemoteRelease {
   id: number;
@@ -43,6 +47,7 @@ interface RemoteRelease {
 export async function assembleCandidate(
   candidate: ReleaseCandidate,
   directory: string,
+  qualification?: PublicationQualification,
 ): Promise<void> {
   validateCandidate(candidate);
   mkdirSync(directory, { recursive: true });
@@ -109,6 +114,27 @@ export async function assembleCandidate(
     join(directory, "f5-release-candidate.json"),
     JSON.stringify(candidate, null, 2) + "\n",
   );
+  writeFileSync(
+    join(directory, "f5-release-qualification.json"),
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        sourceSha: candidate.sourceSha,
+        candidateRun: candidate.runId,
+        candidateAttempt: candidate.runAttempt,
+        ...(qualification ?? {
+          key: null,
+          windowsBaselines: candidate.windowsBaselines,
+          cliBaseline:
+            candidate.artifacts.find((a) => a.component.startsWith("cli-"))?.receipt
+              .cliUpgradeBaseline ?? null,
+          requalification: null,
+        }),
+      },
+      null,
+      2,
+    ) + "\n",
+  );
   execFileSync(
     process.execPath,
     [fileURLToPath(new URL("../assemble-release-checksums.ts", import.meta.url)), directory],
@@ -170,6 +196,9 @@ export async function publishCandidate(
         sha256: await hashFile(join(directory, name)),
       })),
   );
+  // Certification can require source changes. Do not reserve an immutable tag
+  // (or mutate a draft) until this exact candidate has passed the complete policy.
+  if (!listed || listed.draft) await verifyCandidateCertification(candidate, directory);
   let release = listed;
   if (release) {
     git(["fetch", "origin", "refs/tags/" + tag + ":refs/tags/" + tag]);
@@ -392,6 +421,7 @@ export async function verifyPublishedCandidate(
     ...CLI_TARGETS.map((t) => "f5-" + candidate.version + "-" + t + ".tar.gz"),
     "f5-cli-release.json",
     "f5-release-candidate.json",
+    "f5-release-qualification.json",
     "SHA256SUMS",
   ];
   const names = release.assets.map((a) => a.name);
@@ -446,6 +476,10 @@ export async function verifyPublicRelease(candidate: ReleaseCandidate): Promise<
   validateCandidate(provenance);
   if (JSON.stringify(provenance) !== JSON.stringify(candidate))
     throw new Error("Public candidate provenance mismatch");
+  validatePublicationQualification(
+    await (await publicFetch(base + "f5-release-qualification.json")).json(),
+    candidate,
+  );
   const atom = await (
     await publicFetch("https://github.com/" + repository + "/releases.atom")
   ).text();

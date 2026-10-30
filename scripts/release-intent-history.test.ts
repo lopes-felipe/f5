@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -56,4 +56,58 @@ it("pins stable intent to the main merge commit rather than the preparation bran
   expect(JSON.parse(output)).toEqual([{ ...intent, sourceSha: merged }]);
   expect(merged).not.toBe(preparation);
   expect(Number(git(["rev-list", "--first-parent", "--count", base + ".." + merged]))).toBe(2);
+  const evaluate = (expression: string) =>
+    execFileSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        "import * as release from " +
+          JSON.stringify(pathToFileURL(module).href) +
+          "; console.log(JSON.stringify(" +
+          expression +
+          "));",
+      ],
+      { cwd: directory, env, encoding: "utf8" },
+    ).trim();
+  const identity = evaluate("release.publisherIdentity()");
+  writeFileSync(join(directory, "state.txt"), "an unrelated application change\n");
+  git(["add", "state.txt"]);
+  git(["commit", "-m", "unrelated application change"]);
+  expect(evaluate("release.publisherIdentity()")).toBe(identity);
+  const reports = join(directory, "docs/computer-certification");
+  mkdirSync(reports, { recursive: true });
+  writeFileSync(join(reports, "acceptance-0.1.2-codex-chrome-darwin-arm64.json"), "{}\n");
+  git(["add", "docs"]);
+  git(["commit", "-m", "accept the pinned candidate"]);
+  const evidence = git(["rev-parse", "HEAD"]);
+  expect(evaluate("release.acceptanceOnlyCommit(" + JSON.stringify(evidence) + ")")).toBe("true");
+  expect(evaluate("release.acceptanceOnlyCommit(" + JSON.stringify(merged) + ")")).toBe("false");
+  expect(evaluate("release.publisherIdentity()")).not.toBe(identity);
+  const afterEvidence = evaluate("release.publisherIdentity()");
+  mkdirSync(join(directory, "scripts"), { recursive: true });
+  writeFileSync(
+    join(directory, "scripts/reconcile-releases.ts"),
+    "// publisher implementation change\n",
+  );
+  git(["add", "scripts"]);
+  git(["commit", "-m", "change publisher"]);
+  expect(evaluate("release.publisherIdentity()")).not.toBe(afterEvidence);
+  const recovery = {
+    ...intent,
+    requestId: "00000000-0000-4000-8000-000000000002",
+    supersedes: intent.requestId,
+  };
+  writeFileSync(join(directory, "release-intent.json"), JSON.stringify(recovery) + "\n");
+  git(["add", "release-intent.json"]);
+  git(["commit", "-m", "explicit recovery"]);
+  const recovered = git(["rev-parse", "HEAD"]);
+  git(["revert", "--no-edit", recovered]);
+  const history = JSON.parse(
+    evaluate("release.stableRequests(" + JSON.stringify(git(["rev-parse", "HEAD"])) + ")"),
+  );
+  expect(history).toEqual([
+    { ...intent, sourceSha: merged },
+    { ...recovery, sourceSha: recovered },
+  ]);
 });

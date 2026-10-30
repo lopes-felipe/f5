@@ -2,6 +2,7 @@ import type { ReleaseCandidate } from "./release-candidate.ts";
 import { pendingStableRequests } from "./release-candidate.ts";
 import {
   git,
+  acceptanceOnlyCommit,
   repository,
   requireCi,
   releaseProfileAt,
@@ -41,6 +42,7 @@ export function publicationGate(candidate: ReleaseCandidate, qualifiedUpgradeKey
       if (trustedRun(run, "ci.yml") && !latest.has(run.head_sha)) latest.set(run.head_sha, run);
     for (const [sha, run] of latest) {
       if (!newer.has(sha) || run.status !== "completed" || run.conclusion !== "success") continue;
+      if (acceptanceOnlyCommit(sha)) continue;
       let qualified = false;
       try {
         requireCi(sha, releaseProfileAt(sha));

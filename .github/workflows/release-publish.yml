@@ -16,7 +16,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   reconcile:
-    if: github.repository == 'lopes-felipe/f5'
+    if: github.repository == 'lopes-felipe/f5' && github.ref == 'refs/heads/main'
+    environment: release-publish
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

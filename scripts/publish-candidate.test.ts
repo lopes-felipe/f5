@@ -26,6 +26,7 @@ const state = vi.hoisted(() => ({
   interrupt: false,
   partialInterrupt: false,
   certification: false,
+  certifyAfterUpload: false,
   foreignRun: false,
 }));
 vi.mock("./release/release-github.ts", async (importOriginal) => {
@@ -118,7 +119,10 @@ vi.mock("./lib/release-promotion.ts", async (importOriginal) => {
   const original = await importOriginal<typeof import("./lib/release-promotion.ts")>();
   return {
     ...original,
-    promotionProblems: () => (state.certification ? ["Missing exact artifact acceptance"] : []),
+    promotionProblems: () =>
+      state.certification || (state.certifyAfterUpload && state.assets.length)
+        ? ["Missing exact artifact acceptance"]
+        : [],
   };
 });
 import {
@@ -242,6 +246,7 @@ beforeEach(() => {
   state.interrupt = false;
   state.partialInterrupt = false;
   state.certification = false;
+  state.certifyAfterUpload = false;
   state.foreignRun = false;
 });
 describe("publisher integration with immutable platform fixtures", () => {
@@ -352,17 +357,54 @@ describe("publisher integration with immutable platform fixtures", () => {
     await expect(assembleCandidate(candidate, directory)).rejects.toThrow("digest");
     expect(state.writes).toEqual([]);
   });
-  it("blocks mismatched existing assets and missing certification without public changes", async () => {
+  it("blocks certification before reserving a tag or creating a draft", async () => {
     const { candidate, directory } = await candidateFixture();
     await assembleCandidate(candidate, directory);
     state.certification = true;
     await expect(verifyCandidateCertification(candidate, directory)).rejects.toThrow("acceptance");
     await expect(publishCandidate(candidate, directory)).rejects.toThrow("acceptance");
-    expect(state.draft).toBe(true);
+    expect(state.tag).toBe("");
+    expect(state.exists).toBe(false);
+    expect(state.writes).toEqual([]);
+  });
+  it("blocks mismatched complete assets without changing an existing draft", async () => {
+    const { candidate, directory } = await candidateFixture();
+    await assembleCandidate(candidate, directory);
+    state.interrupt = true;
+    await expect(publishCandidate(candidate, directory)).rejects.toThrow("interrupted");
     state.assets[0]!.digest = "sha256:" + "e".repeat(64);
     const writes = state.writes.length;
     await expect(publishCandidate(candidate, directory)).rejects.toThrow("differs");
     expect(state.writes).toHaveLength(writes);
+  });
+  it("retains the post-upload certification gate when mutable acceptance evidence changes", async () => {
+    const { candidate, directory } = await candidateFixture();
+    await assembleCandidate(candidate, directory);
+    state.certifyAfterUpload = true;
+    await expect(publishCandidate(candidate, directory)).rejects.toThrow("acceptance");
+    expect(state.exists).toBe(true);
+    expect(state.draft).toBe(true);
+    expect(state.writes.some((write) => write.includes("--draft=false"))).toBe(false);
+  });
+  it("publishes the exact requalification key and run with the unchanged candidate provenance", async () => {
+    const { candidate, directory } = await candidateFixture();
+    const qualification = {
+      key: "100-1-" + "a".repeat(24),
+      windowsBaselines: candidate.windowsBaselines,
+      cliBaseline: "0.1.1",
+      requalification: { runId: 300, attempt: 2 },
+    };
+    await assembleCandidate(candidate, directory, qualification);
+    expect(
+      JSON.parse(readFileSync(join(directory, "f5-release-qualification.json"), "utf8")),
+    ).toMatchObject({
+      ...qualification,
+      sourceSha: candidate.sourceSha,
+      candidateRun: 100,
+      candidateAttempt: 1,
+    });
+    await publishCandidate(candidate, directory);
+    expect(state.assets.some((a) => a.name === "f5-release-qualification.json")).toBe(true);
   });
 });
 it.each(["redirect failure", "interrupted body"])(

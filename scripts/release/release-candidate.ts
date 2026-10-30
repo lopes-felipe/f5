@@ -82,7 +82,11 @@ export function parseStableIntent(value: unknown): StableIntent {
     (!ID_PATTERN.test(intent.supersedes) || intent.supersedes === intent.requestId)
   )
     throw new Error("Invalid superseded stable request");
-  return intent;
+  return {
+    version: intent.version,
+    requestId: intent.requestId,
+    ...(intent.supersedes ? { supersedes: intent.supersedes } : {}),
+  };
 }
 export function candidateVersion(input: {
   sourceSha: string;
@@ -115,6 +119,27 @@ export function releaseComponents(profile: ReleaseProfile): string[] {
       (t) => "cli-" + t,
     ),
   ];
+}
+/** Bind operator acceptance to the retained candidate before a public tag exists. */
+export function candidateDmgSource(
+  candidate: ReleaseCandidate,
+  arch: string,
+  name: string,
+  size: number,
+  sha256: string,
+): string {
+  validateCandidate(candidate);
+  const file = candidate.artifacts
+    .find((a) => a.component === "desktop-mac-" + arch)
+    ?.receipt.files.find((f) => f.name === name);
+  if (
+    name !== "F5-" + candidate.version + "-" + arch + ".dmg" ||
+    !file ||
+    file.size !== size ||
+    file.sha256 !== sha256
+  )
+    throw new Error("Acceptance DMG does not match the exact candidate receipt");
+  return candidate.sourceSha;
 }
 export function validateReceipt(receipt: ComponentReceipt, plan: ReleasePlan): void {
   if (

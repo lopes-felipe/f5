@@ -11,6 +11,7 @@ import {
 } from "./lib/release-profile.ts";
 
 import { validateCandidate, type ReleaseCandidate } from "./release/release-candidate.ts";
+import { validatePublicationQualification } from "./release/release-upgrade-proof.ts";
 const CHECKSUMS = "SHA256SUMS";
 
 /** Requires exactly one `<sha256>  <name>` line for every other asset. */
@@ -57,7 +58,7 @@ export function verifyReleaseAssets(
     ...cli,
     "f5-cli-release.json",
     CHECKSUMS,
-    ...(candidate ? ["f5-release-candidate.json"] : []),
+    ...(candidate ? ["f5-release-candidate.json", "f5-release-qualification.json"] : []),
   ];
   if (candidate) {
     const provenance = JSON.parse(readFileSync(join(dir, "f5-release-candidate.json"), "utf8"));
@@ -69,6 +70,10 @@ export function verifyReleaseAssets(
       candidate.profile !== profile
     )
       throw new Error("Release provenance manifest mismatch");
+    const qualification = JSON.parse(
+      readFileSync(join(dir, "f5-release-qualification.json"), "utf8"),
+    );
+    validatePublicationQualification(qualification, candidate);
   }
   const allowed = new Set([...required, ...desktop.optionalBlockmaps]);
   const names = readdirSync(dir);

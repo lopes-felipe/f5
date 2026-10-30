@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   candidateVersion,
+  candidateDmgSource,
   parseStableIntent,
   pendingStableRequests,
   releaseComponents,
@@ -142,6 +143,21 @@ describe("release ordering and deterministic versions", () => {
   });
 });
 describe("candidate identity and immutable uploads", () => {
+  it("binds pre-tag acceptance to the exact candidate DMG, architecture and source", () => {
+    const candidate = fixtureCandidate();
+    const component = candidate.artifacts.find((a) => a.component === "desktop-mac-arm64")!;
+    const file = { name: "F5-" + candidate.version + "-arm64.dmg", size: 20, sha256: hash };
+    const bound = {
+      ...candidate,
+      artifacts: candidate.artifacts.map((a) =>
+        a === component ? { ...a, receipt: { ...a.receipt, files: [file] } } : a,
+      ),
+    };
+    expect(candidateDmgSource(bound, "arm64", file.name, 20, hash)).toBe(next);
+    expect(() => candidateDmgSource(bound, "x64", file.name, 20, hash)).toThrow("DMG");
+    expect(() => candidateDmgSource(bound, "arm64", file.name, 21, hash)).toThrow("DMG");
+    expect(() => candidateDmgSource(bound, "arm64", file.name, 20, "e".repeat(64))).toThrow("DMG");
+  });
   it("keeps the native Windows ARM64 Bun exception in the immutable toolchain plan", () => {
     const fixture = fixtureCandidate();
     const candidate = {

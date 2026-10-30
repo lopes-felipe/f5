@@ -3,6 +3,53 @@ import type { ReleaseCandidate } from "./release-candidate.ts";
 import { publishedWindowsBaselines } from "../published-windows-upgrade.ts";
 import type { PublishedReleaseSummary } from "../lib/release-profile.ts";
 import { compareCliReleaseVersions } from "@t3tools/shared/cliRelease";
+export interface PublicationQualification {
+  readonly key: string | null;
+  readonly windowsBaselines: ReleaseCandidate["windowsBaselines"];
+  readonly cliBaseline: string | null;
+  readonly requalification: { readonly runId: number; readonly attempt: number } | null;
+}
+export function validatePublicationQualification(
+  value: unknown,
+  candidate: ReleaseCandidate,
+): void {
+  if (!value || typeof value !== "object")
+    throw new Error("Missing release qualification manifest");
+  const proof = value as PublicationQualification & {
+    schemaVersion: number;
+    sourceSha: string;
+    candidateRun: number;
+    candidateAttempt: number;
+  };
+  const prefix = candidate.runId + "-" + candidate.runAttempt + "-";
+  if (
+    proof.schemaVersion !== 1 ||
+    proof.sourceSha !== candidate.sourceSha ||
+    proof.candidateRun !== candidate.runId ||
+    proof.candidateAttempt !== candidate.runAttempt ||
+    (proof.key !== null &&
+      (typeof proof.key !== "string" ||
+        !proof.key.startsWith(prefix) ||
+        !/^[a-f0-9]{24}$/.test(proof.key.slice(prefix.length)))) ||
+    typeof proof.cliBaseline !== "string" ||
+    !/^\d+\.\d+\.\d+$/.test(proof.cliBaseline) ||
+    !Array.isArray(proof.windowsBaselines) ||
+    proof.windowsBaselines.some(
+      (baseline) =>
+        !baseline ||
+        !/^\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(baseline.baseline) ||
+        !["latest", "beta"].includes(baseline.baselineChannel) ||
+        !["latest", "beta"].includes(baseline.clientChannel),
+    ) ||
+    (proof.requalification !== null &&
+      (!proof.key ||
+        !Number.isSafeInteger(proof.requalification?.runId) ||
+        proof.requalification.runId < 1 ||
+        !Number.isSafeInteger(proof.requalification?.attempt) ||
+        proof.requalification.attempt < 1))
+  )
+    throw new Error("Release qualification manifest mismatch");
+}
 
 export function upgradePlan(
   candidate: ReleaseCandidate,

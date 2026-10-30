@@ -18,7 +18,8 @@ import { pipeline } from "node:stream/promises";
 import { parse } from "yaml";
 import { parseReleaseProfile } from "../lib/release-profile.ts";
 import { artifactEntries } from "./release-publication.ts";
-import { parseStableIntent, SHA_PATTERN, type StableRequest } from "./release-candidate.ts";
+import { SHA_PATTERN, type StableRequest } from "./release-candidate.ts";
+import { resolveStableHistory, type ReleaseIntent } from "./release-intent.ts";
 import {
   assertReleaseCiJobs,
   requiredReleaseCiJobs,
@@ -111,7 +112,7 @@ export function show(sha: string, path: string): string | undefined {
     throw error;
   }
 }
-export function stableRequests(sha: string): StableRequest[] {
+export function stableRequests(sha: string, proposed?: ReleaseIntent): StableRequest[] {
   if (!SHA_PATTERN.test(sha)) throw new Error("Invalid stable request history SHA");
   const commits = git([
     "log",
@@ -124,11 +125,54 @@ export function stableRequests(sha: string): StableRequest[] {
   ])
     .split("\n")
     .filter(Boolean);
-  return commits.map((sourceSha) => {
-    const text = show(sourceSha, "release-intent.json");
-    if (!text) throw new Error("Stable release intent must not be removed");
-    return { ...parseStableIntent(JSON.parse(text)), sourceSha };
-  });
+  const snapshots = commits.map((sourceSha) => ({
+    sourceSha,
+    text: show(sourceSha, "release-intent.json"),
+  }));
+  if (proposed) snapshots.push({ sourceSha: sha, text: JSON.stringify(proposed) });
+  return resolveStableHistory(snapshots);
+}
+/** Acceptance reports are evidence for an existing candidate, never a new beta source. */
+export function acceptanceOnlyCommit(sha: string): boolean {
+  const names = git([
+    "diff-tree",
+    "--root",
+    "--no-commit-id",
+    "--name-only",
+    "-r",
+    "--first-parent",
+    sha,
+  ])
+    .split("\n")
+    .filter(Boolean);
+  return (
+    names.length > 0 &&
+    names.every((name) => /^docs\/computer-certification\/acceptance-[^/]+\.json$/.test(name))
+  );
+}
+/** Hash the publisher and its runtime inputs, not unrelated changes at main's tip. */
+export function publisherIdentity(): string {
+  return createHash("sha256")
+    .update(
+      git([
+        "ls-tree",
+        "-r",
+        "--full-tree",
+        "HEAD",
+        "--",
+        "scripts",
+        "packages",
+        "package.json",
+        "bun.lock",
+        ".node-version",
+        ".bun-version",
+        ".github/actions/setup",
+        ".github/workflows/release-publish.yml",
+        "docs/computer-certification",
+      ]),
+    )
+    .digest("hex")
+    .slice(0, 24);
 }
 export interface RemoteArtifact {
   id: number;
@@ -171,7 +215,7 @@ export function trustedRun(run: WorkflowRun, workflow: string): boolean {
     SHA_PATTERN.test(run.head_sha)
   );
 }
-export function requireCi(sha: string, profile: "all" | "windows"): CiRun {
+export function requireCi(sha: string, profile: "all" | "windows"): WorkflowRun {
   const response = api<{ workflow_runs: WorkflowRun[] }>(
     "actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=" + sha + "&per_page=100",
   );
@@ -193,7 +237,7 @@ export function requireCi(sha: string, profile: "all" | "windows"): CiRun {
     jobPages.flatMap((p) => p.jobs),
     requiredReleaseCiJobs(parse(workflowText) as CiWorkflow, profile),
   );
-  return run;
+  return response.workflow_runs.find((entry) => entry.id === run.id)!;
 }
 export async function hashFile(file: string): Promise<string> {
   const hash = createHash("sha256");

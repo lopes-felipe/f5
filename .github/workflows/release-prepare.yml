@@ -2,10 +2,17 @@ name: Prepare stable release
 on:
   workflow_dispatch:
     inputs:
-      version: { description: Stable version, required: true, type: string }
+      version: { description: Stable version, type: string, default: "" }
       request_id: { description: UUID identifying this request, required: true, type: string }
       supersedes:
         { description: Failed unpublished request UUID to recover, type: string, default: "" }
+      withdraws:
+        {
+          description: Comma-separated request UUIDs or invalid intent commit SHAs,
+          type: string,
+          default: "",
+        }
+      reason: { description: Reason for withdrawal, type: string, default: "" }
 permissions:
   contents: read
 concurrency:
@@ -14,6 +21,7 @@ concurrency:
 jobs:
   prepare:
     if: github.ref == 'refs/heads/main'
+    environment: release-publish
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -40,3 +48,5 @@ jobs:
           VERSION: ${{ inputs.version }}
           REQUEST_ID: ${{ inputs.request_id }}
           SUPERSEDES: ${{ inputs.supersedes }}
+          WITHDRAWS: ${{ inputs.withdraws }}
+          WITHDRAW_REASON: ${{ inputs.reason }}

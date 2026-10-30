@@ -746,16 +746,18 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   if (stagePackageJson.patchedDependencies)
     yield* fs.copy(path.join(repoRoot, "patches"), path.join(stageAppDir, "patches"));
 
-  const stagedBun = (args: TemplateStringsArray, ...values: string[]) =>
+  const stagedInstall = (args: string[]) =>
     runCommand(
-      ChildProcess.make({
-        cwd: stageAppDir,
-        env: withoutSigningCredentials(process.env),
-        extendEnv: false,
-        ...commandOutputOptions(options.verbose),
-        // Windows needs shell mode to resolve .cmd shims (e.g. bun.cmd).
-        shell: process.platform === "win32",
-      })(args, ...values),
+      ChildProcess.make(
+        process.execPath,
+        [path.join(repoRoot, "scripts/retry-install.ts"), ...args],
+        {
+          cwd: stageAppDir,
+          env: withoutSigningCredentials(process.env),
+          extendEnv: false,
+          ...commandOutputOptions(options.verbose),
+        },
+      ),
     );
   // `bun install --production` never saves a lockfile, so resolve one first and
   // audit it before anything is installed or any install script runs. Seeding the
@@ -767,7 +769,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     seedStagedLockfile(rootLock, stagePackageJson),
   );
   yield* Effect.log("[desktop-artifact] Resolving staged dependencies...");
-  yield* stagedBun`node ${path.join(repoRoot, "scripts/retry-install.ts")} --lockfile-only --ignore-scripts`;
+  yield* stagedInstall(["--lockfile-only", "--ignore-scripts"]);
 
   yield* Effect.try({
     try: () =>
@@ -776,7 +778,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       new BuildScriptError({ message: `Staged dependency audit failed: ${String(error)}` }),
   });
   yield* Effect.log("[desktop-artifact] Installing staged production dependencies...");
-  yield* stagedBun`node ${path.join(repoRoot, "scripts/retry-install.ts")} --production --frozen-lockfile`;
+  yield* stagedInstall(["--production", "--frozen-lockfile"]);
   const { patchedDependencies } = stagePackageJson;
   if (patchedDependencies)
     yield* Effect.try({

@@ -44,6 +44,11 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           bun run typecheck
+      - name: Validate release intent on the merge result
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/check-release-intent.ts
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: Boot server under Bun
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |

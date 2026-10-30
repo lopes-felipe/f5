@@ -40,6 +40,21 @@ publication. Missing artifacts require explicit recovery, not an implicit rebuil
 Once publication has reserved a version's immutable tag, resume that exact
 candidate's publication; a recovery PR cannot move the reserved tag to another source.
 
+To abandon a pending request, open an explicit withdrawal PR:
+
+```sh
+bun run release:prepare --withdraw <request-uuid> --reason "Abandon this release"
+```
+
+Withdrawals retain the original history, remove the request and its recovery lineage
+from the publication queue, and restore package versions to the remaining stable
+base. An invalid or deleted historical intent can be acknowledged by its exact
+commit SHA instead; comma-separated targets are supported. Reverting an intent
+never repins a previously seen UUID. A reserved tag remains immutable; after
+abandoning it, prepare a higher unused stable version. Required static CI checks
+the PR merge result, package versions and pending-request constraints. Require
+CODEOWNERS review and up-to-date `CI result` checks for intent edits.
+
 Stable releases become **Latest**. Betas are prereleases and never become Latest.
 Global version ordering is enforced across both channels; stable clients retain
 stable preferences, beta clients retain beta preferences, and no path downgrades.
@@ -49,6 +64,9 @@ stable preferences, beta clients retain beta preferences, and no path downgrades
 - `release.yml` plans the version and builds four desktops (macOS arm64/x64, Linux
   x64 and Windows x64) and five native CLI archives. It starts alongside main CI.
   It uses pinned runtimes, Bun/Electron/builder caches and the Windows Rust cache.
+  Every main merge currently builds the full candidate, including signing and
+  notarization. Supersession coalesces publication, not build costs. Stable builds
+  are never cancelled by a later merge.
 - macOS packages are signed/notarized. The final mounted DMG passes codesign,
   stapler, Gatekeeper and the bundled Claude SDK spawn check on its native runner.
 - Every native CLI archive passes clean-PATH runtime/server/backup smoke, a real
@@ -63,6 +81,8 @@ stable preferences, beta clients retain beta preferences, and no path downgrades
   and runner image to each file's size and SHA-256. The candidate manifest binds
   those receipts to immutable Actions artifact IDs and ZIP digests. Failed-job
   reruns can retain successful components from earlier attempts of the same run.
+  `f5-release-qualification.json` records the actual publication baselines and
+  upgrade proof key/run/attempt separately from the original candidate provenance.
 - `release-publish.yml` reconciles on CI/candidate/upgrade completion and every
   ten minutes. A shared concurrency group serializes both channels; selection
   comes from first-parent history and stable intent, not event arrival order.
@@ -91,8 +111,11 @@ stable preferences, beta clients retain beta preferences, and no path downgrades
   the original multi-gigabyte components.
 - `release-summary.json` records source/version, build run/attempt, merge-to-public
   and candidate durations, retries and artifact reuse. Shadow verification is
-  memoized by candidate/baseline/publisher identities to avoid repeated large
-  downloads on scheduled events.
+  memoized by candidate/baseline identities plus a content hash of publisher
+  tooling, dependencies and certification inputs. Unrelated main merges do not
+  invalidate that verification. Reconciliation qualifies the newest passing
+  source only; a stable barrier qualifies only its pinned source. Failed build
+  and upgrade-proof runs fail reconciliation visibly.
 
 The desktop profile and asset contract remain in `scripts/lib/release-profile.ts`.
 `release-profile.json` currently ships `all`. Once any public Mac/Linux feed
@@ -101,7 +124,21 @@ exists, neither preparation nor publication may revert to Windows-only.
 The existing certification gates remain mandatory. A certifying integration record
 requires exact-source/exact-DMG acceptance evidence on main. Missing evidence blocks
 shadow verification and publication; an agent must not fabricate or weaken it.
+Certification runs before any tag or draft is created, then again after uploads.
 The mounted runtime smoke is not authenticated provider or physical-input evidence.
+When a record certifies an integration, download/install the retained candidate
+DMG and run the existing acceptance checklist against its trusted build run:
+
+```sh
+bun run integrations:accept --integration codex-chrome --candidate-run <run-id> --artifact <candidate.dmg>
+```
+
+This binds the report to the candidate SHA and DMG receipt before a tag exists.
+Merge only the resulting acceptance JSON reports under
+`docs/computer-certification/acceptance-*.json`. Such evidence-only commits do
+not supersede the candidate they certify; code or other documentation changes
+still produce a newer eligible beta. Existing certification policy can hold a
+candidate until its required operator evidence exists; it is never skipped.
 See [agent-browser.md](agent-browser.md) for certification procedures.
 
 ## One-time maintainer setup
@@ -110,8 +147,11 @@ Repository security and credentials are maintained by a human. These settings
 must be completed before enabling publication:
 
 1. Install a dedicated GitHub App on **this repository only**, with Contents,
-   Pull requests and Actions write permissions. Set repository variable
-   `F5_RELEASE_APP_ID` and repository secret `F5_RELEASE_APP_PRIVATE_KEY`.
+   Pull requests and Actions write permissions. Create a `release-publish`
+   environment restricted to `main`, without per-run approval. Set environment
+   variable `F5_RELEASE_APP_ID` and environment secret `F5_RELEASE_APP_PRIVATE_KEY`
+   there. Never keep a repository- or organization-scoped copy of the key.
+   Both preparation and publication jobs declare this environment.
    Preparation requests Contents/Pull requests write; publication requests
    Contents/Actions write. App-authored preparation PRs start normal CI without
    the extra approval needed by token-authored PRs.
@@ -160,8 +200,10 @@ Keep existing public releases untouched throughout rollout.
 
 To retry publication, rerun/dispatch **Release publisher**. To retry a failed
 upgrade-only qualification, rerun its failed jobs; reconciliation reuses its proof.
-For a corrupt or mismatching draft asset, stop and investigate: automation never
-deletes or replaces assets. An administrator handles any destructive cleanup.
+For a corrupt or mismatching uploaded asset, stop and investigate: automation
+never deletes or replaces complete assets or assets in public releases. Only
+recognized incomplete `starter` uploads in a matching draft can be removed
+automatically for retry. An administrator handles other destructive cleanup.
 A failed public availability check can be retried after publication without
 replacing or rebuilding the release.
 

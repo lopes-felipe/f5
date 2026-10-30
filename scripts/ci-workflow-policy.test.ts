@@ -4,6 +4,7 @@ import { parse } from "yaml";
 import { inventories } from "./ci-test-summary.ts";
 
 interface Job {
+  environment?: string;
   needs?: string[];
   if?: string;
   "continue-on-error"?: boolean;
@@ -36,6 +37,25 @@ export function assertWorkflowPolicy(jobs: Record<string, Job>) {
 }
 
 describe("CI workflow policy", () => {
+  it("isolates release App credentials in a main-only environment for both privileged jobs", () => {
+    for (const [file, id] of [
+      ["release-publish.yml", "reconcile"],
+      ["release-prepare.yml", "prepare"],
+    ]) {
+      const job = readWorkflow(file!).jobs[id!]!;
+      expect(job.environment).toBe("release-publish");
+      expect(job.if).toContain("github.ref == 'refs/heads/main'");
+    }
+  });
+  it("gates intent validation on the merge result through required static CI", () => {
+    expect(
+      workflow.jobs.static!.steps!.some(
+        (step) => step.run === "node scripts/check-release-intent.ts",
+      ),
+    ).toBe(true);
+    const owners = readFileSync(new URL("../.github/CODEOWNERS", import.meta.url), "utf8");
+    expect(owners).toContain("/release-intent.json @lopes-felipe");
+  });
   it("installs dependencies before minting the preparation App token and never persists credentials", () => {
     const preparation = readWorkflow("release-prepare.yml");
     const steps = preparation.jobs.prepare!.steps!;
