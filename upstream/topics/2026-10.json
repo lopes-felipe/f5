@@ -31726,11 +31726,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-30T19:36:57.528Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-21070",
-      "status": "port",
+      "reason": "f5 has no WSL environment support (no `DesktopWslEnvironment` or WSL pre-warm), so there is no timeout to raise.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop"
