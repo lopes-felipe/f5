@@ -26,15 +26,30 @@ export function resolveAndPersistPreferredEditor(
   return editor ?? null;
 }
 
-export async function openInPreferredEditor(api: NativeApi, targetPath: string): Promise<EditorId> {
-  return withEditorOpenAuthorization(targetPath, async (authorization) => {
-    const { availableEditors } = await api.server.getConfig();
-    const editor = resolveAndPersistPreferredEditor(availableEditors);
-    if (!editor) throw new Error("No available editors found.");
-    if (authorization) await api.shell.openInEditor(targetPath, editor, authorization);
-    else await api.shell.openInEditor(targetPath, editor);
-    return editor;
-  });
+/**
+ * A target that still needs async work (a workspace lookup) is passed as `resolveTarget`. It runs
+ * after the grant is captured, so a slow lookup cannot outlive the click's gesture; the grant then
+ * cannot name the final path.
+ */
+export async function openInPreferredEditor(
+  api: NativeApi,
+  targetPath: string,
+  resolveTarget?: () => Promise<string>,
+): Promise<EditorId> {
+  return withEditorOpenAuthorization(
+    resolveTarget ? undefined : targetPath,
+    async (authorization) => {
+      const [{ availableEditors }, target] = await Promise.all([
+        api.server.getConfig(),
+        resolveTarget ? resolveTarget() : targetPath,
+      ]);
+      const editor = resolveAndPersistPreferredEditor(availableEditors);
+      if (!editor) throw new Error("No available editors found.");
+      if (authorization) await api.shell.openInEditor(target, editor, authorization);
+      else await api.shell.openInEditor(target, editor);
+      return editor;
+    },
+  );
 }
 
 /** Capture before async work; release unused grants for other editors and failed queries. */

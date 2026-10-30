@@ -19,8 +19,19 @@ beforeEach(() => {
 it("preserves the full target and position when opening an editor", async () => {
   const target = "/tmp/report.json:4:2";
   await openFileInEditor(target);
-  expect(mocks.open).toHaveBeenCalledWith(mocks.api, target);
+  expect(mocks.open).toHaveBeenCalledWith(mocks.api, target, undefined);
   expect(mocks.toast).not.toHaveBeenCalled();
+});
+
+it("reports the resolved target when a looked-up file fails to open", async () => {
+  mocks.open.mockImplementation(async (_api, _target, resolveTarget: () => Promise<string>) => {
+    await resolveTarget();
+    throw new Error("Editor launch failed");
+  });
+  await openFileInEditor("/repo/report.ts", undefined, async () => "/repo/src/report.ts");
+  expect(mocks.toast).toHaveBeenCalledWith(
+    expect.objectContaining({ description: "/repo/src/report.ts: Editor launch failed" }),
+  );
 });
 
 it("reports rejected editor handoffs with the file path", async () => {

@@ -1458,6 +1458,14 @@ export function deriveLiveWorkActivity(
   return { kind: "idle" };
 }
 
+// Activities keep their identity across store updates, so a streamed append
+// reuses every earlier row instead of rebuilding it. Entries are never mutated
+// after derivation; later passes copy the ones they change.
+const workLogEntryByActivity = new WeakMap<
+  OrchestrationThreadActivity,
+  { readonly cacheKey: string; readonly entry: WorkLogEntry }
+>();
+
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   latestTurnId: TurnId | undefined,
@@ -1550,8 +1558,21 @@ export function deriveWorkLogEntries(
     .filter((activity) => activity.kind !== "task.started" && activity.kind !== "task.completed")
     .filter((activity) => activity.summary !== "Checkpoint captured")
     .map((activity) => {
-      const toolPayload = readToolActivityPayload(activity.payload);
       const payload = workLogPayload(activity);
+      // "User input submitted" buries what was asked: lead with the question and keep the
+      // answer as the row's detail.
+      const answeredQuestion =
+        activity.kind === "user-input.resolved" && typeof payload?.requestId === "string"
+          ? userInputQuestionByRequestId.get(payload.requestId)
+          : undefined;
+      // Only the warning label and the answered question depend on more than the activity.
+      const cacheKey =
+        activity.kind === "runtime.warning" ? runtimeWarningVisibility : (answeredQuestion ?? "");
+      const cached = workLogEntryByActivity.get(activity);
+      if (cached?.cacheKey === cacheKey) {
+        return cached.entry;
+      }
+      const toolPayload = readToolActivityPayload(activity.payload);
       const diagnostic = diagnosticFromActivity(activity, payload);
       const warningCategory = asTrimmedString(payload?.category);
       const usageLimit =
@@ -1576,12 +1597,6 @@ export function deriveWorkLogEntries(
                 ? payload.message
                 : activity.summary
               : activity.summary;
-      // "User input submitted" buries what was asked: lead with the question and keep the
-      // answer as the row's detail.
-      const answeredQuestion =
-        activity.kind === "user-input.resolved" && typeof payload?.requestId === "string"
-          ? userInputQuestionByRequestId.get(payload.requestId)
-          : undefined;
       const answerPreview = answeredQuestion ? userInputAnswerPreview(payload?.answers) : "";
       const entry: WorkLogEntry = {
         id: activity.id,
@@ -1613,6 +1628,12 @@ export function deriveWorkLogEntries(
         const detail = stripTrailingExitCode(detailSource).output;
         if (detail) {
           entry.detail = detail;
+        }
+      } else if (activity.kind === "runtime.error" && !usageLimit) {
+        // The row label is the generic "Runtime error"; the retained message says what failed.
+        const message = asTrimmedString(payload?.message);
+        if (message && collapseWhitespace(message) !== collapseWhitespace(entry.label)) {
+          entry.detail = message;
         }
       }
       if (toolPayload?.command) {
@@ -1757,6 +1778,7 @@ export function deriveWorkLogEntries(
         }
       }
       entry.isIssue = usageLimit !== null || isWorkLogIssue(entry);
+      workLogEntryByActivity.set(activity, { cacheKey, entry });
       return entry;
     });
 
