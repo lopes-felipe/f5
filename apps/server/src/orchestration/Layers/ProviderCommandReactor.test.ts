@@ -1066,6 +1066,43 @@ describe("ProviderCommandReactor", () => {
     expect(harness.sendTurn).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["steer", "continuation"] as const)(
+    "reports malformed scratch workspace failures for the %s operation",
+    async (operation) => {
+      const harness = await createHarness({ bridgeTurnDelivery: false });
+      const threadId = await scratchThread(harness);
+      const intent = await pendingTurn(harness, threadId, operation);
+      const model = await Effect.runPromise(harness.engine.getReadModel());
+      Object.assign(model.threads.find((thread) => thread.id === threadId)!, {
+        scratchPath: null,
+      });
+      const request =
+        operation === "steer"
+          ? {
+              ...intent,
+              type: "thread.turn-steer-requested" as const,
+              payload: { ...intent.payload, expectedTurnId: TurnId.makeUnsafe("active-turn") },
+            }
+          : {
+              ...intent,
+              payload: { ...intent.payload, continuationRequestId: "native-wake" },
+            };
+      const failure = await Effect.runPromise(
+        harness.reactor.deliverTurnStart(request).pipe(Effect.flip, Effect.scoped),
+      );
+      expect(failure).toMatchObject({ certainty: "not_sent", retryable: false });
+      const failed = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+        (thread) => thread.id === threadId,
+      )!;
+      expect(failed.activities.at(-1)).toMatchObject({
+        kind: `provider.turn.${operation}.failed`,
+        summary: `Provider turn ${operation} failed`,
+      });
+      expect(harness.startSession).not.toHaveBeenCalled();
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(["native", "summary"] as const)(
     "recovers missing native history only when the latest compaction is %s",
     async (kind) => {

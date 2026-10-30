@@ -50,19 +50,23 @@ const COLOR_CLASS_BY_NAME: Readonly<Record<ProjectIconColor, string>> = {
   pink: "text-pink-500",
 };
 
-export interface ProjectIconProps {
-  readonly projectId?: ProjectId | undefined;
-  readonly kind?: ProjectKind | undefined;
+export type ProjectIconProps = (
+  | { readonly kind: "scratch"; readonly projectId?: ProjectId | undefined }
+  | { readonly kind?: ProjectKind | undefined; readonly projectId: ProjectId }
+) & {
   readonly name?: string;
   readonly icon?: ProjectIconDefinition | null | undefined;
   readonly className?: string;
-}
+};
 
 /** Manual project icon, then checked-in/discovered favicon, then a project monogram. */
 export function ProjectIcon({ projectId, kind, name, icon, className }: ProjectIconProps) {
   const [imageFailed, setImageFailed] = useState(false);
   const origin = useMemo(() => getServerHttpOrigin(), []);
-  const src = `${origin}/api/project-favicon?projectId=${encodeURIComponent(projectId ?? "")}`;
+  const src =
+    projectId === undefined
+      ? undefined
+      : `${origin}/api/project-favicon?projectId=${encodeURIComponent(projectId)}`;
 
   useEffect(() => setImageFailed(false), [src]);
 
