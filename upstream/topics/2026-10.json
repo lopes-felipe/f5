@@ -45093,11 +45093,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
-      "decidedAt": "2026-10-30T00:20:18.818Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-30T00:21:20.403Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-24556",
-      "status": "port",
+      "reason": "f5's server handles HTTP in a plain Node request handler with no tracing middleware, so request URLs never reach server.trace.ndjson or the OTLP collector.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server",
