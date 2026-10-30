@@ -1,6 +1,7 @@
 import { UsageModelAliases, UsagePriceOverride } from "./usage";
 import { AgentBridgeSettings, AgentBridgeSettingsPatch } from "./agentBridge";
 import { Effect } from "effect";
+import * as Combiner from "effect/Combiner";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { IsoDateTime, ProjectId, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas";
@@ -457,6 +458,22 @@ export const ProjectSettingsOverrides = Schema.Struct({
 });
 export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
 
+// The rest record also visits known keys; keep the struct's decoded (or encoded) value for them.
+const keepStructValue = Combiner.first<readonly [string, unknown]>();
+const UnknownOverrideKeys = Schema.Record(Schema.String, Schema.Unknown, {
+  keyValueCombiner: { decode: keepStructValue, encode: keepStructValue },
+});
+
+// Whole-entry writers must round-trip unknown keys; keep the type closed to catch misspellings.
+export const keepUnknownOverrideKeys = <Entry extends Schema.Struct<Schema.Struct.Fields>>(
+  entry: Entry,
+): Schema.Codec<
+  Entry["Type"],
+  Entry["Encoded"],
+  Entry["DecodingServices"],
+  Entry["EncodingServices"]
+> => Schema.StructWithRest(entry, [UnknownOverrideKeys]);
+
 export const ServerSettings = Schema.Struct({
   removeAgentCreditsOnMerge: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   autoSettleOnPullRequestMerge: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
@@ -472,9 +489,10 @@ export const ServerSettings = Schema.Struct({
   worktreeSubmodules: WorktreeSubmodules.pipe(
     Schema.withDecodingDefault(() => "recursive" as const),
   ),
-  projectSettingsOverrides: Schema.Record(ProjectId, ProjectSettingsOverrides).pipe(
-    Schema.withDecodingDefault(() => ({})),
-  ),
+  projectSettingsOverrides: Schema.Record(
+    ProjectId,
+    keepUnknownOverrideKeys(ProjectSettingsOverrides),
+  ).pipe(Schema.withDecodingDefault(() => ({}))),
   clientSettingMigrations: Schema.Record(Schema.String, IsoDateTime).pipe(
     Schema.withDecodingDefault(() => ({})),
   ),
@@ -691,7 +709,7 @@ export const ServerSettingsPatch = Schema.Struct({
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
   worktreeSubmodules: Schema.optionalKey(WorktreeSubmodules),
   projectSettingsOverrides: Schema.optionalKey(
-    Schema.Record(ProjectId, Schema.NullOr(ProjectSettingsOverrides)),
+    Schema.Record(ProjectId, Schema.NullOr(keepUnknownOverrideKeys(ProjectSettingsOverrides))),
   ),
   gitAuthorName: Schema.optionalKey(Schema.String),
   gitAuthorEmail: Schema.optionalKey(Schema.String),
@@ -813,7 +831,7 @@ export const ProjectSettingsResult = Schema.Struct({
   skillScanWarnings: Schema.optional(Schema.Array(ProjectSkillScanWarning)),
   settings: ServerSettings,
   sources: Schema.Record(Schema.Literals(PROJECT_SCOPED_SERVER_SETTING_KEYS), ProjectSettingSource),
-  overrides: ProjectSettingsOverrides,
+  overrides: keepUnknownOverrideKeys(ProjectSettingsOverrides),
 });
 export type ProjectSettingsResult = typeof ProjectSettingsResult.Type;
 export const MigrateClientSettingInput = Schema.Union([
