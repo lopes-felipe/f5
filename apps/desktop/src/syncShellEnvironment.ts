@@ -8,6 +8,11 @@ const CA_TRUST_NAMES = ["SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS"] 
 
 const LOCALE_NAMES = ["LANG", "LC_ALL", "LC_CTYPE"] as const;
 
+/**
+ * Resolves true only when the backend can skip its own probe: the Windows PATH
+ * was hydrated, or the macOS login shell returned a PATH. A timed-out probe
+ * (cold boot, first launch after an update) leaves the server to repair PATH.
+ */
 export function syncShellEnvironment(
   env: NodeJS.ProcessEnv = process.env,
   options: {
@@ -17,7 +22,7 @@ export function syncShellEnvironment(
     windowsPathExists?: (path: string) => Promise<boolean>;
     warn?: (message: string) => void;
   } = {},
-): Promise<void> {
+): Promise<boolean> {
   const platform = options.platform ?? process.platform;
   if (platform === "win32") {
     return ensureWindowsPathHydrated(env, {
@@ -27,10 +32,11 @@ export function syncShellEnvironment(
         : {}),
       ...(options.windowsPathExists ? { pathExists: options.windowsPathExists } : {}),
       warn: options.warn ?? ((message) => console.warn(`[environment] ${message}`)),
-    }).then(() => undefined);
+    }).then(() => true);
   }
-  if (platform !== "darwin") return Promise.resolve();
+  if (platform !== "darwin") return Promise.resolve(false);
 
+  let prepared = false;
   try {
     const shell = env.SHELL ?? "/bin/zsh";
     const shellEnvironment = (options.readEnvironment ?? readEnvironmentFromLoginShell)(shell, [
@@ -51,7 +57,8 @@ export function syncShellEnvironment(
       }
     }
 
-    if (shellEnvironment.PATH) {
+    if (shellEnvironment.PATH?.trim()) {
+      prepared = true;
       env.PATH = shellEnvironment.PATH;
       // mise's record of the PATH entries it added. It must travel with the
       // shell's PATH, or `mise x` can rebuild PATH behind a same-named wrapper
@@ -66,5 +73,5 @@ export function syncShellEnvironment(
     // Keep inherited environment if shell lookup fails.
   }
   if (LOCALE_NAMES.every((name) => !env[name]?.trim())) env.LC_CTYPE = "en_US.UTF-8";
-  return Promise.resolve();
+  return Promise.resolve(prepared);
 }

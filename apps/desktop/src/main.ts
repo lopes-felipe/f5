@@ -195,7 +195,10 @@ import { MainRendererCrashRecovery, mainRendererCrashScreenUrl } from "./rendere
 import { normalizeThreadIdForDesktopWindow, rendererUrlForThread } from "./rendererWindowUrl";
 import { resolveContextMenuPopupPosition } from "./contextMenuPosition";
 
-const shellEnvironmentReady = syncShellEnvironment();
+let shellEnvironmentPrepared = false;
+const shellEnvironmentReady = syncShellEnvironment().then((prepared) => {
+  shellEnvironmentPrepared = prepared;
+});
 
 const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
 const CONFIRM_CHANNEL = "desktop:confirm";
@@ -2854,6 +2857,7 @@ function backendEnv(runtime: BackendRuntime = defaultBackend): NodeJS.ProcessEnv
     stateDir: STATE_DIR,
     stateDirSource: STATE_DIR_CONFIG.source,
     authToken: runtime.backendAuthToken,
+    shellEnvironmentPrepared,
   });
 }
 

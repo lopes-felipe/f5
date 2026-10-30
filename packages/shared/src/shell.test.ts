@@ -1,6 +1,12 @@
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  buildEnvironmentCaptureCommand,
   extractPathFromShellOutput,
   readEnvironmentFromLoginShell,
   readPathFromLoginShell,
@@ -113,7 +119,7 @@ describe("readEnvironmentFromLoginShell", () => {
     });
   });
 
-  it("preserves surrounding whitespace in captured values", () => {
+  it("preserves multiline values and surrounding whitespace", () => {
     const execFile = vi.fn<
       (
         file: string,
@@ -121,13 +127,75 @@ describe("readEnvironmentFromLoginShell", () => {
         options: { encoding: "utf8"; timeout: number },
       ) => string
     >(() =>
-      ["__T3CODE_ENV_CUSTOM_VAR_START__", "  padded value  ", "__T3CODE_ENV_CUSTOM_VAR_END__"].join(
-        "\n",
-      ),
+      [
+        "__T3CODE_ENV_CUSTOM_VAR_START__",
+        "  first\nsecond  ",
+        "__T3CODE_ENV_CUSTOM_VAR_END__",
+      ].join("\n"),
     );
 
     expect(readEnvironmentFromLoginShell("/bin/zsh", ["CUSTOM_VAR"], execFile)).toEqual({
-      CUSTOM_VAR: "  padded value  ",
+      CUSTOM_VAR: "  first\nsecond  ",
     });
   });
+
+  it("reads a Nushell environment natively instead of running the POSIX probe", () => {
+    for (const shell of ["/opt/homebrew/bin/nu", "/Users/test/bin/Nushell"]) {
+      const command = buildEnvironmentCaptureCommand(shell, ["PATH", "SSH_AUTH_SOCK"]);
+      expect(command).not.toContain("printenv");
+      expect(command).not.toContain("||");
+      expect(command).toContain("print '__T3CODE_ENV_PATH_START__'");
+      expect(command).toContain("$env.ENV_CONVERSIONS?.PATH?.to_string?");
+      expect(command).toContain("$env.SSH_AUTH_SOCK? | default ''");
+    }
+    expect(buildEnvironmentCaptureCommand("/bin/zsh", ["PATH"])).toContain("printenv PATH || true");
+  });
+
+  // Opt in with an explicit binary; CI need not install Nu.
+  it.runIf(process.env.F5_TEST_NU_PATH !== undefined)(
+    "captures Nushell PATH and multiline values without external tools",
+    () => {
+      const shell = process.env.F5_TEST_NU_PATH!;
+      const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "f5-nu-env-"));
+      try {
+        const toolPath = NodePath.join(home, "nu tools", "bin");
+        const extraToolPath = NodePath.join(home, "extra-tools", "bin");
+        NodeFS.mkdirSync(toolPath, { recursive: true });
+        NodeFS.mkdirSync(extraToolPath, { recursive: true });
+        const config = NodePath.join(home, "config.nu");
+        const envConfig = NodePath.join(home, "env.nu");
+        NodeFS.writeFileSync(envConfig, "");
+        NodeFS.writeFileSync(
+          config,
+          [
+            `$env.PATH = [${JSON.stringify(toolPath)}, "~/extra-tools/bin", "rel/dir", ""]`,
+            '$env.CUSTOM_VAR = "  first\\nsecond  "',
+            '$env.EMPTY_VAR = ""',
+            'print "startup noise"',
+          ].join("\n"),
+        );
+
+        expect(
+          readEnvironmentFromLoginShell(
+            shell,
+            ["MISSING_VAR", "PATH", "EMPTY_VAR", "CUSTOM_VAR"],
+            (file, args, options) =>
+              NodeChildProcess.execFileSync(
+                file,
+                ["--no-history", "--config", config, "--env-config", envConfig, ...args],
+                {
+                  ...options,
+                  env: { HOME: home, XDG_CONFIG_HOME: home, PATH: toolPath },
+                },
+              ),
+          ),
+        ).toEqual({
+          PATH: `${toolPath}:${extraToolPath}:rel/dir:`,
+          CUSTOM_VAR: "  first\nsecond  ",
+        });
+      } finally {
+        NodeFS.rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
 });

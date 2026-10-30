@@ -1,5 +1,46 @@
-import type { AppUpdater } from "electron-updater";
+import type { AppUpdater, NsisUpdater, VerifyUpdateCodeSignature } from "electron-updater";
 import type { EventEmitter } from "node:events";
+
+/**
+ * The NSIS verifier's PowerShell check is killed after 20 s, which endpoint
+ * scanning of a freshly downloaded installer can exceed. Retry that timeout
+ * once with the same arguments so the update does not fail at 100%.
+ */
+function retrySignatureCheckAfterTimeout(updater: AppUpdater): void {
+  const nsis = updater as AppUpdater & Partial<Pick<NsisUpdater, "verifyUpdateCodeSignature">>;
+  const verify = nsis.verifyUpdateCodeSignature;
+  if (verify === undefined) return;
+
+  const verifyWithRetry: VerifyUpdateCodeSignature = async (publisherNames, path) => {
+    try {
+      return await verify(publisherNames, path);
+    } catch (error) {
+      // execFile marks the error killed when the verifier exceeds its timeout.
+      if (!(error instanceof Error && "killed" in error && error.killed === true)) throw error;
+    }
+
+    const logger = nsis.logger;
+    let skipped = false;
+    nsis.logger = {
+      info: (message) => logger?.info(message),
+      warn: (message) => {
+        // A failed capability probe makes electron-updater warn and resolve
+        // null without checking; that must not pass as a valid signature.
+        skipped ||= String(message).includes("Ignoring signature validation");
+        logger?.warn(message);
+      },
+      error: (message) => logger?.error(message),
+      debug: (message) => logger?.debug?.(message),
+    };
+    try {
+      const result = await verify(publisherNames, path);
+      return skipped ? "Signature validation was skipped after a timed-out check." : result;
+    } finally {
+      nsis.logger = logger;
+    }
+  };
+  nsis.verifyUpdateCodeSignature = verifyWithRetry;
+}
 
 /** Isolates the private integration points verified against pinned electron-updater 6.8.3. */
 export function createUpdaterInstallerAdapter(
@@ -52,6 +93,7 @@ export function createUpdaterInstallerAdapter(
       attempt?.spawns.push(spawn);
       return spawn;
     };
+    retrySignatureCheckAfterTimeout(updater);
   }
   type MacAttempt = {
     nativeUpdater: EventEmitter & { checkForUpdates(): void };
