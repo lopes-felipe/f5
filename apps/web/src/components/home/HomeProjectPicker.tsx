@@ -104,8 +104,9 @@ export default function HomeProjectPicker(props: {
             >
               <span className="inline-flex min-w-0 items-center gap-2">
                 <ProjectIcon
-                  projectId={project?.id}
-                  kind={project ? project.kind : "scratch"}
+                  {...(project
+                    ? { projectId: project.id, kind: project.kind }
+                    : { kind: "scratch" as const })}
                   name={project?.name ?? SCRATCH_PROJECT_TITLE}
                   icon={project?.icon}
                   className="size-3.5"

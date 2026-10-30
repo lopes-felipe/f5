@@ -373,6 +373,44 @@ describe("HomeMissionControl", () => {
     }
   });
 
+  it("scrolls a long project list to the keyboard-highlighted option", async () => {
+    const view = await renderHome([IDLE_THREAD]);
+    try {
+      useStore.setState({
+        projects: [
+          PROJECT_A,
+          ...Array.from({ length: 16 }, (_, index) =>
+            makeProject(`project-${index}`, `Project ${index}`),
+          ),
+        ],
+      });
+      await page.getByRole("combobox", { name: "Project", exact: true }).click();
+      const search = page.getByRole("combobox", { name: "Search projects", exact: true });
+      (search.element() as HTMLElement).focus();
+      await expect
+        .element(page.getByRole("option", { name: "Alpha", exact: true }))
+        .toHaveAttribute("data-highlighted");
+      for (let index = 0; index < 16; index += 1) await userEvent.keyboard("{ArrowDown}");
+      const last = page.getByRole("option", { name: "Project 15", exact: true });
+      await expect.element(last).toHaveAttribute("data-highlighted");
+      await vi.waitFor(() => {
+        const item = last.element().getBoundingClientRect();
+        const viewport = last.element().closest('[data-slot="scroll-area-viewport"]')!;
+        const bounds = viewport.getBoundingClientRect();
+        expect(viewport.scrollTop).toBeGreaterThan(0);
+        // scrollTop rounds fractional CSS pixels.
+        expect(item.top).toBeGreaterThanOrEqual(bounds.top - 1);
+        expect(item.bottom).toBeLessThanOrEqual(bounds.bottom + 1);
+      });
+      await userEvent.keyboard("{Enter}");
+      await expect
+        .element(page.getByRole("combobox", { name: "Project", exact: true }))
+        .toHaveTextContent("Project 15");
+    } finally {
+      await view.cleanup();
+    }
+  });
+
   it("defaults to the most recent visible context while preserving an explicit choice", async () => {
     const view = await renderHome([IDLE_THREAD]);
     try {

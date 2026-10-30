@@ -7370,7 +7370,9 @@ describe("ChatView timeline (full app)", () => {
           expect(open.env).not.toHaveProperty("T3CODE_WORKTREE_PATH");
         } else {
           await vi.waitFor(() =>
-            expect(document.body.textContent).toContain("Could not run command. Try again."),
+            expect(document.body.textContent).toContain(
+              "Terminal is available after the first message",
+            ),
           );
           expect(wsRequests.some((body) => body._tag === WS_METHODS.terminalOpen)).toBe(false);
           expect(wsRequests.some((body) => body._tag === WS_METHODS.terminalWrite)).toBe(false);

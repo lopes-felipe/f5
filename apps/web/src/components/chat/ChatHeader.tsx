@@ -194,7 +194,9 @@ export const ChatHeader = memo(function ChatHeader({
       state: filesState,
       disabled: !workspaceFilesAvailable,
       disabledReason:
-        "Workspace files are available after the first message creates the thread's folder.",
+        activeProjectKind === "scratch"
+          ? "Workspace files are available after the first message creates the thread's folder."
+          : "Workspace files are unavailable because the project's folder is missing.",
       onToggle: onToggleFiles,
     },
     {
@@ -247,7 +249,10 @@ export const ChatHeader = memo(function ChatHeader({
     shortcutLabel: terminalToggleShortcutLabel,
     state: terminalOpen ? "active" : "closed",
     disabled: !terminalAvailable,
-    disabledReason: "Terminal is available after the first message creates the thread's folder.",
+    disabledReason:
+      activeProjectKind === "scratch"
+        ? "Terminal is available after the first message creates the thread's folder."
+        : "Terminal is unavailable because the project's folder is missing.",
     onToggle: onToggleTerminal,
   };
 

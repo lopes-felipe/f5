@@ -361,7 +361,7 @@ function MarkdownCodeBlock({
   const runCommand = useTerminalCommand();
   const [running, setRunning] = useState(false);
   const runningRef = useRef(false);
-  const [runError, setRunError] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const wordWrap = useDiffWordWrap();
@@ -429,9 +429,13 @@ function MarkdownCodeBlock({
               if (runningRef.current) return;
               runningRef.current = true;
               setRunning(true);
-              setRunError(false);
+              setRunError(null);
               void runCommand(command)
-                .catch(() => setRunError(true))
+                .catch((error: unknown) =>
+                  setRunError(
+                    error instanceof Error ? error.message : "Could not run command. Try again.",
+                  ),
+                )
                 .finally(() => {
                   runningRef.current = false;
                   setRunning(false);
@@ -443,7 +447,7 @@ function MarkdownCodeBlock({
         ) : null}
         {runCommand && command && runError ? (
           <span role="status" data-thread-find-ignore>
-            Could not run command. Try again.
+            {runError}
           </span>
         ) : null}
         <div className="ms-auto flex shrink-0 items-center gap-2">
