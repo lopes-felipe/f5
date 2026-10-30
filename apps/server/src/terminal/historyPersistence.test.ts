@@ -94,6 +94,17 @@ it.each([47, 1047, 1049])("leaves an inherited %i alternate screen", (mode) => {
   );
 });
 
+it("resets modes and leaves an alternate screen set with 8-bit CSI controls", () => {
+  const history = "prompt \u009b?1049h\u009b?25l\u009b?1003;2004hdead";
+  expect(neutralizeInheritedHistory(history, 5000, TERMINAL_HISTORY_MAX_BYTES)).toBe(
+    `${history}\u001b7\u001b[?1049l${INPUT_RESET}`,
+  );
+  const closed = "\u009b?1049hvim\u009b?1049lprompt";
+  expect(neutralizeInheritedHistory(closed, 5000, TERMINAL_HISTORY_MAX_BYTES)).toBe(
+    closed + INPUT_RESET,
+  );
+});
+
 it("exits with the outermost alternate-screen entry still open", () => {
   const history = "main\u001b[?1049hone\u001b[?47htwo";
   expect(neutralizeInheritedHistory(history, 5000, TERMINAL_HISTORY_MAX_BYTES)).toBe(

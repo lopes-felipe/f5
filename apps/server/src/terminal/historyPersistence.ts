@@ -13,6 +13,11 @@ const LONGEST_INHERITED_RESET_BYTES = Buffer.byteLength(
   INHERITED_INPUT_RESET + "\u001b7\u001b[?1049l",
 );
 
+/** ESC or the 8-bit C1 CSI, which xterm.js also interprets as a control introducer. */
+function hasControlIntroducer(history: string): boolean {
+  return history.includes("\u001b") || history.includes("\u009b");
+}
+
 /**
  * Bound history a previous shell left behind and append a reset for the modes it
  * left on, so a cold open starts the new shell on a clean main screen.
@@ -22,7 +27,7 @@ export function neutralizeInheritedHistory(
   maxLines: number,
   maxBytes: number,
 ): string {
-  if (!history.includes("\u001b")) return history;
+  if (!hasControlIntroducer(history)) return history;
   // Reserve room for the longest suffix so later trimming cannot drop the
   // alternate-screen entry after its exit is chosen from this exact window.
   const bounded = new BoundedTerminalHistory(
@@ -32,12 +37,12 @@ export function neutralizeInheritedHistory(
   );
   bounded.append(history);
   history = bounded.value();
-  if (!history.includes("\u001b")) return history;
+  if (!hasControlIntroducer(history)) return history;
   // An unconditional 1049 reset restores a stale saved cursor on the main
   // screen, so only leave an alternate screen the history actually entered.
   let alternateScreen: number | undefined;
   // eslint-disable-next-line no-control-regex -- Match replayed alternate-screen controls.
-  for (const match of history.matchAll(/\u001b(?:\[\?([0-9;]+)([hl])|(c))/gu)) {
+  for (const match of history.matchAll(/(?:\u001b\[|\u009b)\?([0-9;]+)([hl])|\u001b(c)/gu)) {
     if (match[3]) alternateScreen = undefined;
     for (const parameter of (match[1] ?? "").split(";")) {
       const mode = Number(parameter);
