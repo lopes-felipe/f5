@@ -15595,14 +15595,16 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-30T16:44:05.919Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-17570",
+      "reason": "F5 has no server-hosted headless Chrome and no `t3 browser setup` command, so there is no host setup flow to detect or install fonts.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-19846"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview browser",
@@ -26463,11 +26465,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-30T16:44:07.246Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-20035",
-      "status": "port",
+      "reason": "f5's startup creates the bootstrap thread with a plain `thread.create` that carries only a model string and never checks whether a provider is enabled, so a disabled provider cannot stop startup.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server",
@@ -29035,11 +29039,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-30T16:44:05.263Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-20522",
-      "status": "port",
+      "reason": "f5's sidebar builds rows straight from the current thread lists and never keeps a list of row keys in state, so a thread that just left can't be looked up from an old list.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "sidebar"
@@ -34879,11 +34885,21 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-30T16:44:05.919Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/desktop/src/main.ts:4018",
+          "apps/desktop/src/main.ts:4019"
+        ],
+        "f5Refs": [
+          "f841bd2a5757574a7d0275cf3045545332be8b64"
+        ]
+      },
       "id": "pr-21733",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "preview-browser",
