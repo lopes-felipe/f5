@@ -28,7 +28,7 @@
     "@t3tools/shared": "workspace:*",
     "@tanstack/react-pacer": "^0.19.4",
     "@tanstack/react-query": "^5.90.0",
-    "@tanstack/react-router": "^1.160.2",
+    "@tanstack/react-router": "^1.170.45",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "class-variance-authority": "^0.7.1",
