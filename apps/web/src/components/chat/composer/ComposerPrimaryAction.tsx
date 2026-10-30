@@ -1,7 +1,7 @@
 import { ChevronDownIcon } from "lucide-react";
 import type * as React from "react";
 
-import { ComposerSendControl } from "~/components/chat/ComposerSendControl";
+import { ComposerSendControl, ComposerStopButton } from "~/components/chat/ComposerSendControl";
 import { Button } from "~/components/ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "~/components/ui/menu";
 
@@ -104,6 +104,10 @@ export function ComposerPrimaryAction(props: {
                 ? "Submit answers"
                 : "Next question"}
           </Button>
+          {/* A question can arrive mid-turn; keep the turn interruptible while it waits.
+              Stop stays enabled while answers submit, so a stalled submission can still be
+              stopped; the interrupt settles any pending input server-side. */}
+          {send.phase === "running" ? <ComposerStopButton onInterrupt={onInterrupt} /> : null}
         </div>
       ) : send.phase === "running" ? (
         <ComposerSendControl
