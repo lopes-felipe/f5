@@ -168,6 +168,39 @@ describe("threadSelectors", () => {
     expect(after.get(THREAD_B)).toBe(before.get(THREAD_B));
   });
 
+  it("recomputes the status when only the omitted-plans flag changes", () => {
+    const threadD = ThreadId.makeUnsafe("thread-plan-omitted");
+    const planReady = makeThread(threadD, "2026-03-01T00:05:00.000Z", {
+      interactionMode: "plan",
+      latestTurn: {
+        turnId: "turn-1" as never,
+        state: "completed",
+        assistantMessageId: null,
+        requestedAt: "2026-03-01T00:00:00.000Z",
+        startedAt: "2026-03-01T00:00:00.000Z",
+        completedAt: "2026-03-01T00:05:00.000Z",
+      },
+      lastVisitedAt: "2026-03-01T00:06:00.000Z",
+      proposedPlans: [
+        {
+          id: "plan-1" as never,
+          turnId: "turn-1" as never,
+          createdAt: "2026-03-01T00:01:00.000Z",
+          updatedAt: "2026-03-01T00:05:00.000Z",
+          planMarkdown: "# Plan",
+          implementedAt: null,
+          implementationThreadId: null,
+        },
+      ],
+    });
+    expect(selectThreadSummaryById({ threads: [planReady] }).get(threadD)?.status).toBe(
+      "plan-ready",
+    );
+    // A reconnect keeps the plans array but flags it stale.
+    const omitted = { ...planReady, proposedPlansOmitted: true };
+    expect(selectThreadSummaryById({ threads: [omitted] }).get(threadD)?.status).toBe("none");
+  });
+
   it("refreshes the ordering key and the order when a thread moves", () => {
     let state = {
       threads: [

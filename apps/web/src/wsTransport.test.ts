@@ -1082,21 +1082,29 @@ describe("admission-aware scheduling", () => {
     transport.dispose();
   });
 
-  it("holds a later mutation behind one waiting for the runtime", async () => {
+  it("holds only same-method mutations behind one waiting for the runtime", async () => {
     const { transport, socket } = connectSynchronized();
     socket.serverMessage(welcome({ state: "starting", revision: 0 }));
-    const held = transport.request("orchestration.archiveWorkflow", { workflowId: "w" });
-    const later = transport.request("projects.writeFile", {});
+    const held = transport.request("server.updateSettings", {
+      projectSettingsOverrides: { p: {} },
+    });
+    const sameMethod = transport.request("server.updateSettings", { patch: {} });
+    const independent = transport.request("projects.writeFile", {});
     const read = transport.request("git.status", {});
-    expect(sentEnvelopes(socket).map((envelope) => envelope.body._tag)).toEqual(["git.status"]);
+    // A write that needs no runtime is not ordered behind one that does.
+    expect(sentEnvelopes(socket).map((envelope) => envelope.body._tag)).toEqual([
+      "projects.writeFile",
+      "git.status",
+    ]);
     socket.serverMessage(readiness({ state: "ready", revision: 1 }));
-    expect(
-      sentEnvelopes(socket)
-        .slice(1)
-        .map((envelope) => envelope.body._tag),
-    ).toEqual(["orchestration.archiveWorkflow", "projects.writeFile"]);
+    const released = sentEnvelopes(socket).slice(2);
+    expect(released.map((envelope) => envelope.body._tag)).toEqual([
+      "server.updateSettings",
+      "server.updateSettings",
+    ]);
+    expect(released[0]!.body.projectSettingsOverrides).toBeDefined();
     for (const envelope of sentEnvelopes(socket)) respond(socket, envelope.id, { result: "ok" });
-    await Promise.all([held, later, read]);
+    await Promise.all([held, sameMethod, independent, read]);
     transport.dispose();
   });
 
@@ -1110,6 +1118,38 @@ describe("admission-aware scheduling", () => {
     // it proves nothing about the socket.
     window.dispatchEvent(new Event("focus"));
     expect(sentEnvelopes(socket).at(-1)!.body._tag).toBe("server.probe");
+    transport.dispose();
+  });
+
+  it("reconnects when a foreground probe expires behind an orphaned probe in silence", async () => {
+    const { transport, socket } = connectSynchronized();
+    const orphan = transport.request("server.probe", {}, { timeoutMs: 100, retry: false });
+    const timedOut = expect(orphan).rejects.toThrow("Request timed out: server.probe");
+    await vi.advanceTimersByTimeAsync(100);
+    await timedOut;
+    // The orphan still holds the single health slot, so the probe queues.
+    window.dispatchEvent(new Event("focus"));
+    expect(socket.sent).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(sockets).toHaveLength(2);
+    transport.dispose();
+  });
+
+  it("keeps the socket when a frame arrives while a foreground probe waits for the health slot", async () => {
+    const { transport, socket } = connectSynchronized();
+    const orphan = transport.request("server.probe", {}, { timeoutMs: 100, retry: false });
+    const orphanId = sentEnvelopes(socket)[0]!.id;
+    const timedOut = expect(orphan).rejects.toThrow("Request timed out: server.probe");
+    await vi.advanceTimersByTimeAsync(100);
+    await timedOut;
+    window.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(2_900);
+    // The late answer frees the slot; the probe is sent with too little time left.
+    respond(socket, orphanId, { result: {} });
+    expect(socket.sent).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(sockets).toHaveLength(1);
+    expect(socket.readyState).toBe(MockWebSocket.OPEN);
     transport.dispose();
   });
 
@@ -1250,6 +1290,25 @@ describe("admission-aware scheduling", () => {
     const held = transport.request("orchestration.archiveWorkflow", { workflowId: "w" });
     socket.serverMessage(readiness({ state: "failed", revision: 1, message: "Migration failed." }));
     await expect(held).rejects.toThrow("Migration failed.");
+    transport.dispose();
+  });
+
+  it("keeps a failed startup final when a ServerStarting response arrives after it", async () => {
+    const { transport, socket } = connectSynchronized();
+    const inFlight = transport.request("orchestration.archiveWorkflow", { workflowId: "w" });
+    socket.serverMessage(readiness({ state: "failed", revision: 1, message: "Migration failed." }));
+    respond(socket, sentEnvelopes(socket)[0]!.id, {
+      error: { message: "starting", code: "ServerStarting", retryable: true, retryAfterMs: 1000 },
+    });
+    await expect(inFlight).rejects.toMatchObject({
+      code: "ServerStartFailed",
+      message: "Migration failed.",
+    });
+    // Later runtime requests are not parked behind a reopened wait.
+    const later = transport.request("orchestration.archiveWorkflow", { workflowId: "w2" });
+    expect(socket.sent).toHaveLength(2);
+    respond(socket, sentEnvelopes(socket)[1]!.id, { result: "archived" });
+    await expect(later).resolves.toBe("archived");
     transport.dispose();
   });
 

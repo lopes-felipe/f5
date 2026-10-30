@@ -167,6 +167,21 @@ describe("RpcRequestScheduler", () => {
     }
   });
 
+  it("lets a later mutation pass a held one that does not hold it back", () => {
+    const scheduler = new RpcRequestScheduler<ScheduledRpc>();
+    const held = entry("mutation");
+    const related = entry("mutation");
+    const unrelated = entry("mutation");
+    for (const item of [held, related, unrelated]) scheduler.enqueue(item);
+    expect(
+      scheduler.takeDispatchable(
+        (item) => item.id !== held.id,
+        (_held, later) => later.id === related.id,
+      ),
+    ).toEqual([unrelated]);
+    expect(scheduler.takeDispatchable(all)).toEqual([held, related]);
+  });
+
   it("resets queues and slots for a new socket generation", () => {
     const scheduler = new RpcRequestScheduler<ScheduledRpc>();
     for (let index = 0; index < 10; index++) scheduler.enqueue(entry("mutation"));

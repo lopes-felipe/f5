@@ -84,6 +84,11 @@ class RequestQueue<T extends ScheduledRpc> {
   }
 }
 
+interface DispatchGate<T> {
+  readonly eligible: (entry: T) => boolean;
+  readonly holdsBack: (held: T, later: T) => boolean;
+}
+
 export type RpcEnqueueResult<T> =
   | { readonly ok: true; readonly evicted: T | null }
   | { readonly ok: false; readonly lane: RpcLane };
@@ -173,12 +178,18 @@ export class RpcRequestScheduler<T extends ScheduledRpc> {
    * Claims a slot for every queued request that may be sent now, in priority
    * order, and returns them. `eligible` rejects requests still gated on
    * synchronization or runtime readiness; they keep their queue position.
+   * `holdsBack` decides which later mutations an ineligible mutation keeps
+   * behind it; by default, all of them.
    */
-  takeDispatchable(eligible: (entry: T) => boolean): T[] {
+  takeDispatchable(
+    eligible: (entry: T) => boolean,
+    holdsBack: (held: T, later: T) => boolean = () => true,
+  ): T[] {
+    const gate: DispatchGate<T> = { eligible, holdsBack };
     const taken: T[] = [];
     for (const lane of LANE_DISPATCH_ORDER) {
-      if (lane === "ordinary") this.takeOrdinary(eligible, taken);
-      else this.takeFrom(this.queues[lane], eligible, taken);
+      if (lane === "ordinary") this.takeOrdinary(gate, taken);
+      else this.takeFrom(this.queues[lane], gate, taken);
     }
     return taken;
   }
@@ -255,7 +266,7 @@ export class RpcRequestScheduler<T extends ScheduledRpc> {
     return count < cap.count && (count === 0 || queuedBytes + bytes <= cap.bytes);
   }
 
-  private takeOrdinary(eligible: (entry: T) => boolean, taken: T[]): void {
+  private takeOrdinary(gate: DispatchGate<T>, taken: T[]): void {
     for (;;) {
       const backgroundFirst =
         this.foregroundStreak >= BACKGROUND_STARVATION_LIMIT && this.ordinary.background.size > 0;
@@ -265,7 +276,7 @@ export class RpcRequestScheduler<T extends ScheduledRpc> {
       let dispatched: T | null = null;
       for (const requestClass of order) {
         if (!this.classHasSlot(requestClass)) continue;
-        dispatched = this.takeOne(this.ordinary[requestClass], eligible);
+        dispatched = this.takeOne(this.ordinary[requestClass], gate);
         if (dispatched) break;
       }
       if (!dispatched) return;
@@ -281,9 +292,9 @@ export class RpcRequestScheduler<T extends ScheduledRpc> {
     return requestClass !== "background" || this.inFlightBackground < ORDINARY_BACKGROUND_SLOTS;
   }
 
-  private takeFrom(queue: RequestQueue<T>, eligible: (entry: T) => boolean, taken: T[]): void {
+  private takeFrom(queue: RequestQueue<T>, gate: DispatchGate<T>, taken: T[]): void {
     for (;;) {
-      const entry = this.takeOne(queue, eligible);
+      const entry = this.takeOne(queue, gate);
       if (!entry) return;
       taken.push(entry);
     }
@@ -292,14 +303,16 @@ export class RpcRequestScheduler<T extends ScheduledRpc> {
   /**
    * Claims the first eligible entry; stops at the first one the lane cannot
    * admit. Reads may pass a held entry, but mutations keep their send order:
-   * a held mutation also holds every later mutation in its queue.
+   * a held mutation also holds the later mutations in its queue that
+   * `holdsBack` names.
    */
-  private takeOne(queue: RequestQueue<T>, eligible: (entry: T) => boolean): T | null {
-    let mutationHeld = false;
+  private takeOne(queue: RequestQueue<T>, gate: DispatchGate<T>): T | null {
+    const heldMutations: T[] = [];
     for (const entry of queue.entries.values()) {
-      if (entry.requestClass === "mutation" && mutationHeld) continue;
-      if (!eligible(entry)) {
-        if (entry.requestClass === "mutation") mutationHeld = true;
+      const mutation = entry.requestClass === "mutation";
+      if (mutation && heldMutations.some((held) => gate.holdsBack(held, entry))) continue;
+      if (!gate.eligible(entry)) {
+        if (mutation) heldMutations.push(entry);
         continue;
       }
       const release = this.admission.claim(entry.lane, entry.bytes);

@@ -111,6 +111,10 @@ const NON_RETRYABLE_QUERY_CODES = new Set([
   "ResponseEncodeFailed",
 ]);
 
+function serverStartFailedError(message: string | undefined): WsRequestError {
+  return new WsRequestError(message ?? "The F5 server failed to start.", "ServerStartFailed");
+}
+
 /** React Query retry predicate: overload and scheduling failures are never retried there. */
 export function isQueryRetryable(error: unknown): boolean {
   if (error instanceof Error && error.name === "AbortError") return false;
@@ -313,6 +317,8 @@ export class WsTransport {
     readonly generation: number;
     readonly startedAtMs: number;
   } | null = null;
+  /** Frames received on the authoritative socket; any frame proves it alive. */
+  private inboundFrames = 0;
   private readonly url: string;
   private readonly browserSessionAuth: boolean;
   private readonly handleWindowFocus = () => this.handleForegroundSignal();
@@ -851,6 +857,7 @@ export class WsTransport {
         return;
       }
 
+      this.inboundFrames++;
       this.handleMessage(event.data);
     });
 
@@ -924,6 +931,7 @@ export class WsTransport {
 
     this.foregroundProbeGeneration = generation;
     this.lastForegroundProbe = { generation, startedAtMs: now };
+    const inboundFramesAtStart = this.inboundFrames;
     void this.request(
       WS_METHODS.serverProbe,
       {},
@@ -934,6 +942,9 @@ export class WsTransport {
         if (!this.isAuthoritativeSocket(generation, ws)) return;
         // Any server answer, including `RpcBusy`, proves the socket is alive.
         if (error instanceof WsRequestError && error.origin === "server") return;
+        // So does any frame since the probe started, such as the late answer
+        // to an orphaned probe whose health slot this one queued behind.
+        if (this.inboundFrames !== inboundFramesAtStart) return;
         noteWsConnectionError(
           asError(error, "WebSocket foreground connectivity probe failed.").message,
         );
@@ -1000,10 +1011,7 @@ export class WsTransport {
       message: readiness.message,
     };
     if (readiness.state === "failed") {
-      const error = new WsRequestError(
-        readiness.message ?? "The F5 server failed to start.",
-        "ServerStartFailed",
-      );
+      const error = serverStartFailedError(readiness.message);
       for (const request of this.scheduler.queuedEntries())
         if (request.requiresRuntime) {
           this.scheduler.remove(request.id);
@@ -1139,13 +1147,21 @@ export class WsTransport {
    */
   private requeueForRuntime(request: TransportRequest, retryAfterMs: number | undefined): void {
     this.clearTimer(request);
-    const reportedReady = this.runtime?.state === "ready";
+    const runtime = this.runtime;
+    if (runtime?.state === "failed" && runtime.generation === this.authoritativeSocketGeneration) {
+      // A response that raced the failed push: startup failure is final for
+      // this socket, so it must not reopen the wait.
+      this.finishRequest(request, serverStartFailedError(runtime.message));
+      this.flushQueue();
+      return;
+    }
+    const reportedReady = runtime?.state === "ready";
     if (!this.runtimeHolding() && !reportedReady) {
       this.runtime = {
         generation: this.authoritativeSocketGeneration,
-        incarnation: this.runtime?.incarnation,
+        incarnation: runtime?.incarnation,
         state: "starting",
-        revision: this.runtime?.revision ?? -1,
+        revision: runtime?.revision ?? -1,
         message: undefined,
       };
     }
@@ -1199,6 +1215,17 @@ export class WsTransport {
     return !(request.requiresRuntime && this.runtimeHolding());
   }
 
+  /**
+   * A mutation waiting only for the runtime holds back later mutations that
+   * need it too or share its method; the server parks runtime routes the same
+   * way, so other writes were never ordered behind them. Any other hold, such
+   * as synchronization, keeps every later mutation behind it.
+   */
+  private holdsBack(held: TransportRequest, later: TransportRequest): boolean {
+    if (!held.requiresRuntime || !this.runtimeHolding()) return true;
+    return later.requiresRuntime || later.method === held.method;
+  }
+
   private flushQueue() {
     if (getProtocolState().upgradeRequired || this.ws?.readyState !== WebSocket.OPEN) {
       return;
@@ -1210,7 +1237,10 @@ export class WsTransport {
     for (const request of this.scheduler.queuedEntries())
       if (request.queueDeadlineAtMs !== null && request.queueDeadlineAtMs <= now)
         this.expireQueued(request);
-    for (const request of this.scheduler.takeDispatchable((entry) => this.isEligible(entry))) {
+    for (const request of this.scheduler.takeDispatchable(
+      (entry) => this.isEligible(entry),
+      (held, later) => this.holdsBack(held, later),
+    )) {
       try {
         ws.send(request.encoded);
       } catch (error) {

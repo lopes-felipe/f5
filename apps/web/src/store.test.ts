@@ -2872,6 +2872,18 @@ describe("archived plans omitted from the startup snapshot", () => {
     expect(next.threads[0]?.proposedPlans[0]?.implementedAt).toBe("2026-04-03T00:00:00.000Z");
   });
 
+  it("keeps an upsert that arrived during a hydration that then failed", () => {
+    const state: AppState = {
+      ...makeState(makeThread({ detailsLoaded: false, proposedPlans: [plan("p1", "# One")] })),
+      detailEventBufferByThreadId: new Map([[threadId, { retainers: 1, events: [] }]]),
+    };
+    const implemented = { ...plan("p1", "# One"), implementedAt: "2026-04-03T00:00:00.000Z" };
+    const buffered = applyDomainEvent(state, upsert(implemented, 9));
+    expect(buffered.detailEventBufferByThreadId.get(threadId)?.events).toHaveLength(1);
+    const failed = clearThreadDetailBuffer(buffered, threadId);
+    expect(failed.threads[0]?.proposedPlans[0]?.implementedAt).toBe("2026-04-03T00:00:00.000Z");
+  });
+
   it("ignores an upsert already covered by a newer tail", () => {
     const loaded = syncThreadTailDetails(
       makeState(makeThread({ detailsLoaded: false })),

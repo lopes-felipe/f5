@@ -1624,11 +1624,11 @@ function reduceDomainEvent(
     case "thread.proposed-plan-upserted": {
       // Plans are detail entities: an older tail must not overwrite a newer
       // plan. Unlike turn diffs, a thread without loaded details still applies
-      // upserts, because its plans came with the startup snapshot.
+      // upserts, because its plans came with the startup snapshot. While its
+      // tail hydrates, the upsert is applied now and also buffered for replay
+      // over the tail, so a failed or cancelled hydration does not lose it.
       const detailGate = gateThreadDetailMutations(state, event.payload.threadId, event);
-      const applyPlan =
-        detailGate.applyDetailMutations ||
-        (detailGate.state === state && !detailEventIsCovered(state, event.payload.threadId, event));
+      const applyPlan = !detailEventIsCovered(state, event.payload.threadId, event);
       const threads = updateThread(detailGate.state.threads, event.payload.threadId, (thread) => {
         const proposedPlans = applyPlan
           ? upsertProposedPlan(thread.proposedPlans, event.payload.proposedPlan)
