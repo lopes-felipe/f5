@@ -7096,11 +7096,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T00:20:18.818Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-30T20:41:30.796Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-14705",
-      "status": "port",
+      "reason": "f5 never opens the diff panel automatically after a turn finishes; only user actions open it.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "panels",
@@ -34619,11 +34621,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-30T00:20:18.818Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-30T20:41:30.796Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-21560",
-      "status": "port",
+      "reason": "f5 never had the fallback that showed the previous thread's timeline while the next one loaded; ChatView builds the timeline only from the active thread.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline",
