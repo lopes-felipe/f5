@@ -25,7 +25,9 @@ const server = ["server-git-smoke", "server-integration"].map(suite);
 export const inventories: Record<string, SuiteIdentity[]> = {
   test: [...workspaces, ...server, suite("server-git-extended")],
   "windows-build": [...workspaces, ...server],
-  "macos-suite": [...workspaces, ...server, suite("server-git-extended"), suite("server-unit")],
+  "macos-workspaces": workspaces,
+  "macos-integration": server,
+  "macos-git": [suite("server-git-extended")],
   "server-unit-1": [suite("server-unit-1")],
   "server-unit-2": [suite("server-unit-2")],
   "server-unit-3": [suite("server-unit-3")],

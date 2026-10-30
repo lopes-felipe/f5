@@ -746,7 +746,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   if (stagePackageJson.patchedDependencies)
     yield* fs.copy(path.join(repoRoot, "patches"), path.join(stageAppDir, "patches"));
 
-  const stagedBun = (args: TemplateStringsArray) =>
+  const stagedBun = (args: TemplateStringsArray, ...values: string[]) =>
     runCommand(
       ChildProcess.make({
         cwd: stageAppDir,
@@ -755,7 +755,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
         ...commandOutputOptions(options.verbose),
         // Windows needs shell mode to resolve .cmd shims (e.g. bun.cmd).
         shell: process.platform === "win32",
-      })(args),
+      })(args, ...values),
     );
   // `bun install --production` never saves a lockfile, so resolve one first and
   // audit it before anything is installed or any install script runs. Seeding the
@@ -767,7 +767,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     seedStagedLockfile(rootLock, stagePackageJson),
   );
   yield* Effect.log("[desktop-artifact] Resolving staged dependencies...");
-  yield* stagedBun`bun install --lockfile-only --ignore-scripts`;
+  yield* stagedBun`node ${path.join(repoRoot, "scripts/retry-install.ts")} --lockfile-only --ignore-scripts`;
 
   yield* Effect.try({
     try: () =>
@@ -776,7 +776,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       new BuildScriptError({ message: `Staged dependency audit failed: ${String(error)}` }),
   });
   yield* Effect.log("[desktop-artifact] Installing staged production dependencies...");
-  yield* stagedBun`bun install --production --frozen-lockfile`;
+  yield* stagedBun`node ${path.join(repoRoot, "scripts/retry-install.ts")} --production --frozen-lockfile`;
   const { patchedDependencies } = stagePackageJson;
   if (patchedDependencies)
     yield* Effect.try({

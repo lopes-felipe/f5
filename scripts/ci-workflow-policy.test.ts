@@ -162,7 +162,7 @@ describe("CI workflow policy", () => {
       with?: { path: string; key: string };
     }[];
     expect(steps.find((step) => step.name === "Install dependencies")!.run).toBe(
-      "bun install --frozen-lockfile",
+      "node scripts/retry-install.ts",
     );
     expect(steps.find((step) => step.name === "Verify Electron installation")!.run).toContain(
       "fs.existsSync(resolved)",

@@ -1,96 +1,170 @@
 # Releasing F5
 
-> Maintainers: one-time setup, the release procedure and checklist, and CLI archive builds.
+Main merges build one immutable candidate alongside CI. Publication joins successful
+qualification for the exact source SHA and publishes those files directly. A tag
+never starts another build. The automation starts in **shadow** mode; it creates
+neither tags nor releases until the maintainer enables publication.
 
-**Contents:** [Desktop release profiles](#desktop-release-profiles) · [One-time maintainer setup](#one-time-maintainer-setup) · [Prepare and publish](#prepare-and-publish) · [Windows-only checklist (`windows` profile; record results in the PR)](#windows-only-checklist-windows-profile-record-results-in-the-pr) · [Full checklist (`all` profile; record results in the PR)](#full-checklist-all-profile-record-results-in-the-pr) · [Build and validate CLI archives](#build-and-validate-cli-archives) · [Signing hardening and remaining backend limitation](#signing-hardening-and-remaining-backend-limitation)
+## Routine releases
 
-Every release includes all five CLI archives (darwin-arm64, linux-x64/arm64, win32-x64/arm64) and `f5-cli-release.json`. Never publish desktop-only: `f5 install` and `f5 update` use the stable release's `f5-cli-release.json`.
+Betas need no version PR or dispatch. After stable 0.1.1, main candidates are
+0.1.2-beta.N, where N is the first-parent distance from the stable base. Rerunning
+the same commit keeps its version. Gaps are intentional. The newest commit whose
+required CI jobs pass supersedes older unpublished betas, even while its candidate
+is still building; a failed newer candidate does not cause an older beta to ship.
 
-## Desktop release profiles
+For a stable release:
 
-`release-profile.json` selects the desktop platforms; `scripts/lib/release-profile.ts` is the single definition of each profile's build matrix, required installers, blockmaps and updater manifests.
+```sh
+bun run release:prepare --stable 0.1.2
+```
 
-- `windows`: Windows x64 NSIS installer, its blockmap, and `latest.yml` (or `beta.yml`). No macOS or Linux jobs run and no macOS manifests are merged.
-- `all`: additionally macOS arm64/x64 DMG + ZIP with a merged `*-mac.yml`, and Linux x64 AppImage with `*-linux.yml`.
+The release App opens a version/changelog PR with `release-intent.json` containing
+the version and a UUID. Review and merge that PR. Its exact main merge commit is
+the stable candidate, and its merge authorizes publication once all gates pass.
+That commit produces no beta. Subsequent main commits target 0.1.3-beta.N.
 
-Tagged releases read the profile from the tagged commit. Dry runs may override it with the `profile` dispatch input. Assembly verifies the exact asset set for the profile, every manifest hash, and every `SHA256SUMS` line.
+A pending stable request holds later betas across build failures, reruns, missed
+events and restarts. Later merges never cancel or silently change its candidate.
+First rerun failed jobs when the source is sound. For a source fix, merge it and
+request an explicit recovery PR for the same unpublished version:
 
-Stable updaters read their manifest from `/releases/latest`, so a release that omits a platform breaks that platform's updates. Preflight, and publication again before creating the draft, therefore reject the `windows` profile once any published release contains `latest-mac.yml`, `beta-mac.yml`, `latest-linux.yml` or `beta-linux.yml`. After macOS or Linux updates launch, `all` is the permanent release path.
+```sh
+bun run release:prepare --stable 0.1.2 --recover <failed-request-uuid>
+```
+
+The recovery PR has a new UUID and `supersedes` the failed request. Its merge pins
+a new commit. Published versions, tags and assets are never replaced. Dependency,
+signature, hash, upgrade, missing certification and expired-artifact failures block
+publication. Missing artifacts require explicit recovery, not an implicit rebuild.
+Once publication has reserved a version's immutable tag, resume that exact
+candidate's publication; a recovery PR cannot move the reserved tag to another source.
+
+Stable releases become **Latest**. Betas are prereleases and never become Latest.
+Global version ordering is enforced across both channels; stable clients retain
+stable preferences, beta clients retain beta preferences, and no path downgrades.
+
+## Pipeline and evidence
+
+- `release.yml` plans the version and builds four desktops (macOS arm64/x64, Linux
+  x64 and Windows x64) and five native CLI archives. It starts alongside main CI.
+  It uses pinned runtimes, Bun/Electron/builder caches and the Windows Rust cache.
+- macOS packages are signed/notarized. The final mounted DMG passes codesign,
+  stapler, Gatekeeper and the bundled Claude SDK spawn check on its native runner.
+- Every native CLI archive passes clean-PATH runtime/server/backup smoke, a real
+  isolated HTTPS installation, and a supervised update from the published stable
+  CLI baseline. The loopback feed trusts a private test certificate; TLS checking
+  stays enabled. No machine-wide service or user installation is touched.
+- Windows published-client upgrade checks begin immediately after the Windows
+  installer finishes. Stable candidates test stable and beta preferences on fresh
+  runners. Synthetic failure/recovery checks reuse the compiled Windows bundles
+  in separate fixture staging directories and preserve shipping artifacts.
+- Component receipts bind the source SHA, version, run/attempt, native toolchain
+  and runner image to each file's size and SHA-256. The candidate manifest binds
+  those receipts to immutable Actions artifact IDs and ZIP digests. Failed-job
+  reruns can retain successful components from earlier attempts of the same run.
+- `release-publish.yml` reconciles on CI/candidate/upgrade completion and every
+  ten minutes. A shared concurrency group serializes both channels; selection
+  comes from first-parent history and stable intent, not event arrival order.
+  Required jobs and matrix variants are derived from that SHA's CI result.
+- The publisher validates trusted repository/workflow identities and downloads
+  platform artifacts directly. It merges updater/CLI manifests, generates
+  checksums and verifies the exact asset set. There is no intermediate release
+  bundle upload. `f5-release-candidate.json` is published with the checksums so
+  provenance remains available after Actions artifact retention expires.
+- Changed published Windows or CLI baselines dispatch `release-upgrade.yml`
+  against existing candidate artifacts. Only affected upgrade checks rerun; no
+  shipping artifact is rebuilt. The proof binds the candidate run/attempt and
+  baseline fingerprint.
+- Publication creates an exact-SHA tag and draft, uploads only missing assets,
+  verifies uploaded sizes and API SHA-256 digests, preserves the existing provider
+  certification policy, then undrafts. A matching complete published release is
+  success on retry. Mismatched existing assets block rather than overwrite.
+- Public checks verify all installer/CLI download URLs, update manifests, candidate
+  provenance, the Atom feed, and stable Latest aliases. Transient public/dependency
+  failures retry once locally. Persistent failures remain visible for rerun.
+  Published retries use public provenance/checksums and API asset digests, so
+  expiring Actions artifacts do not break verification or trigger downloads of
+  the original multi-gigabyte components.
+- `release-summary.json` records source/version, build run/attempt, merge-to-public
+  and candidate durations, retries and artifact reuse. Shadow verification is
+  memoized by candidate/baseline/publisher identities to avoid repeated large
+  downloads on scheduled events.
+
+The desktop profile and asset contract remain in `scripts/lib/release-profile.ts`.
+`release-profile.json` currently ships `all`. Once any public Mac/Linux feed
+exists, neither preparation nor publication may revert to Windows-only.
+
+The existing certification gates remain mandatory. A certifying integration record
+requires exact-source/exact-DMG acceptance evidence on main. Missing evidence blocks
+shadow verification and publication; an agent must not fabricate or weaken it.
+The mounted runtime smoke is not authenticated provider or physical-input evidence.
+See [agent-browser.md](agent-browser.md) for certification procedures.
 
 ## One-time maintainer setup
 
-Create the `release` environment, allow deployment refs `v*` and `main`, and require reviewer `lopes-felipe`. Store Developer ID Application `.p12` credentials as `CSC_LINK` (base64 or certificate URL) and `CSC_KEY_PASSWORD`. Store the App Store Connect `.p8` key contents as `APPLE_API_KEY`, plus `APPLE_API_KEY_ID` and `APPLE_API_ISSUER`. Signed macOS builds fail closed when any credential is absent. The workflow writes the key into the runner's temporary directory.
+Repository security and credentials are maintained by a human. These settings
+must be completed before enabling publication:
 
-Optional Windows signing secrets: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TRUSTED_SIGNING_PUBLISHER_NAME`, `AZURE_TRUSTED_SIGNING_ENDPOINT`, `AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME`, `AZURE_TRUSTED_SIGNING_ACCOUNT_NAME`. Once available, set repository variable `F5_WINDOWS_SIGNING_REQUIRED=true`; missing credentials then fail builds. Otherwise Windows artifacts are explicitly unsigned: packaging sets `signExecutable: false` (keeping the icon and version metadata) and `verifyUpdateCodeSignature: false`, so `app-update.yml` carries no `publisherName`. Every versioned build bakes the `lopes-felipe/f5` feed, and packaging fails if the packaged `app-update.yml` points elsewhere, uses another channel, or has an unexpected `publisherName`. The first signed release must be a higher version that keeps the application identity, install path, profile storage and feed; never replace published unsigned assets.
+1. Install a dedicated GitHub App on **this repository only**, with Contents,
+   Pull requests and Actions write permissions. Set repository variable
+   `F5_RELEASE_APP_ID` and repository secret `F5_RELEASE_APP_PRIVATE_KEY`.
+   Preparation requests Contents/Pull requests write; publication requests
+   Contents/Actions write. App-authored preparation PRs start normal CI without
+   the extra approval needed by token-authored PRs.
+2. Permit that App to **create** `v*` tags. Keep independent rules forbidding tag
+   updates/deletion, and retain release immutability. Do not give the App a blanket
+   bypass of update/delete restrictions. Publishing never needs main write access.
+3. Configure the `release` signing environment to allow trusted `main` automation
+   without per-run approval. Do not allow PR or fork refs. Keep signing credentials
+   there; the read-only candidate jobs never receive publication credentials.
+4. Keep Apple secrets `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_API_KEY` (p8
+   contents), `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`. Missing values fail signed
+   Mac packaging. The temporary p8 file is removed after packaging.
+5. Optional Windows signing uses `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,
+   `AZURE_CLIENT_SECRET`, `AZURE_TRUSTED_SIGNING_PUBLISHER_NAME`,
+   `AZURE_TRUSTED_SIGNING_ENDPOINT`, `AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME`
+   and `AZURE_TRUSTED_SIGNING_ACCOUNT_NAME`. Set
+   `F5_WINDOWS_SIGNING_REQUIRED=true` when available. Otherwise the installer is
+   explicitly unsigned, retaining the existing published-client policy.
+6. Set `F5_RELEASE_AUTOMATION_MODE` to `shadow` (also the default when unset).
+   Keep scheduled workflows enabled; GitHub may disable them after inactivity.
 
-Apply a tag ruleset restricting create/update/delete of `refs/tags/v*` to admins and enable GitHub release immutability. These repository settings require maintainer setup. Prevent upstream tags entering origin: `git config remote.upstream.tagOpt --no-tags`. Never push all upstream tags.
+App setup follows [GitHub token rules](https://docs.github.com/en/actions/concepts/security/github_token).
+Publication does not depend on [concurrency dispatch ordering](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
 
-## Prepare and publish
+## Rollout and recovery qualification
 
-First public release: `v0.1.1` stable with the `all` profile, rehearsed as `v0.1.1-beta.1` and `v0.1.1-beta.2` first. The Windows-only `v0.1.0` was built but never published, so no earlier desktop release has updater manifests. Never promote its draft: it would make a Windows-only release `/releases/latest` and, after beta.1, a stable release lower than a published beta. The maintainer deletes that draft (`gh release delete v0.1.0 --yes`, without `--cleanup-tag`) before tagging `v0.1.1-beta.1`; `release:promote` does not re-check the profile lock or version order.
+Keep existing public releases untouched throughout rollout.
 
-The Windows CLI archives and the rehearsal live in `.github/workflows/windows-release-checks.yml`. The release workflow calls it, and pull requests that touch packaging, distribution, desktop or release files run it as well, with no secrets or environment approval. Get it green on the pull request before merging; a release dry run then only has to confirm the signed and cross-platform parts.
+1. Pass formatting, lint, typecheck, full tests, upstream ledger validation and
+   actionlint. Merge the workflow changes with shadow mode retained.
+2. Let main CI and the signed, native cross-platform candidate finish. Require a
+   successful shadow publisher summary, component receipts, mounted-DMG checks,
+   all five installed CLI checks and both Windows qualification paths. Record
+   observed queue/build/validation timings; **20–25 minutes is a target, not a
+   measured result of local checks**.
+3. Enable `beta` mode after that successful hosted rehearsal. Confirm that a
+   routine main merge publishes without action, a duplicate publisher dispatch
+   changes no assets, and out-of-order candidate completion does not publish a
+   superseded beta.
+4. Exercise a stable preparation PR in `all` mode. Verify the stable barrier
+   while a later main merge completes, then stable Latest and beta preference
+   retention. Verify a failed stable request remains held until explicit recovery.
+5. Interrupt an upload into an unpublished draft, rerun the publisher, and verify
+   existing asset IDs/digests stay unchanged. Exercise stale-baseline requalification
+   against existing artifacts and expired/corrupt artifact rejection.
 
-The rehearsal job builds two unpublished installers from the release commit, on the release channel. Stable pairs are the base version and its next patch; beta pairs are `<base>-beta.1` and `<base>-beta.2`, which resolve through the Atom feed. It then runs `scripts/windows-update-rehearsal.ts` on a fresh Windows runner, which:
+To retry publication, rerun/dispatch **Release publisher**. To retry a failed
+upgrade-only qualification, rerun its failed jobs; reconciliation reuses its proof.
+For a corrupt or mismatching draft asset, stop and investigate: automation never
+deletes or replaces assets. An administrator handles any destructive cleanup.
+A failed public availability check can be retried after publication without
+replacing or rebuilding the release.
 
-- installs the baseline silently and redirects that installation's `app-update.yml` to a loopback GitHub emulator, so the real GitHub provider code path runs;
-- renames every directory providing Node or Bun on F5's effective PATH (inherited, registry machine/user, and the known install folders F5 adds at startup), then launches the app and checks that no Node or Bun process starts;
-- through the renderer bridge and UI Automation, exercises an offline check, sha512 rejection, an interrupted download and retry, cancellation, installer-launch failure recovery, and the real restart into the target;
-- verifies the version, install path, Start Menu shortcut and preserved profile data (seeded settings, markers and the app's own state files);
-- uninstalls silently and checks that user data stays.
-
-`assemble` depends on it, so no draft is created without it. A separate matrix upgrades published Windows installations to the exact `desktop-win-x64` artifact. Beta candidates start from the highest published stable-or-beta version with beta preferences. Stable candidates cover the latest stable install with stable preferences and the highest stable-or-beta install with beta preferences, including beta-to-stable upgrades. Each case gets a fresh Windows runner, downloads the baseline's actual manifest, and preserves its client's channel preference. Both installers are verified against their manifests before execution. Selected versions are recorded in `windows-published-upgrade-*-logs`. Only repositories with no published stable or beta release skip this check.
-
-Published baselines run an upgrade-only path: install, launch, check, download, restart, verify preserved data and channel preference, then uninstall. Failure-path testing stays on the synthetic pair so a bug in an immutable published client cannot block the release that fixes it. Published baselines retain their update publisher identity; a signed baseline must pass Authenticode validation, and its updater continues to enforce that publisher on the candidate installer. Synthetic baselines still require unsigned builds.
-
-What the rehearsal does **not** prove:
-
-- **Published clients:** both builds in the same-commit rehearsal contain the release commit's updater. The separate published-upgrade matrix covers the normal upgrade path from published clients; their failure recovery is deliberately outside that immutable-baseline gate.
-- **Signed builds:** its builds are always unsigned. When Windows signing is enabled, extend it to signed-to-signed upgrades and to rejecting unsigned or wrongly signed updates.
-
-A green dry run with the release's profile is a hard precondition for tagging. The rehearsal has no non-blocking mode; a flaky failure means re-running the job.
-
-1. Run `node scripts/prepare-release.ts <version>`. With the `all` profile, rehearse as `X.Y.Z-beta.N` first. It updates four manifests and the lockfile. Stable preparation moves Unreleased into a dated section; beta preparation leaves it untouched. Follow the printed commands to open a release PR.
-2. Merge and wait for a successful **CI push** run on main at the exact release SHA.
-3. Run `git tag vX.Y.Z <sha>` and `git push origin vX.Y.Z` (use `-beta.N` for beta). Only stable and beta.N tags are accepted. The version must exceed every published stable/beta version.
-4. Approve the release environment. The workflow builds the profile's desktops (with `all`, it also signs and notarizes macOS; with `windows`, it produces only the unsigned Windows installer), runs the Windows rehearsals, checks all hashes/manifests, and creates a **draft**. Updaters cannot see drafts. `workflow_dispatch` with `dry_run=true` on main rehearses the prepared release's channel and creates no release. Beta rehearsals append `.dryrun.<run-number>`; stable rehearsals use the prepared stable version because beta clients ignore custom `-dryrun` tags. Artifacts are isolated by Actions run. After publishing a stable version, run `node scripts/prepare-release.ts <next-version>` before another dry run; preflight fails with that instruction when the candidate cannot upgrade published clients.
-5. Smoke-test using the checklist for the profile below: Windows only for `windows`; one installer per OS and both macOS architectures for `all`. Inspect `release-bundle`, staged dependency lock artifacts, and the draft's asset names and sizes. Changelog text is the release body; YAML never contains releaseNotes.
-6. Publish with `bun run release:promote --tag <tag>`, then `gh release edit <tag> --latest` for stable. Beta releases remain prereleases. The promote script is the only supported way to undraft: when the tag embeds a certified provider integration record, it publishes only after main holds an all-passed acceptance report for the draft's exact macOS DMG (see "Single certification source" in `docs/agent-browser.md`); otherwise it just publishes.
-
-Published releases are immutable. Fix regressions with a higher patch release; never overwrite assets or enable downgrades. Existing drafts are preserved on retry for inspection. After verifying that an existing release is still a draft and saving anything needed for investigation, the maintainer can remove only that draft with `gh release delete <tag> --yes` (without `--cleanup-tag`), then rerun publication. The tag is retained. Agents do not perform this destructive operation under this repository's Git/GitHub policy.
-
-Beta uses electron-updater 6.8.3's first stable-or-beta release in Atom feed order. Other suffixes are skipped. Stable users resolve `/releases/latest`.
-
-Releases across both channels must increase globally. If a higher beta is already published, choose a stable hotfix version above that beta; a lower stable hotfix is rejected. When a beta branch is still maintained, include stable fixes in its next beta. The provider feed-order test documents why a lower stable release would otherwise hide a higher beta; that publication pattern is not permitted by this policy.
-
-## Windows-only checklist (`windows` profile; record results in the PR)
-
-- Dry run on main with `profile=windows`: the Windows installer, blockmap and `latest.yml`, five CLI archives, the CLI manifest and `SHA256SUMS` assemble, the `windows / update-rehearsal` job passes, and no release is created.
-- Confirm that the `refs/tags/v*` tag ruleset is active and release immutability is enabled. With unsigned Windows updates, these controls, plus the sha512 in the release's `latest.yml`, are the only protection for installed clients until a signed release embeds `publisherName`.
-- Before publishing, confirm the macOS preview app has no `resources/app-update.yml`, so it shows no update errors once a Windows-only release becomes latest.
-- On clean Windows 10 and Windows 11 x64 VMs, using the **draft's** installer:
-  - Download through a browser (SmartScreen path), verify its hash against `SHA256SUMS`, install, launch without Node/Bun, create data, and uninstall (data is kept).
-  - On Windows 11, record Smart App Control behaviour and confirm it matches `docs/install.md`.
-  - Test import and side-by-side operation with F5 (Alpha), as in the full checklist.
-- Publish with `bun run release:promote --tag <tag>`, then, for stable only, `gh release edit <tag> --latest`.
-- Stable only: confirm that `releases/latest/download/F5-<version>-x64.exe`, `latest.yml` and `f5-cli-release.json` return 200 with the expected version. An installed release must report "up to date" against the production feed, and `f5 install` must work from the new manifest.
-
-## Full checklist (`all` profile; record results in the PR)
-
-- Dry run on main produces signed/notarized desktops and five CLI archives, passes assembly, and creates no release.
-- Before publishing beta.1, the first release with `beta-mac.yml`, confirm the macOS preview app has no `resources/app-update.yml`, so it never picks up a beta.
-- Publish beta.1 after inspecting its exact asset set. Install without source, Node or Bun on each OS. macOS passes `codesign --verify --deep --strict`, `xcrun stapler validate`, and `spctl -a -vvv -t execute` with `Notarized Developer ID`.
-- Test import with F5 (Alpha) running: launch blocks until it quits; retry imports without changing legacy data. Regrant Screen Recording and Accessibility. On macOS and Linux, record whether legacy preview sign-ins survive; reauthentication may be required because the old Safe Storage key is not migrated. Verify a newly established F5 preview sign-in survives beta.1 → beta.2. On Windows, verify the copied `Local State` preserves profile decryption.
-- Run alongside upstream T3 Code on macOS/Windows; verify separate storage and independent single-instance locks. F5 must block computer use against itself (including dev).
-- Missing Git/provider CLI leaves F5 open with diagnostics.
-- Publish beta.2; check, download, restart on mac arm64/x64, Windows, and AppImage. Test confirmation cancel, window-close veto, offline check, and interrupted download. On a slow Mac, allow Squirrel staging to take more than 60 seconds: windows and agents must stay running until staging completes, with no watchdog recovery or duplicate quit. Squirrel staging has a five-minute timeout before shutdown and shows “Preparing update…”; after a timeout the downloaded payload remains retryable, and a late staging completion does not quit F5. The native handoff after staging remains uncancellable and has no timer-based recovery; native errors still allow retry. Windows and Linux retain the 60-second watchdog.
-- Launch from a mounted DMG: Move to Applications works; Not Now leaves updates disabled with an explanation in About.
-- Publish stable; beta installs update and retain beta preferences. Stable installs never see betas. Turning beta off never downgrades.
-- Verify `f5 install` and `f5 update` with the stable CLI manifest.
-- After stable publication, fetch `https://github.com/lopes-felipe/f5/releases/latest/download/latest-mac.yml`, `/f5-cli-release.json`, and one installer under the same base URL; each must return 200 and the expected version.
-- Confirm the global monotonicity check rejects a lower stable release when a higher beta exists. Automated provider tests also document that unsupported feed order.
-
-Apple credentials, the release environment, and tag ruleset are prerequisites for publication. Local tests cannot substitute for the signed multi-OS rehearsal.
+Manual UI acceptance for import, accessibility permissions, SmartScreen/Smart App
+Control, macOS Squirrel staging and AppImage behavior remains useful for product
+changes, but routine releases do not depend on laptop commands or an agent polling CI.
 
 ## Build and validate CLI archives
 
@@ -104,7 +178,8 @@ bun run dist:cli:manifest release-cli/f5-cli-release.json release-cli/f5-0.0.10-
 
 `--output PATH` selects an artifact directory; `--skip-build` uses existing server web assets. The script bundles the standalone server, builds a SEA with snapshots/code cache disabled, pins native dependency roots and transitive overrides to the repository lockfile, resolves with scripts disabled, verifies every resulting package version and integrity against that lock, then installs with `--frozen-lockfile`, and emits an archive plus its manifest fragment. It rejects unsupported and cross-architecture native builds. A universal macOS Node is thinned to arm64 before injection. macOS artifacts are ad hoc signed for local execution; public distribution signing/notarization is a separate release workflow. Desktop's narrow ASAR unpack policy is unchanged.
 
-The merge script requires all five targets and matching versions. Release publishing automation and credentials belong in a separate PR; these scripts do not publish, change secrets, or configure repository access.
+The merge script requires all five targets and matching versions. Packaging scripts
+never publish or change repository settings; the separate trusted publisher owns publication.
 
 The packaged Claude runtime check runs the bundled server's `claude-runtime-smoke.mjs` through Electron with `ELECTRON_RUN_AS_NODE=1`. Windows and Linux run it from `afterPack`; signed macOS builds run it after signing and before notarization. It checks CLI discovery and SDK initialization using a disposable home without a prompt or account credentials. macOS/Linux use F5's process-group wrapper; Windows uses the SDK's native spawn. The check rejects virtual ASAR executable paths, and native Claude platform packages are explicitly unpacked. A failed or timed-out smoke check blocks release packaging.
 

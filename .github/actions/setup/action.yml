@@ -62,7 +62,7 @@ runs:
         printf 'Runner: %s %s; image: %s %s\n' "$F5_CI_RUNNER_OS" "$F5_CI_RUNNER_ARCH" "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
     - name: Install dependencies
       shell: bash
-      run: bun install --frozen-lockfile
+      run: node scripts/retry-install.ts
     - name: Verify Electron installation
       shell: bash
       working-directory: apps/desktop

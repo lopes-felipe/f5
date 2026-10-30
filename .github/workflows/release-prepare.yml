@@ -1,0 +1,38 @@
+name: Prepare stable release
+on:
+  workflow_dispatch:
+    inputs:
+      version: { description: Stable version, required: true, type: string }
+      request_id: { description: UUID identifying this request, required: true, type: string }
+      supersedes:
+        { description: Failed unpublished request UUID to recover, type: string, default: "" }
+permissions:
+  contents: read
+concurrency:
+  group: release-preparation
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: app
+        with:
+          app-id: ${{ vars.F5_RELEASE_APP_ID }}
+          private-key: ${{ secrets.F5_RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.app.outputs.token }}
+      - uses: ./.github/actions/setup
+      - run: node scripts/create-stable-release-pr.ts
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          VERSION: ${{ inputs.version }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          SUPERSEDES: ${{ inputs.supersedes }}

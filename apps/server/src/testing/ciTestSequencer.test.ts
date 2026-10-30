@@ -57,7 +57,8 @@ describe("server CI shard inventory", () => {
     try {
       const specs = files.map((file) => ({ moduleId: join(root, file) }) as TestSpecification);
       const durations =
-        timings.platforms[process.platform as keyof typeof timings.platforms]?.durationsMs ?? {};
+        timings.platforms[process.platform as keyof typeof timings.platforms]?.durationsMs ??
+        (process.platform === "darwin" ? timings.platforms.linux.durationsMs : {});
       const expected = allocateShards(files, durations, 3);
       const selected: TestSpecification[] = [];
       for (const index of [1, 2, 3]) {

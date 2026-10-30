@@ -10,6 +10,7 @@ import {
   type ReleaseProfile,
 } from "./lib/release-profile.ts";
 
+import { validateCandidate, type ReleaseCandidate } from "./release/release-candidate.ts";
 const CHECKSUMS = "SHA256SUMS";
 
 /** Requires exactly one `<sha256>  <name>` line for every other asset. */
@@ -42,6 +43,7 @@ export function verifyReleaseAssets(
   version: string,
   channel: string,
   profile: ReleaseProfile,
+  candidate?: ReleaseCandidate,
 ): void {
   if (channel !== "latest" && channel !== "beta") throw new Error("Invalid channel");
   const desktop = desktopReleaseAssets(profile, version, channel);
@@ -55,7 +57,19 @@ export function verifyReleaseAssets(
     ...cli,
     "f5-cli-release.json",
     CHECKSUMS,
+    ...(candidate ? ["f5-release-candidate.json"] : []),
   ];
+  if (candidate) {
+    const provenance = JSON.parse(readFileSync(join(dir, "f5-release-candidate.json"), "utf8"));
+    validateCandidate(provenance);
+    if (
+      JSON.stringify(provenance) !== JSON.stringify(candidate) ||
+      candidate.version !== version ||
+      candidate.channel !== channel ||
+      candidate.profile !== profile
+    )
+      throw new Error("Release provenance manifest mismatch");
+  }
   const allowed = new Set([...required, ...desktop.optionalBlockmaps]);
   const names = readdirSync(dir);
   for (const name of required) if (!names.includes(name)) throw new Error(`Missing asset: ${name}`);

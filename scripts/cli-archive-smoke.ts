@@ -8,6 +8,7 @@ import * as net from "node:net";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { cliTarget, parseRelease, sha256File, tarExecutable } from "@t3tools/shared/cliRelease";
+import { installedCliSmoke } from "./cli-installed-upgrade-smoke.ts";
 const exec = promisify(execFile);
 const [archive, manifestFile] = process.argv.slice(2);
 if (!archive || !manifestFile) throw new Error("Usage: cli-archive-smoke.ts ARCHIVE MANIFEST");
@@ -124,6 +125,8 @@ try {
   )
     throw new Error("Standalone backup download is incomplete.");
   await fs.writeFile(path.join(directory, "standalone.f5backup"), backupBytes);
+  if (process.env.GITHUB_ACTIONS === "true")
+    await installedCliSmoke(executable, archive, release, path.join(directory, "installed"));
   console.log(
     `Standalone clean-PATH smoke passed for ${artifact.target}: server, migrations, web assets, native PTY, native search and backup maintenance. Artifacts: ${directory}`,
   );

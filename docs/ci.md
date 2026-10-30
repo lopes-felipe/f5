@@ -18,15 +18,20 @@ matrices finish every shard, and all jobs have timeouts.
 | windows-build       | Code changes            | Strict Rust checks, workspace/Git/integration suites, desktop build and smoke, profiles                  | 30 min  |
 | windows-server-unit | Code changes            | Three Windows unit shards, two workers each                                                              | 20 min  |
 | macos-profiles      | Code changes            | Swift, strict universal helper, selected profile tests                                                   | 15 min  |
-| macos-suite         | Main, nightly, dispatch | Strict native checks, all workspace/server suites, desktop and profile smoke                             | 60 min  |
+| macos-workspaces    | Main, nightly, dispatch | Seven workspace suites                                                                                   | 30 min  |
+| macos-server-unit   | Main, nightly, dispatch | Three duration-balanced server-unit shards                                                               | 30 min  |
+| macos-integration   | Main, nightly, dispatch | Git smoke and server integration                                                                         | 30 min  |
+| macos-git           | Main, nightly, dispatch | Five independent real-Git extended suites                                                                | 30 min  |
+| macos-desktop       | Main, nightly, dispatch | Desktop build, smoke and profile lifecycle                                                               | 30 min  |
 | CI result           | Every run               | Aggregate verdict                                                                                        | 5 min   |
 | main-status         | Current main only       | Reconcile the `ci-main-red` issue                                                                        | 5 min   |
 
 A docs-only PR (only Markdown or `docs/**`) skips the heavy checks. Static checks
 and workspace/Git/integration tests still run, including environment documentation
 drift tests. Main pushes, nightly runs and dispatches always run heavy jobs.
-The full macOS suite never runs on PRs. It feeds `CI result`, so release eligibility
-waits for it after each merge (with a 60-minute job timeout). Hosted timing targets for
+The complete macOS coverage runs in parallel jobs after merges, nightly and on
+dispatch. Native Swift/helper checks remain in `macos-profiles`. Every job feeds
+`CI result` and exact-SHA release qualification. Hosted timing targets for
 this optimization are at most six minutes per Windows unit shard with at most 20%
 imbalance, and at most ten minutes per required job excluding queueing. These replace
 the former 10-minute Linux/12-minute Windows targets and require hosted measurement.
@@ -50,9 +55,9 @@ Only superseded PR runs are cancelled. Main commits use separate concurrency gro
 by SHA, so a later merge cannot cancel an earlier commit's release-eligibility run.
 Windows release checks also cancel superseded runs by PR number; release callers
 and manual rehearsals have independent concurrency groups and are never cancelled.
-Release preflight currently checks the exact SHA's successful main push run. The
-stricter explicit gate/attempt check and distribution workflow are deferred until
-PR #157 merges; see the existing release documentation for the current behavior.
+Release publication joins the exact SHA's successful main push run and candidate
+validation. Required jobs and matrix variants are checked individually; a generic
+green badge does not qualify a release. See [release.md](release.md).
 
 `main-status` ignores stale SHAs and deduplicates comments by run attempt. It has
 no shared concurrency group: [GitHub's concurrency rules](https://docs.github.com/en/actions/concepts/workflows-and-actions/concurrency)
@@ -152,8 +157,11 @@ Duration scheduling is implemented but disabled in `apps/server/test-timings.jso
 The initial single-run estimates did not improve hosted Windows balance: run
 40689999503 took 401/345/270 seconds for unit testing, versus 337/305/304 on main
 run 40703866039. Those runs use different commits and are not controlled experiments.
-Retain Vitest's default sharding and ordering until representative measurements are
-available. Stored initial estimates are inactive, and an inventory check rejects
+Linux and Windows retain Vitest's default sharding and ordering until representative
+measurements are available. macOS opts into the same duration allocator through
+`F5_CI_DURATION_SHARDING=true` for its new three-shard matrix. It uses Linux weights
+as bootstrap estimates until native timing reports are available; its balance
+requires hosted measurement. An inventory check rejects
 orphaned paths after renames/deletions; new files use the platform median when enabled.
 
 Sharded CI reports include JSON in `durations.timings` with import, collection, setup and
@@ -169,7 +177,7 @@ allocation to the lightest shard with stable path tie breaking. Each job's lates
 execution supplies its reports, so partial reruns retain passed earlier jobs without
 borrowing superseded results. Attempts are recorded per job. Skipped jobs, unknown
 platform artifacts, missing metrics and incomplete/duplicate inventories fail before
-writing. macOS remains unsharded and is not a timing-source dependency. Commit the
+writing. macOS is sharded but is not a timing-source dependency of that refresh. Commit the
 generated update separately and verify hosted balance before claiming the targets.
 CI never modifies tracked scheduling data or caches test results.
 
