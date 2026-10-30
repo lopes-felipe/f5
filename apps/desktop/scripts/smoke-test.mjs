@@ -1,6 +1,6 @@
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -800,32 +800,59 @@ try {
   await pressQuit();
   await new Promise((resolve) => setTimeout(resolve, 650));
   if (electronProcess.exitCode !== null) throw new Error("A single quit tap closed the app");
+  // Count whole log lines, including a just-rotated file, so unrelated text that
+  // mentions the phrase cannot satisfy the wait.
   const shutdowns = () =>
-    readFileSync(join(state, "logs", "desktop-main.log"), "utf8").split("shutdown complete")
-      .length - 1;
+    ["desktop-main.log.1", "desktop-main.log"]
+      .map((name) => {
+        try {
+          return readFileSync(join(state, "logs", name), "utf8");
+        } catch {
+          return "";
+        }
+      })
+      .join("")
+      .split("] shutdown complete\n").length - 1;
   const shutdownsBeforeQuit = shutdowns();
   let exited = false;
   const closed = application.waitForEvent("close", { timeout: 0 }).then(() => {
     exited = true;
   });
+  // Only output after the quit can show the inspector hold of this exit.
+  let outputAfterQuit = "";
+  for (const stream of [electronProcess.stdout, electronProcess.stderr]) {
+    stream?.on("data", (chunk) => {
+      outputAfterQuit = (outputAfterQuit + chunk.toString()).slice(-65_536);
+    });
+  }
   // Dispatch both native taps in one synchronous main-process turn: a timer
   // between them can exceed the 500 ms gesture window under streaming load.
   await pressQuit(2);
   // F5's own completed shutdown is the evidence that the gesture quit. Node can
   // then hold the exited main process open for Playwright's attached inspector
   // ("Waiting for the debugger to disconnect..."), intermittently on Windows;
-  // only that hold is released here.
-  const quitDeadline = Date.now() + 10_000;
+  // only that hold is released here. Both waits are generous because a slow
+  // runner is not the failure this guards against.
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const quitDeadline = Date.now() + 30_000;
   while (!exited && shutdowns() <= shutdownsBeforeQuit) {
     if (Date.now() > quitDeadline) throw new Error("The double-tap quit did not shut F5 down");
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await sleep(50);
   }
-  await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 5_000))]);
-  if (!exited) {
-    if (!output.includes("Waiting for the debugger to disconnect"))
+  const holdDeadline = Date.now() + 25_000;
+  while (!exited && !outputAfterQuit.includes("Waiting for the debugger to disconnect")) {
+    if (Date.now() > holdDeadline)
       throw new Error("F5 completed shutdown but its process did not exit");
+    await sleep(50);
+  }
+  if (!exited) {
     console.error("Desktop smoke: releasing an exited main process held by the inspector");
-    electronProcess.kill();
+    // On Windows Playwright launches through cmd.exe, so kill the whole tree.
+    if (process.platform === "win32" && electronProcess.pid)
+      spawnSync("taskkill", ["/pid", String(electronProcess.pid), "/T", "/F"], {
+        stdio: "ignore",
+      });
+    else electronProcess.kill();
     await Promise.race([
       closed,
       new Promise((_, reject) =>
