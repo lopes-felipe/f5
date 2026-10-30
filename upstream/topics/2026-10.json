@@ -4928,11 +4928,21 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T00:20:18.818Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-30T00:51:45.704Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/git/gitProcessEnvironment.ts:23",
+          "apps/server/src/git/Layers/GitService.ts:153"
+        ],
+        "f5Refs": [
+          "4f197bc8b09dbcb6f1b84c259fd1135a68cbdca1"
+        ]
+      },
       "id": "pr-13538",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "checkpoints",
