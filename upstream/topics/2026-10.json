@@ -17189,11 +17189,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-28T20:58:24.169Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-30T00:16:31.977Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-18132",
-      "status": "port",
+      "reason": "f5 has no right-panel launcher letter shortcuts or popup-blocker list, and its Mod+T tab-menu shortcut only checks for a dialog that holds focus, so closed kept-mounted popups never block it.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "panels",
