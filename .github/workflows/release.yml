@@ -251,7 +251,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/rehearsal-node"
           cp "$(command -v node)" "$RUNNER_TEMP/rehearsal-node/node.exe"
-          "$RUNNER_TEMP/rehearsal-node/node.exe" scripts/windows-update-rehearsal.ts --baseline-dir published-upgrade/baseline --target-dir published-upgrade/target --baseline "$BASELINE" --target "$VERSION" --channel "$CHANNEL" --log-dir rehearsal-logs
+          "$RUNNER_TEMP/rehearsal-node/node.exe" scripts/windows-update-rehearsal.ts --baseline-dir published-upgrade/baseline --target-dir published-upgrade/target --baseline "$BASELINE" --target "$VERSION" --channel "$CHANNEL" --published-baseline --log-dir rehearsal-logs
       - if: always()
         uses: actions/upload-artifact@v4
         with:

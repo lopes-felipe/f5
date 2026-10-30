@@ -7,7 +7,7 @@
  * Node and Bun are hidden from every PATH source F5 hydrates at startup, so this
  * script must run from a copied `node.exe` outside them.
  * Usage: node scripts/windows-update-rehearsal.ts --baseline-dir D --target-dir D
- *   --baseline V --target V --channel latest|beta [--log-dir D]
+ *   --baseline V --target V --channel latest|beta [--published-baseline] [--log-dir D]
  */
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import {
@@ -25,9 +25,9 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { DesktopUpdateState } from "@t3tools/contracts";
 import { hydrateWindowsPath, readWindowsRegistryPaths } from "@t3tools/shared/windowsPath";
-import { parseAppUpdateConfig } from "./lib/app-update-config.ts";
 import {
   rehearsalAppUpdateConfig,
+  verifyRehearsalAppUpdateConfig,
   startUpdateFeedEmulator,
   type FeedMode,
 } from "./lib/update-rehearsal.ts";
@@ -40,6 +40,7 @@ const { values } = parseArgs({
     baseline: { type: "string" },
     target: { type: "string" },
     channel: { type: "string" },
+    "published-baseline": { type: "boolean", default: false },
     "log-dir": { type: "string", default: "rehearsal-logs" },
   },
 });
@@ -510,9 +511,16 @@ try {
   assert(existsSync(exe), `Missing ${exe}`);
   assert(existsSync(startMenuShortcut), "Missing Start Menu shortcut after install");
   const appUpdatePath = join(dir, "resources", "app-update.yml");
-  const productionFeed = parseAppUpdateConfig(readFileSync(appUpdatePath, "utf8"));
-  assert(!("publisherName" in productionFeed), "Unsigned build has publisherName");
-  assert(productionFeed.channel === channel, `Packaged channel ${String(productionFeed.channel)}`);
+  const productionFeed = verifyRehearsalAppUpdateConfig(readFileSync(appUpdatePath, "utf8"), {
+    channel,
+    publishedBaseline: values["published-baseline"],
+  });
+  if (productionFeed.publisherName !== undefined) {
+    const status = powershell(
+      `(Get-AuthenticodeSignature -LiteralPath '${exe.replace(/'/g, "''")}').Status.ToString()`,
+    );
+    assert(status === "Valid", `Published baseline signature is ${status}`);
+  }
   const cacheDirName = productionFeed.updaterCacheDirName;
   assert(typeof cacheDirName === "string", "app-update.yml lacks updaterCacheDirName");
   const redirectFeed = () =>

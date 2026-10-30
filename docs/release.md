@@ -39,7 +39,7 @@ The rehearsal job builds two unpublished installers from the release commit, on 
 - verifies the version, install path, Start Menu shortcut and preserved profile data (seeded settings, markers and the app's own state files);
 - uninstalls silently and checks that user data stays.
 
-`assemble` depends on it, so no draft is created without it. The release workflow also downloads the latest published Windows installer on the release channel and rehearses its upgrade to the exact `desktop-win-x64` artifact. It verifies both installers against their updater manifests before execution, and records the selected versions in `windows-published-upgrade-logs`. Only a channel with no published baseline skips this additional check.
+`assemble` depends on it, so no draft is created without it. The release workflow also downloads the latest published Windows installer on the release channel and rehearses its upgrade to the exact `desktop-win-x64` artifact. It verifies both installers against their updater manifests before execution, and records the selected versions in `windows-published-upgrade-logs`. Only a channel with no published baseline skips this additional check. Published baselines retain their original update publisher identity; a signed baseline must pass Authenticode validation, and its updater continues to enforce that publisher on the candidate installer. The synthetic baseline still requires an unsigned build.
 
 What the rehearsal does **not** prove:
 

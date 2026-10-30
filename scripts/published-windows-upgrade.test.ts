@@ -135,4 +135,10 @@ it("blocks assembly on the published upgrade and uses the release artifact", () 
     uses: "actions/download-artifact@v4",
     with: { name: "desktop-win-x64", path: "published-upgrade/target" },
   });
+  expect(
+    upgrade.steps.find(
+      (step: { name?: string }) =>
+        step.name === "Upgrade the published installation to the release artifact",
+    ).run,
+  ).toContain("--published-baseline");
 });

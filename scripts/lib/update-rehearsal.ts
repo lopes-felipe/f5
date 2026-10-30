@@ -7,7 +7,30 @@ import {
   RELEASE_UPDATE_OWNER,
   RELEASE_UPDATE_REPO,
   parseAppUpdateConfig,
+  verifyAppUpdateConfig,
 } from "./app-update-config.ts";
+
+/**
+ * Published baselines are pinned by their release manifest. Keep their original
+ * publisher identity so the real updater still enforces signatures. Locally
+ * built rehearsal pairs must remain unsigned.
+ */
+export function verifyRehearsalAppUpdateConfig(
+  text: string,
+  expected: { readonly channel: string; readonly publishedBaseline?: boolean },
+): ReturnType<typeof parseAppUpdateConfig> {
+  const config = parseAppUpdateConfig(text);
+  let publisherName: string | undefined;
+  if (expected.publishedBaseline && config.publisherName !== undefined) {
+    const names =
+      typeof config.publisherName === "string" ? [config.publisherName] : config.publisherName;
+    if (names.length !== 1 || !names[0]?.trim())
+      throw new Error("Published baseline must have exactly one nonempty update publisherName");
+    publisherName = names[0];
+  }
+  verifyAppUpdateConfig(text, { channel: expected.channel, publisherName });
+  return config;
+}
 
 /**
  * Versions for the unpublished rehearsal pair, matching the release channel:
