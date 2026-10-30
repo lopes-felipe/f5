@@ -11,7 +11,14 @@ interface Job {
   concurrency?: unknown;
   permissions?: Record<string, string>;
   strategy?: { matrix?: unknown; "fail-fast"?: boolean };
-  steps?: { id?: string; uses?: string; if?: string; name?: string; run?: string }[];
+  steps?: {
+    id?: string;
+    uses?: string;
+    if?: string;
+    name?: string;
+    run?: string;
+    env?: Record<string, string>;
+  }[];
 }
 const workflow = parse(
   readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
@@ -29,6 +36,12 @@ export function assertWorkflowPolicy(jobs: Record<string, Job>) {
 }
 
 describe("CI workflow policy", () => {
+  it("lets each workspace preserve its package report identity without overwriting sibling reports", () => {
+    for (const [id, job] of Object.entries(workflow.jobs))
+      for (const step of job.steps ?? [])
+        if (step.run?.includes("test:ci:workspaces"))
+          expect(step.env?.F5_CI_SUITE_ID, id).toBeUndefined();
+  });
   it("gates every job and bounds all jobs and matrices", () => assertWorkflowPolicy(workflow.jobs));
   it("has a report inventory for every configured server unit shard", () => {
     expect(workflow.jobs["server-unit"]!.strategy!.matrix).toEqual({ shard: [1, 2] });

@@ -608,7 +608,6 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:
           NODE_OPTIONS: --max-old-space-size=4096
-          F5_CI_SUITE_ID: "Workspace suites"
         run: bun run test:ci:workspaces
       - name: Summarize test reports
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
