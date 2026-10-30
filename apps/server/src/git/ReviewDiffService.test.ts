@@ -232,6 +232,58 @@ describe("getReviewPreviewDiff", () => {
     expect(result.patch).toContain("feature.txt");
   });
 
+  it("compares the default branch with its tracking upstream rather than a lagging origin", async () => {
+    const cwd = makeRepository();
+    git(cwd, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+    write(cwd, "upstream.txt", "upstream\n");
+    git(cwd, ["add", "upstream.txt"]);
+    git(cwd, ["commit", "-m", "upstream"]);
+    git(cwd, ["remote", "add", "upstream", path.join(cwd, "missing-upstream.git")]);
+    git(cwd, ["update-ref", "refs/remotes/upstream/main", "HEAD"]);
+    git(cwd, ["config", "branch.main.remote", "upstream"]);
+    git(cwd, ["config", "branch.main.merge", "refs/heads/main"]);
+    write(cwd, "local.txt", "local\n");
+    git(cwd, ["add", "local.txt"]);
+    git(cwd, ["commit", "-m", "local"]);
+    // A tag that shares the branch's name must not hide that HEAD is the default branch.
+    git(cwd, ["update-ref", "refs/tags/main", "HEAD"]);
+
+    const result = await preview(cwd, "branch-range");
+
+    expect(result.kind).toBe("success");
+    if (result.kind !== "success") return;
+    expect(result.baseRef).toBe("refs/remotes/upstream/main");
+    expect(result.patch).toContain("local.txt");
+    expect(result.patch).not.toContain("upstream.txt");
+  });
+
+  it("compares against a configured remote merge base even when a local branch shadows it", async () => {
+    const cwd = makeRepository();
+    const lagging = git(cwd, ["rev-parse", "HEAD"]);
+    git(cwd, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+    write(cwd, "upstream.txt", "upstream\n");
+    git(cwd, ["add", "upstream.txt"]);
+    git(cwd, ["commit", "-m", "upstream"]);
+    git(cwd, ["update-ref", "refs/remotes/upstream/main", "HEAD"]);
+    git(cwd, ["reset", "--hard", lagging]);
+    git(cwd, ["branch", "upstream/main", lagging]);
+    git(cwd, ["switch", "--no-track", "-c", "feature", "refs/remotes/upstream/main"]);
+    git(cwd, ["config", "branch.feature.gh-merge-base", "upstream/main"]);
+    write(cwd, "feature.txt", "feature\n");
+    git(cwd, ["add", "feature.txt"]);
+    git(cwd, ["commit", "-m", "feature"]);
+
+    const result = await preview(cwd, "branch-range");
+
+    expect(result.kind).toBe("success");
+    if (result.kind !== "success") return;
+    expect(result.baseRef).toBe("refs/remotes/upstream/main");
+    expect(result.patch).toContain("feature.txt");
+    expect(result.patch).not.toContain("upstream.txt");
+  });
+
   it("caps untracked enumeration and reports truncation", async () => {
     const cwd = makeRepository();
     for (let index = 0; index < 513; index += 1) {

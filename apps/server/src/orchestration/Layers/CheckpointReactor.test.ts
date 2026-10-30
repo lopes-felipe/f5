@@ -3,6 +3,7 @@ import { makeFakeGitCore } from "../../git/testDoubles.ts";
 import { withFixtureWorkspaceWrites } from "../testUtils/workspaceWrites.ts";
 import { GitService, type GitServiceShape } from "../../git/Services/GitService.ts";
 import { GitServiceLive } from "../../git/Layers/GitService.ts";
+import { branchNameFromHeadRef } from "../../git/headBranch.ts";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -411,16 +412,18 @@ describe("CheckpointReactor", () => {
           makeFakeGitCore({
             inspectCheckoutIdentity: (target) =>
               Effect.gen(function* () {
-                const branch = options?.gitService
-                  ? (yield* options.gitService.execute({
-                      operation: "checkpoint.verifyBranch",
-                      cwd: target,
-                      args: ["symbolic-ref", "--short", "HEAD"],
-                    })).stdout.trim()
-                  : execFileSync("git", ["symbolic-ref", "--short", "HEAD"], {
-                      cwd: target,
-                      encoding: "utf8",
-                    }).trim();
+                const branch = branchNameFromHeadRef(
+                  options?.gitService
+                    ? (yield* options.gitService.execute({
+                        operation: "checkpoint.verifyBranch",
+                        cwd: target,
+                        args: ["symbolic-ref", "HEAD"],
+                      })).stdout
+                    : execFileSync("git", ["symbolic-ref", "HEAD"], {
+                        cwd: target,
+                        encoding: "utf8",
+                      }),
+                );
                 return { canonicalRoot: target, commonDir: path.join(target, ".git"), branch };
               }),
           }).service,
@@ -530,7 +533,9 @@ describe("CheckpointReactor", () => {
   ])(
     "follows only an exclusive non-temporary checkout: %j",
     async ({ shared, checkout, injected }) => {
-      const execute = vi.fn(() => Effect.succeed({ code: 0, stdout: checkout + "\n", stderr: "" }));
+      const execute = vi.fn(() =>
+        Effect.succeed({ code: 0, stdout: `refs/heads/${checkout}\n`, stderr: "" }),
+      );
       const harness = await createHarness({
         seedFilesystemCheckpoints: false,
         ...(injected ? { gitService: { execute } } : {}),

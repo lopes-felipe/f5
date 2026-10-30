@@ -47,6 +47,9 @@ function makeScriptedGitService(resolve: (input: ExecuteGitInput) => ScriptedRes
             return { code: 0, stdout: `${process.cwd()}\n`, stderr: "" };
           }
           const scripted = resolve(input);
+          // Like the real service, streaming consumers receive the output as chunks.
+          if (input.onStdoutChunk && scripted.stdout)
+            input.onStdoutChunk(new TextEncoder().encode(scripted.stdout));
           return {
             code: scripted.code ?? 0,
             stdout: scripted.stdout ?? "",
@@ -1485,4 +1488,127 @@ describe("shared .git/config writes", () => {
     expect(order).toEqual(["rename:start", "rename:end"]);
     expect(scripted.calls.some((call) => call.args.includes("--set-upstream-to"))).toBe(true);
   });
+});
+
+describe("real repositories", () => {
+  const runGit = (cwd: string, args: string[]) =>
+    execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+  const makeRealCore = async () =>
+    makeCore(
+      await Effect.runPromise(
+        Effect.service(GitService).pipe(
+          Effect.provide(GitServiceLive.pipe(Layer.provide(NodeServices.layer))),
+        ),
+      ),
+    );
+  const makeRepo = (name = "local") => {
+    const root = mkdtempSync(join(tmpdir(), "f5-git-core-real-"));
+    roots.push(root);
+    const cwd = join(root, name);
+    mkdirSync(cwd);
+    runGit(cwd, ["init", "--initial-branch=main"]);
+    runGit(cwd, ["config", "user.email", "test@test.com"]);
+    runGit(cwd, ["config", "user.name", "Test"]);
+    runGit(cwd, ["config", "commit.gpgsign", "false"]);
+    return { root, cwd };
+  };
+  const commitFile = (cwd: string, file: string) => {
+    writeFileSync(join(cwd, file), `${file}\n`);
+    runGit(cwd, ["add", file]);
+    runGit(cwd, ["commit", "-m", file]);
+    return runGit(cwd, ["rev-parse", "HEAD"]);
+  };
+
+  it("reads the current branch by name when a tag shares it", async () => {
+    const { cwd } = makeRepo();
+    const head = commitFile(cwd, "README.md");
+    runGit(cwd, ["switch", "-c", "release"]);
+    runGit(cwd, ["update-ref", "refs/tags/release", "HEAD"]);
+    expect(runGit(cwd, ["symbolic-ref", "--short", "HEAD"])).toBe("heads/release");
+    const core = await makeRealCore();
+
+    expect((await Effect.runPromise(core.inspectCheckoutIdentity(cwd))).branch).toBe("release");
+    expect(
+      (await Effect.runPromise(core.statusDetails(cwd, { refreshUpstream: false }))).branch,
+    ).toBe("release");
+    await Effect.runPromise(core.fastForwardTo(cwd, head, "release"));
+  }, 30_000);
+
+  it("keeps large change sets available for status and commit preparation", async () => {
+    const { cwd } = makeRepo();
+    const files = Array.from(
+      { length: 6_000 },
+      (_, index) => `file-${String(index).padStart(5, "0")}-${"x".repeat(160)}.txt`,
+    );
+    for (const file of files) writeFileSync(join(cwd, file), "before\n");
+    runGit(cwd, ["add", "."]);
+    const core = await makeRealCore();
+
+    const unborn = await Effect.runPromise(core.statusDetails(cwd, { refreshUpstream: false }));
+    expect(unborn.workingTree.files).toHaveLength(files.length);
+    // The created-file summary alone exceeds the default output cap.
+    const initial = await Effect.runPromise(core.commit(cwd, "initial", ""));
+    expect(initial.commitSha).toMatch(/^[a-f0-9]{40}$/);
+    for (const file of files) writeFileSync(join(cwd, file), "after\n");
+
+    const status = await Effect.runPromise(core.statusDetails(cwd, { refreshUpstream: false }));
+    expect(status.hasWorkingTreeChanges).toBe(true);
+    expect(status.workingTree.files).toHaveLength(files.length);
+    expect(status.workingTree.insertions).toBe(files.length);
+    expect(status.workingTree.deletions).toBe(files.length);
+    const context = await Effect.runPromise(core.prepareCommitContext(cwd));
+    expect(context).not.toBeNull();
+    expect(context!.stagedSummary.length).toBeGreaterThan(1_000_000);
+    expect(context!.stagedSummary.split("\n")).toHaveLength(files.length);
+    expect(context!.stagedPatch.startsWith("diff --git")).toBe(true);
+    expect(context!.stagedPatch.length).toBeLessThanOrEqual(1024 * 1024);
+  }, 120_000);
+
+  // A fork whose local main lags `upstream/main`, with a feature branched from upstream.
+  const makeForkWithUpstreamBase = () => {
+    const { root, cwd } = makeRepo();
+    const lagging = commitFile(cwd, "README.md");
+    commitFile(cwd, "upstream-1.txt");
+    commitFile(cwd, "upstream-2.txt");
+    runGit(cwd, ["remote", "add", "upstream", join(root, "missing-upstream.git")]);
+    runGit(cwd, ["update-ref", "refs/remotes/upstream/main", "HEAD"]);
+    runGit(cwd, ["reset", "--hard", lagging]);
+    runGit(cwd, ["switch", "--no-track", "-c", "feature", "refs/remotes/upstream/main"]);
+    runGit(cwd, ["config", "branch.feature.gh-merge-base", "upstream/main"]);
+    return { root, cwd, lagging };
+  };
+
+  it("counts unpublished commits against a configured remote merge base", async () => {
+    const { cwd } = makeForkWithUpstreamBase();
+    commitFile(cwd, "feature.txt");
+    // A local branch named like the remote base must not shadow it.
+    runGit(cwd, ["branch", "upstream/main", "main"]);
+    const core = await makeRealCore();
+
+    const status = await Effect.runPromise(core.statusDetails(cwd, { refreshUpstream: false }));
+    expect(status.hasUpstream).toBe(false);
+    expect(status.aheadCount).toBe(1);
+  }, 30_000);
+
+  it("pushes a branch at its configured base when the published branch is behind", async () => {
+    const { root, cwd, lagging } = makeForkWithUpstreamBase();
+    const origin = join(root, "origin.git");
+    runGit(root, ["init", "--bare", "--initial-branch=main", origin]);
+    runGit(cwd, ["remote", "add", "origin", origin]);
+    runGit(cwd, ["push", "origin", `${lagging}:refs/heads/feature`]);
+    runGit(cwd, ["fetch", "origin"]);
+    const core = await makeRealCore();
+
+    const status = await Effect.runPromise(core.statusDetails(cwd, { refreshUpstream: false }));
+    expect(status.aheadCount).toBe(0);
+    const result = await Effect.runPromise(core.pushCurrentBranch(cwd, null));
+    expect(result.status).toBe("pushed");
+    expect(runGit(origin, ["rev-parse", "refs/heads/feature"])).toBe(
+      runGit(cwd, ["rev-parse", "HEAD"]),
+    );
+  }, 30_000);
 });
