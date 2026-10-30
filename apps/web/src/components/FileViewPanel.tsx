@@ -13,7 +13,7 @@ import ChatMarkdown from "./ChatMarkdown";
 import { File as FileViewer } from "@pierre/diffs/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { ThreadId } from "@t3tools/contracts";
+import { type EditorId, ThreadId } from "@t3tools/contracts";
 import {
   AlertTriangleIcon,
   ExternalLinkIcon,
@@ -26,7 +26,9 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
+import { usePreferredEditor } from "../editorPreferences";
 import { openFileInEditor } from "../lib/openFileInEditor";
+import { serverConfigQueryOptions } from "../lib/serverReactQuery";
 import { revealFile } from "../lib/revealFile";
 import { clearFileViewSearchParams, parseDiffRouteSearch } from "../diffRouteSearch";
 import { useDiffWordWrap } from "../appSettings";
@@ -75,6 +77,8 @@ export function formatPositionBadge(params: {
   }
   return `L${params.line}`;
 }
+
+const EMPTY_AVAILABLE_EDITORS: EditorId[] = [];
 
 export function resolveEditorTarget(input: {
   filePath: string;
@@ -152,6 +156,7 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
   const fileQuery = useQuery(
     fileContentQueryOptions({ cwd: previewTarget?.cwd, relativePath: watchedFilePath }),
   );
+  const serverConfigQuery = useQuery(serverConfigQueryOptions());
   // External edits refetch the file; a dirty draft turns into a conflict below.
   useWatchedWorkspacePaths(
     workspaceRoot,
@@ -509,8 +514,20 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
     [activeProjectId, activeThreadId, filePath, hasPreviewTarget, workspaceRoot],
   );
 
+  // The file manager would hand the file to its default app, so a preferred file
+  // manager reveals it instead. Decide before any await: desktop file actions
+  // spend the click's one-shot gesture on their first native call.
+  const availableEditors = serverConfigQuery.data?.availableEditors ?? EMPTY_AVAILABLE_EDITORS;
+  const [preferredEditor] = usePreferredEditor(availableEditors);
+  const preferredEditorReveals = preferredEditor === "file-manager";
+  const canOpenInEditor = Boolean(filePath) && (!preferredEditorReveals || !!revealInFileManager);
+
   const openInEditor = useCallback(() => {
     if (!filePath) {
+      return;
+    }
+    if (preferredEditorReveals) {
+      void revealInFileManager?.();
       return;
     }
     const targetPath = resolveEditorTarget({
@@ -519,13 +536,8 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
       line: fileLine,
       column: fileColumn,
     });
-    // The file manager would hand the file to its default app; reveal it instead.
-    void openFileInEditor(
-      targetPath,
-      undefined,
-      revealInFileManager ? { revealFileManager: revealInFileManager } : undefined,
-    );
-  }, [fileColumn, fileLine, filePath, revealInFileManager, workspaceRoot]);
+    void openFileInEditor(targetPath);
+  }, [fileColumn, fileLine, filePath, preferredEditorReveals, revealInFileManager, workspaceRoot]);
 
   const openInVSCode = () => {
     if (filePath)
@@ -642,7 +654,7 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
           size="icon-xs"
           variant="outline"
           onClick={openInEditor}
-          disabled={!filePath}
+          disabled={!canOpenInEditor}
           aria-label="Open in preferred editor"
           title="Open in preferred editor"
         >
@@ -689,7 +701,12 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
               This path cannot be previewed as a local file: {filePath}
             </p>
             <div className="mt-4 flex items-center gap-2">
-              <Button size="xs" variant="outline" onClick={openInEditor}>
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={openInEditor}
+                disabled={!canOpenInEditor}
+              >
                 <ExternalLinkIcon className="size-3.5" />
                 Open in preferred editor
               </Button>
@@ -750,7 +767,12 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
                 <RefreshCwIcon className="size-3.5" />
                 Retry
               </Button>
-              <Button size="xs" variant="outline" onClick={openInEditor}>
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={openInEditor}
+                disabled={!canOpenInEditor}
+              >
                 <ExternalLinkIcon className="size-3.5" />
                 Open in preferred editor
               </Button>

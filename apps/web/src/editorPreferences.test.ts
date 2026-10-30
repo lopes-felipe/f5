@@ -111,23 +111,3 @@ it.each(["configuration", "no-editors", "launch"])(
     expect(release).toHaveBeenCalledWith("unused-token");
   },
 );
-
-it.each([
-  ["file-manager", 1, 0],
-  ["vscode", 0, 1],
-] as const)(
-  "routes a preferred %s through the caller's file-manager reveal",
-  async (editor, reveals, opens) => {
-    const reveal = vi.fn().mockResolvedValue(undefined);
-    const open = vi.fn().mockResolvedValue(undefined);
-    const api = {
-      server: { getConfig: vi.fn().mockResolvedValue({ availableEditors: [editor] }) },
-      shell: { openInEditor: open },
-    } as unknown as NativeApi;
-    await expect(
-      openInPreferredEditor(api, "/repo/report.json:4:2", { revealFileManager: reveal }),
-    ).resolves.toBe(editor);
-    expect(reveal).toHaveBeenCalledTimes(reveals);
-    expect(open).toHaveBeenCalledTimes(opens);
-  },
-);

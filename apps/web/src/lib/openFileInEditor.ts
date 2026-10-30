@@ -4,16 +4,11 @@ import { toastManager } from "../components/ui/toast";
 import type { EditorId } from "@t3tools/contracts";
 
 /** File references must report failed editor handoffs to the user. */
-export async function openFileInEditor(
-  targetPath: string,
-  editor?: EditorId,
-  options?: Parameters<typeof openInPreferredEditor>[2],
-): Promise<void> {
+export async function openFileInEditor(targetPath: string, editor?: EditorId): Promise<void> {
   try {
     const api = readNativeApi();
     if (!api) throw new Error("Editor opening is unavailable.");
     if (editor) await api.shell.openInEditor(targetPath, editor);
-    else if (options) await openInPreferredEditor(api, targetPath, options);
     else await openInPreferredEditor(api, targetPath);
   } catch (error) {
     toastManager.add({

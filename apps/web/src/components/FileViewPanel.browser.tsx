@@ -6,6 +6,7 @@ import { render } from "vitest-browser-react";
 import type { ReactNode } from "react";
 import FileViewPanel from "./FileViewPanel";
 import { providerQueryKeys } from "../lib/providerReactQuery";
+import { serverConfigQueryOptions } from "../lib/serverReactQuery";
 import { resetWorkspaceWatchForTests, startWorkspaceWatchSync } from "../lib/workspaceWatch";
 import type { ProjectWatchedPathsChangedPayload } from "@t3tools/contracts";
 
@@ -132,9 +133,10 @@ it("uses the configured preferred editor while retaining an explicit VS Code act
   }
 });
 
-it("reveals the file when the preferred editor is the file manager", async () => {
+async function renderWithPreferredFileManager() {
   localStorage.setItem("t3code:last-editor", JSON.stringify("file-manager"));
-  api.getConfig.mockResolvedValue({ availableEditors: ["vscode", "file-manager"] });
+  const config = { availableEditors: ["vscode", "file-manager"] };
+  api.getConfig.mockResolvedValue(config);
   api.readFile.mockResolvedValue({
     relativePath: "app.ts",
     contents: "{}",
@@ -142,11 +144,18 @@ it("reveals the file when the preferred editor is the file manager", async () =>
     truncated: false,
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // The app loads the server config at startup, before any file view opens.
+  client.setQueryData(serverConfigQueryOptions().queryKey, config as never);
   const screen = await render(
     <QueryClientProvider client={client}>
       <FileViewPanel mode="sheet" />
     </QueryClientProvider>,
   );
+  return { client, screen };
+}
+
+it("reveals the file when the preferred editor is the file manager", async () => {
+  const { client, screen } = await renderWithPreferredFileManager();
   try {
     await screen.getByRole("button", { name: "Open in preferred editor", exact: true }).click();
     await expect
@@ -158,6 +167,40 @@ it("reveals the file when the preferred editor is the file manager", async () =>
   } finally {
     await screen.unmount();
     client.clear();
+  }
+});
+
+it("spends the desktop click gesture on the reveal itself", async () => {
+  // Like the preload, every native file action consumes the click's single gesture.
+  let gesture = false;
+  const takeGesture = () => {
+    const trusted = gesture;
+    gesture = false;
+    return trusted;
+  };
+  const revealed: string[] = [];
+  const bridge = {
+    prepareEditorOpen: vi.fn(async () => (takeGesture() ? "token" : undefined)),
+    releaseEditorOpen: vi.fn(async () => {}),
+    revealFile: vi.fn(async (filePath: string) => {
+      if (!takeGesture()) throw new Error("File actions require a user gesture.");
+      revealed.push(filePath);
+    }),
+  };
+  vi.stubGlobal("desktopBridge", bridge);
+  const { client, screen } = await renderWithPreferredFileManager();
+  try {
+    const button = screen.getByRole("button", { name: "Open in preferred editor", exact: true });
+    await expect.element(button).toBeEnabled();
+    gesture = true;
+    await button.click();
+    await expect.poll(() => revealed).toEqual(["/repo/app.ts"]);
+    expect(bridge.prepareEditorOpen).not.toHaveBeenCalled();
+    expect(api.openInEditor).not.toHaveBeenCalled();
+  } finally {
+    await screen.unmount();
+    client.clear();
+    vi.unstubAllGlobals();
   }
 });
 
