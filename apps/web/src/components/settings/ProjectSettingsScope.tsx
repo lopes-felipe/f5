@@ -777,9 +777,10 @@ export function ProjectGitOverrides() {
                 defaultValue={settings.textGenerationModelSelection.model}
                 onBlur={(e) => {
                   const model = e.target.value.trim();
+                  // A new model must not inherit the previous model's options.
                   if (model && model !== settings.textGenerationModelSelection.model)
                     set("textGenerationModelSelection", {
-                      ...settings.textGenerationModelSelection,
+                      instanceId: settings.textGenerationModelSelection.instanceId,
                       model,
                     });
                 }}

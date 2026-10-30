@@ -5,6 +5,7 @@ import {
   ProviderInstanceId,
   type ProviderKind,
   type ProjectId,
+  ProjectSettingsOverrides,
   type ServerProvider,
   type ModelSelection,
 } from "@t3tools/contracts";
@@ -194,6 +195,16 @@ function preserveRedactedProviderSecrets(
     : { ...preserved, providerInstances };
 }
 
+const knownProjectOverrideKeys = new Set(Object.keys(ProjectSettingsOverrides.fields));
+
+function pickOverrideKeys(entry: ProjectSettingsOverrides | undefined, known: boolean) {
+  return Object.fromEntries(
+    Object.entries<unknown>(entry ?? {}).filter(
+      ([key]) => knownProjectOverrideKeys.has(key) === known,
+    ),
+  );
+}
+
 /**
  * Applies a server settings patch while treating model selections as
  * replace-on-provider/model updates. This prevents stale nested options from
@@ -215,7 +226,9 @@ export function applyServerSettingsPatch(
       overrides = {
         ...overrides,
         [id]: {
-          ...value,
+          // Preserve downgraded storage, but reject new unknown writes so clients can detect unsupported settings.
+          ...pickOverrideKeys(previous, false),
+          ...pickOverrideKeys(value, true),
           ...(providerInstances === undefined ? {} : { providerInstances }),
         },
       };

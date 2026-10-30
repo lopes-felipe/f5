@@ -480,6 +480,42 @@ describe("settings route", () => {
     }
   });
 
+  it("drops the old model's options when changing the project text-generation model", async () => {
+    const { screen } = await renderSettingsRoute(`/settings?category=git&project=${PROJECT_ONE}`, {
+      serverConfig: {
+        providers: [createTestServerProvider("codex")],
+        settings: {
+          ...DEFAULT_SERVER_SETTINGS,
+          projectSettingsOverrides: {
+            [PROJECT_ONE]: {
+              textGenerationModelSelection: {
+                instanceId: "codex" as never,
+                model: "gpt-5.4",
+                options: [{ id: "reasoningEffort", value: "high" }],
+              },
+            },
+          },
+        },
+      },
+    });
+    try {
+      const input = page.getByRole("textbox", { name: "Text generation model" });
+      await input.fill("gpt-5.4-mini");
+      (input.element() as HTMLInputElement).blur();
+      await vi.waitFor(() =>
+        expect(nativeApiRef.current!.server.updateSettings).toHaveBeenCalledWith({
+          projectSettingsOverrides: {
+            [PROJECT_ONE]: {
+              textGenerationModelSelection: { instanceId: "codex", model: "gpt-5.4-mini" },
+            },
+          },
+        }),
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("searches project scopes, keeps the selected scope in the URL, and shows only project pages", async () => {
     const { screen, router } = await renderSettingsRoute("/settings?category=git");
     try {
