@@ -319,6 +319,46 @@ describe("publisher integration with immutable platform fixtures", () => {
     expect(state.writes).toHaveLength(writes);
   });
 });
+it.each(["redirect failure", "interrupted body"])(
+  "retries one transient artifact transfer after %s, then stops on an integrity failure",
+  async (kind) => {
+    const original = await vi.importActual<typeof import("./release/release-github.ts")>(
+      "./release/release-github.ts",
+    );
+    const redirect = () =>
+      new Response(null, { status: 302, headers: { location: "https://artifact.invalid/file" } });
+    const fetch = vi.fn();
+    if (kind === "redirect failure")
+      fetch.mockResolvedValueOnce(new Response(null, { status: 503 }));
+    else
+      fetch.mockResolvedValueOnce(redirect()).mockResolvedValueOnce(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(Object.assign(new Error("socket reset"), { code: "ECONNRESET" }));
+            },
+          }),
+        ),
+      );
+    fetch
+      .mockResolvedValueOnce(redirect())
+      .mockResolvedValueOnce(new Response("corrupt zip bytes"));
+    vi.stubGlobal("fetch", fetch);
+    try {
+      await expect(
+        original.downloadArtifact({
+          id: 1,
+          name: "component",
+          digest: "sha256:" + "d".repeat(64),
+          expired: false,
+        }),
+      ).rejects.toThrow("ZIP digest");
+      expect(fetch).toHaveBeenCalledTimes(kind === "redirect failure" ? 3 : 4);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  },
+);
 it("rejects expired and corrupt artifact ZIPs before extraction or execution", async () => {
   const original = await vi.importActual<typeof import("./release/release-github.ts")>(
     "./release/release-github.ts",

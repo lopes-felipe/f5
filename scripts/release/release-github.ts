@@ -9,6 +9,7 @@ import {
   readdirSync,
   lstatSync,
   unlinkSync,
+  rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +29,33 @@ import {
 
 export const repository = process.env.GITHUB_REPOSITORY ?? "lopes-felipe/f5";
 if (!/^[\w.-]+\/[\w.-]+$/.test(repository)) throw new Error("Invalid repository");
+function transientReleaseNetworkFailure(error: unknown): boolean {
+  let value = error,
+    detail = "";
+  for (let depth = 0; value && depth < 3; depth++) {
+    if (typeof value !== "object") {
+      detail += " " + String(value);
+      break;
+    }
+    const failure = value as {
+      stderr?: unknown;
+      message?: unknown;
+      code?: unknown;
+      cause?: unknown;
+    };
+    detail +=
+      " " +
+      String(failure.stderr ?? "") +
+      " " +
+      String(failure.message ?? "") +
+      " " +
+      String(failure.code ?? "");
+    value = failure.cause;
+  }
+  return /HTTP (?:429|50[0234])|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|UND_ERR_SOCKET|timeout|connection reset|i\/o timeout|unexpected EOF/i.test(
+    detail,
+  );
+}
 export function gh(args: readonly string[]): string {
   // Reads can retry without creating duplicate tags, drafts, dispatches or uploads.
   const readOnly =
@@ -41,15 +69,7 @@ export function gh(args: readonly string[]): string {
     try {
       return execFileSync("gh", [...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
     } catch (error) {
-      const detail = String((error as { stderr?: unknown }).stderr ?? error);
-      if (
-        attempt ||
-        !readOnly ||
-        !/HTTP (?:429|50[0234])|ECONNRESET|ETIMEDOUT|TLS handshake timeout|connection reset|i\/o timeout|unexpected EOF/i.test(
-          detail,
-        )
-      )
-        throw error;
+      if (attempt || !readOnly || !transientReleaseNetworkFailure(error)) throw error;
       console.warn("Transient release API read failure; retrying once.");
     }
   }
@@ -185,42 +205,55 @@ export async function downloadArtifact(artifact: RemoteArtifact): Promise<string
     !/^sha256:[a-f0-9]{64}$/.test(artifact.digest)
   )
     throw new Error("Artifact expired or missing digest: " + artifact.name);
-  const root = mkdtempSync(join(tmpdir(), "f5-release-artifact-"));
-  const response = await fetch(
-    "https://api.github.com/repos/" + repository + "/actions/artifacts/" + artifact.id + "/zip",
-    {
-      headers: {
-        Authorization: "Bearer " + (process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN ?? ""),
-        Accept: "application/vnd.github+json",
-      },
-      redirect: "manual",
-      signal: AbortSignal.timeout(30_000),
-    },
-  );
-  if (response.status !== 302)
-    throw new Error("Could not obtain artifact download: " + response.status);
-  const url = new URL(response.headers.get("location") ?? "");
-  if (url.protocol !== "https:" || url.username || url.password)
-    throw new Error("Invalid artifact redirect");
-  const archive = join(root, "artifact.zip");
-  const download = await fetch(url, { signal: AbortSignal.timeout(300_000) });
-  if (!download.ok || !download.body) throw new Error("Artifact download failed");
-  await pipeline(Readable.fromWeb(download.body), createWriteStream(archive, { flags: "wx" }));
-  if ("sha256:" + (await hashFile(archive)) !== artifact.digest)
-    throw new Error("Artifact ZIP digest mismatch");
-  const names = execFileSync("unzip", ["-Z1", archive], {
-    encoding: "utf8",
-    maxBuffer: 8 * 1024 * 1024,
-  })
-    .trim()
-    .split("\n");
-  artifactEntries(names);
-  const destination = join(root, "files");
-  execFileSync("unzip", ["-q", "-n", archive, "-d", destination]);
-  if (readdirSync(destination).some((name) => !lstatSync(join(destination, name)).isFile()))
-    throw new Error("Artifact contains a non-regular file");
-  unlinkSync(archive);
-  return destination;
+  for (let attempt = 0; ; attempt++) {
+    const root = mkdtempSync(join(tmpdir(), "f5-release-artifact-"));
+    let received = false;
+    try {
+      const response = await fetch(
+        "https://api.github.com/repos/" + repository + "/actions/artifacts/" + artifact.id + "/zip",
+        {
+          headers: {
+            Authorization: "Bearer " + (process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN ?? ""),
+            Accept: "application/vnd.github+json",
+          },
+          redirect: "manual",
+          signal: AbortSignal.timeout(30_000),
+        },
+      );
+      if (response.status !== 302)
+        throw new Error("Artifact redirect failed: HTTP " + response.status);
+      const url = new URL(response.headers.get("location") ?? "");
+      if (url.protocol !== "https:" || url.username || url.password)
+        throw new Error("Invalid artifact redirect");
+      const archive = join(root, "artifact.zip");
+      const download = await fetch(url, { signal: AbortSignal.timeout(300_000) });
+      if (!download.ok || !download.body)
+        throw new Error("Artifact transfer failed: HTTP " + download.status);
+      await pipeline(Readable.fromWeb(download.body), createWriteStream(archive, { flags: "wx" }));
+      received = true;
+      if ("sha256:" + (await hashFile(archive)) !== artifact.digest)
+        throw new Error("Artifact ZIP digest mismatch");
+      const names = execFileSync("unzip", ["-Z1", archive], {
+        encoding: "utf8",
+        maxBuffer: 8 * 1024 * 1024,
+      })
+        .trim()
+        .split("\n");
+      artifactEntries(names);
+      const destination = join(root, "files");
+      execFileSync("unzip", ["-q", "-n", archive, "-d", destination]);
+      if (readdirSync(destination).some((name) => !lstatSync(join(destination, name)).isFile()))
+        throw new Error("Artifact contains a non-regular file");
+      unlinkSync(archive);
+      return destination;
+    } catch (error) {
+      // Only this attempt's private temporary files are discarded, never inputs
+      // or published assets. Integrity/archive errors cannot enter the retry path.
+      rmSync(root, { recursive: true, force: true });
+      if (attempt || received || !transientReleaseNetworkFailure(error)) throw error;
+      console.warn("Transient artifact transfer failure; retrying once.");
+    }
+  }
 }
 export async function readArtifactJson<T>(artifact: RemoteArtifact, name: string): Promise<T> {
   const dir = await downloadArtifact(artifact);
