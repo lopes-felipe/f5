@@ -54,8 +54,14 @@ export function git(args: readonly string[]): string {
 export function show(sha: string, path: string): string | undefined {
   try {
     return git(["show", sha + ":" + path]);
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (
+      /fatal: path .* (?:does not exist in|exists on disk, but not in)/.test(
+        String((error as { stderr?: unknown }).stderr ?? ""),
+      )
+    )
+      return undefined;
+    throw error;
   }
 }
 export function stableRequests(sha: string): StableRequest[] {

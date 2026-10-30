@@ -76,6 +76,10 @@ repository activity; the maintainer checks schedule activity monthly.
 ## Reproducing failures
 
 Use Node from `.node-version` and Bun from `packageManager` in `package.json`.
+Windows ARM64 uses the native Bun pin in
+`.github/actions/setup/windows-arm64/.bun-version`; the repository's Bun 1.3.9
+has no native Windows ARM64 build and crashes under emulation. Candidate provenance
+records both pins and each component's actual runtime.
 Install with `bun install --frozen-lockfile`. The shared setup action caches Bun's
 download cache and Electron downloads separately, never `node_modules`, native or Turbo outputs.
 Electron keys include its version, runner OS and architecture; changing an unrelated

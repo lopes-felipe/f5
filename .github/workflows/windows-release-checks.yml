@@ -61,9 +61,8 @@ jobs:
       matrix:
         include:
           - { os: windows-latest, target: win32-x64 }
-          # Bun 1.3.9 has no Windows ARM64 build; its emulated x64 build segfaults
-          # during install. 1.3.10 is the first release with a native ARM64 build.
-          - { os: windows-11-arm, target: win32-arm64, bun: 1.3.11 }
+          # Shared setup applies the checked-in native ARM64 Bun exception.
+          - { os: windows-11-arm, target: win32-arm64 }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     defaults:

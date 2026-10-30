@@ -47,10 +47,19 @@ export async function assembleCandidate(
   validateCandidate(candidate);
   mkdirSync(directory, { recursive: true });
   for (const artifact of candidate.artifacts) {
-    const metadata = api<{ id: number; name: string; digest: string; expired: boolean }>(
-      "actions/artifacts/" + artifact.id,
-    );
-    if (metadata.name !== artifact.name || metadata.digest !== artifact.digest)
+    const metadata = api<{
+      id: number;
+      name: string;
+      digest: string;
+      expired: boolean;
+      workflow_run: { id: number; head_sha: string };
+    }>("actions/artifacts/" + artifact.id);
+    if (
+      metadata.name !== artifact.name ||
+      metadata.digest !== artifact.digest ||
+      metadata.workflow_run?.id !== candidate.runId ||
+      metadata.workflow_run.head_sha !== candidate.sourceSha
+    )
       throw new Error("Artifact identity changed");
     const dir = await downloadArtifact(metadata);
     const names = readdirSync(dir);

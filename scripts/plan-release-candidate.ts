@@ -65,6 +65,10 @@ const plan: ReleasePlan = {
   toolchain: {
     node: process.version,
     bun: execFileSync("bun", ["--version"], { encoding: "utf8" }).trim(),
+    bunWindowsArm64: readFileSync(
+      ".github/actions/setup/windows-arm64/.bun-version",
+      "utf8",
+    ).trim(),
     lockSha256: createHash("sha256").update(readFileSync("bun.lock")).digest("hex"),
   },
   windowsBaselines: publishedWindowsBaselines(releases, resolved.version, resolved.channel),

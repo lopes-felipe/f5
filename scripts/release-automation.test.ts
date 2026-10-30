@@ -49,7 +49,7 @@ export function fixtureCandidate(): ReleaseCandidate {
     runId: 100,
     runAttempt: 2,
     createdAt: "2026-10-30T10:00:00Z",
-    toolchain: { node: "v24.13.1", bun: "1.3.11", lockSha256: hash },
+    toolchain: { node: "v24.13.1", bun: "1.3.11", bunWindowsArm64: "1.3.11", lockSha256: hash },
     windowsBaselines: [],
     artifacts: releaseComponents("all").map((component, index) => ({
       id: index + 1,
@@ -142,6 +142,38 @@ describe("release ordering and deterministic versions", () => {
   });
 });
 describe("candidate identity and immutable uploads", () => {
+  it("keeps the native Windows ARM64 Bun exception in the immutable toolchain plan", () => {
+    const fixture = fixtureCandidate();
+    const candidate = {
+      ...fixture,
+      toolchain: { ...fixture.toolchain, bun: "1.3.9" },
+      artifacts: fixture.artifacts.map((a) => ({
+        ...a,
+        receipt: {
+          ...a.receipt,
+          toolchain: {
+            ...a.receipt.toolchain,
+            bun: a.component === "cli-win32-arm64" ? "1.3.11" : "1.3.9",
+          },
+        },
+      })),
+    };
+    expect(() => validateCandidate(candidate)).not.toThrow();
+    const arm = candidate.artifacts.find((a) => a.component === "cli-win32-arm64")!;
+    expect(() =>
+      validateCandidate({
+        ...candidate,
+        artifacts: candidate.artifacts.map((a) =>
+          a === arm
+            ? {
+                ...a,
+                receipt: { ...a.receipt, toolchain: { ...a.receipt.toolchain, bun: "1.3.9" } },
+              }
+            : a,
+        ),
+      }),
+    ).toThrow("toolchain");
+  });
   it("requalifies only affected native targets when baselines change while candidates are held", () => {
     const candidate = { ...fixtureCandidate(), version: "0.1.3-beta.9" };
     const release = (version: string) => ({

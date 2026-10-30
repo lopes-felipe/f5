@@ -21,7 +21,12 @@ export interface ReleasePlan {
   readonly runId: number;
   readonly runAttempt: number;
   readonly createdAt: string;
-  readonly toolchain: { readonly node: string; readonly bun: string; readonly lockSha256: string };
+  readonly toolchain: {
+    readonly node: string;
+    readonly bun: string;
+    readonly bunWindowsArm64: string;
+    readonly lockSha256: string;
+  };
   readonly windowsBaselines: readonly {
     readonly baseline: string;
     readonly baselineChannel: ReleaseChannel;
@@ -125,7 +130,9 @@ export function validateReceipt(receipt: ComponentReceipt, plan: ReleasePlan): v
     throw new Error("Component provenance mismatch: " + receipt.component);
   if (
     !receipt.toolchain ||
-    Object.values(receipt.toolchain).some((value) => typeof value !== "string" || !value)
+    (["node", "bun", "platform", "arch", "image"] as const).some(
+      (key) => typeof receipt.toolchain[key] !== "string" || !receipt.toolchain[key],
+    )
   )
     throw new Error("Missing component toolchain identity");
   const [, platform, arch] = receipt.component.split("-");
@@ -133,7 +140,10 @@ export function validateReceipt(receipt: ComponentReceipt, plan: ReleasePlan): v
   if (
     receipt.toolchain.platform !== expectedPlatform ||
     receipt.toolchain.arch !== arch ||
-    receipt.toolchain.bun !== plan.toolchain.bun
+    receipt.toolchain.bun !==
+      (expectedPlatform === "win32" && arch === "arm64"
+        ? plan.toolchain.bunWindowsArm64
+        : plan.toolchain.bun)
   )
     throw new Error("Component platform/toolchain mismatch");
   if (

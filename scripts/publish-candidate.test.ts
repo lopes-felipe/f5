@@ -25,6 +25,7 @@ const state = vi.hoisted(() => ({
   writes: [] as string[],
   interrupt: false,
   certification: false,
+  foreignRun: false,
 }));
 vi.mock("./release/release-github.ts", async (importOriginal) => {
   const original = await importOriginal<typeof import("./release/release-github.ts")>();
@@ -49,6 +50,7 @@ vi.mock("./release/release-github.ts", async (importOriginal) => {
           name: state.directories.get(id)?.split("/").at(-1),
           digest: "sha256:" + "d".repeat(64),
           expired: false,
+          workflow_run: { id: state.foreignRun ? 101 : 100, head_sha: state.source },
         };
       }
       if (path.startsWith("releases/")) return release();
@@ -128,7 +130,12 @@ async function candidateFixture() {
     runId: 100,
     runAttempt: 1,
     createdAt: "2026-10-30T10:00:00Z",
-    toolchain: { node: "v24.13.1", bun: "1.3.11", lockSha256: "c".repeat(64) },
+    toolchain: {
+      node: "v24.13.1",
+      bun: "1.3.11",
+      bunWindowsArm64: "1.3.11",
+      lockSha256: "c".repeat(64),
+    },
     windowsBaselines: [],
     artifacts: [],
   };
@@ -220,8 +227,15 @@ beforeEach(() => {
   state.writes = [];
   state.interrupt = false;
   state.certification = false;
+  state.foreignRun = false;
 });
 describe("publisher integration with immutable platform fixtures", () => {
+  it("rejects artifacts whose API identity names another build run", async () => {
+    const { candidate, directory } = await candidateFixture();
+    state.foreignRun = true;
+    await expect(assembleCandidate(candidate, directory)).rejects.toThrow("identity");
+    expect(state.writes).toEqual([]);
+  });
   it("verifies a published release after build artifacts expire without downloading them", async () => {
     const { candidate, directory } = await candidateFixture();
     await assembleCandidate(candidate, directory);
