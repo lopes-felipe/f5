@@ -17,7 +17,7 @@ import { terminateOnRelease } from "../../spawn/terminateOnRelease.ts";
  *
  * @module GitServiceLive
  */
-import { Effect, Layer, Option, Schema, Stream } from "effect";
+import { Effect, Layer, Option, Schema, Semaphore, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { GitCommandError } from "../Errors.ts";
 import {
@@ -29,6 +29,14 @@ import {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
+/**
+ * Short commands share these slots across every service instance, so a burst
+ * (status polling across many threads) cannot spawn unbounded processes and
+ * stall the server. Longer or unbounded commands bypass the pool: a slow push
+ * or clone never holds a slot that short commands wait on. Queue time does not
+ * count toward a command's timeout.
+ */
+const gitProcesses = Semaphore.makeUnsafe(8);
 
 function quoteGitCommand(args: ReadonlyArray<string>): string {
   return `git ${args.join(" ")}`;
@@ -222,7 +230,7 @@ const makeGitService = Effect.gen(function* () {
 
     if (timeoutMs === null) return yield* commandEffect.pipe(Effect.scoped);
 
-    return yield* commandEffect.pipe(
+    const timed = commandEffect.pipe(
       Effect.scoped,
       Effect.timeoutOption(timeoutMs),
       Effect.flatMap((result) =>
@@ -240,6 +248,7 @@ const makeGitService = Effect.gen(function* () {
         }),
       ),
     );
+    return yield* timeoutMs > DEFAULT_TIMEOUT_MS ? timed : gitProcesses.withPermits(1)(timed);
   });
 
   return {
