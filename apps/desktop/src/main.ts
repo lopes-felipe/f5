@@ -82,7 +82,12 @@ import { ComputerOverlay } from "./computer/ComputerOverlay";
 import { ComputerConsentAuthority } from "./computer/ComputerConsentAuthority";
 import { ComputerHostChannel } from "./computer/ComputerHostChannel";
 import { BrowserOpenAuthority } from "./browser/BrowserOpenAuthority";
-import { createBrowserOpenPrompt } from "./browser/BrowserOpenPrompt";
+import {
+  createInAppBrowserOpenPrompt,
+  createNativeBrowserOpenPrompt,
+} from "./browser/BrowserOpenPrompt";
+import { registerBrowserOpenIpc } from "./browser/registerBrowserOpenIpc";
+import { appMainFrameProfile } from "./appRendererCaller";
 import { getSafeExternalUrl } from "./browser/externalUrl";
 import { ChromeProcessSupervisor } from "./computer/ChromeProcessSupervisor";
 import { isIntegrationCertified } from "@t3tools/shared/providerIntegrationCertification";
@@ -327,17 +332,37 @@ const makeBackendRuntime = (profile: ProfileRecord): BackendRuntime => ({
 const defaultBackend = makeBackendRuntime(desktopDefaultProfile(STATE_DIR));
 const backends = new Map<string, BackendRuntime>([[defaultBackend.profile.id, defaultBackend]]);
 const profileByWebContentsId = new Map<number, string>();
-const browserOpenAuthority = new BrowserOpenAuthority({
-  prompt: createBrowserOpenPrompt({
-    window: (profileId) =>
-      BrowserWindow.getAllWindows().find(
-        (window) =>
-          !window.isDestroyed() && profileByWebContentsId.get(window.webContents.id) === profileId,
-      ),
-    openProfile: (profileId) => openProfile(profileId),
-    profileName: (profileId) => backends.get(profileId)?.profile.name ?? profileId,
+const browserOpenWindows = {
+  window: (profileId: string) =>
+    BrowserWindow.getAllWindows().find(
+      (window) =>
+        !window.isDestroyed() && profileByWebContentsId.get(window.webContents.id) === profileId,
+    ),
+  openProfile: (profileId: string) => openProfile(profileId),
+  profileName: (profileId: string) => backends.get(profileId)?.profile.name ?? profileId,
+};
+const browserOpenPrompt = createInAppBrowserOpenPrompt({
+  ...browserOpenWindows,
+  attention: (profileId, host) => {
+    app.dock?.bounce("informational");
+    if (!Notification.isSupported()) return;
+    const notice = new Notification({
+      title: `Open ${host} in browser?`,
+      body: `Requested by a terminal or agent in ${browserOpenWindows.profileName(profileId)}.`,
+    });
+    notice.on("click", () => {
+      void openProfile(profileId);
+    });
+    notice.show();
+  },
+  native: createNativeBrowserOpenPrompt({
+    ...browserOpenWindows,
     show: (owner, options) => dialog.showMessageBox(owner, options),
   }),
+});
+const browserOpenAuthority = new BrowserOpenAuthority({
+  prompt: browserOpenPrompt.prompt,
+  waitingChanged: browserOpenPrompt.waitingChanged,
   open: (url) => shell.openExternal(url, { activate: true }),
   copy: (url) => clipboard.writeText(url),
 });
@@ -349,6 +374,16 @@ function runtimeForRenderer(id: number): BackendRuntime {
   const runtime = profileId ? backends.get(profileId) : undefined;
   if (!runtime) throw new Error("Renderer does not own a profile.");
   return runtime;
+}
+/** Consent answers come only from an F5 app main frame on the app origin. */
+function authorizeAppMainFrame(event: Electron.IpcMainInvokeEvent, purpose: string): string {
+  appMainFrameProfile(event, {
+    registered: (id) => appRendererWebContentsIds.has(id),
+    profile: (id) => profileByWebContentsId.get(id),
+    expectedOrigin: isDevelopment ? new URL(mainRendererUrl()).origin : `${DESKTOP_SCHEME}://app`,
+    purpose,
+  });
+  return runtimeForRenderer(event.sender.id).profile.id;
 }
 let computerSystem:
   | {
@@ -656,20 +691,7 @@ function initializeComputerSystem(): void {
     },
   });
   registerComputerIpc(ipcMain, {
-    authorize: (event) => {
-      if (
-        !appRendererWebContentsIds.has(event.sender.id) ||
-        event.senderFrame !== event.sender.mainFrame
-      )
-        throw new Error("Computer controls require an F5 app main frame.");
-      const runtime = runtimeForRenderer(event.sender.id);
-      const expectedOrigin = isDevelopment
-        ? new URL(mainRendererUrl()).origin
-        : `${DESKTOP_SCHEME}://app`;
-      if (event.senderFrame.origin !== expectedOrigin)
-        throw new Error("Untrusted computer-control origin.");
-      return runtime.profile.id;
-    },
+    authorize: (event) => authorizeAppMainFrame(event, "Computer controls"),
     status: rendererStatus,
     retry: () => {
       if (
@@ -3424,6 +3446,10 @@ function registerIpcHandlers(): void {
               (error) => (error ? reject(error) : resolve()),
             );
           }),
+  });
+  registerBrowserOpenIpc(ipcMain, {
+    authorize: (event) => authorizeAppMainFrame(event, "Browser open answers"),
+    prompt: browserOpenPrompt,
   });
   registerHtmlPreviewIpc(ipcMain, (event) => {
     if (

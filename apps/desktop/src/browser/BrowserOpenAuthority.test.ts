@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BrowserOpenAuthority } from "./BrowserOpenAuthority";
+import { BrowserOpenAuthority, type BrowserOpenPrompt } from "./BrowserOpenAuthority";
 import { getSafeBrowserLoginUrl, getSafeExternalUrl } from "./externalUrl";
 
 afterEach(() => vi.useRealTimers());
@@ -31,9 +31,7 @@ describe("browser login validation", () => {
 
 function setup() {
   const effects = {
-    prompt: vi.fn(
-      async (_request: { profileId: string; host: string; url: string; signal: AbortSignal }) => 0,
-    ),
+    prompt: vi.fn(async (_request: BrowserOpenPrompt) => 0),
     open: vi.fn(async (_url: string) => {}),
     copy: vi.fn((_url: string) => {}),
   };
@@ -129,6 +127,41 @@ describe("browser open authority", () => {
     authority.cancelProfile("other");
     expect(await Promise.all(requests.slice(1))).toEqual(["denied", "denied", "denied"]);
     expect(await other).toBe("denied");
+    for (const answer of answers) answer(3);
+  });
+  it("gives each prompt its own id, its request-time expiry, and the live queue length", async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    const { effects } = setup();
+    const waitingChanged = vi.fn();
+    const live = new BrowserOpenAuthority({ ...effects, waitingChanged });
+    const answers: Array<(button: number) => void> = [];
+    effects.prompt.mockImplementation(() => new Promise((resolve) => answers.push(resolve)));
+    const first = live.request("p", "https://example.com");
+    expect(effects.prompt.mock.calls[0]![0]).toMatchObject({
+      profileId: "p",
+      host: "example.com",
+      expiresAtMs: 1_000_000 + 5 * 60 * 1000,
+      waiting: 0,
+    });
+    expect(waitingChanged).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(10_000);
+    const queued = [
+      live.request("p", "https://example.com"),
+      live.request("p", "https://example.com"),
+    ];
+    expect(waitingChanged.mock.calls).toEqual([
+      ["p", 1],
+      ["p", 2],
+    ]);
+    answers[0]!(3);
+    expect(await first).toBe("denied");
+    await vi.waitFor(() => expect(effects.prompt).toHaveBeenCalledTimes(2));
+    const [shown, next] = effects.prompt.mock.calls.map(([prompt]) => prompt);
+    expect(next).toMatchObject({ expiresAtMs: 1_010_000 + 5 * 60 * 1000, waiting: 1 });
+    expect(next!.requestId).not.toBe(shown!.requestId);
+    live.cancelProfile("p");
+    expect(await Promise.all(queued)).toEqual(["denied", "denied"]);
+    expect(waitingChanged).toHaveBeenCalledTimes(2);
     for (const answer of answers) answer(3);
   });
   it("times out active and queued requests within five minutes and ignores late approvals", async () => {
