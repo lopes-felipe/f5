@@ -4207,13 +4207,27 @@ function createWindow(
   });
 
   // Wheel events carry no phase; the renderer's swipe navigation needs to know when fingers lift.
-  window.webContents.on("input-event", (_event, input) => {
-    if (input.type === "gestureScrollBegin") {
-      window.webContents.send(TRACKPAD_SCROLL_CHANNEL, "begin");
-    } else if (input.type === "gestureScrollEnd") {
-      window.webContents.send(TRACKPAD_SCROLL_CHANNEL, "end");
-    }
-  });
+  // Two-finger page swipes are a macOS trackpad convention, so other platforms get none.
+  if (process.platform === "darwin") {
+    // Read from the wheel event that starts each scroll; the gesture events do not carry it.
+    let wheelPrecise: boolean | undefined;
+    window.webContents.on("input-event", (_event, input) => {
+      if (input.type === "mouseWheel") {
+        const precise = (input as { hasPreciseScrollingDeltas?: unknown })
+          .hasPreciseScrollingDeltas;
+        wheelPrecise = typeof precise === "boolean" ? precise : undefined;
+      } else if (input.type === "gestureScrollBegin") {
+        window.webContents.send(
+          TRACKPAD_SCROLL_CHANNEL,
+          wheelPrecise === undefined
+            ? { phase: "begin" }
+            : { phase: "begin", precise: wheelPrecise },
+        );
+      } else if (input.type === "gestureScrollEnd") {
+        window.webContents.send(TRACKPAD_SCROLL_CHANNEL, { phase: "end" });
+      }
+    });
+  }
 
   const rendererWebContentsId = window.webContents.id;
   const rendererCrashRecovery = new MainRendererCrashRecovery({

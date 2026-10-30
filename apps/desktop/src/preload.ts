@@ -194,8 +194,12 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     };
   },
   onTrackpadScroll: (listener) => {
-    const wrappedListener = (_event: Electron.IpcRendererEvent, phase: unknown) => {
-      if (phase === "begin" || phase === "end") listener(phase);
+    const wrappedListener = (_event: Electron.IpcRendererEvent, event: unknown) => {
+      if (typeof event !== "object" || event === null) return;
+      const { phase, precise } = event as { phase?: unknown; precise?: unknown };
+      if (phase === "end") listener({ phase });
+      else if (phase === "begin")
+        listener(typeof precise === "boolean" ? { phase, precise } : { phase });
     };
     ipcRenderer.on(TRACKPAD_SCROLL_CHANNEL, wrappedListener);
     return () => {

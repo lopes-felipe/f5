@@ -31,6 +31,7 @@ import { SnoozedThreadWakeController } from "../components/SnoozedThreadWakeCont
 import ThreadSidebar from "../components/Sidebar";
 import { useWorkflowCreateDialogStore } from "../workflowCreateDialogStore";
 import { Sidebar, SidebarProvider, SidebarRail } from "~/components/ui/sidebar";
+import { isMacPlatform } from "~/lib/utils";
 import { workspaceAreaProps } from "~/lib/workspaceFocus";
 
 const SIDEBAR_WORKSPACE_AREA = workspaceAreaProps("sidebar", 0, "Threads");
@@ -152,7 +153,7 @@ function ChatRouteLayout() {
         </Sidebar>
         <ThreadRecencyController />
         <ThreadNavigationController />
-        {isElectron ? <HistorySwipeNavigation /> : null}
+        {isElectron && isMacPlatform(navigator.platform) ? <HistorySwipeNavigation /> : null}
         <WorkspaceFocusController />
         <ProjectCloneController />
         <ProjectCreateNewController />

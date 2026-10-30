@@ -2,6 +2,7 @@ import { useRouter } from "@tanstack/react-router";
 import { ArrowLeftIcon, ArrowRightIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { isModalDialogOpen } from "~/lib/modalDialogs";
 import { cn } from "~/lib/utils";
 import { canNavigateHistory, navigateHistory, type HistoryDirection } from "~/navigationHistory";
 
@@ -9,15 +10,19 @@ const SWIPE_TRIGGER_DISTANCE = 120;
 // Movement needed before the gesture picks an axis; first events are often diagonal.
 const SWIPE_AXIS_LOCK_DISTANCE = 8;
 const MOMENTUM_SAMPLE_SIZE = 5;
+// Popovers are non-modal dialogs; a swipe over one is not page navigation either.
+const DIALOG_SELECTOR = '[role="dialog"], [role="alertdialog"]';
 
 type SwipeBounds = { left: number; top: number; width: number; height: number };
+// `distanceBefore` lets a momentum tail be taken back out once it is recognized.
+type SwipeSample = { delta: number; distanceBefore: number };
 type SwipeGesture =
-  | { kind: "pending"; target: EventTarget | null; y: number; sumX: number; sumY: number }
+  | { kind: "pending"; path: readonly EventTarget[]; y: number; sumX: number; sumY: number }
   | {
       kind: "tracking";
       direction: HistoryDirection;
       distance: number;
-      deltas: number[];
+      samples: SwipeSample[];
       y: number;
       bounds: SwipeBounds;
     }
@@ -40,13 +45,10 @@ function readMainContentBounds(): SwipeBounds {
   return { left, top: 0, width: Math.max(0, window.innerWidth - left), height: window.innerHeight };
 }
 
-function canScrollHorizontally(target: EventTarget | null, deltaX: number): boolean {
-  for (
-    let element = target instanceof Element ? target : null;
-    element;
-    element = element.parentElement
-  ) {
-    if (element.scrollWidth <= element.clientWidth) continue;
+// The composed path reaches scrollers inside shadow roots, such as rendered diffs.
+function canScrollHorizontally(path: readonly EventTarget[], deltaX: number): boolean {
+  for (const element of path) {
+    if (!(element instanceof Element) || element.scrollWidth <= element.clientWidth) continue;
     const { overflowX } = getComputedStyle(element);
     if (overflowX !== "auto" && overflowX !== "scroll") continue;
     const canScroll =
@@ -61,17 +63,21 @@ function canScrollHorizontally(target: EventTarget | null, deltaX: number): bool
 function lockSwipeAxis(
   pending: Extract<SwipeGesture, { kind: "pending" }>,
 ): Exclude<SwipeGesture, { kind: "pending" }> {
-  const { target, sumX, sumY } = pending;
+  const { path, sumX, sumY } = pending;
   if (Math.abs(sumX) <= Math.abs(sumY)) return { kind: "ignored" };
-  if (target instanceof Element && target.closest('[role="dialog"]')) return { kind: "ignored" };
-  if (canScrollHorizontally(target, sumX)) return { kind: "ignored" };
+  // A modal's backdrop sits outside the dialog element, so any open modal blocks the swipe.
+  if (isModalDialogOpen()) return { kind: "ignored" };
+  if (path.some((element) => element instanceof Element && element.matches(DIALOG_SELECTOR))) {
+    return { kind: "ignored" };
+  }
+  if (canScrollHorizontally(path, sumX)) return { kind: "ignored" };
   const direction = sumX < 0 ? "back" : "forward";
   if (!canNavigateHistory(direction)) return { kind: "ignored" };
   return {
     kind: "tracking",
     direction,
     distance: Math.abs(sumX),
-    deltas: [],
+    samples: [],
     y: pending.y,
     bounds: readMainContentBounds(),
   };
@@ -94,7 +100,7 @@ export function isMomentumTail(deltas: readonly number[]): boolean {
 
 /**
  * Two-finger horizontal trackpad swipes go back and forward, like a browser.
- * Desktop only: it relies on the main process bracketing each trackpad scroll.
+ * macOS desktop only: it relies on the main process bracketing each scroll.
  */
 export function HistorySwipeNavigation() {
   const router = useRouter();
@@ -114,10 +120,17 @@ export function HistorySwipeNavigation() {
       gesture = { kind: "ignored" };
       hideIndicator();
     };
-    // Chromium brackets each trackpad scroll, momentum included, with these.
-    const unsubscribe = onTrackpadScroll((phase) => {
-      if (phase === "begin") {
-        if (gesture?.kind === "ignored") gesture = null;
+    // Chromium brackets each scroll, momentum included, with these. The begin can arrive
+    // after the scroll's first wheel event, so it may find a gesture already pending.
+    const unsubscribe = onTrackpadScroll((event) => {
+      if (event.phase === "begin") {
+        if (event.precise === false) {
+          // A mouse wheel, not a trackpad: ignore this scroll entirely.
+          if (gesture?.kind === "tracking") hideIndicator();
+          gesture = { kind: "ignored" };
+        } else if (gesture?.kind === "ignored") {
+          gesture = null;
+        }
         return;
       }
       if (gesture?.kind === "tracking") release();
@@ -128,7 +141,7 @@ export function HistorySwipeNavigation() {
         gesture =
           event.ctrlKey || event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL
             ? { kind: "ignored" }
-            : { kind: "pending", target: event.target, y: event.clientY, sumX: 0, sumY: 0 };
+            : { kind: "pending", path: event.composedPath(), y: event.clientY, sumX: 0, sumY: 0 };
       }
       if (gesture.kind === "ignored") return;
       if (gesture.kind === "pending") {
@@ -140,8 +153,15 @@ export function HistorySwipeNavigation() {
       } else {
         const delta = gesture.direction === "back" ? -event.deltaX : event.deltaX;
         if (event.deltaX === 0 && event.deltaY === 0) return release();
-        gesture.deltas = [...gesture.deltas.slice(1 - MOMENTUM_SAMPLE_SIZE), delta];
-        if (isMomentumTail(gesture.deltas)) return release();
+        gesture.samples = [
+          ...gesture.samples.slice(1 - MOMENTUM_SAMPLE_SIZE),
+          { delta, distanceBefore: gesture.distance },
+        ];
+        if (isMomentumTail(gesture.samples.map((sample) => sample.delta))) {
+          // The fingers lifted before the tail's first sample; momentum does not count.
+          gesture.distance = gesture.samples[0]!.distanceBefore;
+          return release();
+        }
         gesture.distance = Math.max(0, gesture.distance + delta);
       }
       setSwipe({

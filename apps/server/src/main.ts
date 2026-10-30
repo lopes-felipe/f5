@@ -11,7 +11,7 @@ import {
   isProfilePortBindable,
 } from "./profiles/ProfileRegistryStore";
 import { instanceLock } from "./profiles/InstanceLock";
-import { watchLauncherPipes } from "./launcherPipes";
+import { shutdownOnLauncherLoss } from "./launcherPipes";
 /**
  * CliConfig - CLI/runtime bootstrap service definitions.
  *
@@ -542,10 +542,12 @@ const makeServerProgram = (input: CliInput) =>
     const config = yield* withStartupPhaseTiming("config.resolve", ServerConfig.asEffect());
     if (config.mode === "desktop" && !isTestRuntime()) {
       // A dead launcher shuts down through the signal path, which runs finalizers and exits.
+      // Windows keeps an orphan's parent PID, so only the pipes can tell there.
       yield* Effect.sync(() =>
-        watchLauncherPipes([process.stdout, process.stderr], () =>
-          process.kill(process.pid, "SIGTERM"),
-        ),
+        shutdownOnLauncherLoss({
+          streams: [process.stdout, process.stderr],
+          watchParent: process.platform !== "win32",
+        }),
       );
     }
     yield* Effect.logInfo("server instrumentation flags", {
