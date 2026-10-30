@@ -115,3 +115,24 @@ Upstream Ports uses version 40. It adds the `upstreamPorts.*` methods (`listProj
 `unlinkPort`, `getPortPrompt`, `resolvePublication`, `addRemote`, `takeOverWriter`) and the
 `upstreamPorts.changed` push channel, which carries invalidation only. Older clients have no
 Upstream page, so the bump only forces them to reload before calling the new methods.
+
+Request scheduling and startup (performance Releases 1 and 2) ship together as version 42.
+Version 41 was reserved for Release 1 on its own and was never released, so no client or
+server speaks it.
+
+For request scheduling, every request tag has an exhaustive lane and runtime policy in
+`packages/shared/src/rpcScheduling.ts`, with new `long` and `health` lanes, and the client
+mirrors server admission instead of sending past a busy lane. The server can answer
+`ResponseEncodeFailed` with the request id when a result cannot be encoded; the client adds
+the local codes `QueueExpired` and `BackgroundShed` for requests it never sent.
+`UpstreamOverview.portQueue` gains `queuedTopicIds`, which rows now read their queued
+indicator from, so queue events no longer refetch topic pages. An older client would neither
+respect the new lanes nor decode the overview.
+
+For startup, the welcome carries `runtime` readiness and the `server.runtimeReadiness`
+channel pushes its changes. Requests that need the orchestration runtime, by method or, for
+a few routes, by body, are rejected with `ServerStarting` before admission while it starts,
+and the client holds them until it is ready. The startup snapshot may set
+`OrchestrationThread.proposedPlansOmitted` for archived threads; their plans arrive with
+`OrchestrationThreadTailDetails.proposedPlans`, which carries every plan of the thread.
+Older clients would treat the omitted plans as deleted.

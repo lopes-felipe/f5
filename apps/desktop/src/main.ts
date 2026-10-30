@@ -200,10 +200,15 @@ import { MainRendererCrashRecovery, mainRendererCrashScreenUrl } from "./rendere
 import { normalizeThreadIdForDesktopWindow, rendererUrlForThread } from "./rendererWindowUrl";
 import { resolveContextMenuPopupPosition } from "./contextMenuPosition";
 
+const shellEnvironmentStartedAt = performance.now();
 let shellEnvironmentPrepared = false;
+/** Resolves with the capture's duration; the log sink opens later, so bootstrap logs it. */
 const shellEnvironmentReady = syncShellEnvironment().then((prepared) => {
   shellEnvironmentPrepared = prepared;
+  return performance.now() - shellEnvironmentStartedAt;
 });
+/** Main windows awaiting their first composer-ready marker, by renderer id. */
+const windowCreatedAtByWebContentsId = new Map<number, number>();
 
 const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
 const CONFIRM_CHANNEL = "desktop:confirm";
@@ -3489,6 +3494,13 @@ function registerIpcHandlers(): void {
       throw new Error("Untrusted HTML preview origin.");
     runtimeForRenderer(event.sender.id);
   });
+  // Startup diagnostics: only the first marker per main window is logged.
+  ipcMain.on("desktop:startup-marker", (event, marker: unknown) => {
+    const createdAt = windowCreatedAtByWebContentsId.get(event.sender.id);
+    if (marker !== "composer-ready" || createdAt === undefined) return;
+    windowCreatedAtByWebContentsId.delete(event.sender.id);
+    writeDesktopLogHeader(`window composer ready ms=${Math.round(performance.now() - createdAt)}`);
+  });
   ipcMain.on("desktop:get-ws-url", (event) => {
     try {
       if (event.senderFrame !== event.sender.mainFrame)
@@ -4092,6 +4104,7 @@ function createWindow(
   registerDesktopProtocol(appSession);
   installAppFramePermissionPolicy(appSession);
   const rendererUrl = rendererUrlForThread(mainRendererUrl(), initialThreadId);
+  const createdAt = performance.now();
   const window = new BrowserWindow({
     width: 1100,
     height: 780,
@@ -4249,7 +4262,9 @@ function createWindow(
     applyWindowTitle(window.webContents.getTitle());
     emitUpdateState();
   });
+  windowCreatedAtByWebContentsId.set(rendererWebContentsId, createdAt);
   window.once("ready-to-show", () => {
+    writeDesktopLogHeader(`window first paint ms=${Math.round(performance.now() - createdAt)}`);
     if (activate) window.show();
     else window.showInactive();
   });
@@ -4261,6 +4276,7 @@ function createWindow(
 
   window.on("closed", () => {
     profileByWebContentsId.delete(rendererWebContentsId);
+    windowCreatedAtByWebContentsId.delete(rendererWebContentsId);
     rendererCrashRecovery.dispose();
     lastOpenThreadWindowAtByRenderer.delete(rendererWebContentsId);
     void resetRendererOwnedPreviewResources(rendererWebContentsId);
@@ -4337,8 +4353,10 @@ async function bootstrap(): Promise<void> {
   writeDesktopLogHeader("bootstrap backend request authentication configured");
   mainWindow = createWindow();
   writeDesktopLogHeader("bootstrap main window created");
-  await shellEnvironmentReady;
-  writeDesktopLogHeader("bootstrap shell environment ready");
+  const shellEnvironmentMs = await shellEnvironmentReady;
+  writeDesktopLogHeader(
+    `bootstrap shell environment ready durationMs=${Math.round(shellEnvironmentMs)}`,
+  );
   if (!isQuitting) {
     try {
       await ensureBackendRunning(defaultBackend);

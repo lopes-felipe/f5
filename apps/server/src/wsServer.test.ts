@@ -32,7 +32,12 @@ import { makeSqlitePersistenceLive } from "./persistence/Layers/Sqlite";
 import { WorkspaceTransition } from "./project/Services/WorkspaceTransition.ts";
 import { WorktreePreparation } from "./project/Services/WorktreePreparation.ts";
 import { ProviderService, type ProviderServiceShape } from "./provider/Services/ProviderService";
-import { createServer, readWebSocketRequestId } from "./wsServer";
+import {
+  createServer,
+  encodeResponseEncodeFailure,
+  readWebSocketRequestId,
+  serverStartingRejection,
+} from "./wsServer";
 import {
   asThreadId,
   asTurnId,
@@ -913,12 +918,90 @@ describe("WebSocket Server", () => {
       }),
     );
 
+    // Runtime-dependent methods never park in route slots while the runtime is
+    // not ready: twelve of them (more than the ordinary lane's eight slots) all
+    // come back at once, as `ServerStarting` while it starts or with the
+    // startup failure once this incomplete runtime mock has failed.
+    const held = await Promise.all(
+      Array.from({ length: 12 }, () =>
+        sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot, undefined, {
+          retryServerStarting: false,
+        }),
+      ),
+    );
+    for (const response of held) {
+      expect(response.error).toBeDefined();
+      if (response.error?.code !== "ServerStarting")
+        expect(response.error?.message).toContain("Orchestration runtime unavailable");
+    }
+    const probe = await sendRequest(ws, WS_METHODS.serverProbe);
+    expect(probe.result).toEqual({
+      runtime: expect.objectContaining({ state: expect.stringMatching(/^(starting|failed)$/) }),
+    });
+    const startup = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getStartupSnapshot, {});
+    expect(startup.error).toBeUndefined();
+
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     const loggedLines = [...logSpy.mock.calls, ...warnSpy.mock.calls, ...errorSpy.mock.calls]
       .map(([message]) => (typeof message === "string" ? message : ""))
       .filter(Boolean);
     expect(loggedLines.some((line) => line.includes("startup timed out"))).toBe(false);
+  });
+
+  it("answers runtime-dependent requests with ServerStarting before claiming a slot", async () => {
+    const stateDir = makeTempDir("t3code-state-server-starting-");
+    const persistenceLayer = makeSqlitePersistenceLive(path.join(stateDir, "state.sqlite")).pipe(
+      Layer.provide(NodeServices.layer),
+    );
+    vi.resetModules();
+    vi.doMock("./serverLayers.ts", async () => ({
+      ...(await vi.importActual<typeof import("./serverLayers.ts")>("./serverLayers.ts")),
+      // The runtime never finishes building, so readiness stays `starting`.
+      makeServerOrchestrationRuntimeLayer: () => Layer.effectDiscard(Effect.never),
+    }));
+    const { createServer: createServerWithStartingRuntime } = await import("./wsServer");
+    h.server = await createTestServer({
+      cwd: stateDir,
+      stateDir,
+      persistenceLayer,
+      createServerFactory: createServerWithStartingRuntime,
+    });
+    const addr = h.server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws, welcome] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    expect(welcome.data.runtime).toEqual(
+      expect.objectContaining({ state: "starting", revision: 0 }),
+    );
+
+    // The recovery lane has one slot: answered after admission, eleven of
+    // these would come back `RpcBusy` instead.
+    const held = await Promise.all(
+      Array.from({ length: 12 }, () =>
+        sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot, undefined, {
+          retryServerStarting: false,
+        }),
+      ),
+    );
+    expect(held.map((response) => response.error?.code)).toEqual(Array(12).fill("ServerStarting"));
+    // Only the body that takes the route's runtime branch is held.
+    const projectInventory = await sendRequest(
+      ws,
+      WS_METHODS.serverGetProviderInventory,
+      { instanceId: "missing", projectId: "project-1" },
+      { retryServerStarting: false },
+    );
+    expect(projectInventory.error?.code).toBe("ServerStarting");
+    const globalInventory = await sendRequest(
+      ws,
+      WS_METHODS.serverGetProviderInventory,
+      { instanceId: "missing" },
+      { retryServerStarting: false },
+    );
+    expect(globalInventory.error?.message).toBe("Provider instance not found.");
+    const probe = await sendRequest(ws, WS_METHODS.serverProbe);
+    expect(probe.result).toEqual({ runtime: expect.objectContaining({ state: "starting" }) });
   });
 
   it("returns thread tail details without waiting for passive codex reconciliation", async () => {
@@ -1288,7 +1371,66 @@ describe("WebSocket Server", () => {
 
     const response = await sendRequest(ws, WS_METHODS.serverProbe);
     expect(response.error).toBeUndefined();
-    expect(response.result).toEqual({});
+    // The probe also reports runtime readiness, the client's fallback while it starts.
+    expect(response.result).toEqual({
+      runtime: expect.objectContaining({ state: expect.stringMatching(/^(starting|ready)$/) }),
+    });
+  });
+
+  it("reports runtime readiness in the welcome and the probe once the runtime is ready", async () => {
+    h.server = await createTestServer();
+    const address = h.server.address();
+    if (!address || typeof address === "string") throw new Error("No server address");
+    const [ws, welcome] = await connectAndAwaitWelcome(address.port);
+    connections.push(ws);
+    expect(welcome.data.runtime?.state).toMatch(/^(starting|ready)$/);
+
+    await vi.waitFor(
+      async () => {
+        const response = await sendRequest(ws, WS_METHODS.serverProbe);
+        expect(response.result).toEqual({ runtime: { state: "ready", revision: 1 } });
+      },
+      { timeout: 10_000, interval: 100 },
+    );
+  });
+
+  it("rejects runtime-dependent methods before admission while the runtime starts", () => {
+    const starting = { state: "starting", revision: 0 } as const;
+    const getSnapshot = { _tag: ORCHESTRATION_WS_METHODS.getSnapshot };
+    expect(serverStartingRejection(getSnapshot, starting)).toMatchObject({
+      code: "ServerStarting",
+      retryable: true,
+      retryAfterMs: 1_000,
+    });
+    // Projection-backed and health methods still answer during startup.
+    expect(
+      serverStartingRejection({ _tag: ORCHESTRATION_WS_METHODS.getStartupSnapshot }, starting),
+    ).toBe(null);
+    expect(serverStartingRejection({ _tag: WS_METHODS.serverProbe }, starting)).toBe(null);
+    // A route that awaits the runtime only on one branch is rejected for that body only.
+    expect(serverStartingRejection({ _tag: WS_METHODS.serverGetProviderInventory }, starting)).toBe(
+      null,
+    );
+    expect(
+      serverStartingRejection(
+        { _tag: WS_METHODS.serverGetProviderInventory, projectId: "project-1" } as {
+          _tag: string;
+        },
+        starting,
+      ),
+    ).toMatchObject({ code: "ServerStarting" });
+    expect(serverStartingRejection(getSnapshot, { state: "ready", revision: 1 })).toBe(null);
+    // A failed startup lets the route report the failure itself.
+    expect(
+      serverStartingRejection(getSnapshot, { state: "failed", revision: 1, message: "boom" }),
+    ).toBe(null);
+  });
+
+  it("encodes a response-encoding failure without the failing schema", () => {
+    expect(JSON.parse(encodeResponseEncodeFailure("req-1"))).toEqual({
+      id: "req-1",
+      error: { message: "Response could not be encoded", code: "ResponseEncodeFailed" },
+    });
   });
 
   it("returns error for unknown methods", async () => {

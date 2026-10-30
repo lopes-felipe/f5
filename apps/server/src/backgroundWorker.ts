@@ -16,16 +16,28 @@ export interface BackgroundWorker<A> extends Omit<DrainableWorker<A>, "enqueue">
 export const makeBackgroundWorker = <A, E, R>(
   process: (item: A) => Effect.Effect<void, E, R>,
   options: DrainableWorkerOptions<A>,
-) =>
-  makeDrainableWorker(process, {
+) => {
+  // Lossless ingestion admits a large single provider frame without imposing
+  // an undocumented protocol ceiling. Count admission remains bounded.
+  // Coalesced/rejecting jobs have a byte ceiling.
+  const merged: DrainableWorkerOptions<A> = {
     maxEntries: 1024,
-    // Lossless ingestion admits a large single provider frame without imposing
-    // an undocumented protocol ceiling. Count admission remains bounded; byte
-    // accounting is observable. Coalesced/rejecting jobs have a byte ceiling.
     maxBytes: options.key || options.admission === "reject" ? 32 * 1024 * 1024 : Infinity,
-    sizeOf: (item) => Buffer.byteLength(JSON.stringify(item) ?? ""),
     ...options,
-  }).pipe(
+  };
+  const { sizeOf, ...unsized } = merged;
+  // Sizing only matters under a byte ceiling: an unbounded lossless worker
+  // would otherwise stringify every provider event on the main thread, so its
+  // byte accounting becomes entry counts.
+  return makeDrainableWorker(
+    process,
+    Number.isFinite(merged.maxBytes ?? Infinity)
+      ? {
+          ...unsized,
+          sizeOf: sizeOf ?? ((item: A) => Buffer.byteLength(JSON.stringify(item) ?? "")),
+        }
+      : unsized,
+  ).pipe(
     Effect.map(
       (worker): BackgroundWorker<A> => ({
         ...worker,
@@ -33,6 +45,7 @@ export const makeBackgroundWorker = <A, E, R>(
       }),
     ),
   );
+};
 
 /** Timer callbacks cannot await admission; closed/failed workers must not reject a detached Promise. */
 export const enqueueBackgroundWork = (admission: Effect.Effect<void>) =>

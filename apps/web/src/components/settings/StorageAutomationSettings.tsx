@@ -12,6 +12,7 @@ import { Link } from "@tanstack/react-router";
 import { useSettings } from "../../hooks/useSettings";
 import { serverQueryKeys } from "../../lib/serverReactQuery";
 import { ensureNativeApi } from "../../nativeApi";
+import { rpcQueryContext, rpcQueryMeta } from "../../lib/rpcQueryContext";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import { toastManager } from "../ui/toast";
@@ -105,11 +106,15 @@ export function StorageAutomationSettings() {
   const [activitySource, setActivitySource] = useState<"automatic" | "manual" | "all">("all");
   const audit = useQuery({
     queryKey: [...auditQueryKey, activityLimit, activitySource],
-    queryFn: () =>
-      ensureNativeApi().storage.automationAudit({
-        limit: activityLimit,
-        ...(activitySource !== "all" ? { source: activitySource } : {}),
-      }),
+    queryFn: (context) =>
+      ensureNativeApi().storage.automationAudit(
+        {
+          limit: activityLimit,
+          ...(activitySource !== "all" ? { source: activitySource } : {}),
+        },
+        rpcQueryContext(context),
+      ),
+    meta: rpcQueryMeta("refresh-background"),
     refetchInterval: 30_000,
   });
 

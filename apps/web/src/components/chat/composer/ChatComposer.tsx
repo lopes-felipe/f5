@@ -269,6 +269,11 @@ export function ChatComposer({
   });
 
   useEffect(() => {
+    // Startup diagnostics: the desktop main process logs only the first marker per window.
+    window.desktopBridge?.markStartup?.("composer-ready");
+  }, []);
+
+  useEffect(() => {
     const focus = () => {
       const active = document.activeElement;
       if (

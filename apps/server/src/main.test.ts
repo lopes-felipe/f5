@@ -583,6 +583,7 @@ it.layer(testLayer)("server CLI command", (it) => {
               checkpoints: [],
               activities: [],
               commandExecutions: [],
+              proposedPlans: [],
               tasks: [],
               tasksTurnId: null,
               tasksUpdatedAt: null,

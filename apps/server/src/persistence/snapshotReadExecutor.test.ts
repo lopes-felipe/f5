@@ -1,7 +1,7 @@
 import { OrchestrationProjectionSnapshotQueryLive } from "../orchestration/Layers/ProjectionSnapshotQuery.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Deferred, Effect, Exit, Fiber, Layer } from "effect";
+import { Deferred, Effect, Exit, Fiber, Layer, Logger } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { afterEach, expect, it, vi } from "vitest";
 import * as FS from "node:fs/promises";
@@ -227,4 +227,66 @@ it("allows full bootstrap and startup snapshots beyond the interactive read budg
       }).pipe(Effect.provide(layer)),
     ),
   );
+});
+
+it("logs the lane and scope of a read that waited for its reader", async () => {
+  const persistence = await fixture();
+  const messages: unknown[] = [];
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const readers = yield* SnapshotReadClients;
+        const holding = yield* Deferred.make<void>(),
+          release = yield* Deferred.make<void>();
+        const holder = yield* withSnapshotRead(
+          readers.foreground,
+          "foreground",
+          Effect.gen(function* () {
+            yield* readers.foreground`SELECT 1`;
+            yield* Deferred.succeed(holding, undefined);
+            yield* Deferred.await(release);
+          }),
+        ).pipe(Effect.forkChild);
+        yield* Deferred.await(holding);
+        let now = 0;
+        // Each clock read advances 300 ms, so the queued read's lease wait crosses the threshold.
+        const clock = vi.spyOn(performance, "now").mockImplementation(() => (now += 300));
+        try {
+          const waiting = yield* withSnapshotRead(
+            readers.foreground,
+            "foreground",
+            readers.foreground`SELECT 2`,
+            true,
+            Infinity,
+            "getThreadTailDetails",
+          ).pipe(Effect.forkChild);
+          yield* Deferred.succeed(release, undefined);
+          yield* Fiber.join(holder);
+          yield* Fiber.join(waiting);
+        } finally {
+          clock.mockRestore();
+        }
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            persistence.pipe(Layer.provideMerge(NodeServices.layer)),
+            Logger.layer(
+              [
+                Logger.make((options) => {
+                  messages.push(options.message);
+                }),
+              ],
+              { mergeWithExisting: false },
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+  const waits = messages.filter(
+    (message) => (message as unknown[])[0] === "snapshot read waited for its reader",
+  ) as Array<[string, { lane: string; scope: string; waitMs: number }]>;
+  expect(waits).toHaveLength(1);
+  expect(waits[0]![1]).toMatchObject({ lane: "foreground", scope: "getThreadTailDetails" });
+  expect(waits[0]![1].waitMs).toBeGreaterThanOrEqual(250);
 });

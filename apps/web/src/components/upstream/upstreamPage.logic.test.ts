@@ -20,6 +20,7 @@ import {
   hasActiveFilters,
   headerCheckState,
   historyEntryLabel,
+  isUpstreamTopicQueued,
   ledgerChipLabel,
   liveUndoEntries,
   moveFocus,
@@ -461,6 +462,15 @@ describe("upstream page logic", () => {
     ).toBe("mobile");
     expect(preselectedSkipReason({})).toBeNull();
   });
+});
+
+it("reads queued indicators from the overview set and falls back to the row before it loads", () => {
+  const row = (id: string, queued: boolean) => ({ queued, topic: { id } }) as never;
+  const queuedTopicIds = new Set(["pr-2"]);
+  expect(isUpstreamTopicQueued(row("pr-1", true), queuedTopicIds)).toBe(false);
+  expect(isUpstreamTopicQueued(row("pr-2", false), queuedTopicIds)).toBe(true);
+  expect(isUpstreamTopicQueued(row("pr-1", true), null)).toBe(true);
+  expect(isUpstreamTopicQueued(row("pr-2", false), null)).toBe(false);
 });
 
 describe("undo, files and history", () => {

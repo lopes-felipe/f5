@@ -1,4 +1,5 @@
 import type { ClientDiagnosticsCounters, ReportClientDiagnosticsInput } from "@t3tools/contracts";
+import { readRpcDiagnostics } from "../rpcDiagnostics";
 
 const zero = (): ClientDiagnosticsCounters => ({
   snapshotSyncs: 0,
@@ -72,6 +73,8 @@ export function startClientDiagnostics(deps: {
       session.buckets[index]! += Math.max(0, count - previous.applyBatchBuckets[index]!);
     });
     previous = current;
+    // Transport counters are already cumulative for the page, like `session`.
+    const rpc = readRpcDiagnostics();
     try {
       void deps
         .report({
@@ -80,6 +83,8 @@ export function startClientDiagnostics(deps: {
           clientKind: deps.clientKind,
           counters: { ...session.counters, connectedMs: Math.floor(session.counters.connectedMs) },
           applyBatchBuckets: [...session.buckets],
+          rpcCounters: rpc.counters,
+          rpcQueueWaitBuckets: [...rpc.queueWaitBuckets],
         })
         .catch(() => {});
     } catch {

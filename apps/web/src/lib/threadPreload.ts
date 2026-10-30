@@ -152,6 +152,7 @@ function pumpLiveThreadWarmQueue() {
           ...(nextTask.signal ? { signal: nextTask.signal } : {}),
           captureLiveEvents: false,
           warmProfile: nextTask.warmProfile,
+          priority: "background",
         });
         nextTask.resolve();
       } catch (error) {
@@ -268,6 +269,8 @@ export async function warmThreadBundle(
     captureLiveEvents?: boolean;
     initialDetails?: OrchestrationThreadTailDetails | null;
     warmProfile?: ThreadWarmProfile;
+    /** Warming ahead of navigation yields ordinary slots to interactive reads. */
+    priority?: "interactive" | "background";
   },
 ): Promise<void> {
   const warmProfile = options?.warmProfile ?? DEFAULT_THREAD_WARM_PROFILE;
@@ -280,6 +283,7 @@ export async function warmThreadBundle(
       ...(options?.captureLiveEvents !== undefined
         ? { captureLiveEvents: options.captureLiveEvents }
         : {}),
+      ...(options?.priority ? { priority: options.priority } : {}),
     });
   }
 
@@ -377,6 +381,7 @@ export async function preloadRecentThreadDetails(
           ...(options?.signal ? { signal: options.signal } : {}),
           captureLiveEvents: false,
           warmProfile,
+          priority: "background",
         });
       } catch (error) {
         console.warn("Failed to preload thread bundle.", { threadId, error });

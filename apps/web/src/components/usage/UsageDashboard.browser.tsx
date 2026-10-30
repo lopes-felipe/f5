@@ -1086,7 +1086,10 @@ describe("query-connected usage dashboard", () => {
         .element(page.getByText(/Project filtering is unsupported by this server/))
         .toBeVisible();
       await expect.element(page.getByText("Total tokens")).not.toBeInTheDocument();
-      expect(api.getSummary).toHaveBeenCalledWith(expect.objectContaining({ projectId: projectA }));
+      expect(api.getSummary).toHaveBeenCalledWith(
+        expect.objectContaining({ projectId: projectA }),
+        expect.anything(),
+      );
     } finally {
       await screen.unmount();
       queryClient.clear();
@@ -1136,6 +1139,7 @@ describe("query-connected usage dashboard", () => {
       await vi.waitFor(() =>
         expect(api.getSummary).toHaveBeenLastCalledWith(
           expect.objectContaining({ hiddenProviders: ["codex", "cursor"] }),
+          expect.anything(),
         ),
       );
       await expect
@@ -1207,7 +1211,10 @@ describe("query-connected usage dashboard", () => {
       await expect
         .element(page.getByRole("button", { name: "30 days" }))
         .toHaveAttribute("aria-pressed", "true");
-      expect(api.getSummary).toHaveBeenCalledWith(expect.objectContaining({ range: "30d" }));
+      expect(api.getSummary).toHaveBeenCalledWith(
+        expect.objectContaining({ range: "30d" }),
+        expect.anything(),
+      );
       await page.getByRole("button", { name: "7 days" }).click();
       expect(onSearchChange).toHaveBeenCalledWith({ range: "7d" });
       await page.getByRole("tab", { name: "Limits" }).click();

@@ -12,6 +12,7 @@ import {
   gitStatusQueryOptions,
   invalidateGitQueries,
 } from "./gitReactQuery";
+import { rpcQueryContext } from "./rpcQueryContext";
 
 describe("gitMutationKeys", () => {
   it("scopes stacked action keys by cwd", () => {
@@ -151,6 +152,50 @@ describe("gitStatusQueryOptions", () => {
     expect(options.refetchInterval).toBe(60_000);
     expect(options.refetchOnWindowFocus).toBe("always");
     expect(options.refetchOnReconnect).toBe("always");
+  });
+
+  it("lets sidebar rows respect staleTime on focus and reconnect as background reads", () => {
+    const options = gitStatusQueryOptions({
+      cwd: "/repo/a",
+      autoRefresh: true,
+      staleTimeMs: 30_000,
+      refetchOnFocus: true,
+      refetchOnReconnect: true,
+      priority: "background",
+    });
+
+    expect(options.refetchOnWindowFocus).toBe(true);
+    expect(options.refetchOnReconnect).toBe(true);
+    expect(options.meta).toEqual({ priority: "background" });
+  });
+
+  it("refreshes a loaded status in the background and loads the first one interactively", async () => {
+    const queryClient = new QueryClient();
+    const options = gitStatusQueryOptions({ cwd: "/repo/a", autoRefresh: true });
+    expect(options.meta).toEqual({ priority: "refresh-background" });
+    expect(
+      rpcQueryContext(
+        {
+          client: queryClient,
+          queryKey: options.queryKey,
+          signal: new AbortController().signal,
+          meta: options.meta,
+        },
+        { forwardSignal: false },
+      ),
+    ).toEqual({ priority: "interactive" });
+    queryClient.setQueryData(options.queryKey, {} as never);
+    expect(
+      rpcQueryContext(
+        {
+          client: queryClient,
+          queryKey: options.queryKey,
+          signal: new AbortController().signal,
+          meta: options.meta,
+        },
+        { forwardSignal: false },
+      ),
+    ).toEqual({ priority: "background" });
   });
 });
 
