@@ -1,4 +1,5 @@
 import { claudeSkillToolTitle } from "./toolActivity";
+import { sanitizeComputerStep } from "./computerAction";
 import {
   type CompactMcpOauthActivityPayload,
   type CompactMcpStatusActivityPayload,
@@ -779,6 +780,9 @@ function compactToolPayload(payload: CompactToolActivityPayload): Record<string,
   return {
     itemType: payload.itemType,
     ...(payload.computerTool === true ? { computerTool: true } : {}),
+    ...(payload.computerTool === true && payload.computerStep
+      ? { computerStep: payload.computerStep }
+      : {}),
     ...(payload.completion ? { completion: payload.completion } : {}),
     ...(payload.imagePath ? { imagePath: payload.imagePath } : {}),
     ...(payload.providerItemId ? { providerItemId: payload.providerItemId } : {}),
@@ -957,9 +961,13 @@ export function readToolActivityPayload(payload: unknown): CompactToolActivityPa
       ? record.completion
       : undefined;
 
+  const computerStep =
+    record.computerTool === true ? sanitizeComputerStep(record.computerStep) : undefined;
+
   return {
     itemType: record.itemType,
     ...(record.computerTool === true ? { computerTool: true } : {}),
+    ...(computerStep ? { computerStep } : {}),
     ...(completion ? { completion } : {}),
     ...(imagePath ? { imagePath } : {}),
     ...(providerItemId ? { providerItemId } : {}),

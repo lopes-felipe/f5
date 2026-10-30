@@ -230,6 +230,71 @@ function preloadThreadFileChange(input: {
 }
 
 describe("MessagesTimeline", () => {
+  it("groups computer and preview runs into session rows even when MCP calls expand", async () => {
+    const { buildTimelineRows, createTimelineRowCache } = await import("./MessagesTimeline");
+    const createdAt = "2026-03-17T19:12:28.000Z";
+    const work = (id: string, entry: Partial<Extract<TimelineEntry, { kind: "work" }>["entry"]>) =>
+      ({
+        id,
+        kind: "work",
+        createdAt,
+        entry: { id, createdAt, tone: "tool", label: id, ...entry },
+      }) satisfies TimelineEntry;
+    const computerCall = (id: string) =>
+      work(id, {
+        itemType: "mcp_tool_call",
+        mcpServerName: "f5_computer",
+        mcpToolName: "computer_click",
+        computerTool: true,
+      });
+    const previewCall = (id: string) =>
+      work(id, {
+        itemType: "mcp_tool_call",
+        mcpServerName: "f5_preview",
+        mcpToolName: "preview_click",
+      });
+    const thought = (id: string) => work(id, { tone: "thinking" });
+    const timelineEntries: TimelineEntry[] = [
+      work("before", { tone: "info" }),
+      computerCall("c1"),
+      thought("t1"),
+      computerCall("c2"),
+      thought("t2"),
+      previewCall("p1"),
+      previewCall("p2"),
+      work("other", { itemType: "mcp_tool_call", mcpServerName: "docs", mcpToolName: "read" }),
+      computerCall("c3"),
+    ];
+    const rows = buildTimelineRows({
+      timelineEntries,
+      completionDividerBeforeEntryId: null,
+      completionSummary: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      liveActivity: null,
+      expandMcpToolCalls: true,
+      cache: createTimelineRowCache(),
+    });
+    expect(
+      rows.flatMap((row) =>
+        row.kind === "work"
+          ? [[row.automationSurface ?? null, row.groupedEntries.map((entry) => entry.id)]]
+          : [],
+      ),
+    ).toEqual([
+      [null, ["before"]],
+      ["computer", ["c1", "t1", "c2"]],
+      [null, ["t2"]],
+      ["preview", ["p1", "p2"]],
+      [null, ["other"]],
+      ["computer", ["c3"]],
+    ]);
+    const computerRow = rows.find((row) => row.kind === "work" && row.automationSurface);
+    expect(computerRow?.kind === "work" && computerRow.workSummary).toBe(
+      "Used the computer · 2 actions",
+    );
+  });
+
   it("keeps answered questions visible outside collapsed work from previous turns", async () => {
     const { MessagesTimeline, buildTimelineRows, createTimelineRowCache } =
       await import("./MessagesTimeline");

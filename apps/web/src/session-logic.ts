@@ -13,6 +13,7 @@ import {
   type ElicitationReceiptState,
   type CodexCollaborationTool,
   type CompactSubagentState,
+  type ComputerStepSummary,
   ProviderItemId,
   type RuntimeItemStatus,
   type OrchestrationCommandExecutionSummary,
@@ -123,6 +124,7 @@ export interface WorkLogEntry {
   mcpServerName?: string;
   mcpToolName?: string;
   computerTool?: boolean;
+  computerStep?: ComputerStepSummary;
   mcpInput?: string;
   mcpResult?: string;
   mcpImages?: ReadonlyArray<{ attachmentId: string; mimeType: string; sizeBytes: number }>;
@@ -803,6 +805,7 @@ function workEntryVisibleSignature(entry: WorkLogEntry): string {
     mcpServerName: entry.mcpServerName,
     mcpToolName: entry.mcpToolName,
     computerTool: entry.computerTool,
+    computerStep: entry.computerStep,
     mcpInput: entry.mcpInput,
     mcpResult: entry.mcpResult,
     mcpImages: entry.mcpImages?.map((image) => image.attachmentId) ?? [],
@@ -1699,6 +1702,9 @@ export function deriveWorkLogEntries(
         entry.mcpServerName = toolPayload.mcpServerName;
       }
       if (toolPayload?.computerTool === true) entry.computerTool = true;
+      if (toolPayload?.computerTool === true && toolPayload.computerStep) {
+        entry.computerStep = toolPayload.computerStep;
+      }
       if (toolPayload?.mcpToolName) {
         entry.mcpToolName = toolPayload.mcpToolName;
       }

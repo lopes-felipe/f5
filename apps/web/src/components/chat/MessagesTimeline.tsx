@@ -4,7 +4,15 @@ import { highlightThreadFind } from "./threadFindHighlights";
 import { HtmlRenderFrame } from "./HtmlRenderFrame";
 import { recordTimelineRowRender } from "../../lib/performanceCounters";
 import { messageTextRevision, messageReasoningContent } from "../../lib/streamingTextRevision";
-import { computerToolHeading } from "@t3tools/shared/computerAction";
+import { computerToolHeading, previewToolHeading } from "@t3tools/shared/computerAction";
+import {
+  automationRunEnd,
+  classifyAutomationEntry,
+  summarizeAutomationRun,
+  type AutomationSurface,
+} from "./AutomationSessionCard.logic";
+import { AutomationSessionCard } from "./AutomationSessionCard";
+import { McpToolCallDetails } from "./McpToolCallDetails";
 import type { PromptLinkRepository } from "@t3tools/shared/promptLinks";
 import { NativeFilePreview } from "./NativeFilePreview";
 import { AttachmentFileChip } from "./AttachmentFileChip";
@@ -1843,6 +1851,8 @@ type TimelineRow =
       groupedEntries: TimelineWorkEntry[];
       /** Above the newest user message, so eligible for collapsing. */
       isPriorTurn: boolean;
+      /** Set when the row is one computer or browser-preview run. */
+      automationSurface?: AutomationSurface;
       workSummary: string;
     }
   | {
@@ -2866,6 +2876,11 @@ export function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
     ? computerToolHeading(workEntry.mcpToolName, workEntry.status)
     : undefined;
   if (computer) return `Computer · ${computer}`;
+  const preview =
+    classifyAutomationEntry(workEntry) === "preview"
+      ? previewToolHeading(workEntry.mcpToolName, workEntry.status)
+      : undefined;
+  if (preview) return `Browser · ${preview}`;
   if (workEntry.itemType === "mcp_tool_call") {
     return `MCP Call - ${formatMcpToolHeading(workEntry)}`;
   }
@@ -3318,28 +3333,11 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
       {hasNestedContent && (
         <CollapsiblePanel>
           <div className="border-t border-border px-3 py-3">
-            <div className="space-y-3">
-              {workEntry.mcpInput && (
-                <div>
-                  <p className="text-2xs font-medium text-muted-foreground">Input</p>
-                  <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap wrap-break-word rounded-md bg-muted/40 p-2 font-mono text-xs leading-5 text-foreground">
-                    {workEntry.mcpInput}
-                  </pre>
-                </div>
-              )}
-              {workEntry.mcpResult && (
-                <div>
-                  <p className="text-2xs font-medium text-muted-foreground">Result</p>
-                  <div className="mt-1 max-h-80 overflow-auto rounded-md bg-muted/40 p-2 text-ui text-foreground">
-                    <ChatMarkdown
-                      text={workEntry.mcpResult}
-                      cwd={markdownCwd}
-                      isStreaming={false}
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
+            <McpToolCallDetails
+              mcpInput={workEntry.mcpInput}
+              mcpResult={workEntry.mcpResult}
+              markdownCwd={markdownCwd}
+            />
           </div>
         </CollapsiblePanel>
       )}
@@ -4015,6 +4013,24 @@ function WorkGroupRowContent(props: {
     <WorkEntryRow key={`app:${entry.id}`} workEntry={entry} {...entryProps} />
   ));
   if (!logEntries.length) return <div className="min-w-0 space-y-2">{appRows}</div>;
+  const expanded = externals.collapseOverride ?? !(row.isPriorTurn && collapseCompletedWorkLogs);
+  const canCollapse = row.isPriorTurn && canSetWorkGroupExpanded;
+  if (row.automationSurface && expanded) {
+    return (
+      <div className="min-w-0 px-1 py-0.5">
+        <AutomationSessionCard
+          surface={row.automationSurface}
+          entries={row.groupedEntries}
+          timestampFormat={timestampFormat}
+          markdownCwd={markdownCwd}
+          onImageExpand={actions.onImageExpand}
+          onCollapse={
+            canCollapse ? () => actions.onSetWorkGroupExpanded(groupId, false) : undefined
+          }
+        />
+      </div>
+    );
+  }
   const standaloneExpandedMcpEntry =
     row.groupedEntries.length === 1 &&
     (row.groupedEntries[0]?.htmlRender ||
@@ -4025,7 +4041,7 @@ function WorkGroupRowContent(props: {
           settingsExpandMcpToolCalls: expandMcpToolCalls,
         });
 
-  if (!appEntries.length && standaloneExpandedMcpEntry) {
+  if (!appEntries.length && standaloneExpandedMcpEntry && !row.automationSurface) {
     return (
       <div className="min-w-0 px-1 py-0.5">
         <WorkEntryRow workEntry={standaloneExpandedMcpEntry} {...entryProps} />
@@ -4033,8 +4049,6 @@ function WorkGroupRowContent(props: {
     );
   }
 
-  const expanded = externals.collapseOverride ?? !(row.isPriorTurn && collapseCompletedWorkLogs);
-  const canCollapse = row.isPriorTurn && canSetWorkGroupExpanded;
   const log = !expanded ? (
     <div className="min-w-0 px-1 py-0.5">
       <button
@@ -4740,16 +4754,28 @@ export function buildTimelineRows(input: {
 
     if (timelineEntry.kind === "work") {
       const groupedEntries = [timelineEntry.entry];
-      const shouldIsolateEntry = shouldRenderWorkEntryAsStandaloneRow(
-        timelineEntry.entry,
-        isolationOptions,
-      );
+      // Computer and preview runs become one session card, whatever the MCP expand setting.
+      const automationSurface = classifyAutomationEntry(timelineEntry.entry);
+      const shouldIsolateEntry =
+        !automationSurface &&
+        shouldRenderWorkEntryAsStandaloneRow(timelineEntry.entry, isolationOptions);
       let cursor = index + 1;
-      if (!shouldIsolateEntry) {
+      if (automationSurface) {
+        const end = automationRunEnd(timelineEntries, index, (candidate) =>
+          candidate.kind === "work" ? candidate.entry : undefined,
+        );
+        for (; cursor < end; cursor += 1) {
+          const nextEntry = timelineEntries[cursor];
+          if (nextEntry?.kind === "work") groupedEntries.push(nextEntry.entry);
+        }
+      } else if (!shouldIsolateEntry) {
         while (cursor < timelineEntries.length) {
           const nextEntry = timelineEntries[cursor];
           if (!nextEntry || nextEntry.kind !== "work") break;
-          if (shouldRenderWorkEntryAsStandaloneRow(nextEntry.entry, isolationOptions)) {
+          if (
+            classifyAutomationEntry(nextEntry.entry) ||
+            shouldRenderWorkEntryAsStandaloneRow(nextEntry.entry, isolationOptions)
+          ) {
             break;
           }
           groupedEntries.push(nextEntry.entry);
@@ -4761,14 +4787,21 @@ export function buildTimelineRows(input: {
         index < lastUserMessageEntryIndex &&
         !groupedEntries.some((entry) => entry.subagentType && entry.status === "inProgress");
       nextRows.push(
-        reuse(timelineEntry.id, ["work", isPriorTurn, ...groupedEntries], () => ({
-          kind: "work",
-          id: timelineEntry.id,
-          createdAt: timelineEntry.createdAt,
-          groupedEntries,
-          isPriorTurn,
-          workSummary: summarizeWorkGroup(groupedEntries),
-        })),
+        reuse(
+          timelineEntry.id,
+          ["work", isPriorTurn, automationSurface, ...groupedEntries],
+          () => ({
+            kind: "work",
+            id: timelineEntry.id,
+            createdAt: timelineEntry.createdAt,
+            groupedEntries,
+            isPriorTurn,
+            ...(automationSurface ? { automationSurface } : {}),
+            workSummary: automationSurface
+              ? summarizeAutomationRun(automationSurface, groupedEntries)
+              : summarizeWorkGroup(groupedEntries),
+          }),
+        ),
       );
       index = cursor - 1;
       continue;
