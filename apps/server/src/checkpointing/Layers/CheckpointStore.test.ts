@@ -74,60 +74,6 @@ describe("CheckpointStoreLive", () => {
       "refs/t3/checkpoints/thread/",
     ]);
   });
-  it.each([
-    ["fatal: Unable to create '/tmp/index.lock': File exists", 2, 3],
-    ["error: open('vanished.txt'): No such file or directory", 1, 2],
-    ["fatal: Unable to create '/tmp/index.lock': File exists", 5, 4],
-    ["permission denied", 1, 1],
-  ] as const)("bounds retries for %s", async (detail, failures, expectedAttempts) => {
-    const calls: ExecuteGitInput[] = [];
-    let attempts = 0;
-    const layer = CheckpointStoreLiveWithGitService.pipe(
-      Layer.provide(
-        Layer.succeed(GitService, {
-          execute: (input) =>
-            Effect.gen(function* () {
-              calls.push(input);
-              if (input.args.includes("add") && ++attempts <= failures) {
-                return yield* new GitCommandError({
-                  operation: input.operation,
-                  cwd: input.cwd,
-                  command: "git add",
-                  detail,
-                });
-              }
-              return { code: 0, stdout: "oid\n", stderr: "" };
-            }),
-        }),
-      ),
-      Layer.provide(NodeServices.layer),
-    );
-    const result = await Effect.runPromise(
-      Effect.result(
-        Effect.gen(function* () {
-          const store = yield* CheckpointStore;
-          yield* store.captureCheckpoint({
-            cwd: "/repo",
-            checkpointRef: CheckpointRef.makeUnsafe("refs/t3/test"),
-          });
-        }).pipe(Effect.provide(layer)),
-      ),
-    );
-    expect(attempts).toBe(expectedAttempts);
-    expect(result._tag).toBe(failures < expectedAttempts ? "Success" : "Failure");
-    for (const call of calls.filter((call) =>
-      ["add", "write-tree", "commit-tree", "update-ref"].some((command) =>
-        call.args.includes(command),
-      ),
-    )) {
-      expect(call.args).toContain("core.fsync=objects,reference");
-      expect(call.args).toContain("core.fsyncMethod=fsync");
-      expect(call.env).toMatchObject({ LC_ALL: "C", LANGUAGE: "C" });
-    }
-    if (result._tag === "Failure")
-      expect(calls.some((call) => call.args.includes("update-ref"))).toBe(false);
-  });
-
   const captureOnPlatform = (
     platform: NodeJS.Platform,
     fail: (input: ExecuteGitInput) => string | null = () => null,
@@ -175,6 +121,27 @@ describe("CheckpointStoreLive", () => {
     call.args.filter((arg) => arg.startsWith("core.fsyncMethod="));
 
   it.each([
+    ["fatal: Unable to create '/tmp/index.lock': File exists", 2, 3],
+    ["error: open('vanished.txt'): No such file or directory", 1, 2],
+    ["fatal: Unable to create '/tmp/index.lock': File exists", 5, 4],
+    ["permission denied", 1, 1],
+  ] as const)("bounds retries for %s", async (detail, failures, expectedAttempts) => {
+    let attempts = 0;
+    const { result, calls } = await captureOnPlatform("linux", (input) =>
+      input.args.includes("add") && ++attempts <= failures ? detail : null,
+    );
+    expect(attempts).toBe(expectedAttempts);
+    expect(result._tag).toBe(failures < expectedAttempts ? "Success" : "Failure");
+    for (const call of durableCalls(calls)) {
+      expect(call.args).toContain("core.fsync=objects,reference");
+      expect(call.args).toContain("core.fsyncMethod=fsync");
+      expect(call.env).toMatchObject({ LC_ALL: "C", LANGUAGE: "C" });
+    }
+    if (result._tag === "Failure")
+      expect(calls.some((call) => call.args.includes("update-ref"))).toBe(false);
+  });
+
+  it.each([
     ["darwin", ["core.fsyncMethod=fsync", "core.fsyncMethod=batch"]],
     ["win32", ["core.fsyncMethod=fsync", "core.fsyncMethod=batch"]],
     ["linux", ["core.fsyncMethod=fsync"]],
@@ -195,23 +162,17 @@ describe("CheckpointStoreLive", () => {
     "git update-ref failed: fatal: cannot update ref 'refs/t3/test': couldn't write '/repo/.git/refs/t3/test.lock'";
 
   it.each([
-    ["darwin", "add", unsupportedObjectFsync],
-    ["darwin", "update-ref", unsupportedRefFsync],
-    ["win32", "add", unsupportedObjectFsync],
+    ["add", unsupportedObjectFsync],
+    ["update-ref", unsupportedRefFsync],
   ] as const)(
-    "on %s retries %s once with writeout-only when full fsync is unsupported",
-    async (platform, command, detail) => {
-      const { result, calls } = await captureOnPlatform(platform, (input) =>
+    "on macOS retries %s once with writeout-only when full fsync is unsupported",
+    async (command, detail) => {
+      const { result, calls } = await captureOnPlatform("darwin", (input) =>
         input.args.includes(command) && !input.args.includes("core.fsyncMethod=writeout-only")
           ? detail
           : null,
       );
       const attempts = calls.filter((call) => call.args.includes(command));
-      if (platform !== "darwin") {
-        expect(result._tag).toBe("Failure");
-        expect(attempts).toHaveLength(1);
-        return;
-      }
       expect(result._tag).toBe("Success");
       expect(attempts).toHaveLength(2);
       expect(fsyncMethods(attempts[1]!)).toEqual([
@@ -224,6 +185,39 @@ describe("CheckpointStoreLive", () => {
       expect(attempts[1]!.env).toMatchObject({ LC_ALL: "C", LANGUAGE: "C" });
     },
   );
+
+  it("does not weaken fsync outside macOS", async () => {
+    const { result, calls } = await captureOnPlatform("win32", (input) =>
+      input.args.includes("add") ? unsupportedObjectFsync : null,
+    );
+    expect(result._tag).toBe("Failure");
+    const attempts = calls.filter((call) => call.args.includes("add"));
+    expect(attempts).toHaveLength(1);
+    expect(fsyncMethods(attempts[0]!)).toEqual([
+      "core.fsyncMethod=fsync",
+      "core.fsyncMethod=batch",
+    ]);
+  });
+
+  it("restarts from the full flush when the macOS fallback hits a lock race", async () => {
+    let fallbacks = 0;
+    const { result, calls } = await captureOnPlatform("darwin", (input) => {
+      if (!input.args.includes("add")) return null;
+      if (!input.args.includes("core.fsyncMethod=writeout-only")) return unsupportedObjectFsync;
+      return ++fallbacks === 1
+        ? "git add failed: fatal: Unable to create '/repo/.git/index.lock': File exists."
+        : null;
+    });
+    expect(result._tag).toBe("Success");
+    expect(
+      calls.filter((call) => call.args.includes("add")).map((call) => fsyncMethods(call)[0]),
+    ).toEqual([
+      "core.fsyncMethod=fsync",
+      "core.fsyncMethod=writeout-only",
+      "core.fsyncMethod=fsync",
+      "core.fsyncMethod=writeout-only",
+    ]);
+  });
 
   it("keeps unrelated macOS capture errors and failed fallbacks as failures", async () => {
     const unrelated = await captureOnPlatform("darwin", (input) =>
