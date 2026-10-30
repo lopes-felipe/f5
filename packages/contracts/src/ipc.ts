@@ -653,8 +653,35 @@ export interface DesktopCliCommandState {
   readonly shadowedBy?: string;
 }
 
+export type DesktopBrowserOpenChoice = "open" | "allow-host" | "copy" | "cancel";
+
+/** A terminal or agent asking main to open a login URL; main decides, the card only answers. */
+export interface DesktopBrowserOpenRequest {
+  readonly requestId: string;
+  /** ASCII (punycode) hostname, so look-alike characters cannot hide the real host. */
+  readonly host: string;
+  readonly url: string;
+  readonly profileName: string;
+  readonly expiresAtMs: number;
+  /** Requests queued behind this one when it was shown. */
+  readonly waiting: number;
+}
+
+export interface DesktopBrowserOpenBridge {
+  /** The request currently waiting for this window's profile, if any. */
+  current: () => Promise<DesktopBrowserOpenRequest | null>;
+  onRequested: (listener: (request: DesktopBrowserOpenRequest) => void) => () => void;
+  onSettled: (listener: (requestId: string) => void) => () => void;
+  /** Tells main the card is on screen; without it main falls back to its native dialog. */
+  acknowledge: (requestId: string) => Promise<void>;
+  /** Every choice except cancel requires a trusted click or keypress. */
+  answer: (requestId: string, choice: DesktopBrowserOpenChoice) => Promise<void>;
+}
+
 export interface DesktopBridge {
   htmlPreview?: (input: HtmlPreviewRequest) => Promise<HtmlPreviewResult>;
+  /** Consent for terminals and agents opening login URLs; requests arrive only on macOS. */
+  browserOpen?: DesktopBrowserOpenBridge;
   cliCommand?: {
     state: () => Promise<DesktopCliCommandState>;
     install: () => Promise<DesktopCliCommandState>;
