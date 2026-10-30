@@ -9,7 +9,11 @@ import {
 
 const summarize = (segments: readonly UserMessageSegment[]) =>
   segments.map((segment) =>
-    segment.kind === "text" ? ["text", segment.raw] : [segment.kind, segment.value],
+    segment.kind === "text"
+      ? ["text", segment.raw]
+      : segment.kind === "thread-reference"
+        ? [segment.kind, segment.threadId]
+        : [segment.kind, segment.value],
   );
 
 const rawOf = (segments: readonly UserMessageSegment[]) =>
@@ -99,9 +103,43 @@ describe("parseUserMessageMarkup", () => {
     expect(performance.now() - started).toBeLessThan(500);
     expect(rawOf(segments)).toBe(text);
   });
+
+  it("keeps backticks and bold markers inside a thread reference title atomic", () => {
+    const text = "See [Fix `parser` **now**](f5://thread/thread-1) and `code`";
+    const segments = parseUserMessageMarkup(text);
+    expect(segments[1]).toMatchObject({
+      kind: "thread-reference",
+      threadId: "thread-1",
+      label: "Fix `parser` **now**",
+    });
+    expect(summarize(segments)).toEqual([
+      ["text", "See "],
+      ["thread-reference", "thread-1"],
+      ["text", " and "],
+      ["code", "code"],
+    ]);
+    expect(rawOf(segments)).toBe(text);
+    expect(hasUserMessageMarkup(parseUserMessageMarkup("[A](f5-dev://thread/a)"))).toBe(true);
+  });
+
+  it("parses a bold-wrapped thread reference as bold text and leaves prompt links alone", () => {
+    expect(summarize(parseUserMessageMarkup("**[A](f5://thread/a)**"))).toEqual([
+      ["bold", "[A](f5://thread/a)"],
+    ]);
+    const promptLink = "[A](f5://thread/a?prompt=hi) [B](f5://thread/settings)";
+    expect(hasUserMessageMarkup(parseUserMessageMarkup(promptLink))).toBe(false);
+  });
 });
 
 describe("clipUserMessageSegments", () => {
+  it("turns a clipped thread reference into plain text", () => {
+    const segments = parseUserMessageMarkup("x [Title](f5://thread/abc)");
+    expect(clipUserMessageSegments(segments, 10)).toEqual([
+      { kind: "text", start: 0, end: 2, raw: "x " },
+      { kind: "text", start: 2, end: 10, raw: "[Title](" },
+    ]);
+  });
+
   it("clips to the 600-character collapsed prefix", () => {
     const text = `Intro \`code\` ${"word ".repeat(150)}\`tail code\` end`;
     const collapsed = buildCollapsedUserMessageText(text);

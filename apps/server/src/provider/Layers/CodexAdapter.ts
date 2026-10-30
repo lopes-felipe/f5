@@ -2870,11 +2870,12 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         threadMcpSessions.delete(input.threadId);
         threadMcpSession =
           options?.previewMcpHttpServer?.supportsThreadCatalog &&
-          !input.workflowExecutionProfile &&
           !isSyntheticOneOffThreadId(input.threadId)
             ? options.previewMcpHttpServer.createSessionConfig({
                 threadId: input.threadId,
                 catalog: "thread",
+                // Read-only workflow stages may still read the threads their request references.
+                threadAccess: input.workflowExecutionProfile ? "read-only" : "full",
                 ...(input.providerInstanceId
                   ? { providerInstanceId: input.providerInstanceId }
                   : {}),

@@ -42,6 +42,7 @@ export const threadPurgePolicy: Readonly<
   thread_pull_request_watches: { kind: "cascade" },
   thread_pull_request_watch_stops: { kind: "cascade" },
   thread_message_authorship: { kind: "cascade" },
+  thread_reference_grants: { kind: "cascade" },
   thread_settlement_requests: { kind: "cascade" },
   thread_settlement_hooks: { kind: "cascade" },
   mcp_app_instances: { kind: "cascade" },

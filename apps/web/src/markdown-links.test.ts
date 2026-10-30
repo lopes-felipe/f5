@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  chatMarkdownUrlTransform,
   collectMarkdownLinkHrefs,
   isMarkdownFileLinkLabel,
   resolveMarkdownFileEditorTarget,
@@ -276,5 +277,15 @@ describe("resolveMarkdownFileEditorTarget", () => {
     await expect(
       resolveMarkdownFileEditorTarget(metaFor("main.ts"), undefined, lookup),
     ).resolves.toBe("/repo/project/main.ts");
+  });
+});
+
+describe("chatMarkdownUrlTransform", () => {
+  it("keeps bare thread references and strips other app links", () => {
+    expect(chatMarkdownUrlTransform("f5://thread/thread-1")).toBe("f5://thread/thread-1");
+    expect(chatMarkdownUrlTransform("f5-dev://thread/thread-1")).toBe("f5-dev://thread/thread-1");
+    expect(chatMarkdownUrlTransform("f5://thread/thread-1?prompt=hi")).toBe("");
+    expect(chatMarkdownUrlTransform("f5://thread/settings")).toBe("");
+    expect(chatMarkdownUrlTransform("f5://new?prompt=hi")).toBe("");
   });
 });

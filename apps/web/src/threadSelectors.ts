@@ -404,6 +404,11 @@ export function useThreadExists(threadId: ThreadId | null | undefined): boolean 
   return useStore((state) => (threadId ? selectThreadIndexById(state).has(threadId) : false));
 }
 
+/** Only the title, so a streaming delta in the thread does not re-render the caller. */
+export function useThreadTitle(threadId: ThreadId | null | undefined): string | null {
+  return useStore((state) => selectThreadById(state, threadId)?.title ?? null);
+}
+
 export function useThreadIds(): ReadonlyArray<ThreadId> {
   return useStore(selectThreadIds);
 }

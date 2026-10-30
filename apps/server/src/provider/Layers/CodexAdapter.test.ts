@@ -40,6 +40,7 @@ import {
   normalizeCodexThreadItemType,
   observeCodexChrome,
   withAgentBrowserPreview,
+  type CodexAdapterLiveOptions,
 } from "./CodexAdapter.ts";
 
 it("reports Codex's preview as verified, so its chip can reach ready", () => {
@@ -3412,6 +3413,40 @@ it.effect(
     }).pipe(Effect.scoped);
   },
 );
+
+it.effect("gives a read-only Codex workflow stage a read-only thread catalog", () => {
+  const manager = new FakeCodexManager();
+  const createSessionConfig = vi.fn((input: { readonly threadId: string }) => ({
+    serverName: "f5_thread",
+    serverDefinition: { type: "http" as const, url: `http://127.0.0.1/mcp/${input.threadId}` },
+    env: {},
+    dispose: () => undefined,
+  }));
+  const previewMcpHttpServer = {
+    supportsThreadCatalog: true,
+    createSessionConfig,
+  } as unknown as NonNullable<CodexAdapterLiveOptions["previewMcpHttpServer"]>;
+  const layer = makeCodexAdapterLive({ manager, previewMcpHttpServer }).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "codex-thread-catalog-" })),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  );
+  const threadCatalogCall = () =>
+    createSessionConfig.mock.calls
+      .map(([input]) => input as { catalog?: string; threadAccess?: string })
+      .findLast((input) => input.catalog === "thread");
+  return Effect.gen(function* () {
+    const adapter = yield* CodexAdapter;
+    yield* adapter.startSession({
+      threadId: asThreadId("workflow-stage"),
+      runtimeMode: "full-access",
+      workflowExecutionProfile: "unattended-readonly",
+    });
+    assert.equal(threadCatalogCall()?.threadAccess, "read-only");
+    yield* adapter.startSession({ threadId: asThreadId("normal"), runtimeMode: "full-access" });
+    assert.equal(threadCatalogCall()?.threadAccess, "full");
+  }).pipe(Effect.provide(layer), Effect.scoped);
+});
 
 it.effect(
   "has Codex start node_repl only for consented, interactive desktop sessions without a node_repl of their own",

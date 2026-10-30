@@ -22,9 +22,9 @@ import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { makeAgentBridgeStore, type AgentBridgeClientRecord } from "./AgentBridgeStore.ts";
 import { AGENT_BRIDGE_LIMITS, makeAgentBridgeLimiters } from "./rateLimits.ts";
 import { emptyQueue, FakeAgentBridgeHost, project, provider, thread } from "./testing/fakeHost.ts";
+import { truncateUtf8 } from "../orchestration/threadTranscript.ts";
 import {
   makeThreadTools,
-  truncateUtf8,
   type AgentBridgeCaller,
   type AgentBridgeToolDefinition,
 } from "./threadTools.ts";

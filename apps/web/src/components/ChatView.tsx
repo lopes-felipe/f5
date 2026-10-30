@@ -4,6 +4,12 @@ import {
   hasPullRequestReferenceDrag,
   readPullRequestReferenceDrag,
 } from "../lib/pullRequestReference";
+import { hasThreadReferenceDrag, readThreadReferenceDrag } from "../lib/threadReferenceDrag";
+import {
+  formatThreadReference,
+  referencedThreadIds,
+  THREAD_REFERENCE_MAX_PER_MESSAGE,
+} from "@t3tools/shared/threadReferences";
 import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
 import {
   deriveProviderInstanceEntries,
@@ -114,7 +120,7 @@ import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
 } from "@t3tools/contracts";
-import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
+import { getMessageTextLengthIssue } from "@t3tools/shared/providerInput";
 import { formatByteSize } from "@t3tools/shared/byteSize";
 import {
   createModelSelection,
@@ -220,7 +226,12 @@ import {
   type PendingUserInputQuestionIndexByRequestId,
 } from "../pendingUserInputDraftStore";
 import { nextRewindDraftReadTicket, useStore } from "../store";
-import { selectThreadIndexById, useThread, useThreadSummaries } from "../threadSelectors";
+import {
+  selectThreadById,
+  selectThreadIndexById,
+  useThread,
+  useThreadSummaries,
+} from "../threadSelectors";
 import { useTestRenderCountProps } from "../lib/testRenderCount";
 import {
   deletePendingTurnDispatchArtifacts,
@@ -358,7 +369,7 @@ import {
   MessagesTimeline,
   type MessagesTimelineEmptyState,
 } from "./chat/MessagesTimeline";
-import { promptLinkRepositoryOf } from "./promptLinks/copyPromptLink";
+import { promptLinkRepositoryOf, promptLinkScheme } from "./promptLinks/copyPromptLink";
 import { OlderActivityHistoryControl } from "./chat/OlderActivityHistoryControl";
 import { NewerMessageHistoryControl } from "./chat/NewerMessageHistoryControl";
 
@@ -4902,12 +4913,13 @@ export default memo(function ChatView({
     }
   };
 
+  const hasComposerReferenceDrag = (types: ArrayLike<string>): boolean =>
+    dataTransferHasFileTreeMention(types) ||
+    hasPullRequestReferenceDrag(types) ||
+    hasThreadReferenceDrag(types);
+
   const claimFileTreeMentionDrag = (event: React.DragEvent<HTMLDivElement>): boolean => {
-    if (
-      !dataTransferHasFileTreeMention(event.dataTransfer.types) &&
-      !hasPullRequestReferenceDrag(event.dataTransfer.types)
-    )
-      return false;
+    if (!hasComposerReferenceDrag(event.dataTransfer.types)) return false;
     event.preventDefault();
     event.stopPropagation();
     event.nativeEvent.stopPropagation();
@@ -4928,46 +4940,86 @@ export default memo(function ChatView({
   };
 
   const onComposerFileMentionDragLeaveCapture = (event: React.DragEvent<HTMLDivElement>) => {
-    if (
-      !dataTransferHasFileTreeMention(event.dataTransfer.types) &&
-      !hasPullRequestReferenceDrag(event.dataTransfer.types)
-    )
-      return;
+    if (!hasComposerReferenceDrag(event.dataTransfer.types)) return;
     event.stopPropagation();
     const nextTarget = event.relatedTarget;
     if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
     setIsDragOverComposer(false);
   };
 
+  /** Appends reference links to the end of the prompt, or explains why the composer is blocked. */
+  const appendComposerReferences = (links: ReadonlyArray<string>, errorTitle: string): boolean => {
+    if (
+      links.length === 0 ||
+      isConnecting ||
+      isComposerApprovalState ||
+      isPendingTurnDispatchBlocked ||
+      blockingUserInputs.length > 0
+    ) {
+      toastManager.add({ type: "error", title: errorTitle });
+      return false;
+    }
+    const current = promptRef.current;
+    return applyPromptReplacement(
+      current.length,
+      current.length,
+      `${current && !/\s$/.test(current) ? " " : ""}${links.join(" ")} `,
+    );
+  };
+
   const onComposerFileMentionDropCapture = (event: React.DragEvent<HTMLDivElement>) => {
+    if (hasThreadReferenceDrag(event.dataTransfer.types)) {
+      claimFileTreeMentionDrag(event);
+      dragDepthRef.current = 0;
+      setIsDragOverComposer(false);
+      const errorTitle = "Unable to add the thread reference to chat.";
+      const dragged = readThreadReferenceDrag(event.dataTransfer);
+      if (!dragged) {
+        toastManager.add({ type: "error", title: errorTitle });
+        return;
+      }
+      const existing = referencedThreadIds([promptRef.current]);
+      const candidates = dragged.filter(
+        (item, index) =>
+          item.threadId !== threadId &&
+          !existing.includes(item.threadId) &&
+          dragged.findIndex((other) => other.threadId === item.threadId) === index,
+      );
+      if (candidates.length === 0) {
+        if (dragged.some((item) => item.threadId === threadId))
+          toastManager.add({ type: "info", title: "A thread can't reference itself." });
+        return;
+      }
+      const room = Math.max(0, THREAD_REFERENCE_MAX_PER_MESSAGE - existing.length);
+      const accepted = candidates.slice(0, room);
+      const state = useStore.getState();
+      const links = accepted.map((item) =>
+        formatThreadReference({
+          threadId: item.threadId,
+          title: selectThreadById(state, item.threadId as ThreadId)?.title ?? item.title,
+          scheme: promptLinkScheme,
+        }),
+      );
+      if (accepted.length > 0 && !appendComposerReferences(links, errorTitle)) return;
+      if (accepted.length < candidates.length)
+        toastManager.add({
+          type: "warning",
+          title: `Up to ${THREAD_REFERENCE_MAX_PER_MESSAGE} thread references per message.`,
+        });
+      return;
+    }
     if (hasPullRequestReferenceDrag(event.dataTransfer.types)) {
       claimFileTreeMentionDrag(event);
       dragDepthRef.current = 0;
       setIsDragOverComposer(false);
       const reference = readPullRequestReferenceDrag(event.dataTransfer);
-      if (
-        !reference ||
-        isConnecting ||
-        isComposerApprovalState ||
-        isPendingTurnDispatchBlocked ||
-        blockingUserInputs.length > 0
-      ) {
-        toastManager.add({ type: "error", title: "Unable to add the PR reference to chat." });
-        return;
-      }
-      const current = promptRef.current;
-      applyPromptReplacement(
-        current.length,
-        current.length,
-        `${current && !/\s$/.test(current) ? " " : ""}${reference} `,
+      appendComposerReferences(
+        reference ? [reference] : [],
+        "Unable to add the PR reference to chat.",
       );
       return;
     }
-    if (
-      !dataTransferHasFileTreeMention(event.dataTransfer.types) &&
-      !hasPullRequestReferenceDrag(event.dataTransfer.types)
-    )
-      return;
+    if (!dataTransferHasFileTreeMention(event.dataTransfer.types)) return;
     const payload = readFileTreeDragMention(event.dataTransfer);
     claimFileTreeMentionDrag(event);
     dragDepthRef.current = 0;
@@ -5531,7 +5583,7 @@ export default memo(function ChatView({
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
     const outgoingMessageText = messageTextForSend || IMAGE_ONLY_BOOTSTRAP_PROMPT;
-    const inputLengthIssue = getProviderTurnInputLengthIssue(
+    const inputLengthIssue = getMessageTextLengthIssue(
       outgoingMessageText,
       sendLimits.maxInputChars,
     );
@@ -6038,7 +6090,7 @@ export default memo(function ChatView({
           providerSkills: selectedProviderSnapshot?.skills,
         },
       );
-      const inputLengthIssue = getProviderTurnInputLengthIssue(
+      const inputLengthIssue = getMessageTextLengthIssue(
         outgoingMessageText,
         getServerSendLimits().maxInputChars,
       );
@@ -6235,7 +6287,7 @@ export default memo(function ChatView({
     const planMarkdown = activeProposedPlan.planMarkdown;
     const implementationPrompt = buildPlanImplementationPrompt(planMarkdown);
     const outgoingImplementationPrompt = implementationPrompt;
-    const inputLengthIssue = getProviderTurnInputLengthIssue(
+    const inputLengthIssue = getMessageTextLengthIssue(
       outgoingImplementationPrompt,
       getServerSendLimits().maxInputChars,
     );

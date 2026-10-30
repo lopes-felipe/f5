@@ -3974,3 +3974,97 @@ it.effect(
       ]);
     }).pipe(Effect.provide(makeProjectionPipelineTestLayer(process.cwd()))),
 );
+
+it.effect("writes thread reference grants only for explicitly human-stamped messages", () =>
+  Effect.gen(function* () {
+    const projectionPipeline = yield* OrchestrationProjectionPipeline;
+    const eventStore = yield* OrchestrationEventStore;
+    const sql = yield* SqlClient.SqlClient;
+    const now = new Date().toISOString();
+    const threadId = ThreadId.makeUnsafe("grant-thread");
+    const base = (id: string) => ({
+      eventId: EventId.makeUnsafe(`evt-${id}`),
+      occurredAt: now,
+      causationEventId: null,
+      correlationId: CommandId.makeUnsafe(`cmd-${id}`),
+      metadata: {},
+    });
+    yield* eventStore.append({
+      ...base("project"),
+      type: "project.created",
+      aggregateKind: "project",
+      aggregateId: ProjectId.makeUnsafe("grant-project"),
+      commandId: CommandId.makeUnsafe("cmd-project"),
+      payload: {
+        projectId: ProjectId.makeUnsafe("grant-project"),
+        title: "Project",
+        workspaceRoot: "/tmp/grant-project",
+        defaultModel: null,
+        scripts: [],
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    yield* eventStore.append({
+      ...base("thread"),
+      type: "thread.created",
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      commandId: CommandId.makeUnsafe("cmd-thread"),
+      payload: {
+        threadId,
+        projectId: ProjectId.makeUnsafe("grant-project"),
+        title: "Thread",
+        model: "gpt-5-codex",
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    // Each projector catches up on its own, so the thread row must exist before messages project.
+    yield* projectionPipeline.bootstrap;
+    const refs =
+      "[Self](f5://thread/grant-thread) [Source](f5://thread/source) [Other](f5-dev://thread/other)";
+    const stamps = [
+      ["human", "human"],
+      ["bot", "automation"],
+      ["unstamped", null],
+    ] as const;
+    for (const [id, source] of stamps) {
+      const commandId = CommandId.makeUnsafe(`cmd-${id}`);
+      if (source)
+        yield* sql`INSERT INTO provider_submission_provenance(command_id, thread_id, source, created_at)
+          VALUES(${commandId}, ${threadId}, ${source}, ${now})`;
+      yield* eventStore.append({
+        ...base(id),
+        type: "thread.message-sent",
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        commandId,
+        payload: {
+          threadId,
+          messageId: MessageId.makeUnsafe(`message-${id}`),
+          role: "user",
+          text: `Use ${refs}`,
+          turnId: null,
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+    }
+    yield* projectionPipeline.bootstrap;
+    assert.deepStrictEqual(
+      yield* sql`SELECT thread_id, target_thread_id, message_id FROM thread_reference_grants ORDER BY target_thread_id`,
+      [
+        { thread_id: "grant-thread", target_thread_id: "other", message_id: "message-human" },
+        { thread_id: "grant-thread", target_thread_id: "source", message_id: "message-human" },
+      ],
+    );
+    // Purging the thread cascades to its grants.
+    yield* sql`DELETE FROM projection_threads WHERE thread_id = ${threadId}`;
+    assert.deepStrictEqual(yield* sql`SELECT * FROM thread_reference_grants`, []);
+  }).pipe(Effect.provide(makeProjectionPipelineTestLayer(process.cwd()))),
+);

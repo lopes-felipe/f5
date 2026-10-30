@@ -58,7 +58,12 @@ import {
 import { Cause, Effect, Layer, Option, Schema, Scope, Stream } from "effect";
 import { makeBackgroundWorker } from "../../backgroundWorker.ts";
 import { estimateMessageContextCharacters, inferProviderForModel } from "@t3tools/shared/model";
-import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
+import {
+  getMessageTextLengthIssue,
+  getProviderTurnInputLengthIssue,
+} from "@t3tools/shared/providerInput";
+import { threadReferencesToLabels } from "@t3tools/shared/threadReferences";
+import { projectProviderInput } from "../threadReferenceGrants.ts";
 import {
   areProviderModelOptionsEqual,
   areProviderStartOptionsEqual,
@@ -1259,6 +1264,8 @@ const make = Effect.gen(function* () {
     readonly deliveryId?: CommandId;
     readonly continuationRequestId?: string;
     readonly messageText: string;
+    /** The text the provider receives: the stored text plus any referenced-thread block. */
+    readonly providerInput: string;
     readonly submissionSource?: "human" | "automation";
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly provider?: ProviderKind;
@@ -1296,7 +1303,7 @@ const make = Effect.gen(function* () {
       return yield* providerService.sendTurn({
         threadId: input.threadId,
         continuationRequestId: input.continuationRequestId,
-        input: input.messageText,
+        input: input.providerInput,
         ...(input.deliveryId ? { deliveryId: input.deliveryId } : {}),
         submissionSource: "automation",
         ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
@@ -1356,7 +1363,7 @@ const make = Effect.gen(function* () {
         : {}),
       ...(input.submissionSource === "automation" ? { unattended: true } : {}),
     });
-    const normalizedInput = toNonEmptyProviderInput(input.messageText);
+    const normalizedInput = toNonEmptyProviderInput(input.providerInput);
     const normalizedAttachments = input.attachments ?? [];
     const activeSession = yield* providerService
       .listSessions()
@@ -1636,10 +1643,11 @@ const make = Effect.gen(function* () {
     const cwd = resolveThreadWorkspaceCwd({ thread, projects: readModel.projects });
     const explicitContext = formatThreadTitleRegenerationContext(thread.messages);
     const firstUserMessage = thread.messages.find((message) => message.role === "user");
-    const titleSourceText =
+    const titleSourceText = threadReferencesToLabels(
       event.payload.origin !== "first-turn"
         ? explicitContext.text
-        : (event.payload.titleSourceText ?? firstUserMessage?.text ?? "").trim();
+        : (event.payload.titleSourceText ?? firstUserMessage?.text ?? ""),
+    ).trim();
     const attachments =
       event.payload.origin !== "first-turn"
         ? explicitContext.attachments
@@ -1823,7 +1831,24 @@ const make = Effect.gen(function* () {
             Effect.provideService(SqlClient.SqlClient, sqlOption.value),
           )
         : undefined;
+    // A native continuation's fixed prompt carries no references, so it skips reference work.
+    const providerInput =
+      event.type === "thread.turn-start-requested" && event.payload.continuationRequestId
+        ? message.text
+        : projectProviderInput({
+            text: message.text,
+            submissionSource,
+            readModel: yield* orchestrationEngine.getReadModel(),
+            threadId: thread.id,
+          });
     if (event.type === "thread.turn-steer-requested") {
+      const steerInputLengthIssue = getProviderTurnInputLengthIssue(providerInput);
+      if (steerInputLengthIssue)
+        return yield* new ProviderTurnDeliveryError({
+          certainty: "not_sent",
+          retryable: false,
+          detail: steerInputLengthIssue.message,
+        });
       const project = (yield* orchestrationEngine.getReadModel()).projects.find(
         (entry) => entry.id === thread.projectId,
       );
@@ -1862,13 +1887,14 @@ const make = Effect.gen(function* () {
         ...(event.payload.expectedSessionGeneration !== undefined
           ? { expectedSessionGeneration: event.payload.expectedSessionGeneration }
           : {}),
-        input: message.text,
+        input: providerInput,
         attachments: message.attachments ?? [],
         interactionMode: event.payload.interactionMode,
       });
     }
 
-    const inputLengthIssue = getProviderTurnInputLengthIssue(message.text);
+    const inputLengthIssue =
+      getMessageTextLengthIssue(message.text) ?? getProviderTurnInputLengthIssue(providerInput);
     if (inputLengthIssue) {
       yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
@@ -1890,7 +1916,7 @@ const make = Effect.gen(function* () {
       branch: thread.branch,
       worktreePath: thread.worktreePath,
       messageId: message.id,
-      messageText: message.text,
+      messageText: threadReferencesToLabels(message.text),
       ...(submissionSource ? { submissionSource } : {}),
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
     });
@@ -1898,8 +1924,9 @@ const make = Effect.gen(function* () {
     yield* maybeRequestThreadTitleForFirstTurn({
       threadId: event.payload.threadId,
       messageId: message.id,
-      titleSourceText:
+      titleSourceText: threadReferencesToLabels(
         event.payload.titleSourceText !== undefined ? event.payload.titleSourceText : message.text,
+      ),
       ...(event.payload.titleGenerationModel !== undefined
         ? { titleGenerationModel: event.payload.titleGenerationModel }
         : {}),
@@ -1926,6 +1953,7 @@ const make = Effect.gen(function* () {
       threadId: event.payload.threadId,
       ...(event.commandId !== null ? { deliveryId: event.commandId } : {}),
       messageText: message.text,
+      providerInput,
       ...(submissionSource ? { submissionSource } : {}),
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
       ...(event.payload.provider !== undefined ? { provider: event.payload.provider } : {}),
