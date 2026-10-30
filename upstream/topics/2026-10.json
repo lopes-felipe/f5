@@ -10706,11 +10706,22 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-28T20:58:22.504Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-30T00:15:42.609Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/components/ProjectScriptsControl.tsx:138",
+          "apps/web/src/keybindings.ts:58",
+          "apps/web/src/components/settings/KeybindingEditor.tsx:358"
+        ],
+        "f5Refs": [
+          "4f197bc8b09dbcb6f1b84c259fd1135a68cbdca1"
+        ]
+      },
       "id": "pr-15972",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "settings",
