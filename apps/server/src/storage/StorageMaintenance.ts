@@ -1,4 +1,5 @@
 import { assertScheduledThreadPurgeable, purgeThreadRows } from "./threadPurgePolicy.ts";
+import { removeScratchThreadFolder } from "../project/scratchFolderCleanup.ts";
 import {
   retainedWorkflowThreadIds as workflowRetention,
   workflowEntries,
@@ -46,6 +47,8 @@ import { captureStorageActivity, type StorageActivitySnapshot } from "./storageA
 
 import {
   type CheckpointRef,
+  type ProjectId,
+  type ProjectKind,
   CommandId,
   type DiskSpaceReclaimableItem,
   type StorageCleanupCategoryId,
@@ -304,7 +307,7 @@ export class StorageMaintenance extends ServiceMap.Service<
 
 interface ThreadRow {
   readonly threadId: ThreadId;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly title: string;
   readonly lastInteractionAt: string;
   readonly projectName: string | null;
@@ -312,6 +315,8 @@ interface ThreadRow {
   readonly archivedAt: string | null;
   readonly deletedAt: string | null;
   readonly workspaceRoot: string | null;
+  readonly projectKind: ProjectKind | null;
+  readonly scratchPath: string | null;
 }
 
 interface OrphanAttachmentRow {
@@ -864,6 +869,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
         thread.last_interaction_at AS "lastInteractionAt",
         project.title AS "projectName",
         thread.worktree_path AS "worktreePath",
+        thread.scratch_path AS "scratchPath",
+        project.kind AS "projectKind",
         thread.archived_at AS "archivedAt",
         thread.deleted_at AS "deletedAt",
         project.workspace_root AS "workspaceRoot"
@@ -3286,6 +3293,45 @@ const makeStorageMaintenance = Effect.gen(function* () {
                         operation: "purge.recheck",
                         message: finalBlock ?? "Provider became busy.",
                       });
+                    if (thread.projectKind === "scratch" || thread.scratchPath) {
+                      const readModel = yield* engine.getReadModel();
+                      const cleanup = yield* Effect.tryPromise({
+                        try: () =>
+                          removeScratchThreadFolder({
+                            readModel,
+                            threadId: thread.threadId,
+                            persisted: {
+                              thread: {
+                                id: thread.threadId,
+                                projectId: thread.projectId,
+                                scratchPath: thread.scratchPath,
+                                deletedAt: thread.deletedAt,
+                                archivedAt: thread.archivedAt,
+                              },
+                              project: thread.workspaceRoot
+                                ? {
+                                    id: thread.projectId,
+                                    kind: thread.projectKind ?? "standard",
+                                    workspaceRoot: thread.workspaceRoot,
+                                  }
+                                : undefined,
+                            },
+                            allowArchived: true,
+                          }),
+                        catch: (cause) =>
+                          new StorageMaintenanceError({
+                            operation: "purge.scratchFolder",
+                            message: String(cause),
+                          }),
+                      });
+                      if (cleanup.kind === "refused") {
+                        return yield* new StorageMaintenanceError({
+                          operation: "purge.scratchFolder",
+                          message: cleanup.reason,
+                        });
+                      }
+                      if (cleanup.kind === "removed") markStorageMutation(request.operationId);
+                    }
                     const transactionExit = yield* Effect.exit(
                       sql.withTransaction(
                         Effect.gen(function* () {

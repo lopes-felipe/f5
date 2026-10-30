@@ -5,6 +5,9 @@ import * as Path from "node:path";
 import type { OrchestrationEvent, OrchestrationReadModel } from "@t3tools/contracts";
 import { Effect, Exit, Queue, Scope, Stream } from "effect";
 import { afterEach, expect, it, vi } from "vitest";
+import { it as effectIt } from "@effect/vitest";
+import { TestClock } from "effect/testing";
+import { removeScratchThreadFolder } from "../project/scratchFolderCleanup.ts";
 
 import { startScratchFolderCleanupReactor } from "./scratchFolderCleanupReactor.ts";
 import type { OrchestrationEngineShape } from "./Services/OrchestrationEngine.ts";
@@ -73,6 +76,165 @@ it("removes a deleted thread's own scratch folder", async () => {
   );
   expect(FS.existsSync(kept)).toBe(true);
 });
+
+it("recovers a deletion missed while the server was down", async () => {
+  const { root, folder, thread } = fixture();
+  const mine = folder("missed-12345678");
+  await run(
+    {
+      projects: [{ id: "scratch", kind: "scratch", workspaceRoot: root }],
+      threads: [thread("gone", mine, "2026-10-23T10:00:00Z")],
+    },
+    [],
+    () => !FS.existsSync(mine),
+  );
+});
+
+it("refuses symlinks, keeps archived folders, and permits authorized archived purges", async () => {
+  const { root, folder, thread } = fixture();
+  const mine = folder("archive-12345678");
+  const link = Path.join(root, "linked-12345678");
+  FS.symlinkSync(mine, link, "dir");
+  const model = {
+    projects: [{ id: "scratch", kind: "scratch", workspaceRoot: root }],
+    threads: [
+      { ...thread("archive", mine, null), archivedAt: "2026-10-23T10:00:00Z" },
+      thread("link", link, "2026-10-23T10:00:00Z"),
+    ],
+  } as unknown as OrchestrationReadModel;
+  expect(
+    await removeScratchThreadFolder({ readModel: model, threadId: "link" as never }),
+  ).toMatchObject({ kind: "refused" });
+  expect(
+    await removeScratchThreadFolder({ readModel: model, threadId: "archive" as never }),
+  ).toMatchObject({ kind: "refused" });
+  expect(FS.existsSync(mine)).toBe(true);
+  expect(
+    await removeScratchThreadFolder({
+      readModel: model,
+      threadId: "archive" as never,
+      allowArchived: true,
+    }),
+  ).toEqual({ kind: "removed" });
+  expect(
+    await removeScratchThreadFolder({
+      readModel: model,
+      threadId: "archive" as never,
+      allowArchived: true,
+    }),
+  ).toEqual({ kind: "missing" });
+});
+
+const advanceUntil = (ready: () => boolean) =>
+  Effect.gen(function* () {
+    for (let i = 0; i < 1_000 && !ready(); i++) {
+      yield* TestClock.adjust("100 millis");
+      yield* Effect.promise(() => new Promise((resolve) => setImmediate(resolve)));
+    }
+    expect(ready()).toBe(true);
+  });
+
+it("uses retained SQL metadata without overriding current thread, project, or live ownership", async () => {
+  const { root, folder, thread } = fixture();
+  const mine = folder("retained-12345678");
+  const persisted = {
+    thread: { ...thread("gone", mine, "2026-10-23T10:00:00Z"), archivedAt: null },
+    project: { id: "scratch", kind: "scratch", workspaceRoot: root },
+  } as unknown as NonNullable<Parameters<typeof removeScratchThreadFolder>[0]["persisted"]>;
+  const cleanup = (threads: unknown[], projects: unknown[] = []) =>
+    removeScratchThreadFolder({
+      readModel: { threads, projects } as unknown as OrchestrationReadModel,
+      threadId: persisted.thread.id,
+      persisted,
+    });
+  expect(await cleanup([thread("other-owner", mine, null)])).toEqual({
+    kind: "refused",
+    reason: "Another live thread owns the folder.",
+  });
+  expect(await cleanup([thread("gone", mine, null)])).toEqual({
+    kind: "refused",
+    reason: "The thread is still live.",
+  });
+  expect(await cleanup([], [{ ...persisted.project, kind: "standard" }])).toMatchObject({
+    kind: "refused",
+  });
+  expect(FS.existsSync(mine)).toBe(true);
+  expect(await cleanup([])).toEqual({ kind: "removed" });
+  expect(FS.existsSync(mine)).toBe(false);
+});
+
+effectIt.effect("retries transient failures and deduplicates concurrent deletion events", () =>
+  Effect.gen(function* () {
+    const { root, folder, thread } = fixture();
+    const mine = folder("retry-12345678");
+    const model = {
+      projects: [{ id: "scratch", kind: "scratch", workspaceRoot: root }],
+      threads: [thread("gone", mine, "2026-10-23T10:00:00Z")],
+    };
+    const events = yield* Queue.unbounded<OrchestrationEvent>();
+    let reads = 0;
+    const engine = {
+      getReadModel: () =>
+        Effect.sync(() => {
+          reads++;
+          return model as unknown as OrchestrationReadModel;
+        }),
+      streamDomainEvents: Stream.fromQueue(events),
+    } as unknown as OrchestrationEngineShape;
+    let calls = 0;
+    yield* startScratchFolderCleanupReactor(engine, async (path) => {
+      calls++;
+      if (calls === 1) throw new Error("EBUSY");
+      FS.rmSync(path, { recursive: true, force: true });
+    });
+    for (let i = 0; i < 5; i++)
+      yield* Queue.offer(events, {
+        type: "thread.deleted",
+        payload: { threadId: "gone" },
+      } as unknown as OrchestrationEvent);
+    yield* advanceUntil(() => !FS.existsSync(mine));
+    expect(calls).toBe(2);
+    expect(reads).toBeGreaterThanOrEqual(3);
+  }).pipe(Effect.scoped),
+);
+
+effectIt.effect(
+  "retains deleted metadata after retry exhaustion and cancels waits with the scope",
+  () =>
+    Effect.gen(function* () {
+      const { root, folder, thread } = fixture();
+      const mine = folder("exhaust-12345678");
+      const model = {
+        projects: [{ id: "scratch", kind: "scratch", workspaceRoot: root }],
+        threads: [thread("gone", mine, "2026-10-23T10:00:00Z")],
+      };
+      const engine = {
+        getReadModel: () => Effect.succeed(model as unknown as OrchestrationReadModel),
+        streamDomainEvents: Stream.never,
+      } as unknown as OrchestrationEngineShape;
+      let calls = 0;
+      const scope = yield* Scope.make("sequential");
+      yield* startScratchFolderCleanupReactor(engine, async () => {
+        calls++;
+        throw new Error("EBUSY");
+      }).pipe(Scope.provide(scope));
+      yield* advanceUntil(() => calls === 4);
+      yield* TestClock.adjust("1 minute");
+      expect(calls).toBe(4);
+      expect(FS.existsSync(mine)).toBe(true);
+      expect(model.threads).toHaveLength(1);
+      yield* Scope.close(scope, Exit.void);
+      const nextScope = yield* Scope.make("sequential");
+      yield* startScratchFolderCleanupReactor(engine, async () => {
+        calls++;
+        throw new Error("EBUSY");
+      }).pipe(Scope.provide(nextScope));
+      yield* advanceUntil(() => calls === 5);
+      yield* Scope.close(nextScope, Exit.void);
+      yield* TestClock.adjust("1 minute");
+      expect(calls).toBe(5);
+    }).pipe(Effect.scoped),
+);
 
 it("leaves folders it does not own as a deleted thread's own", async () => {
   const { root, folder, thread } = fixture();
