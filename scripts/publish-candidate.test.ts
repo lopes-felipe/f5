@@ -386,6 +386,19 @@ describe("publisher integration with immutable platform fixtures", () => {
     expect(state.draft).toBe(true);
     expect(state.writes.some((write) => write.includes("--draft=false"))).toBe(false);
   });
+  it("checks certification after the final gate refreshes main's evidence snapshot", async () => {
+    const { candidate, directory } = await candidateFixture();
+    await assembleCandidate(candidate, directory);
+    let gates = 0;
+    await expect(
+      publishCandidate(candidate, directory, () => {
+        if (++gates === 2) state.certification = true;
+      }),
+    ).rejects.toThrow("acceptance");
+    expect(gates).toBe(2);
+    expect(state.draft).toBe(true);
+    expect(state.writes.some((write) => write.includes("--draft=false"))).toBe(false);
+  });
   it("publishes the exact requalification key and run with the unchanged candidate provenance", async () => {
     const { candidate, directory } = await candidateFixture();
     const qualification = {

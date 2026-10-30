@@ -315,6 +315,9 @@ export async function publishCandidate(
     gh(["release", "upload", tag, join(directory, name), "--repo", repository]);
   release = api<RemoteRelease>("releases/" + release.id);
   if (missingUploads(files, release.assets).length) throw new Error("Release upload incomplete");
+  // The gate refreshes origin/main. Check certification against that same final
+  // evidence snapshot, including an acceptance-only merge during the upload.
+  beforePublish();
   const problems = promotionProblems(tag, {
     show,
     commitOf: () => candidate.sourceSha,
@@ -342,7 +345,6 @@ export async function publishCandidate(
       .filter((r) => !r.draft && /^v\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(r.tag_name))
       .map((r) => r.tag_name.slice(1)),
   );
-  beforePublish();
   gh([
     "release",
     "edit",
