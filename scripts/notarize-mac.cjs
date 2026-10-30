@@ -3,6 +3,7 @@ const { mkdtempSync, rmSync } = require("node:fs");
 const { tmpdir } = require("node:os");
 const { basename, dirname, join } = require("node:path");
 const verifyComputerHelper = require("./verify-computer-helper.cjs").default;
+const { verifyClaudeRuntime } = require("./verify-claude-runtime.cjs");
 
 // Apple's notary and ticket services drop connections from CI runners (NSURLErrorDomain
 // -1005), and @electron/notarize retries stapling for only a few seconds.
@@ -97,5 +98,6 @@ exports.default = async (context) => {
   await verifyComputerHelper(context);
   if (context.electronPlatformName !== "darwin") return;
   const app = join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`);
+  verifyClaudeRuntime(context);
   await notarizeAndStaple(app, process.env);
 };

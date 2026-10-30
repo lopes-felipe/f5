@@ -2,7 +2,16 @@ import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 
 type RunResult = { status: number | null; stdout: string };
-type Run = (command: string, args: string[], options?: { cwd?: string }) => RunResult;
+type Run = (
+  command: string,
+  args: string[],
+  options?: {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    timeout?: number;
+    killSignal?: NodeJS.Signals;
+  },
+) => RunResult;
 const require = createRequire(import.meta.url);
 const { notarizeAndStaple } = require("./notarize-mac.cjs") as {
   notarizeAndStaple(
