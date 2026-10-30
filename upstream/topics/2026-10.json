@@ -45958,11 +45958,21 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
-      "decidedAt": "2026-10-30T00:20:18.818Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-30T00:52:20.317Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/project/ProjectCloneTracker.ts:21",
+          "apps/server/src/project/ProjectCloneTracker.ts:213"
+        ],
+        "f5Refs": [
+          "4f197bc8b09dbcb6f1b84c259fd1135a68cbdca1"
+        ]
+      },
       "id": "pr-24698",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "git",
@@ -49257,11 +49267,21 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
-      "decidedAt": "2026-10-30T00:20:18.818Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-30T00:52:20.317Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/git/worktreePaths.ts:10",
+          "apps/server/src/git/Layers/GitCore.ts:2511"
+        ],
+        "f5Refs": [
+          "4f197bc8b09dbcb6f1b84c259fd1135a68cbdca1"
+        ]
+      },
       "id": "pr-25212",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "worktrees",
