@@ -12,9 +12,15 @@ on:
       channel:
         type: string
         required: true
+      bundle:
+        type: string
+        default: ""
+        description: Existing compiled Windows bundles from the candidate build
   pull_request:
     paths:
-      - .github/workflows/release.yml
+      - .github/workflows/release*.yml
+      - .github/actions/release-desktop/**
+      - .github/actions/setup/**
       - .github/workflows/windows-release-checks.yml
       - apps/desktop/**
       - apps/server/package.json
@@ -30,26 +36,33 @@ on:
       - scripts/build-desktop-artifact.ts
       - scripts/cli-archive-smoke.ts
       - scripts/lib/**
+      - scripts/release/**
+      - scripts/cli-*.ts
+      - scripts/*candidate*.ts
+      - scripts/*upgrade*.ts
+      - scripts/record-release*.ts
+      - scripts/retry-install.ts
       - scripts/update-release-package-versions.ts
       - scripts/verify-staged-lockfile.ts
       - scripts/windows-update-rehearsal.ts
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 concurrency:
   # PR updates cancel obsolete checks; release callers and manual runs remain independent.
   group: windows-release-checks-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   cli:
+    if: inputs.version == ''
     strategy:
       fail-fast: false
       matrix:
         include:
           - { os: windows-latest, target: win32-x64 }
-          # Bun 1.3.9 has no Windows ARM64 build; its emulated x64 build segfaults
-          # during install. 1.3.10 is the first release with a native ARM64 build.
-          - { os: windows-11-arm, target: win32-arm64, bun: 1.3.11 }
+          # Shared setup applies the checked-in native ARM64 Bun exception.
+          - { os: windows-11-arm, target: win32-arm64 }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     defaults:
@@ -60,17 +73,11 @@ jobs:
     steps:
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24.13.1
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: ${{ matrix.bun || '1.3.9' }}
+      - uses: ./.github/actions/setup
       - id: meta
         env:
           INPUT_VERSION: ${{ inputs.version }}
-        run: echo "version=${INPUT_VERSION:-$(node -p 'require("./apps/desktop/package.json").version.split("-")[0]')-check.$GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
-      - run: bun install --frozen-lockfile
+        run: echo "version=${INPUT_VERSION:-$(node -p 'require("./apps/desktop/package.json").version.split("-")[0].split(".").map((n,i)=>Number(n)+(i===2?1:0)).join(".")')-check.$GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
       - id: runtime
         run: echo "version=$(node --input-type=module -e 'import { CLI_NODE_VERSION } from "./scripts/build-cli-archive.ts"; console.log(CLI_NODE_VERSION)')" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v4
@@ -101,27 +108,38 @@ jobs:
     steps:
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24.13.1
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: 1.3.9
+      - uses: ./.github/actions/setup
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-      - run: bun install --frozen-lockfile
       - id: versions
         env:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           version="${INPUT_VERSION:-$(node -p 'require("./apps/desktop/package.json").version.split("-")[0]')-check.$GITHUB_RUN_NUMBER}"
           VERSION="$version" node --input-type=module -e 'import { rehearsalVersions } from "./scripts/lib/update-rehearsal.ts"; const v = rehearsalVersions(process.env.VERSION, process.env.CHANNEL); console.log(`baseline=${v.baseline}\ntarget=${v.target}`)' >> "$GITHUB_OUTPUT"
+      - if: inputs.bundle != ''
+        id: bundle
+        run: node scripts/resolve-candidate-artifact.ts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_ARTIFACT: ${{ inputs.bundle }}
+      - if: inputs.bundle != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.bundle.outputs.name }}
+          path: compiled-bundles
+      - if: inputs.bundle != ''
+        run: tar -xzf compiled-bundles/windows-bundles.tar.gz
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: apps/desktop/native/windows -> target
       - name: Build unpublished baseline and target installers
         env:
           BASELINE: ${{ steps.versions.outputs.baseline }}
           TARGET: ${{ steps.versions.outputs.target }}
+          COMPILED_BUNDLE: ${{ inputs.bundle }}
         run: |
           node scripts/update-release-package-versions.ts "$BASELINE"
-          bun run build:desktop
+          if [[ -z "$COMPILED_BUNDLE" ]]; then bun run build:desktop; fi
           for version in "$BASELINE" "$TARGET"; do
             node scripts/build-desktop-artifact.ts --skip-build --platform win --arch x64 --target nsis --build-version "$version" --output-dir "rehearsal/$version"
           done
@@ -137,6 +155,6 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-update-rehearsal-logs
+          name: windows-update-rehearsal-logs-attempt-${{ github.run_attempt }}
           path: rehearsal-logs/**
           if-no-files-found: ignore

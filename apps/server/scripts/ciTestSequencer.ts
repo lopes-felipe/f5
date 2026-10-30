@@ -9,13 +9,19 @@ export class DurationSequencer extends BaseSequencer {
   }
 
   private durations() {
-    return timings.platforms[process.platform as keyof typeof timings.platforms]?.durationsMs ?? {};
+    // macOS has no measured ledger yet. Linux weights preserve known expensive
+    // files while the new Mac shards collect their first native timing reports.
+    return (
+      timings.platforms[process.platform as keyof typeof timings.platforms]?.durationsMs ??
+      (process.platform === "darwin" ? timings.platforms.linux.durationsMs : {})
+    );
   }
 
   override async shard(files: TestSpecification[]): Promise<TestSpecification[]> {
     const shard = this.ctx.config.shard;
     if (!shard) return files;
-    if (!timings.enabled) return super.shard(files);
+    if (!timings.enabled && process.env.F5_CI_DURATION_SHARDING !== "true")
+      return super.shard(files);
     const selected = new Set(
       allocateShards(
         files.map((file) => this.key(file)),
@@ -28,7 +34,11 @@ export class DurationSequencer extends BaseSequencer {
 
   override async sort(files: TestSpecification[]): Promise<TestSpecification[]> {
     // Keep Vitest's cache-aware ordering for local runs and the full macOS suite.
-    if (!this.ctx.config.shard || !timings.enabled) return super.sort(files);
+    if (
+      !this.ctx.config.shard ||
+      (!timings.enabled && process.env.F5_CI_DURATION_SHARDING !== "true")
+    )
+      return super.sort(files);
     const order = new Map(
       sortByDuration(
         files.map((file) => this.key(file)),

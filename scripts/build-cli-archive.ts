@@ -181,7 +181,11 @@ export async function buildCliArchive(options: {
     );
     // Resolve without executing package scripts, then verify every version and integrity
     // against the repository lock before installing the immutable dependency closure.
-    run("bun", ["install", "--lockfile-only", "--ignore-scripts"], stage);
+    run(
+      process.execPath,
+      [path.join(repo, "scripts/retry-install.ts"), "--lockfile-only", "--ignore-scripts"],
+      stage,
+    );
     const runtimeLock = ts.parseConfigFileTextToJson(
       "bun.lock",
       await fs.readFile(path.join(stage, "bun.lock"), "utf8"),
@@ -192,7 +196,17 @@ export async function buildCliArchive(options: {
     for (const entry of Object.values(runtimeLock.packages))
       if (!approved.has(JSON.stringify([entry[0], entry.at(-1)])))
         throw new Error(`Native dependency is absent from the repository lock: ${entry[0]}`);
-    run("bun", ["install", "--production", "--frozen-lockfile", "--linker", "hoisted"], stage);
+    run(
+      process.execPath,
+      [
+        path.join(repo, "scripts/retry-install.ts"),
+        "--production",
+        "--frozen-lockfile",
+        "--linker",
+        "hoisted",
+      ],
+      stage,
+    );
     if (process.platform !== "win32") {
       for (const helper of [
         "build/Release/spawn-helper",

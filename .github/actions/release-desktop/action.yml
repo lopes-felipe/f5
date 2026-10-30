@@ -1,0 +1,125 @@
+name: Package desktop candidate
+description: Package and verify the shipping desktop from compiled bundles
+inputs:
+  platform:
+    required: true
+    description: mac, win or linux
+  arch:
+    required: true
+    description: Target architecture
+  target:
+    required: true
+    description: Packaging target
+runs:
+  using: composite
+  steps:
+    - name: Retain compiled Windows bundles for isolated failure fixtures
+      if: inputs.platform == 'win'
+      shell: bash
+      run: tar -czf windows-bundles.tar.gz apps/desktop/dist-electron apps/server/dist
+    - if: inputs.platform == 'win'
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-bundles-attempt-${{ github.run_attempt }}
+        path: windows-bundles.tar.gz
+        retention-days: 30
+    - name: Configure Apple signing
+      shell: bash
+      id: apple-signing
+      if: inputs.platform == 'mac'
+      env:
+        CSC_LINK: ${{ env.CSC_LINK }}
+        CSC_KEY_PASSWORD: ${{ env.CSC_KEY_PASSWORD }}
+        APPLE_API_KEY_CONTENT: ${{ env.APPLE_API_KEY_CONTENT }}
+        APPLE_API_KEY_ID: ${{ env.APPLE_API_KEY_ID }}
+        APPLE_API_ISSUER: ${{ env.APPLE_API_ISSUER }}
+      run: |
+        for key in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_CONTENT APPLE_API_KEY_ID APPLE_API_ISSUER; do
+          [[ -n "${!key}" ]] || { echo "::error::Missing $key"; exit 1; }
+        done
+        key_path="$RUNNER_TEMP/f5-notarization.p8"
+        umask 077
+        printf '%s' "$APPLE_API_KEY_CONTENT" > "$key_path"
+        echo "key_path=$key_path" >> "$GITHUB_OUTPUT"
+    - name: Package signed macOS desktop
+      shell: bash
+      if: inputs.platform == 'mac'
+      env:
+        CSC_LINK: ${{ env.CSC_LINK }}
+        CSC_KEY_PASSWORD: ${{ env.CSC_KEY_PASSWORD }}
+        APPLE_API_KEY: ${{ steps.apple-signing.outputs.key_path }}
+        APPLE_API_KEY_ID: ${{ env.APPLE_API_KEY_ID }}
+        APPLE_API_ISSUER: ${{ env.APPLE_API_ISSUER }}
+      run: node scripts/build-desktop-artifact.ts --skip-build --signed --platform "$PLATFORM" --arch "$ARCH" --target "$TARGET" --build-version "$VERSION" --output-dir release-artifacts
+    - name: Package Windows desktop
+      shell: bash
+      if: inputs.platform == 'win'
+      env:
+        AZURE_TENANT_ID: ${{ env.AZURE_TENANT_ID }}
+        AZURE_CLIENT_ID: ${{ env.AZURE_CLIENT_ID }}
+        AZURE_CLIENT_SECRET: ${{ env.AZURE_CLIENT_SECRET }}
+        AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ env.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
+        AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ env.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+        AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ env.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
+        AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ env.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+      run: |
+        signed=true
+        for key in AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TRUSTED_SIGNING_PUBLISHER_NAME AZURE_TRUSTED_SIGNING_ENDPOINT AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME AZURE_TRUSTED_SIGNING_ACCOUNT_NAME; do
+          [[ -n "${!key}" ]] || signed=false
+        done
+        args=()
+        if [[ "$signed" == true ]]; then args+=(--signed); else
+          [[ "$WINDOWS_SIGNING_REQUIRED" != true ]] || { echo '::error::Windows signing credentials required'; exit 1; }
+          echo '::warning::Building Windows installer unsigned'
+        fi
+        node scripts/build-desktop-artifact.ts --skip-build --platform "$PLATFORM" --arch "$ARCH" --target "$TARGET" --build-version "$VERSION" --output-dir release-artifacts "${args[@]}"
+    - name: Package Linux desktop
+      shell: bash
+      if: inputs.platform == 'linux'
+      run: node scripts/build-desktop-artifact.ts --skip-build --platform "$PLATFORM" --arch "$ARCH" --target "$TARGET" --build-version "$VERSION" --output-dir release-artifacts
+    - name: Remove notarization key
+      shell: bash
+      if: always() && inputs.platform == 'mac'
+      run: rm -f "$RUNNER_TEMP/f5-notarization.p8"
+    - name: Verify macOS distribution
+      shell: bash
+      if: inputs.platform == 'mac'
+      run: |
+        mount="$RUNNER_TEMP/f5-dmg"
+        mkdir -p "$mount"
+        hdiutil attach "release-artifacts/F5-$VERSION-$ARCH.dmg" -mountpoint "$mount" -nobrowse
+        trap 'hdiutil detach "$mount"' EXIT
+        node -e 'const { verifyClaudeRuntime } = require("./scripts/verify-claude-runtime.cjs"); verifyClaudeRuntime({ appOutDir: process.argv[1], electronPlatformName: "darwin", packager: {appInfo:{productFilename:"F5"}} })' "$mount"
+        codesign --verify --deep --strict "$mount/F5.app"
+        # Validation fetches the ticket from Apple, so retry transient network failures.
+        for attempt in 1 2; do
+          xcrun stapler validate "$mount/F5.app" && break
+          [[ "$attempt" -lt 2 ]] || exit 1
+          sleep 15
+        done
+        spctl -a -vvv -t execute "$mount/F5.app" 2>&1 | tee "$RUNNER_TEMP/spctl.txt"
+        grep -q 'Notarized Developer ID' "$RUNNER_TEMP/spctl.txt"
+    - name: Separate Intel manifest
+      shell: bash
+      if: inputs.platform == 'mac' && inputs.arch == 'x64'
+      run: mv "release-artifacts/$CHANNEL-mac.yml" "release-artifacts/$CHANNEL-mac-x64.yml"
+    - uses: actions/upload-artifact@v4
+      with:
+        name: staged-lock-${{ inputs.platform }}-${{ inputs.arch }}-attempt-${{ github.run_attempt }}
+        path: release-artifacts/*.lock
+    - uses: actions/upload-artifact@v4
+      with:
+        name: desktop-${{ inputs.platform }}-${{ inputs.arch }}-attempt-${{ github.run_attempt }}
+        path: |
+          release-artifacts/*
+          !release-artifacts/*.lock
+          !release-artifacts/builder-debug.yml
+          !release-artifacts/builder-effective-config.yaml
+    - name: Record component provenance
+      shell: bash
+      run: node scripts/record-release-component.ts release-artifacts "desktop-$PLATFORM-$ARCH"
+    - uses: actions/upload-artifact@v4
+      with:
+        name: receipt-desktop-${{ inputs.platform }}-${{ inputs.arch }}-attempt-${{ github.run_attempt }}
+        path: component-receipt/receipt.json
+        retention-days: 30

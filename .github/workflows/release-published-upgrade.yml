@@ -1,0 +1,74 @@
+name: Published Windows upgrade
+on:
+  workflow_call:
+    inputs:
+      version: { type: string, required: true }
+      channel: { type: string, required: true }
+      baseline: { type: string, required: true }
+      baseline_channel: { type: string, required: true }
+      client_channel: { type: string, required: true }
+      source_sha: { type: string, required: true }
+      artifact: { type: string, required: true }
+      run_id: { type: number, required: true }
+permissions:
+  contents: read
+  actions: read
+jobs:
+  upgrade:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ inputs.version }}
+      CHANNEL: ${{ inputs.channel }}
+      BASELINE: ${{ inputs.baseline }}
+      BASELINE_CHANNEL: ${{ inputs.baseline_channel }}
+      CLIENT_CHANNEL: ${{ inputs.client_channel }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - id: artifact
+        run: node scripts/resolve-candidate-artifact.ts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_RUN: ${{ inputs.run_id }}
+          REQUESTED_ARTIFACT: ${{ inputs.artifact }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: published-upgrade/target
+      - run: node scripts/verify-candidate-component.ts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_RUN: ${{ inputs.run_id }}
+          ARTIFACT_NAME: ${{ steps.artifact.outputs.name }}
+          ARTIFACT_DIR: published-upgrade/target
+      - id: baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/prepare-published-windows-upgrade.ts --pinned-baseline --target "$VERSION" --channel "$CHANNEL" --baseline "$BASELINE" --client-channel "$CLIENT_CHANNEL" --target-dir published-upgrade/target --baseline-dir published-upgrade/baseline
+      - if: steps.baseline.outputs.available == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/rehearsal-node"
+          cp "$(command -v node)" "$RUNNER_TEMP/rehearsal-node/node.exe"
+          "$RUNNER_TEMP/rehearsal-node/node.exe" scripts/windows-update-rehearsal.ts --baseline-dir published-upgrade/baseline --target-dir published-upgrade/target --baseline "$BASELINE" --baseline-channel "$BASELINE_CHANNEL" --client-channel "$CLIENT_CHANNEL" --target "$VERSION" --channel "$CHANNEL" --published-baseline --log-dir rehearsal-logs
+      - run: node scripts/record-upgrade-proof.ts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: upgrade-receipt-${{ inputs.client_channel }}-attempt-${{ github.run_attempt }}
+          path: upgrade-receipt/upgrade.json
+          retention-days: 30
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-published-upgrade-${{ inputs.client_channel }}-logs-${{ github.run_attempt }}
+          path: rehearsal-logs/**
+          if-no-files-found: ignore
