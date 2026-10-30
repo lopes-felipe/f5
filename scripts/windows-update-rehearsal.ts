@@ -11,7 +11,9 @@
  * Usage: node scripts/windows-update-rehearsal.ts --baseline-dir D --target-dir D
  *   --baseline V --target V --channel latest|beta [--baseline-channel latest|beta]
  *   [--log-dir D]
- * `--channel` is the target's; a beta baseline may update to a stable target.
+ * `--channel` is the target's and `--baseline-channel` the baseline's packaged one: a
+ * beta baseline may update to a stable target, and a stable baseline with a seeded beta
+ * preference to a beta target.
  */
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import {
@@ -32,6 +34,7 @@ import { hydrateWindowsPath, readWindowsRegistryPaths } from "@t3tools/shared/wi
 import { parseAppUpdateConfig } from "./lib/app-update-config.ts";
 import {
   rehearsalAppUpdateConfig,
+  rehearsalClient,
   startUpdateFeedEmulator,
   type FeedMode,
 } from "./lib/update-rehearsal.ts";
@@ -53,11 +56,8 @@ const target = values.target!;
 const channel = values.channel!;
 if (!baseline || !target || !values["baseline-dir"] || !values["target-dir"])
   throw new Error("Usage: --baseline-dir D --target-dir D --baseline V --target V --channel C");
-if (channel !== "latest" && channel !== "beta") throw new Error(`Invalid channel: ${channel}`);
 const baselineChannel = values["baseline-channel"] ?? channel;
-// Stable clients never see betas, so only a beta baseline may change channel.
-if (baselineChannel !== channel && baselineChannel !== "beta")
-  throw new Error(`A ${baselineChannel} baseline cannot update to a ${channel} target`);
+const client = rehearsalClient(baselineChannel, channel);
 const logDir = values["log-dir"]!;
 mkdirSync(logDir, { recursive: true });
 
@@ -509,6 +509,9 @@ try {
   );
   writeFileSync(join(stateDir, "rehearsal-marker"), baseline);
   writeFileSync(join(userData, "rehearsal-marker"), baseline);
+  // A stable install that opted into betas, as a user would in Settings.
+  if (client.seedBetaPreference)
+    writeFileSync(join(userData, "update-preferences.json"), JSON.stringify({ channel: "beta" }));
 
   step(`Installing ${baseline} silently`);
   const install = spawnSync(artifact(baselineDir, baseline), ["/S"], { timeout: 300_000 });
@@ -541,10 +544,7 @@ try {
   const initial = await waitFor("renderer bridge", () => state(), 180_000);
   assert(initial.enabled, `Updates disabled: ${initial.message}`);
   assert(initial.currentVersion === baseline, `Running ${initial.currentVersion}`);
-  assert(
-    initial.channel === (baselineChannel === "beta" ? "beta" : "stable"),
-    `Channel ${initial.channel}`,
-  );
+  assert(initial.channel === client.channel, `Channel ${initial.channel}`);
   // The startup check (15 seconds after launch) runs offline first, so it cannot race the steps below.
   await waitFor(
     "the startup update check",

@@ -33,10 +33,10 @@ The Windows CLI archives and the rehearsal live in `.github/workflows/windows-re
 
 The rehearsal job updates an installer that clients already run to a build of the release commit. `scripts/rehearsal-baseline.ts` picks the baseline:
 
-- **Beta releases:** the newest published beta.
+- **Beta releases:** the newest published release of either channel. A stable install keeps the beta preference it saved before updating, so when the baseline is stable the rehearsal seeds that preference before the first launch.
 - **Stable releases:** the newest published stable. Before any stable exists, the newest beta, whose clients take stable releases from the Atom feed and fall back from `beta.yml` to `latest.yml`.
 
-It downloads that release's installer, blockmap and manifest and checks them against its `SHA256SUMS`. The target is the release version, or, for pull-request checks and dry runs, the next version on the channel above the baseline. Before any Windows release is published, both builds are unpublished: stable pairs are the base version and its next patch, and beta pairs are `<base>-beta.1` and `<base>-beta.2`. Pull requests rehearse the stable channel; run the workflow manually with `channel=beta` to rehearse a beta update. The job then runs `scripts/windows-update-rehearsal.ts` on a fresh Windows runner, which:
+It downloads that release's installer, blockmap and manifest, retrying transient GitHub failures, and checks them against its `SHA256SUMS`. Every published release that has a Windows asset but can't serve as a baseline is logged; if none can, the job fails rather than quietly rehearsing unpublished builds. The target is the release version, which must be above the baseline, or, for pull-request checks and dry runs, the next version on the channel above it. Before any Windows release is published, both builds are unpublished: stable pairs are the base version and its next patch, and beta pairs are `<base>-beta.1` and `<base>-beta.2`. Pull requests rehearse the stable channel; run the workflow manually with `channel=beta` to rehearse a beta update. The job then runs `scripts/windows-update-rehearsal.ts` on a fresh Windows runner, which:
 
 - installs the baseline silently and redirects that installation's `app-update.yml` to a loopback GitHub emulator, so the real GitHub provider code path runs;
 - renames every directory providing Node or Bun on F5's effective PATH (inherited, registry machine/user, and the known install folders F5 adds at startup), then launches the app and checks that no Node or Bun process starts;
@@ -49,6 +49,7 @@ It downloads that release's installer, blockmap and manifest and checks them aga
 What the rehearsal does **not** prove:
 
 - **Older clients:** only the newest published release on the channel is rehearsed. Clients still on older releases rely on electron-updater's compatibility.
+- **Beta clients taking a stable release, after the first stable:** stable rehearsals then start from the newest stable, so the beta client's fallback from `beta.yml` to `latest.yml` is only rehearsed before the first stable ships; the full checklist covers it manually.
 - **The shipped installer:** the target is a separate build of the release commit, not the `desktop-win-x64` artifact that ships.
 - **Signed builds:** its builds are always unsigned. When Windows signing is enabled, extend it to signed-to-signed upgrades and to rejecting unsigned or wrongly signed updates.
 

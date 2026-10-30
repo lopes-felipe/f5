@@ -1,13 +1,14 @@
 // @effect-diagnostics nodeBuiltinImport:off
 /**
- * Chooses the Windows update rehearsal pair and prints it as GitHub step outputs.
- * When a release is published on the channel, the baseline is its installer,
- * downloaded and checked against its SHA256SUMS; otherwise both builds are unpublished.
+ * Chooses the Windows update rehearsal pair and writes it as GitHub step outputs
+ * (to `$GITHUB_OUTPUT`, or stdout outside Actions). When a release is published on
+ * the channel, the baseline is its installer, downloaded and checked against its
+ * SHA256SUMS; before any Windows release is published, both builds are unpublished.
  *
  * Usage: node scripts/rehearsal-baseline.ts --version V --channel latest|beta --output-dir D
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { RELEASE_UPDATE_OWNER, RELEASE_UPDATE_REPO } from "./lib/app-update-config.ts";
@@ -32,37 +33,48 @@ if (!version || !outputDir || (channel !== "latest" && channel !== "beta"))
   throw new Error("Usage: --version V --channel latest|beta --output-dir D");
 const repository = `${RELEASE_UPDATE_OWNER}/${RELEASE_UPDATE_REPO}`;
 
+/** Runner calls to GitHub fail transiently, so each gets a few spaced attempts. */
+async function retry<T>(label: string, action: () => T): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return action();
+    } catch (error) {
+      if (attempt === 4) throw error;
+      console.warn(`${label} failed (attempt ${attempt}/4); retrying in ${attempt * 10}s`, error);
+      await new Promise((resolve) => setTimeout(resolve, attempt * 10_000));
+    }
+  }
+}
+
 function output(pair: {
   baseline: string;
   baselineChannel: RehearsalChannel;
   target: string;
   published: boolean;
 }) {
-  console.error(
+  console.log(
     `Rehearsing ${pair.published ? "published" : "unpublished"} ${pair.baseline} (${pair.baselineChannel}) → ${pair.target} (${channel})`,
   );
-  console.log(
-    `baseline=${pair.baseline}\nbaseline_channel=${pair.baselineChannel}\ntarget=${pair.target}\npublished=${pair.published}`,
-  );
+  const lines = `baseline=${pair.baseline}\nbaseline_channel=${pair.baselineChannel}\ntarget=${pair.target}\npublished=${pair.published}\n`;
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, lines);
+  else process.stdout.write(lines);
 }
 
-const baseline = selectPublishedBaseline(fetchReleaseSummaries(repository), channel);
+const releases = await retry("Listing releases", () => fetchReleaseSummaries(repository));
+const { baseline, skipped } = selectPublishedBaseline(releases, channel);
+for (const reason of skipped) console.warn(`Not a rehearsal baseline: ${reason}`);
 if (!baseline) {
   const pair = rehearsalVersions(version, channel);
   output({ ...pair, baselineChannel: channel, published: false });
 } else {
   const dir = join(outputDir, baseline.version);
   mkdirSync(dir, { recursive: true });
-  const names = [...baseline.assets, "SHA256SUMS"];
   const args = ["release", "download", baseline.tag, "-R", repository, "-D", dir, "--clobber"];
-  for (const name of names) args.push("-p", name);
-  // Runner downloads from GitHub fail transiently; stdout is reserved for step outputs.
-  for (let attempt = 1; ; attempt++) {
-    const result = spawnSync("gh", args, { stdio: ["ignore", 2, 2] });
-    if (result.status === 0) break;
-    if (attempt === 3) throw new Error(`Could not download ${baseline.tag}'s installer`);
-    console.error(`Download of ${baseline.tag} failed (attempt ${attempt}/3); retrying`);
-  }
+  for (const name of [...baseline.assets, "SHA256SUMS"]) args.push("-p", name);
+  await retry(`Downloading ${baseline.tag}`, () => {
+    const result = spawnSync("gh", args, { stdio: "inherit" });
+    if (result.status !== 0) throw new Error(`gh release download exited with ${result.status}`);
+  });
   verifyDownloadedChecksums(dir, readFileSync(join(dir, "SHA256SUMS"), "utf8"), baseline.assets);
   output({
     baseline: baseline.version,

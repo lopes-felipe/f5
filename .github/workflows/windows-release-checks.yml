@@ -125,7 +125,7 @@ jobs:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           version="${INPUT_VERSION:-$(node -p 'require("./apps/desktop/package.json").version.split("-")[0]')-check.$GITHUB_RUN_NUMBER}"
-          node scripts/rehearsal-baseline.ts --version "$version" --channel "$CHANNEL" --output-dir rehearsal >> "$GITHUB_OUTPUT"
+          node scripts/rehearsal-baseline.ts --version "$version" --channel "$CHANNEL" --output-dir rehearsal
       - name: Build rehearsal installers
         env:
           BASELINE: ${{ steps.versions.outputs.baseline }}

@@ -28,6 +28,23 @@ export function rehearsalVersions(
 }
 
 /**
+ * The update channel the baseline client runs on. A beta install stays on beta,
+ * including when it updates to a stable release. A stable install reaches a beta
+ * target only with a saved beta preference, which the rehearsal seeds before launch.
+ */
+export function rehearsalClient(
+  baselineChannel: string,
+  channel: string,
+): { channel: "beta" | "stable"; seedBetaPreference: boolean } {
+  for (const value of [baselineChannel, channel])
+    if (value !== "latest" && value !== "beta") throw new Error(`Invalid channel: ${value}`);
+  if (baselineChannel === "beta") return { channel: "beta", seedBetaPreference: false };
+  return channel === "beta"
+    ? { channel: "beta", seedBetaPreference: true }
+    : { channel: "stable", seedBetaPreference: false };
+}
+
+/**
  * Points an installed production `app-update.yml` at the loopback emulator while
  * keeping electron-updater's GitHub provider (custom hosts use `/api/v3`).
  */
