@@ -12,6 +12,7 @@ import "../../index.css";
 
 import { QueryClient } from "@tanstack/react-query";
 import type { OrchestrationCommandExecution } from "@t3tools/contracts";
+import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerSendText";
 import {
   EventId,
   MessageId,
@@ -681,6 +682,49 @@ describe("MessagesTimeline (LegendList)", () => {
         },
         { x: 21, y: 34 },
       );
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("shows image-only messages as media instead of the hidden prompt", async () => {
+    const image = (id: string) => ({
+      type: "image" as const,
+      id,
+      name: `${id}.png`,
+      mimeType: "image/png",
+      sizeBytes: 128,
+      previewUrl: `/attachments/${id}`,
+    });
+    const lone = makeUserEntry("lone-image", IMAGE_ONLY_BOOTSTRAP_PROMPT, 0, {
+      attachments: [image("lone")],
+    });
+    const pair = makeUserEntry("image-pair", IMAGE_ONLY_BOOTSTRAP_PROMPT, 1, {
+      attachments: [image("left"), image("right")],
+    });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness initialEntries={[lone, pair]} onIsAtEndChangeSpy={() => {}} />,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(host.querySelector('img[alt="right.png"]')).not.toBeNull();
+      });
+      expect(host.textContent).not.toContain(IMAGE_ONLY_BOOTSTRAP_PROMPT);
+      const bubbles = host.querySelectorAll('[data-slot="user-message-bubble"]');
+      expect([...bubbles].map((bubble) => bubble.hasAttribute("data-media-only"))).toEqual([
+        true,
+        true,
+      ]);
+      expect(host.querySelector('img[alt="lone.png"]')!.getBoundingClientRect().height).toBe(192);
+      const collage = host.querySelector('img[alt="left.png"]')!.closest(".grid")!;
+      expect(collage.getBoundingClientRect().width).toBe(320);
+      expect(host.querySelector('img[alt="left.png"]')!.getBoundingClientRect().height).toBe(192);
+      expect(host.querySelector('button[aria-label="Copy message"]')).toBeNull();
     } finally {
       await screen.unmount();
       host.remove();

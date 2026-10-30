@@ -3,6 +3,9 @@ import { ThreadId } from "./baseSchemas";
 
 export const HTML_RENDER_MAX_SOURCE_BYTES = 512 * 1024;
 export const HTML_RENDER_MAX_PAGE_BYTES = 25 * 1024 * 1024;
+// A client fits the frame to the live page up to this height. It only stops a
+// page that grows with its frame, since vh units are rejected when prepared.
+export const HTML_RENDER_MAX_FIT_HEIGHT = 20_000;
 const HtmlSource = Schema.String.check(Schema.isMaxLength(HTML_RENDER_MAX_SOURCE_BYTES));
 export const HtmlRenderInput = Schema.Struct({
   html: HtmlSource,

@@ -240,7 +240,7 @@ export function NextTurnQueueRow({
             <Button
               type="button"
               size="xs"
-              disabled={draft.text.trim().length === 0}
+              disabled={draft.text.trim().length === 0 && display.imageCount === 0}
               onClick={saveDraft}
             >
               Save

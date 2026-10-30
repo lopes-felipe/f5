@@ -1,8 +1,29 @@
 import type { CommandId, NextTurnQueueItem, NextTurnQueueSnapshot } from "@t3tools/contracts";
+import {
+  IMAGE_ONLY_BOOTSTRAP_PROMPT,
+  isImageOnlyBootstrapPrompt,
+} from "@t3tools/shared/composerSendText";
 
 import { deriveDisplayedUserMessageState } from "~/lib/terminalContext";
 
 export const USAGE_LIMIT_RESUME_LABEL = "Continues after usage limit resets";
+
+/** Puts an edited queued turn's visible text back in front of its send-time context. */
+export function rebuildEditedText(item: NextTurnQueueItem, visibleText: string): string {
+  const current = item.command.message.text;
+  // Editing shows an image-only turn without its hidden prompt; the agent still needs words.
+  if (isImageOnlyBootstrapPrompt(current)) {
+    return visibleText.trim() || IMAGE_ONLY_BOOTSTRAP_PROMPT;
+  }
+  const displayed = item.command.message.text.trim().length > 0 ? current : "";
+  const existingVisible =
+    displayed.length > 0
+      ? current.slice(0, current.length - (current.length - current.trimEnd().length))
+      : "";
+  const terminalMarker = current.search(/\n*<terminal_context>|\n*<attached_files>/u);
+  if (terminalMarker >= 0) return `${visibleText.trim()}${current.slice(terminalMarker)}`;
+  return existingVisible === current ? visibleText.trim() : `${visibleText.trim()}\n`;
+}
 
 export function buildQueueRowDisplay(item: NextTurnQueueItem) {
   const displayed = deriveDisplayedUserMessageState(item.command.message.text);

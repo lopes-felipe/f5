@@ -468,7 +468,7 @@ import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { ThreadDetailsLoadingState } from "./StartupLoadingState";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./ui/empty";
 import { WORK_LOG_PAGE_SIZE } from "./chat/workLogConstants";
-import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "../lib/composerSendText";
+import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerSendText";
 
 const ATTACHMENT_PREVIEW_HANDOFF_TTL_MS = 5000;
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];

@@ -1,4 +1,5 @@
 import { type ThreadId } from "@t3tools/contracts";
+import { isImageOnlyBootstrapPrompt } from "@t3tools/shared/composerSendText";
 import { extractTrailingAttachedFiles } from "./attachedFiles";
 
 export interface TerminalContextSelection {
@@ -237,7 +238,10 @@ export function extractTrailingTerminalContexts(prompt: string): ExtractedTermin
 }
 
 export function deriveDisplayedUserMessageState(prompt: string): DisplayedUserMessageState {
-  const extractedAttachedFiles = extractTrailingAttachedFiles(prompt);
+  // The agent needs words to start a turn; people sent only the images.
+  const extractedAttachedFiles = extractTrailingAttachedFiles(
+    isImageOnlyBootstrapPrompt(prompt) ? "" : prompt,
+  );
   const extractedContexts = extractTrailingTerminalContexts(extractedAttachedFiles.promptText);
   const copyText = buildDisplayedUserMessageCopyText({
     visibleText: extractedContexts.promptText,

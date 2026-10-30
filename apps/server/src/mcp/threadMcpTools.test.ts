@@ -17,6 +17,14 @@ it("tells agents to leave a rendered page on the thread's own background", () =>
   assert.include(description, "at least 16px of padding");
 });
 
+it("tells agents the frame fits the page and viewport height units are rejected", () => {
+  const describe = (name: string) =>
+    THREAD_TOOL_DEFINITIONS.find((tool) => tool.name === name)?.description ?? "";
+  assert.include(describe("html_render"), "up to 20000px");
+  for (const name of ["html_render", "html_preview"])
+    assert.include(describe(name), "reject vh, svh, lvh and dvh units");
+});
+
 it.effect(
   "binds calls to the transport thread, validates inputs and retires runtime ownership",
   () =>

@@ -1,7 +1,11 @@
 import { useServerKeybindings, resolveShortcutCommand } from "../../keybindings";
 import { useAppSettingsSelector } from "../../appSettings";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { HTML_RENDER_MAX_PAGE_BYTES, type HtmlRenderReference } from "@t3tools/contracts";
+import {
+  HTML_RENDER_MAX_FIT_HEIGHT,
+  HTML_RENDER_MAX_PAGE_BYTES,
+  type HtmlRenderReference,
+} from "@t3tools/contracts";
 import { htmlRenderDocument } from "@t3tools/shared/htmlRender";
 import { attachmentPreviewUrlForId } from "../../orchestrationState";
 import { useHtmlRenderTheme } from "../../hooks/useHtmlRenderTheme";
@@ -91,7 +95,9 @@ export function HtmlRenderFrame({
       if (!data || data.f5HtmlRender !== bridgeId) return;
       if (data.type === "height" && typeof data.value === "number" && Number.isFinite(data.value)) {
         setContentHeight(Math.max(120, Math.min(100_000, Math.ceil(data.value))));
-        setHeight(Math.max(120, Math.min(2000, Math.ceil(data.value))));
+        // The page's measured height wins over the agent's: client fonts often wrap it taller,
+        // and the page document hides overflow, so a shorter frame would crop it.
+        setHeight(Math.max(120, Math.min(HTML_RENDER_MAX_FIT_HEIGHT, Math.ceil(data.value))));
       }
       if (
         data.type === "wheel" &&

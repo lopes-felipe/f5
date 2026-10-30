@@ -423,6 +423,10 @@
       "types": "./src/threadFindText.ts",
       "import": "./src/threadFindText.ts"
     },
+    "./composerSendText": {
+      "types": "./src/composerSendText.ts",
+      "import": "./src/composerSendText.ts"
+    },
     "./markdownAlerts": {
       "types": "./src/markdownAlerts.ts",
       "import": "./src/markdownAlerts.ts"

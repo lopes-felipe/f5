@@ -13,7 +13,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { ingestActivityAttachment } from "../activityAttachments.ts";
 import { ThreadToolError } from "../mcp/threadMcpTools.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
-import { prepareHtmlRender } from "./prepareHtmlRender.ts";
+import { HtmlRenderViewportHeightError, prepareHtmlRender } from "./prepareHtmlRender.ts";
 import type { makeHtmlPreviewBroker } from "./HtmlPreviewBroker.ts";
 
 /**
@@ -57,16 +57,19 @@ export const makeHtmlRenderRuntime = (input: {
         return yield* Effect.tryPromise({
           try: () =>
             prepareHtmlRender(html, htmlRenderImageRoots(thread, project, input.attachmentsDir)),
-          catch: () =>
+          catch: (cause) =>
             new ThreadToolError({
               message:
-                "Could not prepare HTML. Keep images inside the project, worktree or attachments, with at most 512 KiB of HTML and 25 MiB after image inlining.",
+                cause instanceof HtmlRenderViewportHeightError
+                  ? cause.message
+                  : "Could not prepare HTML. Keep images inside the project, worktree or attachments, with at most 512 KiB of HTML and 25 MiB after image inlining.",
             }),
         });
       });
     const publish = (threadId: ThreadId, value: HtmlRenderInput) =>
+      prepare(threadId, value.html).pipe(Effect.flatMap((html) => save(threadId, value, html)));
+    const save = (threadId: ThreadId, value: HtmlRenderInput, html: string) =>
       Effect.gen(function* () {
-        const html = yield* prepare(threadId, value.html);
         const id = randomUUID();
         const createdAt = new Date().toISOString();
         const model = yield* input.engine.getReadModel();

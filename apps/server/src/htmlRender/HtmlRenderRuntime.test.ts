@@ -1,8 +1,12 @@
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { ThreadId } from "@t3tools/contracts";
+import { Effect, Layer } from "effect";
 import { afterEach, expect, it } from "vitest";
-import { htmlRenderImageRoots } from "./HtmlRenderRuntime.ts";
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import { htmlRenderImageRoots, makeHtmlRenderRuntime } from "./HtmlRenderRuntime.ts";
 import { prepareHtmlRender } from "./prepareHtmlRender.ts";
 
 const temporary: string[] = [];
@@ -47,4 +51,32 @@ it("keeps the project root and worktree for standard projects", () => {
       "/attachments",
     ),
   ).toEqual(["/repo", "/repo/.worktrees/a", "/attachments"]);
+});
+
+it("tells the agent why a page with a viewport height unit was refused", async () => {
+  const threadId = ThreadId.makeUnsafe("html-thread");
+  const engine = {
+    getReadModel: () =>
+      Effect.succeed({
+        threads: [{ id: threadId, projectId: "project", deletedAt: null, worktreePath: null }],
+        projects: [{ id: "project", kind: "standard", workspaceRoot: "/repo", deletedAt: null }],
+      }),
+    dispatch: () => Effect.die("A refused page must not be published."),
+  } as unknown as Parameters<typeof makeHtmlRenderRuntime>[0]["engine"];
+  const errors = await Effect.gen(function* () {
+    const runtime = yield* makeHtmlRenderRuntime({
+      engine,
+      attachmentsDir: "/attachments",
+      preview: {} as Parameters<typeof makeHtmlRenderRuntime>[0]["preview"],
+    });
+    const html = "<style>main{min-height:100vh}</style><main></main>";
+    return [
+      yield* Effect.flip(runtime.publish(threadId, { html, title: "Chart", height: 400 })),
+      yield* Effect.flip(runtime.preview(threadId, { html })),
+    ];
+  }).pipe(
+    Effect.provide(SqlitePersistenceMemory.pipe(Layer.provideMerge(NodeServices.layer))),
+    Effect.runPromise,
+  );
+  for (const error of errors) expect(error.message).toContain("viewport height unit (100vh)");
 });

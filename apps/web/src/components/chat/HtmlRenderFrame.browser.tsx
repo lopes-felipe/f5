@@ -202,3 +202,11 @@ it("holds the page's height with a skeleton while the page loads", async () => {
   await expect.element(skeleton).toBeVisible();
   expect(skeleton.element().getBoundingClientRect().height).toBe(384);
 });
+it("grows past the agent's height and the old 2000px cap to fit the page", async () => {
+  source = '<p style="margin:0">Hello</p><div style="height:2345px"></div>';
+  await mount();
+  const frame = () => document.querySelector<HTMLIFrameElement>('iframe[title="HTML widget"]');
+  await expect.poll(() => frame()?.getBoundingClientRect().height).toBeGreaterThan(2345);
+  const height = frame()!.getBoundingClientRect().height;
+  expect(height).toBeLessThan(2400);
+});

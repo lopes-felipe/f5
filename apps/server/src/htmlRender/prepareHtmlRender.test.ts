@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, writeFile, symlink, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { prepareHtmlRender } from "./prepareHtmlRender.ts";
+import { HtmlRenderViewportHeightError, prepareHtmlRender } from "./prepareHtmlRender.ts";
 
 const temporary: string[] = [];
 afterEach(async () => {
@@ -46,4 +46,23 @@ it("enforces the HTML byte limit before parsing and bounds inlined image memory"
   await expect(prepareHtmlRender(`<img src="${project}/large.png">`, [project])).rejects.toThrow(
     "10 MiB",
   );
+});
+it("rejects viewport height units, which make the fitted frame grow without end", async () => {
+  const { project } = await fixture();
+  for (const page of [
+    "<style>main{min-height:100vh}</style>",
+    "<style media=screen>main{height: calc(100dvh - 2rem)}",
+    "<div style='top:.5svh'></div>",
+    "<div style=height:100vh></div>",
+    `<script>document.body.innerHTML = '<div style="height:100lvh"></div>'</script>`,
+  ])
+    await expect(prepareHtmlRender(page, [project])).rejects.toBeInstanceOf(
+      HtmlRenderViewportHeightError,
+    );
+  for (const page of [
+    '<style>main{width:100vw;height:320px}</style><img src="data:image/png;base64,AB1vh+2vh/3vhC">',
+    "<p>Avoid 100vh here.</p><!-- <div style=\"height:100vh\"></div> --><script>const unit = '100vh';</script>",
+    `<style>${"1".repeat(200_000)}vx</style>`,
+  ])
+    await expect(prepareHtmlRender(page, [project])).resolves.toBeTypeOf("string");
 });

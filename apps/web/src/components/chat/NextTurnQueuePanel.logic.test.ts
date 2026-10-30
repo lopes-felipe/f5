@@ -4,6 +4,7 @@ import {
   type NextTurnQueueItem,
   type NextTurnQueueSnapshot,
 } from "@t3tools/contracts";
+import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerSendText";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -11,6 +12,7 @@ import {
   describeQueueBlockedState,
   isFoldedUsageLimitItem,
   mergeVisibleOrder,
+  rebuildEditedText,
 } from "./NextTurnQueuePanel.logic";
 
 describe("isFoldedUsageLimitItem", () => {
@@ -135,5 +137,41 @@ describe("buildQueueRowDisplay", () => {
     expect(buildQueueRowDisplay(item("answer-delivery:2", "not json")).label).toBe("not json");
     const ordinary = JSON.stringify({ 0: { answers: ["x"] } });
     expect(buildQueueRowDisplay(item("plain", ordinary)).label).toBe(ordinary);
+  });
+
+  it("labels an image-only turn instead of showing its hidden prompt", () => {
+    const display = buildQueueRowDisplay(imageOnlyItem());
+    expect(display.label).toBe("Image-only turn");
+    expect(display.visibleText).toBe("");
+    expect(display.copyText).toBe("");
+  });
+});
+
+const imageOnlyItem = (text = IMAGE_ONLY_BOOTSTRAP_PROMPT) =>
+  ({
+    command: {
+      commandId: CommandId.makeUnsafe("image-only"),
+      message: {
+        text,
+        attachments: [{ type: "image", id: "image-1", name: "shot.png" }],
+      },
+    },
+  }) as unknown as NextTurnQueueItem;
+
+describe("rebuildEditedText", () => {
+  it("keeps the hidden prompt when an image-only turn is saved without words", () => {
+    expect(rebuildEditedText(imageOnlyItem(), "")).toBe(IMAGE_ONLY_BOOTSTRAP_PROMPT);
+    expect(rebuildEditedText(imageOnlyItem(), "  ")).toBe(IMAGE_ONLY_BOOTSTRAP_PROMPT);
+  });
+
+  it("replaces the hidden prompt with words added while editing", () => {
+    expect(rebuildEditedText(imageOnlyItem(), " What is this? ")).toBe("What is this?");
+  });
+
+  it("keeps send-time context after edited words", () => {
+    const text = "Fix it\n\n<attached_files>\n- /repo/a.ts\n</attached_files>";
+    expect(rebuildEditedText(imageOnlyItem(text), "Fix this")).toBe(
+      "Fix this\n\n<attached_files>\n- /repo/a.ts\n</attached_files>",
+    );
   });
 });
