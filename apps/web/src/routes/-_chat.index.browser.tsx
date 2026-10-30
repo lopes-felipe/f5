@@ -254,7 +254,7 @@ describe("_chat.index onboarding lite", () => {
 
       await vi.waitFor(() => {
         expect(document.querySelector('[data-testid="home-startup-skeleton"]')).toBeNull();
-        expect(document.body.textContent).toContain("Add a project to get started.");
+        expect(document.querySelector('[data-slot="home-quick-start"]')).not.toBeNull();
       });
       expect(document.body.textContent).not.toContain("Planning workflows");
     } finally {
@@ -290,7 +290,7 @@ describe("_chat.index onboarding lite", () => {
 
       await vi.waitFor(() => {
         expect(readPersistedSettings().onboardingLiteStatus).toBe("dismissed");
-        expect(document.body.textContent).toContain("Add a project to get started.");
+        expect(document.querySelector('[data-slot="home-quick-start"]')).not.toBeNull();
       });
     } finally {
       firstRender.queryClient.clear();
@@ -300,7 +300,7 @@ describe("_chat.index onboarding lite", () => {
     const secondRender = await renderIndexRoute();
 
     try {
-      expect(document.body.textContent).toContain("Add a project to get started.");
+      expect(document.querySelector('[data-slot="home-quick-start"]')).not.toBeNull();
       expect(document.body.textContent).not.toContain("Planning workflows");
     } finally {
       secondRender.queryClient.clear();
@@ -466,7 +466,7 @@ describe("_chat.index onboarding lite", () => {
     });
 
     try {
-      expect(document.body.textContent).toContain("Add a project to get started.");
+      expect(document.querySelector('[data-slot="home-quick-start"]')).not.toBeNull();
       expect(document.body.textContent).not.toContain("Planning workflows");
     } finally {
       screen.queryClient.clear();

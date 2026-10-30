@@ -16,6 +16,7 @@ import { GitCommandError, GitManagerError } from "./git/Errors.ts";
 import { type GitManagerShape } from "./git/Services/GitManager.ts";
 import { withProviderThreadAccess } from "./provider/providerThreadAccess.ts";
 import { resolveWorkspaceReadPath } from "./wsServer";
+import * as scratchProject from "./project/scratchProject.ts";
 import {
   connectAndAwaitWelcome,
   createWsServerTestHarness,
@@ -28,6 +29,45 @@ import {
 describe("WebSocket Server", () => {
   const h = createWsServerTestHarness();
   const { connections, makeTempDir, sha256Hex, createTestServer, closeTestServer } = h;
+
+  it("serializes first scratch creation and skips filesystem preparation for existing scratch projects", async () => {
+    h.server = await createTestServer({ autoBootstrapProjectFromCwd: false });
+    const address = h.server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    // The test response helper has one response consumer per socket.
+    const sockets = await Promise.all(
+      Array.from({ length: 4 }, async () => {
+        const [ws] = await connectAndAwaitWelcome(port);
+        connections.push(ws);
+        return ws;
+      }),
+    );
+    const prepare = vi.spyOn(scratchProject, "prepareScratchRoot");
+    try {
+      const results = await Promise.all(
+        sockets.map((ws) => sendRequest(ws, WS_METHODS.projectsEnsureScratch)),
+      );
+      for (const result of results) expect(result.error).toBeUndefined();
+      expect(
+        new Set(results.map((result) => (result.result as { projectId: string }).projectId)).size,
+      ).toBe(1);
+      expect(prepare).toHaveBeenCalledTimes(1);
+      prepare.mockRejectedValue(new Error("must not touch the filesystem"));
+      const repeated = await Promise.all(
+        sockets.map((ws) => sendRequest(ws, WS_METHODS.projectsEnsureScratch)),
+      );
+      for (const result of repeated) expect(result.result).toEqual(results[0]!.result);
+      expect(prepare).toHaveBeenCalledTimes(1);
+      const snapshot = await sendRequest(sockets[0]!, ORCHESTRATION_WS_METHODS.getSnapshot);
+      expect(
+        (snapshot.result as OrchestrationReadModel).projects.filter(
+          (project) => project.kind === "scratch",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      prepare.mockRestore();
+    }
+  });
 
   it("returns checkout conflicts as structured recovery data without a stack trace", async () => {
     const cwd = makeTempDir("f5-checkout-conflict-");

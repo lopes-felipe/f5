@@ -1,4 +1,5 @@
 import "../../index.css";
+import { emptyDiskSpaceStatus } from "../../test/emptyAppRpc";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory } from "@tanstack/react-router";
@@ -129,6 +130,10 @@ function createNativeApiMock() {
   nativeApiRef.openExternal.mockReset();
   nativeApiRef.openExternal.mockResolvedValue(undefined);
   nativeApiRef.current = {
+    storage: {
+      getDiskSpace: async () => emptyDiskSpaceStatus,
+      onDiskSpaceUpdated: () => () => {},
+    },
     server: {
       getConfig: vi.fn(),
       validateHarnesses: nativeApiRef.validateHarnesses,
@@ -533,7 +538,7 @@ describe("HarnessValidationPanel", () => {
     const emptyProjectsRender = await renderWithQueryClient(<HomeEmptyStatePanel />);
 
     try {
-      expect(document.body.textContent).toContain("Add a project to get started.");
+      expect(document.querySelector('[data-slot="home-quick-start"]')).not.toBeNull();
       expect(document.body.textContent).not.toContain("Check your model harnesses");
     } finally {
       emptyProjectsRender.queryClient.clear();

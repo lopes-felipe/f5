@@ -50,9 +50,16 @@ import { useThreadSelectionStore } from "../threadSelectionStore";
 import {
   THREAD_SIDEBAR_DEFAULT_WIDTH_PX,
   THREAD_SIDEBAR_MAX_WIDTH_PX,
+  THREAD_SIDEBAR_MIN_WIDTH_PX,
   THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
 } from "../threadSidebarWidth";
 import { useWorkflowCreateDialogStore } from "../workflowCreateDialogStore";
+import {
+  noteWsConnectionClosed,
+  noteWsConnectionOpened,
+  noteWsSynchronized,
+} from "../wsConnectionState";
+import { toastManager } from "./ui/toast";
 
 vi.mock("./DiffWorkerPoolProvider", () => ({
   DiffWorkerPoolProvider: ({ children }: { children?: ReactNode }) => children ?? null,
@@ -1048,6 +1055,7 @@ describe("Thread sidebar", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     useRecoveryStateStore.getState().reset();
     useCommandPaletteStore.setState({
       open: false,
@@ -1635,72 +1643,156 @@ describe("Thread sidebar", () => {
         expect(document.querySelector('[data-testid="startup-sidebar-skeleton"]')).toBeNull();
         expect(document.querySelector('[data-testid="home-startup-skeleton"]')).toBeNull();
         expect(document.body.textContent).toContain("No projects yet");
-        expect(document.body.textContent).toContain("Add a project to get started.");
+        expect(document.querySelector('[data-slot="home-quick-start"]')).not.toBeNull();
       });
     } finally {
       await mounted.cleanup();
     }
   });
 
-  it("starts a thread without a project from the empty sidebar", async () => {
-    seedAppSettings({ onboardingLiteStatus: "dismissed" });
-    const scratchProjectId = "5c7a0e3b-0d2f-5a51-8f00-000000000001" as ProjectId;
-    let ensureCalls = 0;
+  it.each([false, true])(
+    "starts and reuses a scratch draft from primary sidebar actions (projects: %s)",
+    async (hasProjects) => {
+      seedAppSettings({ onboardingLiteStatus: "dismissed" });
+      localStorage.setItem(THREAD_SIDEBAR_WIDTH_STORAGE_KEY, String(THREAD_SIDEBAR_MIN_WIDTH_PX));
+      const scratchProjectId = "5c7a0e3b-0d2f-5a51-8f00-000000000001" as ProjectId;
+      let ensureCalls = 0;
+      const mounted = await mountApp({
+        width: 1_400,
+        initialEntries: ["/"],
+        configureFixture: (nextFixture) => {
+          nextFixture.snapshot = hasProjects
+            ? { ...createEmptySnapshot(), projects: [createSnapshotProject(PROJECT_ID, "Alpha")] }
+            : createEmptySnapshot();
+          nextFixture.welcome = {
+            cwd: nextFixture.welcome.cwd,
+            projectName: nextFixture.welcome.projectName,
+          };
+          nextFixture.serverConfig = {
+            ...nextFixture.serverConfig,
+            keybindings: createSidebarShortcutBindings(),
+          };
+          nextFixture.resolveWsRequest = (body) => {
+            if (body._tag !== WS_METHODS.projectsEnsureScratch) return null;
+            ensureCalls += 1;
+            // The project.created event lands after the reply, as it would over the socket.
+            setTimeout(() =>
+              useStore.setState((state) => ({
+                projects: [
+                  ...state.projects,
+                  {
+                    id: scratchProjectId,
+                    kind: "scratch",
+                    name: "No project",
+                    cwd: "/state/scratch",
+                    model: "gpt-5",
+                    createdAt: NOW_ISO,
+                    expanded: true,
+                    scripts: [],
+                    memories: [],
+                  },
+                ],
+              })),
+            );
+            return { type: "result", result: { projectId: scratchProjectId } };
+          };
+        },
+      });
+
+      try {
+        if (!hasProjects) {
+          await expect.element(page.getByText("No projects yet", { exact: true })).toBeVisible();
+        }
+        const start = await waitForElement(() => {
+          const button = document.querySelector<HTMLButtonElement>(
+            hasProjects
+              ? '[data-testid="sidebar-new-scratch-thread"]'
+              : '[data-testid="sidebar-new-thread"]',
+          );
+          return button && !button.disabled ? button : null;
+        }, "The sidebar offers a thread without a project.");
+        const primary = document.querySelector<HTMLButtonElement>(
+          '[data-testid="sidebar-new-thread"]',
+        )!;
+        expect(readSidebarWidth("left")).toBe(THREAD_SIDEBAR_MIN_WIDTH_PX);
+        const label = primary.querySelector<HTMLSpanElement>("span.flex-1")!;
+        expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth);
+        const shortcut = primary.querySelector("kbd")!;
+        expect(shortcut.textContent).toBeTruthy();
+        expect(shortcut.getBoundingClientRect().right).toBeLessThanOrEqual(
+          primary.getBoundingClientRect().right,
+        );
+        start.click();
+        start.click();
+        await vi.waitFor(() => expect(ensureCalls).toBe(1), { timeout: 8_000 });
+        await vi.waitFor(() => {
+          const drafts = Object.values(useComposerDraftStore.getState().draftThreadsByThreadId);
+          expect(drafts).toEqual([
+            expect.objectContaining({
+              projectId: scratchProjectId,
+              branch: null,
+              worktreePath: null,
+              envMode: "local",
+            }),
+          ]);
+        });
+        expect(ensureCalls).toBe(1);
+        await vi.waitFor(() => expect(document.body.textContent).not.toContain("No projects yet"));
+        if (!hasProjects)
+          expect(document.querySelector('[data-testid="sidebar-new-scratch-thread"]')).toBeNull();
+        const tree = document.querySelector('[role="tree"][aria-label="Threads and projects"]')!;
+        const first = tree.querySelector('[role="treeitem"]')!;
+        expect(first.textContent).toContain("No project");
+        expect(first.hasAttribute("aria-roledescription")).toBe(false);
+        if (hasProjects) {
+          document
+            .querySelector<HTMLButtonElement>('[data-testid="sidebar-new-scratch-thread"]')!
+            .click();
+          await vi.waitFor(() =>
+            expect(
+              Object.values(useComposerDraftStore.getState().draftThreadsByThreadId),
+            ).toHaveLength(1),
+          );
+          expect(ensureCalls).toBe(1);
+        }
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it("navigates between the static scratch group and sortable projects with arrow keys", async () => {
     const mounted = await mountApp({
       width: 1_400,
       initialEntries: ["/"],
       configureFixture: (nextFixture) => {
-        nextFixture.snapshot = createEmptySnapshot();
-        nextFixture.resolveWsRequest = (body) => {
-          if (body._tag !== WS_METHODS.projectsEnsureScratch) return null;
-          ensureCalls += 1;
-          // The project.created event lands after the reply, as it would over the socket.
-          setTimeout(() =>
-            useStore.setState((state) => ({
-              projects: [
-                ...state.projects,
-                {
-                  id: scratchProjectId,
-                  kind: "scratch",
-                  name: "No project",
-                  cwd: "/state/scratch",
-                  model: "gpt-5",
-                  createdAt: NOW_ISO,
-                  expanded: true,
-                  scripts: [],
-                  memories: [],
-                },
-              ],
-            })),
-          );
-          return { type: "result", result: { projectId: scratchProjectId } };
+        nextFixture.snapshot = {
+          ...createEmptySnapshot(),
+          projects: [
+            createSnapshotProject(PROJECT_ID, "Alpha"),
+            {
+              ...createSnapshotProject("scratch-project" as ProjectId, "No project"),
+              kind: "scratch",
+              workspaceRoot: "/state/scratch",
+            },
+          ],
+        };
+        nextFixture.welcome = {
+          cwd: nextFixture.welcome.cwd,
+          projectName: nextFixture.welcome.projectName,
         };
       },
     });
-
     try {
-      const start = await waitForElement(
-        () =>
-          document.querySelector<HTMLButtonElement>(
-            '[data-testid="sidebar-start-without-project"]',
-          ),
-        "The empty sidebar offers a thread without a project.",
+      const scratch = await waitForElement(
+        () => queryProjectButton("No project"),
+        "The scratch group renders.",
       );
-      start.click();
-      await vi.waitFor(() => {
-        const drafts = Object.values(useComposerDraftStore.getState().draftThreadsByThreadId);
-        expect(drafts).toEqual([
-          expect.objectContaining({
-            projectId: scratchProjectId,
-            branch: null,
-            worktreePath: null,
-            envMode: "local",
-          }),
-        ]);
-      });
-      expect(ensureCalls).toBe(1);
-      // The scratch project is a home for threads, not one more project to pick.
-      expect(document.body.textContent).toContain("No projects yet");
+      scratch.focus();
+      await userEvent.keyboard("{ArrowDown}");
+      expect(document.activeElement).toBe(queryProjectButton("Alpha"));
+      await userEvent.keyboard("{ArrowUp}");
+      expect(document.activeElement).toBe(scratch);
     } finally {
       await mounted.cleanup();
     }
@@ -1744,6 +1836,12 @@ describe("Thread sidebar", () => {
         "Project row should render from live state before startup hydration.",
       );
       expect(document.querySelector('[data-testid="startup-sidebar-skeleton"]')).toBeNull();
+      const scratch = document.querySelector<HTMLButtonElement>(
+        '[data-testid="sidebar-new-scratch-thread"]',
+      )!;
+      expect(scratch.disabled).toBe(true);
+      scratch.click();
+      expect(wsRequests.some((body) => body._tag === WS_METHODS.projectsEnsureScratch)).toBe(false);
     } finally {
       startupResponse.resolve({
         type: "result",
@@ -1755,6 +1853,67 @@ describe("Thread sidebar", () => {
       await mounted.cleanup();
     }
   });
+
+  it.each([false, true])(
+    "blocks scratch shortcuts before synchronization (disconnected: %s)",
+    async (disconnected) => {
+      const startupResponse = createDeferred<WsRequestResolution>();
+      const mounted = await mountApp({
+        width: 1_400,
+        initialEntries: ["/"],
+        configureFixture: (nextFixture) => {
+          nextFixture.snapshot = createEmptySnapshot();
+          nextFixture.welcome = {
+            cwd: nextFixture.welcome.cwd,
+            projectName: nextFixture.welcome.projectName,
+          };
+          nextFixture.serverConfig = {
+            ...nextFixture.serverConfig,
+            keybindings: [
+              ...createSidebarShortcutBindings(),
+              { command: "chat.newScratch", shortcut: createShortcut("s", { shiftKey: true }) },
+            ],
+          };
+          nextFixture.resolveWsRequest = (body) =>
+            body._tag === ORCHESTRATION_WS_METHODS.getStartupSnapshot
+              ? startupResponse.promise
+              : null;
+        },
+      });
+      try {
+        const toast = vi.spyOn(toastManager, "add");
+        await waitForElement(
+          () =>
+            wsRequests.some((body) => body._tag === ORCHESTRATION_WS_METHODS.getStartupSnapshot)
+              ? document.querySelector<HTMLButtonElement>('[data-testid="sidebar-new-thread"]')
+              : null,
+          "Startup snapshot is pending.",
+        );
+        if (disconnected) noteWsConnectionClosed();
+        await expect.element(page.getByTestId("sidebar-new-thread")).toBeDisabled();
+        await dispatchShortcut({ key: "n" });
+        await dispatchShortcut({ key: "s", shiftKey: true });
+        expect(wsRequests.some((body) => body._tag === WS_METHODS.projectsEnsureScratch)).toBe(
+          false,
+        );
+        expect(Object.values(useComposerDraftStore.getState().draftThreadsByThreadId)).toHaveLength(
+          0,
+        );
+        expect(toast).not.toHaveBeenCalled();
+      } finally {
+        // The fixture reuses its transport across mounts; restore the simulated connection.
+        if (disconnected) {
+          noteWsConnectionOpened();
+          noteWsSynchronized();
+        }
+        startupResponse.resolve({
+          type: "result",
+          result: { snapshot: fixture.snapshot, threadTailDetails: null },
+        });
+        await mounted.cleanup();
+      }
+    },
+  );
 
   it("suppresses the sidebar skeleton while the add-project path entry is open", async () => {
     const startupResponse = createDeferred<WsRequestResolution>();
@@ -2568,43 +2727,65 @@ describe("Thread sidebar", () => {
     }
   });
 
-  it("opens a mod-shift-click draft in a desktop window after persisting it", async () => {
-    seedAppSettings({ defaultThreadEnvMode: "local" });
-    const openThreadInNewWindow = vi.fn(async () => true);
-    installDesktopBridgeMock({ openThreadInNewWindow });
-    const mounted = await mountApp({
-      width: 1_400,
-      initialEntries: [`/${THREAD_ID}`],
-    });
-
-    try {
-      const newThreadButton = await waitForElement(
-        () => document.querySelector<HTMLElement>('[data-testid="new-thread-button"]'),
-        "New-thread button should render.",
-      );
-      newThreadButton.dispatchEvent(
-        new MouseEvent("click", {
-          bubbles: true,
-          cancelable: true,
-          shiftKey: true,
-          metaKey: true,
-        }),
-      );
-
-      const pathname = await waitForPath(
-        mounted.router,
-        (nextPathname) => UUID_ROUTE_RE.test(nextPathname),
-        "Mod-shift-click should create the draft before opening a new window.",
-      );
-      await vi.waitFor(() => {
-        expect(openThreadInNewWindow).toHaveBeenCalledWith(pathname.slice(1));
+  it.each([false, true])(
+    "opens a mod-shift-click draft in a desktop window after persisting it (scratch: %s)",
+    async (scratch) => {
+      seedAppSettings({ defaultThreadEnvMode: "local" });
+      const openThreadInNewWindow = vi.fn(async () => true);
+      installDesktopBridgeMock({ openThreadInNewWindow });
+      const mounted = await mountApp({
+        width: 1_400,
+        initialEntries: [`/${THREAD_ID}`],
+        configureFixture: (nextFixture) => {
+          if (scratch)
+            nextFixture.snapshot = {
+              ...nextFixture.snapshot,
+              projects: [
+                ...nextFixture.snapshot.projects,
+                {
+                  ...createSnapshotProject("scratch-project" as ProjectId, "No project"),
+                  kind: "scratch",
+                  workspaceRoot: "/state/scratch",
+                },
+              ],
+            };
+        },
       });
-      const persisted = localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY);
-      expect(persisted).toContain(pathname.slice(1));
-    } finally {
-      await mounted.cleanup();
-    }
-  });
+
+      try {
+        const newThreadButton = await waitForElement(
+          () =>
+            document.querySelector<HTMLElement>(
+              scratch
+                ? '[data-testid="sidebar-new-scratch-thread"]'
+                : '[data-testid="new-thread-button"]',
+            ),
+          "New-thread button should render.",
+        );
+        newThreadButton.dispatchEvent(
+          new MouseEvent("click", {
+            bubbles: true,
+            cancelable: true,
+            shiftKey: true,
+            metaKey: true,
+          }),
+        );
+
+        const pathname = await waitForPath(
+          mounted.router,
+          (nextPathname) => UUID_ROUTE_RE.test(nextPathname),
+          "Mod-shift-click should create the draft before opening a new window.",
+        );
+        await vi.waitFor(() => {
+          expect(openThreadInNewWindow).toHaveBeenCalledWith(pathname.slice(1));
+        });
+        const persisted = localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY);
+        expect(persisted).toContain(pathname.slice(1));
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
 
   it("creates a project-scoped draft from chat.new and preserves branch context", async () => {
     const mounted = await mountApp({

@@ -1,4 +1,7 @@
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
+import type { ProjectId } from "@t3tools/contracts";
+import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { useStore } from "../store";
 
 import { toastManager } from "../components/ui/toast";
 import { waitForProjectInStore } from "../lib/projectArrival";
@@ -14,11 +17,22 @@ import {
  */
 export function useStartScratchThread() {
   const createDraftThread = useCreateProjectBackedDraftThread();
+  // Share only in-flight work. Project identity always comes from the current store.
+  const pending = useRef<Promise<ProjectId> | null>(null);
   return useCallback(
     async (options?: CreateProjectBackedDraftThreadOptions) => {
       try {
-        const { projectId } = await ensureNativeApi().projects.ensureScratch();
-        await waitForProjectInStore(projectId);
+        const existing = useStore.getState().projects.find(isScratchProject);
+        if (!existing && !pending.current) {
+          pending.current = (async () => {
+            const { projectId } = await ensureNativeApi().projects.ensureScratch();
+            await waitForProjectInStore(projectId);
+            return projectId;
+          })().finally(() => {
+            pending.current = null;
+          });
+        }
+        const projectId = existing?.id ?? (await pending.current!);
         return await createDraftThread(projectId, options);
       } catch (error) {
         toastManager.add({

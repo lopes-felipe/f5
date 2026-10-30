@@ -1,6 +1,14 @@
-import type { ProjectId } from "@t3tools/contracts";
 import { ArrowUpIcon, FolderPlusIcon, WorkflowIcon } from "lucide-react";
-import { lazy, Suspense, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useNavigate } from "@tanstack/react-router";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+} from "react";
 
 import { useCommandPaletteStore } from "../../commandPaletteStore";
 import { useComposerDraftStore } from "../../composerDraftStore";
@@ -12,7 +20,11 @@ import type { Project } from "../../types";
 import { useWorkflowCreateDialogStore } from "../../workflowCreateDialogStore";
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
-import { HomeProjectPickerPlaceholder } from "./HomeProjectPickerPlaceholder";
+import {
+  HomeProjectPickerPlaceholder,
+  type HomeProjectSelection,
+  type HomeProjectTarget,
+} from "./HomeProjectPickerPlaceholder";
 
 // Home renders at startup; the combobox it needs would otherwise push the initial bundle
 // past its budget.
@@ -35,24 +47,44 @@ export function appendQuickStartText(existingPrompt: string, text: string): stri
 export function HomeQuickStart(props: {
   readonly greeting: string;
   readonly projects: ReadonlyArray<Project>;
-  readonly defaultProjectId: ProjectId | null;
+  readonly defaultSelection: HomeProjectSelection;
 }) {
   const createProjectBackedDraftThread = useCreateProjectBackedDraftThread();
+  const navigate = useNavigate();
   const startScratchThread = useStartScratchThread();
-  const [selectedProjectId, setSelectedProjectId] = useState<ProjectId | null>(null);
+  const [selected, setSelected] = useState<HomeProjectSelection | null>(null);
+  const liveRef = useRef(true);
+  useEffect(() => {
+    liveRef.current = true;
+    return () => {
+      liveRef.current = false;
+    };
+  }, []);
   const [text, setText] = useState("");
   const [starting, setStarting] = useState(false);
-  const projectId =
-    selectedProjectId && props.projects.some((project) => project.id === selectedProjectId)
-      ? selectedProjectId
-      : (props.defaultProjectId ?? props.projects[0]?.id ?? null);
+  const selection: HomeProjectSelection =
+    selected?.kind === "project" &&
+    !props.projects.some((project) => project.id === selected.projectId)
+      ? { kind: "none" }
+      : (selected ?? props.defaultSelection);
+  const projectId = selection.kind === "project" ? selection.projectId : null;
   const selectedProject = props.projects.find((project) => project.id === projectId);
+  const target: HomeProjectTarget =
+    selection.kind === "none" ? { kind: "none" } : { kind: "project", project: selectedProject };
 
   const start = async () => {
-    if (!projectId || starting) return;
+    if (starting) return;
     setStarting(true);
     try {
-      const { threadId } = await createProjectBackedDraftThread(projectId);
+      // Home must prefill before navigating: navigation itself unmounts this form.
+      // Keep draft creation reusable when the user leaves while creation is pending.
+      const options = { canNavigate: () => false };
+      const result =
+        selection.kind === "none"
+          ? await startScratchThread(options)
+          : await createProjectBackedDraftThread(selection.projectId, options);
+      if (!result || !liveRef.current) return;
+      const { threadId } = result;
       const trimmed = text.trim();
       if (trimmed.length > 0) {
         const draftStore = useComposerDraftStore.getState();
@@ -63,6 +95,7 @@ export function HomeQuickStart(props: {
       }
       requestComposerFocus(threadId);
       setText("");
+      await navigate({ to: "/$threadId", params: { threadId } });
     } catch (error) {
       // Keep the typed text so the user can retry.
       toastManager.add({
@@ -71,7 +104,7 @@ export function HomeQuickStart(props: {
         description: error instanceof Error ? error.message : "An unexpected error occurred.",
       });
     } finally {
-      setStarting(false);
+      if (liveRef.current) setStarting(false);
     }
   };
 
@@ -87,34 +120,6 @@ export function HomeQuickStart(props: {
     event.preventDefault();
     void start();
   };
-
-  if (props.projects.length === 0) {
-    return (
-      <div className="flex flex-col gap-4">
-        <h1 className="font-heading text-3xl font-semibold tracking-tight text-foreground">
-          {props.greeting}
-        </h1>
-        <div className="flex flex-col items-start gap-3 rounded-xl border border-border bg-card p-5">
-          <p className="text-sm text-muted-foreground">
-            Add a project to start a thread or a workflow.
-          </p>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button onClick={() => useCommandPaletteStore.getState().openAddProject()}>
-              <FolderPlusIcon />
-              Add a project
-            </Button>
-            <Button
-              variant="link"
-              data-testid="home-start-without-project"
-              onClick={() => void startScratchThread()}
-            >
-              or start without a project
-            </Button>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -137,11 +142,11 @@ export function HomeQuickStart(props: {
           className="block min-h-24 w-full resize-none bg-transparent px-4 pt-4 pb-2 text-sm text-foreground outline-none placeholder:text-muted-foreground"
         />
         <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
-          <Suspense fallback={<HomeProjectPickerPlaceholder project={selectedProject} />}>
+          <Suspense fallback={<HomeProjectPickerPlaceholder target={target} />}>
             <HomeProjectPicker
               projects={props.projects}
-              projectId={projectId}
-              onSelect={setSelectedProjectId}
+              selection={selection}
+              onSelect={setSelected}
             />
           </Suspense>
           <Button
@@ -167,7 +172,7 @@ export function HomeQuickStart(props: {
             <FolderPlusIcon />
             Add project
           </Button>
-          <Button type="submit" size="sm" className="ms-auto" disabled={!projectId || starting}>
+          <Button type="submit" size="sm" className="ms-auto" disabled={starting}>
             Start
             <ArrowUpIcon />
           </Button>

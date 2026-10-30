@@ -23,6 +23,7 @@ import type { Project, Thread } from "../../types";
 import { useWorkflowCreateDialogStore } from "../../workflowCreateDialogStore";
 import { SidebarProvider } from "../ui/sidebar";
 import { HomeMissionControl } from "./HomeMissionControl";
+import { toastManager } from "../ui/toast";
 
 const NOW_ISO = new Date().toISOString();
 // Older than every thread so thread activity, not creation order, picks the
@@ -33,6 +34,7 @@ const getProjectSettings = vi.fn(async () => {
   throw new Error("offline");
 });
 const dispatchCommand = vi.fn(async () => ({ sequence: 1 }));
+const ensureScratch = vi.fn<NativeApi["projects"]["ensureScratch"]>();
 
 function makeProject(id: string, name: string): Project {
   return {
@@ -86,6 +88,27 @@ function makeThread(projectId: Project["id"], id: string, overrides: Partial<Thr
 
 const PROJECT_A = makeProject("project-a", "Alpha");
 const PROJECT_B = makeProject("project-b", "Beta");
+const SCRATCH: Project = {
+  ...makeProject("scratch", "No project"),
+  kind: "scratch",
+  cwd: "/state/scratch",
+};
+
+function scratchSuccess() {
+  ensureScratch.mockImplementation(async () => {
+    setTimeout(() =>
+      useStore.setState((state) => ({
+        projects: [...state.projects, SCRATCH],
+      })),
+    );
+    return { projectId: SCRATCH.id };
+  });
+}
+
+async function pickNoProject() {
+  await page.getByRole("combobox", { name: "Project" }).click();
+  await page.getByTestId("home-picker-no-project").click();
+}
 
 const APPROVAL_THREAD = makeThread(PROJECT_A.id, "thread-approval", {
   title: "Needs an approval",
@@ -191,6 +214,7 @@ describe("HomeMissionControl", () => {
         onDiskSpaceUpdated: () => () => {},
       },
       server: { getProjectSettings },
+      projects: { ensureScratch },
       orchestration: { dispatchCommand },
     } as unknown as NativeApi;
   });
@@ -199,6 +223,225 @@ describe("HomeMissionControl", () => {
     localStorage.clear();
     document.body.innerHTML = "";
     dispatchCommand.mockClear();
+    ensureScratch.mockReset();
+    getProjectSettings.mockReset();
+    getProjectSettings.mockRejectedValue(new Error("offline"));
+    vi.restoreAllMocks();
+  });
+
+  it("starts a project-free draft from Home with a project present", async () => {
+    scratchSuccess();
+    const view = await renderHome([IDLE_THREAD]);
+    try {
+      await pickNoProject();
+      await expect.element(page.getByRole("button", { name: "New workflow" })).toBeDisabled();
+      await page
+        .getByRole("textbox", { name: "What should we work on?" })
+        .fill("Research solar energy");
+      await page.getByRole("button", { name: "Start" }).click();
+      await vi.waitFor(() =>
+        expect(document.querySelector('[data-testid="thread-route"]')).toBeTruthy(),
+      );
+      const draft = useComposerDraftStore.getState().getDraftThreadByProjectId(SCRATCH.id);
+      expect(draft).toMatchObject({ envMode: "local", branch: null, worktreePath: null });
+      expect(useComposerDraftStore.getState().draftsByThreadId[draft!.threadId]?.prompt).toBe(
+        "Research solar energy",
+      );
+      expect(view.pushedPaths).toEqual([`/${draft!.threadId}`]);
+      expect(ensureScratch).toHaveBeenCalledTimes(1);
+      expect(dispatchCommand).not.toHaveBeenCalled();
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  it("keeps the text after scratch creation fails, then succeeds on retry with one toast", async () => {
+    ensureScratch.mockRejectedValueOnce(new Error("scratch unavailable"));
+    const toast = vi.spyOn(toastManager, "add");
+    const view = await renderHome([IDLE_THREAD]);
+    try {
+      await pickNoProject();
+      const input = page.getByRole("textbox", { name: "What should we work on?" });
+      await input.fill("Keep my research");
+      await page.getByRole("button", { name: "Start" }).click();
+      await vi.waitFor(() =>
+        expect(toast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            title: "Could not start a thread without a project",
+            description: "scratch unavailable",
+          }),
+        ),
+      );
+      expect(toast).toHaveBeenCalledTimes(1);
+      expect(view.pushedPaths).toEqual([]);
+      await expect.element(input).toHaveValue("Keep my research");
+      scratchSuccess();
+      await page.getByRole("button", { name: "Start" }).click();
+      await vi.waitFor(() =>
+        expect(document.querySelector('[data-testid="thread-route"]')).toBeTruthy(),
+      );
+      expect(ensureScratch).toHaveBeenCalledTimes(2);
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  it("keeps an unfinished scratch draft reusable without navigating or focusing after leaving Home", async () => {
+    let finish!: (result: { projectId: ProjectId }) => void;
+    ensureScratch.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const view = await renderHome([IDLE_THREAD]);
+    try {
+      await pickNoProject();
+      await page
+        .getByRole("textbox", { name: "What should we work on?" })
+        .fill("Do not steal focus");
+      await page.getByRole("button", { name: "Start" }).click();
+      await vi.waitFor(() => expect(ensureScratch).toHaveBeenCalledTimes(1));
+      await view.router.navigate({ to: "/$threadId", params: { threadId: "elsewhere" } });
+      finish({ projectId: SCRATCH.id });
+      setTimeout(() => useStore.setState((state) => ({ projects: [...state.projects, SCRATCH] })));
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().getDraftThreadByProjectId(SCRATCH.id)).toBeTruthy(),
+      );
+      expect(view.pushedPaths).toEqual(["/elsewhere"]);
+      expect(useComposerFocusRequestStore.getState().request).toBeNull();
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  it("orders the no-project search option after matching projects and supports keyboard selection", async () => {
+    const view = await renderHome([IDLE_THREAD]);
+    try {
+      useStore.setState({
+        projects: [PROJECT_A, PROJECT_B, makeProject("prometheus", "prometheus")],
+      });
+      await page.getByRole("combobox", { name: "Project" }).click();
+      const search = page.getByRole("combobox", { name: "Search projects" });
+      await expect.element(page.getByRole("option").first()).toHaveTextContent("No project");
+      await search.fill("pro");
+      await userEvent.keyboard("{Enter}");
+      await expect
+        .element(page.getByRole("combobox", { name: "Project" }))
+        .toHaveTextContent("prometheus");
+      await page.getByRole("combobox", { name: "Project" }).click();
+      await search.fill("scr");
+      await expect.element(page.getByRole("option")).toHaveTextContent("No project");
+      await search.fill("bet");
+      expect(page.getByTestId("home-picker-no-project").all()).toHaveLength(0);
+      await userEvent.keyboard("{Escape}");
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  it("wraps to the first no-project option with ArrowDown and Enter in an empty search", async () => {
+    const view = await renderHome([IDLE_THREAD]);
+    try {
+      await page.getByRole("combobox", { name: "Project", exact: true }).click();
+      await page.getByRole("option", { name: "Beta", exact: true }).click();
+      await vi.waitFor(() =>
+        expect(document.querySelector('[data-slot="combobox-popup"]')).toBeNull(),
+      );
+      await page.getByRole("combobox", { name: "Project", exact: true }).click();
+      await expect
+        .element(page.getByRole("option", { name: "No project", exact: true }))
+        .toBeVisible();
+      (
+        page
+          .getByRole("combobox", { name: "Search projects", exact: true })
+          .element() as HTMLElement
+      ).focus();
+      await expect
+        .element(page.getByRole("option", { name: "Beta", exact: true }))
+        .toHaveAttribute("data-highlighted");
+      await userEvent.keyboard("{ArrowDown}");
+      await expect
+        .element(page.getByRole("option", { name: "No project", exact: true }))
+        .toHaveAttribute("data-highlighted");
+      await userEvent.keyboard("{Enter}");
+      await expect
+        .element(page.getByRole("combobox", { name: "Project", exact: true }))
+        .toHaveTextContent("No project");
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  it("scrolls a long project list to the keyboard-highlighted option", async () => {
+    const view = await renderHome([IDLE_THREAD]);
+    try {
+      useStore.setState({
+        projects: [
+          PROJECT_A,
+          ...Array.from({ length: 16 }, (_, index) =>
+            makeProject(`project-${index}`, `Project ${index}`),
+          ),
+        ],
+      });
+      await page.getByRole("combobox", { name: "Project", exact: true }).click();
+      const search = page.getByRole("combobox", { name: "Search projects", exact: true });
+      (search.element() as HTMLElement).focus();
+      await expect
+        .element(page.getByRole("option", { name: "Alpha", exact: true }))
+        .toHaveAttribute("data-highlighted");
+      for (let index = 0; index < 16; index += 1) await userEvent.keyboard("{ArrowDown}");
+      const last = page.getByRole("option", { name: "Project 15", exact: true });
+      await expect.element(last).toHaveAttribute("data-highlighted");
+      await vi.waitFor(() => {
+        const item = last.element().getBoundingClientRect();
+        const viewport = last.element().closest('[data-slot="scroll-area-viewport"]')!;
+        const bounds = viewport.getBoundingClientRect();
+        expect(viewport.scrollTop).toBeGreaterThan(0);
+        // scrollTop rounds fractional CSS pixels.
+        expect(item.top).toBeGreaterThanOrEqual(bounds.top - 1);
+        expect(item.bottom).toBeLessThanOrEqual(bounds.bottom + 1);
+      });
+      await userEvent.keyboard("{Enter}");
+      await expect
+        .element(page.getByRole("combobox", { name: "Project", exact: true }))
+        .toHaveTextContent("Project 15");
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  it("defaults to the most recent visible context while preserving an explicit choice", async () => {
+    const view = await renderHome([IDLE_THREAD]);
+    try {
+      useStore.setState({
+        projects: [PROJECT_A, PROJECT_B, SCRATCH],
+        threads: [
+          IDLE_THREAD,
+          makeThread(SCRATCH.id, "research", { lastInteractionAt: "2099-01-01T00:00:00Z" }),
+        ],
+      });
+      await expect
+        .element(page.getByRole("combobox", { name: "Project" }))
+        .toHaveTextContent("No project");
+      await page.getByRole("combobox", { name: "Project" }).click();
+      await page.getByRole("option", { name: "Alpha", exact: true }).click();
+      useStore.setState({ threads: [IDLE_THREAD] });
+      await expect
+        .element(page.getByRole("combobox", { name: "Project" }))
+        .toHaveTextContent("Alpha");
+      useStore.setState({ projects: [PROJECT_B, SCRATCH] });
+      await expect
+        .element(page.getByRole("combobox", { name: "Project" }))
+        .toHaveTextContent("No project");
+      useStore.setState({ projects: [], threads: [] });
+      await expect
+        .element(page.getByRole("combobox", { name: "Project" }))
+        .toHaveTextContent("No project");
+      await expect.element(page.getByRole("button", { name: "Start" })).toBeEnabled();
+    } finally {
+      await view.cleanup();
+    }
   });
 
   it("leads with a greeting and the quick-start card, without the old stat strip", async () => {

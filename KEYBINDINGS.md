@@ -27,7 +27,7 @@ anywhere in the app.
 - `mod+shift+n` opens a new workflow.
 - `mod+enter` scrolls to the bottom of the chat; it doesn't send. In a dialog it runs the primary
   action.
-- `chat.newLocal` has no default binding but can still be bound.
+- `chat.newLocal` and `chat.newScratch` have no default binding but can still be bound.
 - Invalid rules, and invalid files, are ignored and logged by the server.
 
 ## The keybindings file
@@ -291,6 +291,7 @@ Invalid rules are ignored. Invalid config files are ignored. Warnings are logged
 - `diff.toggle`: toggle the diff panel
 - `chat.new`: create a new chat thread preserving the active thread's branch/worktree state
 - `chat.newLocal`: create or reuse the active project's draft thread
+- `chat.newScratch`: start a new thread without a project
 - `workflow.new`: open the workflow creation dialog for the active project
 - `chat.scrollToBottom`: scroll the active chat to the latest message without sending
 - `chat.queueTurn`: queue the composer contents at the end (`Mod+Shift+Enter` by default)
