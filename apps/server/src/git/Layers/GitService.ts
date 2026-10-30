@@ -183,34 +183,78 @@ const makeGitService = Effect.gen(function* () {
           : `${ssh} -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=30 -o ServerAliveCountMax=3`;
       }
 
-      const child = yield* commandSpawner
-        .spawn(
-          ChildProcess.make(resolveGitExecutable(environment), commandInput.args, {
+      // The pinned Effect NodeSink does not handle stdin "error" events. Git may
+      // close input before a checkpoint write completes (especially on shutdown).
+      // Use the shared native runner for input-fed commands and await its shutdown
+      // before releasing the repository's calling scope.
+      const runWithInput = Effect.acquireUseRelease(
+        Effect.sync(() => {
+          const controller = new AbortController();
+          const pending = runProcess(resolveGitExecutable(environment), commandInput.args, {
             cwd: commandInput.cwd,
             env: environment,
-            ...(input.stdin === undefined
-              ? {}
-              : { stdin: Stream.make(new TextEncoder().encode(input.stdin)) }),
-          }),
-        )
-        .pipe(
-          Effect.mapError(toGitCommandError(commandInput, "failed to spawn.")),
-          // Hooks, credential helpers and ssh can ignore SIGTERM on timeout.
-          Effect.tap(terminateOnRelease),
-          Effect.uninterruptible,
-        );
-
-      const [stdout, stderr, exitCode] = yield* Effect.all(
-        [
-          collectOutput(commandInput, child.stdout, maxOutputBytes, input.onStdoutChunk),
-          collectOutput(commandInput, child.stderr, maxOutputBytes, input.onStderrChunk),
-          child.exitCode.pipe(
-            Effect.map((value) => Number(value)),
-            Effect.mapError(toGitCommandError(commandInput, "failed to report exit code.")),
+            stdin: input.stdin,
+            timeoutMs: null, // The enclosing Effect owns the command deadline.
+            allowNonZeroExit: true,
+            maxBufferBytes: maxOutputBytes,
+            onStdoutChunk: input.onStdoutChunk,
+            onStderrChunk: input.onStderrChunk,
+            signal: controller.signal,
+          });
+          return { controller, pending };
+        }),
+        ({ pending }) =>
+          Effect.tryPromise({
+            try: () => pending,
+            catch: toGitCommandError(commandInput, "stdin command failed."),
+          }).pipe(
+            Effect.flatMap((result) =>
+              result.signal
+                ? Effect.fail(
+                    toGitCommandError(
+                      commandInput,
+                      "failed to report exit code.",
+                    )(new Error("Git process exited with signal " + result.signal)),
+                  )
+                : Effect.succeed([result.stdout, result.stderr, result.code ?? 1] as const),
+            ),
           ),
-        ],
-        { concurrency: "unbounded" },
+        ({ controller, pending }) =>
+          Effect.promise(async () => {
+            controller.abort();
+            await pending.catch(() => {});
+          }),
       );
+      const runWithoutInput = Effect.gen(function* () {
+        const child = yield* commandSpawner
+          .spawn(
+            ChildProcess.make(resolveGitExecutable(environment), commandInput.args, {
+              cwd: commandInput.cwd,
+              env: environment,
+            }),
+          )
+          .pipe(
+            Effect.mapError(toGitCommandError(commandInput, "failed to spawn.")),
+            // Hooks, credential helpers and ssh can ignore SIGTERM on timeout.
+            Effect.tap(terminateOnRelease),
+            Effect.uninterruptible,
+          );
+
+        return yield* Effect.all(
+          [
+            collectOutput(commandInput, child.stdout, maxOutputBytes, input.onStdoutChunk),
+            collectOutput(commandInput, child.stderr, maxOutputBytes, input.onStderrChunk),
+            child.exitCode.pipe(
+              Effect.map((value) => Number(value)),
+              Effect.mapError(toGitCommandError(commandInput, "failed to report exit code.")),
+            ),
+          ],
+          { concurrency: "unbounded" },
+        );
+      });
+      const [stdout, stderr, exitCode] = yield* input.stdin === undefined
+        ? runWithoutInput
+        : runWithInput;
 
       if (!input.allowNonZeroExit && exitCode !== 0) {
         const trimmedStderr = stderr.trim();

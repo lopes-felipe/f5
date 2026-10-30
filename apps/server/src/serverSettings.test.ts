@@ -46,6 +46,21 @@ const makeServerSettingsLayer = () =>
   );
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect("validates repository search folders before saving storage discovery", () =>
+    Effect.gen(function* () {
+      const settings = yield* ServerSettingsService;
+      const denied = yield* settings
+        .updateSettings({
+          storageDiscovery: { machineCleanupEnabled: false, repositoryRoots: ["relative"] },
+        })
+        .pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(denied));
+      const saved = yield* settings.updateSettings({
+        storageDiscovery: { machineCleanupEnabled: false, repositoryRoots: ["~/code", "~/code"] },
+      });
+      assert.deepEqual(saved.storageDiscovery.repositoryRoots, [NodePath.join(homedir(), "code")]);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
   it.effect("times out location validation without saving or holding the settings write lock", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsService;

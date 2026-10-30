@@ -28,56 +28,80 @@ import { GitService } from "../Services/GitService.ts";
 const layer = it.layer(Layer.provideMerge(GitServiceLive, NodeServices.layer));
 
 layer("GitServiceLive", (it) => {
-  it.effect("interrupting a long Git call kills its owned process group", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const git = yield* GitService;
-        const root = yield* Effect.promise(() =>
-          FS.mkdtemp(NodePath.join(OS.tmpdir(), "f5-git-interrupt-")),
-        );
-        const pidFile = NodePath.join(root, "child.pid");
-        const script =
-          'require("fs").writeFileSync(process.env.F5_GIT_PID_FILE, String(process.pid)); setInterval(() => {}, 1000)';
-        const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
-        const fiber = yield* git
-          .execute({
-            operation: "GitService.test.interrupt",
-            cwd: root,
-            args: ["-c", `alias.f5-block=!node -e ${quote(script)}`, "f5-block"],
-            env: { ...process.env, F5_GIT_PID_FILE: pidFile },
-            timeoutMs: null,
-          })
-          .pipe(Effect.forkIn(yield* Scope.Scope));
-        yield* Effect.promise(async () => {
-          for (let attempt = 0; attempt < 200; attempt++) {
-            try {
-              await FS.access(pidFile);
-              return;
-            } catch {}
-            await new Promise((resolve) => setTimeout(resolve, 5));
-          }
-          throw new Error("Git fixture child did not start.");
-        });
-        const pid = Number(yield* Effect.promise(() => FS.readFile(pidFile, "utf8")));
-        yield* Fiber.interrupt(fiber);
-        yield* Effect.promise(async () => {
-          try {
-            for (let attempt = 0; attempt < 200; attempt++) {
-              try {
-                process.kill(pid, 0);
-              } catch (error) {
-                if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
-                throw error;
+  for (const stdin of [undefined, "checkpoint input"]) {
+    it.effect(
+      "interrupting a long Git call kills its owned process group" + (stdin ? " with stdin" : ""),
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const git = yield* GitService;
+            const root = yield* Effect.promise(() =>
+              FS.mkdtemp(NodePath.join(OS.tmpdir(), "f5-git-interrupt-")),
+            );
+            const pidFile = NodePath.join(root, "child.pid");
+            const script =
+              'require("fs").writeFileSync(process.env.F5_GIT_PID_FILE, String(process.pid)); setInterval(() => {}, 1000)';
+            const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
+            const fiber = yield* git
+              .execute({
+                operation: "GitService.test.interrupt",
+                cwd: root,
+                args: ["-c", `alias.f5-block=!node -e ${quote(script)}`, "f5-block"],
+                env: { ...process.env, F5_GIT_PID_FILE: pidFile },
+                timeoutMs: null,
+                ...(stdin === undefined ? {} : { stdin }),
+              })
+              .pipe(Effect.forkIn(yield* Scope.Scope));
+            yield* Effect.promise(async () => {
+              for (let attempt = 0; attempt < 200; attempt++) {
+                try {
+                  await FS.access(pidFile);
+                  return;
+                } catch {}
+                await new Promise((resolve) => setTimeout(resolve, 5));
               }
-              await new Promise((resolve) => setTimeout(resolve, 5));
-            }
-            throw new Error("Interrupted Git child remained alive.");
-          } finally {
-            await FS.rm(root, { recursive: true, force: true });
-          }
-        });
-      }),
-    ),
+              throw new Error("Git fixture child did not start.");
+            });
+            const pid = Number(yield* Effect.promise(() => FS.readFile(pidFile, "utf8")));
+            yield* Fiber.interrupt(fiber);
+            yield* Effect.promise(async () => {
+              try {
+                for (let attempt = 0; attempt < 200; attempt++) {
+                  try {
+                    process.kill(pid, 0);
+                  } catch (error) {
+                    if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+                    throw error;
+                  }
+                  await new Promise((resolve) => setTimeout(resolve, 5));
+                }
+                throw new Error("Interrupted Git child remained alive.");
+              } finally {
+                await FS.rm(root, { recursive: true, force: true });
+              }
+            });
+          }),
+        ),
+    );
+  }
+  it.effect("reports an early stdin close as a typed Git error instead of an uncaught EPIPE", () =>
+    Effect.gen(function* () {
+      const git = yield* GitService;
+      const result = yield* Effect.result(
+        git.execute({
+          operation: "GitService.test.closedInput",
+          cwd: process.cwd(),
+          args: ["--version"],
+          stdin: "checkpoint data".repeat(300_000),
+          timeoutMs: 5_000,
+        }),
+      );
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.isTrue(Schema.is(GitCommandError)(result.failure));
+        assert.include(result.failure.detail, "stdin");
+      }
+    }),
   );
   it.effect("runGit executes successful git commands", () =>
     Effect.gen(function* () {

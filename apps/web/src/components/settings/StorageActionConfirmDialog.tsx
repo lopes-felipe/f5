@@ -20,6 +20,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
+import { Checkbox } from "../ui/checkbox";
 
 export interface StorageConfirmAction {
   readonly confirmation?: StorageConfirmation | undefined;
@@ -50,9 +51,14 @@ export function StorageActionConfirmDialog({
   readonly onCancelCleanup?: () => void;
   readonly lastResult: StorageCleanupResult | null;
   readonly onOpenChange: (open: boolean) => void;
-  readonly onConfirm: (confirmationText: string | undefined) => void;
+  readonly onConfirm: (confirmationText: string | undefined, archiveIdleThreads?: boolean) => void;
 }) {
   const [confirmationText, setConfirmationText] = useState("");
+  const [archiveConfirmed, setArchiveConfirmed] = useState(false);
+  const requiresArchive =
+    action?.categories.some((category) =>
+      category.targets.some((target) => target.action === "archiveAndRemove"),
+    ) ?? false;
   const expiredNonce = useRef<string | null>(null);
   const selections = useMemo(
     () =>
@@ -80,9 +86,11 @@ export function StorageActionConfirmDialog({
     actionable &&
     !pending &&
     action?.confirmation !== undefined &&
+    (!requiresArchive || archiveConfirmed) &&
     (!requiresDelete || confirmationText === "DELETE");
   useEffect(() => {
     setConfirmationText("");
+    setArchiveConfirmed(false);
   }, [
     JSON.stringify(
       action?.categories.map((category) => ({
@@ -90,7 +98,12 @@ export function StorageActionConfirmDialog({
         bytes: category.bytes,
         reclaimableBytes: category.reclaimableBytes,
         impact: category.impact,
-        targets: category.targets.map((target) => ({ id: target.id, bytes: target.bytes })),
+        targets: category.targets.map((target) => ({
+          id: target.id,
+          bytes: target.bytes,
+          action: target.action,
+          affectedThreads: target.affectedThreads,
+        })),
       })),
     ),
   ]);
@@ -113,6 +126,7 @@ export function StorageActionConfirmDialog({
       onOpenChange={(nextOpen) => {
         if (!nextOpen) {
           setConfirmationText("");
+          setArchiveConfirmed(false);
         }
         onOpenChange(nextOpen);
       }}
@@ -122,10 +136,47 @@ export function StorageActionConfirmDialog({
           <DialogTitle>{action?.title ?? "Confirm cleanup"}</DialogTitle>
           <DialogDescription>
             {action?.description ??
-              `This will reclaim up to ${formatByteSize(totalBytes)} from the selected storage targets.`}
+              `The selected targets contain an estimated ${formatByteSize(totalBytes)}. Actual recovered disk space may differ.`}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel className="space-y-4">
+          {action?.categories.some((category) =>
+            category.targets.some((target) => target.action === "archiveAndRemove"),
+          ) ? (
+            <div className="space-y-2 rounded border border-border p-3 text-xs">
+              <p>
+                These idle conversations will be archived before their checkout is removed.
+                Conversations and Git branches are preserved. If removal fails or is cancelled,
+                these conversations remain archived and the checkout stays on disk. You can reopen
+                the conversations from Archive.
+              </p>
+              <ul>
+                {action.categories
+                  .flatMap((category) =>
+                    category.targets.flatMap((target) => target.affectedThreads ?? []),
+                  )
+                  .filter(
+                    (thread, index, all) =>
+                      all.findIndex((t) => t.threadId === thread.threadId) === index,
+                  )
+                  .map((thread) => (
+                    <li key={thread.threadId}>{thread.title}</li>
+                  ))}
+              </ul>
+              <label className="flex items-start gap-2">
+                <Checkbox
+                  checked={archiveConfirmed}
+                  onCheckedChange={(checked) => setArchiveConfirmed(checked === true)}
+                  disabled={pending}
+                  aria-label="Archive the listed conversations"
+                />
+                <span>
+                  I agree to archive every listed conversation, including recently used
+                  conversations.
+                </span>
+              </label>
+            </div>
+          ) : null}
           {pending ? (
             <div role="status" aria-live="polite" className="text-xs text-muted-foreground">
               {progress?.message ?? "Starting…"}
@@ -167,6 +218,9 @@ export function StorageActionConfirmDialog({
                           ? ` · ${target.threadTitle}`
                           : ""}
                         {target.path ? <span className="block truncate">{target.path}</span> : null}
+                        {category.id === "f5Backups" && target.detail ? (
+                          <span className="block whitespace-normal">{target.detail}</span>
+                        ) : null}
                       </li>
                     ))}
                     {category.targets.length > 12 ? (
@@ -218,7 +272,11 @@ export function StorageActionConfirmDialog({
           <Button
             variant="destructive"
             disabled={!canSubmit}
-            onClick={() => onConfirm(requiresDelete ? confirmationText : undefined)}
+            onClick={() =>
+              requiresArchive
+                ? onConfirm(requiresDelete ? confirmationText : undefined, archiveConfirmed)
+                : onConfirm(requiresDelete ? confirmationText : undefined)
+            }
           >
             {pending ? "Cleaning..." : "Reclaim"}
           </Button>
