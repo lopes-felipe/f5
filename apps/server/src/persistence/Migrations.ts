@@ -1,3 +1,4 @@
+import Migration0147 from "./Migrations/147_StorageMachineCleanupAudit.ts";
 import Migration0137 from "./Migrations/137_UpstreamPorts.ts";
 import Migration0136 from "./Migrations/136_ScratchProjects.ts";
 import Migration0135 from "./Migrations/135_RestartBackgroundWork.ts";
@@ -17,7 +18,7 @@ import Migration0143 from "./Migrations/143_UpstreamPortQueue.ts";
 import Migration0144 from "./Migrations/144_UpstreamOutcomeRetries.ts";
 import Migration0145 from "./Migrations/145_UpstreamPortReviews.ts";
 import Migration0146 from "./Migrations/146_ProjectionThreadMessagesReasoningTokens.ts";
-import Migration0147 from "./Migrations/147_ProjectionThreadActivitiesRankIndex.ts";
+import Migration0148 from "./Migrations/148_ProjectionThreadActivitiesRankIndex.ts";
 import Migration0127 from "./Migrations/127_ClearPlanningWorkflowLaneBranches.ts";
 import Migration0126 from "./Migrations/126_ProviderTerminalRecoveryIndexes.ts";
 import Migration0124 from "./Migrations/124_ProviderTerminalRetry.ts";
@@ -180,6 +181,7 @@ import Migration0102 from "./Migrations/102_ForgeAccounts.ts";
 import Migration0101 from "./Migrations/101_UsageResetCreditRequests.ts";
 
 export const MIGRATIONS = {
+  "147_StorageMachineCleanupAudit": Migration0147,
   // 124 to 128 shipped on main first; the October migrations follow them.
   "137_UpstreamPorts": Migration0137,
   "136_ScratchProjects": Migration0136,
@@ -204,9 +206,7 @@ export const MIGRATIONS = {
   "144_UpstreamOutcomeRetries": Migration0144,
   "145_UpstreamPortReviews": Migration0145,
   "146_ProjectionThreadMessagesReasoningTokens": Migration0146,
-  // Main has since taken 147 for StorageMachineCleanupAudit: renumber this to 148
-  // when merging main, or databases that recorded one 147 would skip the other.
-  "147_ProjectionThreadActivitiesRankIndex": Migration0147,
+  "148_ProjectionThreadActivitiesRankIndex": Migration0148,
   "122_StorageActivity": Migration0122,
   "123_WorkspaceMoveRecoveryIndex": Migration0123,
   "121_AttachmentDeletionGuards": Migration0121,

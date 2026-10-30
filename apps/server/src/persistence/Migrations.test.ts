@@ -123,7 +123,8 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 144, name: "UpstreamOutcomeRetries" },
       { migration_id: 145, name: "UpstreamPortReviews" },
       { migration_id: 146, name: "ProjectionThreadMessagesReasoningTokens" },
-      { migration_id: 147, name: "ProjectionThreadActivitiesRankIndex" },
+      { migration_id: 147, name: "StorageMachineCleanupAudit" },
+      { migration_id: 148, name: "ProjectionThreadActivitiesRankIndex" },
     ]);
     const activityIndexes = yield* sql<{
       name: string;

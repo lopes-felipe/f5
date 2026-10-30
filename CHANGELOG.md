@@ -4,21 +4,13 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
-### Added
-
-- Optional automated code review for Upstream port PRs, with two selectable reviewers, a selectable consolidation model, one queued revision, and review progress and retry actions on each port thread.
-- Claude in Chrome lifecycle behind a single certification record (`claude-chrome`, macOS arm64 first, gate closed until a live run is recorded): per-instance readiness with specific reasons, consent for foreign setup, `external-cli-conflict` when a terminal `claude --chrome` takes the connection back, desktop-owned stop that ends the CLI's process group even when the server is frozen, and setup history that can restore the original browser files after restarts and SDK upgrades. `bun run sdk:audit` fails when an advertised record no longer matches the pinned SDK.
-- Codex Chrome control (`enableCodexChrome`, off by default, never settable from `f5.json`): ChatGPT for Chrome runs through an F5 MCP proxy that checks every call itself, takes the browser only for the duration of a call, and needs Full access and an isolated Codex home. The proxy forwards only Codex's per-call turn metadata, which ChatGPT's browser runtime requires, and supplies F5's thread identity when Codex sends none. The gate stays closed until the `codex-chrome` record is certified.
-- Codex Computer Use (Sky) spike harness through the same proxy; there is no `codex-computer` record, so Codex keeps using F5's computer control. Claude's built-in computer use now explains that the CLI starts it only in interactive terminals.
-- Two-phase integration certification: a live run on a clean commit stamps the record (`evidenceCommit`), and a release that embeds a certified record is published only by `bun run release:promote` after an operator acceptance run (`bun run integrations:accept`) of that draft's exact DMG. Codex records now certify a version floor, so newer ChatGPT builds stay open while every signature, origin, inventory and schema check still passes. The Codex Chrome harness also proves that pausing stops background work an earlier call started.
-
-## [0.1.0] - 2026-10-18
-
 ### Installation
 
-- Windows x64 is the first stable desktop platform: an unsigned per-user installer with in-app updates from the GitHub release feed. SmartScreen may warn, and Windows 11 Smart App Control blocks unsigned apps; see the install guide. A later signed release updates unsigned installations in place.
-- The download page links the Windows installer, keeps the labelled macOS Apple Silicon preview, and shows "Not yet available" for macOS Intel and Linux instead of a misleading link.
-- Releases follow a checked-in desktop profile (`windows` or `all`). Windows-only releases are refused once macOS or Linux updates have shipped. Every release verifies the `SHA256SUMS` contents and the packaged update feed, and must pass a Windows install, upgrade and uninstall rehearsal between two unpublished builds of the release commit.
+- First desktop release for macOS, Windows and Linux, with in-app updates from the GitHub release feed:
+  - macOS: Apple Silicon and Intel DMG and ZIP, signed with Developer ID and notarized.
+  - Linux: x64 AppImage.
+  - Windows: unsigned per-user x64 installer. SmartScreen may warn, and Windows 11 Smart App Control blocks unsigned apps; see the install guide. A later signed release updates unsigned installations in place.
+- Releases follow a checked-in desktop profile (`windows` or `all`). Windows-only releases are refused once macOS or Linux updates have shipped. Every release verifies the `SHA256SUMS` contents and the packaged update feed, and must pass a Windows install, upgrade and uninstall rehearsal between two unpublished builds of the release commit. macOS notarization retries submission and stapling when Apple's services drop the connection.
 - Fix a Windows update install that could leave F5 unresponsive with no windows: stopping the backend no longer blocks the main process.
 - Release builds are titled "F5"; the "Alpha" label is gone, so the app is no longer confused with the legacy F5 (Alpha).
 - The Windows CLI archive and `f5 install`/`f5 update` use the Windows `tar`, so installs work when Git Bash or MSYS GNU tar is first on PATH, and the runtime check exits instead of hanging.
@@ -77,6 +69,11 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Added
 
+- Optional automated code review for Upstream port PRs, with two selectable reviewers, a selectable consolidation model, one queued revision, and review progress and retry actions on each port thread.
+- Claude in Chrome lifecycle behind a single certification record (`claude-chrome`, macOS arm64 first, gate closed until a live run is recorded): per-instance readiness with specific reasons, consent for foreign setup, `external-cli-conflict` when a terminal `claude --chrome` takes the connection back, desktop-owned stop that ends the CLI's process group even when the server is frozen, and setup history that can restore the original browser files after restarts and SDK upgrades. `bun run sdk:audit` fails when an advertised record no longer matches the pinned SDK.
+- Codex Chrome control (`enableCodexChrome`, off by default, never settable from `f5.json`): ChatGPT for Chrome runs through an F5 MCP proxy that checks every call itself, takes the browser only for the duration of a call, and needs Full access and an isolated Codex home. The proxy forwards only Codex's per-call turn metadata, which ChatGPT's browser runtime requires, and supplies F5's thread identity when Codex sends none. The gate stays closed until the `codex-chrome` record is certified.
+- Codex Computer Use (Sky) spike harness through the same proxy; there is no `codex-computer` record, so Codex keeps using F5's computer control. Claude's built-in computer use now explains that the CLI starts it only in interactive terminals.
+- Two-phase integration certification: a live run on a clean commit stamps the record (`evidenceCommit`), and a release that embeds a certified record is published only by `bun run release:promote` after an operator acceptance run (`bun run integrations:accept`) of that draft's exact DMG. Codex records now certify a version floor, so newer ChatGPT builds stay open while every signature, origin, inventory and schema check still passes. The Codex Chrome harness also proves that pausing stops background work an earlier call started.
 - Error boundaries around each route and each right-panel tab: a failing page or tab shows "Try again" and "Copy error report" in place while the sidebar, composer and other tabs keep working.
 - A "Window title" setting in Settings > General chooses whether thread and workflow titles show the project name (default) or the thread or workflow title, which can appear in screen shares and window switchers.
 - CI boots the server under Bun (`bun run test:bun-server-boot`) so a Bun-incompatible import fails the build instead of `bun run dev`.

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CheckpointRef } from "@t3tools/contracts";
@@ -488,6 +488,178 @@ describe("CheckpointStoreLive", () => {
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
+  });
+
+  describe("a workspace its parent repository ignores", () => {
+    const liveStore = CheckpointStoreLiveWithoutCredentials.pipe(
+      Layer.provideMerge(NodeServices.layer),
+    );
+    const makeRepository = (options?: { readonly unborn?: boolean }) => {
+      const root = mkdtempSync(path.join(os.tmpdir(), "f5-checkpoint-ignored-"));
+      const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
+      git("init", "-q", "-b", "main");
+      git("config", "user.email", "test@example.com");
+      git("config", "user.name", "Test");
+      writeFileSync(path.join(root, "file.txt"), "base\n");
+      git("add", ".");
+      if (!options?.unborn) git("commit", "-q", "-m", "base");
+      return { root, git };
+    };
+    const capture = (cwd: string, checkpointRef: CheckpointRef) =>
+      Effect.runPromise(
+        Effect.result(
+          Effect.gen(function* () {
+            yield* (yield* CheckpointStore).captureCheckpoint({ cwd, checkpointRef });
+          }).pipe(Effect.provide(liveStore)),
+        ),
+      );
+
+    it.each([
+      { staged: true, expected: "Success" },
+      { staged: false, expected: "CheckpointUnsupportedError" },
+    ])(
+      "before the first commit, staged=$staged captures only staged files or reports unsupported",
+      async ({ staged, expected }) => {
+        const { root, git } = makeRepository({ unborn: true });
+        try {
+          const cwd = path.join(root, "sub");
+          mkdirSync(cwd);
+          if (staged) {
+            writeFileSync(path.join(cwd, "staged.txt"), "staged\n");
+            git("add", "sub/staged.txt");
+          }
+          writeFileSync(path.join(root, ".gitignore"), "sub/\n");
+          if (staged) writeFileSync(path.join(cwd, "staged.txt"), "staged working\n");
+          writeFileSync(path.join(cwd, "secret.txt"), "private\n");
+          const originalIndex = readFileSync(path.join(root, ".git", "index"));
+          const checkpointRef = CheckpointRef.makeUnsafe("refs/t3/checkpoints/unborn/0");
+
+          const captured = await capture(cwd, checkpointRef);
+
+          expect(captured._tag === "Success" ? "Success" : captured.failure._tag).toBe(expected);
+          expect(readFileSync(path.join(root, ".git", "index"))).toEqual(originalIndex);
+          if (staged) {
+            // file.txt is staged outside the workspace, so it stays out.
+            expect(git("ls-tree", "-r", "--name-only", checkpointRef)).toBe("sub/staged.txt\n");
+            expect(git("show", `${checkpointRef}:sub/staged.txt`)).toBe("staged working\n");
+          } else {
+            expect(git("for-each-ref", "--format=%(refname)", checkpointRef)).toBe("");
+          }
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      },
+    );
+
+    it("reports unsupported before copying or rebuilding the index", async () => {
+      const calls: ExecuteGitInput[] = [];
+      const layer = CheckpointStoreLiveWithGitService.pipe(
+        Layer.provide(
+          Layer.succeed(GitService, {
+            execute: (input) =>
+              Effect.sync(() => {
+                calls.push(input);
+                if (input.args[0] === "check-ignore") return { code: 0, stdout: ".\n", stderr: "" };
+                if (input.args.includes("HEAD^{commit}"))
+                  return { code: 0, stdout: "head-oid\n", stderr: "" };
+                if (input.args.includes("head-oid:./")) return { code: 1, stdout: "", stderr: "" };
+                return { code: 0, stdout: "", stderr: "" };
+              }),
+          }),
+        ),
+        Layer.provide(NodeServices.layer),
+      );
+      const result = await Effect.runPromise(
+        Effect.result(
+          Effect.gen(function* () {
+            yield* (yield* CheckpointStore).captureCheckpoint({
+              cwd: "/repo/ignored",
+              checkpointRef: CheckpointRef.makeUnsafe("refs/t3/checkpoints/ignored/0"),
+            });
+          }).pipe(Effect.provide(layer)),
+        ),
+      );
+      expect(result._tag === "Failure" && result.failure._tag).toBe("CheckpointUnsupportedError");
+      // Git exits before reading stdin outside a repository; a late write raised EPIPE.
+      expect(calls.find((call) => call.args[0] === "check-ignore")?.stdin).toBeUndefined();
+      for (const command of ["read-tree", "ls-files", "add", "write-tree"]) {
+        expect(calls.some((call) => call.args.includes(command))).toBe(false);
+      }
+    });
+
+    it("reports unsupported while its allowed sibling still captures", async () => {
+      const { root, git } = makeRepository();
+      try {
+        writeFileSync(
+          path.join(root, ".gitignore"),
+          "*\n!.gitignore\n!file.txt\n!keep/\n!keep/**\n",
+        );
+        mkdirSync(path.join(root, "ignored"));
+        mkdirSync(path.join(root, "keep"));
+        writeFileSync(path.join(root, "ignored", "secret.txt"), "private\n");
+        writeFileSync(path.join(root, "keep", "new.txt"), "new\n");
+        const originalIndex = readFileSync(path.join(root, ".git", "index"));
+        const ignoredRef = CheckpointRef.makeUnsafe("refs/t3/checkpoints/ignored/0");
+        const keepRef = CheckpointRef.makeUnsafe("refs/t3/checkpoints/keep/0");
+
+        const ignored = await capture(path.join(root, "ignored"), ignoredRef);
+        const kept = await capture(path.join(root, "keep"), keepRef);
+
+        expect(ignored._tag === "Failure" && ignored.failure._tag).toBe(
+          "CheckpointUnsupportedError",
+        );
+        expect(kept._tag).toBe("Success");
+        expect(git("show", `${keepRef}:keep/new.txt`)).toBe("new\n");
+        expect(git("ls-tree", "-r", keepRef, "--", "ignored")).toBe("");
+        expect(git("for-each-ref", "--format=%(refname)", ignoredRef)).toBe("");
+        expect(readFileSync(path.join(root, ".git", "index"))).toEqual(originalIndex);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it.each([
+      { tracking: "committed-only", committed: ["committed.txt"], staged: [] },
+      { tracking: "staged-only", committed: [], staged: ["staged.txt"] },
+      { tracking: "mixed", committed: ["committed.txt"], staged: ["staged.txt"] },
+    ])("keeps $tracking tracked edits but leaves out new files", async ({ committed, staged }) => {
+      const { root, git } = makeRepository();
+      try {
+        const cwd = path.join(root, "sub");
+        mkdirSync(cwd);
+        for (const file of committed) {
+          writeFileSync(path.join(cwd, file), "committed\n");
+          git("add", `sub/${file}`);
+        }
+        if (committed.length > 0) git("commit", "-q", "-m", "track project");
+        for (const file of staged) {
+          writeFileSync(path.join(cwd, file), "staged\n");
+          git("add", `sub/${file}`);
+        }
+        // An unrelated staged addition must not leak into the workspace checkpoint.
+        writeFileSync(path.join(root, "unrelated.txt"), "unrelated\n");
+        git("add", "unrelated.txt");
+        const tracked = [...committed, ...staged];
+        writeFileSync(path.join(root, ".gitignore"), "sub/\n");
+        for (const file of tracked) writeFileSync(path.join(cwd, file), `${file} working\n`);
+        writeFileSync(path.join(cwd, "secret.txt"), "private\n");
+        const originalIndex = readFileSync(path.join(root, ".git", "index"));
+        const checkpointRef = CheckpointRef.makeUnsafe("refs/t3/checkpoints/sub/0");
+
+        const captured = await capture(cwd, checkpointRef);
+
+        expect(captured._tag).toBe("Success");
+        expect(readFileSync(path.join(root, ".git", "index"))).toEqual(originalIndex);
+        expect(git("ls-tree", "-r", "--name-only", checkpointRef)).toBe(
+          ["file.txt", ...tracked.map((file) => `sub/${file}`)].join("\n") + "\n",
+        );
+        for (const file of tracked) {
+          expect(git("show", `${checkpointRef}:sub/${file}`)).toBe(`${file} working\n`);
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 
   it("omits whitespace flags by default", async () => {

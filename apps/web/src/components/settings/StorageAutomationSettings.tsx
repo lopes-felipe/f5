@@ -28,6 +28,7 @@ const JOB_LABELS = {
   "event-compaction": "Event compaction",
   "thread-purge": "Thread purge",
   "database-vacuum": "Database space",
+  "machine-cleanup": "Machine cleanup",
 } as const satisfies Record<StorageAutomationTarget["job"], string>;
 
 const ACTION_LABELS = {
@@ -41,6 +42,8 @@ const RESULT_LABELS = {
   pulled: "Pulled",
   skipped: "Skipped",
   failed: "Failed",
+  archiving: "Archiving",
+  archived: "Archived",
 } as const satisfies Record<StorageAutomationAuditEntry["result"], string>;
 
 export function describeAutomationTarget(target: StorageAutomationTarget): string {

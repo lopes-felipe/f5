@@ -5,7 +5,21 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it, assert } from "@effect/vitest";
 import { expect, vi } from "vitest";
 import * as GitProcessEnvironment from "../gitProcessEnvironment.ts";
-import { Effect, Fiber, FileSystem, Layer, Path, Schema, Scope } from "effect";
+import {
+  Deferred,
+  Effect,
+  Fiber,
+  FileSystem,
+  Layer,
+  Path,
+  Queue,
+  Schema,
+  Scope,
+  Sink,
+  Stream,
+} from "effect";
+import { TestClock } from "effect/testing";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { GitCommandError } from "../Errors.ts";
 import { GitServiceLive } from "./GitService.ts";
@@ -14,56 +28,80 @@ import { GitService } from "../Services/GitService.ts";
 const layer = it.layer(Layer.provideMerge(GitServiceLive, NodeServices.layer));
 
 layer("GitServiceLive", (it) => {
-  it.effect("interrupting a long Git call kills its owned process group", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const git = yield* GitService;
-        const root = yield* Effect.promise(() =>
-          FS.mkdtemp(NodePath.join(OS.tmpdir(), "f5-git-interrupt-")),
-        );
-        const pidFile = NodePath.join(root, "child.pid");
-        const script =
-          'require("fs").writeFileSync(process.env.F5_GIT_PID_FILE, String(process.pid)); setInterval(() => {}, 1000)';
-        const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
-        const fiber = yield* git
-          .execute({
-            operation: "GitService.test.interrupt",
-            cwd: root,
-            args: ["-c", `alias.f5-block=!node -e ${quote(script)}`, "f5-block"],
-            env: { ...process.env, F5_GIT_PID_FILE: pidFile },
-            timeoutMs: null,
-          })
-          .pipe(Effect.forkIn(yield* Scope.Scope));
-        yield* Effect.promise(async () => {
-          for (let attempt = 0; attempt < 200; attempt++) {
-            try {
-              await FS.access(pidFile);
-              return;
-            } catch {}
-            await new Promise((resolve) => setTimeout(resolve, 5));
-          }
-          throw new Error("Git fixture child did not start.");
-        });
-        const pid = Number(yield* Effect.promise(() => FS.readFile(pidFile, "utf8")));
-        yield* Fiber.interrupt(fiber);
-        yield* Effect.promise(async () => {
-          try {
-            for (let attempt = 0; attempt < 200; attempt++) {
-              try {
-                process.kill(pid, 0);
-              } catch (error) {
-                if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
-                throw error;
+  for (const stdin of [undefined, "checkpoint input"]) {
+    it.effect(
+      "interrupting a long Git call kills its owned process group" + (stdin ? " with stdin" : ""),
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const git = yield* GitService;
+            const root = yield* Effect.promise(() =>
+              FS.mkdtemp(NodePath.join(OS.tmpdir(), "f5-git-interrupt-")),
+            );
+            const pidFile = NodePath.join(root, "child.pid");
+            const script =
+              'require("fs").writeFileSync(process.env.F5_GIT_PID_FILE, String(process.pid)); setInterval(() => {}, 1000)';
+            const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
+            const fiber = yield* git
+              .execute({
+                operation: "GitService.test.interrupt",
+                cwd: root,
+                args: ["-c", `alias.f5-block=!node -e ${quote(script)}`, "f5-block"],
+                env: { ...process.env, F5_GIT_PID_FILE: pidFile },
+                timeoutMs: null,
+                ...(stdin === undefined ? {} : { stdin }),
+              })
+              .pipe(Effect.forkIn(yield* Scope.Scope));
+            yield* Effect.promise(async () => {
+              for (let attempt = 0; attempt < 200; attempt++) {
+                try {
+                  await FS.access(pidFile);
+                  return;
+                } catch {}
+                await new Promise((resolve) => setTimeout(resolve, 5));
               }
-              await new Promise((resolve) => setTimeout(resolve, 5));
-            }
-            throw new Error("Interrupted Git child remained alive.");
-          } finally {
-            await FS.rm(root, { recursive: true, force: true });
-          }
-        });
-      }),
-    ),
+              throw new Error("Git fixture child did not start.");
+            });
+            const pid = Number(yield* Effect.promise(() => FS.readFile(pidFile, "utf8")));
+            yield* Fiber.interrupt(fiber);
+            yield* Effect.promise(async () => {
+              try {
+                for (let attempt = 0; attempt < 200; attempt++) {
+                  try {
+                    process.kill(pid, 0);
+                  } catch (error) {
+                    if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+                    throw error;
+                  }
+                  await new Promise((resolve) => setTimeout(resolve, 5));
+                }
+                throw new Error("Interrupted Git child remained alive.");
+              } finally {
+                await FS.rm(root, { recursive: true, force: true });
+              }
+            });
+          }),
+        ),
+    );
+  }
+  it.effect("reports an early stdin close as a typed Git error instead of an uncaught EPIPE", () =>
+    Effect.gen(function* () {
+      const git = yield* GitService;
+      const result = yield* Effect.result(
+        git.execute({
+          operation: "GitService.test.closedInput",
+          cwd: process.cwd(),
+          args: ["--version"],
+          stdin: "checkpoint data".repeat(300_000),
+          timeoutMs: 5_000,
+        }),
+      );
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.isTrue(Schema.is(GitCommandError)(result.failure));
+        assert.include(result.failure.detail, "stdin");
+      }
+    }),
   );
   it.effect("runGit executes successful git commands", () =>
     Effect.gen(function* () {
@@ -264,3 +302,121 @@ layer("GitServiceLive", (it) => {
     }),
   );
 });
+
+/** A spawner whose children print "ok" and exit once `gateFor(command)` opens. */
+const gatedSpawner = (
+  gateFor: (command: ChildProcess.Command) => Deferred.Deferred<void>,
+  starts: Queue.Queue<void>,
+  counters: { active: number; peak: number },
+) =>
+  ChildProcessSpawner.make((command) =>
+    Effect.acquireRelease(
+      Effect.gen(function* () {
+        counters.peak = Math.max(counters.peak, ++counters.active);
+        yield* Queue.offer(starts, undefined);
+        return ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(1),
+          exitCode: Deferred.await(gateFor(command)).pipe(
+            Effect.as(ChildProcessSpawner.ExitCode(0)),
+          ),
+          isRunning: Effect.succeed(false),
+          kill: () => Effect.void,
+          stdin: Sink.drain,
+          stdout: Stream.make(new TextEncoder().encode("ok")),
+          stderr: Stream.empty,
+          all: Stream.empty,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+        });
+      }),
+      () => Effect.sync(() => counters.active--),
+    ),
+  );
+
+const gitServiceWith = (spawner: ChildProcessSpawner.ChildProcessSpawner["Service"]) =>
+  Effect.gen(function* () {
+    return yield* GitService;
+  }).pipe(
+    Effect.provide(
+      GitServiceLive.pipe(
+        Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
+      ),
+    ),
+  );
+
+it.effect("bounds Git bursts across services without timing out queued commands", () =>
+  Effect.gen(function* () {
+    const gate = yield* Deferred.make<void>();
+    const starts = yield* Queue.unbounded<void>();
+    const counters = { active: 0, peak: 0 };
+    const spawner = gatedSpawner(() => gate, starts, counters);
+    const services = yield* Effect.all(Array.from({ length: 16 }, () => gitServiceWith(spawner)));
+    const burst = yield* Effect.forEach(
+      services,
+      (service, index) =>
+        service.execute({
+          operation: "GitService.test.burst",
+          cwd: process.cwd(),
+          args: ["rev-parse", "HEAD"],
+          ...(index < 4 ? {} : { timeoutMs: index < 8 ? 30_000 : 1_000 }),
+        }),
+      { concurrency: "unbounded" },
+    ).pipe(Effect.forkChild);
+
+    // The queued commands' one-second deadline has passed; they have not started.
+    yield* TestClock.adjust("2 seconds");
+    assert.equal(yield* Queue.size(starts), 8);
+    assert.equal(counters.peak, 8);
+    yield* Deferred.succeed(gate, undefined);
+    const results = yield* Fiber.join(burst);
+    assert.equal(results.length, 16);
+    assert.isTrue(results.every((result) => result.stdout === "ok" && result.code === 0));
+    assert.equal(counters.peak, 8);
+    assert.equal(counters.active, 0);
+  }),
+);
+
+it.effect.each([{ timeoutMs: null }, { timeoutMs: 30_001 }])(
+  "keeps every Git slot free while a command with timeout $timeoutMs runs",
+  ({ timeoutMs }) =>
+    Effect.gen(function* () {
+      const slowGate = yield* Deferred.make<void>();
+      const fastGate = yield* Deferred.make<void>();
+      const starts = yield* Queue.unbounded<void>();
+      const counters = { active: 0, peak: 0 };
+      const service = yield* gitServiceWith(
+        gatedSpawner(
+          (command) =>
+            ChildProcess.isStandardCommand(command) && command.args[0] === "gc"
+              ? slowGate
+              : fastGate,
+          starts,
+          counters,
+        ),
+      );
+      const slow = yield* service
+        .execute({ operation: "GitService.test.slow", cwd: process.cwd(), args: ["gc"], timeoutMs })
+        .pipe(Effect.forkChild);
+      yield* Queue.take(starts);
+      const burst = yield* Effect.all(
+        Array.from({ length: 8 }, () =>
+          service.execute({
+            operation: "GitService.test.fast",
+            cwd: process.cwd(),
+            args: ["status"],
+          }),
+        ),
+        { concurrency: "unbounded" },
+      ).pipe(Effect.forkChild);
+
+      yield* TestClock.adjust("0 seconds");
+      assert.equal(yield* Queue.size(starts), 8);
+      assert.equal(counters.active, 9);
+      yield* Deferred.succeed(fastGate, undefined);
+      assert.equal((yield* Fiber.join(burst)).length, 8);
+      assert.equal(counters.active, 1);
+      yield* Deferred.succeed(slowGate, undefined);
+      assert.equal((yield* Fiber.join(slow)).stdout, "ok");
+      assert.equal(counters.active, 0);
+    }),
+);

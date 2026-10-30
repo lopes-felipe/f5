@@ -43,6 +43,7 @@ import { toastManager } from "../../ui/toast";
 export { STORAGE_SETTINGS_DESCRIPTORS } from "./StorageSettings.descriptors";
 import { getServerHttpOrigin } from "../../../lib/serverHttpOrigin";
 import { StorageAutomationSettings } from "../StorageAutomationSettings";
+import { StorageDiscoverySettings } from "../StorageDiscoverySettings";
 import { WorktreeLocationSettings } from "../WorktreeLocationSettings";
 import {
   StorageActionConfirmDialog,
@@ -58,6 +59,7 @@ const SECTION_TITLES = {
   attachments: "Attachments",
   providers: "Provider homes",
   legacy: "Legacy T3/F5 data",
+  machine: "Machine caches and logs",
 } as const;
 
 function isTargetLevelCategoryId(categoryId: StorageCleanupCategoryId): boolean {
@@ -71,6 +73,13 @@ function isTargetLevelCategoryId(categoryId: StorageCleanupCategoryId): boolean 
     "orphanAttachments",
     "providerLogsForTerminalThreads",
     "providerLogRotations",
+    "f5Backups",
+    "f5ApplicationLogs",
+    "bunDownloadCache",
+    "npmDownloadCache",
+    "uvDiscardedCaches",
+    "chromeCaches",
+    "bambuStudioLogs",
   ].includes(categoryId);
 }
 
@@ -243,7 +252,7 @@ function TargetRow({
         {target.path ? <CopyPathButton path={target.path} /> : null}
         <Button size="xs" variant="outline" disabled={isDisabled} onClick={onOpenAction}>
           <Trash2Icon />
-          Reclaim
+          {target.action === "archiveAndRemove" ? "Archive and remove" : "Reclaim"}
         </Button>
       </div>
     </div>
@@ -282,9 +291,17 @@ function ResultSummary({
       <div className="mb-3">
         <h2 className="text-sm font-medium text-foreground">Last cleanup result</h2>
         <p className="mt-1 text-xs text-muted-foreground">
-          Reclaimed {formatByteSize(result.reclaimedBytes)}.
+          Estimated storage removed: {formatByteSize(result.reclaimedBytes)}.
           {result.warnings.length > 0 ? ` ${result.warnings.length} warning(s).` : ""}
         </p>
+        {result.volumeChanges?.map((volume) => (
+          <p key={volume.path} className="mt-1 text-xs text-muted-foreground">
+            Observed net free-space change: {volume.netFreeBytes < 0 ? "−" : "+"}
+            {formatByteSize(Math.abs(volume.netFreeBytes))}. Available:{" "}
+            {formatByteSize(volume.freeAfterBytes)}. Concurrent writes and shared filesystem blocks
+            can affect this measurement. <CopyPathButton path={volume.path} />
+          </p>
+        ))}
       </div>
       <div className="space-y-2">
         {result.results.map((entry) => (
@@ -687,10 +704,12 @@ export function StorageSettings() {
     mutationFn: async ({
       action,
       confirmationText,
+      archiveIdleThreads,
       id,
     }: {
       readonly action: StorageConfirmAction;
       readonly confirmationText: string | undefined;
+      readonly archiveIdleThreads?: boolean | undefined;
       readonly id: string;
     }) => {
       if (
@@ -708,6 +727,7 @@ export function StorageSettings() {
         nonce: action.confirmation.nonce,
         categoryIds: action.categories.map((category) => category.id),
         ...(action.targetSelections ? { targetSelections: action.targetSelections } : {}),
+        ...(archiveIdleThreads ? { options: { archiveIdleThreads: true } } : {}),
         ...(confirmationText ? { confirmationText } : {}),
       });
     },
@@ -940,6 +960,11 @@ export function StorageSettings() {
         { name: "Attachments", bytes: report.attachmentsBytes, color: "bg-success/60" },
         { name: "Legacy", bytes: report.legacyBytes, color: "bg-destructive/50" },
         { name: "Other", bytes: report.otherBytes, color: "bg-muted-foreground/35" },
+        {
+          name: "Machine storage",
+          bytes: report.machineBytes ?? 0,
+          color: "bg-muted-foreground/50",
+        },
       ]
     : [];
   const loadTargets = async (category: StorageCleanupCategoryUsage) => {
@@ -995,7 +1020,21 @@ export function StorageSettings() {
             <h2 className="text-sm font-medium text-foreground">Storage</h2>
             <p className="mt-1 text-xs text-muted-foreground">
               Inspect local F5 state and reclaim data by explicit action.
+              {report?.serverName ? " Server: " + report.serverName + "." : ""}
+              {report?.scannedAt
+                ? " Last scan: " + new Date(report.scannedAt).toLocaleString() + "."
+                : ""}
             </p>
+            {report?.discoveryRoots ? (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Repository search coverage:{" "}
+                {report.discoveryRoots.length
+                  ? report.discoveryRoots.join(", ")
+                  : "registered projects only"}
+                . Machine cache scanning: {report.machineCleanupScanned ? "enabled" : "off"}. Any
+                incomplete or inaccessible locations are listed in scan warnings.
+              </p>
+            ) : null}
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -1194,231 +1233,241 @@ export function StorageSettings() {
       ) : null}
       {report ? (
         <>
-          {(["database", "worktrees", "logs", "attachments", "providers", "legacy"] as const).map(
-            (sectionId) => {
-              const categories = sections.get(sectionId) ?? [];
-              if (categories.length === 0 && sectionId !== "providers") return null;
-              const sectionBytes =
-                sectionId === "database"
-                  ? report.databaseBytes
-                  : sectionId === "worktrees"
-                    ? report.worktreesBytes
-                    : sectionId === "logs"
-                      ? report.logsBytes
-                      : sectionId === "attachments"
-                        ? report.attachmentsBytes
-                        : sectionId === "providers"
-                          ? report.providerHomesBytes
+          {(
+            [
+              "database",
+              "worktrees",
+              "logs",
+              "attachments",
+              "providers",
+              "machine",
+              "legacy",
+            ] as const
+          ).map((sectionId) => {
+            const categories = sections.get(sectionId) ?? [];
+            if (categories.length === 0 && sectionId !== "providers") return null;
+            const sectionBytes =
+              sectionId === "database"
+                ? report.databaseBytes
+                : sectionId === "worktrees"
+                  ? report.worktreesBytes
+                  : sectionId === "logs"
+                    ? report.logsBytes
+                    : sectionId === "attachments"
+                      ? report.attachmentsBytes
+                      : sectionId === "providers"
+                        ? report.providerHomesBytes
+                        : sectionId === "machine"
+                          ? (report.machineBytes ??
+                            categories.reduce((sum, category) => sum + category.bytes, 0))
                           : report.legacyBytes;
-              return (
-                <section
-                  key={sectionId}
-                  data-settings-search-target={`storage.${sectionId}`}
-                  className="rounded-xl border border-border bg-card p-5"
-                >
-                  <div className="mb-4 flex items-start justify-between gap-3">
-                    <div>
-                      <h2 className="text-sm font-medium text-foreground">
-                        {SECTION_TITLES[sectionId]} (
-                        {(
-                          sectionId === "providers"
-                            ? report.providerHomesMeasurement === "unavailable"
-                            : categories.some((category) => category.measurement === "unavailable")
-                        )
-                          ? "Unavailable"
-                          : formatByteSize(sectionBytes)}
-                        )
-                      </h2>
-                      {sectionId === "logs" ? (
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          Provider event logs across {report.providerLogSegmentCount} thread
-                          segments. Server, observability, and terminal logs are kept.
-                        </p>
-                      ) : sectionId === "providers" ? (
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          Data that agent CLIs launched by F5 leave in their home directories.
-                        </p>
-                      ) : sectionId === "legacy" && report.legacyCleanupDisabledReason ? (
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {report.legacyCleanupDisabledReason}
-                        </p>
-                      ) : null}
-                    </div>
-                  </div>
-                  {sectionId === "providers" ? (
-                    <div className="mb-3 space-y-2 text-xs text-muted-foreground">
-                      <p>
-                        Agent CLI data for this profile (sessions, transcripts, caches). F5 does not
-                        delete it. Manage it from the provider’s CLI.
+            return (
+              <section
+                key={sectionId}
+                data-settings-search-target={`storage.${sectionId}`}
+                className="rounded-xl border border-border bg-card p-5"
+              >
+                <div className="mb-4 flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-medium text-foreground">
+                      {SECTION_TITLES[sectionId]} (
+                      {(
+                        sectionId === "providers"
+                          ? report.providerHomesMeasurement === "unavailable"
+                          : categories.some((category) => category.measurement === "unavailable")
+                      )
+                        ? "Unavailable"
+                        : formatByteSize(sectionBytes)}
+                      )
+                    </h2>
+                    {sectionId === "logs" ? (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Provider event logs across {report.providerLogSegmentCount} thread segments.
+                        Current application logs, observability, and terminal logs are retained.
                       </p>
-                      {report.providerHomesMeasurement &&
-                      report.providerHomesMeasurement !== "complete" ? (
-                        <p role="status">
-                          Provider home usage is {report.providerHomesMeasurement}. Accessible
-                          cleanup categories remain available.
-                        </p>
-                      ) : null}
-                      {report.providerHomes.map((home) => (
-                        <div key={home.path} className="flex justify-between gap-2">
-                          <span className="flex items-center gap-2">
-                            {home.name}
-                            <CopyPathButton path={home.path} />
-                          </span>
-                          <span>{formatByteSize(home.bytes)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                  <CleanupCategoryList collapsed={sectionId === "legacy"}>
-                    {categories.map((category) => {
-                      const targetLevelOnly = isTargetLevelCategoryId(category.id);
-                      const selectableTargets = targetLevelOnly
-                        ? category.targets.filter(isSelectableCleanupTarget)
-                        : [];
-                      const selectedTargets = selectedTargetSet(
-                        selectedTargetIdsByCategory,
-                        category.id,
-                      );
-                      const selectedTargetCount = selectableTargets.filter((target) =>
-                        selectedTargets.has(target.id),
-                      ).length;
-                      const selectedSelectableTargets = selectableTargets.filter((target) =>
-                        selectedTargets.has(target.id),
-                      );
-                      const categorySelected = targetLevelOnly
-                        ? selectedTargetCount > 0 &&
-                          selectedTargetCount === selectableTargets.length
-                        : selectedIds.has(category.id);
-                      const categoryIndeterminate =
-                        targetLevelOnly &&
-                        selectedTargetCount > 0 &&
-                        selectedTargetCount < selectableTargets.length;
-                      return (
-                        <div key={category.id} className="space-y-2">
-                          {category.id === "inactiveF5Worktrees" && (
-                            <Link to="/worktrees" className="text-sm text-primary underline">
-                              Manage worktrees
-                            </Link>
-                          )}
-                          <CategoryRow
-                            category={category}
-                            selected={categorySelected}
-                            indeterminate={categoryIndeterminate}
-                            disabled={running || !confirmation}
-                            disableCategoryAction={
-                              targetLevelOnly && selectedSelectableTargets.length === 0
-                            }
-                            disableSelection={targetLevelOnly && selectableTargets.length === 0}
-                            onSelectedChange={(selected) => {
-                              if (targetLevelOnly) {
-                                setSelectedTargetIdsByCategory((current) => {
-                                  const next = new Map(current);
-                                  if (selected) {
-                                    next.set(
-                                      category.id,
-                                      new Set(selectableTargets.map((target) => target.id)),
-                                    );
-                                  } else {
-                                    next.delete(category.id);
-                                  }
-                                  return next;
-                                });
-                                return;
-                              }
-                              setSelectedIds((current) => {
-                                const next = new Set(current);
+                    ) : sectionId === "providers" ? (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Data that agent CLIs launched by F5 leave in their home directories.
+                      </p>
+                    ) : sectionId === "legacy" && report.legacyCleanupDisabledReason ? (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {report.legacyCleanupDisabledReason}
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+                {sectionId === "providers" ? (
+                  <div className="mb-3 space-y-2 text-xs text-muted-foreground">
+                    <p>
+                      Agent CLI data for this profile (sessions, transcripts, caches). F5 does not
+                      delete it. Manage it from the provider’s CLI.
+                    </p>
+                    {report.providerHomesMeasurement &&
+                    report.providerHomesMeasurement !== "complete" ? (
+                      <p role="status">
+                        Provider home usage is {report.providerHomesMeasurement}. Accessible cleanup
+                        categories remain available.
+                      </p>
+                    ) : null}
+                    {report.providerHomes.map((home) => (
+                      <div key={home.path} className="flex justify-between gap-2">
+                        <span className="flex items-center gap-2">
+                          {home.name}
+                          <CopyPathButton path={home.path} />
+                        </span>
+                        <span>{formatByteSize(home.bytes)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                <CleanupCategoryList collapsed={sectionId === "legacy"}>
+                  {categories.map((category) => {
+                    const targetLevelOnly = isTargetLevelCategoryId(category.id);
+                    const selectableTargets = targetLevelOnly
+                      ? category.targets.filter(isSelectableCleanupTarget)
+                      : [];
+                    const selectedTargets = selectedTargetSet(
+                      selectedTargetIdsByCategory,
+                      category.id,
+                    );
+                    const selectedTargetCount = selectableTargets.filter((target) =>
+                      selectedTargets.has(target.id),
+                    ).length;
+                    const selectedSelectableTargets = selectableTargets.filter((target) =>
+                      selectedTargets.has(target.id),
+                    );
+                    const categorySelected = targetLevelOnly
+                      ? selectedTargetCount > 0 && selectedTargetCount === selectableTargets.length
+                      : selectedIds.has(category.id);
+                    const categoryIndeterminate =
+                      targetLevelOnly &&
+                      selectedTargetCount > 0 &&
+                      selectedTargetCount < selectableTargets.length;
+                    return (
+                      <div key={category.id} className="space-y-2">
+                        {category.id === "inactiveF5Worktrees" && (
+                          <Link to="/worktrees" className="text-sm text-primary underline">
+                            Manage worktrees
+                          </Link>
+                        )}
+                        <CategoryRow
+                          category={category}
+                          selected={categorySelected}
+                          indeterminate={categoryIndeterminate}
+                          disabled={running || !confirmation}
+                          disableCategoryAction={
+                            targetLevelOnly && selectedSelectableTargets.length === 0
+                          }
+                          disableSelection={targetLevelOnly && selectableTargets.length === 0}
+                          onSelectedChange={(selected) => {
+                            if (targetLevelOnly) {
+                              setSelectedTargetIdsByCategory((current) => {
+                                const next = new Map(current);
                                 if (selected) {
-                                  next.add(category.id);
+                                  next.set(
+                                    category.id,
+                                    new Set(selectableTargets.map((target) => target.id)),
+                                  );
                                 } else {
                                   next.delete(category.id);
                                 }
                                 return next;
                               });
-                            }}
-                            onOpenAction={() => {
-                              if (targetLevelOnly) {
-                                openTargetGroupAction(
-                                  category,
-                                  selectedSelectableTargets,
-                                  category.title,
-                                );
-                                return;
+                              return;
+                            }
+                            setSelectedIds((current) => {
+                              const next = new Set(current);
+                              if (selected) {
+                                next.add(category.id);
+                              } else {
+                                next.delete(category.id);
                               }
-                              openCategoryAction(category);
-                            }}
-                          />
-                          {targetLevelOnly && category.targets.length > 0
-                            ? category.targets
-                                .toSorted((a, b) => b.bytes - a.bytes || a.id.localeCompare(b.id))
-                                .slice(0, expandedCategories.has(category.id) ? undefined : 5)
-                                .map((target) => (
-                                  <TargetRow
-                                    key={target.id}
-                                    category={category}
-                                    target={target}
-                                    selected={
-                                      selectedTargets.has(target.id) &&
-                                      isSelectableCleanupTarget(target)
-                                    }
-                                    disabled={running || !confirmation}
-                                    onSelectedChange={(selected) => {
-                                      setSelectedTargetIdsByCategory((current) => {
-                                        const next = new Map(current);
-                                        const targetIds = new Set(current.get(category.id) ?? []);
-                                        if (selected) {
-                                          targetIds.add(target.id);
-                                        } else {
-                                          targetIds.delete(target.id);
-                                        }
-                                        if (targetIds.size > 0) {
-                                          next.set(category.id, targetIds);
-                                        } else {
-                                          next.delete(category.id);
-                                        }
-                                        return next;
-                                      });
-                                    }}
-                                    onOpenAction={() => openTargetAction(category, target)}
-                                  />
-                                ))
-                            : null}
-                          {targetLevelOnly && category.targetCount > 5 ? (
-                            <Button
-                              size="xs"
-                              variant="ghost"
-                              onClick={() =>
-                                setExpandedCategories((current) => {
-                                  const next = new Set(current);
-                                  if (next.has(category.id)) next.delete(category.id);
-                                  else next.add(category.id);
-                                  return next;
-                                })
-                              }
-                            >
-                              {expandedCategories.has(category.id)
-                                ? "Show fewer targets"
-                                : `Inspect ${category.targetCount} targets`}
-                            </Button>
-                          ) : null}
-                          {expandedCategories.has(category.id) &&
-                          category.targets.length < category.targetCount ? (
-                            <Button
-                              size="xs"
-                              variant="outline"
-                              disabled={loadingTargets === category.id}
-                              onClick={() => void loadTargets(category)}
-                            >
-                              Load 100 more targets
-                            </Button>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                  </CleanupCategoryList>
-                </section>
-              );
-            },
-          )}
+                              return next;
+                            });
+                          }}
+                          onOpenAction={() => {
+                            if (targetLevelOnly) {
+                              openTargetGroupAction(
+                                category,
+                                selectedSelectableTargets,
+                                category.title,
+                              );
+                              return;
+                            }
+                            openCategoryAction(category);
+                          }}
+                        />
+                        {targetLevelOnly && category.targets.length > 0
+                          ? category.targets
+                              .toSorted((a, b) => b.bytes - a.bytes || a.id.localeCompare(b.id))
+                              .slice(0, expandedCategories.has(category.id) ? undefined : 5)
+                              .map((target) => (
+                                <TargetRow
+                                  key={target.id}
+                                  category={category}
+                                  target={target}
+                                  selected={
+                                    selectedTargets.has(target.id) &&
+                                    isSelectableCleanupTarget(target)
+                                  }
+                                  disabled={running || !confirmation}
+                                  onSelectedChange={(selected) => {
+                                    setSelectedTargetIdsByCategory((current) => {
+                                      const next = new Map(current);
+                                      const targetIds = new Set(current.get(category.id) ?? []);
+                                      if (selected) {
+                                        targetIds.add(target.id);
+                                      } else {
+                                        targetIds.delete(target.id);
+                                      }
+                                      if (targetIds.size > 0) {
+                                        next.set(category.id, targetIds);
+                                      } else {
+                                        next.delete(category.id);
+                                      }
+                                      return next;
+                                    });
+                                  }}
+                                  onOpenAction={() => openTargetAction(category, target)}
+                                />
+                              ))
+                          : null}
+                        {targetLevelOnly && category.targetCount > 5 ? (
+                          <Button
+                            size="xs"
+                            variant="ghost"
+                            onClick={() =>
+                              setExpandedCategories((current) => {
+                                const next = new Set(current);
+                                if (next.has(category.id)) next.delete(category.id);
+                                else next.add(category.id);
+                                return next;
+                              })
+                            }
+                          >
+                            {expandedCategories.has(category.id)
+                              ? "Show fewer targets"
+                              : `Inspect ${category.targetCount} targets`}
+                          </Button>
+                        ) : null}
+                        {expandedCategories.has(category.id) &&
+                        category.targets.length < category.targetCount ? (
+                          <Button
+                            size="xs"
+                            variant="outline"
+                            disabled={loadingTargets === category.id}
+                            onClick={() => void loadTargets(category)}
+                          >
+                            Load 100 more targets
+                          </Button>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </CleanupCategoryList>
+              </section>
+            );
+          })}
         </>
       ) : null}
 
@@ -1447,6 +1496,7 @@ export function StorageSettings() {
       ) : null}
 
       <WorktreeLocationSettings />
+      <StorageDiscoverySettings />
       <StorageAutomationSettings />
       <section
         className="rounded-xl border border-border bg-card p-5"
@@ -1546,7 +1596,7 @@ export function StorageSettings() {
         onOpenChange={(open) => {
           if (!open) setConfirmAction(null);
         }}
-        onConfirm={(confirmationText) => {
+        onConfirm={(confirmationText, archiveIdleThreads) => {
           if (confirmAction) {
             const id = operationId();
             cancellationRequested.current = null;
@@ -1554,7 +1604,12 @@ export function StorageSettings() {
             currentSubmissionId.current = id;
             setAcceptedOperation(null);
             setPendingOperationId(id);
-            cleanupMutation.mutate({ action: confirmAction, confirmationText, id });
+            cleanupMutation.mutate({
+              action: confirmAction,
+              confirmationText,
+              archiveIdleThreads,
+              id,
+            });
           }
         }}
       />

@@ -292,6 +292,42 @@ describe("WsTransport", () => {
     transport.dispose();
   });
 
+  it("delivers server.configUpdated pushes without issue kinds this build does not know", () => {
+    const transport = new WsTransport("ws://localhost:3020");
+    const socket = getSocket();
+    socket.open();
+
+    const listener = vi.fn();
+    transport.subscribe(WS_CHANNELS.serverConfigUpdated, listener);
+
+    socket.serverMessage(
+      JSON.stringify({
+        type: "push",
+        sequence: 1,
+        channel: WS_CHANNELS.serverConfigUpdated,
+        data: {
+          issues: [
+            { kind: "keybindings.future-issue", message: "From a newer server" },
+            { kind: "keybindings.malformed-config", message: "Bad file" },
+          ],
+          providers: [],
+        },
+      }),
+    );
+
+    expect(listener).toHaveBeenCalledWith({
+      type: "push",
+      sequence: 1,
+      channel: WS_CHANNELS.serverConfigUpdated,
+      data: {
+        issues: [{ kind: "keybindings.malformed-config", message: "Bad file" }],
+        providers: [],
+      },
+    });
+
+    transport.dispose();
+  });
+
   it("resolves pending requests for valid response envelopes", async () => {
     const transport = new WsTransport("ws://localhost:3020");
     const socket = getSocket();

@@ -301,6 +301,13 @@ export interface GitCoreShape extends MoveSnapshotOperations {
    */
   readonly readDefaultBranch: (cwd: string) => Effect.Effect<string | null, GitCommandError>;
 
+  /**
+   * `readDefaultBranch`, or, without a local `origin/HEAD` ref, the HEAD that
+   * origin advertises (cached). Null when neither names a branch; callers must
+   * not guess a conventional name, which may be a feature branch.
+   */
+  readonly readAdvertisedDefaultBranch: (cwd: string) => Effect.Effect<string | null>;
+
   readonly readConfigValue: (
     cwd: string,
     key: string,

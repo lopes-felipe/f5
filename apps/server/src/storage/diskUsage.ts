@@ -2,10 +2,16 @@ import {
   parseAttachmentIdFromRelativePath,
   parseThreadSegmentFromAttachmentId,
 } from "../attachmentStore.ts";
-import * as FS from "node:fs/promises";
-import type { Stats, Dirent } from "node:fs";
+import * as NodeFS from "node:fs/promises";
+import { createRequire } from "node:module";
+import type { Stats, BigIntStats, Dirent } from "node:fs";
 import * as Path from "node:path";
 import type { StoragePathWarning } from "@t3tools/contracts";
+// Electron's fs treats *.asar files as directories and retains archive handles.
+// Ordinary filesystem semantics also apply to legacy and per-target measurements.
+const FS: typeof NodeFS = process.versions.electron
+  ? createRequire(import.meta.url)("original-fs").promises
+  : NodeFS;
 
 export interface DiskUsageResult {
   readonly bytes: number;
@@ -53,8 +59,46 @@ async function fsCall<A>(call: () => Promise<A>, signal?: AbortSignal): Promise<
     else activeCalls--;
   }
 }
+/** Bun 1.3.9 truncates numeric stat timestamps; its nanosecond fields remain exact. */
+export function normalizeStorageStat(stat: BigIntStats): Stats {
+  const milliseconds = (ns: bigint) => {
+    const seconds = ns / 1_000_000_000n;
+    return Number(seconds) * 1_000 + Number(ns % 1_000_000_000n) / 1_000_000;
+  };
+  return {
+    dev: Number(stat.dev),
+    ino: Number(stat.ino),
+    mode: Number(stat.mode),
+    nlink: Number(stat.nlink),
+    uid: Number(stat.uid),
+    gid: Number(stat.gid),
+    rdev: Number(stat.rdev),
+    size: Number(stat.size),
+    blksize: Number(stat.blksize),
+    blocks: Number(stat.blocks),
+    atimeMs: milliseconds(stat.atimeNs),
+    mtimeMs: milliseconds(stat.mtimeNs),
+    ctimeMs: milliseconds(stat.ctimeNs),
+    birthtimeMs: milliseconds(stat.birthtimeNs),
+    atime: stat.atime,
+    mtime: stat.mtime,
+    ctime: stat.ctime,
+    birthtime: stat.birthtime,
+    isFile: () => stat.isFile(),
+    isDirectory: () => stat.isDirectory(),
+    isSymbolicLink: () => stat.isSymbolicLink(),
+    isBlockDevice: () => stat.isBlockDevice(),
+    isCharacterDevice: () => stat.isCharacterDevice(),
+    isFIFO: () => stat.isFIFO(),
+    isSocket: () => stat.isSocket(),
+  };
+}
+const readStorageStat = async (path: string): Promise<Stats> =>
+  process.versions.bun
+    ? normalizeStorageStat(await FS.lstat(path, { bigint: true }))
+    : FS.lstat(path);
 export const storageLstat = (path: string, signal?: AbortSignal): Promise<Stats> =>
-  fsCall(() => FS.lstat(path), signal);
+  fsCall(() => readStorageStat(path), signal);
 export function storageReadDir(
   path: string,
   options?: undefined,
@@ -111,7 +155,7 @@ export async function walkTree(
     readonly onEntry: (entry: WalkEntry) => void;
   },
 ): Promise<ReadonlyArray<StoragePathWarning>> {
-  const fs = options.fs ?? FS;
+  const fs = options.fs ?? { lstat: readStorageStat, readdir: FS.readdir };
   const checkpoints = new Set((options.checkpoints ?? []).map((path) => Path.resolve(path)));
   const uniqueRoots = [...new Set(roots.map((path) => Path.resolve(path)))].filter(
     (root, _, all) => !all.some((other) => other !== root && within(other, root)),
@@ -215,6 +259,7 @@ export async function measureTree(
   options: DiskUsageOptions & {
     readonly checkpoints: ReadonlyArray<string>;
     readonly onEntry?: (entry: WalkEntry) => void;
+    readonly allowPartial?: boolean;
   },
 ) {
   const byCheckpoint = new Map(
@@ -237,6 +282,12 @@ export async function measureTree(
         }
       }
     },
+  }).catch((error: unknown) => {
+    if (!options.allowPartial || !options.signal?.aborted) throw error;
+    return roots.map((path) => ({
+      path,
+      reason: "Storage measurement time budget reached; results are partial.",
+    }));
   });
   return { totalBytes, entries, byCheckpoint, warnings };
 }
