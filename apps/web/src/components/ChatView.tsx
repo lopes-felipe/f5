@@ -120,7 +120,10 @@ import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
 } from "@t3tools/contracts";
-import { getMessageTextLengthIssue } from "@t3tools/shared/providerInput";
+import {
+  getMessageTextLengthIssue,
+  getThreadReferenceLimitIssue,
+} from "@t3tools/shared/providerInput";
 import { formatByteSize } from "@t3tools/shared/byteSize";
 import {
   createModelSelection,
@@ -5583,10 +5586,9 @@ export default memo(function ChatView({
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
     const outgoingMessageText = messageTextForSend || IMAGE_ONLY_BOOTSTRAP_PROMPT;
-    const inputLengthIssue = getMessageTextLengthIssue(
-      outgoingMessageText,
-      sendLimits.maxInputChars,
-    );
+    const inputLengthIssue =
+      getMessageTextLengthIssue(outgoingMessageText, sendLimits.maxInputChars) ??
+      getThreadReferenceLimitIssue(outgoingMessageText);
     if (inputLengthIssue) {
       setThreadError(threadIdForSend, inputLengthIssue.message);
       sendInFlightRef.current = false;
@@ -6090,10 +6092,9 @@ export default memo(function ChatView({
           providerSkills: selectedProviderSnapshot?.skills,
         },
       );
-      const inputLengthIssue = getMessageTextLengthIssue(
-        outgoingMessageText,
-        getServerSendLimits().maxInputChars,
-      );
+      const inputLengthIssue =
+        getMessageTextLengthIssue(outgoingMessageText, getServerSendLimits().maxInputChars) ??
+        getThreadReferenceLimitIssue(outgoingMessageText);
       if (inputLengthIssue) {
         setThreadError(threadIdForSend, inputLengthIssue.message);
         return;

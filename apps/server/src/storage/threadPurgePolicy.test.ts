@@ -52,6 +52,26 @@ it.layer(SqlitePersistenceMemory)("thread purge schema coverage", (it) => {
       }),
   );
 
+  it.effect("drops grants other threads hold on a purged thread", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const at = "2026-01-01T00:00:00.000Z";
+      for (const threadId of ["holder", "other"])
+        yield* sql`INSERT INTO projection_threads(thread_id,project_id,title,model,created_at,last_interaction_at,updated_at)
+          VALUES(${threadId},'p','t','m',${at},${at},${at})`;
+      yield* sql`INSERT INTO thread_reference_grants(thread_id,target_thread_id,message_id,created_at)
+        VALUES('holder','purged','m1',${at}), ('holder','kept','m1',${at}), ('other','purged','m2',${at})`;
+      const deleted = yield* threadPurgeHandlers.thread_reference_grants(
+        sql,
+        ThreadId.makeUnsafe("purged"),
+      );
+      assert.equal(deleted.length, 2);
+      assert.deepStrictEqual(yield* sql`SELECT target_thread_id FROM thread_reference_grants`, [
+        { target_thread_id: "kept" },
+      ]);
+    }),
+  );
+
   it.effect("drops a purged thread's upstream port links and bumps the links version", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

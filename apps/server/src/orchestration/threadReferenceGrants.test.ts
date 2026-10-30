@@ -79,6 +79,48 @@ describe("authorizedReferencesForDispatch", () => {
   });
 });
 
+describe("workflow stages and literal references", () => {
+  const model = readModel({
+    planningWorkflows: [
+      planningWorkflow({
+        requirementPrompt: `Plan using ${ref("source")}`,
+        authorThreadId: "caller",
+      }),
+    ],
+  });
+
+  it("tells every stage about the request's references, even when its prompt names none", () => {
+    for (const submissionSource of ["automation", "human"] as const) {
+      expect(
+        authorizedReferencesForDispatch({
+          text: "Review the plan below.",
+          submissionSource,
+          readModel: model,
+          threadId: "caller",
+        }),
+      ).toEqual(["source"]);
+    }
+    const input = projectProviderInput({
+      text: "Review the plan below.",
+      submissionSource: "automation",
+      readModel: model,
+      threadId: "caller",
+    });
+    expect(input).toContain("- threadId: source");
+  });
+
+  it("ignores references a person pasted inside code", () => {
+    expect(
+      authorizedReferencesForDispatch({
+        text: `Logs:\n\`\`\`\n${ref("other")}\n\`\`\`\nand \`${ref("other")}\``,
+        submissionSource: "human",
+        readModel: readModel(),
+        threadId: "caller",
+      }),
+    ).toEqual([]);
+  });
+});
+
 describe("workflowRequirementReferences", () => {
   it("grants a workflow's stage threads the references in its request only", () => {
     const model = readModel({

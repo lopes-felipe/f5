@@ -4027,12 +4027,14 @@ it.effect("writes thread reference grants only for explicitly human-stamped mess
     yield* projectionPipeline.bootstrap;
     const refs =
       "[Self](f5://thread/grant-thread) [Source](f5://thread/source) [Other](f5-dev://thread/other)";
+    // A human slash command never grants: the provider parses it, so no block reaches the agent.
     const stamps = [
-      ["human", "human"],
-      ["bot", "automation"],
-      ["unstamped", null],
+      ["human", "human", `Use ${refs}`],
+      ["command", "human", `/compact ${refs}`],
+      ["bot", "automation", `Use ${refs}`],
+      ["unstamped", null, `Use ${refs}`],
     ] as const;
-    for (const [id, source] of stamps) {
+    for (const [id, source, text] of stamps) {
       const commandId = CommandId.makeUnsafe(`cmd-${id}`);
       if (source)
         yield* sql`INSERT INTO provider_submission_provenance(command_id, thread_id, source, created_at)
@@ -4047,7 +4049,7 @@ it.effect("writes thread reference grants only for explicitly human-stamped mess
           threadId,
           messageId: MessageId.makeUnsafe(`message-${id}`),
           role: "user",
-          text: `Use ${refs}`,
+          text,
           turnId: null,
           streaming: false,
           createdAt: now,

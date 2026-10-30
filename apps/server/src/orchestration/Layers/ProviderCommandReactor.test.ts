@@ -67,7 +67,6 @@ import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { stampSubmissionSource } from "../../provider/submissionProvenance.ts";
 import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
-import { THREAD_REFERENCE_CONTEXT_MAX_CHARS } from "@t3tools/shared/threadReferences";
 import {
   ProviderService,
   type ProviderServiceShape,
@@ -1601,8 +1600,9 @@ describe("ProviderCommandReactor", () => {
 
     it("fails a near-limit start and steer as not sent before the provider", async () => {
       const harness = await createHarness({ withSql: true });
-      // Fits the raw provider limit, but not with room for the reference block.
-      const text = `${reference}${"x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS - THREAD_REFERENCE_CONTEXT_MAX_CHARS)}`;
+      // Fits the raw provider limit, but not once the reference block is appended.
+      const text = `${reference}${"x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS - reference.length - 100)}`;
+      expect(getProviderTurnInputLengthIssue(text)).toBeNull();
       await startWithReference(harness, "long", text, "human");
       await waitFor(async () => {
         const readModel = await Effect.runPromise(harness.engine.getReadModel());
@@ -1621,9 +1621,7 @@ describe("ProviderCommandReactor", () => {
       if (!start || start.type !== "thread.turn-start-requested")
         throw new Error("Missing turn start intent.");
       // A steer with the same text fills the provider input past its limit.
-      const longer = `${text}${"y".repeat(THREAD_REFERENCE_CONTEXT_MAX_CHARS - 200)}`;
-      expect(getProviderTurnInputLengthIssue(longer)).toBeNull();
-      await startWithReference(harness, "steer", longer, "human");
+      await startWithReference(harness, "steer", text, "human");
       const steer = {
         ...start,
         type: "thread.turn-steer-requested" as const,

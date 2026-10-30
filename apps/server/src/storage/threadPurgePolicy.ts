@@ -124,6 +124,9 @@ export const threadPurgePolicy: Readonly<
 
 /** Static SQL handlers; schema introspection must never determine what gets deleted. */
 export const threadPurgeHandlers = {
+  // Grants held by the purged thread cascade; grants other threads hold on it go here.
+  thread_reference_grants: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
+    sql`DELETE FROM thread_reference_grants WHERE rowid IN (SELECT rowid FROM thread_reference_grants WHERE target_thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
   upstream_port_reviews: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
     sql`DELETE FROM upstream_port_reviews WHERE port_thread_id = ${threadId} RETURNING rowid`,
   native_history_retired_turns: (sql: SqlClient.SqlClient, threadId: ThreadId) =>

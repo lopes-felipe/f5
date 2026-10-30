@@ -369,7 +369,10 @@ import {
 import { isPrivateHttpPath, makeServerAuth } from "./serverAuth.ts";
 import { getReviewPreviewDiff } from "./git/ReviewDiffService.ts";
 import { decodeJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
-import { getMessageTextLengthIssue } from "@t3tools/shared/providerInput";
+import {
+  getMessageTextLengthIssue,
+  getThreadReferenceLimitIssue,
+} from "@t3tools/shared/providerInput";
 import { CodexControlClientRegistry } from "./codex/CodexControlClientRegistry.ts";
 import { CodexMcpEventBus } from "./codex/CodexMcpEventBus.ts";
 import { CodexMcpSyncService } from "./codex/CodexMcpSyncService.ts";
@@ -1527,7 +1530,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       input.command as typeof input.command & {
         readonly dispatchSource?: unknown;
       };
-    const inputLengthIssue = getMessageTextLengthIssue(turnStartCommand.message.text);
+    const inputLengthIssue =
+      getMessageTextLengthIssue(turnStartCommand.message.text) ??
+      getThreadReferenceLimitIssue(turnStartCommand.message.text);
     if (inputLengthIssue) {
       return yield* new RouteRequestError({
         message: inputLengthIssue.message,

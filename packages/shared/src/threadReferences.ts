@@ -77,18 +77,140 @@ export interface ThreadReferenceMatch {
   readonly threadId: string;
 }
 
-/** Every thread reference in `text`, in order and without overlaps. */
+const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+const PUNCTUATION = /[!-/:-@[-`{-~]/;
+
+/** Line ranges of closed fenced code blocks, as `[start, end)` offsets into `text`. */
+function fencedBlockRanges(text: string): Array<readonly [number, number]> {
+  const lines: Array<{ readonly start: number; readonly end: number; readonly next: number }> = [];
+  for (let start = 0; start <= text.length; ) {
+    const newline = text.indexOf("\n", start);
+    const end = newline === -1 ? text.length : newline;
+    lines.push({ start, end, next: newline === -1 ? text.length : newline + 1 });
+    if (newline === -1) break;
+    start = newline + 1;
+  }
+  const ranges: Array<readonly [number, number]> = [];
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!;
+    const open = FENCE_OPEN.exec(text.slice(line.start, line.end));
+    const token = open?.[1];
+    // A backtick fence's info string may not contain backticks (```a``` is a code span).
+    if (!token || (token[0] === "`" && open[2]?.includes("`"))) continue;
+    const closer = new RegExp(`^ {0,3}\\${token[0]}{${token.length},}\\s*$`);
+    for (let close = index + 1; close < lines.length; close++) {
+      const candidate = lines[close]!;
+      if (!closer.test(text.slice(candidate.start, candidate.end))) continue;
+      ranges.push([line.start, candidate.next]);
+      index = close;
+      break;
+    }
+  }
+  return ranges;
+}
+
+/**
+ * Every thread reference in `text`, in order and without overlaps. A reference inside a code
+ * span or fenced block is literal text, the same as the message bubble shows it, so pasted docs
+ * and logs never reference a thread.
+ */
 export function threadReferenceMatches(text: string): ThreadReferenceMatch[] {
   if (!text.includes("://thread/")) return [];
   const matches: ThreadReferenceMatch[] = [];
-  for (const match of text.matchAll(threadReferencePattern())) {
-    const label = match[1];
-    const threadId = match[3];
-    if (!label || !threadId || isReservedThreadRoute(threadId)) continue;
-    const start = match.index;
-    matches.push({ start, end: start + match[0].length, raw: match[0], label, threadId });
+  const reference = threadReferencePattern("y");
+  const fences = text.includes("```") || text.includes("~~~") ? fencedBlockRanges(text) : [];
+  // A run length that found no closer has none later in that paragraph either (the later run
+  // would have closed it), so each length is scanned at most once per paragraph.
+  const unclosable = new Map<number, number>();
+  let paragraphEnd = -1;
+  let fence = 0;
+  let index = 0;
+  while (index < text.length) {
+    const block = fences[fence];
+    if (block && index >= block[0]) {
+      index = Math.max(index, block[1]);
+      fence++;
+      continue;
+    }
+    const limit = block ? block[0] : text.length;
+    const char = text[index];
+    if (char === "\\" && PUNCTUATION.test(text[index + 1] ?? "")) {
+      index += 2;
+      continue;
+    }
+    if (char === "[") {
+      reference.lastIndex = index;
+      const match = reference.exec(text);
+      const label = match?.[1];
+      const threadId = match?.[3];
+      if (match && label && threadId && !isReservedThreadRoute(threadId)) {
+        const end = index + match[0].length;
+        matches.push({ start: index, end, raw: match[0], label, threadId });
+        index = end;
+        continue;
+      }
+    }
+    if (char === "`") {
+      let run = 1;
+      while (text[index + run] === "`") run++;
+      // A code span closes with a run of exactly the same length within the paragraph.
+      if (paragraphEnd < index) {
+        const next = text.indexOf("\n\n", index);
+        paragraphEnd = next === -1 ? text.length : next;
+      }
+      const end = Math.min(limit, paragraphEnd);
+      if (unclosable.get(run) === end) {
+        index += run;
+        continue;
+      }
+      let close = text.indexOf("`", index + run);
+      while (close !== -1 && close < end) {
+        let closeRun = 1;
+        while (text[close + closeRun] === "`") closeRun++;
+        if (closeRun === run) break;
+        close = text.indexOf("`", close + closeRun);
+      }
+      if (close !== -1 && close < end) {
+        index = close + run;
+      } else {
+        unclosable.set(run, end);
+        index += run;
+      }
+      continue;
+    }
+    index++;
   }
   return matches;
+}
+
+// `/command` or `$skill` at the start. A pasted absolute path (`/Users/me/…`) is not a command.
+const COMMAND_INPUT = /^\s*(?:\/[A-Za-z][\w:-]*(?:\s|$)|\$[A-Za-z])/;
+
+/**
+ * True when `text` is a slash command or skill invocation. Providers parse those themselves, so
+ * F5 neither appends referenced-thread context to them nor lets their references grant access.
+ */
+export function isThreadReferenceCommandInput(text: string): boolean {
+  return COMMAND_INPUT.test(text);
+}
+
+/**
+ * The threads a message effectively references: what grants are written for and what the
+ * referenced-thread block lists. Commands reference nothing.
+ */
+export function effectiveThreadReferenceIds(
+  text: string,
+  options: { readonly exclude?: string } = {},
+): string[] {
+  return isThreadReferenceCommandInput(text) ? [] : referencedThreadIds([text], options);
+}
+
+/** True when `text` references more distinct threads than one message may. */
+export function exceedsThreadReferenceLimit(text: string): boolean {
+  return (
+    new Set(threadReferenceMatches(text).map((match) => match.threadId)).size >
+    THREAD_REFERENCE_MAX_PER_MESSAGE
+  );
 }
 
 /** The distinct thread ids `texts` reference, in order of first appearance and capped. */

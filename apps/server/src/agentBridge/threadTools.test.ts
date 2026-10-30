@@ -737,5 +737,11 @@ layer("Agent Bridge thread tools", (it) => {
   it("truncates on a UTF-8 boundary", () => {
     const value = truncateUtf8("ééé", 5);
     assert.deepStrictEqual(value, { text: "éé", truncated: true });
+    // Real replacement characters are text, not a partial sequence to drop.
+    assert.deepStrictEqual(truncateUtf8("�".repeat(4), 7), {
+      text: "��",
+      truncated: true,
+    });
+    assert.deepStrictEqual(truncateUtf8("a😀", 4), { text: "a", truncated: true });
   });
 });

@@ -58,10 +58,7 @@ import {
 import { Cause, Effect, Layer, Option, Schema, Scope, Stream } from "effect";
 import { makeBackgroundWorker } from "../../backgroundWorker.ts";
 import { estimateMessageContextCharacters, inferProviderForModel } from "@t3tools/shared/model";
-import {
-  getMessageTextLengthIssue,
-  getProviderTurnInputLengthIssue,
-} from "@t3tools/shared/providerInput";
+import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
 import { threadReferencesToLabels } from "@t3tools/shared/threadReferences";
 import { projectProviderInput } from "../threadReferenceGrants.ts";
 import {
@@ -1832,7 +1829,7 @@ const make = Effect.gen(function* () {
           )
         : undefined;
     // A native continuation's fixed prompt carries no references, so it skips reference work.
-    const providerInput =
+    const projectedInput =
       event.type === "thread.turn-start-requested" && event.payload.continuationRequestId
         ? message.text
         : projectProviderInput({
@@ -1841,6 +1838,15 @@ const make = Effect.gen(function* () {
             readModel: yield* orchestrationEngine.getReadModel(),
             threadId: thread.id,
           });
+    // A person's message was admitted with room for the block. An automation prompt was not, so
+    // when the workflow's references would push it past the limit it goes without them.
+    const providerInput =
+      submissionSource !== "human" &&
+      projectedInput !== message.text &&
+      getProviderTurnInputLengthIssue(projectedInput) &&
+      !getProviderTurnInputLengthIssue(message.text)
+        ? message.text
+        : projectedInput;
     if (event.type === "thread.turn-steer-requested") {
       const steerInputLengthIssue = getProviderTurnInputLengthIssue(providerInput);
       if (steerInputLengthIssue)
@@ -1893,8 +1899,8 @@ const make = Effect.gen(function* () {
       });
     }
 
-    const inputLengthIssue =
-      getMessageTextLengthIssue(message.text) ?? getProviderTurnInputLengthIssue(providerInput);
+    // The reference reserve is enforced where people send; here only the final input counts.
+    const inputLengthIssue = getProviderTurnInputLengthIssue(providerInput);
     if (inputLengthIssue) {
       yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,

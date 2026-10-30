@@ -1,6 +1,23 @@
 import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS } from "@t3tools/contracts";
 
-import { THREAD_REFERENCE_CONTEXT_MAX_CHARS, threadReferenceMatches } from "./threadReferences";
+import {
+  exceedsThreadReferenceLimit,
+  THREAD_REFERENCE_CONTEXT_MAX_CHARS,
+  THREAD_REFERENCE_MAX_PER_MESSAGE,
+  threadReferenceMatches,
+} from "./threadReferences";
+
+/**
+ * Why a message references too many threads to send, or null. Past the cap a reference would
+ * still show as a chip but the agent could not read it, so the send is refused instead.
+ */
+export function getThreadReferenceLimitIssue(text: string): { readonly message: string } | null {
+  return exceedsThreadReferenceLimit(text)
+    ? {
+        message: `A message can reference up to ${THREAD_REFERENCE_MAX_PER_MESSAGE} threads. Remove some thread references and send again.`,
+      }
+    : null;
+}
 
 export interface ProviderTurnInputLengthIssue {
   readonly actualChars: number;

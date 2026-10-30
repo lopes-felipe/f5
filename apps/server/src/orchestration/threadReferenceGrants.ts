@@ -1,5 +1,7 @@
 import type { OrchestrationReadModel, ThreadId } from "@t3tools/contracts";
 import {
+  effectiveThreadReferenceIds,
+  isThreadReferenceCommandInput,
   referencedThreadIds,
   THREAD_REFERENCE_CONTEXT_MAX_CHARS,
 } from "@t3tools/shared/threadReferences";
@@ -42,9 +44,10 @@ export function workflowRequirementReferences(
 }
 
 /**
- * The references in a message's text the receiving agent may read. Everything a person sent is
- * authorized; automation (Bots, scheduled runs, workflow stages) only carries references the
- * workflow's human-entered request already names.
+ * The threads the receiving agent may read and is told about for one message. Everything a
+ * person references in it is authorized. Every turn of a planning or document workflow stage
+ * also carries the references in the workflow's human-entered request, whether or not the
+ * stage's own (generated) prompt repeats them. Automation text never adds references.
  */
 export function authorizedReferencesForDispatch(input: {
   readonly text: string;
@@ -52,11 +55,11 @@ export function authorizedReferencesForDispatch(input: {
   readonly readModel: Pick<OrchestrationReadModel, "planningWorkflows">;
   readonly threadId: string;
 }): string[] {
-  const references = referencedThreadIds([input.text], { exclude: input.threadId });
-  if (input.submissionSource === "human") return references;
-  if (references.length === 0) return references;
-  const allowed = new Set(workflowRequirementReferences(input.readModel, input.threadId));
-  return references.filter((threadId) => allowed.has(threadId));
+  const own =
+    input.submissionSource === "human"
+      ? effectiveThreadReferenceIds(input.text, { exclude: input.threadId })
+      : [];
+  return [...new Set([...own, ...workflowRequirementReferences(input.readModel, input.threadId)])];
 }
 
 const CONTEXT_OPEN = "\n\n<f5-thread-references>";
@@ -89,12 +92,10 @@ export function buildThreadReferenceContext(
   return `${head}${lines}${CONTEXT_CLOSE}`;
 }
 
-// `/command` or `$skill` at the start. A pasted absolute path (`/Users/me/…`) is not a command.
-const COMMAND_INPUT = /^\s*(?:\/[A-Za-z][\w:-]*(?:\s|$)|\$[A-Za-z])/;
-
 /**
  * The text a message sends to its provider: the stored text plus the referenced-thread block.
- * Slash commands and skill invocations go through untouched so the provider still parses them.
+ * Slash commands and skill invocations go through untouched so the provider still parses them;
+ * their references never write grants either.
  */
 export function projectProviderInput(input: {
   readonly text: string;
@@ -102,7 +103,7 @@ export function projectProviderInput(input: {
   readonly readModel: ReferenceReadModel;
   readonly threadId: string;
 }): string {
-  if (COMMAND_INPUT.test(input.text)) return input.text;
+  if (isThreadReferenceCommandInput(input.text)) return input.text;
   const refs = authorizedReferencesForDispatch(input);
   if (refs.length === 0) return input.text;
   // Trailing whitespace goes, so the input matches the trimmed length the message check measured.

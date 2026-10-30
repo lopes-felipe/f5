@@ -1,7 +1,11 @@
 import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
-import { getMessageTextLengthIssue, getProviderTurnInputLengthIssue } from "./providerInput";
+import {
+  getMessageTextLengthIssue,
+  getProviderTurnInputLengthIssue,
+  getThreadReferenceLimitIssue,
+} from "./providerInput";
 import { THREAD_REFERENCE_CONTEXT_MAX_CHARS } from "./threadReferences";
 
 describe("getProviderTurnInputLengthIssue", () => {
@@ -22,6 +26,15 @@ describe("getProviderTurnInputLengthIssue", () => {
     });
     expect(issue?.message).toContain("120,000 character provider input limit");
     expect(issue?.message.length).toBeLessThan(240);
+  });
+});
+
+describe("getThreadReferenceLimitIssue", () => {
+  it("refuses more distinct thread references than one message may carry", () => {
+    const refs = (count: number) =>
+      Array.from({ length: count }, (_, index) => `[T](f5://thread/t${index})`).join(" ");
+    expect(getThreadReferenceLimitIssue(refs(10))).toBe(null);
+    expect(getThreadReferenceLimitIssue(refs(11))?.message).toContain("up to 10 threads");
   });
 });
 

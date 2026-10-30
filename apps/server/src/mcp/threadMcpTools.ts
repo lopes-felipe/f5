@@ -321,7 +321,12 @@ export async function callThreadTool(
     const text = stringifyWithinBytes(result.value, THREAD_READ_RESULT_MAX_BYTES);
     return text === undefined
       ? {
-          content: [{ type: "text", text: "The referenced thread could not be read. Retry." }],
+          content: [
+            {
+              type: "text",
+              text: "This part of the referenced thread is too large to return. Read a smaller page with `limit`, or continue one message or plan with `item`.",
+            },
+          ],
           isError: true,
         }
       : { content: [{ type: "text", text }] };

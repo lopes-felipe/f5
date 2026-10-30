@@ -349,11 +349,13 @@ layer("thread_read", (it) => {
     }),
   );
 
-  it.effect("keeps escaped item chunks within the result cap", () =>
+  it.effect.each<readonly [string, string]>([
+    ["backslashes", "\\".repeat(20_000)],
+    ["replacement characters", "�".repeat(20_000)],
+  ])("keeps %s item chunks within the result cap and always advances", ([, text]) =>
     Effect.gen(function* () {
       const t = yield* setup();
       yield* t.grant({ threadId: "caller", target: "source", messageId: "g-escape" });
-      const text = "\\".repeat(20_000);
       yield* t.addMessage({ threadId: "source", id: "slashes", text, createdAt: at(1) });
       let offset = 0;
       let read = "";
@@ -367,6 +369,7 @@ layer("thread_read", (it) => {
         assert.isAtMost(Buffer.byteLength(wrapped), THREAD_READ_RESULT_MAX_BYTES);
         read += item.item.text;
         if (item.item.nextOffset === null) break;
+        assert.isAbove(item.item.nextOffset, offset);
         offset = item.item.nextOffset;
       }
       assert.equal(read, text);

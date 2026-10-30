@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  effectiveThreadReferenceIds,
+  exceedsThreadReferenceLimit,
   formatThreadReference,
+  isThreadReferenceCommandInput,
   isThreadReferenceId,
   referencedThreadIds,
   sanitizeThreadReferenceLabel,
@@ -47,6 +50,51 @@ describe("threadReferenceMatches", () => {
     expect(threadReferenceMatches("[`fix` **now**](f5://thread/t1)")[0]?.label).toBe(
       "`fix` **now**",
     );
+  });
+});
+
+describe("references in code", () => {
+  const ref = "[A](f5://thread/a)";
+
+  it("treats references in code spans and closed fences as literal text", () => {
+    expect(threadReferenceMatches(`\`${ref}\` and \`\`x \` ${ref}\`\``)).toEqual([]);
+    expect(threadReferenceMatches(`Look:\n\`\`\`md\n${ref}\n\`\`\`\nthen ${ref}`)).toEqual([
+      expect.objectContaining({ threadId: "a", start: 40 }),
+    ]);
+    expect(threadReferenceMatches(`~~~~\n${ref}\n~~~~`)).toEqual([]);
+  });
+
+  it("keeps references outside unclosed code and next to escaped backticks", () => {
+    expect(threadReferenceMatches(`\`open ${ref}`)).toHaveLength(1);
+    expect(threadReferenceMatches(`\`\`\`\n${ref}`)).toHaveLength(1);
+    expect(threadReferenceMatches(`\\\`${ref}\\\``)).toHaveLength(1);
+    // A span cannot cross a blank line.
+    expect(threadReferenceMatches(`\`a\n\n${ref}\``)).toHaveLength(1);
+  });
+
+  it("stays fast on adversarial backtick runs", () => {
+    const text = `${Array.from({ length: 400 }, (_, index) => "`".repeat(index + 1)).join(" a ")} ${ref}`;
+    const started = performance.now();
+    expect(threadReferenceMatches(text)).toHaveLength(1);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+});
+
+describe("commands and the reference limit", () => {
+  it("never lets a command reference a thread", () => {
+    const ref = "[A](f5://thread/a)";
+    expect(isThreadReferenceCommandInput(`/compact ${ref}`)).toBe(true);
+    expect(isThreadReferenceCommandInput(` $review ${ref}`)).toBe(true);
+    expect(isThreadReferenceCommandInput(`/Users/me/notes.md ${ref}`)).toBe(false);
+    expect(effectiveThreadReferenceIds(`/compact ${ref}`)).toEqual([]);
+    expect(effectiveThreadReferenceIds(`See ${ref}`, { exclude: "b" })).toEqual(["a"]);
+  });
+
+  it("detects more distinct references than one message may carry", () => {
+    const refs = (count: number) =>
+      Array.from({ length: count }, (_, index) => `[T](f5://thread/t${index})`).join(" ");
+    expect(exceedsThreadReferenceLimit(refs(THREAD_REFERENCE_MAX_PER_MESSAGE))).toBe(false);
+    expect(exceedsThreadReferenceLimit(refs(THREAD_REFERENCE_MAX_PER_MESSAGE + 1))).toBe(true);
   });
 });
 

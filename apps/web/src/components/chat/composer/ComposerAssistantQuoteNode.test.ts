@@ -15,6 +15,15 @@ it("bounds quotes and serializes every line as a portable blockquote", () => {
     serializeAssistantQuote({ messageId: "a", text: "x".repeat(5000), comment: "" }),
   ).toHaveLength(4002);
 });
+it("quotes the agent's thread references as plain labels so they never grant access", () => {
+  expect(
+    serializeAssistantQuote({
+      messageId: "a",
+      text: "Read [Other project](f5://thread/secret-thread)",
+      comment: "Also see [Mine](f5://thread/mine)",
+    }),
+  ).toBe("> Read Other project\n\nAlso see [Mine](f5://thread/mine)");
+});
 it("round-trips quote metadata through Lexical while keeping plain draft text usable", () => {
   const editor = createEditor({
     nodes: [ComposerAssistantQuoteNode],
