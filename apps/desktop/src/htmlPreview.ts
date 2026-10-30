@@ -5,7 +5,7 @@ import {
   HtmlPreviewRequest,
   type HtmlPreviewResult,
 } from "@t3tools/contracts";
-import { htmlRenderDocument } from "@t3tools/shared/htmlRender";
+import { HTML_RENDER_MEASURE_SOURCE, htmlRenderDocument } from "@t3tools/shared/htmlRender";
 import { Schema } from "effect";
 
 export const HTML_PREVIEW_CHANNEL = "desktop:html-preview";
@@ -22,6 +22,7 @@ export function createHtmlPreviewRenderer() {
     const slot = busy.has(0) ? 1 : 0;
     busy.add(slot);
     let window: BrowserWindow | undefined;
+    let debuggerAttached = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       window = new BrowserWindow({
@@ -53,19 +54,33 @@ export function createHtmlPreviewRenderer() {
         if (consoleMessages.length < 100) consoleMessages.push(details.message.slice(0, 1000));
       });
       const render = async (): Promise<HtmlPreviewResult> => {
-        // Agent-requested and unattended, so remote content never loads here.
-        const html = htmlRenderDocument(input.html, {
-          appearance: input.appearance,
-          variables: {
-            "--background": input.appearance === "light" ? "#ffffff" : "#18181b",
-            "--foreground": input.appearance === "light" ? "#18181b" : "#fafafa",
+        // Agent-requested and unattended, so remote content never loads here. The reader's
+        // theme comes with the request; older renderers send none and get these defaults.
+        const html = htmlRenderDocument(
+          input.html,
+          input.theme ?? {
+            appearance: input.appearance,
+            variables: {
+              "--background": input.appearance === "light" ? "#ffffff" : "#18181b",
+              "--foreground": input.appearance === "light" ? "#18181b" : "#fafafa",
+            },
           },
-        });
+        );
         await owner.webContents.session.clearStorageData();
         if (owner.isDestroyed()) return unavailable("HTML preview was cancelled.");
+        // Best effort: without emulation the page still gets the theme's CSS variables.
+        try {
+          owner.webContents.debugger.attach("1.3");
+          debuggerAttached = true;
+          await owner.webContents.debugger.sendCommand("Emulation.setEmulatedMedia", {
+            features: [{ name: "prefers-color-scheme", value: input.appearance }],
+          });
+        } catch {
+          /* prefers-color-scheme follows the system instead. */
+        }
         await owner.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
         const height: unknown = await owner.webContents.executeJavaScript(
-          "document.fonts.ready.then(()=>Math.ceil(Math.max(document.documentElement.scrollHeight,document.body?.scrollHeight||1)))",
+          `document.fonts.ready.then(()=>${HTML_RENDER_MEASURE_SOURCE})`,
         );
         const contentHeight =
           typeof height === "number" && Number.isFinite(height)
@@ -107,6 +122,13 @@ export function createHtmlPreviewRenderer() {
       return unavailable("The desktop could not render this HTML preview.");
     } finally {
       if (timer) clearTimeout(timer);
+      if (debuggerAttached && window && !window.isDestroyed()) {
+        try {
+          window.webContents.debugger.detach();
+        } catch {
+          /* Destroying the window detaches it anyway. */
+        }
+      }
       if (window && !window.isDestroyed()) window.destroy();
       busy.delete(slot);
     }
