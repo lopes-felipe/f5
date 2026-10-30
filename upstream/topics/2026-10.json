@@ -803,6 +803,30 @@
       "upstreamPrs": []
     },
     {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "decidedAt": "2026-10-30T11:04:20.788Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "c-da8cc591dadd",
+      "reason": "Comment and test fixes only. Users see no change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "ci"
+        ],
+        "confidence": 0.97,
+        "model": "claude-opus-5-5",
+        "reason": "Comment and test fixes only. Users see no change.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Edits a comment in ClaudeAdapterV2 and adjusts two tests to repair main after a burst of merges.",
+      "title": "Upstream CI repair after a merge burst",
+      "upstreamPrs": []
+    },
+    {
       "createdAt": "2026-10-26T17:31:50.643Z",
       "decidedAt": "2026-10-28T21:02:45.718Z",
       "decidedBy": "user",
@@ -25950,6 +25974,29 @@
       ]
     },
     {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "epoch": 1,
+      "id": "pr-19941",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "diff",
+          "git",
+          "forges"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "This is a user-visible review capability in f5's diff panel. Reimplement it in f5's git layer, and leave out the GitCafe link handling.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Adds bounded commit browsing and per-file reads to the Diff pane. Commit links from GitHub, GitLab, Forgejo/Gitea, Bitbucket and Azure DevOps open in the current thread after they are checked against the thread's workspace. Tool-call diffs and saved branch comparisons keep working.",
+      "title": "Diff pane can show a single local commit and open code-host commit links",
+      "upstreamPrs": [
+        19941
+      ]
+    },
+    {
       "createdAt": "2026-10-26T13:50:40.934Z",
       "epoch": 1,
       "id": "pr-19945",
@@ -42333,6 +42380,31 @@
       ]
     },
     {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "epoch": 1,
+      "id": "pr-23802",
+      "relatedTopics": [
+        "pr-25700"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git",
+          "worktrees"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "f5 creates worktrees for threads, so a long checkout or hook can be killed the same way and leave Retry broken.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "git worktree add no longer has a fixed 300 s deadline. Large checkouts and slow post-checkout hooks can finish. Before, the kill left an orphaned worktree and branch behind, and Retry failed with branch_already_exists. Cancelling still stops git and its hook.",
+      "title": "Slow worktree checkouts are no longer killed after five minutes",
+      "upstreamPrs": [
+        23802
+      ]
+    },
+    {
       "createdAt": "2026-10-26T14:35:48.824Z",
       "decidedAt": "2026-10-30T00:15:28.566Z",
       "decidedBy": "llm",
@@ -43847,6 +43919,28 @@
       ]
     },
     {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "epoch": 1,
+      "id": "pr-24139",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "usage",
+          "claude"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes Usage under-reporting Claude costs.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Parses advisor_message iterations in Claude transcripts as separate usage records with their own dedupe keys. Bumps the scan cache so existing transcripts are rescanned.",
+      "title": "Usage counts Claude advisor calls under the advisor model",
+      "upstreamPrs": [
+        24139
+      ]
+    },
+    {
       "createdAt": "2026-10-26T14:35:48.824Z",
       "epoch": 1,
       "id": "pr-24172",
@@ -44028,6 +44122,28 @@
       "upstreamPrs": [
         24206,
         24951
+      ]
+    },
+    {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "epoch": 1,
+      "id": "pr-24209",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "sidebar",
+          "accessibility"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "A small accessibility fix. f5 would use its own branding text.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Changes the logo link's aria-label from 'Go to threads' to 'T3 Code home'.",
+      "title": "Sidebar logo link is named T3 Code home",
+      "upstreamPrs": [
+        24209
       ]
     },
     {
@@ -44625,6 +44741,28 @@
       ]
     },
     {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "epoch": 1,
+      "id": "pr-24320",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "claude",
+          "providers"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes Claude threads hanging with no way to recover.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "When Claude Code requests focus on a mod's UI pane that T3 cannot show, the turn fails with an error that names the mod, and the query is closed instead of staying Running forever.",
+      "title": "Claude turns fail clearly when a mod waits for terminal pane input",
+      "upstreamPrs": [
+        24320
+      ]
+    },
+    {
       "createdAt": "2026-10-26T14:35:48.824Z",
       "decidedAt": "2026-10-26T14:35:48.824Z",
       "decidedBy": "rule",
@@ -44787,6 +44925,28 @@
       "title": "fix(mobile): the question card uses the whole screen while the keyboard is closed (#24363)",
       "upstreamPrs": [
         24363
+      ]
+    },
+    {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "epoch": 1,
+      "id": "pr-24392",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "pr hub",
+          "gitlab"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "A performance improvement for the GitLab forge in the PR hub. Reimplement without source-control-* packages.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Caches project merge settings for 15 minutes and MR reads for 60 seconds. Detail and checks share these reads, and writes and refreshes invalidate them. Fewer glab calls are spent from the rate budget.",
+      "title": "GitLab merge request detail and checks share cached reads",
+      "upstreamPrs": [
+        24392
       ]
     },
     {
@@ -45478,6 +45638,28 @@
       ]
     },
     {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "epoch": 1,
+      "id": "pr-24614",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "threads"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "A UX fix for provider error banners in threads.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Provider stream failures pass through the shared provider-failure formatter before they become the session's lastError. Banners show a bounded, redacted message instead of stack traces, and the raw cause goes to the server log.",
+      "title": "Provider runtime failure banners show a readable message",
+      "upstreamPrs": [
+        24614
+      ]
+    },
+    {
       "createdAt": "2026-10-26T14:35:48.824Z",
       "decidedAt": "2026-10-28T22:28:29.041Z",
       "decidedBy": "user",
@@ -45689,6 +45871,27 @@
       "title": "fix(web): signed-out T3 Connect shows a Sign in button (#24636)",
       "upstreamPrs": [
         24636
+      ]
+    },
+    {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "epoch": 1,
+      "id": "pr-24640",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "terminal"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Improves terminal activity reliability on Windows and on loaded hosts.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The Windows PowerShell fallback gets a 15 s timeout, and the next poll waits up to 4x the query time, capped at 60 s. Slow but valid snapshots are kept, and loaded hosts aren't hammered.",
+      "title": "Terminal keeps slow fallback process-table queries and spaces them out",
+      "upstreamPrs": [
+        24640
       ]
     },
     {
@@ -55983,6 +56186,28 @@
       ]
     },
     {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "epoch": 1,
+      "id": "pr-26718",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "mcp",
+          "threads"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "Prevents a destructive mistake by agents using f5's MCP thread tools.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Marks the tool strict, so excess arguments such as threadIds fail validation instead of falling back to archiving the calling thread.",
+      "title": "t3_thread_organize rejects unknown arguments instead of archiving the caller",
+      "upstreamPrs": [
+        26718
+      ]
+    },
+    {
       "createdAt": "2026-10-29T11:02:55.890Z",
       "epoch": 1,
       "id": "pr-26727",
@@ -56139,6 +56364,34 @@
       "title": "Image-only messages show the images instead of the placeholder prompt",
       "upstreamPrs": [
         26769
+      ]
+    },
+    {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "decidedAt": "2026-10-30T11:04:20.788Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-26777",
+      "reason": "Upstream reverted the whole series.",
+      "reasonKey": "reverted",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "composer"
+        ],
+        "confidence": 0.95,
+        "model": "claude-opus-5-5",
+        "reason": "Upstream reverted the whole series.",
+        "reasonKey": "reverted",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Adds a composer rich text/Markdown toggle and shortcut, changes its icon, then reverts both.",
+      "title": "Composer rich text toggle button and mod+/ (reverted)",
+      "upstreamPrs": [
+        26777,
+        27375,
+        27390
       ]
     },
     {
@@ -56846,6 +57099,357 @@
       "title": "Huge checkpoints send at most 200 files to clients, with totals",
       "upstreamPrs": [
         27110
+      ]
+    },
+    {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "epoch": 1,
+      "id": "pr-27141",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "providers",
+          "antigravity"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "A stuck-thread bug that can occur in f5 when it restarts turns for providers that can't steer.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "When Stop takes the 'before provider start' path, it also interrupts the run's still-running provider turn from the superseded attempt. Threads on providers that ignore cancel, such as Antigravity, no longer get stuck for good.",
+      "title": "Stop during a turn restart interrupts the superseded provider turn",
+      "upstreamPrs": [
+        27141
+      ]
+    },
+    {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "epoch": 1,
+      "id": "pr-27176",
+      "relatedTopics": [
+        "pr-23913"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "server",
+          "process",
+          "agents"
+        ],
+        "confidence": 0.45,
+        "model": "claude-opus-5-5",
+        "question": "Does f5 run agents in systemd agent scopes and ship upstream's boot service, so these cgroup protections apply?",
+        "reason": "A reliability fix: agents filling memory froze the server. It applies only if f5 runs agents in systemd scopes. The boot-service and `service protect` parts need f5's background service.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Gives the agents' systemd slice CPUWeight=10, IOWeight=10 and TasksMax=25% at runtime, and gives the boot service MemoryLow=1536M. Adds `t3 service protect`, which uses sudo to set the parent cgroups' memory protection and OOM scores so the server, tunnel and headless browser outlive agents.",
+      "title": "Server keeps priority over agents under CPU, task and memory pressure",
+      "upstreamPrs": [
+        27176,
+        27239
+      ]
+    },
+    {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "epoch": 1,
+      "id": "pr-27221",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "queue",
+          "scheduled tasks",
+          "orchestration"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Messages from f5's scheduler and MCP-driven threads can stall the same way. Reimplement in f5's orchestration layer.",
+        "status": "port",
+        "userImpact": "high"
+      },
+      "summary": "When a later run completes and was not stopped, messages queued by agents, the server or scheduled tasks are released from the hold. Threads driven by automation no longer stall forever after a provider failure or restart. Failed worktree setup keeps the hold.",
+      "title": "Held queues release agent and scheduled messages after a completed run",
+      "upstreamPrs": [
+        27221
+      ]
+    },
+    {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "epoch": 1,
+      "id": "pr-27222",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "restart",
+          "subagents"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "f5 resumes active turns after a restart, so it has the same failure mode. Reimplement outside orchestration-v2 and keep f5's default for resumeActiveTurnsAfterRestart.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "A restart continuation that fails before the prompt reaches the provider (for example, an MCP registration timeout) is retried after a delay. Children of a parent the user stopped are no longer resumed across a restart.",
+      "title": "Restart continuations retry failed starts and respect a parent's stop",
+      "upstreamPrs": [
+        27222
+      ]
+    },
+    {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "epoch": 1,
+      "id": "pr-27224",
+      "relatedTopics": [
+        "pr-23745"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "preview browser",
+          "server"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "A resource-leak fix in the HTML rendering behind the preview.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Before the process-group signal, headless Chrome gets a Browser.close request. Confined browsers (AppArmor in LXC) no longer pile up as orphans.",
+      "title": "HTML preview browsers quit when done instead of waiting to be killed",
+      "upstreamPrs": [
+        27224
+      ]
+    },
+    {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "decidedAt": "2026-10-30T11:04:20.788Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-27227",
+      "reason": "Developer tooling only.",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "tooling"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "Developer tooling only.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Rewrites the dev check script with concurrency and timeout limits.",
+      "title": "check:changed limits concurrency and step time",
+      "upstreamPrs": [
+        27227
+      ]
+    },
+    {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "epoch": 1,
+      "id": "pr-27252",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "providers",
+          "composer"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "A reliability fix for Stop hanging on frozen providers. It applies to f5's threads and providers. Skip the mobile parts and reimplement in f5's session layer.",
+        "status": "port",
+        "userImpact": "high"
+      },
+      "summary": "Every provider interrupt now has a time limit, so a hung interrupt no longer blocks later work on the thread. When an agent ignores Stop, the UI offers a user-chosen Force stop that kills its processes. Nothing is killed automatically.",
+      "title": "Stop always completes, with a Force stop for agents that ignore it",
+      "upstreamPrs": [
+        27252
+      ]
+    },
+    {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "decidedAt": "2026-10-30T11:04:20.788Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-27285",
+      "reason": "Upstream release or CI only",
+      "reasonKey": "release-ci",
+      "status": "skip",
+      "summary": "",
+      "title": "ci(mobile): production deploys use a Release Manager Expo token (#27285)",
+      "upstreamPrs": [
+        27285
+      ]
+    },
+    {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "decidedAt": "2026-10-30T11:04:20.788Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-27292",
+      "reason": "Upstream release or CI only",
+      "reasonKey": "release-ci",
+      "status": "skip",
+      "summary": "",
+      "title": "ci(mobile): maintainers can deploy EAS previews for reviewed fork commits (#27292)",
+      "upstreamPrs": [
+        27292
+      ]
+    },
+    {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "epoch": 1,
+      "id": "pr-27316",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline",
+          "settings"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "A small UX polish on the timeline and diagnostics surfaces f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "formatDuration shows 7s instead of 7.0s in Worked-for rows, worktree setup timings and subagent timers. The diagnostics thresholds and the trace summary follow the same rule.",
+      "title": "Durations under 10s drop a trailing .0",
+      "upstreamPrs": [
+        27316
+      ]
+    },
+    {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "epoch": 1,
+      "id": "pr-27354",
+      "relatedTopics": [
+        "pr-26538"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "sharing"
+        ],
+        "confidence": 0.45,
+        "model": "claude-opus-5-5",
+        "question": "Does f5 keep upstream's guest share links, or are they treated as relay-cloud?",
+        "reason": "A capability improvement for shared guest links, if f5 offers guest sharing outside T3 Connect.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Adds a guest history route and a Load earlier turns control, so guests can read long shared threads from the start. File diffs stay excluded.",
+      "title": "Guest links can load earlier turns",
+      "upstreamPrs": [
+        27354
+      ]
+    },
+    {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "epoch": 1,
+      "id": "pr-27420",
+      "relatedTopics": [
+        "pr-26727"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline",
+          "markdown",
+          "performance"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "This is a measurable streaming performance improvement in f5's timeline. The atom-based part has to be reimplemented without client-runtime.",
+        "status": "port",
+        "userImpact": "high"
+      },
+      "summary": "A four-part stack. Timeline rows keep a stable row context. Markdown is split into memoized blocks so only the last block re-parses. GitActionsControl reads the quiet projection. The streaming assistant row reads its own text atom. Upstream measured main-thread time going from 21 s to under 13 s fo…",
+      "title": "Streaming replies re-render only what changed",
+      "upstreamPrs": [
+        27420,
+        27417,
+        27418,
+        27419
+      ]
+    },
+    {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "epoch": 1,
+      "id": "pr-27430",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "desktop",
+          "sidebar"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "This is a desktop navigation UX improvement in a surface f5 has.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Back and forward buttons sit after the logo in the sidebar header. They are disabled when there is nowhere to go, and their tooltips show ⌘[ and ⌘]. A two-finger horizontal trackpad swipe shows an edge indicator and navigates when the fingers lift, using a new trackpad-scroll-begin IPC event.",
+      "title": "Desktop gets back/forward buttons and two-finger swipe navigation",
+      "upstreamPrs": [
+        27430
+      ]
+    },
+    {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "decidedAt": "2026-10-30T11:04:20.788Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-27442",
+      "reason": "Applies only to T3 Connect and the relay.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "relay"
+        ],
+        "confidence": 0.97,
+        "model": "claude-opus-5-5",
+        "reason": "Applies only to T3 Connect and the relay.",
+        "reasonKey": "relay-cloud",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "The relay returns maxTunnelsOverride, and the T3 Connect tunnel meter uses it instead of the cap derived from the T3 Chat plan.",
+      "title": "T3 Connect settings show the account's real tunnel cap",
+      "upstreamPrs": [
+        27442
+      ]
+    },
+    {
+      "createdAt": "2026-10-30T11:04:20.788Z",
+      "epoch": 1,
+      "id": "pr-27465",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "cli",
+          "server"
+        ],
+        "confidence": 0.45,
+        "model": "claude-opus-5-5",
+        "question": "Does f5 ship the `t3 service protect` command for boot-service hosts, so that this sudo fix should be ported?",
+        "reason": "The command lives under upstream's cloud and service CLI, and its files do not exist in f5. The fit with relay-cloud is uncertain.",
+        "reasonKey": "relay-cloud",
+        "status": "skip",
+        "userImpact": "low"
+      },
+      "summary": "runPrivileged starts sudo with detached: false so it can prompt for a password. The command also explains what the systemd drop-ins do before applying them.",
+      "title": "t3 service protect can ask for a sudo password",
+      "upstreamPrs": [
+        27465
       ]
     },
     {

@@ -1,0 +1,209 @@
+{
+  "baseSha": "cba30591f95859bc76154e5be97891ea4ae1b85a",
+  "commits": [
+    {
+      "pr": 27465,
+      "sha": "32ecd71726fee16f335484c1f95cbce126d461f6",
+      "subject": "fix(server): `t3 service protect` can ask for your sudo password (#27465)",
+      "topic": "pr-27465"
+    },
+    {
+      "pr": 27419,
+      "sha": "3cbc98241d33f202b78c1ebe7e5b8f35f5d6ac29",
+      "subject": "perf(web): streamed assistant text re-renders only its own row (#27419)",
+      "topic": "pr-27420"
+    },
+    {
+      "pr": 27418,
+      "sha": "aaee7743f813984cdf2d266e99f22cea4f28ca6e",
+      "subject": "perf(web): the git actions panel no longer re-renders on every streamed update (#27418)",
+      "topic": "pr-27420"
+    },
+    {
+      "pr": 27417,
+      "sha": "d8c926c395155be72b09be594cb498adda3dfed2",
+      "subject": "perf(web): streaming replies re-render only their last Markdown block (#27417)",
+      "topic": "pr-27420"
+    },
+    {
+      "pr": 27420,
+      "sha": "5cbc207d8c8e92964b36e235740f22b49d938352",
+      "subject": "fix(web): streaming replies no longer re-render every visible timeline row (#27420)",
+      "topic": "pr-27420"
+    },
+    {
+      "pr": 27442,
+      "sha": "305a90dce44b8b7813d951662f13ce8510a3c669",
+      "subject": "fix(relay): show the account's real tunnel cap in T3 Connect settings (#27442)",
+      "topic": "pr-27442"
+    },
+    {
+      "pr": 19941,
+      "sha": "5ef56853ef1854da50bc1909c6c0a32700f2cb13",
+      "subject": "feat(web): review local commits in the Diff pane (#19941)",
+      "topic": "pr-19941"
+    },
+    {
+      "pr": 27430,
+      "sha": "476590d0adede15a4eec0d05b8adac8c63736452",
+      "subject": "feat(desktop): back/forward buttons and trackpad swipe navigation (#27430)",
+      "topic": "pr-27430"
+    },
+    {
+      "pr": 27115,
+      "sha": "97e35bcf23e4dcf34c2dcffadd37c08db0e01e52",
+      "subject": "feat(settings): point provider environment variables at a secret provider (#27115)",
+      "topic": "pr-25709"
+    },
+    {
+      "pr": 23802,
+      "sha": "fa4e4677c0ecc437aece2dcea39f76ef31414152",
+      "subject": "fix(server): let slow worktree checkouts finish (#23802)",
+      "topic": "pr-23802"
+    },
+    {
+      "sha": "da8cc591dadd75819ae62961da4a882767efb145",
+      "subject": "fix(ci): repair main after merge burst",
+      "topic": "c-da8cc591dadd"
+    },
+    {
+      "pr": 27354,
+      "sha": "35c1210331a70fd3f460f9ad3425aed7d9a263cf",
+      "subject": "fix: guest links can load earlier turns (#27354)",
+      "topic": "pr-27354"
+    },
+    {
+      "pr": 27252,
+      "sha": "6b1245cceda1d504b6f16b438e16f2a2e08f3388",
+      "subject": "fix(server): Stop always completes, and an agent that ignores it can be force stopped (#27252)",
+      "topic": "pr-27252"
+    },
+    {
+      "pr": 24320,
+      "sha": "0a455d725878f653b3df607eaaff18fbfa90db99",
+      "subject": "fix(server): fail Claude turns waiting for unsupported mod input (#24320)",
+      "topic": "pr-24320"
+    },
+    {
+      "pr": 24209,
+      "sha": "d5536f6052c0027533f40bd9520827b69946d056",
+      "subject": "fix(web): name the sidebar logo link T3 Code home (#24209)",
+      "topic": "pr-24209"
+    },
+    {
+      "pr": 24139,
+      "sha": "adba9a31d021ed9c9cc3205aa01d7ad670568e86",
+      "subject": "fix(usage): count Claude advisor calls under the advisor model (#24139)",
+      "topic": "pr-24139"
+    },
+    {
+      "pr": 24392,
+      "sha": "2c119bd975deb06f49505a0af3ec8d272806b923",
+      "subject": "fix(gitlab): share merge request reads across detail and checks (#24392)",
+      "topic": "pr-24392"
+    },
+    {
+      "pr": 24614,
+      "sha": "f3b0194c7b43251791e9732323d5098a5823cd26",
+      "subject": "fix(server): show readable provider runtime failure banners (#24614)",
+      "topic": "pr-24614"
+    },
+    {
+      "pr": 24640,
+      "sha": "05f0d9be28218bdf5e91aa39462e23073379b48a",
+      "subject": "fix(terminal): retain and pace slow fallback process queries (#24640)",
+      "topic": "pr-24640"
+    },
+    {
+      "pr": 27224,
+      "sha": "2ba2426af640899eee1ca1c544e9321bd2170762",
+      "subject": "fix(server): HTML preview browsers quit when done instead of waiting to be killed (#27224)",
+      "topic": "pr-27224"
+    },
+    {
+      "pr": 27390,
+      "sha": "3dd62dce70b5ff577099966ba92452603ccc8f89",
+      "subject": "revert(web): remove the composer rich text toggle button and mod+/ shortcut (#27390)",
+      "topic": "pr-26777"
+    },
+    {
+      "pr": 27375,
+      "sha": "aa11ef6783da81039e6646e2e96941748afb358e",
+      "subject": "fix(web): composer Markdown source button shows the pilcrow again (#27375)",
+      "topic": "pr-26777"
+    },
+    {
+      "pr": 26718,
+      "sha": "a773dc38ac75177b6cd133d27df00ca0a83f9480",
+      "subject": "fix(server): t3_thread_organize rejects unknown arguments instead of archiving the caller (#26718)",
+      "topic": "pr-26718"
+    },
+    {
+      "pr": 26777,
+      "sha": "f48fb51fac22c76c0b76f196909acdb395f5832e",
+      "subject": "feat(web): switch the composer between rich text and Markdown source from a button or mod+/ (#26777)",
+      "topic": "pr-26777"
+    },
+    {
+      "pr": 27316,
+      "sha": "c8a606c7b73e1e3586d5c06f76c69525f2d4c679",
+      "subject": "fix(shared): durations under 10s drop a trailing .0 (#27316)",
+      "topic": "pr-27316"
+    },
+    {
+      "pr": 27227,
+      "sha": "8970a32104e0d37123f33fd122e96826e68b3b4a",
+      "subject": "fix(scripts): bound check:changed concurrency and step time (#27227)",
+      "topic": "pr-27227"
+    },
+    {
+      "pr": 27141,
+      "sha": "6d12bb1e9fbdd6186967ae57cd0917c39f7214e4",
+      "subject": "fix(server): Stop during a restart no longer leaves the thread stuck (#27141)",
+      "topic": "pr-27141"
+    },
+    {
+      "pr": 27222,
+      "sha": "36dac688a17c6de1c6398e62d01546fb787c185b",
+      "subject": "fix(server): restart continuations retry failed starts and respect a parent's stop (#27222)",
+      "topic": "pr-27222"
+    },
+    {
+      "pr": 27221,
+      "sha": "8ab098a4a8d62335f43cf61b708c2fbb65d4741c",
+      "subject": "fix(server): held queues release agent and scheduled messages once the thread completes a run (#27221)",
+      "topic": "pr-27221"
+    },
+    {
+      "pr": 27239,
+      "sha": "44d508fd8b44794e51d82480052f5a041640e411",
+      "subject": "feat(server): `t3 service protect` keeps the server alive when agents fill memory (#27239)",
+      "topic": "pr-27176"
+    },
+    {
+      "pr": 27176,
+      "sha": "d7b6cf7884029b20baf5b2adbfe5271490faecf8",
+      "subject": "fix(server): agents yield CPU, tasks, and reclaim to the server under pressure (#27176)",
+      "topic": "pr-27176"
+    },
+    {
+      "pr": 27292,
+      "sha": "f58fad04162165653bf06f0c987bbfb0074a8a4b",
+      "subject": "ci(mobile): maintainers can deploy EAS previews for reviewed fork commits (#27292)",
+      "topic": "pr-27292"
+    },
+    {
+      "pr": 27285,
+      "sha": "b42adff3d77f01f5e0f5edfb5a071dabb535710b",
+      "subject": "ci(mobile): production deploys use a Release Manager Expo token (#27285)",
+      "topic": "pr-27285"
+    }
+  ],
+  "count": 33,
+  "createdAt": "2026-10-30T11:04:20.788Z",
+  "digest": "4e48ec4c03ee297435f241453b567f97ff26478d99b34b752fd5de101b22cb05",
+  "interval": 9,
+  "schemaVersion": 7,
+  "selection": "first-parent",
+  "targetSha": "32ecd71726fee16f335484c1f95cbce126d461f6"
+}
