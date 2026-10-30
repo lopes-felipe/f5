@@ -12,9 +12,35 @@ import {
 } from "./claudeSdkExecutable.ts";
 
 describe("Claude SDK executable resolution", () => {
-  it("omits the executable override for the default provider setting", () => {
-    expect(resolveClaudeSdkExecutableOptions(undefined)).toEqual({});
-    expect(resolveClaudeSdkExecutableOptions("claude")).toEqual({});
+  it.each([undefined, null, "", " ", "claude", " claude "])(
+    "uses the bundled executable for the default SDK setting %s",
+    (setting) => {
+      expect(resolveClaudeSdkExecutableOptions(setting)).toEqual({
+        pathToClaudeCodeExecutable: resolveBundledClaudeExecutable(),
+      });
+    },
+  );
+
+  it("uses the same executable for SDK sessions and CLI probes", () => {
+    expect(resolveClaudeSdkExecutableOptions(undefined).pathToClaudeCodeExecutable).toBe(
+      resolveClaudeCliInvocation(undefined, ["--version"], { PATH: "" }).file,
+    );
+  });
+
+  it("resolves explicit native ASAR paths before passing them to the SDK", () => {
+    expect(
+      resolveClaudeSdkExecutableOptions("/F5.app/Contents/Resources/app.asar/bin/claude"),
+    ).toEqual({
+      pathToClaudeCodeExecutable: "/F5.app/Contents/Resources/app.asar.unpacked/bin/claude",
+    });
+  });
+
+  it("keeps JavaScript entries in Electron's virtual filesystem", () => {
+    const script = "/F5.app/Contents/Resources/app.asar/bin/cli.js";
+    expect(resolveClaudeSdkExecutableOptions(script)).toEqual({
+      pathToClaudeCodeExecutable: script,
+      executable: "node",
+    });
   });
 
   it("resolves the installed SDK platform binary", () => {
@@ -42,9 +68,6 @@ describe("Claude SDK executable resolution", () => {
   it("rejects Windows cmd shims with a typed, actionable error", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "f5-claude-sdk-"));
     writeFileSync(path.join(directory, "custom-claude.CMD"), "@echo off\r\n");
-    expect(() =>
-      resolveClaudeSdkExecutableOptions("claude", { PATH: directory, PATHEXT: ".CMD" }, "win32"),
-    ).not.toThrow();
     expect(() =>
       resolveClaudeSdkExecutableOptions(
         "custom-claude",

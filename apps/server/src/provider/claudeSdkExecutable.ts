@@ -3,6 +3,7 @@ import { statSync } from "node:fs";
 import { createRequire } from "node:module";
 import * as NodePath from "node:path";
 
+import { resolveAsarExecutablePath } from "../spawn/asarExecutable.ts";
 import {
   CommandNotFoundError,
   resolveExecutable,
@@ -43,7 +44,7 @@ export function resolveBundledClaudeExecutable(
   try {
     const sdkEntry = require.resolve("@anthropic-ai/claude-agent-sdk");
     const sdkRequire = createRequire(sdkEntry);
-    executable = sdkRequire.resolve(`${packageName}/${executableName}`);
+    executable = resolveAsarExecutablePath(sdkRequire.resolve(`${packageName}/${executableName}`));
   } catch {
     throw new CommandNotFoundError(
       DEFAULT_CLAUDE_BINARY,
@@ -65,15 +66,25 @@ export function resolveClaudeSdkExecutableOptions(
   platform: NodeJS.Platform = process.platform,
   cwd?: string,
 ): ClaudeSdkExecutableOptions {
-  if (isDefaultClaudeBinary(binaryPath)) return {};
+  // Keep the configured default identity for profile certification, but give
+  // the SDK a physical path: its require.resolve result can live inside ASAR.
+  if (isDefaultClaudeBinary(binaryPath)) {
+    return { pathToClaudeCodeExecutable: resolveBundledClaudeExecutable(platform) };
+  }
 
   const command = binaryPath!.trim();
   if (platform !== "win32") {
     return NODE_SCRIPT_EXTENSIONS.has(NodePath.extname(command).toLowerCase())
       ? { pathToClaudeCodeExecutable: command, executable: "node" }
-      : { pathToClaudeCodeExecutable: command };
+      : { pathToClaudeCodeExecutable: resolveAsarExecutablePath(command) };
   }
-  const resolved = resolveExecutable(command, environment, { platform, cwd });
+  const resolved = resolveExecutable(
+    NODE_SCRIPT_EXTENSIONS.has(NodePath.win32.extname(command).toLowerCase())
+      ? command
+      : resolveAsarExecutablePath(command),
+    environment,
+    { platform, cwd },
+  );
   if (!resolved) throw new CommandNotFoundError(command);
 
   const extension = NodePath.win32.extname(resolved).toLowerCase();
@@ -86,7 +97,7 @@ export function resolveClaudeSdkExecutableOptions(
   if (NODE_SCRIPT_EXTENSIONS.has(extension)) {
     return { pathToClaudeCodeExecutable: resolved, executable: "node" };
   }
-  return { pathToClaudeCodeExecutable: resolved };
+  return { pathToClaudeCodeExecutable: resolveAsarExecutablePath(resolved) };
 }
 
 export function resolveClaudeCliInvocation(

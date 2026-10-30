@@ -1,16 +1,61 @@
 import { createRequire } from "node:module";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { join } from "node:path";
 
 type RunResult = { status: number | null; stdout: string };
-type Run = (command: string, args: string[], options?: { cwd?: string }) => RunResult;
+type Run = (
+  command: string,
+  args: string[],
+  options?: {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    timeout?: number;
+    killSignal?: NodeJS.Signals;
+  },
+) => RunResult;
 const require = createRequire(import.meta.url);
-const { notarizeAndStaple } = require("./notarize-mac.cjs") as {
+const { notarizeAndStaple, verifyClaudeRuntime } = require("./notarize-mac.cjs") as {
   notarizeAndStaple(
     app: string,
     env: Record<string, string | undefined>,
     deps: { run: Run; sleep: (ms: number) => Promise<void> },
   ): Promise<void>;
+  verifyClaudeRuntime(app: string, deps: { run: Run }): void;
 };
+
+describe("verifyClaudeRuntime", () => {
+  it("runs the signed ASAR entry without passing signing credentials to the subprocess", () => {
+    const run = vi.fn<Run>(() => ({ status: 0, stdout: "" }));
+    const app = join("/out", "F5 Test.app");
+    verifyClaudeRuntime(app, { run });
+    expect(run).toHaveBeenCalledExactlyOnceWith(
+      join(app, "Contents", "MacOS", "F5 Test"),
+      [
+        join(
+          app,
+          "Contents",
+          "Resources",
+          "app.asar",
+          "apps",
+          "server",
+          "dist",
+          "claude-runtime-smoke.mjs",
+        ),
+      ],
+      {
+        env: { PATH: process.env.PATH, ELECTRON_RUN_AS_NODE: "1" },
+        timeout: 45_000,
+        killSignal: "SIGKILL",
+      },
+    );
+  });
+
+  it.each([1, null])("blocks notarization after an unsuccessful smoke check (%s)", (status) => {
+    expect(() =>
+      verifyClaudeRuntime("/out/F5.app", { run: () => ({ status, stdout: "" }) }),
+    ).toThrow("Bundled Claude runtime smoke failed");
+  });
+});
 
 const env = { APPLE_API_KEY: "/tmp/key.p8", APPLE_API_KEY_ID: "KEY", APPLE_API_ISSUER: "ISSUER" };
 const accepted = { status: 0, stdout: '{"id":"abc","status":"Accepted"}\n' };

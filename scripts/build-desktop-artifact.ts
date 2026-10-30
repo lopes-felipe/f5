@@ -28,7 +28,10 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
 const BuildArch = Schema.Literals(["arm64", "x64", "universal"]);
-export const DESKTOP_ASAR_UNPACK = ["node_modules/@ff-labs/fff-bin-*/**/*"] as const;
+export const DESKTOP_ASAR_UNPACK = [
+  "node_modules/@ff-labs/fff-bin-*/**/*",
+  "node_modules/@anthropic-ai/claude-agent-sdk-*/**/*",
+] as const;
 
 const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("..", import.meta.url))),
