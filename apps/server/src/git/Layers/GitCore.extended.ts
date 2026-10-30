@@ -2418,36 +2418,40 @@ it.layer(TestLayer)("git integration", (it) => {
     });
 
     // Live clock: the config-lock retries wait between attempts.
-    liveIt("creates the worktree without an orphan branch while the config stays locked", () =>
-      Effect.gen(function* () {
-        const { source, initialBranch } = yield* initRepoWithOrigin();
-        const lockPath = path.join(source, ".git", "config.lock");
-        yield* writeTextFile(lockPath, "");
-        const worktreePath = path.join(source, "locked-config");
-        const core = yield* GitCore;
+    liveIt(
+      "creates the worktree without an orphan branch while the config stays locked",
+      () =>
+        Effect.gen(function* () {
+          const { source, initialBranch } = yield* initRepoWithOrigin();
+          const lockPath = path.join(source, ".git", "config.lock");
+          yield* writeTextFile(lockPath, "");
+          const worktreePath = path.join(source, "locked-config");
+          const core = yield* GitCore;
 
-        const created = yield* core.createWorktree({
-          cwd: source,
-          branch: initialBranch,
-          baseRefName: `origin/${initialBranch}`,
-          newBranch: "feature/locked-config",
-          path: worktreePath,
-        });
+          const created = yield* core.createWorktree({
+            cwd: source,
+            branch: initialBranch,
+            baseRefName: `origin/${initialBranch}`,
+            newBranch: "feature/locked-config",
+            path: worktreePath,
+          });
 
-        expect(created.worktree).toEqual({ path: worktreePath, branch: "feature/locked-config" });
-        expect(yield* git(worktreePath, ["branch", "--show-current"])).toBe(
-          "feature/locked-config",
-        );
-        expect(existsSync(path.join(worktreePath, "README.md"))).toBe(true);
-        expect(existsSync(lockPath)).toBe(true);
-        expect(
-          yield* git(source, ["config", "--get", "branch.feature/locked-config.remote"]).pipe(
-            Effect.orElseSucceed(() => ""),
-          ),
-        ).toBe("");
-        yield* (yield* FileSystem.FileSystem).remove(lockPath);
-        yield* core.removeWorktree({ cwd: source, path: worktreePath });
-      }).pipe(Effect.provide(TestLayer)),
+          expect(created.worktree).toEqual({ path: worktreePath, branch: "feature/locked-config" });
+          expect(yield* git(worktreePath, ["branch", "--show-current"])).toBe(
+            "feature/locked-config",
+          );
+          expect(existsSync(path.join(worktreePath, "README.md"))).toBe(true);
+          expect(existsSync(lockPath)).toBe(true);
+          expect(
+            yield* git(source, ["config", "--get", "branch.feature/locked-config.remote"]).pipe(
+              Effect.orElseSucceed(() => ""),
+            ),
+          ).toBe("");
+          yield* (yield* FileSystem.FileSystem).remove(lockPath);
+          yield* core.removeWorktree({ cwd: source, path: worktreePath });
+        }).pipe(Effect.provide(TestLayer)),
+      // Real Git retries the persistent lock; busy CI runners also pay for every process spawn.
+      { timeout: 30_000 },
     );
 
     liveIt("tracks a remote base once a briefly held config lock is released", () =>

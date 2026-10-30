@@ -3,6 +3,7 @@ import {
   selectReleaseCiRun,
   requiredReleaseCiJobs,
   assertReleaseCiJobs,
+  dryRunReleaseVersion,
   type CiRun,
   type CiJob,
   type CiWorkflow,
@@ -12,6 +13,7 @@ import { readFileSync, appendFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { compareCliReleaseVersions, versionToken } from "@t3tools/shared/cliRelease";
 import { releasePackageFiles } from "./update-release-package-versions.ts";
+import { publishedWindowsUpgradeMatrix } from "./published-windows-upgrade.ts";
 import {
   assertReleaseProfileAllowed,
   desktopBuildMatrix,
@@ -37,7 +39,7 @@ assertReleaseProfileAllowed(profile, releases);
 let version: string;
 if (dryRun) {
   if (ref !== "main") throw new Error("Dry runs require main");
-  version = `${current.split("-")[0]}-dryrun.${process.env.GITHUB_RUN_NUMBER}`;
+  version = dryRunReleaseVersion(current, process.env.GITHUB_RUN_NUMBER ?? "");
 } else {
   if (!/^v\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(ref)) throw new Error("Invalid release tag");
   version = versionToken(ref.slice(1));
@@ -77,6 +79,11 @@ if (dryRun) {
     throw new Error("Stable release needs changelog entry");
 }
 const beta = version.includes("-beta.");
+const windowsUpgradeMatrix = publishedWindowsUpgradeMatrix(
+  releases,
+  version,
+  beta ? "beta" : "latest",
+);
 appendFileSync(
   process.env.GITHUB_OUTPUT!,
   [
@@ -88,5 +95,6 @@ appendFileSync(
     `profile=${profile}`,
     `desktop_matrix=${JSON.stringify(desktopBuildMatrix(profile))}`,
     `merge_mac=${mergesMacManifests(profile)}`,
+    `windows_upgrade_matrix=${JSON.stringify(windowsUpgradeMatrix)}`,
   ].join("\n") + "\n",
 );
