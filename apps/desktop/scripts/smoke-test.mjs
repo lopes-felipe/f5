@@ -67,6 +67,7 @@ app.setPath=(key,value)=>setPath(key,key==='userData'?${JSON.stringify(join(dire
 require(${JSON.stringify(join(desktopDir, "dist-electron/main.js"))});
 `,
 );
+const countMarker = (text, marker) => text.split(marker).length - 1;
 const env = Object.fromEntries(
   Object.entries(process.env).filter(
     ([key]) =>
@@ -614,7 +615,7 @@ try {
       });
       // The echoed shell command contains the marker once. Require actual
       // subprocess output as well, rather than passing on that echo alone.
-      if ((snapshot?.history.split(marker).length ?? 1) - 1 >= 3) return snapshot;
+      if (countMarker(snapshot?.history ?? "", marker) >= 3) return snapshot;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     throw new Error("Terminal smoke subprocess did not emit output");
@@ -631,29 +632,43 @@ try {
   };
   const recoveryTerminalMarker = "F5_BACKEND_RECOVERY_OUTPUT";
   await startTerminalStream(recoveryTerminalMarker);
-  // Recovery restores persisted history. On Windows the profile Stop below is a
-  // hard taskkill with no final flush, so wait until the debounced history write
-  // has reached disk rather than racing it.
-  const terminalLogs = join(state, "logs", "terminals");
-  const persistedDeadline = Date.now() + 15_000;
-  const historyPersisted = () => {
-    try {
-      return readdirSync(terminalLogs, { withFileTypes: true }).some(
-        (entry) =>
-          entry.isFile() &&
-          readFileSync(join(terminalLogs, entry.name), "utf8").split(recoveryTerminalMarker)
-            .length -
-            1 >=
-            3,
-      );
-    } catch {
-      // Not created yet, or an atomic replace is in progress (EPERM on Windows).
-      return false;
+  // Recovery restores persisted history. On Windows the profile Stop below ends
+  // in a forced kill with no final flush (#300), so wait until the throttled
+  // history write has reached disk rather than racing it.
+  if (process.platform === "win32") {
+    const terminalLogs = join(state, "logs", "terminals");
+    const persistedDeadline = Date.now() + 15_000;
+    let lastError;
+    const historyPersisted = () => {
+      try {
+        return readdirSync(terminalLogs, { withFileTypes: true }).some(
+          (entry) =>
+            entry.isFile() &&
+            countMarker(
+              readFileSync(join(terminalLogs, entry.name), "utf8"),
+              recoveryTerminalMarker,
+            ) >= 3,
+        );
+      } catch (error) {
+        // Not created yet, or an atomic replace is in progress (EPERM on Windows).
+        lastError = error;
+        return false;
+      }
+    };
+    while (!historyPersisted()) {
+      if (Date.now() > persistedDeadline) {
+        let listing;
+        try {
+          listing = readdirSync(terminalLogs).join(", ") || "(empty)";
+        } catch (error) {
+          listing = `unreadable: ${error?.code ?? error}`;
+        }
+        throw new Error(
+          `Terminal history was never persisted (files: ${listing}; last error: ${lastError?.code ?? lastError ?? "none"})`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
-  };
-  while (!historyPersisted()) {
-    if (Date.now() > persistedDeadline) throw new Error("Terminal history was never persisted");
-    await new Promise((resolve) => setTimeout(resolve, 50));
   }
   const retainedWsUrl = await page.evaluate(() => window.desktopBridge.getWsUrl());
   const retainedRendererUrl = page.url();
@@ -676,7 +691,9 @@ try {
   await waitForRecovery(beforeSecondInstance);
   const restoredTerminal = await nativeRequest("terminal.open", terminalInput);
   if (!restoredTerminal.history.includes(recoveryTerminalMarker))
-    throw new Error("Backend recovery lost terminal history");
+    throw new Error(
+      `Backend recovery lost terminal history; restored tail: ${JSON.stringify(restoredTerminal.history.slice(-500))}`,
+    );
   if ((await page.evaluate(() => window.desktopBridge.getWsUrl())) !== retainedWsUrl)
     throw new Error("Reopening changed the retained window's connection");
   if (
@@ -859,7 +876,7 @@ try {
   await page.goto(providerRendererUrl);
   await page.locator('[contenteditable="true"]').waitFor({ timeout: 60_000 });
   const quitHistory = await nativeRequest("terminal.open", terminalInput);
-  if (quitHistory.history.split(quitTerminalMarker).length - 1 < 3)
+  if (countMarker(quitHistory.history, quitTerminalMarker) < 3)
     throw new Error("Desktop quit/reopen lost active terminal output");
   const restoredProviderMessages = await waitForProviderOutput();
   for (const before of providerMessages) {
