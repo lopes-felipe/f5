@@ -180,6 +180,7 @@ export default function Sidebar() {
   const threadPreviewLimit = appSettings.sidebarThreadPreviewCount;
   const wsConnectionState = useWsConnectionState();
   const wsInteractionBlocked = isWsInteractionBlocked(wsConnectionState.phase);
+  const scratchDisabled = wsInteractionBlocked || !wsConnectionState.synchronized;
   const setCommandPaletteOpen = useCommandPaletteStore((store) => store.setOpen);
   const routeThreadId = useParams({
     strict: false,
@@ -853,6 +854,7 @@ export default function Sidebar() {
       }
 
       if (command === "chat.newScratch") {
+        if (scratchDisabled) return;
         event.preventDefault();
         event.stopPropagation();
         void startScratchThread();
@@ -871,6 +873,7 @@ export default function Sidebar() {
       }
 
       if (command !== "chat.new") return;
+      if (projectId === null && scratchDisabled) return;
       event.preventDefault();
       event.stopPropagation();
       void handleNewThread(projectId, {
@@ -903,6 +906,7 @@ export default function Sidebar() {
     openWorkflowCreateDialog,
     projects,
     routeThreadId,
+    scratchDisabled,
     startScratchThread,
     terminalStateByThreadId,
     wsInteractionBlocked,
@@ -1111,7 +1115,7 @@ export default function Sidebar() {
             : undefined
         }
         scratchShortcutLabel={scratchShortcutLabel}
-        scratchDisabled={wsInteractionBlocked || !wsConnectionState.synchronized}
+        scratchDisabled={scratchDisabled}
         onNewWorkflow={(projectId) => {
           // Workflows need a repository; from a thread without a project, pick a project first.
           if (!isScratchProject(projects.find((entry) => entry.id === projectId)))

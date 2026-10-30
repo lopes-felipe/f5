@@ -53,6 +53,12 @@ import {
   THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
 } from "../threadSidebarWidth";
 import { useWorkflowCreateDialogStore } from "../workflowCreateDialogStore";
+import {
+  noteWsConnectionClosed,
+  noteWsConnectionOpened,
+  noteWsSynchronized,
+} from "../wsConnectionState";
+import { toastManager } from "./ui/toast";
 
 vi.mock("./DiffWorkerPoolProvider", () => ({
   DiffWorkerPoolProvider: ({ children }: { children?: ReactNode }) => children ?? null,
@@ -1048,6 +1054,7 @@ describe("Thread sidebar", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     useRecoveryStateStore.getState().reset();
     useCommandPaletteStore.setState({
       open: false,
@@ -1747,6 +1754,43 @@ describe("Thread sidebar", () => {
     },
   );
 
+  it("navigates between the static scratch group and sortable projects with arrow keys", async () => {
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: ["/"],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = {
+          ...createEmptySnapshot(),
+          projects: [
+            createSnapshotProject(PROJECT_ID, "Alpha"),
+            {
+              ...createSnapshotProject("scratch-project" as ProjectId, "No project"),
+              kind: "scratch",
+              workspaceRoot: "/state/scratch",
+            },
+          ],
+        };
+        nextFixture.welcome = {
+          cwd: nextFixture.welcome.cwd,
+          projectName: nextFixture.welcome.projectName,
+        };
+      },
+    });
+    try {
+      const scratch = await waitForElement(
+        () => queryProjectButton("No project"),
+        "The scratch group renders.",
+      );
+      scratch.focus();
+      await userEvent.keyboard("{ArrowDown}");
+      expect(document.activeElement).toBe(queryProjectButton("Alpha"));
+      await userEvent.keyboard("{ArrowUp}");
+      expect(document.activeElement).toBe(scratch);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("renders live project rows instead of the sidebar skeleton before startup hydration", async () => {
     const startupResponse = createDeferred<WsRequestResolution>();
     useStore.setState({
@@ -1802,6 +1846,67 @@ describe("Thread sidebar", () => {
       await mounted.cleanup();
     }
   });
+
+  it.each([false, true])(
+    "blocks scratch shortcuts before synchronization (disconnected: %s)",
+    async (disconnected) => {
+      const startupResponse = createDeferred<WsRequestResolution>();
+      const mounted = await mountApp({
+        width: 1_400,
+        initialEntries: ["/"],
+        configureFixture: (nextFixture) => {
+          nextFixture.snapshot = createEmptySnapshot();
+          nextFixture.welcome = {
+            cwd: nextFixture.welcome.cwd,
+            projectName: nextFixture.welcome.projectName,
+          };
+          nextFixture.serverConfig = {
+            ...nextFixture.serverConfig,
+            keybindings: [
+              ...createSidebarShortcutBindings(),
+              { command: "chat.newScratch", shortcut: createShortcut("s", { shiftKey: true }) },
+            ],
+          };
+          nextFixture.resolveWsRequest = (body) =>
+            body._tag === ORCHESTRATION_WS_METHODS.getStartupSnapshot
+              ? startupResponse.promise
+              : null;
+        },
+      });
+      try {
+        const toast = vi.spyOn(toastManager, "add");
+        await waitForElement(
+          () =>
+            wsRequests.some((body) => body._tag === ORCHESTRATION_WS_METHODS.getStartupSnapshot)
+              ? document.querySelector<HTMLButtonElement>('[data-testid="sidebar-new-thread"]')
+              : null,
+          "Startup snapshot is pending.",
+        );
+        if (disconnected) noteWsConnectionClosed();
+        await expect.element(page.getByTestId("sidebar-new-thread")).toBeDisabled();
+        await dispatchShortcut({ key: "n" });
+        await dispatchShortcut({ key: "s", shiftKey: true });
+        expect(wsRequests.some((body) => body._tag === WS_METHODS.projectsEnsureScratch)).toBe(
+          false,
+        );
+        expect(Object.values(useComposerDraftStore.getState().draftThreadsByThreadId)).toHaveLength(
+          0,
+        );
+        expect(toast).not.toHaveBeenCalled();
+      } finally {
+        // The fixture reuses its transport across mounts; restore the simulated connection.
+        if (disconnected) {
+          noteWsConnectionOpened();
+          noteWsSynchronized();
+        }
+        startupResponse.resolve({
+          type: "result",
+          result: { snapshot: fixture.snapshot, threadTailDetails: null },
+        });
+        await mounted.cleanup();
+      }
+    },
+  );
 
   it("suppresses the sidebar skeleton while the add-project path entry is open", async () => {
     const startupResponse = createDeferred<WsRequestResolution>();
