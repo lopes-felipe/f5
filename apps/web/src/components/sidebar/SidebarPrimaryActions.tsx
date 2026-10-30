@@ -23,7 +23,7 @@ export function SidebarPrimaryActions(props: {
 }) {
   const { projectId } = props;
   return (
-    <div className="flex shrink-0 items-center gap-1.5 px-2 pb-2">
+    <div className="flex shrink-0 flex-wrap items-center gap-1.5 px-2 pb-2">
       <Tooltip>
         <TooltipTrigger
           render={
@@ -32,7 +32,7 @@ export function SidebarPrimaryActions(props: {
               size="sm"
               data-testid="sidebar-new-thread"
               disabled={projectId === null && props.scratchDisabled}
-              className="h-8 min-w-0 flex-1 justify-start gap-2 bg-background px-2.5 text-foreground"
+              className="h-8 min-w-0 flex-[1_1_10rem] justify-start gap-2 bg-background px-2.5 text-foreground"
               onClick={(event) => {
                 props.onNewThread(projectId, {
                   shiftKey: event.shiftKey,

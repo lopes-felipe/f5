@@ -50,6 +50,7 @@ import { useThreadSelectionStore } from "../threadSelectionStore";
 import {
   THREAD_SIDEBAR_DEFAULT_WIDTH_PX,
   THREAD_SIDEBAR_MAX_WIDTH_PX,
+  THREAD_SIDEBAR_MIN_WIDTH_PX,
   THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
 } from "../threadSidebarWidth";
 import { useWorkflowCreateDialogStore } from "../workflowCreateDialogStore";
@@ -1653,6 +1654,7 @@ describe("Thread sidebar", () => {
     "starts and reuses a scratch draft from primary sidebar actions (projects: %s)",
     async (hasProjects) => {
       seedAppSettings({ onboardingLiteStatus: "dismissed" });
+      localStorage.setItem(THREAD_SIDEBAR_WIDTH_STORAGE_KEY, String(THREAD_SIDEBAR_MIN_WIDTH_PX));
       const scratchProjectId = "5c7a0e3b-0d2f-5a51-8f00-000000000001" as ProjectId;
       let ensureCalls = 0;
       const mounted = await mountApp({
@@ -1712,9 +1714,14 @@ describe("Thread sidebar", () => {
         const primary = document.querySelector<HTMLButtonElement>(
           '[data-testid="sidebar-new-thread"]',
         )!;
+        expect(readSidebarWidth("left")).toBe(THREAD_SIDEBAR_MIN_WIDTH_PX);
         const label = primary.querySelector<HTMLSpanElement>("span.flex-1")!;
         expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth);
-        expect(primary.querySelector("kbd")?.textContent).toBeTruthy();
+        const shortcut = primary.querySelector("kbd")!;
+        expect(shortcut.textContent).toBeTruthy();
+        expect(shortcut.getBoundingClientRect().right).toBeLessThanOrEqual(
+          primary.getBoundingClientRect().right,
+        );
         start.click();
         start.click();
         await vi.waitFor(() => expect(ensureCalls).toBe(1), { timeout: 8_000 });
