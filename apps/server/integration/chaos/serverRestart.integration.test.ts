@@ -7,6 +7,7 @@ import { expect, it } from "vitest";
 import type { OrchestrationReadModel } from "@t3tools/contracts";
 import { spawnJsonFixture } from "./process.ts";
 import { connectStoreClient } from "./client.ts";
+import { chaosTimeout } from "./timeouts.ts";
 
 it.each([
   "before-send",
@@ -197,5 +198,5 @@ it.each([
       fs.rmSync(directory, { recursive: true, force: true });
     }
   },
-  45_000,
+  chaosTimeout(45_000),
 );

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { once } from "node:events";
+import { chaosTimeout } from "./timeouts.ts";
 
 export function spawnJsonFixture(input: {
   script: string;
@@ -15,6 +16,7 @@ export function spawnJsonFixture(input: {
   });
   const lines = createInterface({ input: child.stdout });
   const messages: Array<Record<string, unknown>> = [];
+  let receivedMessage = false;
   let failure: Error | undefined;
   const waiters = new Set<{
     type: string;
@@ -35,6 +37,7 @@ export function spawnJsonFixture(input: {
       fail(new Error(`Invalid fixture response: ${String(error)}`));
       return;
     }
+    receivedMessage = true;
     if (value.type === "failure") {
       fail(new Error(String(value.message)));
       return;
@@ -54,6 +57,9 @@ export function spawnJsonFixture(input: {
     const index = messages.findIndex((message) => message.type === type);
     if (index >= 0) return messages.splice(index, 1)[0]!;
     if (failure) throw failure;
+    const phase = receivedMessage ? "response" : "startup";
+    const timeout = receivedMessage ? 15_000 : chaosTimeout(15_000);
+    const label = `${phase}, ${timeout}ms; ${input.script}; pid ${child.pid ?? "unknown"}`;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let waiter: {
       type: string;
@@ -65,8 +71,8 @@ export function spawnJsonFixture(input: {
         waiter = { type, resolve, reject };
         waiters.add(waiter);
         timer = setTimeout(
-          () => reject(new Error(`Waiting for fixture ${type}: ${stderr}`)),
-          15_000,
+          () => reject(new Error(`Waiting for fixture ${type} (${label}): ${stderr}`)),
+          timeout,
         );
       });
     } finally {

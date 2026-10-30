@@ -8,6 +8,7 @@ import {
 } from "../OrchestrationEngineHarness.integration.ts";
 import { makeClientTransport } from "./transport.ts";
 import { connectStoreClient } from "./client.ts";
+import { chaosTimeout } from "./timeouts.ts";
 
 it.live(
   "a WebSocket drop mid-stream converges the real client store without duplicate deltas",
@@ -104,7 +105,7 @@ it.live(
         assert.deepEqual(observed.threads, expected);
       }),
     ),
-  30_000,
+  chaosTimeout(30_000),
 );
 
 it.live(
@@ -211,5 +212,5 @@ it.live(
         assert.equal(transport.closes(), 1);
       }),
     ),
-  30_000,
+  chaosTimeout(30_000),
 );
