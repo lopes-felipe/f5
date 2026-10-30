@@ -1044,8 +1044,10 @@ describe("ProviderCommandReactor", () => {
     const threadId = await scratchThread(harness);
     const first = await pendingTurn(harness, threadId, "first");
     await Effect.runPromise(harness.reactor.deliverTurnStart(first).pipe(Effect.scoped));
+    const binding = harness.getBinding(threadId);
+    expect(binding).toBeDefined();
     const context = (
-      harness.getBinding(threadId)?.runtimePayload as {
+      binding!.runtimePayload as {
         instructionContext: Record<string, unknown>;
       }
     ).instructionContext;
