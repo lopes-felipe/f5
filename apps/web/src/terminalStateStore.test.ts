@@ -364,4 +364,25 @@ describe("terminalStateStore actions", () => {
       { id: "group-default", terminalIds: ["default", "terminal-2"] },
     ]);
   });
+
+  it.each([
+    ["terminal-3", "terminal-3", "default"],
+    ["default", "default", "terminal-3"],
+    ["terminal-3", "default", "terminal-3"],
+  ])("keeps the split's tab when %s is active and %s closes", (activeId, closedId, nextId) => {
+    const store = useTerminalStateStore.getState();
+    store.setTerminalOpen(THREAD_ID, true);
+    store.newTerminal(THREAD_ID, "terminal-2");
+    store.setActiveTerminal(THREAD_ID, "default");
+    store.splitTerminal(THREAD_ID, "terminal-3");
+    store.setActiveTerminal(THREAD_ID, activeId);
+    store.closeTerminal(THREAD_ID, closedId);
+
+    const terminalState = selectThreadTerminalState(
+      useTerminalStateStore.getState().terminalStateByThreadId,
+      THREAD_ID,
+    );
+    expect(terminalState.activeTerminalId).toBe(nextId);
+    expect(terminalState.activeTerminalGroupId).toBe("group-default");
+  });
 });

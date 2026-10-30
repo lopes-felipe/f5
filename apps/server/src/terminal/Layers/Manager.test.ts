@@ -888,6 +888,32 @@ describe("TerminalManager", () => {
     }
   });
 
+  it("resets modes a dead shell left in inherited history only on a cold open", async () => {
+    const { manager, ptyAdapter, logsDir } = makeManager(100);
+    try {
+      const dead = "prompt % vim\u001b[?1049h\u001b[?25l\u001b[?1003;1006;2004hdead app";
+      fs.writeFileSync(historyLogPath(logsDir), dead);
+
+      const first = await manager.open(openInput());
+      expect(first.history.startsWith(`${dead}\u001b7\u001b[?1049l`)).toBe(true);
+      expect(first.history).toContain("\u001b[?1;9;66;67;1000;1002;1003;1004;1005;1006;1015;2004l");
+      expect(first.history).toContain("\u001b[?25;1035;1036h");
+
+      ptyAdapter.processes[0]!.emitData("fresh shell\u001b[?1003h");
+      const attached = await manager.open(openInput());
+      expect(attached.history).toBe(`${first.history}fresh shell\u001b[?1003h`);
+      expect(ptyAdapter.spawnInputs).toHaveLength(1);
+
+      await manager.close({ threadId: "thread-1" });
+      expect(fs.readFileSync(historyLogPath(logsDir), "utf8")).toBe(attached.history);
+      const reopened = await manager.open(openInput());
+      expect(reopened.history.startsWith(attached.history)).toBe(true);
+      expect(reopened.history.length).toBeGreaterThan(attached.history.length);
+    } finally {
+      await manager.dispose();
+    }
+  });
+
   it("waits for the old terminal source before changing directories and fences late old output", async () => {
     const logsDir = fs.mkdtempSync(path.join(os.tmpdir(), "f5-terminal-directory-"));
     tempDirs.push(logsDir);
