@@ -28,8 +28,13 @@ export const HTML_RENDER_CHART_COLORS = {
  * The page height, gutter included. A page shorter than its frame reports its
  * own height rather than the frame's, and absolutely positioned overflow still
  * counts. Shared by the inline bootstrap and the desktop preview.
+ *
+ * Without overflow, `scrollHeight` is only the frame height, so out-of-flow
+ * content that exactly fills the frame would read as the root box's height and
+ * the frame would shrink and grow forever. Then the lowest element bottom
+ * counts too; fixed elements follow the frame, so they are skipped.
  */
-export const HTML_RENDER_MEASURE_SOURCE = `(()=>{const r=document.documentElement;return Math.min(${HTML_RENDER_MAX_CONTENT_HEIGHT},Math.ceil(r.scrollHeight>r.clientHeight?r.scrollHeight:r.getBoundingClientRect().height))})()`;
+export const HTML_RENDER_MEASURE_SOURCE = `(()=>{const r=document.documentElement,c=r.clientHeight;if(r.scrollHeight>c)return Math.min(${HTML_RENDER_MAX_CONTENT_HEIGHT},Math.ceil(r.scrollHeight));let h=r.getBoundingClientRect().height;if(h<c-1)for(const e of r.getElementsByTagName('*')){const b=e.getBoundingClientRect().bottom+scrollY;if(b>h&&getComputedStyle(e).position!=='fixed')h=b}return Math.min(${HTML_RENDER_MAX_CONTENT_HEIGHT},Math.ceil(h))})()`;
 
 export interface HtmlRenderMeasurement {
   readonly height: number;

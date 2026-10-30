@@ -299,6 +299,29 @@ it("pauses a page that grows with its frame, and Retry sizing fits it again", as
   expect(page.getByText(/Automatic sizing paused/).query()).toBeNull();
 });
 
+it("remounts a paused page at its frozen height instead of growing each time", async () => {
+  source = "<style>body{min-height:100vh}</style><p>Grows</p>";
+  const looping = freshReference(300);
+  for (let remount = 0; remount < 3; remount++) {
+    active = await render(<Harness reference={looping} />);
+    await expect.element(page.getByText(/Automatic sizing paused/)).toBeVisible();
+    expect(frameHeight()).toBe(300);
+    await active.unmount();
+  }
+});
+
+it("pauses a looping page in full screen too, with Retry sizing there", async () => {
+  source = "<style>body{min-height:100vh}</style><p>Grows</p>";
+  active = await render(<Harness reference={freshReference(300)} />);
+  await expect.element(page.getByText(/Automatic sizing paused/)).toBeVisible();
+  await page.getByRole("button", { name: "Open full screen", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect.element(dialog.getByText(/Automatic sizing paused/)).toBeVisible();
+  await expect
+    .element(dialog.getByRole("button", { name: "Retry sizing", exact: true }))
+    .toBeVisible();
+});
+
 it("starts a remounted page at its last measured height", async () => {
   const remembered = freshReference();
   source = '<div style="height:600px">Remembered</div>';

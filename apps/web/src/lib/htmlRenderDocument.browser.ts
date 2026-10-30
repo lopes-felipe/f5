@@ -34,6 +34,11 @@ describe("htmlRenderDocument measurement", () => {
     const heights = load('<div style="height:300px"></div>');
     await expect.poll(() => heights.at(-1)?.height).toBe(316);
     expect(heights.at(-1)?.viewportHeight).toBe(800);
+    // A fixed footer follows the frame, so it must not hold the frame at its current height.
+    const fixed = load(
+      '<div style="height:300px"></div><div style="position:fixed;bottom:0;height:20px"></div>',
+    );
+    await expect.poll(() => fixed.at(-1)?.height).toBe(316);
   });
 
   it("counts absolutely positioned overflow", async () => {
@@ -42,6 +47,32 @@ describe("htmlRenderDocument measurement", () => {
     );
     await expect.poll(() => heights.at(-1)?.height).toBeGreaterThanOrEqual(3000);
     expect(heights.at(-1)!.height).toBeLessThanOrEqual(3016);
+  });
+
+  it("settles out-of-flow content once the frame takes its measured height", async () => {
+    for (const page of [
+      '<div style="position:absolute;top:0;left:0;height:3000px;width:10px"></div>',
+      '<p>Short</p><div style="position:absolute;top:500px;height:700px;width:10px"></div>',
+    ]) {
+      const heights = load(page, 120);
+      const frame = frames.at(-1)!;
+      // Applies each report like the host does, until a round reports the frame's own height.
+      await expect
+        .poll(
+          () => {
+            const last = heights.at(-1);
+            if (last && last.height !== last.viewportHeight)
+              frame.style.height = `${last.height}px`;
+            return last && last.height === last.viewportHeight ? last.height : null;
+          },
+          { timeout: 3000 },
+        )
+        .not.toBeNull();
+      const settled = heights.length;
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(heights.length).toBe(settled);
+      expect(heights.at(-1)!.height).toBeGreaterThanOrEqual(page.includes("500px") ? 1200 : 3000);
+    }
   });
 
   it("keeps measuring a page that changes continuously", async () => {

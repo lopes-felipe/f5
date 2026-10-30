@@ -3869,6 +3869,7 @@ describe("MessagesTimeline HTML renders", () => {
   });
 
   it("keeps the reader's place when a page above the viewport grows past 3000px", async () => {
+    await page.viewport(1000, 800);
     const host = document.createElement("div");
     document.body.append(host);
     let currentRef: LegendListRef | null = null;
@@ -3881,7 +3882,9 @@ describe("MessagesTimeline HTML renders", () => {
             "<div id=g style=\"height:200px\">Chart</div><script>setTimeout(()=>{document.getElementById('g').style.height='3200px'},1500)</script>",
             1,
           ),
-          ...makeOverflowEntries(16),
+          // More than the growth below the viewport: LegendList applies its anchor
+          // adjustment before the list grows, so the browser clamps it to the old end.
+          ...makeOverflowEntries(48),
         ]}
         initialHeight={500}
         onIsAtEndChangeSpy={() => {}}

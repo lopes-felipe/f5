@@ -249,6 +249,17 @@ function HtmlRenderDocumentFrame(props: {
   );
 }
 
+function SizingPausedNotice(props: { readonly onRetry: () => void }) {
+  return (
+    <p role="status" className="flex items-center gap-2 p-2 text-muted-foreground text-xs">
+      Automatic sizing paused: this page grows with its frame.
+      <Button size="xs" variant="outline" onClick={props.onRetry}>
+        Retry sizing
+      </Button>
+    </p>
+  );
+}
+
 export function HtmlRenderFrame({
   reference,
   onImageExpand,
@@ -337,7 +348,8 @@ export function HtmlRenderFrame({
       const next = nextHtmlRenderFit(fitRef.current, measurement);
       if (next === fitRef.current) return;
       setFit(next);
-      if (next.mode !== "paused") rememberHeight(reference.attachmentId, next.height);
+      // A paused page caches its frozen height, so a remount does not start from a taller round.
+      rememberHeight(reference.attachmentId, next.height);
     },
     [reference.attachmentId, setFit],
   );
@@ -426,16 +438,7 @@ export function HtmlRenderFrame({
         </>
       )}
       {html !== null && fit.mode === "paused" ? (
-        <p role="status" className="flex items-center gap-2 p-2 text-muted-foreground text-xs">
-          Automatic sizing paused: this page grows with its frame.
-          <Button
-            size="xs"
-            variant="outline"
-            onClick={() => setFit(initialHtmlRenderFit(fit.height))}
-          >
-            Retry sizing
-          </Button>
-        </p>
+        <SizingPausedNotice onRetry={() => setFit(initialHtmlRenderFit(fit.height))} />
       ) : html !== null && fit.mode === "capped" ? (
         <p className="p-2 text-muted-foreground text-xs">
           This page is taller than {HTML_RENDER_MAX_FIT_HEIGHT.toLocaleString()}px; scroll inside it
@@ -490,6 +493,15 @@ export function HtmlRenderFrame({
               />
             ) : null}
           </div>
+          {fullFit.mode === "paused" ? (
+            <SizingPausedNotice
+              onRetry={() => {
+                const next = initialHtmlRenderFit(fullFit.height, HTML_RENDER_MAX_CONTENT_HEIGHT);
+                fullFitRef.current = next;
+                setFullFitState(next);
+              }}
+            />
+          ) : null}
         </DialogPopup>
       </Dialog>
     </div>
