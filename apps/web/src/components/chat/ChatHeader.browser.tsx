@@ -6,6 +6,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
+const disabledReasons = vi.hoisted(() => new Map<string, string | undefined>());
+
+vi.mock("../ui/toolbar-toggle", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../ui/toolbar-toggle")>();
+  return {
+    ToolbarToggle: (props: ComponentProps<typeof original.ToolbarToggle>) => {
+      if (props.disabled) disabledReasons.set(props.label, props.disabledReason);
+      return <original.ToolbarToggle {...props} />;
+    },
+  };
+});
+
 vi.mock("../GitActionsControl", () => ({
   default: () => <span data-testid="git-actions" />,
 }));
@@ -86,6 +98,19 @@ function renderHeader(overrides: Partial<ChatHeaderProps> = {}, width = 900) {
 }
 
 describe("ChatHeader", () => {
+  it.each([
+    ["scratch", "after the first message creates the thread's folder."],
+    ["standard", "because the project's folder is missing."],
+  ] as const)("explains unavailable workspace controls for %s threads", async (kind, reason) => {
+    await renderHeader({ activeProjectKind: kind });
+    expect(disabledReasons.get("Files")).toBe(
+      `Workspace files are ${kind === "scratch" ? "available" : "unavailable"} ${reason}`,
+    );
+    expect(disabledReasons.get("Terminal")).toBe(
+      `Terminal is ${kind === "scratch" ? "available" : "unavailable"} ${reason}`,
+    );
+  });
+
   it("shows scratch breadcrumbs without project settings or scripts, with terminal available after allocation", async () => {
     const base = {
       activeProjectId: "scratch" as never,
@@ -118,6 +143,7 @@ describe("ChatHeader", () => {
       .toBeEnabled();
   });
   afterEach(() => {
+    disabledReasons.clear();
     for (const client of queryClients.splice(0)) client.clear();
     document.body.innerHTML = "";
   });
