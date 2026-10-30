@@ -1,6 +1,14 @@
 import type { ReleaseCandidate } from "./release-candidate.ts";
 import { pendingStableRequests } from "./release-candidate.ts";
-import { git, repository, requireCi, runs, stableRequests, trustedRun } from "./release-github.ts";
+import {
+  git,
+  repository,
+  requireCi,
+  releaseProfileAt,
+  runs,
+  stableRequests,
+  trustedRun,
+} from "./release-github.ts";
 import { fetchReleaseSummaries } from "../lib/release-profile.ts";
 import { upgradePlan } from "./release-upgrade-proof.ts";
 
@@ -35,7 +43,7 @@ export function publicationGate(candidate: ReleaseCandidate, qualifiedUpgradeKey
       if (!newer.has(sha) || run.status !== "completed" || run.conclusion !== "success") continue;
       let qualified = false;
       try {
-        requireCi(sha, candidate.profile);
+        requireCi(sha, releaseProfileAt(sha));
         qualified = true;
       } catch {
         continue;

@@ -17,6 +17,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup
       - uses: actions/create-github-app-token@v2
         id: app
         with:
@@ -24,15 +30,13 @@ jobs:
           private-key: ${{ secrets.F5_RELEASE_APP_PRIVATE_KEY }}
           permission-contents: write
           permission-pull-requests: write
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-          token: ${{ steps.app.outputs.token }}
-      - uses: ./.github/actions/setup
       - run: node scripts/create-stable-release-pr.ts
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
+          # Use gh's environment credential only for Git invocations; never persist the token.
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: credential.https://github.com.helper
+          GIT_CONFIG_VALUE_0: "!gh auth git-credential"
           VERSION: ${{ inputs.version }}
           REQUEST_ID: ${{ inputs.request_id }}
           SUPERSEDES: ${{ inputs.supersedes }}

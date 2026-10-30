@@ -80,6 +80,9 @@ stable preferences, beta clients retain beta preferences, and no path downgrades
   verifies uploaded sizes and API SHA-256 digests, preserves the existing provider
   certification policy, then undrafts. A matching complete published release is
   success on retry. Mismatched existing assets block rather than overwrite.
+  A retry can remove an expected incomplete `starter` upload from its matching
+  draft before uploading it again. Complete assets and public releases are never
+  removed or replaced.
 - Public checks verify all installer/CLI download URLs, update manifests, candidate
   provenance, the Atom feed, and stable Latest aliases. Transient public/dependency
   failures retry once locally. Persistent failures remain visible for rerun.

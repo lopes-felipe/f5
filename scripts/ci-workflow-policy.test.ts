@@ -36,6 +36,22 @@ export function assertWorkflowPolicy(jobs: Record<string, Job>) {
 }
 
 describe("CI workflow policy", () => {
+  it("installs dependencies before minting the preparation App token and never persists credentials", () => {
+    const preparation = readWorkflow("release-prepare.yml");
+    const steps = preparation.jobs.prepare!.steps!;
+    const setup = steps.findIndex((s) => s.uses === "./.github/actions/setup");
+    const token = steps.findIndex((s) => s.uses?.startsWith("actions/create-github-app-token@"));
+    expect(setup).toBeGreaterThan(-1);
+    expect(token).toBeGreaterThan(setup);
+    const checkout = steps.find((s) => s.uses?.startsWith("actions/checkout@")) as {
+      with: Record<string, unknown>;
+    };
+    expect(checkout.with["persist-credentials"]).toBe(false);
+    expect(checkout.with.token).toBeUndefined();
+    const prepare = steps.find((s) => s.run?.includes("create-stable-release-pr.ts"))!;
+    expect(prepare.env?.GIT_CONFIG_VALUE_0).toBe("!gh auth git-credential");
+    expect(prepare.env?.GH_TOKEN).toBe("${{ steps.app.outputs.token }}");
+  });
   it("lets each workspace preserve its package report identity without overwriting sibling reports", () => {
     for (const [id, job] of Object.entries(workflow.jobs))
       for (const step of job.steps ?? [])

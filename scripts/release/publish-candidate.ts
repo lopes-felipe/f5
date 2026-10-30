@@ -180,6 +180,38 @@ export async function publishCandidate(
     });
     if (remote !== candidate.sourceSha || release.prerelease !== (candidate.kind === "beta"))
       throw new Error("Existing release/tag has a different identity");
+    if (release.draft && release.assets.some((a) => a.state === "starter")) {
+      // Only failed uploads in this matching draft may be removed. Validate every
+      // complete asset first; uploaded bytes are always immutable.
+      release = api<RemoteRelease>("releases/" + release.id);
+      if (!release.draft) throw new Error("Release became public during upload recovery");
+      const partial = release.assets.filter((a) => a.state === "starter");
+      missingUploads(
+        files,
+        release.assets.filter((a) => a.state !== "starter"),
+      );
+      const names = new Set<string>();
+      for (const asset of release.assets) {
+        if (names.has(asset.name)) throw new Error("Duplicate draft release asset");
+        names.add(asset.name);
+      }
+      for (const asset of partial) {
+        const wanted = files.find((f) => f.name === asset.name);
+        if (
+          !wanted ||
+          !Number.isSafeInteger(asset.id) ||
+          asset.id! < 1 ||
+          asset.digest ||
+          asset.size < 0 ||
+          asset.size > wanted.size
+        )
+          throw new Error("Unrecognized partial draft upload: " + asset.name);
+      }
+      for (const asset of partial)
+        gh(["api", "--method", "DELETE", "repos/" + repository + "/releases/assets/" + asset.id]);
+      release = api<RemoteRelease>("releases/" + release.id);
+      if (!release.draft) throw new Error("Release became public during upload recovery");
+    }
     const missing = missingUploads(files, release.assets);
     if (!release.draft) {
       if (missing.length) throw new Error("Published immutable release is incomplete");

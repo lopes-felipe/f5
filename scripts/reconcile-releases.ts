@@ -9,6 +9,7 @@ import {
   readArtifactJson,
   repository,
   requireCi,
+  releaseProfileAt,
   runs,
   stableRequests,
   trustedRun,
@@ -56,7 +57,7 @@ for (const [sha, run] of latestCi) {
   if (order < boundary || order < 0 || run.conclusion !== "success" || run.status !== "completed")
     continue;
   try {
-    requireCi(sha, "all");
+    requireCi(sha, releaseProfileAt(sha));
     green.push({ sourceSha: sha, order });
   } catch (error) {
     console.log("Waiting for exact-SHA CI:", sha, String(error));

@@ -28,9 +28,10 @@ export function selectPublication(
   return latest ? { sourceSha: latest.sourceSha, reason: "newest passing main commit" } : null;
 }
 export interface UploadedAsset {
+  readonly id?: number;
   readonly name: string;
   readonly size: number;
-  readonly digest: string;
+  readonly digest: string | null;
   readonly state: string;
 }
 export function missingUploads(

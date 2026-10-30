@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { parse } from "yaml";
+import { parseReleaseProfile } from "../lib/release-profile.ts";
 import { artifactEntries } from "./release-publication.ts";
 import { parseStableIntent, SHA_PATTERN, type StableRequest } from "./release-candidate.ts";
 import {
@@ -93,6 +94,9 @@ export function pages<T>(path: string): T[] {
 }
 export function git(args: readonly string[]): string {
   return execFileSync("git", [...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }).trim();
+}
+export function releaseProfileAt(sha: string): "all" | "windows" {
+  return parseReleaseProfile(JSON.parse(git(["show", sha + ":release-profile.json"])).desktop);
 }
 export function show(sha: string, path: string): string | undefined {
   try {

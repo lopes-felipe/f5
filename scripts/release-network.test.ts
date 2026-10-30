@@ -4,11 +4,27 @@ vi.mock("node:child_process", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:child_process")>()),
   execFileSync: execute,
 }));
-import { gh } from "./release/release-github.ts";
+import { gh, releaseProfileAt } from "./release/release-github.ts";
 beforeEach(() => {
   execute.mockReset();
 });
 const transient = () => Object.assign(new Error("network"), { stderr: "HTTP 502: Server Error" });
+it.each(["all", "windows"])(
+  "reads the %s qualification profile from the exact source SHA",
+  (profile) => {
+    const sha = "a".repeat(40);
+    execute.mockReturnValue(JSON.stringify({ desktop: profile }));
+    expect(releaseProfileAt(sha)).toBe(profile);
+    expect(execute.mock.calls[0]!.slice(0, 2)).toEqual([
+      "git",
+      ["show", sha + ":release-profile.json"],
+    ]);
+  },
+);
+it("rejects a missing or invalid source profile", () => {
+  execute.mockReturnValue("{}");
+  expect(() => releaseProfileAt("a".repeat(40))).toThrow("Invalid release profile");
+});
 it("retries a transient API read once, preserving its exact arguments", () => {
   execute
     .mockImplementationOnce(() => {

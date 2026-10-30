@@ -20,10 +20,11 @@ const state = vi.hoisted(() => ({
   tag: "",
   draft: true,
   exists: false,
-  assets: [] as { name: string; size: number; digest: string; state: string }[],
+  assets: [] as { id?: number; name: string; size: number; digest: string | null; state: string }[],
   directories: new Map<number, string>(),
   writes: [] as string[],
   interrupt: false,
+  partialInterrupt: false,
   certification: false,
   foreignRun: false,
 }));
@@ -62,6 +63,11 @@ vi.mock("./release/release-github.ts", async (importOriginal) => {
     gh: (args: string[]) => {
       state.writes.push(args.join(" "));
       if (args[0] === "api") {
+        if (args.includes("DELETE")) {
+          const id = Number(args.at(-1)!.split("/").at(-1));
+          state.assets = state.assets.filter((a) => a.id !== id);
+          return "";
+        }
         state.tag = args
           .find((a) => a.startsWith("ref=refs/tags/"))!
           .slice("ref=refs/tags/".length);
@@ -74,6 +80,14 @@ vi.mock("./release/release-github.ts", async (importOriginal) => {
       if (args[1] === "upload") {
         if (state.interrupt && state.assets.length === 2) {
           state.interrupt = false;
+          if (state.partialInterrupt)
+            state.assets.push({
+              id: 900,
+              name: basename(args[3]!),
+              size: 0,
+              digest: null,
+              state: "starter",
+            });
           throw new Error("connection interrupted");
         }
         const file = args[3]!,
@@ -226,10 +240,42 @@ beforeEach(() => {
   state.directories.clear();
   state.writes = [];
   state.interrupt = false;
+  state.partialInterrupt = false;
   state.certification = false;
   state.foreignRun = false;
 });
 describe("publisher integration with immutable platform fixtures", () => {
+  it("resumes a matching draft with an interrupted starter asset without replacing uploaded bytes", async () => {
+    const { candidate, directory } = await candidateFixture();
+    await assembleCandidate(candidate, directory);
+    state.interrupt = true;
+    state.partialInterrupt = true;
+    await expect(publishCandidate(candidate, directory)).rejects.toThrow("interrupted");
+    const retained = state.assets.filter((a) => a.state === "uploaded").map((a) => ({ ...a }));
+    await publishCandidate(candidate, directory);
+    expect(state.assets.slice(0, retained.length)).toEqual(retained);
+    expect(state.assets.every((a) => a.state === "uploaded")).toBe(true);
+    expect(state.writes.filter((w) => w.includes("DELETE"))).toEqual([
+      "api --method DELETE repos/lopes-felipe/f5/releases/assets/900",
+    ]);
+    expect(state.draft).toBe(false);
+  });
+  it.each(["public", "mismatched", "unrecognized"])(
+    "never removes partial assets from a %s release",
+    async (problem) => {
+      const { candidate, directory } = await candidateFixture();
+      await assembleCandidate(candidate, directory);
+      state.interrupt = true;
+      state.partialInterrupt = true;
+      await expect(publishCandidate(candidate, directory)).rejects.toThrow("interrupted");
+      if (problem === "public") state.draft = false;
+      if (problem === "mismatched") state.assets[0]!.digest = "sha256:" + "e".repeat(64);
+      if (problem === "unrecognized") state.assets.at(-1)!.name = "foreign.bin";
+      const writes = state.writes.length;
+      await expect(publishCandidate(candidate, directory)).rejects.toThrow();
+      expect(state.writes).toHaveLength(writes);
+    },
+  );
   it("rejects artifacts whose API identity names another build run", async () => {
     const { candidate, directory } = await candidateFixture();
     state.foreignRun = true;

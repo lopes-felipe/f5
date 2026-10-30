@@ -219,25 +219,28 @@ export async function installedCliSmoke(
       JSON.stringify({ version: baseline.version, target, candidate: release.version }) + "\n",
     );
   } finally {
-    if (child && child.exitCode === null && child.signalCode === null) {
-      const owned = child;
-      const exited = new Promise<void>((ok) => {
-        const timer = setTimeout(() => owned.kill("SIGKILL"), 10_000);
-        owned.once("exit", () => {
-          clearTimeout(timer);
-          ok();
+    try {
+      if (child && child.exitCode === null && child.signalCode === null) {
+        const owned = child;
+        const exited = new Promise<void>((ok) => {
+          const timer = setTimeout(() => owned.kill("SIGKILL"), 10_000);
+          owned.once("exit", () => {
+            clearTimeout(timer);
+            ok();
+          });
         });
-      });
-      if (process.platform === "win32" && owned.pid) {
-        await exec(
-          join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
-          ["/PID", String(owned.pid), "/T", "/F"],
-          { timeout: 15_000 },
-        );
-      } else owned.kill("SIGTERM");
-      await exited;
+        if (process.platform === "win32" && owned.pid) {
+          await exec(
+            join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
+            ["/PID", String(owned.pid), "/T", "/F"],
+            { timeout: 15_000 },
+          ).catch(() => owned.kill("SIGKILL"));
+        } else owned.kill("SIGTERM");
+        await exited;
+      }
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((ok) => server.close(() => ok()));
     }
-    server.closeAllConnections();
-    await new Promise<void>((ok) => server.close(() => ok()));
   }
 }
