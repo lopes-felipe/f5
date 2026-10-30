@@ -17,6 +17,7 @@ import {
   AUTHORED_PATHS_MAX_COMMITS,
   CheckpointStoreLiveWithGitService,
   CheckpointStoreLiveWithoutCredentials,
+  makeCheckpointStoreLayer,
 } from "./CheckpointStore.ts";
 
 function makeLayer(calls: ExecuteGitInput[], refOutput = "") {
@@ -120,11 +121,123 @@ describe("CheckpointStoreLive", () => {
       ),
     )) {
       expect(call.args).toContain("core.fsync=objects,reference");
-      expect(call.args).toContain("core.fsyncMethod=batch");
+      expect(call.args).toContain("core.fsyncMethod=fsync");
       expect(call.env).toMatchObject({ LC_ALL: "C", LANGUAGE: "C" });
     }
     if (result._tag === "Failure")
       expect(calls.some((call) => call.args.includes("update-ref"))).toBe(false);
+  });
+
+  const captureOnPlatform = (
+    platform: NodeJS.Platform,
+    fail: (input: ExecuteGitInput) => string | null = () => null,
+  ) => {
+    const calls: ExecuteGitInput[] = [];
+    const layer = makeCheckpointStoreLayer(platform).pipe(
+      Layer.provide(
+        Layer.succeed(GitService, {
+          execute: (input) =>
+            Effect.gen(function* () {
+              calls.push(input);
+              const detail = fail(input);
+              if (detail !== null) {
+                return yield* new GitCommandError({
+                  operation: input.operation,
+                  cwd: input.cwd,
+                  command: "git",
+                  detail,
+                });
+              }
+              return { code: 0, stdout: "oid\n", stderr: "" };
+            }),
+        }),
+      ),
+      Layer.provide(NodeServices.layer),
+    );
+    return Effect.runPromise(
+      Effect.result(
+        Effect.gen(function* () {
+          yield* (yield* CheckpointStore).captureCheckpoint({
+            cwd: "/repo",
+            checkpointRef: CheckpointRef.makeUnsafe("refs/t3/test"),
+          });
+        }).pipe(Effect.provide(layer)),
+      ),
+    ).then((result) => ({ result, calls }));
+  };
+  const durableCalls = (calls: ReadonlyArray<ExecuteGitInput>) =>
+    calls.filter((call) =>
+      ["add", "write-tree", "commit-tree", "update-ref"].some((command) =>
+        call.args.includes(command),
+      ),
+    );
+  const fsyncMethods = (call: ExecuteGitInput) =>
+    call.args.filter((arg) => arg.startsWith("core.fsyncMethod="));
+
+  it.each([
+    ["darwin", ["core.fsyncMethod=fsync", "core.fsyncMethod=batch"]],
+    ["win32", ["core.fsyncMethod=fsync", "core.fsyncMethod=batch"]],
+    ["linux", ["core.fsyncMethod=fsync"]],
+  ] as const)(
+    "batches object flushes only where Git documents it as safe: %s",
+    async (platform, expected) => {
+      const { result, calls } = await captureOnPlatform(platform);
+      expect(result._tag).toBe("Success");
+      const durable = durableCalls(calls);
+      expect(durable).toHaveLength(4);
+      for (const call of durable) expect(fsyncMethods(call)).toEqual(expected);
+    },
+  );
+
+  const unsupportedObjectFsync =
+    "git add failed: error: fsync error on '.git/objects/ab/tmp_obj_x': Operation not supported\nfatal: adding files failed";
+  const unsupportedRefFsync =
+    "git update-ref failed: fatal: cannot update ref 'refs/t3/test': couldn't write '/repo/.git/refs/t3/test.lock'";
+
+  it.each([
+    ["darwin", "add", unsupportedObjectFsync],
+    ["darwin", "update-ref", unsupportedRefFsync],
+    ["win32", "add", unsupportedObjectFsync],
+  ] as const)(
+    "on %s retries %s once with writeout-only when full fsync is unsupported",
+    async (platform, command, detail) => {
+      const { result, calls } = await captureOnPlatform(platform, (input) =>
+        input.args.includes(command) && !input.args.includes("core.fsyncMethod=writeout-only")
+          ? detail
+          : null,
+      );
+      const attempts = calls.filter((call) => call.args.includes(command));
+      if (platform !== "darwin") {
+        expect(result._tag).toBe("Failure");
+        expect(attempts).toHaveLength(1);
+        return;
+      }
+      expect(result._tag).toBe("Success");
+      expect(attempts).toHaveLength(2);
+      expect(fsyncMethods(attempts[1]!)).toEqual([
+        "core.fsyncMethod=writeout-only",
+        "core.fsyncMethod=writeout-only",
+      ]);
+      expect(attempts[1]!.args.filter((arg) => !arg.startsWith("core.fsyncMethod="))).toEqual(
+        attempts[0]!.args.filter((arg) => !arg.startsWith("core.fsyncMethod=")),
+      );
+      expect(attempts[1]!.env).toMatchObject({ LC_ALL: "C", LANGUAGE: "C" });
+    },
+  );
+
+  it("keeps unrelated macOS capture errors and failed fallbacks as failures", async () => {
+    const unrelated = await captureOnPlatform("darwin", (input) =>
+      input.args.includes("add") ? "git add failed: fatal: permission denied" : null,
+    );
+    expect(unrelated.result._tag).toBe("Failure");
+    expect(unrelated.calls.filter((call) => call.args.includes("add"))).toHaveLength(1);
+
+    const fallbackFails = await captureOnPlatform("darwin", (input) =>
+      input.args.includes("add") ? unsupportedObjectFsync : null,
+    );
+    expect(fallbackFails.result._tag).toBe("Failure");
+    expect(fallbackFails.calls.filter((call) => call.args.includes("add"))).toHaveLength(2);
+    expect(fallbackFails.calls.some((call) => call.args.includes("update-ref"))).toBe(false);
   });
 
   for (const scenario of ["too-many-candidates", "discovery-timeout", "discovery-failure"])
