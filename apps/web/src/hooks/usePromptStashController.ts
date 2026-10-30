@@ -3,7 +3,10 @@ import {
   type ResolvedKeybindingsConfig,
   type ServerProvider,
 } from "@t3tools/contracts";
-import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
+import {
+  threadWorkspaceCwd,
+  threadAttachmentWorkspaceRoots,
+} from "@t3tools/shared/threadWorkspace";
 import { useCallback, useMemo } from "react";
 
 import { type PromptStashDraftSelection, useComposerDraftStore } from "~/composerDraftStore";
@@ -95,7 +98,7 @@ export function usePromptStashController(input: {
           stashId,
           threadId: activeThread.id,
           projectId: activeProject.id,
-          workspaceRoots: [activeThread.worktreePath, activeProject.cwd],
+          workspaceRoots: threadAttachmentWorkspaceRoots(activeThread, activeProject),
           normalizeAbsolutePathForComparison:
             window.desktopBridge?.resolveRealPath ?? ((pathValue) => pathValue),
           selection: resolvedSelection.selection,

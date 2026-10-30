@@ -1,4 +1,5 @@
 import type { ProjectId, ThreadId } from "@t3tools/contracts";
+import { threadAttachmentWorkspaceRoots } from "@t3tools/shared/threadWorkspace";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useState, type MouseEvent } from "react";
 
@@ -88,10 +89,10 @@ export function useSidebarThreadActions(input: {
         files: folders,
         isElectron,
         desktopBridge: window.desktopBridge,
-        workspaceRoots: [
-          thread.worktreePath,
-          projects.find((project) => project.id === thread.projectId)?.cwd,
-        ],
+        workspaceRoots: threadAttachmentWorkspaceRoots(
+          thread,
+          projects.find((project) => project.id === thread.projectId),
+        ),
         normalizeAbsolutePathForComparison: createCachedAbsolutePathComparisonNormalizer(
           window.desktopBridge?.resolveRealPath ?? identityAbsolutePathNormalizer,
         ),

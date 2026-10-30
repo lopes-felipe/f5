@@ -7312,6 +7312,75 @@ describe("ChatView timeline (full app)", () => {
     },
   );
 
+  it.each([null, "/state/scratch/research-12345678"])(
+    "uses only the scratch thread folder for terminal/header controls (%s)",
+    async (scratchPath) => {
+      const initial = createSnapshotForTargetUser({
+        targetMessageId: "scratch-user" as MessageId,
+        targetText: "Research a topic",
+        fillerPairCount: 1,
+        targetPairIndex: 0,
+      });
+      const snapshot: OrchestrationReadModel = {
+        ...initial,
+        projects: initial.projects.map((project) => ({
+          ...project,
+          kind: "scratch",
+          title: "No project",
+          workspaceRoot: "/state/scratch",
+        })),
+        threads: initial.threads.map((thread) => ({
+          ...thread,
+          branch: null,
+          worktreePath: null,
+          scratchPath,
+          messages: thread.messages.map((message) =>
+            message.role === "assistant"
+              ? { ...message, text: "```bash\necho scratch\n```" }
+              : message,
+          ),
+        })),
+      };
+      const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+      try {
+        const terminal = page.getByRole("button", { name: "Toggle terminal drawer", exact: true });
+        if (scratchPath) await expect.element(terminal).toBeEnabled();
+        else await expect.element(terminal).toBeDisabled();
+        expect(
+          page
+            .getByRole("navigation", { name: "Breadcrumb", exact: true })
+            .getByRole("button", { name: "Project actions for No project" })
+            .all(),
+        ).toHaveLength(0);
+        expect(
+          page.getByRole("button", { name: "Project scripts", exact: true }).all(),
+        ).toHaveLength(0);
+        const run = page.getByRole("button", { name: "Run in terminal", exact: true });
+        await expect.element(run).toBeVisible();
+        await run.click();
+        if (scratchPath) {
+          await vi.waitFor(() =>
+            expect(wsRequests.some((body) => body._tag === WS_METHODS.terminalWrite)).toBe(true),
+          );
+          expect(wsRequests.find((body) => body._tag === WS_METHODS.terminalOpen)).toMatchObject({
+            cwd: scratchPath,
+            env: { T3CODE_PROJECT_ROOT: scratchPath },
+          });
+          const open = wsRequests.find((body) => body._tag === WS_METHODS.terminalOpen)!;
+          expect(open.env).not.toHaveProperty("T3CODE_WORKTREE_PATH");
+        } else {
+          await vi.waitFor(() =>
+            expect(document.body.textContent).toContain("Could not run command. Try again."),
+          );
+          expect(wsRequests.some((body) => body._tag === WS_METHODS.terminalOpen)).toBe(false);
+          expect(wsRequests.some((body) => body._tag === WS_METHODS.terminalWrite)).toBe(false);
+        }
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
   it("runs a settled shell block in a fresh terminal rooted at the thread worktree", async () => {
     const initial = createSnapshotForTargetUser({
       targetMessageId: "shell-user" as MessageId,

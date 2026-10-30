@@ -67,7 +67,7 @@ import {
   normalizeProviderStartOptions,
 } from "@t3tools/shared/providerOptions";
 
-import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { isScratchProject, isScratchThreadFolder } from "@t3tools/shared/scratchProject";
 import { resolveThreadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import {
@@ -503,11 +503,18 @@ const make = Effect.gen(function* () {
     return thread?.deletedAt === null ? thread : null;
   });
 
-  const resolveThreadSessionStartContext = Effect.fnUntraced(function* (threadId: ThreadId) {
+  const resolveThreadInstructionContext = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    workflowExecutionProfile?: WorkflowTurnExecutionProfile,
+  ) {
     const readModel = yield* orchestrationEngine.getReadModel();
     const thread = readModel.threads.find((entry) => entry.id === threadId);
     if (!thread) {
-      return yield* Effect.die(new Error(`Thread '${threadId}' was not found in read model.`));
+      return yield* new ProviderTurnDeliveryError({
+        certainty: "not_sent",
+        retryable: false,
+        detail: "The thread was not found in the read model.",
+      });
     }
 
     const effectiveCwd = resolveThreadWorkspaceCwd({
@@ -517,22 +524,52 @@ const make = Effect.gen(function* () {
     const project = readModel.projects.find(
       (project) => project.id === thread.projectId && project.deletedAt === null,
     );
+    const scratch = isScratchProject(project);
+    if (
+      (scratch &&
+        (!thread.scratchPath ||
+          !isScratchThreadFolder(project!.workspaceRoot, thread.scratchPath) ||
+          thread.branch !== null ||
+          thread.worktreePath !== null)) ||
+      (!project && thread.scratchPath)
+    ) {
+      const detail = "The thread without a project has an invalid workspace folder or Git state.";
+      yield* appendProviderFailureActivity({
+        threadId,
+        kind: "provider.turn.start.failed",
+        summary: "Provider turn start failed",
+        detail,
+        turnId: null,
+        createdAt: new Date().toISOString(),
+      });
+      return yield* new ProviderTurnDeliveryError({
+        certainty: "not_sent",
+        retryable: false,
+        detail,
+      });
+    }
     yield* Effect.logInfo("provider command reactor resolved thread session start context", {
       threadId,
       threadWorktreePath: thread.worktreePath,
       projectWorkspaceRoot: project?.workspaceRoot ?? null,
       effectiveCwd: effectiveCwd ?? null,
     });
-    const activeProjectMemories = (project?.memories ?? []).filter(
+    const activeProjectMemories = (scratch ? [] : (project?.memories ?? [])).filter(
       (memory) => memory.deletedAt === null,
     );
     const instructionContext = buildThreadInstructionContext({
       thread,
-      ...(project?.title ? { projectTitle: project.title } : {}),
+      ...(!scratch && project?.title ? { projectTitle: project.title } : {}),
       projectMemories: activeProjectMemories,
       ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
       turnCount: deriveThreadTurnCount(thread),
+      ...(workflowExecutionProfile ? { workflowExecutionProfile } : {}),
     });
+    return { thread, instructionContext, effectiveCwd };
+  });
+
+  const resolveThreadSessionStartContext = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const { thread, instructionContext } = yield* resolveThreadInstructionContext(threadId);
     const persistedBindingOption = yield* providerSessionDirectory.getBinding(threadId);
 
     return {
@@ -1277,6 +1314,7 @@ const make = Effect.gen(function* () {
       return;
     }
     if (input.continuationRequestId) {
+      yield* resolveThreadInstructionContext(input.threadId);
       yield* requireDeliverableThread(input.threadId);
       const live = (yield* providerService.listSessions()).find(
         (session) => session.threadId === input.threadId && session.status !== "closed",
@@ -1319,6 +1357,10 @@ const make = Effect.gen(function* () {
     input: SendTurnForThreadInput,
     thread: OrchestrationThread,
   ) {
+    const { effectiveCwd: workspace, instructionContext } = yield* resolveThreadInstructionContext(
+      thread.id,
+      input.workflowExecutionProfile,
+    );
     if (thread.worktreePath && thread.branch) {
       const model = yield* orchestrationEngine.getReadModel();
       const project = model.projects.find((entry) => entry.id === thread.projectId);
@@ -1339,10 +1381,6 @@ const make = Effect.gen(function* () {
           });
       }
     }
-    const workspace = resolveThreadWorkspaceCwd({
-      thread,
-      projects: (yield* orchestrationEngine.getReadModel()).projects,
-    });
     if (workspace) yield* ensureWorkspaceDirectory(workspace);
     yield* requireDeliverableThread(input.threadId);
     yield* ensureSessionForThread(input.threadId, input.createdAt, {
@@ -1366,33 +1404,6 @@ const make = Effect.gen(function* () {
     const persistedBinding = yield* providerSessionDirectory
       .getBinding(input.threadId)
       .pipe(Effect.map(Option.getOrUndefined));
-    const readModel = yield* orchestrationEngine.getReadModel();
-    const project = readModel.projects.find(
-      (project) => project.id === thread.projectId && project.deletedAt === null,
-    );
-    const activeProjectMemories = (project?.memories ?? []).filter(
-      (memory) => memory.deletedAt === null,
-    );
-    const effectiveCwd = resolveThreadWorkspaceCwd({
-      thread,
-      projects: readModel.projects,
-    });
-    yield* Effect.logInfo("provider command reactor sendTurnForThread resolved cwd", {
-      threadId: input.threadId,
-      threadWorktreePath: thread.worktreePath,
-      projectWorkspaceRoot: project?.workspaceRoot ?? null,
-      effectiveCwd: effectiveCwd ?? null,
-    });
-    const instructionContext = buildThreadInstructionContext({
-      thread,
-      ...(project?.title ? { projectTitle: project.title } : {}),
-      projectMemories: activeProjectMemories,
-      ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
-      turnCount: deriveThreadTurnCount(thread),
-      ...(input.workflowExecutionProfile
-        ? { workflowExecutionProfile: input.workflowExecutionProfile }
-        : {}),
-    });
     const sessionModelSwitch =
       activeSession === undefined
         ? "in-session"
@@ -1824,6 +1835,7 @@ const make = Effect.gen(function* () {
           )
         : undefined;
     if (event.type === "thread.turn-steer-requested") {
+      yield* resolveThreadInstructionContext(thread.id);
       const project = (yield* orchestrationEngine.getReadModel()).projects.find(
         (entry) => entry.id === thread.projectId,
       );

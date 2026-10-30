@@ -1,18 +1,24 @@
 import type { ProjectId, ThreadId, ProjectIssueAssetUrlInput } from "@t3tools/contracts";
 import { isNetworkPath, workspaceRelativeFilePath } from "@t3tools/shared/path";
+import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { safeDecodeLocalPath } from "../local-paths";
 export function resolveChatAssetTarget(
   src: string,
   cwd: string | undefined,
-  projects: ReadonlyArray<{ id: ProjectId; cwd: string }>,
-  threads: ReadonlyArray<{ id: ThreadId; worktreePath: string | null }>,
+  projects: ReadonlyArray<{ id: ProjectId; cwd: string; kind?: string | undefined }>,
+  threads: ReadonlyArray<{
+    id: ThreadId;
+    worktreePath: string | null;
+    scratchPath?: string | null | undefined;
+  }>,
 ): { identity: ProjectIssueAssetUrlInput["identity"]; path: string } | undefined {
   const decoded = safeDecodeLocalPath(src);
   if (isNetworkPath(decoded)) {
     const relative = workspaceRelativeFilePath(decoded, cwd);
     if (relative === null) return;
-    const thread = threads.find((thread) => thread.worktreePath === cwd);
-    const project = projects.find((project) => project.cwd === cwd);
+    const thread = threads.find((thread) => threadWorkspaceCwd(thread, undefined) === cwd);
+    const project = projects.find((project) => !isScratchProject(project) && project.cwd === cwd);
     const identity = thread
       ? { kind: "thread" as const, threadId: thread.id }
       : project
@@ -36,20 +42,23 @@ export function resolveChatAssetTarget(
     if (url.protocol !== "file:" || (url.hostname && url.hostname !== "localhost")) return;
     const absolute = decodeURIComponent(url.pathname).replace(/^\/([a-z]:\/)/iu, "$1");
     const roots = [
-      ...threads.flatMap((thread) =>
-        thread.worktreePath
+      ...threads.flatMap((thread) => {
+        const root = threadWorkspaceCwd(thread, undefined);
+        return root
           ? [
               {
-                root: normalize(thread.worktreePath),
+                root: normalize(root),
                 identity: { kind: "thread" as const, threadId: thread.id },
               },
             ]
-          : [],
-      ),
-      ...projects.map((project) => ({
-        root: normalize(project.cwd),
-        identity: { kind: "project" as const, projectId: project.id },
-      })),
+          : [];
+      }),
+      ...projects
+        .filter((project) => !isScratchProject(project))
+        .map((project) => ({
+          root: normalize(project.cwd),
+          identity: { kind: "project" as const, projectId: project.id },
+        })),
     ].sort((a, b) => b.root.length - a.root.length);
     const target = roots.find(({ root }) =>
       /^[a-z]:/iu.test(root)

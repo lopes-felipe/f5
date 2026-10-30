@@ -7,11 +7,11 @@ import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
 vi.mock("../GitActionsControl", () => ({
-  default: () => null,
+  default: () => <span data-testid="git-actions" />,
 }));
 
 vi.mock("../ProjectScriptsControl", () => ({
-  default: () => null,
+  default: () => <span data-testid="project-scripts" />,
 }));
 
 vi.mock("./OpenInPicker", () => ({
@@ -86,6 +86,37 @@ function renderHeader(overrides: Partial<ChatHeaderProps> = {}, width = 900) {
 }
 
 describe("ChatHeader", () => {
+  it("shows scratch breadcrumbs without project settings or scripts, with terminal available after allocation", async () => {
+    const base = {
+      activeProjectId: "scratch" as never,
+      activeProjectKind: "scratch" as const,
+      activeProjectName: "No project",
+      isGitRepo: false,
+      activeProjectScripts: undefined,
+      onNewThreadInProject: () => {},
+      onOpenProjectSettings: undefined,
+    };
+    const view = await renderHeader(base);
+    await expect.element(page.getByText("No project", { exact: true })).toBeVisible();
+    expect(page.getByRole("button", { name: "Project actions for No project" }).all()).toHaveLength(
+      0,
+    );
+    expect(document.querySelector('[data-testid="project-scripts"]')).toBeNull();
+    expect(document.querySelector("img")).toBeNull();
+    await expect
+      .element(page.getByRole("button", { name: "Toggle terminal drawer" }))
+      .toBeDisabled();
+    await view.unmount();
+    await renderHeader({
+      ...base,
+      openInCwd: "/state/scratch/own",
+      terminalAvailable: true,
+      workspaceFilesAvailable: true,
+    });
+    await expect
+      .element(page.getByRole("button", { name: "Toggle terminal drawer" }))
+      .toBeEnabled();
+  });
   afterEach(() => {
     for (const client of queryClients.splice(0)) client.clear();
     document.body.innerHTML = "";
