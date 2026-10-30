@@ -1195,15 +1195,16 @@ const makeGitCore = Effect.gen(function* () {
           continue;
         }
 
+        // Exact refs, so a tag that shares the base's name cannot stand in for it.
         if (yield* branchExists(cwd, normalizedCandidate)) {
-          return normalizedCandidate;
+          return `refs/heads/${normalizedCandidate}`;
         }
 
         if (
           primaryRemoteName &&
           (yield* remoteBranchExists(cwd, primaryRemoteName, normalizedCandidate))
         ) {
-          return `${primaryRemoteName}/${normalizedCandidate}`;
+          return `refs/remotes/${primaryRemoteName}/${normalizedCandidate}`;
         }
       }
 
@@ -1863,9 +1864,11 @@ const makeGitCore = Effect.gen(function* () {
             { env, maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES },
           )).stdout.trim();
           if (!stagedSummary) return null;
-          // Stream past the cap and keep only the start: large change sets must not fail here.
+          // Keep only the start of the patch, and stop Git once it is read: large change sets
+          // must neither fail here nor run the full diff until the command times out.
           const patchChunks: Uint8Array[] = [];
           let patchBytes = 0;
+          const patchCapped = Deferred.makeUnsafe<void>();
           yield* executeGit(
             "GitCore.prepareCommitContext.stagedPatch",
             cwd,
@@ -1886,8 +1889,14 @@ const makeGitCore = Effect.gen(function* () {
                 const kept = chunk.subarray(0, COMMIT_CONTEXT_PATCH_MAX_BYTES - patchBytes);
                 patchChunks.push(kept);
                 patchBytes += kept.byteLength;
+                if (patchBytes >= COMMIT_CONTEXT_PATCH_MAX_BYTES)
+                  Deferred.doneUnsafe(patchCapped, Exit.void);
               },
             },
+          ).pipe(
+            // Interrupting the command releases its scope, which terminates Git.
+            Effect.asVoid,
+            Effect.raceFirst(Deferred.await(patchCapped)),
           );
           const stagedPatch = Buffer.concat(patchChunks).toString("utf8");
           return { stagedSummary, stagedPatch };
@@ -2349,9 +2358,7 @@ const makeGitCore = Effect.gen(function* () {
         { allowNonZeroExit: true },
       );
       const currentRef = current.code === 0 ? current.stdout.trim() : null;
-      const currentBranch = currentRef?.startsWith("refs/heads/")
-        ? currentRef.slice("refs/heads/".length)
-        : null;
+      const currentBranch = currentRef ? branchNameFromHeadRef(currentRef) : null;
       // Shells and agents can create branches without going through executeGit.
       // A fresh HEAD missing from the shared snapshot must trigger a fresh scan.
       if (

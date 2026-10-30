@@ -528,11 +528,13 @@ describe("CheckpointReactor", () => {
   it.each([
     { shared: false, checkout: "agent-selected", injected: false },
     { shared: false, checkout: "agent-selected", injected: true },
+    // A tag that shares the branch's name must not make it read as heads/<name>.
+    { shared: false, checkout: "agent-selected", tagged: true },
     { shared: true, checkout: "agent-selected" },
     { shared: false, checkout: "t3code/abcdef01" },
   ])(
     "follows only an exclusive non-temporary checkout: %j",
-    async ({ shared, checkout, injected }) => {
+    async ({ shared, checkout, injected, tagged }) => {
       const execute = vi.fn(() =>
         Effect.succeed({ code: 0, stdout: `refs/heads/${checkout}\n`, stderr: "" }),
       );
@@ -544,6 +546,28 @@ describe("CheckpointReactor", () => {
         cwd: harness.cwd,
         stdio: "ignore",
       });
+      if (tagged) {
+        execFileSync(
+          "git",
+          [
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@test.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+          ],
+          { cwd: harness.cwd, stdio: "ignore" },
+        );
+        execFileSync("git", ["update-ref", `refs/tags/${checkout}`, "HEAD"], {
+          cwd: harness.cwd,
+          stdio: "ignore",
+        });
+      }
       const threadId = ThreadId.makeUnsafe("thread-1");
       await Effect.runPromise(
         harness.engine.dispatch({

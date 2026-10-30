@@ -282,6 +282,36 @@ describe("getReviewPreviewDiff", () => {
     expect(result.baseRef).toBe("refs/remotes/upstream/main");
     expect(result.patch).toContain("feature.txt");
     expect(result.patch).not.toContain("upstream.txt");
+
+    // Choosing the same base explicitly compares the same remote ref.
+    const explicit = await preview(cwd, "branch-range", "upstream/main");
+    expect(explicit.kind).toBe("success");
+    if (explicit.kind !== "success") return;
+    expect(explicit.baseRef).toBe("upstream/main");
+    expect(explicit.patch).toBe(result.patch);
+  });
+
+  it("compares against a configured local merge base", async () => {
+    const cwd = makeRepository();
+    git(cwd, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+    git(cwd, ["switch", "-c", "release/v2"]);
+    write(cwd, "release.txt", "release\n");
+    git(cwd, ["add", "release.txt"]);
+    git(cwd, ["commit", "-m", "release"]);
+    git(cwd, ["switch", "-c", "feature"]);
+    git(cwd, ["config", "branch.feature.gh-merge-base", "release/v2"]);
+    write(cwd, "feature.txt", "feature\n");
+    git(cwd, ["add", "feature.txt"]);
+    git(cwd, ["commit", "-m", "feature"]);
+
+    const result = await preview(cwd, "branch-range");
+
+    expect(result.kind).toBe("success");
+    if (result.kind !== "success") return;
+    expect(result.baseRef).toBe("refs/heads/release/v2");
+    expect(result.patch).toContain("feature.txt");
+    expect(result.patch).not.toContain("release.txt");
   });
 
   it("caps untracked enumeration and reports truncation", async () => {

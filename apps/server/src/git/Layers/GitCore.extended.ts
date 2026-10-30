@@ -3311,6 +3311,45 @@ it.layer(TestLayer)("git integration", (it) => {
 
   describe("GitCore", () => {
     it.effect(
+      "keeps large change sets available for status and commit preparation",
+      () =>
+        Effect.gen(function* () {
+          const tmp = yield* makeTmpDir();
+          const core = yield* GitCore;
+          yield* git(tmp, ["init", "--initial-branch=main"]);
+          yield* git(tmp, ["config", "user.email", "test@test.com"]);
+          yield* git(tmp, ["config", "user.name", "Test"]);
+          yield* git(tmp, ["config", "commit.gpgsign", "false"]);
+          const files = Array.from(
+            { length: 6_000 },
+            (_, index) => `file-${String(index).padStart(5, "0")}-${"x".repeat(160)}.txt`,
+          );
+          for (const file of files) writeFileSync(path.join(tmp, file), "before\n");
+          yield* git(tmp, ["add", "."]);
+
+          const unborn = yield* core.statusDetails(tmp, { refreshUpstream: false });
+          expect(unborn.workingTree.files).toHaveLength(files.length);
+          // The created-file summary alone exceeds the default output cap.
+          const initial = yield* core.commit(tmp, "initial", "");
+          expect(initial.commitSha).toMatch(/^[a-f0-9]{40}$/);
+          for (const file of files) writeFileSync(path.join(tmp, file), "after\n");
+
+          const status = yield* core.statusDetails(tmp, { refreshUpstream: false });
+          expect(status.hasWorkingTreeChanges).toBe(true);
+          expect(status.workingTree.files).toHaveLength(files.length);
+          expect(status.workingTree.insertions).toBe(files.length);
+          expect(status.workingTree.deletions).toBe(files.length);
+          const context = yield* core.prepareCommitContext(tmp);
+          expect(context).not.toBeNull();
+          expect(context!.stagedSummary.length).toBeGreaterThan(1_000_000);
+          expect(context!.stagedSummary.split("\n")).toHaveLength(files.length);
+          expect(context!.stagedPatch.startsWith("diff --git")).toBe(true);
+          expect(context!.stagedPatch.length).toBeLessThanOrEqual(1024 * 1024);
+        }),
+      120_000,
+    );
+
+    it.effect(
       "inspects inventory dirtiness without fetching and returns null for non-checkouts",
       () =>
         Effect.gen(function* () {

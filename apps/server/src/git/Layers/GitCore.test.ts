@@ -481,6 +481,36 @@ describe("GitCore unit", () => {
     ]);
   });
 
+  it("stops reading the staged patch once commit context has enough of it", async () => {
+    const indexPath = join(tmpdir(), `f5-fake-index-${crypto.randomUUID()}`);
+    const scripted = makeScriptedGitService((input) => {
+      if (argsEqual(input, ["rev-parse", "--path-format=absolute", "--git-path", "index"]))
+        return { stdout: indexPath };
+      if (input.args.includes("--name-status")) return { stdout: "A\tvendor/huge.js\n" };
+      return {};
+    });
+    let patchInterrupted = false;
+    const core = await makeCore({
+      execute: (input) =>
+        input.args.includes("--patch")
+          ? // A diff far larger than the cap that would otherwise run until its timeout.
+            Effect.sync(() => input.onStdoutChunk?.(new Uint8Array(2 * 1024 * 1024).fill(43))).pipe(
+              Effect.andThen(Effect.never),
+              Effect.onInterrupt(() =>
+                Effect.sync(() => {
+                  patchInterrupted = true;
+                }),
+              ),
+            )
+          : scripted.service.execute(input),
+    });
+
+    const context = await Effect.runPromise(core.prepareCommitContext(process.cwd()));
+    expect(context?.stagedSummary).toBe("A\tvendor/huge.js");
+    expect(context?.stagedPatch).toHaveLength(1024 * 1024);
+    expect(patchInterrupted).toBe(true);
+  });
+
   it("commits the full index during a merge even when selected paths were requested", async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "f5-git-core-merge-"));
     const mergeHeadPath = path.join(cwd, "MERGE_HEAD");
@@ -1532,41 +1562,26 @@ describe("real repositories", () => {
     const core = await makeRealCore();
 
     expect((await Effect.runPromise(core.inspectCheckoutIdentity(cwd))).branch).toBe("release");
+    expect((await Effect.runPromise(core.inspectCheckout(cwd))).branch).toBe("release");
     expect(
       (await Effect.runPromise(core.statusDetails(cwd, { refreshUpstream: false }))).branch,
     ).toBe("release");
     await Effect.runPromise(core.fastForwardTo(cwd, head, "release"));
   }, 30_000);
 
-  it("keeps large change sets available for status and commit preparation", async () => {
+  it("counts unpublished commits against the base branch, not a tag that shares its name", async () => {
     const { cwd } = makeRepo();
-    const files = Array.from(
-      { length: 6_000 },
-      (_, index) => `file-${String(index).padStart(5, "0")}-${"x".repeat(160)}.txt`,
-    );
-    for (const file of files) writeFileSync(join(cwd, file), "before\n");
-    runGit(cwd, ["add", "."]);
+    const older = commitFile(cwd, "README.md");
+    commitFile(cwd, "base.txt");
+    runGit(cwd, ["update-ref", "refs/tags/main", older]);
+    runGit(cwd, ["switch", "-c", "feature"]);
+    commitFile(cwd, "feature.txt");
     const core = await makeRealCore();
 
-    const unborn = await Effect.runPromise(core.statusDetails(cwd, { refreshUpstream: false }));
-    expect(unborn.workingTree.files).toHaveLength(files.length);
-    // The created-file summary alone exceeds the default output cap.
-    const initial = await Effect.runPromise(core.commit(cwd, "initial", ""));
-    expect(initial.commitSha).toMatch(/^[a-f0-9]{40}$/);
-    for (const file of files) writeFileSync(join(cwd, file), "after\n");
-
     const status = await Effect.runPromise(core.statusDetails(cwd, { refreshUpstream: false }));
-    expect(status.hasWorkingTreeChanges).toBe(true);
-    expect(status.workingTree.files).toHaveLength(files.length);
-    expect(status.workingTree.insertions).toBe(files.length);
-    expect(status.workingTree.deletions).toBe(files.length);
-    const context = await Effect.runPromise(core.prepareCommitContext(cwd));
-    expect(context).not.toBeNull();
-    expect(context!.stagedSummary.length).toBeGreaterThan(1_000_000);
-    expect(context!.stagedSummary.split("\n")).toHaveLength(files.length);
-    expect(context!.stagedPatch.startsWith("diff --git")).toBe(true);
-    expect(context!.stagedPatch.length).toBeLessThanOrEqual(1024 * 1024);
-  }, 120_000);
+    expect(status.hasUpstream).toBe(false);
+    expect(status.aheadCount).toBe(1);
+  }, 30_000);
 
   // A fork whose local main lags `upstream/main`, with a feature branched from upstream.
   const makeForkWithUpstreamBase = () => {

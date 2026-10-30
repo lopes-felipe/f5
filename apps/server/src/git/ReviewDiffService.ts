@@ -121,9 +121,31 @@ function resolveCommit(cwd: string, ref: string, execution: ReviewDiffExecutionO
   ).pipe(Effect.map((result) => (result.code === 0 ? result.stdout.trim() : null)));
 }
 
-// A configured remote base such as `upstream/main` is compared by its exact remote-tracking
-// ref, even when a local branch or tag with that name shadows it.
-function resolveConfiguredRemoteBaseRef(
+// Qualify a base branch name to the exact ref it names, so a local branch or tag cannot shadow
+// it. A remote-tracking ref such as `upstream/main` wins, then `remote`'s copy, then the local
+// branch. Returns null when none exists.
+function qualifyBaseRef(
+  cwd: string,
+  name: string,
+  execution: ReviewDiffExecutionOptions,
+  remote?: string,
+) {
+  return Effect.gen(function* () {
+    if (name.startsWith("refs/")) return null;
+    const candidates = [
+      ...(name.includes("/") ? [`refs/remotes/${name}`] : []),
+      ...(remote ? [`refs/remotes/${remote}/${name}`] : []),
+      `refs/heads/${name}`,
+    ];
+    for (const candidate of candidates) {
+      if ((yield* resolveCommit(cwd, candidate, execution)) !== null) return candidate;
+    }
+    return null;
+  });
+}
+
+// The branch's configured base (`gh-merge-base`), compared by its exact ref.
+function resolveConfiguredBaseRef(
   cwd: string,
   currentBranch: string,
   execution: ReviewDiffExecutionOptions,
@@ -136,9 +158,8 @@ function resolveConfiguredRemoteBaseRef(
       execution,
     );
     const baseRef = configured.code === 0 ? configured.stdout.trim() : "";
-    if (!baseRef.includes("/") || baseRef.startsWith("refs/")) return null;
-    const comparisonRef = `refs/remotes/${baseRef}`;
-    return (yield* resolveCommit(cwd, comparisonRef, execution)) === null ? null : comparisonRef;
+    if (!baseRef || baseRef === currentBranch) return null;
+    return yield* qualifyBaseRef(cwd, baseRef, execution, "origin");
   });
 }
 
@@ -165,12 +186,8 @@ function resolveDefaultBaseRef(
 ) {
   return Effect.gen(function* () {
     if (currentBranchName) {
-      const configuredRemoteBase = yield* resolveConfiguredRemoteBaseRef(
-        cwd,
-        currentBranchName,
-        execution,
-      );
-      if (configuredRemoteBase !== null) return configuredRemoteBase;
+      const configuredBase = yield* resolveConfiguredBaseRef(cwd, currentBranchName, execution);
+      if (configuredBase !== null) return configuredBase;
     }
 
     let defaultBase: string | null = null;
@@ -400,7 +417,11 @@ export function getReviewPreviewDiff(
         execution,
       ));
     if (!baseRef) return failure("missing_base", "No branch-range base ref could be resolved.");
-    const baseCommit = yield* resolveCommit(cwd, baseRef, execution);
+    // An explicitly chosen branch is compared by its exact ref; other revisions resolve as given.
+    const comparisonRef = input.request.baseRef
+      ? ((yield* qualifyBaseRef(cwd, input.request.baseRef, execution)) ?? input.request.baseRef)
+      : baseRef;
+    const baseCommit = yield* resolveCommit(cwd, comparisonRef, execution);
     if (!baseCommit)
       return failure("invalid_ref", `Base ref does not resolve to a commit: ${baseRef}`);
 
