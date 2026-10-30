@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
+import { THEME_TOKEN_NAMES } from "@t3tools/shared/themeTokens";
 import { Effect, Exit, Scope } from "effect";
 import { makePreviewAutomationBroker, PreviewAutomationBroker } from "./PreviewAutomationBroker.ts";
 import { makePreviewMcpHttpServer } from "./PreviewMcpHttpServer.ts";
@@ -8,13 +9,17 @@ import {
   makeThreadMcpBroker,
   THREAD_TOOL_DEFINITIONS,
   ThreadMcpBroker,
+  threadToolInputJsonSchema,
 } from "./threadMcpTools.ts";
 
 it("tells agents to leave a rendered page on the thread's own background", () => {
   const description =
     THREAD_TOOL_DEFINITIONS.find((tool) => tool.name === "html_render")?.description ?? "";
-  assert.include(description, "leave html, body and the outermost element without a background");
-  assert.include(description, "at least 16px of padding");
+  assert.include(
+    description,
+    "Leave html, body and the outermost element without a background, card or side padding",
+  );
+  assert.include(description, "16px of padding");
 });
 
 it.effect(
@@ -135,3 +140,38 @@ it.effect(
       }),
     ),
 );
+
+it("guides agents to chart data, follow the theme and leave the page unannounced", () => {
+  const render = THREAD_TOOL_DEFINITIONS.find((tool) => tool.name === "html_render")!;
+  const preview = THREAD_TOOL_DEFINITIONS.find((tool) => tool.name === "html_preview")!;
+  assert.isTrue(render.alwaysLoad);
+  assert.include(
+    render.description,
+    "When an answer shows a trend or comparison in data, prefer showing it as a chart with this tool, unless the user asked for text only or for an exportable image.",
+  );
+  assert.include(render.description, "Do not announce or restate the page.");
+  assert.include(render.description, "up to 20000px");
+  for (const token of THEME_TOKEN_NAMES) assert.include(render.description, `--${token}`);
+  for (const variable of ["--chart-1", "--chart-6", "--radius", "--font-sans", "--font-mono"])
+    assert.include(render.description, variable);
+  assert.deepStrictEqual(preview.annotations, {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  });
+  assert.isFalse(preview.alwaysLoad);
+  for (const tool of [render, preview]) {
+    const schema = threadToolInputJsonSchema(tool) as {
+      properties: { html: { minLength?: number } };
+    };
+    assert.equal(schema.properties.html.minLength, 1);
+  }
+  const height = (
+    threadToolInputJsonSchema(render) as {
+      properties: { height: { maximum?: number; description?: string } };
+    }
+  ).properties.height;
+  assert.equal(height.maximum, 100_000);
+  assert.include(height.description, "Pass contentHeight from html_preview");
+});

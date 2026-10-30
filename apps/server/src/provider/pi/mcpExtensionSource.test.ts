@@ -138,6 +138,29 @@ describe("Pi MCP tool exposure", () => {
     },
   );
 
+  it("adds the chart nudge only when the live catalog can preview and publish pages", async () => {
+    const chart = "prefer showing it as a chart with html_render";
+    const full = await loadMcpBridge({ modern: true, toolSearchAvailable: true });
+    await full.handlers.get("session_start")!({ systemPrompt: "" }, discoveryContext);
+    const withCharts = await full.handlers.get("before_agent_start")!(
+      { systemPrompt: "Pi system prompt" },
+      discoveryContext,
+    );
+    assert.include(withCharts.systemPrompt, chart);
+    const renderOnly = await loadMcpBridge({
+      modern: true,
+      toolSearchAvailable: true,
+      catalogResponse: { tools: [{ name: "thread_status" }, { name: "html_render" }] },
+    });
+    await renderOnly.handlers.get("session_start")!({ systemPrompt: "" }, discoveryContext);
+    const withoutCharts = await renderOnly.handlers.get("before_agent_start")!(
+      { systemPrompt: "Pi system prompt" },
+      discoveryContext,
+    );
+    assert.include(withoutCharts.systemPrompt, "thread_status");
+    assert.notInclude(withoutCharts.systemPrompt, chart);
+  });
+
   it("keeps orchestration direct and optional bridge tools discoverable on modern Pi", async () => {
     const bridge = await loadMcpBridge({ modern: true, toolSearchAvailable: true });
     await bridge.handlers.get("session_start")!({ systemPrompt: "" }, discoveryContext);

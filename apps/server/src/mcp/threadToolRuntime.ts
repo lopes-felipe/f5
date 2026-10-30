@@ -11,7 +11,7 @@ import type { OrchestrationEngineShape } from "../orchestration/Services/Orchest
 import type { PrHubFederationShape } from "../prHub/Layers/PrHubFederation.ts";
 import type { PrHubReviewGuideService } from "../prHub/Layers/PrHubReviewGuideService.ts";
 import type { PrHubExtensions } from "../prHub/PrHubExtensions.ts";
-import { ThreadToolError, type ThreadToolHandler } from "./threadMcpTools.ts";
+import { keepThreadToolError, ThreadToolError, type ThreadToolHandler } from "./threadMcpTools.ts";
 
 export function makeThreadToolHandler(input: {
   readonly engine: Pick<OrchestrationEngineShape, "getReadModel">;
@@ -76,11 +76,9 @@ export function makeThreadToolHandler(input: {
         : input.guides.get({ ...target, mode: "force" });
     }).pipe(
       Effect.mapError(
-        () =>
-          new ThreadToolError({
-            message:
-              "Thread tool failed. Check the PR target, account and current thread, then retry.",
-          }),
+        keepThreadToolError(
+          "Thread tool failed. Check the PR target, account and current thread, then retry.",
+        ),
       ),
     );
 }

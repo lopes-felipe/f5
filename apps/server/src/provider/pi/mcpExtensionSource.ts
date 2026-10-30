@@ -9,6 +9,7 @@ import {
   F5_PI_RUNTIME_MODE_ENV,
   F5_PI_MCP_EXTENSION_PATH_ENV,
 } from "./PiEnvironment.ts";
+import { HTML_RENDER_CHART_GUIDANCE } from "../../htmlRender/htmlRenderGuide.ts";
 const F5_ORCHESTRATION_INSTRUCTIONS = `F5's MCP tools are scoped to this thread. Use thread_status to inspect it and thread_settle only when work is complete. PR watch tools create continuing work only when requested. Use html_preview to validate a visual before html_render publishes it in the thread. Discover available tools from the live catalog and follow their input schemas.`;
 
 export const PI_F5_MCP_EXTENSION_FILENAME = "pi-f5-mcp-extension.ts";
@@ -31,6 +32,7 @@ const TOKEN_ENV = ${JSON.stringify(F5_PI_MCP_BEARER_ENV)};
 const RUNTIME_MODE_ENV = ${JSON.stringify(F5_PI_RUNTIME_MODE_ENV)};
 const EXTENSION_PATH_ENV = ${JSON.stringify(F5_PI_MCP_EXTENSION_PATH_ENV)};
 const ORCHESTRATION_INSTRUCTIONS = ${JSON.stringify(F5_ORCHESTRATION_INSTRUCTIONS.trim())};
+const CHART_INSTRUCTIONS = ${JSON.stringify(HTML_RENDER_CHART_GUIDANCE)};
 const PROTOCOL = "2025-06-18";
 const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const MAX_HTTP_BYTES = 16 * 1024 * 1024;
@@ -528,7 +530,10 @@ export default async function f5McpExtension(pi: ExtensionAPI) {
   // with "/" and silently break slash-command expansion.
   pi.on("before_agent_start", (event, ctx) => {
     reconcileDiscovery(ctx);
-    return { systemPrompt: event.systemPrompt + "\\n\\n" + ORCHESTRATION_INSTRUCTIONS };
+    // Only a catalog that can preview and publish pages gets the chart nudge.
+    const names = new Set(catalog.map((tool) => tool.name));
+    const charts = names.has("html_render") && names.has("html_preview") ? " " + CHART_INSTRUCTIONS : "";
+    return { systemPrompt: event.systemPrompt + "\\n\\n" + ORCHESTRATION_INSTRUCTIONS + charts };
   });
 }
 `;
