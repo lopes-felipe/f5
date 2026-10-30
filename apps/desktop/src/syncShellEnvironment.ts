@@ -1,6 +1,6 @@
 import { readEnvironmentFromLoginShell, ShellEnvironmentReader } from "@t3tools/shared/shell";
 import {
-  ensureWindowsPathHydrated,
+  ensureWindowsPathHydration,
   type WindowsRegistryPathReader,
 } from "@t3tools/shared/windowsPath";
 
@@ -9,9 +9,10 @@ const CA_TRUST_NAMES = ["SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS"] 
 const LOCALE_NAMES = ["LANG", "LC_ALL", "LC_CTYPE"] as const;
 
 /**
- * Resolves true only when the backend can skip its own probe: the Windows PATH
- * was hydrated, or the macOS login shell returned a PATH. A timed-out probe
- * (cold boot, first launch after an update) leaves the server to repair PATH.
+ * Resolves true only when the backend can skip its own probe: the Windows
+ * registry PATH was read, or the macOS login shell returned a PATH. A failed or
+ * timed-out probe (cold boot, first launch after an update, endpoint scanning)
+ * leaves the server to repair PATH.
  */
 export function syncShellEnvironment(
   env: NodeJS.ProcessEnv = process.env,
@@ -25,14 +26,14 @@ export function syncShellEnvironment(
 ): Promise<boolean> {
   const platform = options.platform ?? process.platform;
   if (platform === "win32") {
-    return ensureWindowsPathHydrated(env, {
+    return ensureWindowsPathHydration(env, {
       platform,
       ...(options.readWindowsRegistryPaths
         ? { readRegistryPaths: options.readWindowsRegistryPaths }
         : {}),
       ...(options.windowsPathExists ? { pathExists: options.windowsPathExists } : {}),
       warn: options.warn ?? ((message) => console.warn(`[environment] ${message}`)),
-    }).then(() => true);
+    }).then((result) => result.registryRead);
   }
   if (platform !== "darwin") return Promise.resolve(false);
 

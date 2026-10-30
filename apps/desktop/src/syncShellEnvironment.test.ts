@@ -177,4 +177,22 @@ describe("syncShellEnvironment", () => {
       "C:\\Inherited;C:\\Windows\\System32;C:\\Users\\Test\\AppData\\Roaming\\npm",
     );
   });
+
+  it("leaves Windows preparation incomplete when the registry PATH cannot be read", async () => {
+    const env: NodeJS.ProcessEnv = { Path: "C:\\Inherited" };
+    const warn = vi.fn();
+
+    const prepared = await syncShellEnvironment(env, {
+      platform: "win32",
+      readWindowsRegistryPaths: () => Promise.reject(new Error("powershell timed out")),
+      windowsPathExists: async () => false,
+      warn,
+    });
+
+    expect(prepared).toBe(false);
+    expect(warn).toHaveBeenCalledWith(
+      "Unable to read the Windows registry PATH; using the inherited PATH.",
+    );
+    expect(env.PATH).toBe("C:\\Inherited");
+  });
 });
