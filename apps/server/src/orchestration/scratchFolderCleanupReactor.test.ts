@@ -134,6 +134,35 @@ const advanceUntil = (ready: () => boolean) =>
     expect(ready()).toBe(true);
   });
 
+it("uses retained SQL metadata without overriding current thread, project, or live ownership", async () => {
+  const { root, folder, thread } = fixture();
+  const mine = folder("retained-12345678");
+  const persisted = {
+    thread: { ...thread("gone", mine, "2026-10-23T10:00:00Z"), archivedAt: null },
+    project: { id: "scratch", kind: "scratch", workspaceRoot: root },
+  } as unknown as NonNullable<Parameters<typeof removeScratchThreadFolder>[0]["persisted"]>;
+  const cleanup = (threads: unknown[], projects: unknown[] = []) =>
+    removeScratchThreadFolder({
+      readModel: { threads, projects } as unknown as OrchestrationReadModel,
+      threadId: persisted.thread.id,
+      persisted,
+    });
+  expect(await cleanup([thread("other-owner", mine, null)])).toEqual({
+    kind: "refused",
+    reason: "Another live thread owns the folder.",
+  });
+  expect(await cleanup([thread("gone", mine, null)])).toEqual({
+    kind: "refused",
+    reason: "The thread is still live.",
+  });
+  expect(await cleanup([], [{ ...persisted.project, kind: "standard" }])).toMatchObject({
+    kind: "refused",
+  });
+  expect(FS.existsSync(mine)).toBe(true);
+  expect(await cleanup([])).toEqual({ kind: "removed" });
+  expect(FS.existsSync(mine)).toBe(false);
+});
+
 effectIt.effect("retries transient failures and deduplicates concurrent deletion events", () =>
   Effect.gen(function* () {
     const { root, folder, thread } = fixture();

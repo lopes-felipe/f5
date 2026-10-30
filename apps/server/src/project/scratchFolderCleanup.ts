@@ -1,7 +1,12 @@
 import * as NodeFS from "node:fs/promises";
 import * as NodePath from "node:path";
 
-import type { OrchestrationReadModel, ThreadId } from "@t3tools/contracts";
+import type {
+  OrchestrationProject,
+  OrchestrationReadModel,
+  OrchestrationThread,
+  ThreadId,
+} from "@t3tools/contracts";
 import { isScratchProject, isScratchThreadFolder } from "@t3tools/shared/scratchProject";
 
 export type ScratchFolderCleanupResult =
@@ -12,17 +17,30 @@ export type ScratchFolderCleanupResult =
 export async function removeScratchThreadFolder(input: {
   readModel: OrchestrationReadModel;
   threadId: ThreadId;
+  /** Storage maintenance may retain SQL rows after deleted metadata leaves the read model. */
+  persisted?: {
+    thread: Pick<
+      OrchestrationThread,
+      "id" | "projectId" | "scratchPath" | "deletedAt" | "archivedAt"
+    >;
+    project: Pick<OrchestrationProject, "id" | "kind" | "workspaceRoot"> | undefined;
+  };
   allowArchived?: boolean;
   remove?: (folder: string) => Promise<void>;
 }): Promise<ScratchFolderCleanupResult> {
-  const thread = input.readModel.threads.find((entry) => entry.id === input.threadId);
+  const persisted = input.persisted?.thread.id === input.threadId ? input.persisted : undefined;
+  // Current metadata always wins, including a live thread or a changed project root.
+  const thread =
+    input.readModel.threads.find((entry) => entry.id === input.threadId) ?? persisted?.thread;
   if (!thread) return { kind: "refused", reason: "Thread metadata is missing." };
   const folder = thread.scratchPath;
   if (!folder) return { kind: "none" };
   if (thread.deletedAt === null && !(input.allowArchived && thread.archivedAt != null)) {
     return { kind: "refused", reason: "The thread is still live." };
   }
-  const project = input.readModel.projects.find((entry) => entry.id === thread.projectId);
+  const project =
+    input.readModel.projects.find((entry) => entry.id === thread.projectId) ??
+    (persisted?.project?.id === thread.projectId ? persisted.project : undefined);
   if (
     !project ||
     !isScratchProject(project) ||

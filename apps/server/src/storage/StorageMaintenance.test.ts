@@ -166,6 +166,7 @@ function makeGitCoreStub(input?: {
 
 function makeOrchestrationEngineStub(input?: {
   readonly dispatch?: OrchestrationEngineShape["dispatch"];
+  readonly omitDeletedScratchThreads?: boolean;
   readonly getWorkflows?: () => Pick<
     OrchestrationReadModel,
     "planningWorkflows" | "codeReviewWorkflows" | "investigationWorkflows"
@@ -181,8 +182,19 @@ function makeOrchestrationEngineStub(input?: {
           yield* sql`SELECT thread_id AS id, title, last_interaction_at AS "lastInteractionAt", project_id AS "projectId", worktree_path AS "worktreePath", scratch_path AS "scratchPath", archived_at AS "archivedAt", deleted_at AS "deletedAt" FROM projection_threads`;
         return {
           ...input?.getWorkflows?.(),
-          projects,
-          threads: threads.map((thread) => ({ ...thread, session: null, activities: [] })),
+          projects: input?.omitDeletedScratchThreads
+            ? projects.filter((project) => project.kind !== "scratch")
+            : projects,
+          threads: threads
+            .filter(
+              (thread) =>
+                !input?.omitDeletedScratchThreads ||
+                thread.deletedAt === null ||
+                !projects.some(
+                  (project) => project.id === thread.projectId && project.kind === "scratch",
+                ),
+            )
+            .map((thread) => ({ ...thread, session: null, activities: [] })),
         } as never;
       }),
     readEvents: () => Stream.empty,
@@ -453,7 +465,14 @@ it.effect(
     ),
 );
 
-for (const mode of ["failure", "refusal", "removed-before-purge", "archived"] as const) {
+for (const mode of [
+  "failure",
+  "refusal",
+  "removed-before-purge",
+  "archived",
+  "missing-metadata",
+  "missing-metadata-unallocated",
+] as const) {
   it.effect(`retains scratch metadata until owned folder removal succeeds (${mode})`, () =>
     withHomeSandbox(
       Effect.gen(function* () {
@@ -470,8 +489,10 @@ for (const mode of ["failure", "refusal", "removed-before-purge", "archived"] as
           ...(mode === "archived" ? { archivedAt: daysAgo(90) } : {}),
         });
         yield* sql`UPDATE projection_projects SET kind='scratch', workspace_root=${scratchRoot} WHERE project_id='project-storage-maintenance'`;
-        yield* sql`UPDATE projection_threads SET scratch_path=${folder} WHERE thread_id=${threadId}`;
-        yield* Effect.promise(() => writeFile(NodePath.join(folder, "notes.txt"), "research"));
+        if (mode !== "missing-metadata-unallocated") {
+          yield* sql`UPDATE projection_threads SET scratch_path=${folder} WHERE thread_id=${threadId}`;
+          yield* Effect.promise(() => writeFile(NodePath.join(folder, "notes.txt"), "research"));
+        }
         if (mode === "removed-before-purge") {
           yield* Effect.promise(() => NodeFS.rm(folder, { recursive: true }));
         }
@@ -503,7 +524,15 @@ for (const mode of ["failure", "refusal", "removed-before-purge", "archived"] as
         }
         assert.equal(yield* countRows(sql, "projection_threads", threadId), 0);
         assert.isFalse(yield* Effect.promise(() => pathExists(folder)));
-      }).pipe(Effect.provide(makeStorageTestLayer())),
+      }).pipe(
+        Effect.provide(
+          makeStorageTestLayer({
+            orchestrationEngine: makeOrchestrationEngineStub({
+              omitDeletedScratchThreads: mode.startsWith("missing-metadata"),
+            }),
+          }),
+        ),
+      ),
     ),
   );
 }

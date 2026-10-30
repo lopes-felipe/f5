@@ -47,6 +47,8 @@ import { captureStorageActivity, type StorageActivitySnapshot } from "./storageA
 
 import {
   type CheckpointRef,
+  type ProjectId,
+  type ProjectKind,
   CommandId,
   type DiskSpaceReclaimableItem,
   type StorageCleanupCategoryId,
@@ -305,7 +307,7 @@ export class StorageMaintenance extends ServiceMap.Service<
 
 interface ThreadRow {
   readonly threadId: ThreadId;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly title: string;
   readonly lastInteractionAt: string;
   readonly projectName: string | null;
@@ -313,7 +315,7 @@ interface ThreadRow {
   readonly archivedAt: string | null;
   readonly deletedAt: string | null;
   readonly workspaceRoot: string | null;
-  readonly projectKind: string | null;
+  readonly projectKind: ProjectKind | null;
   readonly scratchPath: string | null;
 }
 
@@ -3298,6 +3300,22 @@ const makeStorageMaintenance = Effect.gen(function* () {
                           removeScratchThreadFolder({
                             readModel,
                             threadId: thread.threadId,
+                            persisted: {
+                              thread: {
+                                id: thread.threadId,
+                                projectId: thread.projectId,
+                                scratchPath: thread.scratchPath,
+                                deletedAt: thread.deletedAt,
+                                archivedAt: thread.archivedAt,
+                              },
+                              project: thread.workspaceRoot
+                                ? {
+                                    id: thread.projectId,
+                                    kind: thread.projectKind ?? "standard",
+                                    workspaceRoot: thread.workspaceRoot,
+                                  }
+                                : undefined,
+                            },
                             allowArchived: true,
                           }),
                         catch: (cause) =>
