@@ -72,7 +72,7 @@ jobs:
       TARGET: ${{ matrix.target }}
     steps:
       - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - id: meta
         env:
@@ -80,7 +80,7 @@ jobs:
         run: echo "version=${INPUT_VERSION:-$(node -p 'require("./apps/desktop/package.json").version.split("-")[0].split(".").map((n,i)=>Number(n)+(i===2?1:0)).join(".")')-check.$GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
       - id: runtime
         run: echo "version=$(node --input-type=module -e 'import { CLI_NODE_VERSION } from "./scripts/build-cli-archive.ts"; console.log(CLI_NODE_VERSION)')" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ steps.runtime.outputs.version }}
       - env:
@@ -91,7 +91,7 @@ jobs:
           node scripts/cli-archive-smoke.ts "release-cli/f5-$VERSION-$TARGET.tar.gz" "release-cli/f5-$VERSION-$TARGET.json"
       # Only release runs ship the archives.
       - if: inputs.version
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cli-${{ matrix.target }}
           path: release-cli/*
@@ -107,7 +107,7 @@ jobs:
       T3CODE_DESKTOP_UPDATE_CHANNEL: ${{ inputs.channel || 'latest' }}
     steps:
       - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - id: versions
@@ -123,13 +123,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REQUESTED_ARTIFACT: ${{ inputs.bundle }}
       - if: inputs.bundle != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ steps.bundle.outputs.name }}
           path: compiled-bundles
       - if: inputs.bundle != ''
         run: tar -xzf compiled-bundles/windows-bundles.tar.gz
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
           workspaces: apps/desktop/native/windows -> target
       - name: Build unpublished baseline and target installers
@@ -153,7 +153,7 @@ jobs:
           cp "$(command -v node)" "$RUNNER_TEMP/rehearsal-node/node.exe"
           "$RUNNER_TEMP/rehearsal-node/node.exe" scripts/windows-update-rehearsal.ts --baseline-dir "rehearsal/$BASELINE" --target-dir "rehearsal/$TARGET" --baseline "$BASELINE" --target "$TARGET" --channel "$CHANNEL" --log-dir rehearsal-logs
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-update-rehearsal-logs-attempt-${{ github.run_attempt }}
           path: rehearsal-logs/**
