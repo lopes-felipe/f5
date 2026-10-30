@@ -25,9 +25,10 @@ import { attachmentPreviewUrlForId } from "../../orchestrationState";
 import { useHtmlRenderTheme } from "../../hooks/useHtmlRenderTheme";
 import { readBoundedResponseText } from "../../lib/readBoundedResponseText";
 import { useOpenLink } from "../../hooks/useOpenLink";
+import { Maximize2Icon, ZoomInIcon, ZoomOutIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
-import { Skeleton } from "../ui/skeleton";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
 import { replayWheelOnTimeline } from "./timelineMinimapWheel";
 
@@ -374,19 +375,16 @@ export function HtmlRenderFrame({
     onShortcut: shortcut,
     onImageExpand,
   };
+  const zoomBy = (step: number) =>
+    setZoom((current) => Math.min(2, Math.max(0.5, Math.round((current + step) * 4) / 4)));
   return (
     <div
       ref={host}
       tabIndex={-1}
-      className="min-w-0 rounded border border-border bg-card"
+      role="figure"
+      className="group/html-render relative min-w-0"
       aria-label={`HTML render: ${reference.title}`}
     >
-      <div className="flex items-center justify-between gap-2 border-b border-border p-2">
-        <span className="truncate text-sm">{reference.title}</span>
-        <Button size="xs" disabled={html === null} onClick={openFullscreen}>
-          Fullscreen
-        </Button>
-      </div>
       {failed ? (
         <p role="alert" className="p-3 text-sm">
           Could not load this page.{" "}
@@ -396,22 +394,36 @@ export function HtmlRenderFrame({
         </p>
       ) : html === null ? (
         // Holds the page's own height, so the thread does not jump when it loads.
-        <Skeleton
-          role="status"
-          aria-label="Loading page…"
-          className="m-2 rounded-lg"
-          style={{ height: `${Math.max(0, fit.height - 16)}px` }}
-        />
+        <div aria-busy="true" style={{ height: `${fit.height}px` }} />
       ) : (
-        // Stays mounted while full screen is open, so the page keeps its state.
-        <HtmlRenderDocumentFrame
-          key={documentKey}
-          {...frameProps}
-          sizingMode={fit.mode === "fit" ? "fit" : "scroll"}
-          dialogFocus={false}
-          onMeasure={measureInline}
-          style={{ height: `${fit.height}px` }}
-        />
+        <>
+          {/* Stays mounted while full screen is open, so the page keeps its state. */}
+          <HtmlRenderDocumentFrame
+            key={documentKey}
+            {...frameProps}
+            sizingMode={fit.mode === "fit" ? "fit" : "scroll"}
+            dialogFocus={false}
+            onMeasure={measureInline}
+            style={{ height: `${fit.height}px` }}
+          />
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label="Open full screen"
+                  className="absolute top-1 right-1 bg-background/80 text-muted-foreground opacity-0 group-hover/html-render:opacity-100 group-focus-within/html-render:opacity-100 pointer-coarse:opacity-100"
+                  onClick={openFullscreen}
+                />
+              }
+            >
+              <Maximize2Icon aria-hidden="true" />
+            </TooltipTrigger>
+            <TooltipPopup side="top">Open full screen</TooltipPopup>
+          </Tooltip>
+        </>
       )}
       {html !== null && fit.mode === "paused" ? (
         <p role="status" className="flex items-center gap-2 p-2 text-muted-foreground text-xs">
@@ -431,22 +443,41 @@ export function HtmlRenderFrame({
         </p>
       ) : null}
       <Dialog open={fullscreen} onOpenChange={setFullscreen}>
-        <DialogPopup className="h-[90dvh] max-w-[95vw] p-4" bottomStickOnMobile={false}>
-          <DialogTitle>{reference.title}</DialogTitle>
-          <div className="flex gap-2 py-2">
-            <Button
-              size="xs"
-              disabled={zoom <= 0.5}
-              onClick={() => setZoom(Math.max(0.5, zoom - 0.1))}
-            >
-              Zoom out
-            </Button>
-            <span className="text-sm">{Math.round(zoom * 100)}%</span>
-            <Button size="xs" disabled={zoom >= 2} onClick={() => setZoom(Math.min(2, zoom + 0.1))}>
-              Zoom in
-            </Button>
+        <DialogPopup className="h-[90dvh] max-w-[95vw] gap-2 p-4" bottomStickOnMobile={false}>
+          {/* Clear of the dialog's own close button. */}
+          <div className="flex items-center justify-between gap-2 pe-10">
+            <DialogTitle className="truncate">{reference.title}</DialogTitle>
+            <div className="flex shrink-0 items-center gap-1">
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                aria-label="Zoom out"
+                disabled={zoom <= 0.5}
+                onClick={() => zoomBy(-0.25)}
+              >
+                <ZoomOutIcon aria-hidden="true" />
+              </Button>
+              <Button
+                size="xs"
+                variant="ghost"
+                aria-label="Reset zoom"
+                className="min-w-12 tabular-nums"
+                onClick={() => setZoom(1)}
+              >
+                {Math.round(zoom * 100)}%
+              </Button>
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                aria-label="Zoom in"
+                disabled={zoom >= 2}
+                onClick={() => zoomBy(0.25)}
+              >
+                <ZoomInIcon aria-hidden="true" />
+              </Button>
+            </div>
           </div>
-          <div className="min-h-0 flex-1 overflow-auto">
+          <div className="min-h-0 flex-1 overflow-auto rounded-lg bg-background p-4 ring-1 ring-border">
             {fullscreen && html !== null ? (
               // Its own copy of the page; the inline one keeps its state underneath.
               <HtmlRenderDocumentFrame
