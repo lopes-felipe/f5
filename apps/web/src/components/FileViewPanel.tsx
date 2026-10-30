@@ -496,6 +496,19 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
     };
   }, [fileLine, fileQuery.data]);
 
+  const hasPreviewTarget = previewTarget !== undefined;
+  const revealInFileManager = useMemo(
+    () =>
+      filePath && hasPreviewTarget && activeProjectId && activeThreadId
+        ? () =>
+            revealFile(filePath, workspaceRoot, {
+              projectId: activeProjectId,
+              threadId: activeThreadId,
+            })
+        : null,
+    [activeProjectId, activeThreadId, filePath, hasPreviewTarget, workspaceRoot],
+  );
+
   const openInEditor = useCallback(() => {
     if (!filePath) {
       return;
@@ -506,8 +519,13 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
       line: fileLine,
       column: fileColumn,
     });
-    void openFileInEditor(targetPath);
-  }, [fileColumn, fileLine, filePath, workspaceRoot]);
+    // The file manager would hand the file to its default app; reveal it instead.
+    void openFileInEditor(
+      targetPath,
+      undefined,
+      revealInFileManager ? { revealFileManager: revealInFileManager } : undefined,
+    );
+  }, [fileColumn, fileLine, filePath, revealInFileManager, workspaceRoot]);
 
   const openInVSCode = () => {
     if (filePath)
@@ -643,16 +661,8 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
         <Button
           size="icon-xs"
           variant="outline"
-          onClick={() =>
-            filePath &&
-            activeProjectId &&
-            activeThreadId &&
-            void revealFile(filePath, workspaceRoot, {
-              projectId: activeProjectId,
-              threadId: activeThreadId,
-            })
-          }
-          disabled={!previewTarget || !activeProjectId || !activeThreadId}
+          onClick={() => void revealInFileManager?.()}
+          disabled={!revealInFileManager}
           aria-label="Reveal in file manager"
           title="Reveal in Finder / file manager"
         >

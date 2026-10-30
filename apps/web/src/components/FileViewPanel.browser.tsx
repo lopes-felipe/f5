@@ -132,6 +132,35 @@ it("uses the configured preferred editor while retaining an explicit VS Code act
   }
 });
 
+it("reveals the file when the preferred editor is the file manager", async () => {
+  localStorage.setItem("t3code:last-editor", JSON.stringify("file-manager"));
+  api.getConfig.mockResolvedValue({ availableEditors: ["vscode", "file-manager"] });
+  api.readFile.mockResolvedValue({
+    relativePath: "app.ts",
+    contents: "{}",
+    byteLength: 2,
+    truncated: false,
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const screen = await render(
+    <QueryClientProvider client={client}>
+      <FileViewPanel mode="sheet" />
+    </QueryClientProvider>,
+  );
+  try {
+    await screen.getByRole("button", { name: "Open in preferred editor", exact: true }).click();
+    await expect
+      .poll(() => api.revealInFileManager.mock.calls)
+      .toEqual([
+        [{ projectId: "project-1", threadId: "thread-1", relativePath: "app.ts", kind: "file" }],
+      ]);
+    expect(api.openInEditor).not.toHaveBeenCalled();
+  } finally {
+    await screen.unmount();
+    client.clear();
+  }
+});
+
 it("preserves the draft base and blocks saves when a refetch arrives during editing", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const key = providerQueryKeys.fileContent({ cwd: "/repo", relativePath: "app.ts" });

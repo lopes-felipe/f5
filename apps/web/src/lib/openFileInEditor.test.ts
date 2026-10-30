@@ -23,6 +23,12 @@ it("preserves the full target and position when opening an editor", async () => 
   expect(mocks.toast).not.toHaveBeenCalled();
 });
 
+it("passes a file-manager reveal through to the preferred editor", async () => {
+  const revealFileManager = vi.fn();
+  await openFileInEditor("/tmp/report.json", undefined, { revealFileManager });
+  expect(mocks.open).toHaveBeenCalledWith(mocks.api, "/tmp/report.json", { revealFileManager });
+});
+
 it("reports rejected editor handoffs with the file path", async () => {
   mocks.open.mockRejectedValue(new Error("Editor launch failed"));
   await expect(openFileInEditor("/tmp/report.json")).resolves.toBeUndefined();

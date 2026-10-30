@@ -26,12 +26,21 @@ export function resolveAndPersistPreferredEditor(
   return editor ?? null;
 }
 
-export async function openInPreferredEditor(api: NativeApi, targetPath: string): Promise<EditorId> {
+export async function openInPreferredEditor(
+  api: NativeApi,
+  targetPath: string,
+  options?: {
+    /** Opening a file in the file manager launches its default app; callers that can reveal it instead pass this. */
+    revealFileManager?: () => Promise<void>;
+  },
+): Promise<EditorId> {
   return withEditorOpenAuthorization(targetPath, async (authorization) => {
     const { availableEditors } = await api.server.getConfig();
     const editor = resolveAndPersistPreferredEditor(availableEditors);
     if (!editor) throw new Error("No available editors found.");
-    if (authorization) await api.shell.openInEditor(targetPath, editor, authorization);
+    if (editor === "file-manager" && options?.revealFileManager) {
+      await options.revealFileManager();
+    } else if (authorization) await api.shell.openInEditor(targetPath, editor, authorization);
     else await api.shell.openInEditor(targetPath, editor);
     return editor;
   });
