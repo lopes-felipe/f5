@@ -3,6 +3,7 @@ import { parse } from "yaml";
 import { expect, it } from "vitest";
 import {
   assertReleaseCiJobs,
+  dryRunReleaseVersion,
   requiredReleaseCiJobs,
   selectReleaseCiRun,
   type CiWorkflow,
@@ -21,6 +22,12 @@ const main: CiRun = {
   run_attempt: 1,
   run_number: 10,
 };
+it("rehearses the prepared release channel with a unique version", () => {
+  expect(dryRunReleaseVersion("0.1.1-beta.2", "42")).toBe("0.1.1-beta.2.dryrun.42");
+  expect(dryRunReleaseVersion("0.1.1", "42")).toBe("0.1.1-dryrun.42");
+  expect(() => dryRunReleaseVersion("v0.1.1", "42")).toThrow();
+  expect(() => dryRunReleaseVersion("0.1.1", "42\nchannel=beta")).toThrow();
+});
 it("requires a main push run and rejects failed latest attempts instead of using older green runs", () => {
   expect(
     selectReleaseCiRun([main, { ...main, head_branch: "feature", run_number: 11 }], "release"),

@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 /**
- * Installs an unpublished baseline build on a fresh Windows runner, points the
+ * Installs a published or unpublished baseline on a fresh Windows runner, points the
  * installation at a loopback GitHub emulator and drives the real updater through
  * the renderer bridge (Chromium remote debugging; Node inspector fuses stay off).
  *

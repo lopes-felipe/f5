@@ -3,6 +3,7 @@ import {
   selectReleaseCiRun,
   requiredReleaseCiJobs,
   assertReleaseCiJobs,
+  dryRunReleaseVersion,
   type CiRun,
   type CiJob,
   type CiWorkflow,
@@ -37,7 +38,7 @@ assertReleaseProfileAllowed(profile, releases);
 let version: string;
 if (dryRun) {
   if (ref !== "main") throw new Error("Dry runs require main");
-  version = `${current.split("-")[0]}-dryrun.${process.env.GITHUB_RUN_NUMBER}`;
+  version = dryRunReleaseVersion(current, process.env.GITHUB_RUN_NUMBER ?? "");
 } else {
   if (!/^v\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(ref)) throw new Error("Invalid release tag");
   version = versionToken(ref.slice(1));

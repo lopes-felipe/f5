@@ -39,11 +39,11 @@ The rehearsal job builds two unpublished installers from the release commit, on 
 - verifies the version, install path, Start Menu shortcut and preserved profile data (seeded settings, markers and the app's own state files);
 - uninstalls silently and checks that user data stays.
 
-`assemble` depends on it, so no draft is created without it.
+`assemble` depends on it, so no draft is created without it. The release workflow also downloads the latest published Windows installer on the release channel and rehearses its upgrade to the exact `desktop-win-x64` artifact. It verifies both installers against their updater manifests before execution, and records the selected versions in `windows-published-upgrade-logs`. Only a channel with no published baseline skips this additional check.
 
 What the rehearsal does **not** prove:
 
-- **Published clients:** both builds contain the release commit's updater, so it cannot show that already-published clients can update to the new release. The first published Windows release has no published baseline; beta.1 remains a draft, so beta.2 uses the same-commit rehearsal. Starting with the second published Windows release, use the latest published installer on the release's channel as the baseline and the `desktop-win-x64` build artifact as the target.
+- **Published clients:** both builds in the same-commit rehearsal contain the release commit's updater. The separate published-upgrade job covers already-published clients: beta.1 is published, so beta.2 must pass its upgrade to the release artifact before assembly.
 - **Signed builds:** its builds are always unsigned. When Windows signing is enabled, extend it to signed-to-signed upgrades and to rejecting unsigned or wrongly signed updates.
 
 A green dry run with the release's profile is a hard precondition for tagging. The rehearsal has no non-blocking mode; a flaky failure means re-running the job.
@@ -51,7 +51,7 @@ A green dry run with the release's profile is a hard precondition for tagging. T
 1. Run `node scripts/prepare-release.ts <version>`. With the `all` profile, rehearse as `X.Y.Z-beta.N` first. It updates four manifests and the lockfile. Stable preparation moves Unreleased into a dated section; beta preparation leaves it untouched. Follow the printed commands to open a release PR.
 2. Merge and wait for a successful **CI push** run on main at the exact release SHA.
 3. Run `git tag vX.Y.Z <sha>` and `git push origin vX.Y.Z` (use `-beta.N` for beta). Only stable and beta.N tags are accepted. The version must exceed every published stable/beta version.
-4. Approve the release environment. The workflow builds the profile's desktops (with `all`, it also signs and notarizes macOS; with `windows`, it produces only the unsigned Windows installer), runs the Windows rehearsal, checks all hashes/manifests, and creates a **draft**. Updaters cannot see drafts. `workflow_dispatch` with `dry_run=true` on main rehearses builds with a unique dryrun version and creates no release.
+4. Approve the release environment. The workflow builds the profile's desktops (with `all`, it also signs and notarizes macOS; with `windows`, it produces only the unsigned Windows installer), runs the Windows rehearsals, checks all hashes/manifests, and creates a **draft**. Updaters cannot see drafts. `workflow_dispatch` with `dry_run=true` on main rehearses builds with a unique dryrun version on the prepared release's channel and creates no release.
 5. Smoke-test using the checklist for the profile below: Windows only for `windows`; one installer per OS and both macOS architectures for `all`. Inspect `release-bundle`, staged dependency lock artifacts, and the draft's asset names and sizes. Changelog text is the release body; YAML never contains releaseNotes.
 6. Publish with `bun run release:promote --tag <tag>`, then `gh release edit <tag> --latest` for stable. Beta releases remain prereleases. The promote script is the only supported way to undraft: when the tag embeds a certified provider integration record, it publishes only after main holds an all-passed acceptance report for the draft's exact macOS DMG (see "Single certification source" in `docs/agent-browser.md`); otherwise it just publishes.
 
