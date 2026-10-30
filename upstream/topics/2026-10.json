@@ -7428,11 +7428,22 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T00:20:18.818Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-30T00:29:23.982Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/orchestration/decider.ts:1125",
+          "apps/server/src/wsServer.ts:1904",
+          "apps/server/src/orchestration/projector.ts:960"
+        ],
+        "f5Refs": [
+          "4f197bc8b09dbcb6f1b84c259fd1135a68cbdca1"
+        ]
+      },
       "id": "pr-14887",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "threads",
@@ -12582,11 +12593,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T00:20:18.819Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-30T00:29:23.982Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-16623",
-      "status": "port",
+      "reason": "f5 has no thread fork, and its PR watches live in a per-thread table that nothing copies to new threads.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "threads",
