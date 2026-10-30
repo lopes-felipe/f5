@@ -3,6 +3,7 @@ import {
   ProviderDriverKind,
   ProjectId,
   ProviderInstanceId,
+  ServerSettings,
   ServerSettingsPatch,
 } from "@t3tools/contracts";
 import { Schema } from "effect";
@@ -17,6 +18,39 @@ import {
 } from "./serverSettings";
 
 describe("serverSettings helpers", () => {
+  it("drops an override key this server does not know from a patch and keeps one it stored", () => {
+    const projectId = ProjectId.make("project-a");
+    const current = Schema.decodeUnknownSync(ServerSettings)({
+      projectSettingsOverrides: {
+        [projectId]: { autoPullDefaultBranch: true, addedByNewerServer: 3 },
+      },
+    });
+    const patch = Schema.decodeUnknownSync(ServerSettingsPatch)({
+      projectSettingsOverrides: {
+        [projectId]: {
+          autoPullDefaultBranch: false,
+          addedByNewerServer: 4,
+          addedByNewerClient: "x",
+        },
+      },
+    });
+
+    const updated = applyServerSettingsPatch(current, patch);
+    expect(updated.projectSettingsOverrides[projectId]).toEqual({
+      autoPullDefaultBranch: false,
+      addedByNewerServer: 3,
+    });
+    const reset = applyServerSettingsPatch(updated, {
+      projectSettingsOverrides: { [projectId]: {} },
+    });
+    expect(reset.projectSettingsOverrides[projectId]).toEqual({ addedByNewerServer: 3 });
+    expect(
+      applyServerSettingsPatch(reset, {
+        projectSettingsOverrides: { [projectId]: null },
+      }).projectSettingsOverrides[projectId],
+    ).toBeUndefined();
+  });
+
   it("does not claim unused worktree locations when changing settings", () => {
     const first = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, { worktreesDirectory: "/a" });
     expect(first.previousWorktreesDirectories).toEqual([]);

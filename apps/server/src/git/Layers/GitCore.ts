@@ -23,6 +23,7 @@ import {
 } from "../../persistence/Services/WorktreePreparations.ts";
 import { lstat as inspectPath, readFile, writeFile, rm, stat, utimes } from "node:fs/promises";
 import { parseWorktreeListPorcelain, stripPathTerminator } from "../worktreeList.ts";
+import { branchNameFromHeadRef } from "../headBranch.ts";
 import { isRefLockFailure, networkFailureDetail } from "../networkFailureDetail.ts";
 import {
   gitDeletesWorktreeFiles,
@@ -95,6 +96,10 @@ const STATUS_STATIC_METADATA_FAILURE_CACHE_TTL = Duration.seconds(5);
 const ADVERTISED_DEFAULT_BRANCH_CACHE_TTL = Duration.minutes(10);
 const ADVERTISED_DEFAULT_BRANCH_TIMEOUT_MS = 20_000;
 const DEFAULT_BASE_BRANCH_CANDIDATES = ["main", "master"] as const;
+// Changed-path listings grow with the change set, so they get more than the 1 MB default.
+const CHANGE_METADATA_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
+// Commit generation reads only the start of the staged patch.
+const COMMIT_CONTEXT_PATCH_MAX_BYTES = 1024 * 1024;
 
 class StatusUpstreamRefreshCacheKey extends Data.Class<{
   cwd: string;
@@ -1151,6 +1156,18 @@ const makeGitCore = Effect.gen(function* () {
         true,
       ).pipe(Effect.map((stdout) => stdout.trim()));
 
+      // Keep a configured remote base such as `upstream/main` and compare its exact ref,
+      // even when a local branch or tag with that name shadows it.
+      if (configuredBaseBranch.includes("/") && !configuredBaseBranch.startsWith("refs/")) {
+        const remoteBase = yield* executeGit(
+          "GitCore.resolveBaseBranchForNoUpstream.configuredRemote",
+          cwd,
+          ["show-ref", "--verify", "--quiet", `refs/remotes/${configuredBaseBranch}`],
+          { allowNonZeroExit: true },
+        );
+        if (remoteBase.code === 0) return `refs/remotes/${configuredBaseBranch}`;
+      }
+
       const primaryRemoteName = yield* resolvePrimaryRemoteName(cwd).pipe(
         Effect.catch(() => Effect.succeed(null)),
       );
@@ -1178,15 +1195,16 @@ const makeGitCore = Effect.gen(function* () {
           continue;
         }
 
+        // Exact refs, so a tag that shares the base's name cannot stand in for it.
         if (yield* branchExists(cwd, normalizedCandidate)) {
-          return normalizedCandidate;
+          return `refs/heads/${normalizedCandidate}`;
         }
 
         if (
           primaryRemoteName &&
           (yield* remoteBranchExists(cwd, primaryRemoteName, normalizedCandidate))
         ) {
-          return `${primaryRemoteName}/${normalizedCandidate}`;
+          return `refs/remotes/${primaryRemoteName}/${normalizedCandidate}`;
         }
       }
 
@@ -1269,25 +1287,28 @@ const makeGitCore = Effect.gen(function* () {
               "GitCore.statusDetails.status",
               cwd,
               ["status", "--porcelain=2", "--branch", "-z"],
-              { env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } },
+              {
+                env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+                maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES,
+              },
             ).pipe(Effect.map((result) => result.stdout)),
-            runGitStdout("GitCore.statusDetails.unstagedNumstat", cwd, [
-              "diff-files",
-              "-M",
-              "--numstat",
-              "-z",
-            ]),
-            runGitStdout("GitCore.statusDetails.stagedNumstat", cwd, [
-              "diff",
-              "--cached",
-              "--numstat",
-              "-z",
-            ]),
+            executeGit(
+              "GitCore.statusDetails.unstagedNumstat",
+              cwd,
+              ["diff-files", "-M", "--numstat", "-z"],
+              { maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES },
+            ).pipe(Effect.map((result) => result.stdout)),
+            executeGit(
+              "GitCore.statusDetails.stagedNumstat",
+              cwd,
+              ["diff", "--cached", "--numstat", "-z"],
+              { maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES },
+            ).pipe(Effect.map((result) => result.stdout)),
             executeGit(
               "GitCore.statusDetails.headNumstat",
               cwd,
               ["diff-index", "-M", "--numstat", "-z", "HEAD", "--"],
-              { allowNonZeroExit: true },
+              { allowNonZeroExit: true, maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES },
             ),
           ],
           { concurrency: "unbounded" },
@@ -1840,10 +1861,15 @@ const makeGitCore = Effect.gen(function* () {
             "GitCore.prepareCommitContext.stagedSummary",
             cwd,
             ["diff", "--cached", "--name-status", ...paths],
-            { env },
+            { env, maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES },
           )).stdout.trim();
           if (!stagedSummary) return null;
-          const stagedPatch = (yield* executeGit(
+          // Keep only the start of the patch, and stop Git once it is read: large change sets
+          // must neither fail here nor run the full diff until the command times out.
+          const patchChunks: Uint8Array[] = [];
+          let patchBytes = 0;
+          const patchCapped = Deferred.makeUnsafe<void>();
+          yield* executeGit(
             "GitCore.prepareCommitContext.stagedPatch",
             cwd,
             [
@@ -1856,8 +1882,23 @@ const makeGitCore = Effect.gen(function* () {
               "--minimal",
               ...paths,
             ],
-            { env },
-          )).stdout;
+            {
+              env,
+              onStdoutChunk: (chunk) => {
+                if (patchBytes >= COMMIT_CONTEXT_PATCH_MAX_BYTES) return;
+                const kept = chunk.subarray(0, COMMIT_CONTEXT_PATCH_MAX_BYTES - patchBytes);
+                patchChunks.push(kept);
+                patchBytes += kept.byteLength;
+                if (patchBytes >= COMMIT_CONTEXT_PATCH_MAX_BYTES)
+                  Deferred.doneUnsafe(patchCapped, Exit.void);
+              },
+            },
+          ).pipe(
+            // Interrupting the command releases its scope, which terminates Git.
+            Effect.asVoid,
+            Effect.raceFirst(Deferred.await(patchCapped)),
+          );
+          const stagedPatch = Buffer.concat(patchChunks).toString("utf8");
           return { stagedSummary, stagedPatch };
         }),
       );
@@ -1943,7 +1984,10 @@ const makeGitCore = Effect.gen(function* () {
           args.push("--only", "--", ...filePaths.map(literalGitPathspec));
         }
       }
-      yield* runGit("GitCore.commit.commit", cwd, args);
+      // The summary lists every created or deleted path.
+      yield* executeGit("GitCore.commit.commit", cwd, args, {
+        maxOutputBytes: CHANGE_METADATA_MAX_OUTPUT_BYTES,
+      });
       const commitSha = yield* runGitStdout("GitCore.commit.revParseHead", cwd, [
         "rev-parse",
         "HEAD",
@@ -2032,10 +2076,17 @@ const makeGitCore = Effect.gen(function* () {
             };
           }
 
-          const hasRemoteBranch = yield* remoteBranchExists(cwd, publishRemoteName, branch).pipe(
+          // The configured base can contain HEAD while the published branch is still behind.
+          const publishContainsHead = yield* executeGit(
+            "GitCore.pushCurrentBranch.publishContainsHead",
+            cwd,
+            ["merge-base", "--is-ancestor", "HEAD", `refs/remotes/${publishRemoteName}/${branch}`],
+            { allowNonZeroExit: true },
+          ).pipe(
+            Effect.map((result) => result.code === 0),
             Effect.catch(() => Effect.succeed(false)),
           );
-          if (hasRemoteBranch) {
+          if (publishContainsHead) {
             return {
               status: "skipped_up_to_date" as const,
               branch,
@@ -2307,9 +2358,7 @@ const makeGitCore = Effect.gen(function* () {
         { allowNonZeroExit: true },
       );
       const currentRef = current.code === 0 ? current.stdout.trim() : null;
-      const currentBranch = currentRef?.startsWith("refs/heads/")
-        ? currentRef.slice("refs/heads/".length)
-        : null;
+      const currentBranch = currentRef ? branchNameFromHeadRef(currentRef) : null;
       // Shells and agents can create branches without going through executeGit.
       // A fresh HEAD missing from the shared snapshot must trigger a fresh scan.
       if (
@@ -2842,7 +2891,7 @@ const makeGitCore = Effect.gen(function* () {
         const symbolic = yield* executeGit(
           "GitCore.inspectCheckoutIdentity",
           cwd,
-          ["symbolic-ref", "--quiet", "--short", "HEAD"],
+          ["symbolic-ref", "--quiet", "HEAD"],
           { allowNonZeroExit: true },
         );
         if (symbolic.code !== 0 && symbolic.code !== 1)
@@ -2855,7 +2904,7 @@ const makeGitCore = Effect.gen(function* () {
         return {
           canonicalRoot: yield* canonicalPath(stripPathTerminator(root)),
           commonDir: yield* canonicalPath(yield* resolveCommonDir(cwd)),
-          branch: symbolic.code === 0 ? stripPathTerminator(symbolic.stdout) : null,
+          branch: symbolic.code === 0 ? branchNameFromHeadRef(symbolic.stdout) : null,
         };
       }),
     );
@@ -2925,7 +2974,7 @@ const makeGitCore = Effect.gen(function* () {
         const symbolic = yield* executeGit(
           "GitCore.inspectCheckout",
           cwd,
-          ["symbolic-ref", "--quiet", "--short", "HEAD"],
+          ["symbolic-ref", "--quiet", "HEAD"],
           { allowNonZeroExit: true },
         );
         if (symbolic.code !== 0 && symbolic.code !== 1)
@@ -3067,7 +3116,7 @@ const makeGitCore = Effect.gen(function* () {
           commonDir,
           registration: entries.find((entry) => entry.canonicalPath === canonicalRoot) ?? null,
           headSha: yield* resolveCommit(cwd, "HEAD"),
-          branch: symbolic.code === 0 ? stripPathTerminator(symbolic.stdout) : null,
+          branch: symbolic.code === 0 ? branchNameFromHeadRef(symbolic.stdout) : null,
           operation: yield* readOperationInProgress(cwd),
           hasInitializedSubmodules,
           hasTrackedChanges,
@@ -3811,11 +3860,9 @@ const makeGitCore = Effect.gen(function* () {
         cwd,
         Effect.gen(function* () {
           if (expectedBranch !== undefined) {
-            const branch = (yield* runGitStdout("GitCore.fastForwardTo.branch", cwd, [
-              "symbolic-ref",
-              "--short",
-              "HEAD",
-            ])).trim();
+            const branch = branchNameFromHeadRef(
+              yield* runGitStdout("GitCore.fastForwardTo.branch", cwd, ["symbolic-ref", "HEAD"]),
+            );
             if (branch !== expectedBranch)
               return yield* createGitCommandError(
                 "GitCore.fastForwardTo",

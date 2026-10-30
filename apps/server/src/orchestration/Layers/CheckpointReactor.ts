@@ -6,6 +6,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { makeConversationRewind } from "../rewind.ts";
 import { followsCheckoutBranchAtTurnEnd } from "../../project/worktreeReadiness.ts";
 import { GitService } from "../../git/Services/GitService.ts";
+import { branchNameFromHeadRef } from "../../git/headBranch.ts";
 import type { CheckpointStoreError } from "../../checkpointing/Errors.ts";
 import {
   type CheckpointRef,
@@ -322,10 +323,10 @@ const make = Effect.gen(function* () {
         const result = yield* git.execute({
           operation: "checkpoint.syncBranch",
           cwd: input.cwd,
-          args: ["symbolic-ref", "--quiet", "--short", "HEAD"],
+          args: ["symbolic-ref", "--quiet", "HEAD"],
           allowNonZeroExit: true,
         });
-        const branch = result.stdout.trim();
+        const branch = branchNameFromHeadRef(result.stdout);
         if (result.code !== 0 || !branch || branch === input.thread.branch) return;
         if (
           !(yield* followsCheckoutBranchAtTurnEnd(

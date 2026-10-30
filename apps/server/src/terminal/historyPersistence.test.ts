@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { readTerminalHistory } from "./historyPersistence";
+import { neutralizeInheritedHistory, readTerminalHistory } from "./historyPersistence";
 import { TERMINAL_HISTORY_MAX_BYTES } from "./BoundedTerminalHistory";
 const directories: string[] = [];
 afterEach(() => {
@@ -67,4 +67,68 @@ it("closes the file on a read failure", async () => {
   });
   await expect(readTerminalHistory(name, 5000)).rejects.toThrow("read failed");
   expect(close).toHaveBeenCalledOnce();
+});
+
+const INPUT_RESET =
+  "\u001b[?1049h\u001b[<100u\u001b[=0;1u\u001b[?1049l" +
+  "\u001b[?1;9;66;67;1000;1002;1003;1004;1005;1006;1015;2004l" +
+  "\u001b[?25;1035;1036h\u001b[<100u\u001b[=0;1u\u001b[>4m";
+
+it("leaves plain inherited history unchanged", () => {
+  expect(neutralizeInheritedHistory("prompt % ls\n", 5000, TERMINAL_HISTORY_MAX_BYTES)).toBe(
+    "prompt % ls\n",
+  );
+});
+
+it("resets input modes a dead program left on the main screen", () => {
+  const history = "prompt \u001b[32mok\u001b[0m\u001b[?25l\u001b[?1003;1006;2004h";
+  expect(neutralizeInheritedHistory(history, 5000, TERMINAL_HISTORY_MAX_BYTES)).toBe(
+    history + INPUT_RESET,
+  );
+});
+
+it.each([47, 1047, 1049])("leaves an inherited %i alternate screen", (mode) => {
+  const history = `prompt\u001b[?${mode}h\u001b[7;18Hdead app`;
+  expect(neutralizeInheritedHistory(history, 5000, TERMINAL_HISTORY_MAX_BYTES)).toBe(
+    `${history}\u001b7\u001b[?${mode}l${INPUT_RESET}`,
+  );
+});
+
+it("resets modes and leaves an alternate screen set with 8-bit CSI controls", () => {
+  const history = "prompt \u009b?1049h\u009b?25l\u009b?1003;2004hdead";
+  expect(neutralizeInheritedHistory(history, 5000, TERMINAL_HISTORY_MAX_BYTES)).toBe(
+    `${history}\u001b7\u001b[?1049l${INPUT_RESET}`,
+  );
+  const closed = "\u009b?1049hvim\u009b?1049lprompt";
+  expect(neutralizeInheritedHistory(closed, 5000, TERMINAL_HISTORY_MAX_BYTES)).toBe(
+    closed + INPUT_RESET,
+  );
+});
+
+it("exits with the outermost alternate-screen entry still open", () => {
+  const history = "main\u001b[?1049hone\u001b[?47htwo";
+  expect(neutralizeInheritedHistory(history, 5000, TERMINAL_HISTORY_MAX_BYTES)).toBe(
+    `${history}\u001b7\u001b[?1049l${INPUT_RESET}`,
+  );
+});
+
+it.each([
+  ["an explicit exit", "\u001b[?1049hvim\u001b[?1049lprompt"],
+  ["a full reset", "\u001b[?1049hvim\u001bcprompt"],
+])("does not leave an alternate screen closed by %s", (_name, history) => {
+  expect(neutralizeInheritedHistory(history, 5000, TERMINAL_HISTORY_MAX_BYTES)).toBe(
+    history + INPUT_RESET,
+  );
+});
+
+it("reserves the reset inside the line and byte limits", () => {
+  const lines = "a\nb\n\u001b[?1049hc\n";
+  const byLines = neutralizeInheritedHistory(lines, 3, TERMINAL_HISTORY_MAX_BYTES);
+  expect(byLines).toBe(`b\n\u001b[?1049hc\n\u001b7\u001b[?1049l${INPUT_RESET}`);
+  expect(byLines.split("\n")).toHaveLength(3);
+
+  const maxBytes = 1024;
+  const bytes = neutralizeInheritedHistory("x".repeat(2048) + "\u001b[?2004h", 5000, maxBytes);
+  expect(bytes.endsWith(INPUT_RESET)).toBe(true);
+  expect(Buffer.byteLength(bytes)).toBeLessThanOrEqual(maxBytes);
 });

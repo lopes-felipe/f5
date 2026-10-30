@@ -80,7 +80,12 @@
         "F5_TEST_LOGS",
         "VITEST_MAX_WORKERS",
         "F5_CI_REPORT_DIR",
-        "F5_CI_SUITE_ID"
+        "F5_CI_SUITE_ID",
+        "F5_CI_TEST_RETRY",
+        "GITHUB_JOB",
+        "GITHUB_RUN_ID",
+        "GITHUB_RUN_ATTEMPT",
+        "GITHUB_WORKSPACE"
       ],
       "cache": false,
       "outputs": []

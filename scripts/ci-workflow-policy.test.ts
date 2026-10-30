@@ -41,6 +41,34 @@ describe("CI workflow policy", () => {
       }
     }
   });
+  it("uploads reports, including flaky records, from every job that prepares them", () => {
+    for (const [id, job] of Object.entries(workflow.jobs)) {
+      const runs = (job.steps ?? []).map((step) => step.run ?? "");
+      const prepares = runs.some((run) => run.includes("ci-test-summary.ts --prepare"));
+      if (runs.some((run) => run.includes("test:desktop-smoke")))
+        expect(prepares, `${id} records flaky smoke retries`).toBe(true);
+      if (!prepares) continue;
+      const upload = job.steps!.find(
+        (step) =>
+          step.uses?.startsWith("actions/upload-artifact@") &&
+          String((step as { with?: { name?: string } }).with?.name).startsWith("reports-"),
+      );
+      expect(upload, `${id} uploads reports`).toBeDefined();
+      expect(upload!.if, id).toMatch(/^always\(\)/);
+    }
+  });
+  it("retries desktop smoke only through ci-retry-once and wraps nothing else", () => {
+    const runs = Object.values(workflow.jobs).flatMap((job) =>
+      (job.steps ?? []).flatMap((step) => (step.run ? [step.run] : [])),
+    );
+    const smoke = runs.filter((run) => run.includes("test:desktop-smoke"));
+    expect(smoke).toHaveLength(3);
+    for (const run of smoke)
+      expect(run.trim()).toMatch(
+        /^node scripts\/ci-retry-once\.ts --step desktop-smoke -- (xvfb-run --auto-servernum )?bun run test:desktop-smoke$/,
+      );
+    expect(runs.filter((run) => run.includes("ci-retry-once"))).toEqual(smoke);
+  });
   it("keeps the notifier outside concurrency groups that can cancel push runs", () => {
     expect(workflow.jobs["main-status"]!.concurrency).toBeUndefined();
   });
@@ -152,5 +180,69 @@ describe("CI workflow policy", () => {
     const jobs = structuredClone(workflow.jobs);
     jobs["ci-result"]!.needs = jobs["ci-result"]!.needs!.filter((id) => id !== "browser");
     expect(() => assertWorkflowPolicy(jobs)).toThrow();
+  });
+});
+
+const readWorkflow = (file: string) =>
+  parse(readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), "utf8")) as {
+    on: Record<string, unknown>;
+    permissions: Record<string, string>;
+    concurrency?: unknown;
+    jobs: Record<string, Job & { "runs-on"?: string; env?: Record<string, string> }>;
+  };
+
+describe("flake workflows", () => {
+  it("passes every variable the CI reporter reads through Turbo's strict env", () => {
+    const turbo = JSON.parse(readFileSync(new URL("../turbo.json", import.meta.url), "utf8")) as {
+      globalPassThroughEnv: string[];
+      tasks: { test: { passThroughEnv: string[] } };
+    };
+    const allowed = new Set([...turbo.globalPassThroughEnv, ...turbo.tasks.test.passThroughEnv]);
+    const source = readFileSync(new URL("./lib/ci-test-reports.ts", import.meta.url), "utf8");
+    const read = [...new Set([...source.matchAll(/\benv\.([A-Z][A-Z0-9_]*)/g)].map((m) => m[1]!))];
+    expect(read).toEqual(expect.arrayContaining(["F5_CI_REPORT_DIR", "F5_CI_TEST_RETRY"]));
+    expect(read.filter((name) => !allowed.has(name))).toEqual([]);
+  });
+
+  it("files flakes after CI with least privilege and never runs PR code", () => {
+    const ledger = readWorkflow("ci-flakes.yml");
+    expect(ledger.on).toEqual({ workflow_run: { workflows: ["CI"], types: ["completed"] } });
+    expect(ledger.permissions).toEqual({ contents: "read" });
+    // A pending run must not cancel the previous one and lose its occurrences.
+    expect(ledger.concurrency).toBeUndefined();
+    expect(Object.keys(ledger.jobs)).toEqual(["ledger"]);
+    const job = ledger.jobs.ledger!;
+    expect(job.permissions).toEqual({ contents: "read", actions: "read", issues: "write" });
+    expect(job["timeout-minutes"]).toBeGreaterThan(0);
+    expect(job.concurrency).toBeUndefined();
+    // Fork PRs control their artifacts; only same-repo runs may write issues.
+    expect(job.if).toContain(
+      "github.event.workflow_run.head_repository.full_name == github.repository",
+    );
+    const checkout = job.steps!.find((step) => step.uses?.startsWith("actions/checkout@")) as {
+      with?: Record<string, unknown>;
+    };
+    expect(checkout.with).toMatchObject({
+      "persist-credentials": false,
+      ref: "${{ github.event.repository.default_branch }}",
+    });
+    const runs = job.steps!.map((step) => step.run ?? "").join("\n");
+    // Untrusted event fields reach scripts only through the environment.
+    expect(runs).not.toContain("${{");
+    expect(runs).not.toMatch(/\bbun (install|run)\b|npm |npx /);
+    expect(runs).toContain("node scripts/ci-flake-ledger.ts");
+  });
+  it("repeats a single target on demand with bounded work and no write access", () => {
+    const repro = readWorkflow("ci-flake-repro.yml");
+    expect(Object.keys(repro.on)).toEqual(["workflow_dispatch"]);
+    expect(repro.permissions).toEqual({ contents: "read" });
+    const job = repro.jobs.repeat!;
+    expect(job.permissions).toBeUndefined();
+    expect(job["timeout-minutes"]).toBeGreaterThan(0);
+    expect(job["timeout-minutes"]).toBeLessThanOrEqual(90);
+    const runs = job.steps!.map((step) => step.run ?? "").join("\n");
+    expect(runs).not.toContain("${{");
+    expect(runs).toContain('node scripts/ci-repeat.ts "${flags[@]}" -- "${command[@]}"');
+    expect(job.env).toMatchObject({ FILTER: "${{ inputs.filter }}" });
   });
 });

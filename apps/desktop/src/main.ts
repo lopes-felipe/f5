@@ -196,10 +196,12 @@ import { normalizeThreadIdForDesktopWindow, rendererUrlForThread } from "./rende
 import { resolveContextMenuPopupPosition } from "./contextMenuPosition";
 
 const shellEnvironmentStartedAt = performance.now();
+let shellEnvironmentPrepared = false;
 /** Resolves with the capture's duration; the log sink opens later, so bootstrap logs it. */
-const shellEnvironmentReady = syncShellEnvironment().then(
-  () => performance.now() - shellEnvironmentStartedAt,
-);
+const shellEnvironmentReady = syncShellEnvironment().then((prepared) => {
+  shellEnvironmentPrepared = prepared;
+  return performance.now() - shellEnvironmentStartedAt;
+});
 /** Main windows awaiting their first composer-ready marker, by renderer id. */
 const windowCreatedAtByWebContentsId = new Map<number, number>();
 
@@ -2860,6 +2862,7 @@ function backendEnv(runtime: BackendRuntime = defaultBackend): NodeJS.ProcessEnv
     stateDir: STATE_DIR,
     stateDirSource: STATE_DIR_CONFIG.source,
     authToken: runtime.backendAuthToken,
+    shellEnvironmentPrepared,
   });
 }
 
@@ -4372,6 +4375,7 @@ app.on("will-quit", (event) => {
   // will-quit is emitted only after all renderer unload checks have succeeded.
   void cleanupBeforeExit().finally(() => {
     shutdownComplete = true;
+    writeDesktopLogHeader("shutdown complete");
     restoreStdIoCapture?.();
     app.quit();
   });

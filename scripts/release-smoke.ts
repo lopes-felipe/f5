@@ -32,6 +32,8 @@ function copyWorkspaceManifestFixture(targetRoot: string): void {
     mkdirSync(dirname(destinationPath), { recursive: true });
     cpSync(sourcePath, destinationPath);
   }
+  // patchedDependencies entries must resolve, or the lockfile-only install fails.
+  cpSync(resolve(repoRoot, "patches"), resolve(targetRoot, "patches"), { recursive: true });
 }
 
 function writeMacManifestFixtures(targetRoot: string): { arm64Path: string; x64Path: string } {

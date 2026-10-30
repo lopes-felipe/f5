@@ -359,7 +359,7 @@ jobs:
       - name: Desktop smoke
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
-          xvfb-run --auto-servernum bun run test:desktop-smoke
+          node scripts/ci-retry-once.ts --step desktop-smoke -- xvfb-run --auto-servernum bun run test:desktop-smoke
       - name: Profile lifecycle
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
@@ -368,6 +368,14 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           bun run build:marketing
+      - name: Upload test reports
+        if: always() && steps.changes.outputs.heavy == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_REPORT_DIR || format('{0}/ci-reports/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
       - name: Upload diagnostics
         if: always() && steps.changes.outputs.heavy == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -461,7 +469,7 @@ jobs:
       - name: Desktop smoke
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
-          bun run test:desktop-smoke
+          node scripts/ci-retry-once.ts --step desktop-smoke -- bun run test:desktop-smoke
       - name: Profile lifecycle
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
@@ -649,7 +657,7 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=4096
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
-          bun run test:desktop-smoke
+          node scripts/ci-retry-once.ts --step desktop-smoke -- bun run test:desktop-smoke
       - name: Profile lifecycle
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
