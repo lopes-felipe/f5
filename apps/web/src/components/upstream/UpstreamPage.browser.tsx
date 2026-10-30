@@ -689,6 +689,7 @@ it("round-trips filters through the search params and shows them as removable ch
   await vi.waitFor(() =>
     expect(api.listTopics).toHaveBeenLastCalledWith(
       expect.objectContaining({ list: "inbox", filter: { suggestion: ["skip"] } }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     ),
   );
   await expect.element(page.getByTestId("search")).toHaveTextContent('"suggestion":["skip"]');
@@ -706,6 +707,7 @@ it("filters from the suggestion strip and searches with a debounce", async () =>
   await vi.waitFor(() =>
     expect(api.listTopics).toHaveBeenLastCalledWith(
       expect.objectContaining({ filter: { query: "terminal", suggestion: ["port"] } }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     ),
   );
   await page.getByRole("button", { name: "Clear", exact: true }).click();
