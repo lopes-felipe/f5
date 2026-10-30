@@ -4357,6 +4357,7 @@ app.on("will-quit", (event) => {
   // will-quit is emitted only after all renderer unload checks have succeeded.
   void cleanupBeforeExit().finally(() => {
     shutdownComplete = true;
+    writeDesktopLogHeader("shutdown complete");
     restoreStdIoCapture?.();
     app.quit();
   });
