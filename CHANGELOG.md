@@ -4,6 +4,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-30
+
 ### Installation
 
 - First desktop release for macOS, Windows and Linux, with in-app updates from the GitHub release feed:
@@ -70,6 +72,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Added
 
+- Agent and terminal requests to open a browser now appear in a non-modal card in the requesting profile's window, with a native dialog fallback if the card cannot be shown.
 - Optional automated code review for Upstream port PRs, with two selectable reviewers, a selectable consolidation model, one queued revision, and review progress and retry actions on each port thread.
 - Claude in Chrome lifecycle behind a single certification record (`claude-chrome`, macOS arm64 first, gate closed until a live run is recorded): per-instance readiness with specific reasons, consent for foreign setup, `external-cli-conflict` when a terminal `claude --chrome` takes the connection back, desktop-owned stop that ends the CLI's process group even when the server is frozen, and setup history that can restore the original browser files after restarts and SDK upgrades. `bun run sdk:audit` fails when an advertised record no longer matches the pinned SDK.
 - Codex Chrome control (`enableCodexChrome`, off by default, never settable from `f5.json`): ChatGPT for Chrome runs through an F5 MCP proxy that checks every call itself, takes the browser only for the duration of a call, and needs Full access and an isolated Codex home. The proxy forwards only Codex's per-call turn metadata, which ChatGPT's browser runtime requires, and supplies F5's thread identity when Codex sends none. The gate stays closed until the `codex-chrome` record is certified.
