@@ -3395,7 +3395,9 @@ it.layer(
           assert.equal(rows[0]?.path, target);
         }),
       ),
-    30_000,
+    // Two scans and repeated archive preflights use real Git and native process
+    // probes; Windows CI needs headroom for process startup and NTFS latency.
+    process.platform === "win32" ? 60_000 : 30_000,
   );
   it.effect(
     "removes inactive F5 worktrees and preserves every branch during manual cleanup",
