@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import type { BrowserWindow } from "electron";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { BrowserOpenAuthority } from "./BrowserOpenAuthority";
 import {
   BROWSER_OPEN_REQUESTED_CHANNEL,
   BROWSER_OPEN_SETTLED_CHANNEL,
@@ -10,28 +11,34 @@ import {
 
 afterEach(() => vi.useRealTimers());
 
-function owner(focused = true) {
+/** Models Electron: `show()` focuses the window, `showInactive()` does not. */
+function owner(state: { focused?: boolean; visible?: boolean; minimized?: boolean } = {}) {
+  const window = { focused: true, visible: true, minimized: false, ...state };
   const contents = Object.assign(new EventEmitter(), {
     send: vi.fn(),
     isDestroyed: vi.fn(() => false),
+    isLoading: vi.fn(() => false),
   });
   return {
     isDestroyed: () => false,
-    isFocused: () => focused,
-    show: vi.fn(),
-    focus: vi.fn(),
+    isFocused: () => window.focused,
+    isVisible: () => window.visible,
+    isMinimized: () => window.minimized,
+    show: vi.fn(() => Object.assign(window, { visible: true, focused: true })),
+    showInactive: vi.fn(() => Object.assign(window, { visible: true })),
+    focus: vi.fn(() => Object.assign(window, { focused: true })),
     webContents: contents,
   };
 }
 
-function prompt(controller = new AbortController()) {
+function prompt(controller = new AbortController(), waiting = () => 1) {
   return {
     requestId: "request-1",
     profileId: "work",
     host: "example.com",
     url: "https://example.com/login",
     expiresAtMs: 123_000,
-    waiting: 1,
+    waiting,
     signal: controller.signal,
   };
 }
@@ -105,20 +112,26 @@ describe("native prompt", () => {
 });
 
 describe("in-app prompt", () => {
-  function setup(focused = true) {
-    const window = owner(focused);
+  function setup(state: Parameters<typeof owner>[0] & { closed?: boolean } = {}) {
+    const window = owner(state);
+    let open = !state.closed;
+    const dismiss = vi.fn();
     const effects = {
-      window: vi.fn((_profile: string) => window as unknown as BrowserWindow | undefined),
-      openProfile: vi.fn(async (_profile: string) => {}),
+      window: vi.fn(
+        (_profile: string) => (open ? window : undefined) as unknown as BrowserWindow | undefined,
+      ),
+      openProfile: vi.fn(async (_profile: string) => {
+        open = true;
+      }),
       profileName: (_profile: string) => "Work",
-      attention: vi.fn((_profile: string, _host: string) => {}),
+      attention: vi.fn((_profile: string, _host: string) => dismiss),
       native: vi.fn(async () => 2),
     };
     const controller = new AbortController();
     const inApp = createInAppBrowserOpenPrompt(effects);
     const request = prompt(controller);
     const result = inApp.prompt(request);
-    return { owner: window, effects, controller, inApp, request, result };
+    return { owner: window, effects, dismiss, controller, inApp, request, result };
   }
   const shown = async (h: ReturnType<typeof setup>) => {
     await vi.waitFor(() => expect(h.inApp.current("work")).not.toBeNull());
@@ -171,16 +184,141 @@ describe("in-app prompt", () => {
     expect(await h.result).toBe(3);
   });
 
-  it("shows the window without stealing focus and signals only when unfocused", async () => {
-    const focused = setup(true);
-    await shown(focused);
-    expect(focused.owner.show).toHaveBeenCalledOnce();
-    expect(focused.owner.focus).not.toHaveBeenCalled();
-    expect(focused.effects.attention).not.toHaveBeenCalled();
-    const away = setup(false);
-    await shown(away);
-    expect(away.owner.focus).not.toHaveBeenCalled();
-    expect(away.effects.attention).toHaveBeenCalledExactlyOnceWith("work", "example.com");
+  it("leaves a focused window alone and asks for nothing more", async () => {
+    const h = setup();
+    await shown(h);
+    expect(h.owner.show).not.toHaveBeenCalled();
+    expect(h.owner.showInactive).not.toHaveBeenCalled();
+    expect(h.owner.focus).not.toHaveBeenCalled();
+    expect(h.effects.attention).not.toHaveBeenCalled();
+    h.inApp.answer("work", "request-1", "cancel", false);
+    await h.result;
+  });
+
+  it.each([
+    ["a hidden window", { focused: false, visible: false }, 1],
+    ["a background window", { focused: false }, 0],
+    ["a minimized window", { focused: false, visible: false, minimized: true }, 0],
+  ])("shows %s without focusing it and draws attention", async (_name, state, inactive) => {
+    const h = setup(state);
+    await shown(h);
+    expect(h.owner.isFocused()).toBe(false);
+    expect(h.owner.show).not.toHaveBeenCalled();
+    expect(h.owner.focus).not.toHaveBeenCalled();
+    expect(h.owner.showInactive).toHaveBeenCalledTimes(inactive);
+    expect(h.effects.attention).toHaveBeenCalledExactlyOnceWith("work", "example.com");
+    expect(h.dismiss).not.toHaveBeenCalled();
+    h.inApp.answer("work", "request-1", "open", true);
+    expect(await h.result).toBe(0);
+    expect(h.dismiss).toHaveBeenCalledOnce();
+  });
+
+  it("reads the focus state before reopening a closed profile window", async () => {
+    const h = setup({ closed: true, focused: true });
+    await shown(h);
+    expect(h.effects.openProfile).toHaveBeenCalledWith("work");
+    expect(h.effects.attention).toHaveBeenCalledOnce();
+    h.controller.abort();
+    expect(await h.result).toBe(3);
+    expect(h.dismiss).toHaveBeenCalledOnce();
+  });
+
+  it("shows no card when the request is aborted while its window opens", async () => {
+    const window = owner();
+    let open = false;
+    const controller = new AbortController();
+    const attention = vi.fn(() => () => {});
+    const inApp = createInAppBrowserOpenPrompt({
+      window: () => (open ? (window as unknown as BrowserWindow) : undefined),
+      openProfile: async () => {
+        open = true;
+        controller.abort();
+      },
+      profileName: () => "Work",
+      attention,
+      native: async () => 0,
+    });
+    expect(await inApp.prompt(prompt(controller))).toBe(3);
+    expect(window.webContents.send).not.toHaveBeenCalled();
+    expect(inApp.current("work")).toBeNull();
+    expect(attention).not.toHaveBeenCalled();
+  });
+
+  it("frees the profile queue when a request expires while its window opens", async () => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    const window = owner();
+    let open = false;
+    const inApp = createInAppBrowserOpenPrompt({
+      window: () => (open ? (window as unknown as BrowserWindow) : undefined),
+      openProfile: () =>
+        new Promise<void>((resolve) => {
+          release = () => {
+            open = true;
+            resolve();
+          };
+        }),
+      profileName: () => "Work",
+      attention: () => () => {},
+      native: async () => 3,
+    });
+    const authority = new BrowserOpenAuthority({
+      prompt: inApp.prompt,
+      waitingChanged: inApp.waitingChanged,
+      open: async () => {},
+      copy: () => {},
+    });
+    const stuck = authority.request("work", "https://example.com/one");
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+    expect(await stuck).toBe("denied");
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(window.webContents.send).not.toHaveBeenCalled();
+    const next = authority.request("work", "https://example.com/two");
+    await vi.waitFor(() => expect(inApp.current("work")?.url).toBe("https://example.com/two"));
+    inApp.answer("work", inApp.current("work")!.requestId, "open", true);
+    expect(await next).toBe("opened");
+  });
+
+  it("counts requests queued while the window was opening", async () => {
+    let waiting = 0;
+    let open = false;
+    const window = owner();
+    const inApp = createInAppBrowserOpenPrompt({
+      window: () => (open ? (window as unknown as BrowserWindow) : undefined),
+      openProfile: async () => {
+        waiting = 2;
+        open = true;
+      },
+      profileName: () => "Work",
+      attention: () => () => {},
+      native: async () => 3,
+    });
+    const controller = new AbortController();
+    const result = inApp.prompt(prompt(controller, () => waiting));
+    await vi.waitFor(() => expect(inApp.current("work")?.waiting).toBe(2));
+    controller.abort();
+    expect(await result).toBe(3);
+  });
+
+  it("treats closing the window as Cancel without reopening it", async () => {
+    const h = setup();
+    await shown(h);
+    h.owner.webContents.emit("destroyed");
+    expect(await h.result).toBe(3);
+    expect(h.effects.native).not.toHaveBeenCalled();
+    expect(h.effects.openProfile).not.toHaveBeenCalled();
+  });
+
+  it("gives a window that is still loading longer to show the card", async () => {
+    vi.useFakeTimers();
+    const h = setup({ closed: true });
+    await vi.waitFor(() => expect(h.inApp.current("work")).not.toBeNull());
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(h.effects.native).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(await h.result).toBe(2);
+    expect(h.effects.native).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -244,7 +382,7 @@ describe("in-app prompt", () => {
       window: vi.fn(() => undefined),
       openProfile: vi.fn(async () => {}),
       profileName: () => "Work",
-      attention: vi.fn(),
+      attention: vi.fn(() => () => {}),
       native: vi.fn(async () => 0),
     };
     const inApp = createInAppBrowserOpenPrompt(effects);

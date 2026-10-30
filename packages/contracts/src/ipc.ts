@@ -680,7 +680,7 @@ export interface DesktopBrowserOpenBridge {
 
 export interface DesktopBridge {
   htmlPreview?: (input: HtmlPreviewRequest) => Promise<HtmlPreviewResult>;
-  /** macOS only: consent for terminals and agents opening login URLs. */
+  /** Consent for terminals and agents opening login URLs; requests arrive only on macOS. */
   browserOpen?: DesktopBrowserOpenBridge;
   cliCommand?: {
     state: () => Promise<DesktopCliCommandState>;

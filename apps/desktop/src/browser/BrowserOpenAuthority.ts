@@ -9,8 +9,8 @@ export interface BrowserOpenPrompt {
   url: string;
   /** When the request is denied, counting from when it was made, not shown. */
   expiresAtMs: number;
-  /** Requests queued behind this one. */
-  waiting: number;
+  /** Requests queued behind this one right now; later changes arrive via `waitingChanged`. */
+  waiting: () => number;
   signal: AbortSignal;
 }
 interface Request {
@@ -119,7 +119,7 @@ export class BrowserOpenAuthority {
       return;
     }
     queue.active = request;
-    void this.perform(profileId, request, this.waitingCount(queue))
+    void this.perform(profileId, request, () => this.waitingCount(queue))
       .then(
         (status) => this.finish(request, status),
         () => this.finish(request, "denied"),
@@ -133,7 +133,7 @@ export class BrowserOpenAuthority {
   private async perform(
     profileId: string,
     request: Request,
-    waiting: number,
+    waiting: () => number,
   ): Promise<OpenExternalUrlStatus> {
     if (!this.allowed.get(profileId)?.has(request.host)) {
       const button = await this.effects.prompt({

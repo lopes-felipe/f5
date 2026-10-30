@@ -51,17 +51,21 @@ and URLs longer than 4096 characters, then shows a card in the bottom-right of t
 requesting profile's window with the ASCII (punycode) host, the URL (expandable to
 its full length), the profile and a countdown. Choose Open, allow that hostname
 until F5 quits (from the Open menu), Copy link, or Cancel. The card never takes
-focus, and main shows the window without focusing it; when the window is in the
-background, the Dock bounces and a system notification appears.
+focus, and F5 never activates for it: a hidden window is shown inactive, a
+minimized one stays minimized, and a closed one is reopened without focus. Unless
+the window was already focused, the Dock bounces and a system notification
+appears until the request settles. Closing the window cancels the request.
 
 Main remains the authority. It accepts an answer only from the profile's F5 app
-main frame on the app origin, only for the request currently shown, and, except for
-Cancel, only within a second of a trusted click or keypress observed by the
-isolated preload. A wrong answer throws and leaves the request pending. This is
-not a widening: the app renderer can already open any HTTP(S) URL without a prompt
-through `desktop:open-external`. If no window acknowledges the card within three
-seconds, or the renderer crashes or closes, main falls back to a native dialog
-with the same choices. Host approvals are separate per profile, survive backend restarts,
+main frame on the app origin, and only for the request currently shown. Except for
+Cancel, the isolated preload must also have seen a trusted click or keypress
+anywhere in that window within the last second. That shows recent user activity,
+not that the user clicked the card. A wrong answer throws and leaves the request
+pending. This is not a widening: the app renderer can already open any HTTP(S) URL
+without a prompt through `desktop:open-external`. If no card acknowledges the
+request within three seconds (fifteen while the window is still loading), or the
+renderer crashes, main falls back to a native dialog with the same choices. Host
+approvals are separate per profile, survive backend restarts,
 and disappear when F5 quits; they are never written to disk or Keychain.
 Host approvals include HTTP and HTTPS on every port, including loopback hosts.
 Browser launches share a per-profile limit of ten per rolling minute; excess

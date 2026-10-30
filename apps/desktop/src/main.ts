@@ -338,25 +338,34 @@ const browserOpenWindows = {
       (window) =>
         !window.isDestroyed() && profileByWebContentsId.get(window.webContents.id) === profileId,
     ),
-  openProfile: (profileId: string) => openProfile(profileId),
   profileName: (profileId: string) => backends.get(profileId)?.profile.name ?? profileId,
 };
 const browserOpenPrompt = createInAppBrowserOpenPrompt({
   ...browserOpenWindows,
+  // The card must not pull F5 in front of the app the user is typing in.
+  openProfile: (profileId) => openProfile(profileId, { activate: false }),
   attention: (profileId, host) => {
-    app.dock?.bounce("informational");
-    if (!Notification.isSupported()) return;
-    const notice = new Notification({
-      title: `Open ${host} in browser?`,
-      body: `Requested by a terminal or agent in ${browserOpenWindows.profileName(profileId)}.`,
-    });
-    notice.on("click", () => {
-      void openProfile(profileId);
-    });
-    notice.show();
+    const bounce = app.dock?.bounce("informational");
+    // Held until the request settles, so the click handler survives garbage collection.
+    let notice: Notification | undefined;
+    if (Notification.isSupported()) {
+      notice = new Notification({
+        title: `Open ${host} in browser?`,
+        body: `Requested by a terminal or agent in ${browserOpenWindows.profileName(profileId)}.`,
+      });
+      notice.on("click", () => {
+        void openProfile(profileId);
+      });
+      notice.show();
+    }
+    return () => {
+      if (bounce !== undefined) app.dock?.cancelBounce(bounce);
+      notice?.close();
+    };
   },
   native: createNativeBrowserOpenPrompt({
     ...browserOpenWindows,
+    openProfile: (profileId) => openProfile(profileId),
     show: (owner, options) => dialog.showMessageBox(owner, options),
   }),
 });
@@ -377,13 +386,16 @@ function runtimeForRenderer(id: number): BackendRuntime {
 }
 /** Consent answers come only from an F5 app main frame on the app origin. */
 function authorizeAppMainFrame(event: Electron.IpcMainInvokeEvent, purpose: string): string {
-  appMainFrameProfile(event, {
+  return appMainFrameProfile(event, {
     registered: (id) => appRendererWebContentsIds.has(id),
-    profile: (id) => profileByWebContentsId.get(id),
+    // A profile counts only while its backend runtime exists, as in `runtimeForRenderer`.
+    profile: (id) => {
+      const profileId = profileByWebContentsId.get(id);
+      return profileId && backends.has(profileId) ? profileId : undefined;
+    },
     expectedOrigin: isDevelopment ? new URL(mainRendererUrl()).origin : `${DESKTOP_SCHEME}://app`,
     purpose,
   });
-  return runtimeForRenderer(event.sender.id).profile.id;
 }
 let computerSystem:
   | {
@@ -3329,18 +3341,25 @@ async function ensureBackendRunning(runtime: BackendRuntime): Promise<void> {
   });
 }
 
-const openProfile = singleProfileOpen(async (id) => {
+interface ProfileOpenOptions {
+  /** False shows the profile window without focusing it or activating F5. */
+  activate?: boolean;
+}
+const openProfile = singleProfileOpen(async (id: string, options?: ProfileOpenOptions) => {
   try {
     await bootstrapGate.wait();
     if (isQuitting) return false;
-    return await openProfileOnce(id);
+    return await openProfileOnce(id, options);
   } catch (cause) {
     const runtime = backends.get(id);
     if (runtime && !runtime.backendProcess && !runtime.restartTimer) runtime.stopped = true;
     throw cause;
   }
 });
-async function openProfileOnce(profileId: string): Promise<boolean> {
+async function openProfileOnce(
+  profileId: string,
+  options: ProfileOpenOptions = {},
+): Promise<boolean> {
   const profile = readDesktopProfiles(STATE_DIR).find(
     (record) => record.id === profileId && record.status === "ready",
   );
@@ -3353,10 +3372,16 @@ async function openProfileOnce(profileId: string): Promise<boolean> {
     (window) => profileByWebContentsId.get(window.webContents.id) === profileId,
   );
   if (existingWindow && !existingWindow.isDestroyed()) {
-    if (existingWindow.isMinimized()) existingWindow.restore();
-    existingWindow.show();
-    existingWindow.focus();
-  } else createWindow(null, runtime);
+    if (options.activate === false) {
+      // A minimized window stays minimized: restoring it would take focus.
+      if (!existingWindow.isVisible() && !existingWindow.isMinimized())
+        existingWindow.showInactive();
+    } else {
+      if (existingWindow.isMinimized()) existingWindow.restore();
+      existingWindow.show();
+      existingWindow.focus();
+    }
+  } else createWindow(null, runtime, { activate: options.activate !== false });
   lastOpenedProfileId = profile.id;
   writeDesktopLogHeader(`profile open ready profile=${profile.id}`);
   return true;
@@ -4058,6 +4083,7 @@ function mainRendererUrl(): string {
 function createWindow(
   initialThreadId: string | null = null,
   runtime: BackendRuntime = defaultBackend,
+  { activate = true }: { activate?: boolean } = {},
 ): BrowserWindow {
   const partition = profilePartition(runtime.profile);
   const appSession = partition
@@ -4224,7 +4250,8 @@ function createWindow(
     emitUpdateState();
   });
   window.once("ready-to-show", () => {
-    window.show();
+    if (activate) window.show();
+    else window.showInactive();
   });
 
   void window.loadURL(rendererUrl);

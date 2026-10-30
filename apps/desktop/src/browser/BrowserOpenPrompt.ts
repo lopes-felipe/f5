@@ -18,6 +18,7 @@ const CHOICE_BUTTON: Record<DesktopBrowserOpenChoice, number> = {
 
 interface PromptWindowEffects {
   window: (profileId: string) => BrowserWindow | undefined;
+  /** The in-app prompt opens the window without focusing it; the native dialog focuses it. */
   openProfile: (profileId: string) => Promise<unknown>;
   profileName: (profileId: string) => string;
 }
@@ -26,14 +27,15 @@ interface PromptWindowEffects {
 async function ownerFor(
   effects: PromptWindowEffects,
   { profileId, signal }: BrowserOpenPrompt,
-): Promise<BrowserWindow | undefined> {
+): Promise<{ owner: BrowserWindow; opened: boolean } | undefined> {
   if (signal.aborted) return undefined;
   let owner = effects.window(profileId);
-  if (!owner || owner.isDestroyed()) {
+  const opened = !owner || owner.isDestroyed();
+  if (opened) {
     await effects.openProfile(profileId);
     owner = effects.window(profileId);
   }
-  return !owner || owner.isDestroyed() || signal.aborted ? undefined : owner;
+  return !owner || owner.isDestroyed() || signal.aborted ? undefined : { owner, opened };
 }
 
 /** Parent consent only to the requesting profile; a parent is required for macOS cancellation. */
@@ -44,7 +46,7 @@ export function createNativeBrowserOpenPrompt(
 ): (request: BrowserOpenPrompt) => Promise<number> {
   return async (request) => {
     const { profileId, host, url, signal } = request;
-    const owner = await ownerFor(effects, request);
+    const owner = (await ownerFor(effects, request))?.owner;
     if (!owner) return 3;
     owner.show();
     owner.focus();
@@ -82,10 +84,15 @@ export interface InAppBrowserOpenPrompt {
  */
 export function createInAppBrowserOpenPrompt(
   effects: PromptWindowEffects & {
-    /** Draws attention without stealing focus, so typing elsewhere cannot answer. */
-    attention: (profileId: string, host: string) => void;
+    /**
+     * Draws attention without stealing focus, so typing elsewhere cannot answer. Returns a
+     * disposer, called when the request settles.
+     */
+    attention: (profileId: string, host: string) => () => void;
     native: (request: BrowserOpenPrompt) => Promise<number>;
     acknowledgeTimeoutMs?: number;
+    /** A window that is still loading needs time to load, hydrate and mount the card. */
+    coldAcknowledgeTimeoutMs?: number;
   },
 ): InAppBrowserOpenPrompt {
   const active = new Map<
@@ -105,10 +112,18 @@ export function createInAppBrowserOpenPrompt(
   };
   return {
     prompt: async (request) => {
-      const owner = await ownerFor(effects, request);
-      if (!owner) return 3;
-      owner.show();
-      if (!owner.isFocused()) effects.attention(request.profileId, request.host);
+      // Read before anything is shown: only a window the user is already in skips attention.
+      const before = effects.window(request.profileId);
+      const wasFocused = !!before && !before.isDestroyed() && before.isFocused();
+      const resolved = await ownerFor(effects, request);
+      // The authority aborts on timeout or cancel; that may happen while the window opens.
+      if (!resolved || request.signal.aborted) return 3;
+      const { owner, opened } = resolved;
+      // `show()` focuses and activates F5; a minimized window stays minimized.
+      if (!owner.isVisible() && !owner.isMinimized()) owner.showInactive();
+      const dismissAttention = wasFocused
+        ? undefined
+        : effects.attention(request.profileId, request.host);
       const contents = owner.webContents;
       const card: DesktopBrowserOpenRequest = {
         requestId: request.requestId,
@@ -116,7 +131,7 @@ export function createInAppBrowserOpenPrompt(
         url: request.url,
         profileName: effects.profileName(request.profileId),
         expiresAtMs: request.expiresAtMs,
-        waiting: request.waiting,
+        waiting: request.waiting(),
       };
       const FALLBACK = -1;
       const button = await new Promise<number>((resolve) => {
@@ -125,10 +140,11 @@ export function createInAppBrowserOpenPrompt(
           if (active.get(request.profileId) !== entry) return;
           active.delete(request.profileId);
           clearTimeout(timer);
+          dismissAttention?.();
           request.signal.removeEventListener("abort", aborted);
           if (!contents.isDestroyed()) {
-            contents.removeListener("render-process-gone", gone);
-            contents.removeListener("destroyed", gone);
+            contents.removeListener("render-process-gone", crashed);
+            contents.removeListener("destroyed", closed);
             contents.send(BROWSER_OPEN_SETTLED_CHANNEL, card.requestId);
           }
           resolve(value);
@@ -143,14 +159,24 @@ export function createInAppBrowserOpenPrompt(
           finish,
         };
         const aborted = () => finish(3);
-        const gone = () => finish(FALLBACK);
+        // A crash leaves a window for the native dialog; closing the window means Cancel and
+        // must not reopen it.
+        const crashed = () => finish(FALLBACK);
+        const closed = () => finish(3);
         active.set(request.profileId, entry);
         request.signal.addEventListener("abort", aborted, { once: true });
-        contents.once("render-process-gone", gone);
-        contents.once("destroyed", gone);
-        timer = setTimeout(() => {
-          if (!entry.acknowledged) finish(FALLBACK);
-        }, effects.acknowledgeTimeoutMs ?? 3000);
+        contents.once("render-process-gone", crashed);
+        contents.once("destroyed", closed);
+        const cold = opened || contents.isLoading();
+        timer = setTimeout(
+          () => {
+            if (!entry.acknowledged) finish(FALLBACK);
+          },
+          cold
+            ? (effects.coldAcknowledgeTimeoutMs ?? 15_000)
+            : (effects.acknowledgeTimeoutMs ?? 3000),
+        );
+        // A window that is still loading drops this; its card asks `current()` once mounted.
         entry.send();
       });
       if (button !== FALLBACK) return button;

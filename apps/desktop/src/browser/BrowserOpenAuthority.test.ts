@@ -137,18 +137,21 @@ describe("browser open authority", () => {
     const answers: Array<(button: number) => void> = [];
     effects.prompt.mockImplementation(() => new Promise((resolve) => answers.push(resolve)));
     const first = live.request("p", "https://example.com");
-    expect(effects.prompt.mock.calls[0]![0]).toMatchObject({
+    const shown = effects.prompt.mock.calls[0]![0];
+    expect(shown).toMatchObject({
       profileId: "p",
       host: "example.com",
       expiresAtMs: 1_000_000 + 5 * 60 * 1000,
-      waiting: 0,
     });
+    expect(shown.waiting()).toBe(0);
     expect(waitingChanged).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(10_000);
     const queued = [
       live.request("p", "https://example.com"),
       live.request("p", "https://example.com"),
     ];
+    // The getter is live for a prompt still resolving its window.
+    expect(shown.waiting()).toBe(2);
     expect(waitingChanged.mock.calls).toEqual([
       ["p", 1],
       ["p", 2],
@@ -156,8 +159,9 @@ describe("browser open authority", () => {
     answers[0]!(3);
     expect(await first).toBe("denied");
     await vi.waitFor(() => expect(effects.prompt).toHaveBeenCalledTimes(2));
-    const [shown, next] = effects.prompt.mock.calls.map(([prompt]) => prompt);
-    expect(next).toMatchObject({ expiresAtMs: 1_010_000 + 5 * 60 * 1000, waiting: 1 });
+    const next = effects.prompt.mock.calls[1]![0];
+    expect(next).toMatchObject({ expiresAtMs: 1_010_000 + 5 * 60 * 1000 });
+    expect(next.waiting()).toBe(1);
     expect(next!.requestId).not.toBe(shown!.requestId);
     live.cancelProfile("p");
     expect(await Promise.all(queued)).toEqual(["denied", "denied"]);
