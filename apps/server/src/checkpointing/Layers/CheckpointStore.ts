@@ -156,11 +156,12 @@ const makeCheckpointStore = Effect.gen(function* () {
             const capturedHead = yield* resolveHeadCommit(input.cwd);
             const headExists = capturedHead !== null;
             // An ignored workspace is a normal outcome, so settle it before any index work.
+            // Pass the path as an argument: outside a repository Git exits before reading
+            // stdin, and a late stdin write then fails with an unhandled EPIPE.
             const ignoreCheck = yield* executeCapture({
               operation,
               cwd: input.cwd,
-              args: ["check-ignore", "--no-index", "-z", "--stdin"],
-              stdin: ".\0",
+              args: ["check-ignore", "--no-index", "--", "."],
               allowNonZeroExit: true,
             });
             if (ignoreCheck.code !== 0 && ignoreCheck.code !== 1) {
@@ -171,7 +172,7 @@ const makeCheckpointStore = Effect.gen(function* () {
                 detail: ignoreCheck.stderr.trim() || "git check-ignore failed.",
               });
             }
-            const workspaceIgnored = ignoreCheck.code === 0 && ignoreCheck.stdout === ".\0";
+            const workspaceIgnored = ignoreCheck.code === 0 && ignoreCheck.stdout.trim() === ".";
             // HEAD omits staged-only paths. Seed just this workspace's additions so
             // unrelated staged changes elsewhere in the repository stay out.
             const ignoredAdditions = workspaceIgnored

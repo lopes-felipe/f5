@@ -199,6 +199,21 @@ describe("UsageLimitNotice", () => {
     expect(mocks.dismiss).toHaveBeenCalledTimes(1);
   });
 
+  it("offers only a time picker when a monthly reset is past the scheduling horizon", async () => {
+    const resetsAt = new Date(Date.now() + 30 * 24 * 60 * 60_000).toISOString();
+    active = await renderNotice({
+      resetsAt,
+      windows: [{ id: "codex:individual", label: "monthly credit", resetsAt }],
+    });
+    await expect.element(page.getByText(/^Resets /)).toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: /^Continue at/ }))
+      .not.toBeInTheDocument();
+    await page.getByRole("button", { name: "Schedule continue…" }).click();
+    await expect.element(page.getByText("Custom", { exact: true })).toBeInTheDocument();
+    expect(mocks.schedule).not.toHaveBeenCalled();
+  });
+
   it("offers check again and a time picker for an unknown reset", async () => {
     active = await renderNotice({ resetsAt: null });
     await expect
