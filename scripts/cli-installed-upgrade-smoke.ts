@@ -8,6 +8,7 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { Effect } from "effect";
 import { NetService } from "@t3tools/shared/Net";
+import { waitForCliBootstrap } from "./cli-smoke-readiness.ts";
 import {
   parseRelease,
   cliTarget,
@@ -166,24 +167,10 @@ export async function installedCliSmoke(
     child.stderr?.on("data", (b) => {
       logs += String(b);
     });
-    for (let i = 0; ; i++) {
-      if (child.exitCode !== null || child.signalCode !== null || i > 240)
-        throw new Error("Baseline launcher failed: " + logs);
-      try {
-        await readFile(join(root, "launcher.json"));
-        if (
-          (
-            await fetch("http://127.0.0.1:" + port + "/api/bootstrap", {
-              signal: AbortSignal.timeout(1000),
-            })
-          ).ok
-        )
-          break;
-      } catch {
-        /* Await the owned server's startup. */
-      }
-      await wait(250);
-    }
+    const owned = child;
+    const stopped = () => owned.exitCode !== null || owned.signalCode !== null;
+    await waitForCliBootstrap("http://127.0.0.1:" + port, stopped, () => logs);
+    await readFile(join(root, "launcher.json"));
     manifest = { ...release, artifacts: [{ ...artifact, url: url + "/archive.tar.gz" }] };
     const update = await invoke(previous, [
       "update",
@@ -203,11 +190,11 @@ export async function installedCliSmoke(
         const installed = JSON.parse(await readFile(join(root, "current.json"), "utf8"));
         if (installed.version !== release.version)
           throw new Error("CLI current version disagrees with outcome");
-        const bootstrap = (await (
-          await fetch("http://127.0.0.1:" + port + "/api/bootstrap", {
-            signal: AbortSignal.timeout(5000),
-          })
-        ).json()) as { update?: { version: string; outcome: string } };
+        const bootstrap = (await waitForCliBootstrap(
+          "http://127.0.0.1:" + port,
+          stopped,
+          () => logs,
+        )) as { update?: { version: string; outcome: string } };
         if (
           bootstrap.update?.version !== release.version ||
           bootstrap.update.outcome !== "committed"
