@@ -76,6 +76,10 @@ it("rejects viewport height units in stylesheets, SVG, templates and decoded sty
     ['<template><div style="height:10lvh"></div></template>', "10lvh"],
     ['<div style="height:100&#118;h">x</div>', "100vh"],
     ["<style>main{height:100\\76h}</style>", "100vh"],
+    ["<style>main{margin-top:-10vh}</style>", "10vh"],
+    ["<style>main{height:calc(100% - 2*10vh)}</style>", "10vh"],
+    ["<style>main{height:max(200px,50vh)}</style>", "50vh"],
+    ['<svg height="100vh"><rect width="10" height="10"/></svg>', "100vh"],
   ] as const)
     await expect(prepareHtmlRender(html, [])).rejects.toThrow(
       `The page uses a viewport height unit (${unit}).`,
@@ -91,6 +95,10 @@ it("allows viewport units outside CSS code", async () => {
     "<script>document.body.style.height='100vh'</script>",
     '<img src="data:image/png;base64,AAA1vh+/1vh">',
     '<div style="background:url(data:image/png;base64,ab+1vh)"></div>',
+    '<div style="background:url(data:image/png;base64,1vh+abc)"></div>',
+    "<style>.min-h-100vh{min-height:200px}</style>",
+    '<div style="background:url(chart-1vh.png)"></div>',
+    '<div data-height="100vh" title="100vh">x</div>',
   ])
     await expect(prepareHtmlRender(html, [])).resolves.toMatchObject({
       missing: { paths: [], omitted: 0 },

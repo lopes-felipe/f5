@@ -37,8 +37,10 @@ const shorten = (value: string) =>
   value.length > MAX_LISTED_PATH_LENGTH ? `${value.slice(0, MAX_LISTED_PATH_LENGTH - 1)}…` : value;
 const mib = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 
-// The lookbehind skips base64 runs, such as an inlined image that happens to contain "1vh".
-const VIEWPORT_HEIGHT_UNIT = /(?<![\w.+/])(?:\d+(?:\.\d+)?|\.\d+)[sld]?vh(?![\w-])/i;
+// Only a value counts: the number starts a declaration value, a function argument or a
+// calc() operand. That skips class names (`.min-h-100vh`), file names (`chart-1vh.png`)
+// and base64 runs that happen to contain "1vh".
+const VIEWPORT_HEIGHT_UNIT = /(?<=(?:^|[\s:(,*])-?)(?:\d+(?:\.\d+)?|\.\d+)[sld]?vh(?![\w\-+/=.])/i;
 
 /** CSS without comments and quoted strings, so `/* 100vh *\/` and `content:"100vh"` pass. */
 function cssCode(css: string): string {
@@ -158,6 +160,12 @@ export async function prepareHtmlRender(
     const names = imageAttributes(node.tagName);
     for (const attribute of node.attrs) {
       if (attribute.name === "style") rejectViewportHeight(attribute.value);
+      // SVG sizes itself from presentation attributes as well as CSS.
+      if (
+        node.namespaceURI === "http://www.w3.org/2000/svg" &&
+        (attribute.name === "height" || attribute.name === "width")
+      )
+        rejectViewportHeight(attribute.value);
       if (!names.includes(attribute.name)) continue;
       let local = attribute.value;
       if (local.startsWith("file:")) {

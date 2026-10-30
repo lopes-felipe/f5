@@ -42,12 +42,20 @@ type ShortcutKey = {
   readonly repeat: boolean;
 };
 
-/** The last measured inline height per page, so a remount under virtualization does not jump. */
-const measuredHeights = new Map<string, number>();
+/**
+ * The last inline sizing per page, so a remount under virtualization neither jumps nor
+ * replays a paused page's feedback loop.
+ */
+type RememberedSizing = {
+  readonly height: number;
+  readonly paused: boolean;
+  readonly width: number | null;
+};
+const measuredHeights = new Map<string, RememberedSizing>();
 const MEASURED_HEIGHTS_LIMIT = 200;
-function rememberHeight(attachmentId: string, height: number) {
+function rememberHeight(attachmentId: string, sizing: RememberedSizing) {
   measuredHeights.delete(attachmentId);
-  measuredHeights.set(attachmentId, height);
+  measuredHeights.set(attachmentId, sizing);
   if (measuredHeights.size > MEASURED_HEIGHTS_LIMIT)
     measuredHeights.delete(measuredHeights.keys().next().value!);
 }
@@ -76,7 +84,11 @@ function HtmlRenderDocumentFrame(props: {
   readonly attachmentId: string;
   readonly allowRemoteContent: boolean;
   readonly theme: HtmlRenderTheme;
-  readonly sizingMode: "fit" | "scroll";
+  /**
+   * `scroll` lets the page scroll inside its frame while wheels still go to the
+   * thread; `scroll-inner` (full screen) lets wheels scroll the page too.
+   */
+  readonly sizingMode: "fit" | "scroll" | "scroll-inner";
   readonly dialogFocus: boolean;
   readonly onMeasure: (measurement: HtmlRenderMeasurement) => void;
   readonly onEscape: () => void;
@@ -278,8 +290,16 @@ export function HtmlRenderFrame({
   // Follows the chat's remote-image setting, so a page cannot reach the network on its own.
   const allowRemoteContent = useAppSettingsSelector((settings) => settings.loadRemoteImagesInChat);
   const documentKey = `${reference.attachmentId}:${attempt}:${allowRemoteContent}`;
-  const startHeight = () => measuredHeights.get(reference.attachmentId) ?? reference.height;
-  const [fit, setFitState] = useState(() => initialHtmlRenderFit(startHeight()));
+  const startState = () => {
+    const remembered = measuredHeights.get(reference.attachmentId);
+    return initialHtmlRenderFit(
+      remembered?.height ?? reference.height,
+      HTML_RENDER_MAX_FIT_HEIGHT,
+      remembered?.paused && remembered.width !== null ? { width: remembered.width } : undefined,
+    );
+  };
+  const startHeight = () => startState().height;
+  const [fit, setFitState] = useState(startState);
   const fitRef = useRef(fit);
   const setFit = useCallback((next: HtmlRenderFitState) => {
     fitRef.current = next;
@@ -296,7 +316,10 @@ export function HtmlRenderFrame({
     if (previousKey.current === documentKey) return;
     previousKey.current = documentKey;
     contentHeight.current = null;
-    setFit(initialHtmlRenderFit(startHeight()));
+    setFit(startState());
+    const full = initialHtmlRenderFit(startHeight(), HTML_RENDER_MAX_CONTENT_HEIGHT);
+    fullFitRef.current = full;
+    setFullFitState(full);
   }, [documentKey, setFit]);
   useEffect(() => {
     const element = host.current;
@@ -349,7 +372,11 @@ export function HtmlRenderFrame({
       if (next === fitRef.current) return;
       setFit(next);
       // A paused page caches its frozen height, so a remount does not start from a taller round.
-      rememberHeight(reference.attachmentId, next.height);
+      rememberHeight(reference.attachmentId, {
+        height: next.height,
+        paused: next.mode === "paused",
+        width: next.width,
+      });
     },
     [reference.attachmentId, setFit],
   );
@@ -406,7 +433,12 @@ export function HtmlRenderFrame({
         </p>
       ) : html === null ? (
         // Holds the page's own height, so the thread does not jump when it loads.
-        <div aria-busy="true" style={{ height: `${fit.height}px` }} />
+        <div
+          role="status"
+          aria-label="Loading page…"
+          aria-busy="true"
+          style={{ height: `${fit.height}px` }}
+        />
       ) : (
         <>
           {/* Stays mounted while full screen is open, so the page keeps its state. */}
@@ -486,7 +518,7 @@ export function HtmlRenderFrame({
               <HtmlRenderDocumentFrame
                 key={`${documentKey}:fullscreen`}
                 {...frameProps}
-                sizingMode={fullFit.mode === "fit" ? "fit" : "scroll"}
+                sizingMode={fullFit.mode === "fit" ? "fit" : "scroll-inner"}
                 dialogFocus
                 onMeasure={measureFullscreen}
                 style={{ height: `${fullFit.height}px`, zoom }}

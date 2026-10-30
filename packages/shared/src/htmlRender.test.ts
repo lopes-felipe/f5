@@ -57,7 +57,15 @@ describe("readHtmlRenderMeasurement", () => {
   it("accepts only finite, bounded geometry", () => {
     expect(
       readHtmlRenderMeasurement({ height: 300, viewportWidth: 800, viewportHeight: 120 }),
-    ).toEqual({ height: 300, viewportWidth: 800, viewportHeight: 120 });
+    ).toEqual({ height: 300, viewportWidth: 800, viewportHeight: 120, changed: false });
+    expect(
+      readHtmlRenderMeasurement({
+        height: 300,
+        viewportWidth: 800,
+        viewportHeight: 120,
+        changed: true,
+      })?.changed,
+    ).toBe(true);
     for (const value of [
       300,
       null,
@@ -72,8 +80,13 @@ describe("readHtmlRenderMeasurement", () => {
 });
 
 describe("nextHtmlRenderFit", () => {
-  const measure = (state: HtmlRenderFitState, height: number, width = 800) =>
-    nextHtmlRenderFit(state, { height, viewportWidth: width, viewportHeight: state.height });
+  const measure = (state: HtmlRenderFitState, height: number, width = 800, changed = false) =>
+    nextHtmlRenderFit(state, {
+      height,
+      viewportWidth: width,
+      viewportHeight: state.height,
+      changed,
+    });
   /** Drives a page whose height is `page(viewport)` until it settles or pauses. */
   const settle = (start: number, page: (viewport: number) => number, rounds = 40) => {
     let state = initialHtmlRenderFit(start);
@@ -98,7 +111,7 @@ describe("nextHtmlRenderFit", () => {
     expect(settle(300, (viewport) => viewport + 16)).toMatchObject({ height: 300, mode: "paused" });
   });
 
-  it("pauses percentage heights and innerHeight-driven scripts", () => {
+  it("pauses percentage heights and frame-height pages that do not touch the DOM", () => {
     expect(settle(300, (viewport) => Math.ceil(viewport * 1.2))).toMatchObject({
       height: 300,
       mode: "paused",
@@ -115,10 +128,48 @@ describe("nextHtmlRenderFit", () => {
     });
   });
 
-  it("stays paused until the width changes, and ignores stale measurements", () => {
+  it("keeps fitting a page that grows steadily while it changes", () => {
+    // Rows appended on a timer, an entrance animation or images decoding one by one:
+    // every round sees the same new growth, but the page itself changed in between.
+    for (const step of [15, 40, 100]) {
+      let state = initialHtmlRenderFit(300);
+      for (let round = 0; round < 40; round++)
+        state = measure(state, state.height + step, 800, true);
+      expect(state).toMatchObject({ mode: "fit", height: 300 + 40 * step });
+    }
+  });
+
+  it("does not count a few pixels on a tall frame as proportional growth", () => {
+    let state = initialHtmlRenderFit(2000);
+    const excesses = [10, 25, 40, 55, 70, 85];
+    for (const excess of excesses) state = measure(state, state.height + excess);
+    expect(state.mode).toBe("fit");
+  });
+
+  it("stays paused until the page or width changes, and ignores stale measurements", () => {
     const paused = settle(300, (viewport) => viewport + 16);
-    expect(measure(paused, 5000)).toBe(paused);
+    // The loop predicts the height at the frozen frame.
+    expect(paused).toMatchObject({ mode: "paused", height: 300, pausedContent: 316 });
+    const baseline = measure(paused, 316);
+    expect(baseline).toBe(paused);
+    // A page that keeps changing (a ticking clock) while the loop holds stays paused.
+    expect(measure(baseline, 316, 800, true)).toBe(baseline);
+    // Content that changes without the page changing (the frame or CSS alone) stays paused.
+    expect(measure(baseline, 900)).toMatchObject({ mode: "paused", height: 300 });
+    // A page that changes and grows with it resumes fitting.
+    expect(measure(baseline, 900, 800, true)).toMatchObject({ mode: "fit", height: 900 });
+    // A change reported before the frozen height landed counts at the next measurement there.
+    const early = nextHtmlRenderFit(baseline, {
+      height: 5000,
+      viewportWidth: 800,
+      viewportHeight: 348,
+      changed: true,
+    });
+    expect(early).toMatchObject({ mode: "paused", height: 300, pausedChange: true });
+    expect(measure(early, 900)).toMatchObject({ mode: "fit", height: 900 });
+    // A new width resumes only a page whose height at the frozen frame moved with it.
     expect(measure(paused, 640, 600)).toMatchObject({ height: 640, mode: "fit" });
+    expect(measure(paused, 316, 600)).toMatchObject({ height: 300, mode: "paused", width: 600 });
     const growing = measure(initialHtmlRenderFit(300), 320);
     const stale = nextHtmlRenderFit(growing, {
       height: 336,
@@ -127,5 +178,17 @@ describe("nextHtmlRenderFit", () => {
     });
     expect(stale.run).toEqual(growing.run);
     expect(stale.height).toBe(336);
+  });
+
+  it("starts a remounted paused page paused, learning its width if unknown", () => {
+    const remounted = initialHtmlRenderFit(300, HTML_RENDER_MAX_FIT_HEIGHT, { width: 800 });
+    expect(remounted).toMatchObject({ mode: "paused", height: 300, width: 800 });
+    // The first measurement after loading is the baseline, though loading counts as a change.
+    const loaded = measure(remounted, 316, 800, true);
+    expect(loaded).toMatchObject({ mode: "paused", height: 300, pausedContent: 316 });
+    expect(measure(loaded, 900, 800, true)).toMatchObject({ mode: "fit", height: 900 });
+    expect(measure(remounted, 900, 640)).toMatchObject({ mode: "fit", height: 900 });
+    const unknown = { ...remounted, width: null };
+    expect(measure(unknown, 316, 640)).toMatchObject({ mode: "paused", width: 640 });
   });
 });

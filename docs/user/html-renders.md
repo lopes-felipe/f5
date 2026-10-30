@@ -25,7 +25,9 @@ reloading them, so anything you typed into a page stays.
 - Links open in your browser, or beside the thread for pull requests, like chat links. The
   app's keyboard shortcuts keep working inside a page.
 - Scrolling over a page scrolls the conversation, and scrolling up while a reply streams
-  stops following the end, as it does anywhere else in the thread.
+  stops following the end, as it does anywhere else in the thread. This holds for pages that
+  scroll inside their frame too; use their scrollbar or keyboard, or open them full screen,
+  where the wheel scrolls the page.
 
 ### Height
 
@@ -35,8 +37,10 @@ height it last had, so the thread does not jump.
 
 Some pages size themselves from their frame, for example with `100vh` or a script that reads
 the window height. They would grow every time the frame grows. F5 stops such a page at its
-previous height, lets it scroll inside, and shows **Automatic sizing paused**. Click
-**Retry sizing** to measure it again; resizing the window also retries.
+previous height, lets it scroll inside, and shows **Automatic sizing paused**. The page
+resumes fitting when its content or the window width changes its height. Click
+**Retry sizing** to measure it again. A script that rebuilds the page from the frame height
+every time keeps changing it, so that page grows to the 20,000-pixel limit instead.
 
 ## Limits
 

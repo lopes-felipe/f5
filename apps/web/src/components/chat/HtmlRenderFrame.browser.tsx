@@ -288,25 +288,139 @@ it("fits a tall page inline and caps a very tall one, which scrolls inside", asy
 });
 
 it("pauses a page that grows with its frame, and Retry sizing fits it again", async () => {
+  // A CSSOM edit changes the page without a DOM mutation, so only Retry resumes it.
   source =
-    "<style>body{min-height:100vh}</style><p>Grows</p><script>document.addEventListener('click',()=>{document.body.style.minHeight='0'})</script>";
+    "<style>body{min-height:100vh}</style><p>Grows</p><script>document.addEventListener('click',()=>{const sheets=document.styleSheets;sheets[sheets.length-1].cssRules[0].style.minHeight='0'})</script>";
   active = await render(<Harness reference={freshReference(300)} />);
   await expect.element(page.getByText(/Automatic sizing paused/)).toBeVisible();
-  expect(frameHeight()).toBe(300);
+  // Frozen where the run started, a round or two past the initial 300px.
+  expect(frameHeight()).toBeLessThan(400);
   await page.getByTitle("HTML widget", { exact: true }).click();
   await page.getByRole("button", { name: "Retry sizing", exact: true }).click();
   await expect.poll(frameHeight).toBe(120);
   expect(page.getByText(/Automatic sizing paused/).query()).toBeNull();
 });
 
-it("remounts a paused page at its frozen height instead of growing each time", async () => {
+it("resumes fitting a paused page once its content changes", async () => {
+  source =
+    "<style>body{min-height:100vh}</style><p>Grows</p><script>document.addEventListener('click',()=>{document.body.style.minHeight='0';document.body.insertAdjacentHTML('beforeend','<div style=\"height:900px\"></div>')})</script>";
+  active = await render(<Harness reference={freshReference(300)} />);
+  await expect.element(page.getByText(/Automatic sizing paused/)).toBeVisible();
+  await page.getByTitle("HTML widget", { exact: true }).click();
+  await expect.poll(frameHeight).toBeGreaterThan(900);
+  expect(page.getByText(/Automatic sizing paused/).query()).toBeNull();
+});
+
+it("keeps fitting a page that grows steadily, as rows on a timer do", async () => {
+  source =
+    "<div id=rows></div><script>let n=0;const t=setInterval(()=>{document.getElementById('rows').insertAdjacentHTML('beforeend','<div style=\"height:20px\">row</div>');if(++n>=60)clearInterval(t)},25)</script>";
+  active = await render(<Harness reference={freshReference(120)} />);
+  await expect.poll(frameHeight, { timeout: 5000 }).toBe(60 * 20 + 16);
+  expect(page.getByText(/Automatic sizing paused/).query()).toBeNull();
+});
+
+it("remounts a paused page at its frozen height without replaying the loop", async () => {
   source = "<style>body{min-height:100vh}</style><p>Grows</p>";
   const looping = freshReference(300);
-  for (let remount = 0; remount < 3; remount++) {
-    active = await render(<Harness reference={looping} />);
-    await expect.element(page.getByText(/Automatic sizing paused/)).toBeVisible();
-    expect(frameHeight()).toBe(300);
+  active = await render(<Harness reference={looping} />);
+  await expect.element(page.getByText(/Automatic sizing paused/)).toBeVisible();
+  const frozen = frameHeight()!;
+  await active.unmount();
+  for (let remount = 0; remount < 2; remount++) {
+    const heights = new Set<number>();
+    const sample = setInterval(() => {
+      const height = frameHeight();
+      if (height !== undefined) heights.add(height);
+    }, 5);
+    try {
+      active = await render(<Harness reference={looping} />);
+      await expect.element(page.getByText(/Automatic sizing paused/)).toBeVisible();
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    } finally {
+      clearInterval(sample);
+    }
+    expect([...heights]).toEqual([frozen]);
     await active.unmount();
+  }
+});
+
+it("keeps a paused page still while the window resizes", async () => {
+  source = "<style>body{min-height:100vh}</style><p>Grows</p>";
+  active = await render(<Harness reference={freshReference(300)} />);
+  await expect.element(page.getByText(/Automatic sizing paused/)).toBeVisible();
+  const frozen = frameHeight()!;
+  const heights = new Set<number>();
+  const sample = setInterval(() => {
+    const height = frameHeight();
+    if (height !== undefined) heights.add(height);
+  }, 5);
+  try {
+    for (const width of [900, 760, 620]) {
+      await page.viewport(width, 800);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+  } finally {
+    clearInterval(sample);
+  }
+  expect([...heights]).toEqual([frozen]);
+  expect(page.getByText(/Automatic sizing paused/).query()).not.toBeNull();
+});
+
+it("sends the wheel to the thread over a capped page instead of scrolling inside it", async () => {
+  source =
+    '<div style="height:25000px">Very tall</div><script>addEventListener("message",e=>{if(e.data==="scroll-inside")document.scrollingElement.scrollTop=1000});setInterval(()=>parent.postMessage({probe:true,top:document.scrollingElement.scrollTop},"*"),50)</script>';
+  const { reports, stop } = probes();
+  try {
+    active = await render(
+      <Harness
+        reference={freshReference()}
+        wrap={(frame) => (
+          <div data-testid="thread" style={{ height: "500px", overflowY: "auto" }}>
+            {frame}
+            <div style={{ height: "1000px" }} />
+          </div>
+        )}
+      />,
+    );
+    const thread = page.getByTestId("thread").element();
+    await expect.poll(frameHeight).toBe(20_000);
+    await userEvent.wheel(page.getByTitle("HTML widget", { exact: true }), { delta: { y: 300 } });
+    await expect.poll(() => thread.scrollTop).toBeGreaterThan(0);
+    const after = reports.length;
+    await expect.poll(() => reports.length).toBeGreaterThan(after);
+    expect(reports.at(-1)?.data.top).toBe(0);
+    // Scrolled inside (by its scrollbar or keyboard), a wheel up still moves the thread,
+    // so the timeline's own listener sees it and stops following the end.
+    inlineFrame().contentWindow!.postMessage("scroll-inside", "*");
+    await expect.poll(() => reports.at(-1)?.data.top).toBe(1000);
+    const threadTop = thread.scrollTop;
+    await userEvent.wheel(page.getByTitle("HTML widget", { exact: true }), { delta: { y: -200 } });
+    await expect.poll(() => thread.scrollTop).toBeLessThan(threadTop);
+    expect(reports.at(-1)?.data.top).toBe(1000);
+  } finally {
+    stop();
+  }
+});
+
+it("restyles a mounted page over the bridge without rebuilding its document", async () => {
+  source =
+    '<input aria-label="Name" style="display:block;width:100%;height:150px"><script>setInterval(()=>parent.postMessage({probe:true,scheme:getComputedStyle(document.documentElement).colorScheme,value:document.querySelector("input").value},"*"),50)</script>';
+  const reference = freshReference();
+  const { reports, stop } = probes();
+  try {
+    active = await render(<Harness reference={reference} appearance="dark" />);
+    await expect.poll(frameHeight).toBeGreaterThan(150);
+    const element = inlineFrame();
+    const srcdoc = element.srcdoc;
+    await page.getByTitle("HTML widget", { exact: true }).click();
+    await userEvent.keyboard("kept");
+    await active.rerender(<Harness reference={reference} appearance="light" />);
+    await expect.poll(() => reports.at(-1)?.data.scheme).toBe("light");
+    expect(reports.at(-1)?.data.value).toBe("kept");
+    expect(inlineFrame() === element).toBe(true);
+    expect(inlineFrame().srcdoc).toBe(srcdoc);
+  } finally {
+    stop();
   }
 });
 

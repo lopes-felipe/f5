@@ -41,6 +41,30 @@ describe("htmlRenderDocument measurement", () => {
     await expect.poll(() => fixed.at(-1)?.height).toBe(316);
   });
 
+  it("ignores content clipped by an ancestor and anything inside a fixed element", async () => {
+    const clipped = load(
+      '<div style="height:100px;overflow:hidden"><div style="height:5000px"></div></div><div style="position:absolute;top:0;height:100px;width:10px"></div>',
+    );
+    await expect.poll(() => clipped.at(-1)?.height).toBe(116);
+    const footer = load(
+      '<div style="height:300px"></div><div style="position:fixed;bottom:0;left:0;right:0"><p style="margin:0;height:20px">Footer</p></div>',
+    );
+    await expect.poll(() => footer.at(-1)?.height).toBe(316);
+  });
+
+  it("reports whether the page itself changed since the last measurement", async () => {
+    const heights = load(
+      "<div id=g style=height:100px></div><script>setTimeout(()=>{document.getElementById('g').style.height='400px'},300)</script>",
+      150,
+    ) as Array<{ height: number; changed?: boolean }>;
+    await expect.poll(() => heights.find((entry) => entry.height === 416)?.changed).toBe(true);
+    // A resize alone is not a change to the page.
+    frames.at(-1)!.style.height = "300px";
+    await expect
+      .poll(() => heights.at(-1))
+      .toMatchObject({ height: 416, viewportHeight: 300, changed: false });
+  });
+
   it("counts absolutely positioned overflow", async () => {
     const heights = load(
       '<div style="position:absolute;top:0;left:0;height:3000px;width:10px"></div>',

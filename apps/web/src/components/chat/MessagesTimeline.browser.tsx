@@ -3824,6 +3824,59 @@ describe("MessagesTimeline HTML renders", () => {
     }
   });
 
+  it("stops following the tail when the wheel turns up over a paused page", async () => {
+    const initialEntries = [
+      ...makeOverflowEntries(16),
+      makeHtmlRenderEntry(
+        "html-paused",
+        "<style>body{min-height:100vh;margin:0}</style><p>Grows with its frame</p>",
+        120,
+      ),
+      makeAssistantEntry("paused-tail", "Reply", 121),
+    ];
+    let api: TimelineHarnessApi | null = null;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={initialEntries}
+        initialHeight={800}
+        initialIsWorking
+        onIsAtEndChangeSpy={() => {}}
+        setApi={(nextApi) => {
+          api = nextApi;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const node = await waitForScrollContainer(host);
+      const distanceFromEnd = () => node.scrollHeight - node.clientHeight - node.scrollTop;
+      await expect.element(page.getByRole("button", { name: "Retry sizing" })).toBeVisible();
+      // The notice grows the row after the thread settled, which LegendList does not follow.
+      node.scrollTop = node.scrollHeight;
+      await vi.waitFor(() => expect(distanceFromEnd()).toBeLessThan(8));
+      await userEvent.wheel(page.getByTitle("html-paused", { exact: true }), {
+        delta: { y: -200 },
+      });
+      await vi.waitFor(() => expect(distanceFromEnd()).toBeGreaterThan(150));
+      api!.setEntries([
+        ...initialEntries.slice(0, -1),
+        makeAssistantEntry(
+          "paused-tail",
+          Array.from({ length: 12 }, (_, index) => "Streamed paragraph " + index).join("\n\n"),
+          121,
+        ),
+      ]);
+      await waitForTimelineLayout(() => node);
+      await waitForTimelineLayout(() => node);
+      expect(distanceFromEnd()).toBeGreaterThan(150);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("drops a pending disclosure pin when a page's wheel leaves the end", async () => {
     const commandId = "command-under-render";
     const host = document.createElement("div");
