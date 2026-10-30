@@ -74,15 +74,18 @@ export interface HtmlRenderFitState {
 
 export const HTML_RENDER_LOOP_ROUNDS = 4;
 
-export const initialHtmlRenderFit = (height: number): HtmlRenderFitState => ({
-  height: clampFit(height),
+export const initialHtmlRenderFit = (
+  height: number,
+  limit: number = HTML_RENDER_MAX_FIT_HEIGHT,
+): HtmlRenderFitState => ({
+  height: clampFit(height, limit),
   mode: "fit",
   width: null,
   run: null,
 });
 
-const clampFit = (height: number) =>
-  Math.max(HTML_RENDER_MIN_FIT_HEIGHT, Math.min(HTML_RENDER_MAX_FIT_HEIGHT, Math.ceil(height)));
+const clampFit = (height: number, limit: number) =>
+  Math.max(HTML_RENDER_MIN_FIT_HEIGHT, Math.min(limit, Math.ceil(height)));
 
 /**
  * Fits the inline frame to a measurement. A page whose height follows its frame
@@ -90,10 +93,12 @@ const clampFit = (height: number) =>
  * the same amount or proportion every time the frame grows; after
  * {@link HTML_RENDER_LOOP_ROUNDS} such rounds the height freezes where the run
  * started and sizing pauses until the width changes or the reader retries.
+ * `limit` is the inline cap; full screen passes the content cap.
  */
 export function nextHtmlRenderFit(
   state: HtmlRenderFitState,
   measurement: HtmlRenderMeasurement,
+  limit: number = HTML_RENDER_MAX_FIT_HEIGHT,
 ): HtmlRenderFitState {
   const widthChanged = state.width !== null && state.width !== measurement.viewportWidth;
   if (state.mode === "paused" && !widthChanged) return state;
@@ -101,8 +106,8 @@ export function nextHtmlRenderFit(
     ? { ...state, mode: "fit", run: null, width: measurement.viewportWidth }
     : { ...state, width: measurement.viewportWidth };
   const content = Math.ceil(measurement.height);
-  const height = clampFit(content);
-  const mode = content > HTML_RENDER_MAX_FIT_HEIGHT ? "capped" : "fit";
+  const height = clampFit(content, limit);
+  const mode = content > limit ? "capped" : "fit";
   // Only a measurement taken at the height last applied completes a round.
   const completed = Math.abs(measurement.viewportHeight - base.height) <= 1;
   const expanding = completed && mode === "fit" && content > measurement.viewportHeight + 1;
@@ -144,15 +149,15 @@ export function htmlRenderDocument(
     const read={};for(const key of ['key','code','metaKey','ctrlKey','shiftKey','altKey','repeat','isComposing']){const getter=Object.getOwnPropertyDescriptor(KeyboardEvent.prototype,key)?.get;if(getter)read[key]=Function.prototype.call.bind(getter)}
     const prevent=Function.prototype.call.bind(Event.prototype.preventDefault);
     const root=document.documentElement;
-    let shortcuts=[],scroll=false;channel.port1.onmessage=e=>{if(e.data?.type==='shortcuts')shortcuts=e.data.value;if(e.data?.type==='sizing'){scroll=e.data.value==='scroll';if(scroll)root.style.setProperty('overflow','auto');else root.style.removeProperty('overflow')}if(e.data?.type==='theme'){const t=e.data.value,s=document.getElementById('f5-html-theme');if(s&&t){let css=':root{color-scheme:'+(t.appearance==='light'?'light':'dark')+';';for(const key in t.variables)if(/^--[a-z0-9-]+$/.test(key))css+=key+':'+String(t.variables[key]).replace(/[;{}<>]/g,'')+';';s.textContent=css+'}'}}};
+    let shortcuts=[],scroll=false;channel.port1.onmessage=e=>{if(e.data?.type==='shortcuts')shortcuts=e.data.value;if(e.data?.type==='sizing'){scroll=e.data.value==='scroll';if(scroll)root.style.setProperty('overflow','auto');else root.style.removeProperty('overflow');last='';invalidate()}if(e.data?.type==='theme'){const t=e.data.value,s=document.getElementById('f5-html-theme');if(s&&t){let css=':root{color-scheme:'+(t.appearance==='light'?'light':'dark')+';';for(const key in t.variables)if(/^--[a-z0-9-]+$/.test(key))css+=key+':'+String(t.variables[key]).replace(/[;{}<>]/g,'')+';';s.textContent=css+'}'}}};
     parent.postMessage({f5HtmlRender:__f5Bridge,type:'connect'},'*',[channel.port2]);
-    let last='',timer=0,frame=0,ran=-1e9;
-    const measure=()=>{frame=0;ran=performance.now();const height=` +
+    let last='',timer=0,frame=0,backstop=0,ran=-1e9;
+    const measure=()=>{cancelAnimationFrame(frame);clearTimeout(backstop);frame=0;backstop=0;ran=performance.now();const height=` +
     HTML_RENDER_MEASURE_SOURCE +
     String.raw`,key=height+','+innerWidth+','+innerHeight;if(key!==last){last=key;emit('height',{height,viewportWidth:innerWidth,viewportHeight:innerHeight})}};
-    const invalidate=()=>{if(timer||frame)return;timer=setTimeout(()=>{timer=0;frame=requestAnimationFrame(measure)},Math.max(0,50-(performance.now()-ran)))};
+    const invalidate=()=>{if(timer||frame)return;timer=setTimeout(()=>{timer=0;frame=requestAnimationFrame(measure);backstop=setTimeout(measure,100)},Math.max(0,50-(performance.now()-ran)))};
     addEventListener('load',invalidate,true);addEventListener('error',invalidate,true);addEventListener('resize',invalidate);
-    addEventListener('DOMContentLoaded',()=>{const resize=new ResizeObserver(invalidate);resize.observe(root);if(document.body)resize.observe(document.body);const mutation=new MutationObserver(invalidate);mutation.observe(root,{subtree:true,childList:true,characterData:true,attributes:true});document.fonts?.ready.then(invalidate);document.fonts?.addEventListener('loadingdone',invalidate);addEventListener('pagehide',()=>{resize.disconnect();mutation.disconnect();clearTimeout(timer);cancelAnimationFrame(frame);document.fonts?.removeEventListener('loadingdone',invalidate);removeEventListener('load',invalidate,true);removeEventListener('error',invalidate,true);removeEventListener('resize',invalidate)},{once:true});invalidate()},{once:true});
+    addEventListener('DOMContentLoaded',()=>{const resize=new ResizeObserver(invalidate);resize.observe(root);if(document.body)resize.observe(document.body);const mutation=new MutationObserver(invalidate);mutation.observe(root,{subtree:true,childList:true,characterData:true,attributes:true});document.fonts?.ready.then(invalidate);document.fonts?.addEventListener('loadingdone',invalidate);addEventListener('pagehide',()=>{resize.disconnect();mutation.disconnect();clearTimeout(timer);clearTimeout(backstop);cancelAnimationFrame(frame);document.fonts?.removeEventListener('loadingdone',invalidate);removeEventListener('load',invalidate,true);removeEventListener('error',invalidate,true);removeEventListener('resize',invalidate)},{once:true});invalidate()},{once:true});
     document.addEventListener('click',e=>{if(!e.isTrusted)return;const a=e.composedPath().find(n=>n?.matches?.('a[href]'));if(a){prevent(e);try{const u=new URL(a.getAttribute('href'));if(/^https?:$/.test(u.protocol))emit('link',u.href)}catch{}return}const img=e.composedPath().find(n=>n?.tagName==='IMG');if(img&&!e.defaultPrevented)emit('image',{src:img.currentSrc||img.src,name:img.alt||'Rendered image'})},true);
     addEventListener('keydown',e=>{if(!e.isTrusted||read.isComposing(e))return;const key=read.key(e);if(key==='Escape'){prevent(e);emit('escape',null);return}const value={key,code:read.code(e),metaKey:read.metaKey(e),ctrlKey:read.ctrlKey(e),shiftKey:read.shiftKey(e),altKey:read.altKey(e),repeat:read.repeat(e)};if(shortcuts.some(s=>s.key===key.toLowerCase()&&s.metaKey===value.metaKey&&s.ctrlKey===value.ctrlKey&&s.shiftKey===value.shiftKey&&s.altKey===value.altKey)){prevent(e);emit('keydown',value)}},true);
     addEventListener('wheel',e=>{if(!e.isTrusted||e.ctrlKey)return;if(scroll){const s=document.scrollingElement||root,x=e.deltaX,y=e.deltaY;if((y<0&&s.scrollTop>0)||(y>0&&s.scrollTop+s.clientHeight<s.scrollHeight-1)||(x<0&&s.scrollLeft>0)||(x>0&&s.scrollLeft+s.clientWidth<s.scrollWidth-1))return}prevent(e);emit('wheel',{x:e.deltaX,y:e.deltaY,mode:e.deltaMode})},{passive:false});

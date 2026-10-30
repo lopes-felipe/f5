@@ -849,6 +849,22 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     });
   }, [listRef]);
 
+  const disclosurePinsEndRef = useRef(false);
+  const disclosureSettleFrameRef = useRef<number | null>(null);
+  // A jump or scroll away from the end: stop following the tail now, and drop
+  // any follow scroll or disclosure pin already queued for a later frame.
+  const leaveEnd = useCallback(() => {
+    manualScrollGenerationRef.current++;
+    isAtEndRef.current = false;
+    liveFollowEnabledRef.current = false;
+    setLiveFollowEnabled(false);
+    disclosurePinsEndRef.current = false;
+    if (disclosureSettleFrameRef.current !== null) {
+      window.cancelAnimationFrame(disclosureSettleFrameRef.current);
+      disclosureSettleFrameRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     if (!hasMessages && !isWorking) {
       return;
@@ -894,10 +910,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       if (scrollableNode instanceof HTMLElement) {
         const cancelFollow = () => {
           if (scrollableNode.scrollHeight <= scrollableNode.clientHeight) return;
-          manualScrollGenerationRef.current++;
-          isAtEndRef.current = false;
-          liveFollowEnabledRef.current = false;
-          setLiveFollowEnabled(false);
+          leaveEnd();
         };
         const wheel = (event: WheelEvent) => {
           if (event.deltaY < 0) cancelFollow();
@@ -944,7 +957,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         cleanup();
       }
     };
-  }, [hasMessages, isWorking, listRef, measureTurnRailGutter, syncIsAtEndFromListState]);
+  }, [hasMessages, isWorking, leaveEnd, listRef, measureTurnRailGutter, syncIsAtEndFromListState]);
 
   useLayoutEffect(() => {
     if (!threadId || !hasMessages) return;
@@ -975,8 +988,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   // A disclosure toggled at the end keeps the end in view while rows re-measure.
   // Anywhere else, maintainVisibleContentPosition holds the toggled row in place.
-  const disclosurePinsEndRef = useRef(false);
-  const disclosureSettleFrameRef = useRef<number | null>(null);
   const pinDisclosureToEnd = useCallback(() => {
     if (!disclosurePinsEndRef.current) return;
     const node = listRef.current?.getScrollableNode?.();
@@ -1017,14 +1028,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [],
   );
 
-  // A jump away from the end: stop following the tail now, and drop any
-  // follow scroll already queued for the next frame.
-  const leaveEnd = useCallback(() => {
-    manualScrollGenerationRef.current++;
-    isAtEndRef.current = false;
-    liveFollowEnabledRef.current = false;
-    setLiveFollowEnabled(false);
-  }, []);
   useLayoutEffect(() => {
     if (!leaveEndRef) return;
     leaveEndRef.current = leaveEnd;
