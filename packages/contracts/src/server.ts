@@ -386,6 +386,17 @@ export const ClientDiagnosticsCounters = Schema.Struct({
   connectedMs: NonNegativeInt,
 });
 export type ClientDiagnosticsCounters = typeof ClientDiagnosticsCounters.Type;
+/** Transport scheduling outcomes, cumulative per page session. */
+export const ClientRpcDiagnosticsCounters = Schema.Struct({
+  rpcBusy: NonNegativeInt,
+  rpcServerStarting: NonNegativeInt,
+  rpcTimeouts: NonNegativeInt,
+  rpcQueueExpired: NonNegativeInt,
+  rpcBackgroundShed: NonNegativeInt,
+  rpcOrphanReleased: NonNegativeInt,
+  rpcConnectionNotReady: NonNegativeInt,
+});
+export type ClientRpcDiagnosticsCounters = typeof ClientRpcDiagnosticsCounters.Type;
 export const ReportClientDiagnosticsInput = Schema.Struct({
   sessionId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
   reportSeq: NonNegativeInt,
@@ -394,6 +405,11 @@ export const ReportClientDiagnosticsInput = Schema.Struct({
   applyBatchBuckets: Schema.Array(NonNegativeInt).check(
     Schema.isMinLength(9),
     Schema.isMaxLength(9),
+  ),
+  rpcCounters: Schema.optional(ClientRpcDiagnosticsCounters),
+  /** Send wait buckets with lower edges 0, 50, 100, 250, 500, 1k, 2.5k, 10k and 30k ms. */
+  rpcQueueWaitBuckets: Schema.optional(
+    Schema.Array(NonNegativeInt).check(Schema.isMinLength(9), Schema.isMaxLength(9)),
   ),
 });
 export type ReportClientDiagnosticsInput = typeof ReportClientDiagnosticsInput.Type;

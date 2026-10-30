@@ -265,4 +265,31 @@ export function buildRenderedProjectThreadIds(input: {
   ];
 }
 
+export interface SidebarGitTarget {
+  readonly threadId: ThreadId;
+  readonly branch: string | null;
+  readonly archived: boolean;
+  readonly cwd: string | null;
+}
+
+/**
+ * Workspaces whose sidebar git status polls: those of live branch threads and
+ * of the open thread. Archived rows keep a disabled observer, so they show a
+ * cached status without fetching one.
+ */
+export function polledSidebarGitStatusCwds(
+  targets: ReadonlyArray<SidebarGitTarget>,
+  routeThreadId: ThreadId | null | undefined,
+): ReadonlySet<string> {
+  const cwds = new Set<string>();
+  for (const target of targets)
+    if (
+      target.branch !== null &&
+      target.cwd !== null &&
+      (!target.archived || target.threadId === routeThreadId)
+    )
+      cwds.add(target.cwd);
+  return cwds;
+}
+
 export { hasUnseenCompletion, resolveThreadStatusPill, type ThreadStatusPill };

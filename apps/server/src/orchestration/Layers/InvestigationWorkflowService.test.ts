@@ -507,6 +507,7 @@ async function createHarness(
               checkpoints: [],
               activities: [],
               commandExecutions: [],
+              proposedPlans: [],
               tasks: [],
               tasksTurnId: null,
               tasksUpdatedAt: null,

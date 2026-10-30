@@ -1031,6 +1031,12 @@ export const OrchestrationThread = Schema.Struct({
   ),
   messages: Schema.Array(OrchestrationMessage),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(Schema.withDecodingDefault(() => [])),
+  /**
+   * Set only by the startup snapshot for archived threads: `proposedPlans` is
+   * empty because it was not loaded, not because the thread has none. The
+   * thread's tail details carry them.
+   */
+  proposedPlansOmitted: Schema.optional(Schema.Boolean),
   tasks: Schema.Array(TaskItem).pipe(Schema.withDecodingDefault(() => [])),
   tasksTurnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(() => null)),
   tasksUpdatedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
@@ -3029,6 +3035,8 @@ export const OrchestrationThreadTailDetails = Schema.Struct({
   commandExecutions: Schema.Array(OrchestrationCommandExecutionSummary).pipe(
     Schema.withDecodingDefault(() => []),
   ),
+  /** The retained plans (same query and cap as snapshots), for threads whose snapshot omitted them. */
+  proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(Schema.withDecodingDefault(() => [])),
   tasks: Schema.Array(TaskItem).pipe(Schema.withDecodingDefault(() => [])),
   tasksTurnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(() => null)),
   tasksUpdatedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),

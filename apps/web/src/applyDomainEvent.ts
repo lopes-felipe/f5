@@ -1622,8 +1622,17 @@ function reduceDomainEvent(
     }
 
     case "thread.proposed-plan-upserted": {
-      const threads = updateThread(state.threads, event.payload.threadId, (thread) => {
-        const proposedPlans = upsertProposedPlan(thread.proposedPlans, event.payload.proposedPlan);
+      // Plans are detail entities: an older tail must not overwrite a newer
+      // plan. Unlike turn diffs, a thread without loaded details still applies
+      // upserts, because its plans came with the startup snapshot.
+      const detailGate = gateThreadDetailMutations(state, event.payload.threadId, event);
+      const applyPlan =
+        detailGate.applyDetailMutations ||
+        (detailGate.state === state && !detailEventIsCovered(state, event.payload.threadId, event));
+      const threads = updateThread(detailGate.state.threads, event.payload.threadId, (thread) => {
+        const proposedPlans = applyPlan
+          ? upsertProposedPlan(thread.proposedPlans, event.payload.proposedPlan)
+          : thread.proposedPlans;
         if (
           proposedPlans === thread.proposedPlans &&
           thread.lastInteractionAt === event.occurredAt
@@ -1636,7 +1645,9 @@ function reduceDomainEvent(
           lastInteractionAt: event.occurredAt,
         };
       });
-      return threads === state.threads ? state : { ...state, threads };
+      return threads === detailGate.state.threads
+        ? detailGate.state
+        : { ...detailGate.state, threads };
     }
 
     case "thread.turn-diff-completed": {

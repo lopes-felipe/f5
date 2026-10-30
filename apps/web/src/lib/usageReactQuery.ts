@@ -9,6 +9,7 @@ import {
 import { queryOptions, type Query, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import { Schema } from "effect";
 import { ensureNativeApi } from "../nativeApi";
+import { rpcQueryContext, rpcQueryMeta } from "./rpcQueryContext";
 
 export const usageQueryKeys = {
   summaries: ["usage", "summary"] as const,
@@ -51,16 +52,20 @@ export function usageSummaryQueryOptions(input: {
   const hiddenProviders = input.hiddenProviders?.toSorted() ?? [];
   return queryOptions({
     queryKey: usageQueryKeys.summary(range, timeZone, provider, projectId, hiddenProviders),
-    queryFn: async () =>
+    queryFn: async (context) =>
       decodeUsageSummary(
-        await ensureNativeApi().usage.getSummary({
-          range,
-          timeZone,
-          ...(provider ? { provider } : {}),
-          ...(projectId ? { projectId } : {}),
-          ...(hiddenProviders.length > 0 ? { hiddenProviders } : {}),
-        }),
+        await ensureNativeApi().usage.getSummary(
+          {
+            range,
+            timeZone,
+            ...(provider ? { provider } : {}),
+            ...(projectId ? { projectId } : {}),
+            ...(hiddenProviders.length > 0 ? { hiddenProviders } : {}),
+          },
+          rpcQueryContext(context),
+        ),
       ),
+    meta: rpcQueryMeta("refresh-background"),
     staleTime: 30_000,
     enabled: input.enabled ?? true,
   });
@@ -187,8 +192,14 @@ export function usageAccountsQueryOptions() {
         const cached = context.client.getQueryData<UsageAccounts>(usageQueryKeys.accounts);
         refresh = accountJobsPending(cached) ? "none" : "if-stale";
       }
-      return decodeUsageAccounts(await ensureNativeApi().usage.getAccounts({ refresh }));
+      return decodeUsageAccounts(
+        await ensureNativeApi().usage.getAccounts(
+          { refresh },
+          rpcQueryContext(context, { forwardSignal: false }),
+        ),
+      );
     },
+    meta: rpcQueryMeta("refresh-background"),
     staleTime: 300_000,
     retry: false,
     refetchOnWindowFocus: true,

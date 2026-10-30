@@ -1,6 +1,7 @@
 import type { ReviewDiffScope, ThreadId } from "@t3tools/contracts";
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import { ensureNativeApi } from "../nativeApi";
+import { rpcQueryContext, rpcQueryMeta } from "./rpcQueryContext";
 
 export const reviewQueryKeys = {
   all: ["review"] as const,
@@ -31,14 +32,18 @@ export function reviewPreviewDiffQueryOptions(input: {
       baseRef: input.baseRef,
       ignoreWhitespace: input.ignoreWhitespace,
     }),
-    queryFn: async () => {
+    meta: rpcQueryMeta("refresh-background"),
+    queryFn: async (context) => {
       if (!input.threadId || !input.scope) throw new Error("Review diff is unavailable.");
-      return ensureNativeApi().review.previewDiff({
-        threadId: input.threadId,
-        scope: input.scope,
-        ...(input.baseRef ? { baseRef: input.baseRef } : {}),
-        ignoreWhitespace: input.ignoreWhitespace,
-      });
+      return ensureNativeApi().review.previewDiff(
+        {
+          threadId: input.threadId,
+          scope: input.scope,
+          ...(input.baseRef ? { baseRef: input.baseRef } : {}),
+          ignoreWhitespace: input.ignoreWhitespace,
+        },
+        rpcQueryContext(context),
+      );
     },
     enabled: input.threadId !== null && input.scope !== null,
     staleTime: 1_000,

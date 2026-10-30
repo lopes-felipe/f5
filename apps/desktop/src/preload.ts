@@ -103,6 +103,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   getSystemLocale: () => systemLocale,
   setQuitShortcutMode: (mode) => ipcRenderer.invoke("desktop:quit-mode", mode),
   setAttentionBadge: (count) => ipcRenderer.invoke("desktop:attention-badge", count),
+  markStartup: (marker) => ipcRenderer.send("desktop:startup-marker", marker),
   onQuitShortcut: (listener) => {
     const wrapped = (_event: Electron.IpcRendererEvent, hint: Parameters<typeof listener>[0]) =>
       listener(hint);

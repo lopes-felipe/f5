@@ -16,6 +16,7 @@ import { WORKFLOW_TYPE_DIALOG_LABEL } from "../../lib/workflowType";
 import { readNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
 import { useThreadsByIds } from "../../threadSelectors";
+import { useThreadPlansHydrated } from "../../lib/useThreadPlansHydrated";
 import { threadIdsForWorkflow } from "./workflowUtils";
 import ChatMarkdown from "../ChatMarkdown";
 import { FileChip } from "../chat/FileChip";
@@ -87,6 +88,8 @@ export function WorkflowView(props: { workflowId: string }) {
     () => (workflow ? collectPlanningWorkflowErrors(workflow) : []),
     [workflow],
   );
+  // An archived merge thread's plans may have been left out of the startup snapshot.
+  const mergeThreadPlans = useThreadPlansHydrated(workflow?.merge.threadId ?? null);
 
   if (!workflow) {
     return (
@@ -240,15 +243,24 @@ export function WorkflowView(props: { workflowId: string }) {
           </WorkflowArtifactSection>
         ) : (
           <p className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
-            {documentType
-              ? "The document will appear here after the drafts are reviewed and merged."
-              : "The merged plan will appear here once the workflow reaches manual review."}
+            {mergeThreadPlans.loading
+              ? documentType
+                ? "Loading the document…"
+                : "Loading the merged plan…"
+              : mergeThreadPlans.failed
+                ? documentType
+                  ? "The document could not be loaded."
+                  : "The merged plan could not be loaded."
+                : documentType
+                  ? "The document will appear here after the drafts are reviewed and merged."
+                  : "The merged plan will appear here once the workflow reaches manual review."}
           </p>
         )}
         <WorkflowInputSection
           label={documentType ? "Brief" : "Requirement"}
           text={workflow.requirementPrompt}
-          defaultOpen={!mergedPlan}
+          // Stay collapsed while omitted plans hydrate, as when they arrive with the snapshot.
+          defaultOpen={!mergedPlan && !mergeThreadPlans.loading}
         >
           {documentType && workflow.readerReviewEnabled ? (
             <p className="mt-3 flex flex-wrap items-center gap-x-2 text-ui text-muted-foreground">

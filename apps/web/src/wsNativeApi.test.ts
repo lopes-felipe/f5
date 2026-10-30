@@ -26,6 +26,7 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS } from "@t3tools/shared/codexOAuthTiming";
+import { rpcLongRunningTimeoutMs } from "@t3tools/shared/rpcScheduling";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestServerProvider } from "./testServerProvider";
 
@@ -134,9 +135,9 @@ describe("wsNativeApi", () => {
       newBranch: "t3code/12345678",
     };
     await createWsNativeApi().git.prepareWorktree(input);
-    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.gitPrepareWorktree, input, {
-      timeoutMs: null,
-    });
+    // The transport takes the long lane's timeout from the shared method policy.
+    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.gitPrepareWorktree, input);
+    expect(rpcLongRunningTimeoutMs({ _tag: WS_METHODS.gitPrepareWorktree, ...input })).toBe(null);
   });
 
   it("forwards the project-scoped worktree inventory request", async () => {
@@ -638,16 +639,13 @@ describe("wsNativeApi", () => {
       serverName: "Observability",
     });
 
-    expect(requestMock).toHaveBeenCalledWith(
-      WS_METHODS.mcpStartLogin,
-      {
-        provider: "codex",
-        projectId: "project-1",
-        serverName: "Observability",
-      },
-      {
-        timeoutMs: CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS,
-      },
+    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.mcpStartLogin, {
+      provider: "codex",
+      projectId: "project-1",
+      serverName: "Observability",
+    });
+    expect(rpcLongRunningTimeoutMs({ _tag: WS_METHODS.mcpStartLogin, provider: "codex" })).toBe(
+      CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS,
     );
   });
 

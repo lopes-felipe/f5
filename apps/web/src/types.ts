@@ -175,6 +175,11 @@ export interface Thread {
   messages: ChatMessage[];
   commandExecutions: OrchestrationCommandExecutionSummary[];
   proposedPlans: ProposedPlan[];
+  /**
+   * The startup snapshot left this archived thread's plans out: `proposedPlans`
+   * is not authoritative until thread details load (`useThreadPlansHydrated`).
+   */
+  proposedPlansOmitted?: boolean;
   error: string | null;
   createdAt: string;
   archivedAt: string | null;

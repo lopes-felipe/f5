@@ -1,4 +1,4 @@
-import { Effect, Exit } from "effect";
+import { Deferred, Effect, Exit } from "effect";
 import { expect, it, vi } from "vitest";
 import { enqueueBackgroundWork, makeBackgroundWorker } from "./backgroundWorker.ts";
 
@@ -42,3 +42,31 @@ it.each(["closed", "item-failed"])(
     }
   },
 );
+
+it("sizes items only for workers with a byte ceiling", async () => {
+  const serialized = vi.fn(() => "x".repeat(10));
+  const item = { toJSON: serialized };
+  const snapshots = await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        // Items stay accounted until processed, so hold them while reading snapshots.
+        const gate = yield* Deferred.make<void>();
+        const hold = (_item: typeof item) => Deferred.await(gate);
+        const lossless = yield* makeBackgroundWorker(hold, { name: "lossless" });
+        const rejecting = yield* makeBackgroundWorker(hold, {
+          name: "rejecting",
+          admission: "reject",
+        });
+        yield* lossless.enqueue(item);
+        expect(serialized).not.toHaveBeenCalled();
+        yield* rejecting.enqueue(item);
+        expect(serialized).toHaveBeenCalledTimes(1);
+        const result = [yield* lossless.snapshot, yield* rejecting.snapshot];
+        yield* Deferred.succeed(gate, undefined);
+        return result;
+      }),
+    ),
+  );
+  // Lossless byte accounting counts entries; the byte ceiling counts JSON bytes.
+  expect(snapshots.map((snapshot) => snapshot.bytes)).toEqual([1, 12]);
+});

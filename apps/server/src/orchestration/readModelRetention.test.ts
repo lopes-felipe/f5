@@ -29,3 +29,19 @@ it("warns above the message threshold without truncating or replacing retained h
   ]);
   expect(messages).toEqual(original);
 });
+
+it("reports the heap change across hydrate when given the starting heap", async () => {
+  const logs: Array<unknown> = [];
+  const logger = Logger.make((entry) => {
+    logs.push(entry.message);
+  });
+  await Effect.runPromise(
+    observeReadModelRetention({ threads: [] }, process.memoryUsage().heapUsed).pipe(
+      Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
+    ),
+  );
+  const [message, fields] = logs[0] as [string, { heapUsedDeltaBytes: number }];
+  expect(message).toBe("orchestration read model hydrated");
+  // A collection during the call can make the change negative.
+  expect(Number.isFinite(fields.heapUsedDeltaBytes)).toBe(true);
+});

@@ -145,6 +145,7 @@ const overview = {
   portQueue: {
     hasHistory: false,
     queuedTopics: 0,
+    queuedTopicIds: [],
     queuedThreads: 0,
     running: 0,
     concurrency: 5,
@@ -381,8 +382,13 @@ it("queues all matching Ready topics using the current filter and sort", async (
 });
 
 it("queues selected IDs beyond loaded pages and removes queued topics", async () => {
-  const ready = { ...inState(ROWS[0]!, "ready"), queued: true };
+  // The row's own flag is stale: queue membership comes from the overview.
+  const ready = { ...inState(ROWS[0]!, "ready"), queued: false };
   api.listTopics.mockResolvedValue(topicsPage([ready], 250));
+  api.getOverview.mockResolvedValue({
+    ...overview,
+    portQueue: { ...overview.portQueue, queuedTopics: 1, queuedTopicIds: ["pr-1"], queuedThreads: 1 },
+  });
   const topicIds = ["pr-1", ...matchingIds(249)];
   api.listTopicIds.mockResolvedValue({
     revision: "r1",
@@ -391,6 +397,7 @@ it("queues selected IDs beyond loaded pages and removes queued topics", async ()
     truncated: false,
   });
   await setup({ project: projectId, list: "ready" }, "Topic A", true);
+  await expect.element(page.getByText("Queued", { exact: true })).toBeVisible();
   await selectAllMatching(250);
   await bulkButton("Queue selected…").click();
   await page.getByRole("button", { name: "Add to queue" }).click();

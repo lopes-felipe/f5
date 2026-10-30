@@ -92,8 +92,8 @@ import {
   type ProjectSkillSyncServiceShape,
 } from "./orchestration/Services/ProjectSkillSyncService.ts";
 import { startScheduledBackups, readScheduledBackupStatus } from "./storage/scheduledBackups.ts";
-import { rpcBusyTotal } from "./observability/Metrics";
-import { rpcLane, RpcAdmission } from "@t3tools/shared/rpcScheduling";
+import { rpcBusyTotal, rpcServerStartingTotal } from "./observability/Metrics";
+import { rpcLane, RpcAdmission, rpcRequiresRuntime } from "@t3tools/shared/rpcScheduling";
 import { writeWorkspaceFile } from "./WorkspaceFileWriter";
 import { WorkspaceWatchRegistry } from "./workspaceWatch";
 import {
@@ -145,8 +145,10 @@ import {
   F5_PROTOCOL_HEADER,
   F5_PROTOCOL_QUERY,
   F5_UPGRADE_REQUIRED_CLOSE_CODE,
+  type ServerRuntimeReadiness,
   type TurnSubmissionResult,
   type GitCheckoutConflict,
+  type WebSocketResponse,
 } from "@t3tools/contracts";
 import { GithubDeviceLogin, resolveGithubOAuthClientId } from "./git/GithubDeviceLogin";
 import { GithubCliImport } from "./git/GithubCliImport";
@@ -206,7 +208,6 @@ import {
   WS_CHANNELS,
   WS_METHODS,
   WebSocketRequest,
-  type WsResponse as WsResponseMessage,
   WsResponse,
   type WsPushEnvelopeBase,
   type WorkflowPlatformCreateRunInput,
@@ -803,6 +804,42 @@ function resolveGitStatusInvalidation(event: OrchestrationEvent):
 
 const encodeWsResponse = Schema.encodeEffect(Schema.fromJsonString(WsResponse));
 const decodeWebSocketRequest = decodeJsonResult(WebSocketRequest);
+
+/** The RPC method a route fiber serves, so a runtime wait can attribute itself. */
+const CurrentRpcMethod = ServiceMap.Reference<string | null>("f5/ws/CurrentRpcMethod", {
+  defaultValue: () => null,
+});
+const SLOW_RPC_ROUTE_LOG_MS = 1_000;
+const LARGE_RPC_RESPONSE_LOG_BYTES = 1024 * 1024;
+
+/**
+ * Sent when a result cannot be encoded, so the client still releases the
+ * request's slot. Built without the schema that just failed.
+ */
+export function encodeResponseEncodeFailure(id: string): string {
+  return JSON.stringify({
+    id,
+    error: { message: "Response could not be encoded", code: "ResponseEncodeFailed" },
+  });
+}
+
+/**
+ * The pre-admission answer for a request that needs the orchestration runtime
+ * while it starts; `null` lets the request proceed to admission.
+ */
+export function serverStartingRejection(
+  body: { readonly _tag: string },
+  readiness: ServerRuntimeReadiness,
+) {
+  return readiness.state === "starting" && rpcRequiresRuntime(body)
+    ? {
+        code: "ServerStarting" as const,
+        retryable: true,
+        retryAfterMs: 1_000,
+        message: "F5 is still starting. The request will run once startup finishes.",
+      }
+    : null;
+}
 
 /** Best-effort id recovery for requests whose body fails schema decoding. */
 export function readWebSocketRequestId(messageText: string): string | null {
@@ -2667,6 +2704,34 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     OrchestrationRuntimeServices,
     ServerLifecycleError
   >();
+  /** Revision 0 is `starting`; the single transition to ready or failed is revision 1. */
+  let runtimeReadiness: ServerRuntimeReadiness = { state: "starting", revision: 0 };
+  const currentRuntimeReadiness = (): ServerRuntimeReadiness => {
+    if (runtimeReadiness.state !== "starting") return runtimeReadiness;
+    const phase = getCurrentStartupPhase()?.phase;
+    return phase ? { ...runtimeReadiness, phase } : runtimeReadiness;
+  };
+  // Requests that still park inside a route while the runtime starts. A
+  // runtime-dependent request is answered `ServerStarting` before admission,
+  // so every arrival here is a policy misclassification. Arrivals are counted
+  // as they happen; every parked request resumes at readiness, so the earliest
+  // arrival bounds the longest wait.
+  const runtimeParkedByMethod = new Map<string, number>();
+  let firstRuntimeParkedAt: number | null = null;
+  const noteRuntimeParked = (method: string) => {
+    const count = runtimeParkedByMethod.get(method) ?? 0;
+    runtimeParkedByMethod.set(method, count + 1);
+    firstRuntimeParkedAt ??= Date.now();
+    if (count === 0)
+      logger.warn("rpc method policy misclassified a runtime-dependent route", { method });
+  };
+  const logRuntimeParking = () => {
+    if (firstRuntimeParkedAt === null) return;
+    logger.info("requests parked while the orchestration runtime started", {
+      parkedByMethod: Object.fromEntries(runtimeParkedByMethod),
+      maxParkedMs: Date.now() - firstRuntimeParkedAt,
+    });
+  };
   const nextTurnQueueDispatcherRef = yield* Ref.make<NextTurnQueueDispatcherShape | null>(null);
 
   yield* Effect.gen(function* () {
@@ -3095,6 +3160,30 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   );
   const orchestrationRuntimeStartedAtMs = Date.now();
   yield* startOrchestrationRuntime.pipe(Effect.forkIn(subscriptionsScope));
+  // Clients hold runtime-dependent requests while this reports `starting`,
+  // instead of parking them in route slots for the whole startup.
+  yield* Deferred.await(orchestrationRuntime).pipe(
+    Effect.matchEffect({
+      onSuccess: () => Effect.succeed<ServerRuntimeReadiness>({ state: "ready", revision: 1 }),
+      onFailure: (error) =>
+        Effect.succeed<ServerRuntimeReadiness>({
+          state: "failed",
+          revision: 1,
+          message: formatServerLifecycleRouteFailure(error),
+        }),
+    }),
+    Effect.flatMap((readiness) =>
+      Effect.suspend(() => {
+        runtimeReadiness = readiness;
+        logRuntimeParking();
+        return pushBus.publishAll(WS_CHANNELS.serverRuntimeReadiness, {
+          ...readiness,
+          backendIncarnation: BACKEND_INCARNATION,
+        });
+      }),
+    ),
+    Effect.forkIn(subscriptionsScope),
+  );
 
   // Server-internal waits (cwd auto-bootstrap, clone completion) have no
   // client deadline, so they wait for startup to finish however long catch-up
@@ -3188,7 +3277,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     );
   }
 
-  const awaitOrchestrationRuntimeForRoute = Deferred.await(orchestrationRuntime).pipe(
+  const awaitOrchestrationRuntimeForRoute = Effect.suspend(() => {
+    if (runtimeReadiness.state !== "starting") return Deferred.await(orchestrationRuntime);
+    // A route still parking here holds an RPC slot: the policy should have
+    // answered `ServerStarting` before admission. Count it per method.
+    return Effect.gen(function* () {
+      const method = yield* CurrentRpcMethod;
+      // The runtime may have resolved just before readiness was published.
+      if (method !== null && !(yield* Deferred.isDone(orchestrationRuntime)))
+        noteRuntimeParked(method);
+      return yield* Deferred.await(orchestrationRuntime);
+    });
+  }).pipe(
     Effect.mapError(
       (error) =>
         new RouteRequestError({
@@ -6362,7 +6462,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         yield* clientDiagnosticsReporter.report(stripRequestTag(request.body));
         return undefined;
       case WS_METHODS.serverProbe:
-        return {};
+        // Lets a client holding requests notice readiness even if a push is lost.
+        return { runtime: currentRuntimeReadiness() };
 
       case WS_METHODS.serverGetConfig:
         const keybindingsConfig = yield* keybindingsManager.loadConfigState;
@@ -7650,8 +7751,21 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       ws.close(1012, "Server shutting down");
       return;
     }
-    const sendWsResponse = (response: WsResponseMessage) =>
+    const sendWsResponse = (response: WebSocketResponse, method?: string) =>
       encodeWsResponse(response).pipe(
+        Effect.catch((cause) =>
+          // The cause can quote the response payload, so only its kind is logged.
+          Effect.logWarning("rpc response could not be encoded", {
+            method: method ?? "unknown",
+            error: cause instanceof Error ? cause.name : typeof cause,
+          }).pipe(Effect.as(encodeResponseEncodeFailure(response.id))),
+        ),
+        Effect.tap((encodedResponse) => {
+          const bytes = Buffer.byteLength(encodedResponse);
+          return bytes >= LARGE_RPC_RESPONSE_LOG_BYTES
+            ? Effect.logInfo("large rpc response", { method: method ?? "unknown", bytes })
+            : Effect.void;
+        }),
         Effect.flatMap((encodedResponse) => webSocketSendController.send(ws, encodedResponse)),
         Effect.asVoid,
       );
@@ -7679,25 +7793,40 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     }
 
     const method = request.success.body._tag;
+    const lane = rpcLane(request.success.body);
+    // Pre-execution, like `RpcBusy`: nothing runs and no slot is held. The
+    // client holds the request until the runtime reports ready.
+    const starting = serverStartingRejection(request.success.body, runtimeReadiness);
+    if (starting) {
+      yield* increment(rpcServerStartingTotal, { method });
+      return yield* sendWsResponse({ id: request.success.id, error: starting }, method);
+    }
     const admission = rpcAdmissions.get(ws) ?? new RpcAdmission();
     rpcAdmissions.set(ws, admission);
-    const release = admission.claim(rpcLane(request.success.body), Buffer.byteLength(messageText));
+    const release = admission.claim(lane, Buffer.byteLength(messageText));
     if (!release) {
-      yield* increment(rpcBusyTotal, { lane: rpcLane(request.success.body) });
-      return yield* sendWsResponse({
-        id: request.success.id,
-        error: {
-          code: "RpcBusy",
-          retryable: true,
-          retryAfterMs: 250,
-          message: "This request lane is busy. Retry shortly.",
+      yield* increment(rpcBusyTotal, { lane, method });
+      return yield* sendWsResponse(
+        {
+          id: request.success.id,
+          error: {
+            code: "RpcBusy",
+            retryable: true,
+            retryAfterMs: 250,
+            message: "This request lane is busy. Retry shortly.",
+          },
         },
-      });
+        method,
+      );
     }
+    const routeStartedAt = Date.now();
     const result = yield* Effect.exit(
       observeRpcEffect(
         method,
-        routeRequest(ws, request.success).pipe(Effect.ensuring(Effect.sync(release))),
+        routeRequest(ws, request.success).pipe(
+          Effect.provideService(CurrentRpcMethod, method),
+          Effect.ensuring(Effect.sync(release)),
+        ),
         rpcTraceAttributesForRequest(request.success),
       ).pipe(
         Effect.withSpan(`rpc.${method}`, {
@@ -7705,17 +7834,31 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         }),
       ),
     );
-    if (Exit.isFailure(result)) {
-      return yield* sendWsResponse({
-        id: request.success.id,
-        error: formatRouteFailure(result.cause, method),
+    const routeMs = Date.now() - routeStartedAt;
+    if (routeMs >= SLOW_RPC_ROUTE_LOG_MS)
+      yield* Effect.logInfo("slow rpc route", {
+        method,
+        lane,
+        durationMs: routeMs,
+        admission: admission.snapshot(),
       });
+    if (Exit.isFailure(result)) {
+      return yield* sendWsResponse(
+        {
+          id: request.success.id,
+          error: formatRouteFailure(result.cause, method),
+        },
+        method,
+      );
     }
 
-    return yield* sendWsResponse({
-      id: request.success.id,
-      result: result.value,
-    });
+    return yield* sendWsResponse(
+      {
+        id: request.success.id,
+        result: result.value,
+      },
+      method,
+    );
   });
 
   httpServer.on("upgrade", (request, socket, head) => {
@@ -7771,6 +7914,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     const segments = cwd.split(/[/\\]/).filter(Boolean);
     const projectName = segments[segments.length - 1] ?? "project";
 
+    let welcomeRuntime: ServerRuntimeReadiness | null = null;
     const welcomeData = {
       backendIncarnation: BACKEND_INCARNATION,
       bootstrap: SERVER_BOOTSTRAP,
@@ -7792,6 +7936,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         Effect.flatMap((snapshot) =>
           pushBus.publishClient(ws, WS_CHANNELS.serverWelcome, {
             ...welcomeData,
+            runtime: (welcomeRuntime = currentRuntimeReadiness()),
             profile: snapshot.profiles.find((profile) => profile.isActive) ?? {
               ...fallbackDefaultProfile(defaultProfileStateDir),
               ...activeProfile,
@@ -7811,6 +7956,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         Effect.flatMap((delivered) =>
           delivered
             ? Ref.update(clients, (clients) => clients.add(ws)).pipe(
+                // Readiness that changed between the welcome and joining the
+                // broadcast set would otherwise be lost for this client.
+                Effect.andThen(
+                  Effect.suspend(() =>
+                    welcomeRuntime !== null && runtimeReadiness.revision !== welcomeRuntime.revision
+                      ? pushBus.publishClient(ws, WS_CHANNELS.serverRuntimeReadiness, {
+                          ...runtimeReadiness,
+                          backendIncarnation: BACKEND_INCARNATION,
+                        })
+                      : Effect.void,
+                  ),
+                ),
                 Effect.andThen(registerPreviewAutomationHost(ws)),
                 Effect.andThen(
                   Effect.suspend(() => {

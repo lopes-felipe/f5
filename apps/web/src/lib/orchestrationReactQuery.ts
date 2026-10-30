@@ -207,16 +207,19 @@ function getOrStartInFlightRequest<T>(
 async function fetchThreadTailDetailsRpc(
   threadId: ThreadId,
   signal?: AbortSignal,
+  priority: "interactive" | "background" = "interactive",
 ): Promise<OrchestrationThreadTailDetails> {
   const generation = useStore.getState().backendGeneration;
   const historyGeneration = useStore.getState().threads.find((thread) => thread.id === threadId)
     ?.history?.generation;
   const api = ensureNativeApi();
   for (let attempt = 0; attempt < 2; attempt++) {
+    // Interactive hydration never joins a background warm: that request may
+    // wait behind interactive reads or be shed.
     const request = getOrStartInFlightRequest(
       inFlightThreadDetailRequests,
-      getThreadTailRequestKey(threadId),
-      () => api.orchestration.getThreadTailDetails({ threadId }),
+      `${getThreadTailRequestKey(threadId)}${priority === "background" ? ":background" : ""}`,
+      () => api.orchestration.getThreadTailDetails({ threadId }, { priority }),
     );
     const details = await raceWithAbort(request, signal);
     if (
@@ -489,10 +492,10 @@ async function fetchThreadFileChangesRpc(
 async function fetchThreadDetailInternal(
   queryClient: QueryClient,
   threadId: ThreadId,
-  options?: { force?: boolean; signal?: AbortSignal },
+  options?: { force?: boolean; signal?: AbortSignal; priority?: "interactive" | "background" },
 ): Promise<OrchestrationThreadTailDetails> {
-  if (options?.signal) {
-    return fetchThreadTailDetailsRpc(threadId, options.signal);
+  if (options?.signal || options?.priority === "background") {
+    return fetchThreadTailDetailsRpc(threadId, options.signal, options.priority);
   }
 
   return queryClient.fetchQuery({
@@ -504,7 +507,12 @@ async function fetchThreadDetailInternal(
 export async function fetchAndSyncThreadDetail(
   queryClient: QueryClient,
   threadId: ThreadId,
-  options?: { force?: boolean; signal?: AbortSignal; captureLiveEvents?: boolean },
+  options?: {
+    force?: boolean;
+    signal?: AbortSignal;
+    captureLiveEvents?: boolean;
+    priority?: "interactive" | "background";
+  },
 ): Promise<OrchestrationThreadTailDetails | null> {
   const stateBeforeFetch = useStore.getState();
   const lastAppliedSequenceBeforeFetch = stateBeforeFetch.lastAppliedSequence;
