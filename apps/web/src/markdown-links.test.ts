@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   collectMarkdownLinkHrefs,
   isMarkdownFileLinkLabel,
+  resolveMarkdownFileEditorTarget,
   resolveMarkdownFileLinkMeta,
   resolveMarkdownFileLinkTarget,
   rewriteMarkdownFileUriHref,
@@ -231,5 +232,49 @@ describe("rewriteMarkdownFileUriHref", () => {
     expect(rewriteMarkdownFileUriHref("file:///C:/Users/julius/project/main.ts")).toBe(
       "C:/Users/julius/project/main.ts",
     );
+  });
+});
+
+describe("resolveMarkdownFileEditorTarget", () => {
+  const cwd = "/repo/project";
+  const metaFor = (href: string) => resolveMarkdownFileLinkMeta(href, cwd)!;
+
+  it("opens the workspace file a bare file name chip names, keeping line and column", async () => {
+    const lookups: string[] = [];
+    const target = await resolveMarkdownFileEditorTarget(metaFor("main.ts:12:4"), cwd, (name) => {
+      lookups.push(name);
+      return Promise.resolve("src/app/main.ts");
+    });
+
+    expect(lookups).toEqual(["main.ts"]);
+    expect(target).toBe("/repo/project/src/app/main.ts:12:4");
+  });
+
+  it("keeps the chip target when the root file exists or the name is ambiguous", async () => {
+    await expect(
+      resolveMarkdownFileEditorTarget(metaFor("main.ts:3"), cwd, () => Promise.resolve("main.ts")),
+    ).resolves.toBe("/repo/project/main.ts:3");
+    await expect(
+      resolveMarkdownFileEditorTarget(metaFor("main.ts"), cwd, () => Promise.resolve(null)),
+    ).resolves.toBe("/repo/project/main.ts");
+    await expect(
+      resolveMarkdownFileEditorTarget(metaFor("main.ts"), cwd, () =>
+        Promise.reject(new Error("index unavailable")),
+      ),
+    ).resolves.toBe("/repo/project/main.ts");
+  });
+
+  it("does not look up chips that already name a folder or sit outside the workspace", async () => {
+    const lookup = () => Promise.reject(new Error("unexpected lookup"));
+
+    await expect(
+      resolveMarkdownFileEditorTarget(metaFor("src/main.ts:2"), cwd, lookup),
+    ).resolves.toBe("/repo/project/src/main.ts:2");
+    await expect(
+      resolveMarkdownFileEditorTarget(metaFor("/Users/me/notes.md"), cwd, lookup),
+    ).resolves.toBe("/Users/me/notes.md");
+    await expect(
+      resolveMarkdownFileEditorTarget(metaFor("main.ts"), undefined, lookup),
+    ).resolves.toBe("/repo/project/main.ts");
   });
 });
