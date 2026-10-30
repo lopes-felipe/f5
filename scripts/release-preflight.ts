@@ -13,6 +13,7 @@ import { readFileSync, appendFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { compareCliReleaseVersions, versionToken } from "@t3tools/shared/cliRelease";
 import { releasePackageFiles } from "./update-release-package-versions.ts";
+import { publishedWindowsUpgradeMatrix } from "./published-windows-upgrade.ts";
 import {
   assertReleaseProfileAllowed,
   desktopBuildMatrix,
@@ -78,6 +79,11 @@ if (dryRun) {
     throw new Error("Stable release needs changelog entry");
 }
 const beta = version.includes("-beta.");
+const windowsUpgradeMatrix = publishedWindowsUpgradeMatrix(
+  releases,
+  version,
+  beta ? "beta" : "latest",
+);
 appendFileSync(
   process.env.GITHUB_OUTPUT!,
   [
@@ -89,5 +95,6 @@ appendFileSync(
     `profile=${profile}`,
     `desktop_matrix=${JSON.stringify(desktopBuildMatrix(profile))}`,
     `merge_mac=${mergesMacManifests(profile)}`,
+    `windows_upgrade_matrix=${JSON.stringify(windowsUpgradeMatrix)}`,
   ].join("\n") + "\n",
 );

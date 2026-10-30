@@ -22,9 +22,9 @@ const main: CiRun = {
   run_attempt: 1,
   run_number: 10,
 };
-it("rehearses the prepared release channel with a unique version", () => {
+it("preserves beta feed selection and stable tags in release rehearsals", () => {
   expect(dryRunReleaseVersion("0.1.1-beta.2", "42")).toBe("0.1.1-beta.2.dryrun.42");
-  expect(dryRunReleaseVersion("0.1.1", "42")).toBe("0.1.1-dryrun.42");
+  expect(dryRunReleaseVersion("0.1.1", "42")).toBe("0.1.1");
   expect(() => dryRunReleaseVersion("v0.1.1", "42")).toThrow();
   expect(() => dryRunReleaseVersion("0.1.1", "42\nchannel=beta")).toThrow();
 });

@@ -6,25 +6,57 @@ import { compareCliReleaseVersions, versionToken } from "@t3tools/shared/cliRele
 import { parseDesktopUpdateManifest } from "./desktop-update-manifest.ts";
 import type { PublishedReleaseSummary, ReleaseChannel } from "./lib/release-profile.ts";
 
-/** Select by semver rather than API order; drafts never count as installed clients. */
-export function publishedWindowsBaseline(
+export interface PublishedWindowsUpgrade {
+  readonly baseline: string;
+  readonly baselineChannel: ReleaseChannel;
+  readonly clientChannel: ReleaseChannel;
+}
+
+/** Cover stable clients and the stable-or-beta feed followed by beta clients. */
+export function publishedWindowsBaselines(
   releases: readonly PublishedReleaseSummary[],
   target: string,
   channel: ReleaseChannel,
-): string | undefined {
+): PublishedWindowsUpgrade[] {
   versionToken(target);
-  const pattern = channel === "beta" ? /^v\d+\.\d+\.\d+-beta\.\d+$/ : /^v\d+\.\d+\.\d+$/;
-  const release = releases
-    .filter((entry) => !entry.draft && pattern.test(entry.tag_name))
-    .toSorted((a, b) => compareCliReleaseVersions(b.tag_name.slice(1), a.tag_name.slice(1)))[0];
-  if (!release) return undefined;
-  const baseline = release.tag_name.slice(1);
-  if (compareCliReleaseVersions(target, baseline) <= 0)
-    throw new Error(`Upgrade target ${target} must exceed published ${baseline}`);
-  for (const name of windowsUpgradeAssets(baseline, channel))
-    if (!release.assets?.some((asset) => asset.name === name))
-      throw new Error(`Published ${release.tag_name} is missing ${name}`);
-  return baseline;
+  const published = releases
+    .filter((entry) => !entry.draft && /^v\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(entry.tag_name))
+    .toSorted((a, b) => compareCliReleaseVersions(b.tag_name.slice(1), a.tag_name.slice(1)));
+  const latest = published[0];
+  if (!latest) return [];
+  if (compareCliReleaseVersions(target, latest.tag_name.slice(1)) <= 0)
+    throw new Error(
+      `Upgrade target ${target} must exceed published ${latest.tag_name}. Run node scripts/prepare-release.ts <next-version> before rehearsing an upgrade.`,
+    );
+  const plans: PublishedWindowsUpgrade[] = [];
+  const add = (release: PublishedReleaseSummary, clientChannel: ReleaseChannel) => {
+    const baseline = release.tag_name.slice(1);
+    const baselineChannel = baseline.includes("-beta.") ? "beta" : "latest";
+    for (const name of windowsUpgradeAssets(baseline, baselineChannel))
+      if (!release.assets?.some((asset) => asset.name === name))
+        throw new Error(`Published ${release.tag_name} is missing ${name}`);
+    plans.push({ baseline, baselineChannel, clientChannel });
+  };
+  if (channel === "latest") {
+    const stable = published.find((entry) => !entry.tag_name.includes("-"));
+    if (stable) add(stable, "latest");
+  }
+  add(latest, "beta");
+  return plans;
+}
+
+/** Keep the first-release job running so its successful skip does not skip assembly. */
+export function publishedWindowsUpgradeMatrix(
+  releases: readonly PublishedReleaseSummary[],
+  target: string,
+  channel: ReleaseChannel,
+): { include: PublishedWindowsUpgrade[] } {
+  const plans = publishedWindowsBaselines(releases, target, channel);
+  return {
+    include: plans.length
+      ? plans
+      : [{ baseline: "", baselineChannel: channel, clientChannel: channel }],
+  };
 }
 
 export function windowsUpgradeAssets(

@@ -40,6 +40,8 @@ const { values } = parseArgs({
     baseline: { type: "string" },
     target: { type: "string" },
     channel: { type: "string" },
+    "baseline-channel": { type: "string" },
+    "client-channel": { type: "string" },
     "published-baseline": { type: "boolean", default: false },
     "log-dir": { type: "string", default: "rehearsal-logs" },
   },
@@ -47,9 +49,13 @@ const { values } = parseArgs({
 const baseline = values.baseline!;
 const target = values.target!;
 const channel = values.channel!;
+const baselineChannel = values["baseline-channel"] ?? channel;
+const clientChannel = values["client-channel"] ?? channel;
+const upgradeOnly = values["published-baseline"];
 if (!baseline || !target || !values["baseline-dir"] || !values["target-dir"])
   throw new Error("Usage: --baseline-dir D --target-dir D --baseline V --target V --channel C");
-if (channel !== "latest" && channel !== "beta") throw new Error(`Invalid channel: ${channel}`);
+for (const value of [channel, baselineChannel, clientChannel])
+  if (value !== "latest" && value !== "beta") throw new Error(`Invalid channel: ${value}`);
 const logDir = values["log-dir"]!;
 mkdirSync(logDir, { recursive: true });
 
@@ -450,7 +456,6 @@ function listFiles(root: string, prefix = ""): string[] {
   );
 }
 
-const manifest = `${channel}.yml`;
 const artifact = (dir: string, version: string, suffix = "") =>
   join(dir, `F5-${version}-x64.exe${suffix}`);
 const baselineDir = values["baseline-dir"]!;
@@ -463,7 +468,7 @@ const feed = await startUpdateFeedEmulator({
       assets: {
         [`F5-${baseline}-x64.exe`]: artifact(baselineDir, baseline),
         [`F5-${baseline}-x64.exe.blockmap`]: artifact(baselineDir, baseline, ".blockmap"),
-        [manifest]: join(baselineDir, manifest),
+        [`${baselineChannel}.yml`]: join(baselineDir, `${baselineChannel}.yml`),
       },
     },
     {
@@ -471,7 +476,7 @@ const feed = await startUpdateFeedEmulator({
       assets: {
         [`F5-${target}-x64.exe`]: artifact(targetDir, target),
         [`F5-${target}-x64.exe.blockmap`]: artifact(targetDir, target, ".blockmap"),
-        [manifest]: join(targetDir, manifest),
+        [`${channel}.yml`]: join(targetDir, `${channel}.yml`),
       },
     },
   ],
@@ -486,6 +491,10 @@ try {
   step("Seeding profile data");
   mkdirSync(join(stateDir, "userdata"), { recursive: true });
   mkdirSync(userData, { recursive: true });
+  writeFileSync(
+    join(userData, "update-preferences.json"),
+    JSON.stringify({ channel: clientChannel === "beta" ? "beta" : "stable" }),
+  );
   writeFileSync(
     join(stateDir, "userdata", "settings.json"),
     JSON.stringify({
@@ -512,7 +521,7 @@ try {
   assert(existsSync(startMenuShortcut), "Missing Start Menu shortcut after install");
   const appUpdatePath = join(dir, "resources", "app-update.yml");
   const productionFeed = verifyRehearsalAppUpdateConfig(readFileSync(appUpdatePath, "utf8"), {
-    channel,
+    channel: baselineChannel,
     publishedBaseline: values["published-baseline"],
   });
   if (productionFeed.publisherName !== undefined) {
@@ -521,8 +530,6 @@ try {
     );
     assert(status === "Valid", `Published baseline signature is ${status}`);
   }
-  const cacheDirName = productionFeed.updaterCacheDirName;
-  assert(typeof cacheDirName === "string", "app-update.yml lacks updaterCacheDirName");
   const redirectFeed = () =>
     writeFileSync(
       appUpdatePath,
@@ -531,16 +538,16 @@ try {
   redirectFeed();
 
   step("Launching baseline without Node/Bun");
-  feed.setMode("offline");
+  feed.setMode(upgradeOnly ? "normal" : "offline");
   launch(exe, "baseline");
   const initial = await waitFor("renderer bridge", () => state(), 180_000);
   assert(initial.enabled, `Updates disabled: ${initial.message}`);
   assert(initial.currentVersion === baseline, `Running ${initial.currentVersion}`);
   assert(
-    initial.channel === (channel === "beta" ? "beta" : "stable"),
+    initial.channel === (clientChannel === "beta" ? "beta" : "stable"),
     `Channel ${initial.channel}`,
   );
-  // The startup check (15 seconds after launch) runs offline first, so it cannot race the steps below.
+  // Wait for the startup check so it cannot race the explicit checks below.
   await waitFor(
     "the startup update check",
     async () => {
@@ -552,56 +559,69 @@ try {
   assertNoForeignRuntime();
   const seededFiles = listFiles(join(stateDir, "userdata"));
 
-  step("Offline check reports a retryable check error");
-  const offline = await check("offline");
-  assert(offline.status === "error" && offline.errorContext === "check", JSON.stringify(offline));
+  if (!upgradeOnly) {
+    step("Offline check reports a retryable check error");
+    const offline = await check("offline");
+    assert(offline.status === "error" && offline.errorContext === "check", JSON.stringify(offline));
 
-  step("Corrupt sha512 is rejected");
-  const corruptCheck = await check("corrupt-manifest");
-  assert(
-    corruptCheck.status === "available" && corruptCheck.availableVersion === target,
-    JSON.stringify(corruptCheck),
-  );
-  const corrupt = await download("corrupt-manifest");
-  assert(corrupt.errorContext === "download" && corrupt.canRetry, JSON.stringify(corrupt));
-  assert(corrupt.downloadedVersion === null, "Corrupt download was accepted");
+    step("Corrupt sha512 is rejected");
+    const corruptCheck = await check("corrupt-manifest");
+    assert(
+      corruptCheck.status === "available" && corruptCheck.availableVersion === target,
+      JSON.stringify(corruptCheck),
+    );
+    const corrupt = await download("corrupt-manifest");
+    assert(corrupt.errorContext === "download" && corrupt.canRetry, JSON.stringify(corrupt));
+    assert(corrupt.downloadedVersion === null, "Corrupt download was accepted");
 
-  step("Interrupted download is retryable");
-  assert((await check("normal")).status === "available", "Update not offered");
-  const dropped = await download("drop-installer");
-  assert(dropped.errorContext === "download" && dropped.canRetry, JSON.stringify(dropped));
+    step("Interrupted download is retryable");
+    assert((await check("normal")).status === "available", "Update not offered");
+    const dropped = await download("drop-installer");
+    assert(dropped.errorContext === "download" && dropped.canRetry, JSON.stringify(dropped));
+  } else {
+    step("Checking the published client's normal upgrade path");
+    const available = await check("normal");
+    assert(
+      available.status === "available" && available.availableVersion === target,
+      JSON.stringify(available),
+    );
+  }
   const downloaded = await download("normal");
   assert(
     downloaded.status === "downloaded" && downloaded.downloadedVersion === target,
     JSON.stringify(downloaded),
   );
 
-  step("Cancelling the restart confirmation keeps F5 running");
-  await answerInstall("Cancel");
-  const cancelled = await settled("cancelled install", ["preparing"]);
-  assert(
-    cancelled.status === "downloaded" && cancelled.errorContext !== "install",
-    JSON.stringify(cancelled),
-  );
+  if (!upgradeOnly) {
+    step("Cancelling the restart confirmation keeps F5 running");
+    await answerInstall("Cancel");
+    const cancelled = await settled("cancelled install", ["preparing"]);
+    assert(
+      cancelled.status === "downloaded" && cancelled.errorContext !== "install",
+      JSON.stringify(cancelled),
+    );
 
-  step("Installer launch failure recovers windows and stays retryable");
-  const pending = join(localAppData, cacheDirName, "pending");
-  const installer = readdirSync(pending).find((name) => name.toLowerCase().endsWith(".exe"));
-  assert(installer, `No pending installer in ${pending}`);
-  // Stay on the same volume: the workspace may be on another drive than %LOCALAPPDATA%.
-  const stashed = join(pending, `${installer}.rehearsal-stash`);
-  renameSync(join(pending, installer), stashed);
-  await answerInstall("Restart to update");
-  const failed = await waitFor(
-    "install failure recovery",
-    async () => {
-      const current = await state();
-      return current.errorContext === "install" ? current : undefined;
-    },
-    180_000,
-  );
-  assert(failed.status === "downloaded" && failed.canRetry, JSON.stringify(failed));
-  renameSync(stashed, join(pending, installer));
+    step("Installer launch failure recovers windows and stays retryable");
+    const cacheDirName = productionFeed.updaterCacheDirName;
+    assert(typeof cacheDirName === "string", "app-update.yml lacks updaterCacheDirName");
+    const pending = join(localAppData, cacheDirName, "pending");
+    const installer = readdirSync(pending).find((name) => name.toLowerCase().endsWith(".exe"));
+    assert(installer, `No pending installer in ${pending}`);
+    // Stay on the same volume: the workspace may be on another drive than %LOCALAPPDATA%.
+    const stashed = join(pending, `${installer}.rehearsal-stash`);
+    renameSync(join(pending, installer), stashed);
+    await answerInstall("Restart to update");
+    const failed = await waitFor(
+      "install failure recovery",
+      async () => {
+        const current = await state();
+        return current.errorContext === "install" ? current : undefined;
+      },
+      180_000,
+    );
+    assert(failed.status === "downloaded" && failed.canRetry, JSON.stringify(failed));
+    renameSync(stashed, join(pending, installer));
+  }
 
   step(`Restarting into ${target}`);
   const baselineProcesses = new Set(f5ProcessIds());
@@ -644,6 +664,7 @@ try {
   launch(exe, "target");
   const relaunched = await waitFor("upgraded renderer bridge", () => state(), 180_000);
   assert(relaunched.currentVersion === target, `Running ${relaunched.currentVersion}`);
+  assert(relaunched.channel === initial.channel, "Upgrade changed the update channel preference");
   const upToDate = await check("normal");
   assert(upToDate.status === "up-to-date", JSON.stringify(upToDate));
   assertNoForeignRuntime();

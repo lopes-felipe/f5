@@ -1,11 +1,11 @@
 import { releaseProfilePlatforms, type ReleaseProfile } from "./release-profile.ts";
 import { versionToken } from "@t3tools/shared/cliRelease";
 
-/** Keep beta rehearsals on the beta feed while avoiding a publishable release version. */
+/** Stable candidates need a stable tag in the emulator so beta clients will accept them. */
 export function dryRunReleaseVersion(current: string, runNumber: string): string {
   versionToken(current);
   if (!/^[1-9]\d*$/.test(runNumber)) throw new Error("Invalid dry-run number");
-  return `${current}${current.includes("-") ? "." : "-"}dryrun.${runNumber}`;
+  return current.includes("-") ? `${current}.dryrun.${runNumber}` : current;
 }
 
 export interface CiRun {

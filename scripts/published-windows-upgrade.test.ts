@@ -1,15 +1,18 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import {
-  publishedWindowsBaseline,
+  publishedWindowsBaselines,
+  publishedWindowsUpgradeMatrix,
   verifyWindowsUpgradeArtifacts,
   windowsUpgradeAssets,
 } from "./published-windows-upgrade.ts";
 import type { PublishedReleaseSummary, ReleaseChannel } from "./lib/release-profile.ts";
+import { dryRunReleaseVersion } from "./lib/release-qualification.ts";
+import { preparePublishedWindowsUpgrade } from "./prepare-published-windows-upgrade.ts";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -29,27 +32,49 @@ function release(version: string, draft = false): PublishedReleaseSummary {
 describe("published Windows baseline", () => {
   it("chooses the latest published version numerically, ignoring drafts and API order", () => {
     expect(
-      publishedWindowsBaseline(
+      publishedWindowsBaselines(
         [release("0.1.1-beta.2"), release("0.1.1-beta.20", true), release("0.1.1-beta.10")],
         "0.1.1-beta.11",
         "beta",
       ),
-    ).toBe("0.1.1-beta.10");
+    ).toEqual([{ baseline: "0.1.1-beta.10", baselineChannel: "beta", clientChannel: "beta" }]);
   });
-  it("keeps stable and beta baselines on the requested feed", () => {
+  it("covers both stable clients and beta-to-stable upgrades", () => {
     const releases = [release("0.1.1"), release("0.2.0-beta.1")];
-    expect(publishedWindowsBaseline(releases, "0.2.0", "latest")).toBe("0.1.1");
-    expect(publishedWindowsBaseline(releases, "0.2.0-beta.2.dryrun.42", "beta")).toBe(
-      "0.2.0-beta.1",
-    );
+    expect(publishedWindowsBaselines(releases, "0.2.0", "latest")).toEqual([
+      { baseline: "0.1.1", baselineChannel: "latest", clientChannel: "latest" },
+      { baseline: "0.2.0-beta.1", baselineChannel: "beta", clientChannel: "beta" },
+    ]);
   });
-  it("only permits skipping when the channel has no published baseline", () => {
+  it("starts beta rehearsals from a newer stable release that beta users already follow", () => {
     expect(
-      publishedWindowsBaseline([release("0.1.1-beta.1", true)], "0.1.1-beta.2", "beta"),
-    ).toBeUndefined();
-    expect(publishedWindowsBaseline([release("0.1.1-beta.1")], "0.1.1", "latest")).toBeUndefined();
+      publishedWindowsBaselines(
+        [release("0.1.1-beta.2"), release("0.1.1")],
+        "0.2.0-beta.1",
+        "beta",
+      ),
+    ).toEqual([{ baseline: "0.1.1", baselineChannel: "latest", clientChannel: "beta" }]);
+  });
+  it("still tests beta users when the first stable release has no stable baseline", () => {
+    expect(publishedWindowsBaselines([release("0.1.1-beta.1")], "0.1.1", "latest")).toEqual([
+      { baseline: "0.1.1-beta.1", baselineChannel: "beta", clientChannel: "beta" },
+    ]);
+  });
+  it("keeps stable and beta preferences separate even on the same installed version", () => {
+    expect(publishedWindowsBaselines([release("0.1.1")], "0.1.2", "latest")).toEqual([
+      { baseline: "0.1.1", baselineChannel: "latest", clientChannel: "latest" },
+      { baseline: "0.1.1", baselineChannel: "latest", clientChannel: "beta" },
+    ]);
+  });
+  it("only permits skipping when no stable or beta release has been published", () => {
+    expect(
+      publishedWindowsBaselines([release("0.1.1-beta.1", true)], "0.1.1-beta.2", "beta"),
+    ).toEqual([]);
+    expect(publishedWindowsUpgradeMatrix([], "0.1.1-beta.1", "beta")).toEqual({
+      include: [{ baseline: "", baselineChannel: "beta", clientChannel: "beta" }],
+    });
     expect(() =>
-      publishedWindowsBaseline(
+      publishedWindowsBaselines(
         [{ ...release("0.1.1-beta.1"), assets: [] }],
         "0.1.1-beta.2",
         "beta",
@@ -57,7 +82,7 @@ describe("published Windows baseline", () => {
     ).toThrow(/missing/);
   });
   it.each(["0.1.1-beta.1", "0.1.1-beta.0"])("rejects a non-upgrade target %s", (target) => {
-    expect(() => publishedWindowsBaseline([release("0.1.1-beta.1")], target, "beta")).toThrow(
+    expect(() => publishedWindowsBaselines([release("0.1.1-beta.1")], target, "beta")).toThrow(
       /must exceed/,
     );
   });
@@ -66,7 +91,7 @@ describe("published Windows baseline", () => {
     (index) => {
       const baseline = release("0.1.1-beta.1");
       expect(() =>
-        publishedWindowsBaseline(
+        publishedWindowsBaselines(
           [{ ...baseline, assets: baseline.assets!.filter((_, i) => i !== index) }],
           "0.1.1-beta.2",
           "beta",
@@ -74,10 +99,24 @@ describe("published Windows baseline", () => {
       ).toThrow(/missing/);
     },
   );
+  it("requires preparing the next stable version before another dry run", () => {
+    expect(() =>
+      publishedWindowsBaselines([release("0.1.1")], dryRunReleaseVersion("0.1.1", "42"), "latest"),
+    ).toThrow(/prepare-release/);
+    expect(
+      publishedWindowsBaselines(
+        [release("0.1.1-beta.2")],
+        dryRunReleaseVersion("0.1.1-beta.2", "42"),
+        "beta",
+      ),
+    ).toHaveLength(1);
+  });
 });
 
-function artifacts(channel: ReleaseChannel = "beta") {
-  const version = channel === "beta" ? "0.1.1-beta.1" : "0.1.1";
+function artifacts(
+  channel: ReleaseChannel = "beta",
+  version = channel === "beta" ? "0.1.1-beta.1" : "0.1.1",
+) {
   const dir = mkdtempSync(join(tmpdir(), "f5-published-upgrade-"));
   directories.push(dir);
   const installer = `F5-${version}-x64.exe`;
@@ -124,6 +163,110 @@ describe("Windows installer verification", () => {
   });
 });
 
+function preparation(
+  published: PublishedReleaseSummary[] = [],
+  baseline = "",
+  channel: ReleaseChannel = "latest",
+  clientChannel: ReleaseChannel = channel,
+) {
+  const target = channel === "beta" ? "0.2.0-beta.1" : "0.2.0";
+  const candidate = artifacts(channel, target);
+  const output = join(candidate.dir, "github-output");
+  const baselineDir = join(candidate.dir, "baseline");
+  const logDir = join(candidate.dir, "logs");
+  const dependencies = {
+    releases: vi.fn(() => published),
+    download: vi.fn<(repository: string, baseline: string, names: string[], dir: string) => void>(),
+  };
+  const run = () =>
+    preparePublishedWindowsUpgrade(
+      [
+        "--target",
+        target,
+        "--channel",
+        channel,
+        "--baseline",
+        baseline,
+        "--client-channel",
+        clientChannel,
+        "--target-dir",
+        candidate.dir,
+        "--baseline-dir",
+        baselineDir,
+        "--log-dir",
+        logDir,
+      ],
+      { GITHUB_REPOSITORY: "lopes-felipe/f5", GITHUB_OUTPUT: output },
+      dependencies,
+    );
+  return { run, output, baselineDir, logDir, dependencies, candidate };
+}
+
+describe("published upgrade preparation entry point", () => {
+  it("records a first-release skip and emits the outputs consumed by Actions", () => {
+    const prepared = preparation();
+    prepared.run();
+    expect(readFileSync(prepared.output, "utf8")).toBe(
+      "available=false\nbaseline=\nbaseline_channel=latest\n",
+    );
+    expect(
+      JSON.parse(readFileSync(join(prepared.logDir, "published-upgrade.json"), "utf8")),
+    ).toMatchObject({ baseline: null, target: "0.2.0", clientChannel: "latest" });
+    expect(prepared.dependencies.download).not.toHaveBeenCalled();
+  });
+  it("verifies the candidate before consulting releases, even if it would skip", () => {
+    const prepared = preparation();
+    writeFileSync(join(prepared.candidate.dir, prepared.candidate.installer), "corrupt");
+    expect(prepared.run).toThrow(/checksum/);
+    expect(prepared.dependencies.releases).not.toHaveBeenCalled();
+    expect(prepared.dependencies.download).not.toHaveBeenCalled();
+    expect(existsSync(prepared.output)).toBe(false);
+  });
+  it("downloads the stable baseline's real manifest for a beta client", () => {
+    const source = artifacts("latest", "0.1.1");
+    const prepared = preparation([release("0.1.1")], "0.1.1", "beta", "beta");
+    prepared.dependencies.download.mockImplementation((_repository, _baseline, _names, dir) => {
+      cpSync(source.dir, dir, { recursive: true });
+    });
+    prepared.run();
+    expect(prepared.dependencies.download).toHaveBeenCalledWith(
+      "lopes-felipe/f5",
+      "0.1.1",
+      ["F5-0.1.1-x64.exe", "F5-0.1.1-x64.exe.blockmap", "latest.yml"],
+      prepared.baselineDir,
+    );
+    expect(readFileSync(prepared.output, "utf8")).toBe(
+      "available=true\nbaseline=0.1.1\nbaseline_channel=latest\n",
+    );
+    expect(
+      JSON.parse(readFileSync(join(prepared.logDir, "published-upgrade.json"), "utf8")),
+    ).toMatchObject({ baselineChannel: "latest", clientChannel: "beta", channel: "beta" });
+  });
+  it("fails instead of skipping if published releases changed after preflight", () => {
+    const prepared = preparation([release("0.1.1")]);
+    expect(prepared.run).toThrow(/plan changed/);
+    expect(existsSync(prepared.output)).toBe(false);
+  });
+  it("never emits a successful gate after a corrupt baseline download", () => {
+    const source = artifacts("latest", "0.1.1");
+    const prepared = preparation([release("0.1.1")], "0.1.1", "latest", "latest");
+    prepared.dependencies.download.mockImplementation((_repository, _baseline, _names, dir) => {
+      cpSync(source.dir, dir, { recursive: true });
+      writeFileSync(join(dir, source.installer), "corrupt");
+    });
+    expect(prepared.run).toThrow(/checksum/);
+    expect(existsSync(prepared.output)).toBe(false);
+  });
+  it("propagates network failures without reporting a successful skip", () => {
+    const prepared = preparation([release("0.1.1")], "0.1.1", "latest", "latest");
+    prepared.dependencies.download.mockImplementation(() => {
+      throw new Error("offline");
+    });
+    expect(prepared.run).toThrow("offline");
+    expect(existsSync(prepared.output)).toBe(false);
+  });
+});
+
 it("blocks assembly on the published upgrade and uses the release artifact", () => {
   const workflow = parse(
     readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8"),
@@ -131,14 +274,30 @@ it("blocks assembly on the published upgrade and uses the release artifact", () 
   expect(workflow.jobs.assemble.needs).toContain("windows-published-upgrade");
   const upgrade = workflow.jobs["windows-published-upgrade"];
   expect(upgrade.needs).toContain("build-desktop");
+  expect(upgrade.strategy.matrix).toContain("needs.preflight.outputs.windows_upgrade_matrix");
   expect(upgrade.steps).toContainEqual({
     uses: "actions/download-artifact@v4",
     with: { name: "desktop-win-x64", path: "published-upgrade/target" },
   });
-  expect(
-    upgrade.steps.find(
-      (step: { name?: string }) =>
-        step.name === "Upgrade the published installation to the release artifact",
-    ).run,
-  ).toContain("--published-baseline");
+  const run = upgrade.steps.find(
+    (step: { name?: string }) =>
+      step.name === "Upgrade the published installation to the release artifact",
+  );
+  expect(run.if).toBe("steps.baseline.outputs.available == 'true'");
+  for (const argument of [
+    '--target "$VERSION"',
+    '--channel "$CHANNEL"',
+    '--baseline "$BASELINE"',
+    '--baseline-channel "$BASELINE_CHANNEL"',
+    '--client-channel "$CLIENT_CHANNEL"',
+    "--published-baseline",
+  ])
+    expect(run.run).toContain(argument);
+  expect(upgrade.env).toMatchObject({
+    VERSION: "${{ needs.preflight.outputs.version }}",
+    CHANNEL: "${{ needs.preflight.outputs.channel }}",
+    BASELINE: "${{ matrix.baseline }}",
+    BASELINE_CHANNEL: "${{ matrix.baselineChannel }}",
+    CLIENT_CHANNEL: "${{ matrix.clientChannel }}",
+  });
 });
