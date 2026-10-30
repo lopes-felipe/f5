@@ -49113,11 +49113,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
-      "decidedAt": "2026-10-30T00:20:18.818Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-30T01:01:43.607Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-25193",
-      "status": "port",
+      "reason": "f5 has no history escape-sequence sanitizer (`apps/server/src/terminal/Layers/Manager.ts` saves raw PTY output), so a cancelled sequence cannot cause later output to be lost.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "terminal"
@@ -66938,11 +66940,20 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-30T00:20:18.818Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-10-30T01:01:43.607Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/package.json:33"
+        ],
+        "f5Refs": [
+          "4f197bc8b09dbcb6f1b84c259fd1135a68cbdca1"
+        ]
+      },
       "id": "pr-9867",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "terminal"
