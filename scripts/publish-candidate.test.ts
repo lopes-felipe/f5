@@ -47,7 +47,7 @@ vi.mock("./release/release-github.ts", async (importOriginal) => {
         const id = Number(path.split("/").at(-1));
         return {
           id,
-          name: state.directories.get(id)?.split("/").at(-1),
+          name: basename(state.directories.get(id) ?? ""),
           digest: "sha256:" + "d".repeat(64),
           expired: false,
           workflow_run: { id: state.foreignRun ? 101 : 100, head_sha: state.source },

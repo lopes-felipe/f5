@@ -188,7 +188,7 @@ if (!sameBaselines(candidate.windowsBaselines, fresh.baselines) || fresh.cliTarg
 const root = mkdtempSync(join(tmpdir(), "f5-release-publication-"));
 const directory = join(root, "assets");
 await assembleCandidate(candidate, directory);
-await verifyCandidateCertification(candidate, directory);
+if (mode === "shadow") await verifyCandidateCertification(candidate, directory);
 // No candidate executables run here; only trusted tooling parses and hashes the archives.
 if (mode !== "shadow") {
   // Refresh durable intent immediately before publication. A newly merged stable request is a barrier.

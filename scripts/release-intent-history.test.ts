@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 
 it("pins stable intent to the main merge commit rather than the preparation branch commit", () => {
@@ -46,7 +46,7 @@ it("pins stable intent to the main merge commit rather than the preparation bran
       "--input-type=module",
       "-e",
       "import {stableRequests} from " +
-        JSON.stringify(module) +
+        JSON.stringify(pathToFileURL(module).href) +
         "; console.log(JSON.stringify(stableRequests(" +
         JSON.stringify(merged) +
         ")));",

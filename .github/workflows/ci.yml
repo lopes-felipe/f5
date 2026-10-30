@@ -604,6 +604,11 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           node scripts/ci-test-summary.ts --prepare
+      - name: Prepare AppKit compiler modules
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        # The former monolith warmed these through its native helper checks.
+        # Keep cold SDK compilation outside the bitmap fixture's 30-second hook.
+        run: swift -e 'import AppKit; print("AppKit compiler modules ready")'
       - name: Workspace suites
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:

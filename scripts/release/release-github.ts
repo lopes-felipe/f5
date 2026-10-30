@@ -29,7 +29,30 @@ import {
 export const repository = process.env.GITHUB_REPOSITORY ?? "lopes-felipe/f5";
 if (!/^[\w.-]+\/[\w.-]+$/.test(repository)) throw new Error("Invalid repository");
 export function gh(args: readonly string[]): string {
-  return execFileSync("gh", [...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  // Reads can retry without creating duplicate tags, drafts, dispatches or uploads.
+  const readOnly =
+    args[0] === "api" &&
+    !args.some(
+      (a) =>
+        ["-X", "--method", "-f", "-F", "--field", "--raw-field", "--input"].includes(a) ||
+        /^(?:--method|--field|--raw-field|--input)=/.test(a),
+    );
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return execFileSync("gh", [...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    } catch (error) {
+      const detail = String((error as { stderr?: unknown }).stderr ?? error);
+      if (
+        attempt ||
+        !readOnly ||
+        !/HTTP (?:429|50[0234])|ECONNRESET|ETIMEDOUT|TLS handshake timeout|connection reset|i\/o timeout|unexpected EOF/i.test(
+          detail,
+        )
+      )
+        throw error;
+      console.warn("Transient release API read failure; retrying once.");
+    }
+  }
 }
 export function api<T>(path: string): T {
   return JSON.parse(gh(["api", "repos/" + repository + "/" + path])) as T;
