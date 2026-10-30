@@ -239,9 +239,12 @@ function MarkdownFileChip({
       return;
     }
     const api = readNativeApi();
-    void resolveMarkdownFileEditorTarget(meta, cwd, (name) =>
-      api && cwd ? findWorkspaceBasenameFile(api, cwd, name) : Promise.resolve(null),
-    ).then((targetPath) => openFileInEditor(targetPath));
+    // The lookup runs after the editor grant is captured, so a slow search keeps the click valid.
+    void openFileInEditor(meta.targetPath, undefined, () =>
+      resolveMarkdownFileEditorTarget(meta, cwd, (name) =>
+        api && cwd ? findWorkspaceBasenameFile(api, cwd, name) : Promise.resolve(null),
+      ),
+    );
   };
 
   return (

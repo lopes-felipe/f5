@@ -224,6 +224,13 @@ it("keeps backslashes that CommonMark would read as escapes in prose Windows pat
   expect(render(String.raw`See C:\x and \*this\* and Note:\*that\*.`)).toBe(
     String.raw`See C:\x and *this* and Note:*that*.`,
   );
+  // A lone letter before a colon is only a drive when a path character follows.
+  expect(render(String.raw`Option A:\*bold\* and Plan B:\#2 but D:\$Recycle`)).toBe(
+    String.raw`Option A:*bold* and Plan B:#2 but D:\$Recycle`,
+  );
+  // Each escape scans only new text, so later paths and prose in a long paragraph stay correct.
+  const repeated = String.raw`C:\me\.t3\_x snake\_case `.repeat(2000);
+  expect(render(repeated)).toBe(String.raw`C:\me\.t3\_x snake_case `.repeat(2000).trimEnd());
   expect(render(String.raw`${"`"}C:\me\.t3${"`"} and C:\me\.t3`)).toBe(
     String.raw`<code>C:\me\.t3</code> and C:\me\.t3`,
   );

@@ -157,7 +157,9 @@ function ChangedFilesRows({
     if (!virtualized || !container || !rowPitch) return;
 
     // The card sits inside the timeline's scroller, so its own scrollTop stays zero. Watch
-    // the ancestors up to that scroller too: streaming text above can move the card.
+    // the ancestors up to that scroller too: streaming text above can move the card. Wrappers
+    // between here and the timeline must clip with `overflow-x-clip`, not `hidden`, or the walk
+    // stops at them (see MessagesTimeline).
     const resized: HTMLElement[] = [container, rowPitch];
     let scrollElement: HTMLElement | null = null;
     for (let parent = container.parentElement; parent; parent = parent.parentElement) {
