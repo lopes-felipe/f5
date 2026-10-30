@@ -32,10 +32,10 @@ jobs:
       merge_mac: ${{ steps.preflight.outputs.merge_mac }}
       windows_upgrade_matrix: ${{ steps.preflight.outputs.windows_upgrade_matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24.13.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -68,8 +68,8 @@ jobs:
       TARGET: ${{ matrix.target }}
     steps:
       - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24.13.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -157,11 +157,11 @@ jobs:
       - name: Separate Intel manifest
         if: matrix.platform == 'mac' && matrix.arch == 'x64'
         run: mv "release-artifacts/$CHANNEL-mac.yml" "release-artifacts/$CHANNEL-mac-x64.yml"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: staged-lock-${{ matrix.platform }}-${{ matrix.arch }}
           path: release-artifacts/*.lock
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
@@ -187,8 +187,8 @@ jobs:
       TARGET: ${{ matrix.target }}
     steps:
       - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24.13.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -197,13 +197,13 @@ jobs:
       - run: bun install --frozen-lockfile
       - id: runtime
         run: echo "version=$(node --input-type=module -e 'import { CLI_NODE_VERSION } from "./scripts/build-cli-archive.ts"; console.log(CLI_NODE_VERSION)')" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ steps.runtime.outputs.version }}
       - run: node scripts/update-release-package-versions.ts "$VERSION"
       - run: node scripts/build-cli-archive.ts --target "$TARGET" --output release-cli
       - run: node scripts/cli-archive-smoke.ts "release-cli/f5-$VERSION-$TARGET.tar.gz" "release-cli/f5-$VERSION-$TARGET.json"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cli-${{ matrix.target }}
           path: release-cli/*
@@ -234,15 +234,15 @@ jobs:
       CLIENT_CHANNEL: ${{ matrix.clientChannel }}
     steps:
       - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24.13.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.3.9
       - run: bun install --frozen-lockfile
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: desktop-win-x64
           path: published-upgrade/target
@@ -258,7 +258,7 @@ jobs:
           cp "$(command -v node)" "$RUNNER_TEMP/rehearsal-node/node.exe"
           "$RUNNER_TEMP/rehearsal-node/node.exe" scripts/windows-update-rehearsal.ts --baseline-dir published-upgrade/baseline --target-dir published-upgrade/target --baseline "$BASELINE" --baseline-channel "$BASELINE_CHANNEL" --client-channel "$CLIENT_CHANNEL" --target "$VERSION" --channel "$CHANNEL" --published-baseline --log-dir rehearsal-logs
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-published-upgrade-${{ matrix.clientChannel }}-logs
           path: rehearsal-logs/**
@@ -272,20 +272,20 @@ jobs:
       PROFILE: ${{ needs.preflight.outputs.profile }}
       MERGE_MAC: ${{ needs.preflight.outputs.merge_mac }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24.13.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.3.9
       - run: bun install --frozen-lockfile
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: desktop-*
           path: release-assets
           merge-multiple: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: cli-*
           path: release-assets
@@ -301,7 +301,7 @@ jobs:
           node scripts/verify-release-assets.ts --version "$VERSION" --channel "$CHANNEL" --profile "$PROFILE" release-assets
       - if: needs.preflight.outputs.dry_run != 'true'
         run: node scripts/extract-release-notes.ts "$VERSION" notes.md
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-bundle
           path: |
@@ -320,11 +320,11 @@ jobs:
       PRERELEASE: ${{ needs.preflight.outputs.is_prerelease }}
       PROFILE: ${{ needs.preflight.outputs.profile }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24.13.1
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release-bundle
       - name: Create verified draft
