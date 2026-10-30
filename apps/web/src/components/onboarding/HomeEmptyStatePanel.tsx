@@ -229,27 +229,7 @@ export function HomeEmptyStatePanel() {
     displayProfile === "custom" ? "balanced" : displayProfile;
   const openAddProject = () => useCommandPaletteStore.getState().openAddProject();
 
-  if (mode === "empty-projects") {
-    return (
-      <PanelShell
-        subtitle="Add a project to get started."
-        body={
-          <div className="rounded-xl border border-border bg-card p-5">
-            <p className="text-sm text-muted-foreground">
-              Connect a workspace to create threads, run agents, and keep work isolated per project.
-            </p>
-          </div>
-        }
-        footer={
-          <div className="flex flex-wrap items-center gap-3">
-            <Button onClick={openAddProject}>Add a project</Button>
-          </div>
-        }
-      />
-    );
-  }
-
-  if (mode === "empty-threads") {
+  if (mode === "empty-projects" || mode === "empty-threads") {
     return <HomeMissionControl />;
   }
 

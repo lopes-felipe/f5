@@ -222,6 +222,7 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
           {section === "settled" ? (
             <ProjectIcon
               projectId={thread.projectId}
+              kind={project?.kind}
               name={project?.name ?? "Project"}
               icon={project?.icon}
               className="size-4"

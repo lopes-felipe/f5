@@ -14,11 +14,29 @@ afterwards.
 4. Choose **Agent** or **Plan**. Plan asks for a plan you can accept or revise before any change.
 5. Choose the **workspace**: **Local** (the project checkout) or a
    [worktree](worktrees-and-storage-automation.md) with its own branch and directory.
+   For unrelated work, use [a thread without a project](#threads-without-a-project).
 6. Send your message.
 
 The composer also takes [attachments](attachments-and-media.md), `@` file mentions and `/`
 commands, including provider and project skills. The context ring shows how full the model's
 context window is.
+
+## Threads without a project
+
+For internet research or one-off tasks, click the sidebar's **New thread without a project**
+button, choose **No project** in Home's project picker, or use **New thread without a project**
+in the command palette. The main **New thread** button also starts one when no project context
+is available. Once the **No project** group exists, its hover **New thread** action starts another.
+You can bind the `chat.newScratch` command in keyboard settings; it has no default shortcut.
+
+The first message creates a separate folder for the thread under `<stateDir>/scratch/`, named
+with its date, first words and a short id. Attachments, generated files and terminals use that
+folder. Provider tools handle internet research as usual. These threads have no Git repository,
+branches, worktrees or workflows. The folders separate working context but are not a filesystem
+sandbox; provider permissions still apply.
+
+Threads are grouped under **No project** in the sidebar and Usage. Deleting a thread removes
+its folder; archiving keeps it.
 
 ## While the agent works
 

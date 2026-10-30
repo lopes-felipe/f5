@@ -234,6 +234,7 @@ export default function Sidebar() {
   );
   const startScratchThread = useStartScratchThread();
   const primaryProjectId = resolvePrimaryNewThreadProjectId({
+    projects,
     activeThreadProjectId: activeThread?.projectId,
     activeDraftProjectId: activeDraftThread?.projectId,
     mostRecentProjectId,
@@ -722,7 +723,13 @@ export default function Sidebar() {
     if (!over || active.id === over.id) return;
     const activeProject = projects.find((project) => project.id === active.id);
     const overProject = projects.find((project) => project.id === over.id);
-    if (!activeProject || !overProject) return;
+    if (
+      !activeProject ||
+      !overProject ||
+      isScratchProject(activeProject) ||
+      isScratchProject(overProject)
+    )
+      return;
     reorderProjects(activeProject.id, overProject.id);
   });
 
@@ -822,6 +829,7 @@ export default function Sidebar() {
       if (!command) return;
 
       const projectId = resolvePrimaryNewThreadProjectId({
+        projects,
         activeThreadProjectId: activeThread?.projectId,
         activeDraftProjectId: activeDraftThread?.projectId,
         mostRecentProjectId,
@@ -863,7 +871,6 @@ export default function Sidebar() {
       }
 
       if (command !== "chat.new") return;
-      if (!projectId) return;
       event.preventDefault();
       event.stopPropagation();
       void handleNewThread(projectId, {
@@ -925,6 +932,10 @@ export default function Sidebar() {
 
   const newThreadShortcutLabel = useMemo(
     () => shortcutLabelForCommand(keybindings, "chat.new"),
+    [keybindings],
+  );
+  const scratchShortcutLabel = useMemo(
+    () => shortcutLabelForCommand(keybindings, "chat.newScratch"),
     [keybindings],
   );
   const workflowShortcutLabel = useMemo(
@@ -1045,6 +1056,42 @@ export default function Sidebar() {
     onPinnedThreadDragEnd: handlePinnedThreadDragEnd,
   };
 
+  const renderProjectItem = (project: (typeof projects)[number]) => {
+    const sidebarLists = projectSidebarListsById.get(project.id);
+    if (!sidebarLists) return null;
+    return (
+      <SidebarProjectItem
+        key={project.id}
+        project={project}
+        sidebarLists={sidebarLists}
+        freezeSnapshot={sidebarHoverFreezeSnapshot}
+        threadPreviewLimit={threadPreviewLimit}
+        activeExpanded={expandedThreadListsByProject.has(
+          threadBucketExpansionKey(project.id, "active"),
+        )}
+        archivedExpanded={expandedThreadListsByProject.has(
+          threadBucketExpansionKey(project.id, "archived"),
+        )}
+        archivedSectionCollapsed={collapsedArchivedSectionsByProject.has(project.id)}
+        snoozedSectionCollapsed={collapsedSnoozedSectionsByProject.has(project.id)}
+        draftThreadsByThreadId={draftThreadsByThreadId}
+        persistedThreadIds={persistedThreadIds}
+        routeThreadId={routeThreadId}
+        pathname={pathname}
+        isRenamingProject={renamingProjectId === project.id}
+        expandWorkflowThreadsByDefault={appSettings.expandWorkflowThreadsByDefault}
+        workflowExpandedById={workflowExpandedById}
+        newThreadShortcutLabel={newThreadShortcutLabel}
+        workflowShortcutLabel={workflowShortcutLabel}
+        dndSensors={projectDnDSensors}
+        collisionDetection={projectCollisionDetection}
+        indicatorsForThread={indicatorsForThread}
+        threadActions={threadActions}
+        projectActions={projectActions}
+      />
+    );
+  };
+
   return (
     <div
       ref={sidebarHoverAnchorRef}
@@ -1058,11 +1105,19 @@ export default function Sidebar() {
         newThreadShortcutLabel={newThreadShortcutLabel}
         workflowShortcutLabel={workflowShortcutLabel}
         onNewThread={threadActions.createThreadInProject}
+        onNewScratchThread={
+          listedProjects.length > 0
+            ? (modifiers) => threadActions.createThreadInProject(null, modifiers)
+            : undefined
+        }
+        scratchShortcutLabel={scratchShortcutLabel}
+        scratchDisabled={wsInteractionBlocked || !wsConnectionState.synchronized}
         onNewWorkflow={(projectId) => {
           // Workflows need a repository; from a thread without a project, pick a project first.
           if (!isScratchProject(projects.find((entry) => entry.id === projectId)))
             openWorkflowCreateDialog(projectId);
           else if (firstProjectId) openWorkflowCreateDialog(firstProjectId);
+          else addProject.handleStartAddProject();
         }}
         onAddProject={addProject.handleStartAddProject}
       />
@@ -1098,7 +1153,7 @@ export default function Sidebar() {
           className={cn("px-2 pt-0 pb-2", sidebarSearchQuery.trim().length > 0 && "hidden")}
         >
           <div className="flex h-7 items-center justify-between px-2">
-            <span className="text-2xs font-medium text-muted-foreground">Projects</span>
+            <span className="text-2xs font-medium text-muted-foreground">Threads and projects</span>
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -1129,56 +1184,23 @@ export default function Sidebar() {
           >
             <SidebarMenu
               {...SIDEBAR_TREE_PROPS}
-              aria-label="Projects"
+              aria-label="Threads and projects"
               ref={attachSidebarTree}
               className="gap-px"
             >
+              {projects.filter(isScratchProject).map(renderProjectItem)}
               <SortableContext
-                items={projects.map((project) => project.id)}
+                items={listedProjects.map((project) => project.id)}
                 strategy={verticalListSortingStrategy}
               >
-                {projects.map((project) => {
-                  const sidebarLists = projectSidebarListsById.get(project.id);
-                  if (!sidebarLists) return null;
-                  return (
-                    <SidebarProjectItem
-                      key={project.id}
-                      project={project}
-                      sidebarLists={sidebarLists}
-                      freezeSnapshot={sidebarHoverFreezeSnapshot}
-                      threadPreviewLimit={threadPreviewLimit}
-                      activeExpanded={expandedThreadListsByProject.has(
-                        threadBucketExpansionKey(project.id, "active"),
-                      )}
-                      archivedExpanded={expandedThreadListsByProject.has(
-                        threadBucketExpansionKey(project.id, "archived"),
-                      )}
-                      archivedSectionCollapsed={collapsedArchivedSectionsByProject.has(project.id)}
-                      snoozedSectionCollapsed={collapsedSnoozedSectionsByProject.has(project.id)}
-                      draftThreadsByThreadId={draftThreadsByThreadId}
-                      persistedThreadIds={persistedThreadIds}
-                      routeThreadId={routeThreadId}
-                      pathname={pathname}
-                      isRenamingProject={renamingProjectId === project.id}
-                      expandWorkflowThreadsByDefault={appSettings.expandWorkflowThreadsByDefault}
-                      workflowExpandedById={workflowExpandedById}
-                      newThreadShortcutLabel={newThreadShortcutLabel}
-                      workflowShortcutLabel={workflowShortcutLabel}
-                      dndSensors={projectDnDSensors}
-                      collisionDetection={projectCollisionDetection}
-                      indicatorsForThread={indicatorsForThread}
-                      threadActions={threadActions}
-                      projectActions={projectActions}
-                    />
-                  );
-                })}
+                {listedProjects.map(renderProjectItem)}
               </SortableContext>
             </SidebarMenu>
           </DndContext>
 
           {!startupReady && projects.length === 0 && !addProject.showPathEntry ? (
             <StartupSidebarSkeleton />
-          ) : startupReady && listedProjects.length === 0 && !addProject.showPathEntry ? (
+          ) : startupReady && projects.length === 0 && !addProject.showPathEntry ? (
             <div className="mx-1 mt-2 flex flex-col items-center gap-2 rounded-xl border border-dashed border-border px-3 py-5 text-center">
               <p className="text-ui text-muted-foreground">No projects yet</p>
               <Button size="sm" variant="outline" onClick={addProject.handleStartAddProject}>

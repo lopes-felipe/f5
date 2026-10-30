@@ -1,5 +1,5 @@
 import type { ProjectId, ThreadId } from "@t3tools/contracts";
-import { withoutScratchProjects } from "@t3tools/shared/scratchProject";
+import { isScratchProject, withoutScratchProjects } from "@t3tools/shared/scratchProject";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowRightIcon,
@@ -23,7 +23,12 @@ import {
   readLastHomeVisitAt,
   writeLastHomeVisitAt,
 } from "../../lib/lastHomeVisit";
-import { getMostRecentProject, sortProjectsByActivity } from "../../lib/threadOrdering";
+import {
+  getMostRecentProject,
+  getVisibleThreads,
+  sortProjectsByActivity,
+} from "../../lib/threadOrdering";
+import type { HomeProjectSelection } from "./HomeProjectPickerPlaceholder";
 import {
   bucketThreadsByAttention,
   selectStandaloneThreadsByActivity,
@@ -42,7 +47,6 @@ import {
 } from "../../threadSelectors";
 import type { ThreadStatus } from "../../threadStatus";
 import type { Project } from "../../types";
-import { resolvePrimaryNewThreadProjectId } from "../Sidebar.logic";
 import { LowDiskSpaceBanner } from "../chat/LowDiskSpaceBanner";
 import { ProjectIcon } from "../ProjectIcon";
 import { Kbd } from "../ui/kbd";
@@ -269,6 +273,7 @@ function SmartResumeBanner(props: {
           {props.project ? (
             <ProjectIcon
               projectId={props.project.id}
+              kind={props.project.kind}
               name={props.project.name}
               icon={props.project.icon}
               className="size-3"
@@ -403,13 +408,23 @@ export function HomeMissionControl() {
       codeReviewWorkflows,
       investigationWorkflows,
     ).slice(0, QUICK_JUMP_PROJECT_LIMIT);
+    const visibleProjectIds = new Set(
+      getVisibleThreads(
+        threads,
+        planningWorkflows,
+        codeReviewWorkflows,
+        investigationWorkflows,
+      ).map((thread) => thread.projectId),
+    );
 
     return {
       buckets: bucketThreads(sorted, statusById, pausedQueueThreadIds, workflowThreads),
       statusByThreadId: statusById,
       projectsById: projectMap,
       mostRecentProject: getMostRecentProject(
-        listedProjects,
+        projects.filter(
+          (project) => !isScratchProject(project) || visibleProjectIds.has(project.id),
+        ),
         threads,
         planningWorkflows,
         codeReviewWorkflows,
@@ -582,12 +597,10 @@ export function HomeMissionControl() {
     [nowHour, recentBuckets, recentTruncated],
   );
   const greeting = resolveGreeting(new Date(nowHour).getHours());
-  const defaultProjectId = resolvePrimaryNewThreadProjectId({
-    activeThreadProjectId: null,
-    activeDraftProjectId: null,
-    mostRecentProjectId: mostRecentProject?.id ?? null,
-    firstProjectId: pickableProjects[0]?.id ?? null,
-  });
+  const defaultSelection: HomeProjectSelection =
+    !mostRecentProject || isScratchProject(mostRecentProject)
+      ? { kind: "none" }
+      : { kind: "project", projectId: mostRecentProject.id };
 
   // One flat index so j/k spans every section in reading order: each section
   // starts where the previous one's rendered rows end.
@@ -656,7 +669,7 @@ export function HomeMissionControl() {
         <HomeQuickStart
           greeting={greeting}
           projects={pickableProjects}
-          defaultProjectId={defaultProjectId}
+          defaultSelection={defaultSelection}
         />
         {quickStartChips.length > 0 ? <QuickStartChips chips={quickStartChips} /> : null}
       </div>

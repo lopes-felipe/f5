@@ -241,6 +241,19 @@ describe("resolvePrimaryNewThreadProjectId", () => {
       }),
     ).toBeNull();
   });
+
+  it("ignores stale bootstrap/draft context when its project no longer exists", () => {
+    const context = {
+      activeThreadProjectId: active,
+      activeDraftProjectId: draft,
+      mostRecentProjectId: recent,
+      firstProjectId: first,
+    };
+    expect(resolvePrimaryNewThreadProjectId({ ...context, projects: [] })).toBeNull();
+    expect(resolvePrimaryNewThreadProjectId({ ...context, projects: [{ id: recent }] })).toBe(
+      recent,
+    );
+  });
 });
 
 describe("resolveSidebarNewThreadIntent", () => {

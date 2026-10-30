@@ -70,6 +70,7 @@ export function HomeAttentionCard(props: {
         {project ? (
           <ProjectIcon
             projectId={project.id}
+            kind={project.kind}
             name={project.name}
             icon={project.icon}
             className="size-3.5 shrink-0"
