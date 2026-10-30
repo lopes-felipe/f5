@@ -33,6 +33,14 @@ describe("fixPath", () => {
     expect(env.__MISE_DIFF).toBe("mise-diff");
   });
 
+  it("keeps the inherited PATH when the login shell returns a blank one", async () => {
+    readEnvironmentFromLoginShell.mockReturnValueOnce({ PATH: "  ", __MISE_DIFF: "mise-diff" });
+    const env: NodeJS.ProcessEnv = { PATH: "/usr/bin", SHELL: "/bin/zsh" };
+    await fixPath(env, "darwin");
+    expect(env.PATH).toBe("/usr/bin");
+    expect(env.__MISE_DIFF).toBeUndefined();
+  });
+
   it("skips the probes the desktop already ran into the inherited environment", async () => {
     for (const platform of ["darwin", "win32"] as const) {
       const env: NodeJS.ProcessEnv = { PATH: "/desktop/bin", F5_SHELL_ENVIRONMENT_PREPARED: "1" };

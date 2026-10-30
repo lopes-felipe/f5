@@ -14,11 +14,12 @@ describe("syncShellEnvironment", () => {
       SSH_AUTH_SOCK: "/tmp/secretive.sock",
     }));
 
-    await syncShellEnvironment(env, {
+    const prepared = await syncShellEnvironment(env, {
       platform: "darwin",
       readEnvironment,
     });
 
+    expect(prepared).toBe(true);
     expect(env.__MISE_DIFF).toBe("mise-diff");
     expect(readEnvironment).toHaveBeenCalledWith("/bin/zsh", [
       "PATH",
@@ -67,14 +68,28 @@ describe("syncShellEnvironment", () => {
 
   it("keeps UTF-8 text working when the login shell fails", async () => {
     const env: NodeJS.ProcessEnv = {};
-    await syncShellEnvironment(env, {
+    const prepared = await syncShellEnvironment(env, {
       platform: "darwin",
       readEnvironment: () => {
-        throw new Error("shell failed");
+        throw Object.assign(new Error("spawnSync /bin/zsh ETIMEDOUT"), { code: "ETIMEDOUT" });
       },
     });
+    expect(prepared).toBe(false);
     expect(env.LC_CTYPE).toBe("en_US.UTF-8");
   });
+
+  it.each([{}, { PATH: "  " }, { SSH_AUTH_SOCK: "/tmp/agent.sock" }])(
+    "leaves macOS preparation incomplete when the login shell returns no PATH (%o)",
+    async (shell) => {
+      const env: NodeJS.ProcessEnv = { SHELL: "/bin/zsh", PATH: "/usr/bin:/bin" };
+      const prepared = await syncShellEnvironment(env, {
+        platform: "darwin",
+        readEnvironment: () => shell,
+      });
+      expect(prepared).toBe(false);
+      expect(env.PATH).toBe("/usr/bin:/bin");
+    },
+  );
 
   it("preserves an inherited SSH_AUTH_SOCK value", async () => {
     const env: NodeJS.ProcessEnv = {
@@ -126,11 +141,12 @@ describe("syncShellEnvironment", () => {
       SSH_AUTH_SOCK: "/tmp/secretive.sock",
     }));
 
-    await syncShellEnvironment(env, {
+    const prepared = await syncShellEnvironment(env, {
       platform: "linux",
       readEnvironment,
     });
 
+    expect(prepared).toBe(false);
     expect(readEnvironment).not.toHaveBeenCalled();
     expect(env.PATH).toBe("/usr/bin");
     expect(env.SSH_AUTH_SOCK).toBe("/tmp/inherited.sock");
@@ -154,11 +170,29 @@ describe("syncShellEnvironment", () => {
 
     expect(env.PATH).toBeUndefined();
     finishRegistryRead?.({ machine: "C:\\Windows\\System32" });
-    await environmentReady;
+    expect(await environmentReady).toBe(true);
 
     expect(Object.keys(env).filter((key) => key.toLowerCase() === "path")).toEqual(["PATH"]);
     expect(env.PATH).toBe(
       "C:\\Inherited;C:\\Windows\\System32;C:\\Users\\Test\\AppData\\Roaming\\npm",
     );
+  });
+
+  it("leaves Windows preparation incomplete when the registry PATH cannot be read", async () => {
+    const env: NodeJS.ProcessEnv = { Path: "C:\\Inherited" };
+    const warn = vi.fn();
+
+    const prepared = await syncShellEnvironment(env, {
+      platform: "win32",
+      readWindowsRegistryPaths: () => Promise.reject(new Error("powershell timed out")),
+      windowsPathExists: async () => false,
+      warn,
+    });
+
+    expect(prepared).toBe(false);
+    expect(warn).toHaveBeenCalledWith(
+      "Unable to read the Windows registry PATH; using the inherited PATH.",
+    );
+    expect(env.PATH).toBe("C:\\Inherited");
   });
 });

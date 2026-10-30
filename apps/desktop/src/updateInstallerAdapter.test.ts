@@ -1,13 +1,18 @@
 import { createRequire } from "node:module";
 import { EventEmitter } from "node:events";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { BaseUpdater as BaseType } from "electron-updater/out/BaseUpdater";
 import type { MacUpdater as MacType } from "electron-updater/out/MacUpdater";
+import type { NsisUpdater as NsisType } from "electron-updater/out/NsisUpdater";
+import type { VerifyUpdateCodeSignature } from "electron-updater";
 import { createUpdaterInstallerAdapter } from "./updateInstallerAdapter";
 import { createUpdateInstaller } from "./updateInstall";
 const require = createRequire(import.meta.url);
 const { BaseUpdater } = require("electron-updater/out/BaseUpdater") as {
   BaseUpdater: typeof BaseType;
+};
+const { NsisUpdater } = require("electron-updater/out/NsisUpdater") as {
+  NsisUpdater: typeof NsisType;
 };
 class NativeBaseUpdater extends BaseUpdater {
   calls = 0;
@@ -72,6 +77,83 @@ it.each(["error", "watchdog"])(
     }
   },
 );
+describe("Windows update signature check", () => {
+  const publisherNames = ["F5"];
+  const installerPath = "C:\\updater\\pending\\temp-F5-x64.exe";
+  // execFile marks the error killed when the verifier exceeds its 20-second timeout.
+  const timedOut = () =>
+    Object.assign(new Error("Command failed: powershell.exe"), { killed: true });
+  const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+  // Runs the real NsisUpdater.verifySignature, which NSIS downloads call and
+  // which accepts only null as a valid signature.
+  function nsisUpdater(verify: VerifyUpdateCodeSignature) {
+    const native = new NsisUpdater(undefined, { version: "0.1.0", quit: vi.fn() } as never);
+    native.logger = logger;
+    native.verifyUpdateCodeSignature = verify;
+    Object.assign(native, { configOnDisk: { value: Promise.resolve({ publisherName: "F5" }) } });
+    createUpdaterInstallerAdapter(native, "win32");
+    const check = native as unknown as {
+      verifySignature(path: string): Promise<string | null>;
+    };
+    return { native, check: () => check.verifySignature(installerPath) };
+  }
+
+  it("retries a timed-out signature check with the same verifier and installer", async () => {
+    const verify = vi
+      .fn<VerifyUpdateCodeSignature>()
+      .mockRejectedValueOnce(timedOut())
+      .mockResolvedValueOnce(null);
+    const { check } = nsisUpdater(verify);
+
+    await expect(check()).resolves.toBeNull();
+    expect(verify.mock.calls).toEqual([
+      [publisherNames, installerPath],
+      [publisherNames, installerPath],
+    ]);
+  });
+
+  it.each([
+    { name: "an invalid signature", outcome: () => Promise.resolve("Invalid publisher"), calls: 1 },
+    {
+      name: "another error",
+      outcome: () => Promise.reject(new Error("Cannot execute PowerShell")),
+      calls: 1,
+    },
+    { name: "two timeouts", outcome: () => Promise.reject(timedOut()), calls: 2 },
+  ])("fails on $name on every download without stacking retries", async ({ outcome, calls }) => {
+    const verify = vi.fn<VerifyUpdateCodeSignature>(outcome);
+    const { check } = nsisUpdater(verify);
+
+    for (let download = 1; download <= 2; download++) {
+      const result = await check().catch((error: unknown) => error);
+      expect(result).not.toBeNull();
+      expect(verify).toHaveBeenCalledTimes(calls * download);
+    }
+  });
+
+  it("rejects a retry when the capability probe skips verification", async () => {
+    let native: InstanceType<typeof NsisUpdater> | undefined;
+    const verify = vi
+      .fn<VerifyUpdateCodeSignature>()
+      .mockRejectedValueOnce(timedOut())
+      .mockImplementationOnce(async () => {
+        // electron-updater resolves null even though its failed probe skipped verification.
+        native!.logger?.warn(
+          "Cannot execute ConvertTo-Json: spawnSync powershell.exe ETIMEDOUT. Ignoring signature validation due to unsupported powershell version. Please upgrade to powershell 3 or higher.",
+        );
+        return null;
+      });
+    const updater = nsisUpdater(verify);
+    native = updater.native;
+
+    await expect(updater.check()).resolves.toBe(
+      "Signature validation was skipped after a timed-out check.",
+    );
+    expect(verify).toHaveBeenCalledTimes(2);
+    expect(native.logger).toBe(logger);
+  });
+});
 it.each([false, true])(
   "stages using real MacUpdater before cleanup without a handoff timeout (stage error first: %s)",
   async (failFirst) => {
