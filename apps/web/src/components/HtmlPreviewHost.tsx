@@ -1,12 +1,17 @@
 import { HTML_RENDER_MAX_PAGE_BYTES } from "@t3tools/contracts";
 import { getServerHttpOrigin } from "../lib/serverHttpOrigin";
 import { readBoundedResponseText } from "../lib/readBoundedResponseText";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
+import { useHtmlRenderThemes } from "../hooks/useHtmlRenderTheme";
 import { readNativeApi } from "../nativeApi";
 import { onServerWelcome } from "../wsNativeApi";
 
 /** Only desktop app renderers can fulfill offscreen preview requests. */
 export function HtmlPreviewHost() {
+  // Read through a ref, so a theme change neither re-registers the host nor drops requests.
+  const current = useHtmlRenderThemes();
+  const themes = useRef(current);
+  themes.current = current;
   useEffect(() => {
     const render = window.desktopBridge?.htmlPreview;
     const api = readNativeApi()?.htmlRender;
@@ -32,6 +37,8 @@ export function HtmlPreviewHost() {
             threadId: request.threadId,
             width: request.width,
             appearance: request.appearance,
+            // The appearance the agent asked for, even when the reader shows the other one.
+            theme: themes.current[request.appearance],
             html,
           });
         })

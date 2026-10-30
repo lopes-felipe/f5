@@ -76,7 +76,7 @@ const source = () =>
 const pending=new Map();let next=1;
 const request=(method,params)=>new Promise(resolve=>{const id=next++;pending.set(id,resolve);parent.postMessage({jsonrpc:'2.0',id,method,params},'*');});
 window.addEventListener('message',event=>{if(event.source===parent&&event.data?.jsonrpc==='2.0'&&pending.has(event.data.id)){pending.get(event.data.id)(event.data);pending.delete(event.data.id);}});
-const ready=request('ui/initialize',{protocolVersion:'2026-01-26'}).then(()=>{parent.postMessage({jsonrpc:'2.0',method:'ui/notifications/initialized'},'*');parent.postMessage({mcpProbe:'ready'},'*');});
+const ready=request('ui/initialize',{protocolVersion:'2026-01-26'}).then((reply)=>{parent.postMessage({jsonrpc:'2.0',method:'ui/notifications/initialized'},'*');parent.postMessage({mcpProbe:'ready',hostContext:reply.result?.hostContext},'*');});
 document.getElementById('act').onclick=async()=>{await ready; const mode=${JSON.stringify(mode)};
 if(mode==='noop')return;
 if(mode==='link'){const reply=await request('ui/open-link',{url:'https://example.com/weather'});parent.postMessage({mcpProbe:'done',reply},'*');return;}
@@ -149,6 +149,24 @@ it("uses an opaque sandbox and calls a read-only tool without an approval prompt
     approved: false,
   });
   expect(page.getByRole("dialog").query()).toBeNull();
+});
+it("gives the app the reader's palette, fonts and radius as host styles", async () => {
+  await mount();
+  await ready();
+  const report = reports.find((entry) => (entry as { mcpProbe?: string }).mcpProbe === "ready") as {
+    hostContext: { theme: string; styles: { variables: Record<string, string> } };
+  };
+  const variables = report.hostContext.styles.variables;
+  for (const name of [
+    "--color-background-info",
+    "--color-text-info",
+    "--color-border-secondary",
+    "--color-ring-primary",
+  ])
+    expect(variables[name], name).toMatch(/^#[0-9a-f]{6}$/);
+  expect(variables["--font-sans"]).toContain("Inter");
+  expect(variables["--font-mono"]).toContain("JetBrains Mono");
+  expect(variables["--border-radius-md"]).toBe("12px");
 });
 it("leaves fullscreen and waits for explicit approval before sending one tool call", async () => {
   await mount();
