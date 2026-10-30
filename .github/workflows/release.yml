@@ -20,7 +20,7 @@ jobs:
       mac_matrix: ${{ steps.plan.outputs.mac_matrix }}
       windows_upgrade_matrix: ${{ steps.plan.outputs.windows_upgrade_matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -29,7 +29,7 @@ jobs:
         run: node scripts/plan-release-candidate.ts
         env:
           GH_TOKEN: ${{ github.token }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-plan-attempt-${{ github.run_attempt }}
           path: release-plan.json
@@ -93,13 +93,13 @@ jobs:
       TARGET: ${{ matrix.target }}
     steps:
       - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
       - id: runtime
         run: echo "version=$(node --input-type=module -e 'import { CLI_NODE_VERSION } from "./scripts/build-cli-archive.ts"; console.log(CLI_NODE_VERSION)')" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ steps.runtime.outputs.version }}
       - run: |
@@ -107,12 +107,12 @@ jobs:
           node scripts/build-cli-archive.ts --target "$TARGET" --output release-cli
           node scripts/cli-archive-smoke.ts "release-cli/f5-$VERSION-$TARGET.tar.gz" "release-cli/f5-$VERSION-$TARGET.json"
       - run: node scripts/record-release-component.ts release-cli "cli-$TARGET"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cli-${{ matrix.target }}-attempt-${{ github.run_attempt }}
           path: release-cli/*
           retention-days: 30
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: receipt-cli-${{ matrix.target }}-attempt-${{ github.run_attempt }}
           path: component-receipt/receipt.json
@@ -160,14 +160,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
       - run: node scripts/record-release-candidate.ts
         env:
           GH_TOKEN: ${{ github.token }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-candidate-attempt-${{ github.run_attempt }}
           path: candidate.json

@@ -24,7 +24,7 @@ jobs:
       cli_baseline: ${{ steps.plan.outputs.cli_baseline }}
       cli_matrix: ${{ steps.plan.outputs.cli_matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
@@ -34,7 +34,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CANDIDATE_RUN: ${{ inputs.candidate_run }}
           UPGRADE_KEY: ${{ inputs.key }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: upgrade-plan-${{ github.run_attempt }}
           path: proof.json
@@ -71,11 +71,11 @@ jobs:
       CLI_BASELINE: ${{ needs.plan.outputs.cli_baseline }}
     steps:
       - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ matrix.artifact }}
           run-id: ${{ fromJSON(inputs.candidate_run) }}
@@ -98,7 +98,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
@@ -106,7 +106,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           UPGRADE_KEY: ${{ inputs.key }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: upgrade-proof-${{ inputs.key }}-attempt-${{ github.run_attempt }}
           path: proof.json
