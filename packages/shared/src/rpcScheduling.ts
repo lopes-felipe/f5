@@ -366,7 +366,8 @@ export const RPC_METHOD_POLICY = {
   "shell.openInEditor": MUTATION,
   "shell.revealInFileManager": MUTATION,
 
-  "storage.automationAudit": MUTATION,
+  // Reads the audit table and the backup status file.
+  "storage.automationAudit": READ,
   "storage.automationDryRun": MUTATION_RT,
   "storage.cancelCleanup": STOP_RT,
   "storage.cleanup": MUTATION_RT,

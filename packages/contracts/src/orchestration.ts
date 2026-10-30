@@ -3042,7 +3042,7 @@ export const OrchestrationThreadTailDetails = Schema.Struct({
   commandExecutions: Schema.Array(OrchestrationCommandExecutionSummary).pipe(
     Schema.withDecodingDefault(() => []),
   ),
-  /** The retained plans (same query and cap as snapshots), for threads whose snapshot omitted them. */
+  /** Every plan of the thread, uncapped: replaces the client's plans, including ones a startup snapshot omitted. */
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(Schema.withDecodingDefault(() => [])),
   tasks: Schema.Array(TaskItem).pipe(Schema.withDecodingDefault(() => [])),
   tasksTurnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(() => null)),

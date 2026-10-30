@@ -3,6 +3,7 @@ import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import { useStore } from "../store";
+import { useWsConnectionState } from "../wsConnectionState";
 import { warmThreadBundle } from "./threadPreload";
 
 const inFlight = new Map<ThreadId, Promise<boolean>>();
@@ -46,7 +47,8 @@ export function hydrateUnarchivedThreadPlans(
  * For components that render a thread's plans: hydrates them when the startup
  * snapshot omitted them (archived threads) and reports whether they are still
  * loading. A load that fails, or finishes with the plans still omitted,
- * reports `failed` until the thread or the flag changes.
+ * reports `failed` until the thread or the flag changes, or until the
+ * connection synchronizes again, which retries it.
  */
 export function useThreadPlansHydrated(threadId: ThreadId | null | undefined): {
   readonly loading: boolean;
@@ -58,9 +60,11 @@ export function useThreadPlansHydrated(threadId: ThreadId | null | undefined): {
       ? state.threads.find((thread) => thread.id === threadId)?.proposedPlansOmitted === true
       : false,
   );
+  const connection = useWsConnectionState();
+  const connectionReady = connection.phase === "connected" && connection.synchronized;
   const [failedThreadId, setFailedThreadId] = useState<ThreadId | null>(null);
   useEffect(() => {
-    if (!threadId || !omitted) return;
+    if (!threadId || !omitted || !connectionReady) return;
     let cancelled = false;
     setFailedThreadId(null);
     hydrateOmittedThreadPlans(queryClient, threadId).then(
@@ -74,7 +78,7 @@ export function useThreadPlansHydrated(threadId: ThreadId | null | undefined): {
     return () => {
       cancelled = true;
     };
-  }, [queryClient, threadId, omitted]);
+  }, [queryClient, threadId, omitted, connectionReady]);
   const failed = omitted && failedThreadId === threadId;
   return { loading: omitted && !failed, failed };
 }
