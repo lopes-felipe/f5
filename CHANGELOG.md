@@ -48,6 +48,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Reliability
 
+- Fix Claude threads failing with exit code 126 in packaged desktop builds. Resolve the bundled Claude executable from the unpacked application files while preserving isolated-profile certification, and verify CLI discovery and SDK startup in macOS release builds.
 - Keep stop, approvals, user-input answers and supported steering responsive while a provider prompt is pending, and prevent late results from reviving a stopped generation.
 - Run durable deliveries independently across threads, scan a bounded rotating backlog, retain delivery reservations, and preserve unknown history as ambiguous recovery evidence.
 - Save workspace files with explicit create or hash-match conditions, cross-profile connection-owned locks and atomic installation. Artifact exports never overwrite an existing file.

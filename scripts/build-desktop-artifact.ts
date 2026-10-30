@@ -28,7 +28,10 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
 const BuildArch = Schema.Literals(["arm64", "x64", "universal"]);
-export const DESKTOP_ASAR_UNPACK = ["node_modules/@ff-labs/fff-bin-*/**/*"] as const;
+export const DESKTOP_ASAR_UNPACK = [
+  "node_modules/@ff-labs/fff-bin-*/**/*",
+  "node_modules/@anthropic-ai/claude-agent-sdk-*/**/*",
+] as const;
 
 const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("..", import.meta.url))),
@@ -469,6 +472,7 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     protocols: DESKTOP_PROTOCOLS,
     artifactName: "F5-${version}-${arch}.${ext}",
     asarUnpack: DESKTOP_ASAR_UNPACK,
+    ...(platform !== "mac" ? { afterPack: "verify-claude-runtime.cjs" } : {}),
     ...(platform !== "linux"
       ? {
           extraResources: [{ from: "apps/desktop/native-bin", to: "native" }],
@@ -700,6 +704,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       yield* fs.copyFile(path.join(repoRoot, "scripts", hook), path.join(stageAppDir, hook));
   }
 
+  yield* fs.copyFile(
+    path.join(repoRoot, "scripts", "verify-claude-runtime.cjs"),
+    path.join(stageAppDir, "verify-claude-runtime.cjs"),
+  );
   yield* assertPlatformBuildResources(options.platform, stageResourcesDir, options.verbose);
 
   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production

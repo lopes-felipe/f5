@@ -13,6 +13,7 @@ import {
   protectProfileAdapter,
 } from "./providerIsolation";
 import { runProcess } from "../processRunner";
+import { resolveClaudeSdkExecutableOptions } from "../provider/claudeSdkExecutable";
 
 vi.mock("../processRunner", () => ({ runProcess: vi.fn() }));
 afterEach(() => {
@@ -32,6 +33,17 @@ it("requires deliberate recertification when the bundled Claude SDK changes", as
     validateProviderCompatibility(config, "claudeAgent", "claude", {}),
   ).resolves.toBeUndefined();
   expect(runProcess).not.toHaveBeenCalled();
+});
+
+it("rejects explicit Claude executable overrides in isolated profiles", async () => {
+  await expect(
+    validateProviderCompatibility(
+      config,
+      "claudeAgent",
+      resolveClaudeSdkExecutableOptions("claude").pathToClaudeCodeExecutable!,
+      {},
+    ),
+  ).rejects.toThrow("unsupported-isolation: Claude requires the bundled certified Agent SDK");
 });
 
 it("coalesces version probes and expires certification after a minute", async () => {
