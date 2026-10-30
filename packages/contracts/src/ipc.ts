@@ -686,6 +686,10 @@ export interface DesktopBrowserOpenBridge {
   answer: (requestId: string, choice: DesktopBrowserOpenChoice) => Promise<void>;
 }
 
+export type DesktopTrackpadScrollEvent =
+  // `precise` is false for a mouse wheel, and absent when Chromium did not report it.
+  { readonly phase: "begin"; readonly precise?: boolean } | { readonly phase: "end" };
+
 export interface DesktopBridge {
   htmlPreview?: (input: HtmlPreviewRequest) => Promise<HtmlPreviewResult>;
   /** Consent for terminals and agents opening login URLs; requests arrive only on macOS. */
@@ -735,6 +739,8 @@ export interface DesktopBridge {
   revealFile?: (filePath: string) => Promise<void>;
   openThreadInNewWindow?: (threadId: string) => Promise<boolean>;
   onMenuAction: (listener: (action: string) => void) => () => void;
+  /** macOS only. Chromium brackets each scroll, momentum included, with a begin and an end. */
+  onTrackpadScroll?: (listener: (event: DesktopTrackpadScrollEvent) => void) => () => void;
   checkForUpdates?: () => Promise<DesktopUpdateActionResult>;
   setUpdateChannel?: (channel: DesktopUpdateChannel) => Promise<DesktopUpdateActionResult>;
   getUpdateState: () => Promise<DesktopUpdateState>;
