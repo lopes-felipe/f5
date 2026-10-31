@@ -207,6 +207,10 @@ function MessagesTimelineEmpty(props: { emptyState: MessagesTimelineEmptyState |
   );
 }
 
+// Drawn inside the media so dark screenshots keep an edge on the dark background.
+const USER_MEDIA_EDGE_CLASS_NAME =
+  "relative after:pointer-events-none after:absolute after:inset-0 after:z-10 after:rounded-[inherit] after:ring-1 after:ring-inset after:ring-black/9 dark:after:ring-white/12";
+
 const WORK_META_CHIP_CLASS_NAME =
   "inline-flex h-5 items-center rounded-md border border-border bg-muted/50 px-1.5 text-2xs text-muted-foreground";
 
@@ -4146,28 +4150,76 @@ function UserMessageRowContent(props: {
   const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
   const terminalContexts = displayedUserMessage.contexts;
   const canRevertAgentWork = externals.canRevert;
+  // Images sent without words show as media, not as a bubble around them.
+  const mediaOnly =
+    userImages.length > 0 &&
+    userFiles.length === 0 &&
+    displayedUserMessage.attachedFilePaths.length === 0 &&
+    terminalContexts.length === 0 &&
+    displayedUserMessage.visibleText.trim() === "";
+  // A lone image keeps its own shape; a fixed crop hides most of a wide screenshot.
+  const loneImage = mediaOnly && userImages.length === 1;
+  // Several images sent without words share one rounded shape, split by hairlines.
+  const collage = mediaOnly && userImages.length > 1;
   return (
     <div className="group/user-message flex flex-col items-end">
       <div
-        className="max-w-full rounded-xl rounded-br-md border border-border bg-secondary px-4 py-2.5 sm:max-w-[85%]"
+        className={cn(
+          "max-w-full sm:max-w-[85%]",
+          !mediaOnly && "rounded-xl rounded-br-md border border-border bg-secondary px-4 py-2.5",
+        )}
         data-slot="user-message-bubble"
+        data-media-only={mediaOnly ? "" : undefined}
       >
         {userFiles.map((file) => (
           <AttachmentFileChip key={file.id} file={file} />
         ))}
         {userImages.length > 0 && (
-          <div className="mb-2 grid max-w-[420px] grid-cols-2 gap-2">
-            {userImages.map((image: NonNullable<TimelineMessage["attachments"]>[number]) => {
+          <div
+            className={cn(
+              "grid",
+              loneImage
+                ? "max-w-full"
+                : collage
+                  ? cn(
+                      USER_MEDIA_EDGE_CLASS_NAME,
+                      "w-80 max-w-full gap-px overflow-hidden rounded-2xl bg-black/9 dark:bg-white/12",
+                      userImages.length === 2
+                        ? "auto-rows-[12rem] grid-cols-2"
+                        : userImages.length === 3
+                          ? "auto-rows-[calc(6rem-0.5px)] grid-cols-[3fr_2fr]"
+                          : "auto-rows-[6rem] grid-cols-2",
+                    )
+                  : "mb-2 max-w-[420px] grid-cols-2 gap-2",
+            )}
+          >
+            {userImages.map((image: NonNullable<TimelineMessage["attachments"]>[number], index) => {
               const previewUrl = image.previewUrl;
               return (
                 <div
                   key={image.id}
-                  className="overflow-hidden rounded-lg border border-border/80 bg-background/70"
+                  className={cn(
+                    loneImage
+                      ? cn(
+                          USER_MEDIA_EDGE_CLASS_NAME,
+                          "overflow-hidden rounded-2xl bg-background/70",
+                        )
+                      : collage
+                        ? cn(
+                            "overflow-hidden bg-background",
+                            userImages.length === 3 && index === 0 && "row-span-2",
+                            userImages.length > 3 &&
+                              userImages.length % 2 === 1 &&
+                              index === userImages.length - 1 &&
+                              "col-span-2",
+                          )
+                        : "overflow-hidden rounded-lg border border-border/80 bg-background/70",
+                  )}
                 >
                   {previewUrl ? (
                     <button
                       type="button"
-                      className="h-full w-full cursor-zoom-in"
+                      className="block h-full w-full cursor-zoom-in"
                       aria-label={`Preview ${image.name}`}
                       onContextMenu={(event) => {
                         if (!usesCustomImageContextMenu || !hasImageActionMenu) return;
@@ -4192,12 +4244,26 @@ function UserMessageRowContent(props: {
                       <img
                         src={previewUrl}
                         alt={image.name}
-                        className="h-full max-h-[220px] w-full object-cover"
+                        className={cn(
+                          "block object-cover",
+                          // A fixed height keeps the row from growing when the image loads.
+                          loneImage
+                            ? "h-48 w-auto min-w-24 max-w-full"
+                            : collage
+                              ? "size-full"
+                              : "h-full max-h-[220px] w-full",
+                        )}
                         draggable={false}
                       />
                     </button>
                   ) : (
-                    <div className="flex min-h-18 items-center justify-center px-2 py-3 text-center text-2xs text-muted-foreground">
+                    <div
+                      className={cn(
+                        "flex min-h-18 items-center justify-center px-2 py-3 text-center text-2xs text-muted-foreground",
+                        loneImage && "h-48 w-64 max-w-full",
+                        collage && "h-full",
+                      )}
+                    >
                       {image.name}
                     </div>
                   )}

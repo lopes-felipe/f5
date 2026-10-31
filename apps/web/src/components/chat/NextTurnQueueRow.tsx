@@ -26,7 +26,11 @@ import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { SkillInlineChip } from "./SkillInlineChip";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
-import { buildQueueRowDisplay, USAGE_LIMIT_RESUME_LABEL } from "./NextTurnQueuePanel.logic";
+import {
+  buildQueueRowDisplay,
+  rebuildEditedText,
+  USAGE_LIMIT_RESUME_LABEL,
+} from "./NextTurnQueuePanel.logic";
 import { RUNTIME_MODE_PRESENTATION } from "./runtimeModePresentation";
 
 export function NextTurnQueueRow({
@@ -95,8 +99,10 @@ export function NextTurnQueueRow({
     if (draft) setEditDraft(snapshot.threadId, item.itemId, { ...draft, ...patch });
   };
   const stopEditing = () => setEditDraft(snapshot.threadId, item.itemId, null);
+  // Attachments and send-time context still make a turn without words.
+  const canSave = draft !== null && rebuildEditedText(item, draft.text).trim().length > 0;
   const saveDraft = () => {
-    if (!draft) return;
+    if (!draft || !canSave) return;
     void onUpdate(item, {
       text: draft.text,
       model: draft.model.trim() || undefined,
@@ -237,12 +243,7 @@ export function NextTurnQueueRow({
             <Button type="button" variant="ghost" size="xs" onClick={stopEditing}>
               Cancel
             </Button>
-            <Button
-              type="button"
-              size="xs"
-              disabled={draft.text.trim().length === 0}
-              onClick={saveDraft}
-            >
+            <Button type="button" size="xs" disabled={!canSave} onClick={saveDraft}>
               Save
             </Button>
           </div>

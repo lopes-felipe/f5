@@ -1,4 +1,5 @@
 import {
+  HTML_RENDER_MAX_FIT_HEIGHT,
   HtmlRenderInput,
   HtmlPreviewInput,
   HtmlPreviewResult,
@@ -7,6 +8,9 @@ import {
 import { Data, Effect, Exit, Layer, Option, Schema, ServiceMap } from "effect";
 import { z } from "zod";
 import { previewToolResult, type McpToolResult } from "./previewMcpTools.ts";
+
+const HTML_RENDER_HEIGHT_RULE =
+  "Let content set the page's height. The frame grows to fit the page, so a height that follows the viewport makes it grow again and again: html_preview and html_render reject vh, svh, lvh and dvh units, and height:100% on html or body has the same problem.";
 
 export class ThreadToolError extends Data.TaggedError("ThreadToolError")<{
   readonly message: string;
@@ -156,12 +160,18 @@ export const THREAD_TOOL_DEFINITIONS = [
   {
     name: "html_render",
     title: "Render HTML in thread",
-    description:
-      "Save an HTML page in this thread. Local absolute image paths must stay inside the project, worktree or attachments. JavaScript runs in a sandboxed frame. The page sits on the thread's background, so leave html, body and the outermost element without a background color; a box that needs its own background gets at least 16px of padding and rounded corners.",
+    description: `Save an HTML page in this thread. Local absolute image paths must stay inside the project, worktree or attachments. JavaScript runs in a sandboxed frame. The page sits on the thread's background, so leave html, body and the outermost element without a background color; a box that needs its own background gets at least 16px of padding and rounded corners. F5 fits the frame to the page's height at each reader's width, up to ${HTML_RENDER_MAX_FIT_HEIGHT}px. ${HTML_RENDER_HEIGHT_RULE}`,
     shape: {
       html: z.string().max(512 * 1024),
       title: z.string().min(1).max(80),
-      height: z.number().int().min(120).max(2000),
+      height: z
+        .number()
+        .int()
+        .min(120)
+        .max(2000)
+        .describe(
+          "The frame height in CSS pixels while the page loads. Use html_preview's contentHeight; the loaded page's own height replaces it.",
+        ),
     },
     annotations: annotations(false),
     alwaysLoad: false,
@@ -169,8 +179,7 @@ export const THREAD_TOOL_DEFINITIONS = [
   {
     name: "html_preview",
     title: "Preview HTML screenshot",
-    description:
-      "Render HTML in the connected desktop and return a PNG, content height and console output. No browser download is needed. html_render also works without a desktop.",
+    description: `Render HTML in the connected desktop and return a PNG, content height and console output. No browser download is needed. html_render also works without a desktop. ${HTML_RENDER_HEIGHT_RULE}`,
     shape: {
       html: z.string().max(512 * 1024),
       width: z.number().int().min(200).max(2000).optional(),

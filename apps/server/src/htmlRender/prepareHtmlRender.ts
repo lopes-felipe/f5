@@ -16,6 +16,33 @@ const MIMES: Readonly<Record<string, string>> = {
 };
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
+export class HtmlRenderViewportHeightError extends Error {
+  constructor(found: string) {
+    super(
+      `The page uses a viewport height unit (${found}). The frame grows to fit the page, so a size that follows the viewport makes it grow again and again. Let content set the height, or use fixed pixel heights.`,
+    );
+  }
+}
+
+// Only stylesheets and style attributes are checked, so page text that mentions
+// a unit passes; comments match first so their contents are skipped. Scripts
+// are still checked, since markup they insert applies. An unclosed comment,
+// tag, or quote runs to the end of the page, which keeps both patterns linear
+// on hostile input.
+const CSS_SOURCE =
+  /<!--[\s\S]*?(?:-->|$)|<style\b[^>]*(?:>|$)([\s\S]*?)(?:<\/style\s*>|$)|\sstyle\s*=\s*(?:"([^"]*)(?:"|$)|'([^']*)(?:'|$)|([^\s>]+))/gi;
+// The lookbehind skips base64 runs, such as an inlined image that happens to contain "1vh".
+const VIEWPORT_HEIGHT_UNIT = /(?<![\w.+/])(?:\d+(?:\.\d+)?|\.\d+)[sld]?vh(?![\w-])/i;
+
+/** Rejects vh, svh, lvh and dvh units: the frame fits the page, so they would grow it without end. */
+export function rejectViewportHeightUnits(html: string): void {
+  for (const [, sheet, doubleQuoted, singleQuoted, unquoted] of html.matchAll(CSS_SOURCE)) {
+    const css = sheet ?? doubleQuoted ?? singleQuoted ?? unquoted ?? "";
+    const found = VIEWPORT_HEIGHT_UNIT.exec(css)?.[0];
+    if (found !== undefined) throw new HtmlRenderViewportHeightError(found);
+  }
+}
+
 /** Inline local images through the same inode-checked containment boundary as file serving. */
 export async function prepareHtmlRender(
   html: string,
@@ -23,6 +50,7 @@ export async function prepareHtmlRender(
 ): Promise<string> {
   if (Buffer.byteLength(html) > HTML_RENDER_MAX_SOURCE_BYTES)
     throw new Error("HTML source exceeds 512 KiB.");
+  rejectViewportHeightUnits(html);
   const document = parse(html);
   const pending: DefaultTreeAdapterMap["node"][] = [document];
   const images = new Map<string, string>();
