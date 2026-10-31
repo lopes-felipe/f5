@@ -1,10 +1,12 @@
 import { ProjectId } from "@t3tools/contracts";
+import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerSendText";
 import { assert, it } from "@effect/vitest";
 import { Effect } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { makeGlobalSearch } from "./globalSearch.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
+import Migration0149 from "./persistence/Migrations/149_ExcludeImageOnlyPromptFromSearch.ts";
 
 const layer = it.layer(SqlitePersistenceMemory);
 
@@ -143,6 +145,44 @@ layer("GlobalSearch", (it) => {
       assert.equal(hiddenReasoning.results.length, 0);
       const hiddenPayload = yield* search.query({ query: "rawTerminalLog" });
       assert.equal(hiddenPayload.results.length, 0);
+    }),
+  );
+
+  it.effect("leaves the hidden prompt of image-only messages out of search", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const search = yield* makeGlobalSearch;
+      const at = "2026-01-05T00:00:00.000Z";
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+        ) VALUES (
+          'image-only', 'search-thread', 'search-turn', 'user', ${IMAGE_ONLY_BOOTSTRAP_PROMPT},
+          0, ${at}, ${at}
+        )
+      `;
+      assert.equal((yield* search.query({ query: "additional text" })).results.length, 0);
+      yield* sql`UPDATE projection_thread_messages SET text = 'Explain this additional text'
+        WHERE message_id = 'image-only'`;
+      assert.equal((yield* search.query({ query: "additional text" })).results.length, 1);
+
+      // An index built before migration 149 still holds the prompt until the migration runs.
+      yield* sql`DELETE FROM projection_thread_messages WHERE message_id = 'image-only'`;
+      yield* sql`
+        INSERT INTO search_documents (
+          document_key, kind, entity_id, project_id, thread_id, message_id, turn_id,
+          title, content, role, created_at
+        ) VALUES (
+          'message:legacy', 'message', 'legacy', ${projectId}, 'search-thread', 'legacy',
+          'search-turn', 'Durable reconnect work', ${IMAGE_ONLY_BOOTSTRAP_PROMPT}, 'user', ${at}
+        )
+      `;
+      assert.equal((yield* search.query({ query: "additional text" })).results.length, 1);
+      yield* Migration0149;
+      assert.equal((yield* search.query({ query: "additional text" })).results.length, 0);
+      const durable = yield* search.query({ query: "durable snapshot" });
+      assert.equal(durable.results[0]?.messageId, "search-message");
     }),
   );
 

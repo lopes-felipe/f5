@@ -1,28 +1,28 @@
 import type { CommandId, NextTurnQueueItem, NextTurnQueueSnapshot } from "@t3tools/contracts";
-import {
-  IMAGE_ONLY_BOOTSTRAP_PROMPT,
-  isImageOnlyBootstrapPrompt,
-} from "@t3tools/shared/composerSendText";
+import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerSendText";
 
-import { deriveDisplayedUserMessageState } from "~/lib/terminalContext";
+import {
+  deriveDisplayedUserMessageState,
+  type DisplayedUserMessageState,
+} from "~/lib/terminalContext";
 
 export const USAGE_LIMIT_RESUME_LABEL = "Continues after usage limit resets";
 
-/** Puts an edited queued turn's visible text back in front of its send-time context. */
+/**
+ * Puts an edited queued turn's visible text back in front of its send-time context. An empty
+ * result means the turn has nothing left to send.
+ */
 export function rebuildEditedText(item: NextTurnQueueItem, visibleText: string): string {
   const current = item.command.message.text;
-  // Editing shows an image-only turn without its hidden prompt; the agent still needs words.
-  if (isImageOnlyBootstrapPrompt(current)) {
-    return visibleText.trim() || IMAGE_ONLY_BOOTSTRAP_PROMPT;
-  }
-  const displayed = item.command.message.text.trim().length > 0 ? current : "";
-  const existingVisible =
-    displayed.length > 0
-      ? current.slice(0, current.length - (current.length - current.trimEnd().length))
-      : "";
+  const visible = visibleText.trim();
   const terminalMarker = current.search(/\n*<terminal_context>|\n*<attached_files>/u);
-  if (terminalMarker >= 0) return `${visibleText.trim()}${current.slice(terminalMarker)}`;
-  return existingVisible === current ? visibleText.trim() : `${visibleText.trim()}\n`;
+  if (terminalMarker >= 0) return `${visible}${current.slice(terminalMarker)}`;
+  // Providers need words to start a turn, so attachments sent without any get the hidden prompt,
+  // as they do when first sent.
+  if (visible.length === 0) {
+    return item.command.message.attachments.length > 0 ? IMAGE_ONLY_BOOTSTRAP_PROMPT : "";
+  }
+  return current === current.trimEnd() ? visible : `${visible}\n`;
 }
 
 export function buildQueueRowDisplay(item: NextTurnQueueItem) {
@@ -37,16 +37,23 @@ export function buildQueueRowDisplay(item: NextTurnQueueItem) {
     ...displayed,
     imageCount,
     fileCount,
-    label:
-      describeAnswerDelivery(item) ??
-      (displayed.visibleText.trim().length === 0 &&
-      displayed.attachedFilePaths.length === 0 &&
-      imageCount + fileCount > 0
-        ? fileCount > 0
-          ? "Attachment-only turn"
-          : "Image-only turn"
-        : displayed.visibleText),
+    label: describeAnswerDelivery(item) ?? queuedTurnLabel(displayed, { imageCount, fileCount }),
   };
+}
+
+/** Names a queued turn sent without words by what it carries. */
+export function queuedTurnLabel(
+  displayed: Pick<DisplayedUserMessageState, "visibleText" | "attachedFilePaths">,
+  attachments: { readonly imageCount: number; readonly fileCount: number },
+): string {
+  if (
+    displayed.visibleText.trim().length > 0 ||
+    displayed.attachedFilePaths.length > 0 ||
+    attachments.imageCount + attachments.fileCount === 0
+  ) {
+    return displayed.visibleText;
+  }
+  return attachments.fileCount > 0 ? "Attachment-only turn" : "Image-only turn";
 }
 
 /**

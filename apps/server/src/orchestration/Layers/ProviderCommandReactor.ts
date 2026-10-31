@@ -124,6 +124,7 @@ import { codexChromeFingerprint } from "../../provider/codexChromeIntegration";
 import {
   formatThreadTitleRegenerationContext,
   resolveBestEffortGeneratedTitleResult,
+  userMessageTitleText,
 } from "../../threadTitle.ts";
 
 type ProviderIntentEvent = Extract<
@@ -1639,7 +1640,9 @@ const make = Effect.gen(function* () {
     const titleSourceText =
       event.payload.origin !== "first-turn"
         ? explicitContext.text
-        : (event.payload.titleSourceText ?? firstUserMessage?.text ?? "").trim();
+        : (
+            event.payload.titleSourceText ?? userMessageTitleText(firstUserMessage?.text ?? "")
+          ).trim();
     const attachments =
       event.payload.origin !== "first-turn"
         ? explicitContext.attachments
@@ -1899,7 +1902,9 @@ const make = Effect.gen(function* () {
       threadId: event.payload.threadId,
       messageId: message.id,
       titleSourceText:
-        event.payload.titleSourceText !== undefined ? event.payload.titleSourceText : message.text,
+        event.payload.titleSourceText !== undefined
+          ? event.payload.titleSourceText
+          : userMessageTitleText(message.text),
       ...(event.payload.titleGenerationModel !== undefined
         ? { titleGenerationModel: event.payload.titleGenerationModel }
         : {}),

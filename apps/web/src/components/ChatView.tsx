@@ -1,5 +1,6 @@
 import { ThreadFindBar, type ThreadFindMatch } from "./chat/ThreadFindBar";
 import { ThreadFindContext } from "./chat/threadFindContext";
+import { queuedTurnLabel } from "./chat/NextTurnQueuePanel.logic";
 import {
   hasPullRequestReferenceDrag,
   readPullRequestReferenceDrag,
@@ -468,7 +469,10 @@ import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { ThreadDetailsLoadingState } from "./StartupLoadingState";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./ui/empty";
 import { WORK_LOG_PAGE_SIZE } from "./chat/workLogConstants";
-import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerSendText";
+import {
+  IMAGE_ONLY_BOOTSTRAP_PROMPT,
+  isImageOnlyBootstrapPrompt,
+} from "@t3tools/shared/composerSendText";
 
 const ATTACHMENT_PREVIEW_HANDOFF_TTL_MS = 5000;
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
@@ -2970,7 +2974,7 @@ export default memo(function ChatView({
       if (!api || !worktreeSetup) return;
       const setupThreadId = worktreeSetup.threadId;
       // Discarding a settled setup deletes the still-empty thread; keep its text.
-      const discardedText =
+      const queuedText =
         action === "cancel" && worktreeSetup.phase !== "running"
           ? (useNextTurnQueueStore
               .getState()
@@ -2978,6 +2982,9 @@ export default memo(function ChatView({
                 (item) => item.itemId === worktreeSetup.itemId,
               )?.command.message.text ?? null)
           : null;
+      // An image-only turn has no words of the user's to keep.
+      const discardedText =
+        queuedText !== null && isImageOnlyBootstrapPrompt(queuedText) ? null : queuedText;
       setWorktreeSetupBusy(true);
       try {
         await api.worktreeSetup[action]({
@@ -4162,7 +4169,11 @@ export default memo(function ChatView({
           useNextTurnQueueStore.getState().addOptimistic({
             submissionId: input.command.commandId,
             threadId: input.command.threadId,
-            text: deriveDisplayedUserMessageState(input.command.message.text).visibleText,
+            // Uploaded attachments carry no kind, so the composer snapshot says which they were.
+            text: queuedTurnLabel(deriveDisplayedUserMessageState(input.command.message.text), {
+              imageCount: input.rollback.images.filter((image) => image.type === "image").length,
+              fileCount: input.rollback.images.filter((image) => image.type === "file").length,
+            }),
             createdAtMs: Date.now(),
           });
         }

@@ -12,6 +12,7 @@ import {
   describeQueueBlockedState,
   isFoldedUsageLimitItem,
   mergeVisibleOrder,
+  queuedTurnLabel,
   rebuildEditedText,
 } from "./NextTurnQueuePanel.logic";
 
@@ -139,6 +140,15 @@ describe("buildQueueRowDisplay", () => {
     expect(buildQueueRowDisplay(item("plain", ordinary)).label).toBe(ordinary);
   });
 
+  it("labels a pending send the same way from its composer counts", () => {
+    const empty = { visibleText: "", attachedFilePaths: [] };
+    expect(queuedTurnLabel(empty, { imageCount: 2, fileCount: 0 })).toBe("Image-only turn");
+    expect(queuedTurnLabel(empty, { imageCount: 1, fileCount: 1 })).toBe("Attachment-only turn");
+    expect(queuedTurnLabel({ ...empty, visibleText: "Fix" }, { imageCount: 1, fileCount: 0 })).toBe(
+      "Fix",
+    );
+  });
+
   it("labels an image-only turn instead of showing its hidden prompt", () => {
     const display = buildQueueRowDisplay(imageOnlyItem());
     expect(display.label).toBe("Image-only turn");
@@ -147,21 +157,35 @@ describe("buildQueueRowDisplay", () => {
   });
 });
 
-const imageOnlyItem = (text = IMAGE_ONLY_BOOTSTRAP_PROMPT) =>
+const attachment = {
+  image: { type: "image", id: "image-1", name: "shot.png" },
+  file: { type: "file", id: "file-1", name: "spec.pdf" },
+};
+const imageOnlyItem = (
+  text = IMAGE_ONLY_BOOTSTRAP_PROMPT,
+  attachments: ReadonlyArray<object> = [attachment.image],
+) =>
   ({
     command: {
       commandId: CommandId.makeUnsafe("image-only"),
-      message: {
-        text,
-        attachments: [{ type: "image", id: "image-1", name: "shot.png" }],
-      },
+      message: { text, attachments },
     },
   }) as unknown as NextTurnQueueItem;
 
 describe("rebuildEditedText", () => {
-  it("keeps the hidden prompt when an image-only turn is saved without words", () => {
+  it("keeps the hidden prompt when an attachment-only turn is saved without words", () => {
     expect(rebuildEditedText(imageOnlyItem(), "")).toBe(IMAGE_ONLY_BOOTSTRAP_PROMPT);
     expect(rebuildEditedText(imageOnlyItem(), "  ")).toBe(IMAGE_ONLY_BOOTSTRAP_PROMPT);
+    const fileOnly = imageOnlyItem(IMAGE_ONLY_BOOTSTRAP_PROMPT, [attachment.file]);
+    expect(rebuildEditedText(fileOnly, "")).toBe(IMAGE_ONLY_BOOTSTRAP_PROMPT);
+  });
+
+  it("restores the hidden prompt when the words of a turn with images are cleared", () => {
+    expect(rebuildEditedText(imageOnlyItem("Fix this"), "")).toBe(IMAGE_ONLY_BOOTSTRAP_PROMPT);
+  });
+
+  it("leaves nothing to send when a turn without attachments loses its words", () => {
+    expect(rebuildEditedText(imageOnlyItem("Fix this", []), " ")).toBe("");
   });
 
   it("replaces the hidden prompt with words added while editing", () => {

@@ -8,6 +8,7 @@ import {
   ProviderInstanceId,
   type OrchestrationMessage,
 } from "@t3tools/contracts";
+import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerSendText";
 
 import { TextGenerationError } from "./git/Errors.ts";
 import {
@@ -22,6 +23,7 @@ import {
   THREAD_TITLE_MAX_CHARS,
   THREAD_TITLE_REGENERATION_MAX_CONTEXT_CHARS,
   trimToMaxChars,
+  userMessageTitleText,
 } from "./threadTitle.ts";
 
 describe("trimToMaxChars", () => {
@@ -121,6 +123,21 @@ describe("formatThreadTitleRegenerationContext", () => {
     expect(context.text).not.toContain("request 3");
     expect(context.text).toContain("request 4");
     expect(context.text).toContain("request 7");
+  });
+
+  it("names image-only messages by their images, not the prompt sent in their place", () => {
+    const context = formatThreadTitleRegenerationContext([
+      {
+        ...userMessage(1, IMAGE_ONLY_BOOTSTRAP_PROMPT),
+        attachments: [
+          { type: "image", id: "shot", name: "shot.png", mimeType: "image/png", sizeBytes: 1 },
+        ],
+      },
+    ]);
+    expect(context.text).toBe("First user message:\n[Image attachment without text]");
+    expect(context.attachments.map((attachment) => attachment.id)).toEqual(["shot"]);
+    expect(userMessageTitleText(` ${IMAGE_ONLY_BOOTSTRAP_PROMPT}\n`)).toBe("");
+    expect(userMessageTitleText(" Fix the login form ")).toBe("Fix the login form");
   });
 
   it("preserves the beginning and latest context within the fixed budget", () => {

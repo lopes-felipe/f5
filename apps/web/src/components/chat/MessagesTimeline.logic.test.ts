@@ -29,6 +29,7 @@ import {
   sampleTimelineMinimapRowIndices,
   TURN_RAIL_PREVIEW_DISPLAY_CHARS,
 } from "./MessagesTimeline.logic";
+import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerSendText";
 import { appendAttachedFilesToPrompt } from "../../lib/attachedFiles";
 import { appendTerminalContextsToPrompt } from "../../lib/terminalContext";
 
@@ -302,6 +303,21 @@ describe("timeline turn rail", () => {
       },
       { id: "u2", rowIndex: 4, createdAt: null, userText: "Second", assistantText: null },
     ]);
+  });
+
+  it("previews an image-only turn by its images, not the prompt sent in their place", () => {
+    const [item] = deriveTimelineTurnRailItems([
+      {
+        id: "u1",
+        kind: "message",
+        message: {
+          role: "user",
+          text: IMAGE_ONLY_BOOTSTRAP_PROMPT,
+          attachments: [{ name: "login.png" }, { name: "error.png" }],
+        },
+      },
+    ]);
+    expect(item?.userText).toBe("login.png, error.png");
   });
 
   it("bounds previews and carries each turn's creation time", () => {
