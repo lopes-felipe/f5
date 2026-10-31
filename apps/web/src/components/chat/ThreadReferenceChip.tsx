@@ -1,8 +1,9 @@
 import { ThreadId } from "@t3tools/contracts";
-import { Link } from "@tanstack/react-router";
 import { MessagesSquareIcon } from "lucide-react";
 
+import { useOpenLink } from "../../hooks/useOpenLink";
 import { useThreadTitle } from "../../threadSelectors";
+import { promptLinkScheme } from "../promptLinks/copyPromptLink";
 import { cn } from "../../lib/utils";
 import {
   COMPOSER_INLINE_CHIP_CLASS_NAME,
@@ -24,6 +25,8 @@ export function ThreadReferenceChip(props: {
 }) {
   const threadId = ThreadId.makeUnsafe(props.threadId);
   const title = useThreadTitle(threadId);
+  // Navigation goes through the shared link opener, which routes thread references in the app.
+  const openLink = useOpenLink();
   const available = title !== null;
   const label = title ?? props.label;
   const chip = (
@@ -46,10 +49,12 @@ export function ThreadReferenceChip(props: {
       <TooltipTrigger
         render={
           props.link && available ? (
-            <Link
-              to="/$threadId"
-              params={{ threadId }}
-              className="inline-flex max-w-full align-middle no-underline"
+            <button
+              type="button"
+              className="inline-flex max-w-full cursor-pointer align-middle"
+              onClick={() => {
+                void openLink(`${promptLinkScheme}://thread/${threadId}`).catch(() => undefined);
+              }}
             />
           ) : (
             <span className="inline-flex max-w-full align-middle" />
