@@ -1,5 +1,6 @@
 import { defaultUrlTransform } from "react-markdown";
 import { isNetworkPath, workspaceRelativeFilePath } from "@t3tools/shared/path";
+import { threadIdOfThreadReferenceUrl } from "@t3tools/shared/threadReferences";
 
 import { formatWorkspaceRelativePath } from "./filePathDisplay";
 import { resolvePathLinkTarget, splitPathAndPosition } from "./terminal-links";
@@ -316,6 +317,8 @@ export function rewriteMarkdownFileUriHref(href: string): string {
  * file chips; everything else gets the default sanitizing.
  */
 export function chatMarkdownUrlTransform(href: string): string {
+  // A bare thread reference opens the thread in the app; other `f5:` links stay stripped.
+  if (threadIdOfThreadReferenceUrl(href)) return href;
   // Destinations arrive percent-encoded, so `C:\me` is `C:%5Cme` here.
   if (isWindowsAbsolutePath(safeDecodeLocalPath(href))) return href;
   if (href.toLowerCase().startsWith("file:") && parseLocalFileUrl(href)) return href;

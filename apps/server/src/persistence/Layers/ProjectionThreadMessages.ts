@@ -10,9 +10,15 @@ import {
   AppendStreamingTextInput,
   type ProjectionThreadMessageRepositoryShape,
   DeleteProjectionThreadMessagesInput,
+  GetProjectionThreadMessageContextItemInput,
   GetProjectionThreadMessageInput,
+  ListProjectionThreadMessageContextPageInput,
   ListProjectionThreadMessagesInput,
   ProjectionThreadMessage,
+  ProjectionThreadMessageContext,
+  THREAD_CONTEXT_ITEM_MAX_CHARS,
+  THREAD_CONTEXT_PREVIEW_MAX_CHARS,
+  ThreadContextAttachment,
 } from "../Services/ProjectionThreadMessages.ts";
 
 const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
@@ -46,8 +52,67 @@ const fromDbRow = (row: ProjectionThreadMessageDbRow): ProjectionThreadMessage =
   ...(row.attachments !== null ? { attachments: row.attachments } : {}),
 });
 
+const ProjectionThreadMessageContextDbRowSchema = ProjectionThreadMessageContext.mapFields(
+  Struct.assign({
+    isStreaming: Schema.Number,
+    attachments: Schema.fromJsonString(Schema.Array(ThreadContextAttachment)),
+  }),
+);
+type ProjectionThreadMessageContextDbRow = typeof ProjectionThreadMessageContextDbRowSchema.Type;
+
+const fromContextDbRow = (
+  row: ProjectionThreadMessageContextDbRow,
+): ProjectionThreadMessageContext => ({ ...row, isStreaming: row.isStreaming === 1 });
+
 const makeProjectionThreadMessageRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+
+  // Only attachment names and types; their payloads and the message's reasoning stay out.
+  const contextColumns = (from: number, length: number) => sql`
+    message_id AS "messageId",
+    role,
+    substr(text, ${from}, ${length}) AS text,
+    length(text) AS "totalLength",
+    (
+      SELECT json_group_array(json_object(
+        'name', COALESCE(json_extract(a.value, '$.name'), ''),
+        'type', COALESCE(json_extract(a.value, '$.type'), '')
+      ))
+      FROM json_each(COALESCE(attachments_json, '[]')) AS a
+    ) AS attachments,
+    is_streaming AS "isStreaming",
+    created_at AS "createdAt",
+    updated_at AS "updatedAt"
+  `;
+
+  const listContextPageRows = SqlSchema.findAll({
+    Request: ListProjectionThreadMessageContextPageInput,
+    Result: ProjectionThreadMessageContextDbRowSchema,
+    execute: ({ threadId, before, limit }) => sql`
+      SELECT ${contextColumns(1, THREAD_CONTEXT_PREVIEW_MAX_CHARS)}
+      FROM projection_thread_messages
+      WHERE thread_id = ${threadId}
+        AND role IN ('user', 'assistant')
+        AND (
+          ${before === undefined ? 1 : 0} = 1
+          OR created_at < ${before?.createdAt ?? ""}
+          OR (created_at = ${before?.createdAt ?? ""} AND message_id < ${before?.messageId ?? ""})
+        )
+      ORDER BY created_at DESC, message_id DESC
+      LIMIT ${limit + 1}
+    `,
+  });
+
+  const getContextItemRow = SqlSchema.findOneOption({
+    Request: GetProjectionThreadMessageContextItemInput,
+    Result: ProjectionThreadMessageContextDbRowSchema,
+    execute: ({ threadId, messageId, offset }) => sql`
+      SELECT ${contextColumns(offset + 1, THREAD_CONTEXT_ITEM_MAX_CHARS)}
+      FROM projection_thread_messages
+      WHERE message_id = ${messageId} AND thread_id = ${threadId}
+        AND role IN ('user', 'assistant')
+    `,
+  });
 
   const upsertProjectionThreadMessageRow = SqlSchema.void({
     Request: ProjectionThreadMessage,
@@ -277,6 +342,22 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
       Effect.map(Option.map(fromDbRow)),
     );
 
+  const listContextPage: ProjectionThreadMessageRepositoryShape["listContextPage"] = (input) =>
+    listContextPageRows(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadMessageRepository.listContextPage:query"),
+      ),
+      Effect.map((rows) => rows.map(fromContextDbRow)),
+    );
+
+  const getContextItem: ProjectionThreadMessageRepositoryShape["getContextItem"] = (input) =>
+    getContextItemRow(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadMessageRepository.getContextItem:query"),
+      ),
+      Effect.map(Option.map(fromContextDbRow)),
+    );
+
   const deleteByThreadId: ProjectionThreadMessageRepositoryShape["deleteByThreadId"] = (input) =>
     deleteProjectionThreadMessageRows(input).pipe(
       Effect.mapError(
@@ -290,6 +371,8 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
     addReasoningTokens,
     listByThreadId,
     getByMessageId,
+    listContextPage,
+    getContextItem,
     deleteByThreadId,
   } satisfies ProjectionThreadMessageRepositoryShape;
 });

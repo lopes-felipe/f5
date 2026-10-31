@@ -1,3 +1,5 @@
+import { threadReferencesToLabels } from "@t3tools/shared/threadReferences";
+
 export function proposedPlanTitle(planMarkdown: string): string | null {
   const heading = planMarkdown.match(/^\s{0,3}#{1,6}\s+(.+)$/m)?.[1]?.trim();
   return heading && heading.length > 0 ? heading : null;
@@ -70,8 +72,13 @@ function sanitizePlanFileSegment(input: string, fallback = "plan"): string {
   return sanitized.length > 0 ? sanitized : fallback;
 }
 
+/**
+ * The agent wrote the plan, so a thread reference in it would turn into a read grant once the
+ * person sends it. References become their plain labels so only references a person adds
+ * themselves grant access.
+ */
 export function buildPlanImplementationPrompt(planMarkdown: string): string {
-  return `PLEASE IMPLEMENT THIS PLAN:\n${planMarkdown.trim()}`;
+  return `PLEASE IMPLEMENT THIS PLAN:\n${threadReferencesToLabels(planMarkdown.trim())}`;
 }
 
 export function resolvePlanFollowUpSubmission(input: { draftText: string; planMarkdown: string }): {

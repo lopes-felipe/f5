@@ -74,6 +74,52 @@ export const AppendStreamingTextInput = Schema.Struct({
 });
 export type AppendStreamingTextInput = typeof AppendStreamingTextInput.Type;
 
+/** Longest message preview a context page returns, in code points. */
+export const THREAD_CONTEXT_PREVIEW_MAX_CHARS = 4096;
+/** Longest chunk a context item read returns, in code points. */
+export const THREAD_CONTEXT_ITEM_MAX_CHARS = 16384;
+
+export const ThreadContextAttachment = Schema.Struct({
+  name: Schema.String,
+  type: Schema.String,
+});
+export type ThreadContextAttachment = typeof ThreadContextAttachment.Type;
+
+/**
+ * A user or assistant message read as context for another thread: its text is bounded in SQL
+ * and reasoning and attachment payloads are left out.
+ */
+export const ProjectionThreadMessageContext = Schema.Struct({
+  messageId: MessageId,
+  role: OrchestrationMessageRole,
+  text: Schema.String,
+  /** Length of the full text in code points, matching SQLite `length`. */
+  totalLength: NonNegativeInt,
+  attachments: Schema.Array(ThreadContextAttachment),
+  isStreaming: Schema.Boolean,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type ProjectionThreadMessageContext = typeof ProjectionThreadMessageContext.Type;
+
+export const ListProjectionThreadMessageContextPageInput = Schema.Struct({
+  threadId: ThreadId,
+  /** Exclusive keyset cursor: only rows ordered before it are returned. */
+  before: Schema.optional(Schema.Struct({ createdAt: Schema.String, messageId: Schema.String })),
+  limit: NonNegativeInt,
+});
+export type ListProjectionThreadMessageContextPageInput =
+  typeof ListProjectionThreadMessageContextPageInput.Type;
+
+export const GetProjectionThreadMessageContextItemInput = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+  /** Code points to skip. */
+  offset: NonNegativeInt,
+});
+export type GetProjectionThreadMessageContextItemInput =
+  typeof GetProjectionThreadMessageContextItemInput.Type;
+
 /**
  * ProjectionThreadMessageRepositoryShape - Service API for projected thread messages.
  */
@@ -116,6 +162,19 @@ export interface ProjectionThreadMessageRepositoryShape {
   readonly getByMessageId: (
     input: GetProjectionThreadMessageInput,
   ) => Effect.Effect<Option.Option<ProjectionThreadMessage>, ProjectionRepositoryError>;
+
+  /**
+   * Read up to `limit + 1` user and assistant messages, newest first, ordered by
+   * `(createdAt, messageId)` descending. Each text is cut to a preview.
+   */
+  readonly listContextPage: (
+    input: ListProjectionThreadMessageContextPageInput,
+  ) => Effect.Effect<ReadonlyArray<ProjectionThreadMessageContext>, ProjectionRepositoryError>;
+
+  /** Read one chunk of a user or assistant message's text, scoped to its thread. */
+  readonly getContextItem: (
+    input: GetProjectionThreadMessageContextItemInput,
+  ) => Effect.Effect<Option.Option<ProjectionThreadMessageContext>, ProjectionRepositoryError>;
 
   /**
    * Delete projected thread messages by thread.

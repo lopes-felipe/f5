@@ -1,8 +1,11 @@
+import { isReservedThreadRoute } from "@t3tools/shared/promptLinks";
+import { threadReferencePattern } from "@t3tools/shared/threadReferences";
+
 import { isFenceClosingLine, matchFence } from "./streamingMarkdown";
 
 /**
- * The little Markdown a user bubble renders: fenced code blocks, code spans and
- * `**bold**`. Everything else (escapes, `_`, single `*`, `~~`, headings, lists)
+ * The little Markdown a user bubble renders: fenced code blocks, code spans,
+ * `**bold**` and thread references (`[Title](f5://thread/<id>)`). Everything else (escapes, `_`, single `*`, `~~`, headings, lists)
  * stays literal, so `__init__`, `snake_case` and `*.ts` read as typed.
  *
  * Every segment carries its source range; concatenating the `raw` of every
@@ -17,6 +20,14 @@ export type UserMessageSegment =
       readonly raw: string;
       /** The displayed content, without delimiters. */
       readonly value: string;
+    }
+  | {
+      readonly kind: "thread-reference";
+      readonly start: number;
+      readonly end: number;
+      readonly raw: string;
+      readonly threadId: string;
+      readonly label: string;
     }
   | {
       readonly kind: "codeblock";
@@ -168,6 +179,7 @@ class InlineClosers {
 
 function parseInline(text: string, offset: number, segments: UserMessageSegment[]): void {
   const closers = new InlineClosers(text);
+  const threadReference = threadReferencePattern("y");
   let textStart = 0;
   const flushText = (end: number) => {
     if (end > textStart) {
@@ -185,6 +197,26 @@ function parseInline(text: string, offset: number, segments: UserMessageSegment[
     if (char === "\\" && PUNCTUATION.test(text[index + 1] ?? "")) {
       index += 2;
       continue;
+    }
+    // A reference is atomic, so backticks and `**` inside its title stay part of the chip.
+    if (char === "[") {
+      threadReference.lastIndex = index;
+      const match = threadReference.exec(text);
+      if (match?.[1] && match[3] && !isReservedThreadRoute(match[3])) {
+        flushText(index);
+        const end = index + match[0].length;
+        segments.push({
+          kind: "thread-reference",
+          start: offset + index,
+          end: offset + end,
+          raw: match[0],
+          threadId: match[3],
+          label: match[1],
+        });
+        index = end;
+        textStart = index;
+        continue;
+      }
     }
     if (char === "`") {
       const run = backtickRunLength(text, index);

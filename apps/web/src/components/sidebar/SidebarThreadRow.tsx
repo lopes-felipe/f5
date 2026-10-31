@@ -12,13 +12,19 @@ import {
   SunriseIcon,
   TerminalIcon,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import type { DragEvent, ReactNode } from "react";
+import {
+  isThreadReferenceId,
+  THREAD_REFERENCE_MAX_PER_MESSAGE,
+} from "@t3tools/shared/threadReferences";
 
 import { useStore } from "../../store";
 import { ProjectIcon } from "../ProjectIcon";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { synchronizeStatusPulse } from "../../lib/statusPulse";
+import { writeThreadReferenceDrag } from "../../lib/threadReferenceDrag";
+import { selectThreadById } from "../../threadSelectors";
 import { cn } from "../../lib/utils";
 import { selectThreadTerminalState, useTerminalStateStore } from "../../terminalStateStore";
 import { useThreadSelectionStore } from "../../threadSelectionStore";
@@ -81,6 +87,32 @@ export interface SidebarThreadRowProps {
 export const SIDEBAR_ROW_REVEAL_CLASS_NAME =
   "opacity-0 group-hover/thread-row:opacity-100 group-focus-within/thread-row:opacity-100 pointer-coarse:opacity-100";
 
+const PINNED_DRAG_HANDLE_SELECTOR = "[data-pinned-thread-drag-handle]";
+
+/**
+ * The threads a row drag carries: the multi-selection when this row is part of it, in visible
+ * order, otherwise just this row. Titles are the full thread titles.
+ */
+export function threadReferenceDragItems(input: {
+  readonly threadId: ThreadId;
+  readonly selectedThreadIds: ReadonlySet<ThreadId>;
+  readonly orderedIds: readonly ThreadId[];
+  readonly titleOf: (threadId: ThreadId) => string | undefined;
+}): Array<{ threadId: string; title: string }> {
+  const { threadId, selectedThreadIds, orderedIds } = input;
+  const ids =
+    selectedThreadIds.has(threadId) && selectedThreadIds.size > 1
+      ? [
+          ...orderedIds.filter((id) => selectedThreadIds.has(id)),
+          ...[...selectedThreadIds].filter((id) => !orderedIds.includes(id)),
+        ]
+      : [threadId];
+  return ids
+    .filter((id) => isThreadReferenceId(id))
+    .slice(0, THREAD_REFERENCE_MAX_PER_MESSAGE)
+    .map((id) => ({ threadId: id, title: input.titleOf(id) ?? "Thread" }));
+}
+
 export function SidebarThreadRow(props: SidebarThreadRowProps) {
   "use memo";
   const {
@@ -114,6 +146,25 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
         : undefined;
   const canRename = section === "active" || section === "archived" || section === "settled";
   const treeRowProps = useSidebarTreeRowProps(`thread:${section}:${thread.id}`);
+  // Dragging a row onto a composer references the thread; it never navigates or reorders.
+  const draggable = !isDraft && !(canRename && isRenaming) && isThreadReferenceId(thread.id);
+  const onThreadDragStart = (event: DragEvent<HTMLElement>) => {
+    // The pinned handle reorders with its own pointer sensor; it never starts a reference drag.
+    if (event.target instanceof Element && event.target.closest(PINNED_DRAG_HANDLE_SELECTOR)) {
+      event.preventDefault();
+      return;
+    }
+    const items = threadReferenceDragItems({
+      threadId: thread.id,
+      selectedThreadIds: selectable
+        ? useThreadSelectionStore.getState().selectedThreadIds
+        : new Set(),
+      orderedIds,
+      titleOf: (id) =>
+        id === thread.id ? thread.title : selectThreadById(useStore.getState(), id)?.title,
+    });
+    if (!writeThreadReferenceDrag(event.dataTransfer, items)) event.preventDefault();
+  };
   const action =
     section === "active" && !isDraft
       ? {
@@ -160,7 +211,14 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
       <SidebarMenuSubButton
         // Inside a project the row is a tree item, reached with the arrow keys from the
         // tree's single Tab stop; attention rows outside the tree keep their own stop.
-        render={<div role="button" tabIndex={0} {...treeRowProps} />}
+        render={
+          <div
+            role="button"
+            tabIndex={0}
+            {...treeRowProps}
+            {...(draggable ? { draggable: true, onDragStart: onThreadDragStart } : {})}
+          />
+        }
         size="md"
         isActive={isActive}
         {...(testId ? { "data-testid": testId } : {})}
@@ -343,6 +401,7 @@ export function PinnedThreadDragHandle({ threadId }: { threadId: ThreadId }) {
       ref={setNodeRef}
       type="button"
       aria-label="Reorder pinned thread"
+      data-pinned-thread-drag-handle=""
       className={cn(
         "inline-flex size-5 shrink-0 cursor-grab items-center justify-center rounded-md text-warning-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing",
         isDragging && "z-20 opacity-70",

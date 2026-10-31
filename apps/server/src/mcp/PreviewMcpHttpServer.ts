@@ -1,7 +1,8 @@
 import {
   ThreadMcpBroker,
   callThreadTool,
-  THREAD_TOOL_DEFINITIONS,
+  threadToolDefinitions,
+  type ThreadToolAccess,
   THREAD_TOOL_TIMEOUT_MS,
   threadToolInputJsonSchema,
 } from "./threadMcpTools.ts";
@@ -85,6 +86,8 @@ interface PreviewMcpSessionScope {
   readonly automationSessionId: string;
   readonly issuedAt: string;
   readonly catalog: McpCatalog;
+  /** Which thread tools this session lists and may call. */
+  readonly threadAccess: ThreadToolAccess;
   geometry: ComputerToolGeometry;
   computerScope?: ComputerSessionScope;
   /** Provider-native integration proxied through F5's per-call admission. */
@@ -110,6 +113,8 @@ export interface PreviewMcpHttpServerShape {
     readonly catalog?: McpCatalog;
     readonly provider?: ComputerAgentProvider | "acp";
     readonly serverName?: string;
+    /** Thread catalog only: read-only sessions get just the tools that read. Defaults to full. */
+    readonly threadAccess?: ThreadToolAccess;
     /** Required for the `integration` catalog; disposed with the session config. */
     readonly integration?: IntegrationProxySession;
   }) => PreviewMcpSessionConfig;
@@ -158,7 +163,11 @@ function makeToolCallHandler(
     }
     if (scope.catalog === "thread") {
       return thread
-        ? callThreadTool({ broker: thread, threadId: scope.threadId }, name, rawArguments)
+        ? callThreadTool(
+            { broker: thread, threadId: scope.threadId, access: scope.threadAccess },
+            name,
+            rawArguments,
+          )
         : previewToolErrorResult(new Error("Thread tools unavailable."));
     }
     if (scope.catalog === "computer") {
@@ -201,6 +210,7 @@ function handleRpcRequest(input: {
   readonly request: JsonRpcRequest;
   readonly token: string;
   readonly catalog: McpCatalog;
+  readonly threadAccess?: ThreadToolAccess;
   readonly integration?: IntegrationProxySession;
   /** Scopes a client JSON-RPC id to this MCP connection. */
   readonly invocationKey: (id: string) => string;
@@ -267,7 +277,7 @@ function handleRpcRequest(input: {
         jsonRpcSuccess(request.id, {
           tools:
             input.catalog === "thread"
-              ? THREAD_TOOL_DEFINITIONS.map((tool) => ({
+              ? threadToolDefinitions(input.threadAccess ?? "full").map((tool) => ({
                   name: tool.name,
                   description: tool.description,
                   inputSchema: threadToolInputJsonSchema(tool),
@@ -409,6 +419,7 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
               request: asObject(entry) as JsonRpcRequest,
               token,
               catalog,
+              threadAccess: scope.threadAccess,
               ...(scope.integration ? { integration: scope.integration } : {}),
               invocationKey: (id) => `${incarnation}:${id}`,
               callTool,
@@ -517,6 +528,7 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
         ...(input.providerInstanceId ? { providerInstanceId: input.providerInstanceId } : {}),
         automationSessionId: generation,
         catalog,
+        threadAccess: input.threadAccess ?? "full",
         geometry,
         ...(computerScope ? { computerScope } : {}),
         ...(catalog === "integration" ? { integration: input.integration! } : {}),

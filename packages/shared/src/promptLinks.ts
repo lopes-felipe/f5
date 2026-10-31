@@ -263,8 +263,13 @@ export function buildThreadPromptLink(input: {
   return url.toString();
 }
 
-const APP_SCHEME = /^f5(?:-[a-z]+)?:$/;
-const THREAD_ID = /^\/([A-Za-z0-9_-]{1,128})\/?$/;
+/** The app's link schemes (`f5`, `f5-dev`, …) as a regex source without anchors. */
+export const APP_LINK_SCHEME_SOURCE = "f5(?:-[a-z]+)?";
+/** A thread id a thread link can carry, as a regex source without anchors. */
+export const THREAD_LINK_ID_SOURCE = "[A-Za-z0-9_-]{1,128}";
+
+const APP_SCHEME = new RegExp(`^${APP_LINK_SCHEME_SOURCE}:$`);
+const THREAD_ID = new RegExp(`^\\/(${THREAD_LINK_ID_SOURCE})\\/?$`);
 // A thread link opens `/<id>`, so an id naming one of the app's own screens would open that
 // screen instead. Dot segments are refused before URL parsing resolves them for the same reason.
 const RESERVED_ROUTES = new Set([
@@ -279,6 +284,12 @@ const RESERVED_ROUTES = new Set([
   "workflow",
   "worktrees",
 ]);
+
+/** True when `id` names one of the app's own screens, so a thread link must not carry it. */
+export function isReservedThreadRoute(id: string): boolean {
+  return RESERVED_ROUTES.has(id);
+}
+
 const DOT_SEGMENT = /\/\.\.?(?:[/?#]|$)/;
 // Only the parameters each route reads pass through, so a link cannot also open a panel such as
 // the file viewer (`?fileViewPath=.env`) next to the prompt.
@@ -305,7 +316,7 @@ export function promptLinkAppPath(value: string): string | null {
   if (url.host === "new" && (url.pathname === "" || url.pathname === "/"))
     return `/new${allowedSearch(url, NEW_LINK_PARAMS)}`;
   const thread = url.host === "thread" ? THREAD_ID.exec(url.pathname) : null;
-  return thread?.[1] && !RESERVED_ROUTES.has(thread[1])
+  return thread?.[1] && !isReservedThreadRoute(thread[1])
     ? `/${thread[1]}${allowedSearch(url, THREAD_LINK_PARAMS)}`
     : null;
 }

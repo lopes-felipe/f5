@@ -66,6 +66,8 @@ import {
 } from "../markdown-links";
 import { inferEntryKindFromPath } from "../vscode-icons";
 import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
+import { ThreadReferenceChip } from "./chat/ThreadReferenceChip";
+import { threadIdOfThreadReferenceUrl } from "@t3tools/shared/threadReferences";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { SurfaceErrorBoundary } from "./ui/SurfaceErrorBoundary";
 import { MermaidDiagram } from "./chat/MermaidDiagram";
@@ -787,6 +789,16 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         ) : null;
       },
       a({ node: _node, href, children, ...props }) {
+        // A thread reference only navigates; it never grants the agent access to the thread.
+        const referencedThreadId = href ? threadIdOfThreadReferenceUrl(href) : null;
+        if (referencedThreadId)
+          return (
+            <ThreadReferenceChip
+              threadId={referencedThreadId}
+              label={nodeToPlainText(children).trim() || "Thread"}
+              link
+            />
+          );
         // Resolve meta directly from the href so reference-style links and
         // balanced-paren hrefs (which the regex pre-scan misses) still
         // render as file chips — the pre-scan is only used for collision

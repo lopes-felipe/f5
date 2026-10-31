@@ -88,6 +88,30 @@ describe("user message markup", () => {
     }
   });
 
+  it.each([true, false])(
+    "renders thread references as chips with rich text %s",
+    async (composerRichTextEnabled) => {
+      persistAppSettings({ composerRichTextEnabled });
+      const text =
+        "See [Gone `source`](f5://thread/missing-source) and **[Bold](f5://thread/other)**";
+      const { host, screen } = await renderHarness({
+        initialEntries: [makeUserEntry("reference-user", text, 0)],
+      });
+      try {
+        await vi.waitFor(() => {
+          const chips = host.querySelectorAll("[data-thread-reference]");
+          expect(Array.from(chips, (chip) => chip.textContent)).toEqual(["Gone `source`", "Bold"]);
+        });
+        // A thread that is not in the app keeps its saved label and does not link.
+        expect(
+          host.querySelector('[data-thread-reference="missing-source"]')?.closest("a"),
+        ).toBeNull();
+      } finally {
+        await screen.unmount();
+      }
+    },
+  );
+
   it("shows a collapsed bubble as a prefix of the expanded one", async () => {
     persistAppSettings({ composerRichTextEnabled: true });
     const text = `Intro\n\`\`\`ts\n${Array.from({ length: 12 }, (_, index) => `code ${index}`).join("\n")}\n\`\`\`\nOutro`;

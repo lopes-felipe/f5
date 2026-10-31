@@ -4,6 +4,7 @@ import {
   SCHEDULED_RUN_EVENT_TYPES,
 } from "../../scheduledTasks/projector.ts";
 import { retainNativeTurnRows } from "@t3tools/shared/nativeHistoryReconciliation";
+import { effectiveThreadReferenceIds } from "@t3tools/shared/threadReferences";
 import { readSubmissionSource } from "../../provider/submissionProvenance.ts";
 import { makeStreamingProjectionUpdates } from "../../persistence/streamingProjectionUpdates.ts";
 import { PerformanceStageProbe, measurePerformanceStage } from "../../observability/Metrics.ts";
@@ -1465,6 +1466,19 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             yield* sql`INSERT OR IGNORE INTO thread_message_authorship(message_id,thread_id,source) SELECT m.message_id,m.thread_id,${source ?? "human"} FROM projection_thread_messages m JOIN projection_threads t ON t.thread_id=m.thread_id WHERE m.message_id=${event.payload.messageId} AND m.thread_id=${event.payload.threadId}`.pipe(
               Effect.mapError(toPersistenceSqlError("ProjectionPipeline.authorship:write")),
             );
+            // Only an explicit human stamp lets the agent read the threads this message
+            // references; automation and unstamped submissions never grant access.
+            if (source === "human") {
+              for (const targetThreadId of effectiveThreadReferenceIds(nextMessage.text, {
+                exclude: event.payload.threadId,
+              })) {
+                yield* sql`INSERT OR IGNORE INTO thread_reference_grants(thread_id,target_thread_id,message_id,created_at) SELECT m.thread_id,${targetThreadId},m.message_id,${event.payload.createdAt} FROM projection_thread_messages m JOIN projection_threads t ON t.thread_id=m.thread_id WHERE m.message_id=${event.payload.messageId} AND m.thread_id=${event.payload.threadId}`.pipe(
+                  Effect.mapError(
+                    toPersistenceSqlError("ProjectionPipeline.referenceGrants:write"),
+                  ),
+                );
+              }
+            }
           }
           return;
         }
