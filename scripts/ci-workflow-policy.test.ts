@@ -4,6 +4,7 @@ import { parse } from "yaml";
 import { inventories } from "./ci-test-summary.ts";
 
 interface Job {
+  environment?: string;
   needs?: string[];
   if?: string;
   "continue-on-error"?: boolean;
@@ -11,7 +12,14 @@ interface Job {
   concurrency?: unknown;
   permissions?: Record<string, string>;
   strategy?: { matrix?: unknown; "fail-fast"?: boolean };
-  steps?: { id?: string; uses?: string; if?: string; name?: string; run?: string }[];
+  steps?: {
+    id?: string;
+    uses?: string;
+    if?: string;
+    name?: string;
+    run?: string;
+    env?: Record<string, string>;
+  }[];
 }
 const workflow = parse(
   readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
@@ -29,6 +37,47 @@ export function assertWorkflowPolicy(jobs: Record<string, Job>) {
 }
 
 describe("CI workflow policy", () => {
+  it("isolates release App credentials in a main-only environment for both privileged jobs", () => {
+    for (const [file, id] of [
+      ["release-publish.yml", "reconcile"],
+      ["release-prepare.yml", "prepare"],
+    ]) {
+      const job = readWorkflow(file!).jobs[id!]!;
+      expect(job.environment).toBe("release-publish");
+      expect(job.if).toContain("github.ref == 'refs/heads/main'");
+    }
+  });
+  it("gates intent validation on the merge result through required static CI", () => {
+    expect(
+      workflow.jobs.static!.steps!.some(
+        (step) => step.run === "node scripts/check-release-intent.ts",
+      ),
+    ).toBe(true);
+    const owners = readFileSync(new URL("../.github/CODEOWNERS", import.meta.url), "utf8");
+    expect(owners).toContain("/release-intent.json @lopes-felipe");
+  });
+  it("installs dependencies before minting the preparation App token and never persists credentials", () => {
+    const preparation = readWorkflow("release-prepare.yml");
+    const steps = preparation.jobs.prepare!.steps!;
+    const setup = steps.findIndex((s) => s.uses === "./.github/actions/setup");
+    const token = steps.findIndex((s) => s.uses?.startsWith("actions/create-github-app-token@"));
+    expect(setup).toBeGreaterThan(-1);
+    expect(token).toBeGreaterThan(setup);
+    const checkout = steps.find((s) => s.uses?.startsWith("actions/checkout@")) as {
+      with: Record<string, unknown>;
+    };
+    expect(checkout.with["persist-credentials"]).toBe(false);
+    expect(checkout.with.token).toBeUndefined();
+    const prepare = steps.find((s) => s.run?.includes("create-stable-release-pr.ts"))!;
+    expect(prepare.env?.GIT_CONFIG_VALUE_0).toBe("!gh auth git-credential");
+    expect(prepare.env?.GH_TOKEN).toBe("${{ steps.app.outputs.token }}");
+  });
+  it("lets each workspace preserve its package report identity without overwriting sibling reports", () => {
+    for (const [id, job] of Object.entries(workflow.jobs))
+      for (const step of job.steps ?? [])
+        if (step.run?.includes("test:ci:workspaces"))
+          expect(step.env?.F5_CI_SUITE_ID, id).toBeUndefined();
+  });
   it("gates every job and bounds all jobs and matrices", () => assertWorkflowPolicy(workflow.jobs));
   it("has a report inventory for every configured server unit shard", () => {
     expect(workflow.jobs["server-unit"]!.strategy!.matrix).toEqual({ shard: [1, 2] });
@@ -162,7 +211,7 @@ describe("CI workflow policy", () => {
       with?: { path: string; key: string };
     }[];
     expect(steps.find((step) => step.name === "Install dependencies")!.run).toBe(
-      "bun install --frozen-lockfile",
+      "node scripts/retry-install.ts",
     );
     expect(steps.find((step) => step.name === "Verify Electron installation")!.run).toContain(
       "fs.existsSync(resolved)",

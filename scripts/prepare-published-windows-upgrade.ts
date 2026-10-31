@@ -46,6 +46,7 @@ export function preparePublishedWindowsUpgrade(
       target: { type: "string" },
       channel: { type: "string" },
       baseline: { type: "string" },
+      "pinned-baseline": { type: "boolean", default: false },
       "client-channel": { type: "string" },
       "target-dir": { type: "string" },
       "baseline-dir": { type: "string" },
@@ -75,7 +76,15 @@ export function preparePublishedWindowsUpgrade(
 
   // Fail before any network access, and never turn a corrupt candidate into a successful skip.
   verifyWindowsUpgradeArtifacts(targetDir, target, channel);
-  const plans = publishedWindowsBaselines(dependencies.releases(repository), target, channel);
+  const releases = dependencies.releases(repository);
+  // A candidate validates the immutable baseline captured by its plan. A later public
+  // release is qualified separately against the same installer, never by rebuilding.
+  const pinned = values["pinned-baseline"] && values.baseline !== "";
+  const eligible = pinned
+    ? releases.filter((r) => r.tag_name === "v" + values.baseline && !r.draft)
+    : releases;
+  if (pinned && eligible.length !== 1) throw new Error("Pinned published baseline is missing");
+  const plans = publishedWindowsBaselines(eligible, target, channel);
   const plan = plans.find(
     (entry) => entry.baseline === values.baseline && entry.clientChannel === clientChannel,
   );

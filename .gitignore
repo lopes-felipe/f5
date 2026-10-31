@@ -12,6 +12,9 @@ packages/*/dist
 build/
 .logs/
 release/
+# Release automation is source; other release/ directories remain build output.
+!scripts/release/
+!scripts/release/**
 .t3
 .idea/
 apps/web/.playwright

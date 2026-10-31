@@ -1,184 +1,90 @@
-name: Release
+name: Release candidate
 on:
   push:
-    tags: ["v[0-9]+.[0-9]+.[0-9]+", "v[0-9]+.[0-9]+.[0-9]+-beta.[0-9]+"]
-  workflow_dispatch:
-    inputs:
-      dry_run:
-        description: Rehearse builds without creating a release
-        type: boolean
-        default: true
-      profile:
-        description: Desktop release profile for dry runs (tagged releases use release-profile.json)
-        type: choice
-        options: [checked-in, windows, all]
-        default: checked-in
+    branches: [main]
 permissions:
   contents: read
+  actions: read
+# Every main SHA is durable. Stable builds are never cancelled by later pushes.
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: candidate-${{ github.sha }}
   cancel-in-progress: false
 jobs:
   preflight:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
-      version: ${{ steps.preflight.outputs.version }}
-      tag: ${{ steps.preflight.outputs.tag }}
-      channel: ${{ steps.preflight.outputs.channel }}
-      is_prerelease: ${{ steps.preflight.outputs.is_prerelease }}
-      dry_run: ${{ steps.preflight.outputs.dry_run }}
-      profile: ${{ steps.preflight.outputs.profile }}
-      desktop_matrix: ${{ steps.preflight.outputs.desktop_matrix }}
-      merge_mac: ${{ steps.preflight.outputs.merge_mac }}
-      windows_upgrade_matrix: ${{ steps.preflight.outputs.windows_upgrade_matrix }}
+      version: ${{ steps.plan.outputs.version }}
+      channel: ${{ steps.plan.outputs.channel }}
+      profile: ${{ steps.plan.outputs.profile }}
+      mac_matrix: ${{ steps.plan.outputs.mac_matrix }}
+      windows_upgrade_matrix: ${{ steps.plan.outputs.windows_upgrade_matrix }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24.13.1
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: 1.3.9
-      - run: bun install --frozen-lockfile
-      - id: preflight
-        run: node scripts/release-preflight.ts
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - id: plan
+        run: node scripts/plan-release-candidate.ts
         env:
           GH_TOKEN: ${{ github.token }}
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
-          PROFILE_OVERRIDE: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || '' }}
-  build-desktop:
-    needs: preflight
-    environment: release
-    strategy:
-      fail-fast: true
-      matrix: ${{ fromJSON(needs.preflight.outputs.desktop_matrix) }}
-    runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        shell: bash
-    env:
-      VERSION: ${{ needs.preflight.outputs.version }}
-      CHANNEL: ${{ needs.preflight.outputs.channel }}
-      T3CODE_DESKTOP_UPDATE_CHANNEL: ${{ needs.preflight.outputs.channel }}
-      WINDOWS_SIGNING_REQUIRED: ${{ vars.F5_WINDOWS_SIGNING_REQUIRED }}
-      PLATFORM: ${{ matrix.platform }}
-      ARCH: ${{ matrix.arch }}
-      TARGET: ${{ matrix.target }}
-    steps:
-      - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24.13.1
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: 1.3.9
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        if: runner.os == 'Windows'
-      - run: bun install --frozen-lockfile
-      - name: Build application bundles without signing credentials
-        env:
-          # The contracts declaration build exceeds Node's ~2 GB default heap on macOS Intel runners.
-          NODE_OPTIONS: --max-old-space-size=6144
-        run: |
-          node scripts/update-release-package-versions.ts "$VERSION"
-          bun run build:desktop
-      - name: Configure Apple signing
-        id: apple-signing
-        if: matrix.platform == 'mac'
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: |
-          for key in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_CONTENT APPLE_API_KEY_ID APPLE_API_ISSUER; do
-            [[ -n "${!key}" ]] || { echo "::error::Missing $key"; exit 1; }
-          done
-          key_path="$RUNNER_TEMP/f5-notarization.p8"
-          umask 077
-          printf '%s' "$APPLE_API_KEY_CONTENT" > "$key_path"
-          echo "key_path=$key_path" >> "$GITHUB_OUTPUT"
-      - name: Package signed macOS desktop
-        if: matrix.platform == 'mac'
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_API_KEY: ${{ steps.apple-signing.outputs.key_path }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: node scripts/build-desktop-artifact.ts --skip-build --signed --platform "$PLATFORM" --arch "$ARCH" --target "$TARGET" --build-version "$VERSION" --output-dir release-artifacts
-      - name: Package Windows desktop
-        if: matrix.platform == 'win'
-        env:
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
-          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
-          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
-          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
-        run: |
-          signed=true
-          for key in AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TRUSTED_SIGNING_PUBLISHER_NAME AZURE_TRUSTED_SIGNING_ENDPOINT AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME AZURE_TRUSTED_SIGNING_ACCOUNT_NAME; do
-            [[ -n "${!key}" ]] || signed=false
-          done
-          args=()
-          if [[ "$signed" == true ]]; then args+=(--signed); else
-            [[ "$WINDOWS_SIGNING_REQUIRED" != true ]] || { echo '::error::Windows signing credentials required'; exit 1; }
-            echo '::warning::Building Windows installer unsigned'
-          fi
-          node scripts/build-desktop-artifact.ts --skip-build --platform "$PLATFORM" --arch "$ARCH" --target "$TARGET" --build-version "$VERSION" --output-dir release-artifacts "${args[@]}"
-      - name: Package Linux desktop
-        if: matrix.platform == 'linux'
-        run: node scripts/build-desktop-artifact.ts --skip-build --platform "$PLATFORM" --arch "$ARCH" --target "$TARGET" --build-version "$VERSION" --output-dir release-artifacts
-      - name: Remove notarization key
-        if: always() && matrix.platform == 'mac'
-        run: rm -f "$RUNNER_TEMP/f5-notarization.p8"
-      - name: Verify macOS distribution
-        if: matrix.platform == 'mac'
-        run: |
-          mount="$RUNNER_TEMP/f5-dmg"
-          mkdir -p "$mount"
-          hdiutil attach "release-artifacts/F5-$VERSION-$ARCH.dmg" -mountpoint "$mount" -nobrowse
-          trap 'hdiutil detach "$mount"' EXIT
-          codesign --verify --deep --strict "$mount/F5.app"
-          # Validation fetches the ticket from Apple, so retry transient network failures.
-          for attempt in 1 2 3 4 5; do
-            xcrun stapler validate "$mount/F5.app" && break
-            [[ "$attempt" -lt 5 ]] || exit 1
-            sleep $((attempt * 15))
-          done
-          spctl -a -vvv -t execute "$mount/F5.app" 2>&1 | tee "$RUNNER_TEMP/spctl.txt"
-          grep -q 'Notarized Developer ID' "$RUNNER_TEMP/spctl.txt"
-      - name: Separate Intel manifest
-        if: matrix.platform == 'mac' && matrix.arch == 'x64'
-        run: mv "release-artifacts/$CHANNEL-mac.yml" "release-artifacts/$CHANNEL-mac-x64.yml"
       - uses: actions/upload-artifact@v4
         with:
-          name: staged-lock-${{ matrix.platform }}-${{ matrix.arch }}
-          path: release-artifacts/*.lock
-      - uses: actions/upload-artifact@v4
-        with:
-          name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
-          path: |
-            release-artifacts/*
-            !release-artifacts/*.lock
-            !release-artifacts/builder-debug.yml
-            !release-artifacts/builder-effective-config.yaml
-  build-cli:
+          name: release-plan-attempt-${{ github.run_attempt }}
+          path: release-plan.json
+          retention-days: 30
+  windows-desktop:
+    needs: preflight
+    uses: ./.github/workflows/release-desktop.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.preflight.outputs.version }}
+      channel: ${{ needs.preflight.outputs.channel }}
+      os: windows-latest
+      platform: win
+      arch: x64
+      target: nsis
+  mac-desktop:
+    needs: preflight
+    if: needs.preflight.outputs.profile == 'all'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.preflight.outputs.mac_matrix) }}
+    uses: ./.github/workflows/release-desktop.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.preflight.outputs.version }}
+      channel: ${{ needs.preflight.outputs.channel }}
+      os: ${{ matrix.os }}
+      platform: mac
+      arch: ${{ matrix.arch }}
+      target: dmg
+  linux-desktop:
+    needs: preflight
+    if: needs.preflight.outputs.profile == 'all'
+    uses: ./.github/workflows/release-desktop.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.preflight.outputs.version }}
+      channel: ${{ needs.preflight.outputs.channel }}
+      os: ubuntu-latest
+      platform: linux
+      arch: x64
+      target: AppImage
+  cli:
     needs: preflight
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - { os: macos-latest, target: darwin-arm64 }
           - { os: ubuntu-latest, target: linux-x64 }
           - { os: ubuntu-24.04-arm, target: linux-arm64 }
+          - { os: windows-latest, target: win32-x64 }
+          - { os: windows-11-arm, target: win32-arm64 }
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     defaults:
       run:
         shell: bash
@@ -188,144 +94,81 @@ jobs:
     steps:
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
         with:
-          node-version: 24.13.1
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: 1.3.9
-      - run: bun install --frozen-lockfile
+          persist-credentials: false
+      - uses: ./.github/actions/setup
       - id: runtime
         run: echo "version=$(node --input-type=module -e 'import { CLI_NODE_VERSION } from "./scripts/build-cli-archive.ts"; console.log(CLI_NODE_VERSION)')" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ steps.runtime.outputs.version }}
-      - run: node scripts/update-release-package-versions.ts "$VERSION"
-      - run: node scripts/build-cli-archive.ts --target "$TARGET" --output release-cli
-      - run: node scripts/cli-archive-smoke.ts "release-cli/f5-$VERSION-$TARGET.tar.gz" "release-cli/f5-$VERSION-$TARGET.json"
+      - run: |
+          node scripts/update-release-package-versions.ts "$VERSION"
+          node scripts/build-cli-archive.ts --target "$TARGET" --output release-cli
+          node scripts/cli-archive-smoke.ts "release-cli/f5-$VERSION-$TARGET.tar.gz" "release-cli/f5-$VERSION-$TARGET.json"
+      - run: node scripts/record-release-component.ts release-cli "cli-$TARGET"
       - uses: actions/upload-artifact@v4
         with:
-          name: cli-${{ matrix.target }}
+          name: cli-${{ matrix.target }}-attempt-${{ github.run_attempt }}
           path: release-cli/*
-  # Windows CLI archives and the installed-upgrade rehearsal; pull requests run it too.
-  windows:
-    needs: preflight
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: receipt-cli-${{ matrix.target }}-attempt-${{ github.run_attempt }}
+          path: component-receipt/receipt.json
+          retention-days: 30
+  windows-fixtures:
+    needs: [preflight, windows-desktop]
     uses: ./.github/workflows/windows-release-checks.yml
     with:
       version: ${{ needs.preflight.outputs.version }}
       channel: ${{ needs.preflight.outputs.channel }}
-  # Keep the failure-path rehearsal above, and also test already-installed clients
-  # against the exact installer that assembly will publish.
+      bundle: windows-bundles-attempt-${{ github.run_attempt }}
   windows-published-upgrade:
-    needs: [preflight, build-desktop]
-    runs-on: windows-latest
-    timeout-minutes: 45
+    needs: [preflight, windows-desktop]
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.preflight.outputs.windows_upgrade_matrix) }}
-    defaults:
-      run:
-        shell: bash
-    env:
-      VERSION: ${{ needs.preflight.outputs.version }}
-      CHANNEL: ${{ needs.preflight.outputs.channel }}
-      BASELINE: ${{ matrix.baseline }}
-      BASELINE_CHANNEL: ${{ matrix.baselineChannel }}
-      CLIENT_CHANNEL: ${{ matrix.clientChannel }}
+    uses: ./.github/workflows/release-published-upgrade.yml
+    with:
+      version: ${{ needs.preflight.outputs.version }}
+      channel: ${{ needs.preflight.outputs.channel }}
+      baseline: ${{ matrix.baseline }}
+      baseline_channel: ${{ matrix.baselineChannel }}
+      client_channel: ${{ matrix.clientChannel }}
+      source_sha: ${{ github.sha }}
+      artifact: desktop-win-x64-attempt-${{ github.run_attempt }}
+      run_id: ${{ fromJSON(github.run_id) }}
+  candidate:
+    needs:
+      [
+        preflight,
+        windows-desktop,
+        mac-desktop,
+        linux-desktop,
+        cli,
+        windows-fixtures,
+        windows-published-upgrade,
+      ]
+    if: >-
+      always() && !cancelled() &&
+      needs.preflight.result == 'success' && needs.windows-desktop.result == 'success' &&
+      (needs.mac-desktop.result == 'success' || needs.mac-desktop.result == 'skipped') &&
+      (needs.linux-desktop.result == 'success' || needs.linux-desktop.result == 'skipped') &&
+      needs.cli.result == 'success' && needs.windows-fixtures.result == 'success' &&
+      needs.windows-published-upgrade.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
         with:
-          node-version: 24.13.1
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: 1.3.9
-      - run: bun install --frozen-lockfile
-      - uses: actions/download-artifact@v4
-        with:
-          name: desktop-win-x64
-          path: published-upgrade/target
-      - name: Download and verify the latest published Windows baseline
-        id: baseline
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: node scripts/record-release-candidate.ts
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/prepare-published-windows-upgrade.ts --target "$VERSION" --channel "$CHANNEL" --baseline "$BASELINE" --client-channel "$CLIENT_CHANNEL" --target-dir published-upgrade/target --baseline-dir published-upgrade/baseline
-      - name: Upgrade the published installation to the release artifact
-        if: steps.baseline.outputs.available == 'true'
-        run: |
-          mkdir -p "$RUNNER_TEMP/rehearsal-node"
-          cp "$(command -v node)" "$RUNNER_TEMP/rehearsal-node/node.exe"
-          "$RUNNER_TEMP/rehearsal-node/node.exe" scripts/windows-update-rehearsal.ts --baseline-dir published-upgrade/baseline --target-dir published-upgrade/target --baseline "$BASELINE" --baseline-channel "$BASELINE_CHANNEL" --client-channel "$CLIENT_CHANNEL" --target "$VERSION" --channel "$CHANNEL" --published-baseline --log-dir rehearsal-logs
-      - if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-published-upgrade-${{ matrix.clientChannel }}-logs
-          path: rehearsal-logs/**
-          if-no-files-found: ignore
-  assemble:
-    needs: [preflight, build-desktop, build-cli, windows, windows-published-upgrade]
-    runs-on: ubuntu-latest
-    env:
-      VERSION: ${{ needs.preflight.outputs.version }}
-      CHANNEL: ${{ needs.preflight.outputs.channel }}
-      PROFILE: ${{ needs.preflight.outputs.profile }}
-      MERGE_MAC: ${{ needs.preflight.outputs.merge_mac }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24.13.1
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: 1.3.9
-      - run: bun install --frozen-lockfile
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: desktop-*
-          path: release-assets
-          merge-multiple: true
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: cli-*
-          path: release-assets
-          merge-multiple: true
-      - run: |
-          if [[ "$MERGE_MAC" == true ]]; then
-            node scripts/merge-mac-update-manifests.ts "release-assets/$CHANNEL-mac.yml" "release-assets/$CHANNEL-mac-x64.yml"
-            rm "release-assets/$CHANNEL-mac-x64.yml"
-          fi
-          node scripts/merge-cli-release-manifests.ts release-assets/f5-cli-release.json "release-assets/f5-$VERSION-"*.json
-          rm "release-assets/f5-$VERSION-"*.json
-          node scripts/assemble-release-checksums.ts release-assets
-          node scripts/verify-release-assets.ts --version "$VERSION" --channel "$CHANNEL" --profile "$PROFILE" release-assets
-      - if: needs.preflight.outputs.dry_run != 'true'
-        run: node scripts/extract-release-notes.ts "$VERSION" notes.md
       - uses: actions/upload-artifact@v4
         with:
-          name: release-bundle
-          path: |
-            release-assets/*
-            notes.md
-  publish:
-    needs: [preflight, assemble]
-    if: needs.preflight.outputs.dry_run != 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      TAG: ${{ needs.preflight.outputs.tag }}
-      PRERELEASE: ${{ needs.preflight.outputs.is_prerelease }}
-      PROFILE: ${{ needs.preflight.outputs.profile }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24.13.1
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-bundle
-      - name: Create verified draft
-        run: node scripts/publish-release.ts
+          name: release-candidate-attempt-${{ github.run_attempt }}
+          path: candidate.json
+          retention-days: 30

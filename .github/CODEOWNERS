@@ -1,0 +1,3 @@
+/release-intent.json @lopes-felipe
+/.github/workflows/release-prepare.yml @lopes-felipe
+/.github/workflows/release-publish.yml @lopes-felipe
