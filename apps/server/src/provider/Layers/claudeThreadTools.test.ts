@@ -49,3 +49,31 @@ it("keeps native thread tools available after a parent turn ends and revokes the
     ]);
   }
 });
+
+it("keeps html_render loaded in Claude's tool search and leaves html_preview deferred", async () => {
+  const broker = await Effect.runPromise(makeThreadMcpBroker);
+  const server = makeClaudeThreadMcpServer({
+    broker,
+    threadId: ThreadId.makeUnsafe("always-load"),
+    existingServerNames: new Set(),
+  });
+  const client = new Client({ name: "always-load", version: "1" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  try {
+    await Promise.all([
+      server.config.instance.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+    const tools = (await client.listTools()).tools;
+    const alwaysLoad = (name: string) =>
+      tools.find((tool) => tool.name === name)?._meta?.["anthropic/alwaysLoad"] === true;
+    expect(alwaysLoad("html_render")).toBe(true);
+    expect(alwaysLoad("thread_status")).toBe(true);
+    expect(alwaysLoad("html_preview")).toBe(false);
+    expect(tools.find((tool) => tool.name === "html_preview")?.annotations?.readOnlyHint).toBe(
+      true,
+    );
+  } finally {
+    await Promise.allSettled([client.close(), server.config.instance.close()]);
+  }
+});

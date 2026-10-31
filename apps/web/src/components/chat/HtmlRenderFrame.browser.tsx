@@ -4,7 +4,10 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 import { ThreadId } from "@t3tools/contracts";
+import { updateAppSettings } from "../../appSettings";
+import { HtmlRenderThemeProvider } from "../../hooks/useHtmlRenderTheme";
 import { OpenLinkThread } from "../../hooks/useOpenLink";
+import { BUILTIN_THEME_PALETTES } from "../../themePalette";
 import { useRightPanelStore } from "../../rightPanelStore";
 import { TooltipProvider } from "../ui/tooltip";
 import { HtmlRenderFrame } from "./HtmlRenderFrame";
@@ -38,7 +41,7 @@ beforeEach(() => {
   } as never;
   useRightPanelStore.setState({ byThreadId: {}, closedHistory: [] });
   vi.spyOn(globalThis, "fetch").mockImplementation((input, init) =>
-    String(input).includes("/attachments/html-page")
+    String(input).includes("/attachments/html-")
       ? Promise.resolve(new Response(source, { headers: { "content-type": "text/html" } }))
       : originalFetch(input, init),
   );
@@ -122,13 +125,29 @@ it("opens rendered images through the existing image viewer", async () => {
 });
 it("supports fullscreen zoom and returns inline when Escape is pressed inside the frame", async () => {
   await mount();
-  await page.getByRole("button", { name: "Fullscreen", exact: true }).click();
+  // The page shows bare on the thread, with no title bar of its own.
+  expect(page.getByText("HTML widget", { exact: true }).query()).toBeNull();
+  await page.getByRole("figure", { name: "HTML render: HTML widget" }).hover();
+  await page.getByRole("button", { name: "Open full screen", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect.element(dialog.getByText("HTML widget", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Zoom in", exact: true }).click();
-  await expect.element(page.getByText("110%", { exact: true })).toBeVisible();
-  await page.getByTitle("HTML widget", { exact: true }).click();
+  await expect
+    .element(page.getByRole("button", { name: "Reset zoom", exact: true }))
+    .toHaveTextContent("125%");
+  for (let step = 0; step < 3; step++)
+    await page.getByRole("button", { name: "Zoom out", exact: true }).click();
+  await expect.element(page.getByRole("button", { name: "Zoom out", exact: true })).toBeDisabled();
+  await expect
+    .element(page.getByRole("button", { name: "Reset zoom", exact: true }))
+    .toHaveTextContent("50%");
+  await page.getByRole("button", { name: "Reset zoom", exact: true }).click();
+  await expect
+    .element(page.getByRole("button", { name: "Reset zoom", exact: true }))
+    .toHaveTextContent("100%");
+  await dialog.getByTitle("HTML widget", { exact: true }).click();
   await userEvent.keyboard("{Escape}");
   await expect.poll(() => page.getByRole("dialog").query()).toBeNull();
-  await expect.element(page.getByRole("button", { name: "Fullscreen", exact: true })).toBeVisible();
 });
 
 it("ignores forged page commands and extra channel handshakes", async () => {
@@ -185,20 +204,321 @@ it("scrolls the thread when the wheel turns over an inline page", async () => {
   const thread = page.getByTestId("thread").element();
   const frame = page.getByTitle("HTML widget", { exact: true });
   // The reported height shows the page's script is connected and handling the wheel.
-  await expect.poll(() => frame.query()?.getBoundingClientRect().height).toBe(300);
+  // The page's 300px plus the 8px gutter on each side.
+  await expect.poll(() => frame.query()?.getBoundingClientRect().height).toBe(316);
   await userEvent.wheel(frame, { delta: { y: 100 } });
   await expect.poll(() => thread.scrollTop).toBeGreaterThan(0);
 });
-it("holds the page's height with a skeleton while the page loads", async () => {
+it("holds the page's height with an empty busy box, not a skeleton, while it loads", async () => {
   vi.mocked(globalThis.fetch).mockImplementation(() => new Promise<Response>(() => undefined));
   active = await render(
     <QueryClientProvider client={new QueryClient()}>
       <TooltipProvider>
-        <HtmlRenderFrame reference={{ ...reference, height: 400 }} onImageExpand={vi.fn()} />
+        <HtmlRenderFrame
+          reference={{ ...reference, attachmentId: "html-loading", height: 400 }}
+          onImageExpand={vi.fn()}
+        />
       </TooltipProvider>
     </QueryClientProvider>,
   );
-  const skeleton = page.getByRole("status", { name: "Loading page…" });
-  await expect.element(skeleton).toBeVisible();
-  expect(skeleton.element().getBoundingClientRect().height).toBe(384);
+  await expect.poll(() => document.querySelector('[aria-busy="true"]')).not.toBeNull();
+  const loading = document.querySelector<HTMLElement>('[aria-busy="true"]')!;
+  expect(loading.getBoundingClientRect().height).toBe(400);
+  expect(loading.childElementCount).toBe(0);
+  expect(document.querySelector('[data-slot="skeleton"]')).toBeNull();
+});
+
+let nextPage = 0;
+/** A fresh attachment id, so no test starts from another test's remembered height. */
+const freshReference = (height = 120) => ({
+  attachmentId: `html-fresh-${++nextPage}`,
+  title: "HTML widget",
+  height,
+});
+function Harness(props: {
+  reference: { attachmentId: string; title: string; height: number };
+  appearance?: "light" | "dark";
+  wrap?: (children: React.ReactNode) => React.ReactNode;
+}) {
+  const frame = <HtmlRenderFrame reference={props.reference} onImageExpand={vi.fn()} />;
+  return (
+    <QueryClientProvider client={new QueryClient()}>
+      <TooltipProvider>
+        <HtmlRenderThemeProvider
+          palette={BUILTIN_THEME_PALETTES[0]!}
+          settings={{ uiFontFamily: "", monoFontFamily: "" }}
+          appearance={props.appearance ?? "dark"}
+        >
+          {props.wrap ? props.wrap(frame) : frame}
+        </HtmlRenderThemeProvider>
+      </TooltipProvider>
+    </QueryClientProvider>
+  );
+}
+const inlineFrame = () => document.querySelector<HTMLIFrameElement>('iframe[title="HTML widget"]')!;
+const frameHeight = () => inlineFrame()?.getBoundingClientRect().height;
+function probes() {
+  const reports: Array<{ source: MessageEventSource | null; data: Record<string, unknown> }> = [];
+  const receive = (event: MessageEvent) => {
+    if (event.data?.probe) reports.push({ source: event.source, data: event.data });
+  };
+  window.addEventListener("message", receive);
+  return { reports, stop: () => window.removeEventListener("message", receive) };
+}
+
+it("fits a tall page inline and caps a very tall one, which scrolls inside", async () => {
+  source = '<div style="height:3500px">Tall</div>';
+  active = await render(<Harness reference={freshReference()} />);
+  await expect.poll(frameHeight).toBe(3516);
+  await active.unmount();
+  source =
+    '<div style="height:25000px">Very tall</div><script>setInterval(()=>parent.postMessage({probe:true,overflow:getComputedStyle(document.documentElement).overflow},"*"),50)</script>';
+  const { reports, stop } = probes();
+  try {
+    active = await render(<Harness reference={freshReference()} />);
+    await expect.poll(frameHeight).toBe(20_000);
+    await expect.element(page.getByText(/This page is taller than 20,000px/)).toBeVisible();
+    await expect.poll(() => reports.at(-1)?.data.overflow).toBe("auto");
+    await page.getByRole("button", { name: "Open full screen", exact: true }).click();
+    const fullscreen = page.getByRole("dialog").getByTitle("HTML widget", { exact: true });
+    await expect.poll(() => fullscreen.query()?.getBoundingClientRect().height).toBe(25_016);
+  } finally {
+    stop();
+  }
+});
+
+it("pauses a page that grows with its frame, and Retry sizing fits it again", async () => {
+  // A CSSOM edit changes the page without a DOM mutation, so only Retry resumes it.
+  source =
+    "<style>body{min-height:100vh}</style><p>Grows</p><script>document.addEventListener('click',()=>{const sheets=document.styleSheets;sheets[sheets.length-1].cssRules[0].style.minHeight='0'})</script>";
+  active = await render(<Harness reference={freshReference(300)} />);
+  await expect.element(page.getByText(/Automatic sizing paused/)).toBeVisible();
+  // Frozen where the run started, a round or two past the initial 300px.
+  expect(frameHeight()).toBeLessThan(400);
+  await page.getByTitle("HTML widget", { exact: true }).click();
+  await page.getByRole("button", { name: "Retry sizing", exact: true }).click();
+  await expect.poll(frameHeight).toBe(120);
+  expect(page.getByText(/Automatic sizing paused/).query()).toBeNull();
+});
+
+it("resumes fitting a paused page once its content changes", async () => {
+  source =
+    "<style>body{min-height:100vh}</style><p>Grows</p><script>document.addEventListener('click',()=>{document.body.style.minHeight='0';document.body.insertAdjacentHTML('beforeend','<div style=\"height:900px\"></div>')})</script>";
+  active = await render(<Harness reference={freshReference(300)} />);
+  await expect.element(page.getByText(/Automatic sizing paused/)).toBeVisible();
+  await page.getByTitle("HTML widget", { exact: true }).click();
+  await expect.poll(frameHeight).toBeGreaterThan(900);
+  expect(page.getByText(/Automatic sizing paused/).query()).toBeNull();
+});
+
+it("keeps fitting a page that grows steadily, as rows on a timer do", async () => {
+  source =
+    "<div id=rows></div><script>let n=0;const t=setInterval(()=>{document.getElementById('rows').insertAdjacentHTML('beforeend','<div style=\"height:20px\">row</div>');if(++n>=60)clearInterval(t)},25)</script>";
+  active = await render(<Harness reference={freshReference(120)} />);
+  await expect.poll(frameHeight, { timeout: 5000 }).toBe(60 * 20 + 16);
+  expect(page.getByText(/Automatic sizing paused/).query()).toBeNull();
+});
+
+it("remounts a paused page at its frozen height without replaying the loop", async () => {
+  source = "<style>body{min-height:100vh}</style><p>Grows</p>";
+  const looping = freshReference(300);
+  active = await render(<Harness reference={looping} />);
+  await expect.element(page.getByText(/Automatic sizing paused/)).toBeVisible();
+  const frozen = frameHeight()!;
+  await active.unmount();
+  for (let remount = 0; remount < 2; remount++) {
+    const heights = new Set<number>();
+    const sample = setInterval(() => {
+      const height = frameHeight();
+      if (height !== undefined) heights.add(height);
+    }, 5);
+    try {
+      active = await render(<Harness reference={looping} />);
+      await expect.element(page.getByText(/Automatic sizing paused/)).toBeVisible();
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    } finally {
+      clearInterval(sample);
+    }
+    expect([...heights]).toEqual([frozen]);
+    await active.unmount();
+  }
+});
+
+it("keeps a paused page still while the window resizes", async () => {
+  source = "<style>body{min-height:100vh}</style><p>Grows</p>";
+  active = await render(<Harness reference={freshReference(300)} />);
+  await expect.element(page.getByText(/Automatic sizing paused/)).toBeVisible();
+  const frozen = frameHeight()!;
+  const heights = new Set<number>();
+  const sample = setInterval(() => {
+    const height = frameHeight();
+    if (height !== undefined) heights.add(height);
+  }, 5);
+  try {
+    for (const width of [900, 760, 620]) {
+      await page.viewport(width, 800);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+  } finally {
+    clearInterval(sample);
+  }
+  expect([...heights]).toEqual([frozen]);
+  expect(page.getByText(/Automatic sizing paused/).query()).not.toBeNull();
+});
+
+it("sends the wheel to the thread over a capped page instead of scrolling inside it", async () => {
+  source =
+    '<div style="height:25000px">Very tall</div><script>addEventListener("message",e=>{if(e.data==="scroll-inside")document.scrollingElement.scrollTop=1000});setInterval(()=>parent.postMessage({probe:true,top:document.scrollingElement.scrollTop},"*"),50)</script>';
+  const { reports, stop } = probes();
+  try {
+    active = await render(
+      <Harness
+        reference={freshReference()}
+        wrap={(frame) => (
+          <div data-testid="thread" style={{ height: "500px", overflowY: "auto" }}>
+            {frame}
+            <div style={{ height: "1000px" }} />
+          </div>
+        )}
+      />,
+    );
+    const thread = page.getByTestId("thread").element();
+    await expect.poll(frameHeight).toBe(20_000);
+    await userEvent.wheel(page.getByTitle("HTML widget", { exact: true }), { delta: { y: 300 } });
+    await expect.poll(() => thread.scrollTop).toBeGreaterThan(0);
+    const after = reports.length;
+    await expect.poll(() => reports.length).toBeGreaterThan(after);
+    expect(reports.at(-1)?.data.top).toBe(0);
+    // Scrolled inside (by its scrollbar or keyboard), a wheel up still moves the thread,
+    // so the timeline's own listener sees it and stops following the end.
+    inlineFrame().contentWindow!.postMessage("scroll-inside", "*");
+    await expect.poll(() => reports.at(-1)?.data.top).toBe(1000);
+    const threadTop = thread.scrollTop;
+    await userEvent.wheel(page.getByTitle("HTML widget", { exact: true }), { delta: { y: -200 } });
+    await expect.poll(() => thread.scrollTop).toBeLessThan(threadTop);
+    expect(reports.at(-1)?.data.top).toBe(1000);
+  } finally {
+    stop();
+  }
+});
+
+it("restyles a mounted page over the bridge without rebuilding its document", async () => {
+  source =
+    '<input aria-label="Name" style="display:block;width:100%;height:150px"><script>setInterval(()=>parent.postMessage({probe:true,scheme:getComputedStyle(document.documentElement).colorScheme,value:document.querySelector("input").value},"*"),50)</script>';
+  const reference = freshReference();
+  const { reports, stop } = probes();
+  try {
+    active = await render(<Harness reference={reference} appearance="dark" />);
+    await expect.poll(frameHeight).toBeGreaterThan(150);
+    const element = inlineFrame();
+    const srcdoc = element.srcdoc;
+    await page.getByTitle("HTML widget", { exact: true }).click();
+    await userEvent.keyboard("kept");
+    await active.rerender(<Harness reference={reference} appearance="light" />);
+    await expect.poll(() => reports.at(-1)?.data.scheme).toBe("light");
+    expect(reports.at(-1)?.data.value).toBe("kept");
+    expect(inlineFrame() === element).toBe(true);
+    expect(inlineFrame().srcdoc).toBe(srcdoc);
+  } finally {
+    stop();
+  }
+});
+
+it("pauses a looping page in full screen too, with Retry sizing there", async () => {
+  source = "<style>body{min-height:100vh}</style><p>Grows</p>";
+  active = await render(<Harness reference={freshReference(300)} />);
+  await expect.element(page.getByText(/Automatic sizing paused/)).toBeVisible();
+  await page.getByRole("button", { name: "Open full screen", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect.element(dialog.getByText(/Automatic sizing paused/)).toBeVisible();
+  await expect
+    .element(dialog.getByRole("button", { name: "Retry sizing", exact: true }))
+    .toBeVisible();
+});
+
+it("starts a remounted page at its last measured height", async () => {
+  const remembered = freshReference();
+  source = '<div style="height:600px">Remembered</div>';
+  active = await render(<Harness reference={remembered} />);
+  await expect.poll(frameHeight).toBe(616);
+  await active.unmount();
+  vi.mocked(globalThis.fetch).mockImplementation(() => new Promise<Response>(() => undefined));
+  active = await render(<Harness reference={remembered} />);
+  await expect.poll(() => document.querySelector('[aria-busy="true"]')).not.toBeNull();
+  expect(document.querySelector('[aria-busy="true"]')!.getBoundingClientRect().height).toBe(616);
+});
+
+it("reconnects a replaced document with the current theme and ignores the retired one", async () => {
+  updateAppSettings({ loadRemoteImagesInChat: false });
+  source =
+    '<a style="display:block;height:200px" href="https://example.test/after">Link</a><script>parent.postMessage({probe:true,scheme:getComputedStyle(document.documentElement).colorScheme,background:getComputedStyle(document.documentElement).getPropertyValue("--background")},"*")</script>';
+  const reference = freshReference();
+  const { reports, stop } = probes();
+  try {
+    active = await render(<Harness reference={reference} appearance="dark" />);
+    await expect.poll(frameHeight).toBe(216);
+    await active.rerender(<Harness reference={reference} appearance="light" />);
+    const retired = inlineFrame();
+    updateAppSettings({ loadRemoteImagesInChat: true });
+    await expect.poll(() => inlineFrame() !== retired).toBe(true);
+    const fromFresh = () =>
+      reports.filter((report) => report.source === inlineFrame().contentWindow).length;
+    await expect.poll(fromFresh).toBe(1);
+    const fresh = reports.find((report) => report.source === inlineFrame().contentWindow)!;
+    expect(fresh.data.scheme).toBe("light");
+    expect(fresh.data.background).toMatch(/^#[0-9a-f]{6}$/);
+    expect(inlineFrame().srcdoc).toContain("img-src data: https:");
+    await expect.poll(frameHeight).toBe(216);
+    await page.getByTitle("HTML widget", { exact: true }).click();
+    await expect.poll(() => api.openExternal.mock.calls).toEqual([["https://example.test/after"]]);
+  } finally {
+    stop();
+    updateAppSettings({ loadRemoteImagesInChat: false });
+  }
+});
+
+it("keeps typed input in the inline page across opening and closing full screen", async () => {
+  source =
+    '<input aria-label="Name" style="display:block;width:100%;height:150px"><script>setInterval(()=>parent.postMessage({probe:true,value:document.querySelector("input").value},"*"),50)</script>';
+  const { reports, stop } = probes();
+  try {
+    active = await render(<Harness reference={freshReference()} />);
+    await expect.poll(frameHeight).toBeGreaterThan(150);
+    const inlineElement = inlineFrame();
+    const inline = inlineElement.contentWindow;
+    await page.getByTitle("HTML widget", { exact: true }).click();
+    await userEvent.keyboard("kept");
+    await expect
+      .poll(() => reports.findLast((report) => report.source === inline)?.data.value)
+      .toBe("kept");
+    await page.getByRole("button", { name: "Open full screen", exact: true }).click();
+    await expect.element(page.getByRole("dialog")).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await expect.poll(() => page.getByRole("dialog").query()).toBeNull();
+    expect(inlineFrame() === inlineElement).toBe(true);
+    const after = reports.length;
+    await expect.poll(() => reports.length).toBeGreaterThan(after);
+    expect(reports.findLast((report) => report.source === inline)?.data.value).toBe("kept");
+  } finally {
+    stop();
+  }
+});
+
+it("scrolls the thread sideways when the wheel turns horizontally over a page", async () => {
+  source = '<p style="height:300px;margin:0">Hello</p>';
+  active = await render(
+    <Harness
+      reference={freshReference()}
+      wrap={(frame) => (
+        <div data-testid="thread" style={{ height: "500px", width: "400px", overflow: "auto" }}>
+          {frame}
+          <div style={{ height: "1000px", width: "1200px" }} />
+        </div>
+      )}
+    />,
+  );
+  const thread = page.getByTestId("thread").element();
+  await expect.poll(frameHeight).toBe(316);
+  await userEvent.wheel(page.getByTitle("HTML widget", { exact: true }), { delta: { x: 120 } });
+  await expect.poll(() => thread.scrollLeft).toBeGreaterThan(0);
 });

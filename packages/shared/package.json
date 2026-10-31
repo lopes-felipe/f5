@@ -407,6 +407,10 @@
       "types": "./src/htmlRender.ts",
       "import": "./src/htmlRender.ts"
     },
+    "./themeTokens": {
+      "types": "./src/themeTokens.ts",
+      "import": "./src/themeTokens.ts"
+    },
     "./mcpApp": {
       "types": "./src/mcpApp.ts",
       "import": "./src/mcpApp.ts"

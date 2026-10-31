@@ -4,13 +4,29 @@ import {
   HtmlPreviewResult,
   type ThreadId,
 } from "@t3tools/contracts";
-import { Data, Effect, Exit, Layer, Option, Schema, ServiceMap } from "effect";
+import { Cause, Data, Effect, Exit, Layer, Option, Schema, ServiceMap } from "effect";
 import { z } from "zod";
+import { HTML_RENDER_COLUMN_WIDTH } from "@t3tools/shared/htmlRender";
+import {
+  HTML_PREVIEW_DESCRIPTION,
+  HTML_RENDER_DESCRIPTION,
+} from "../htmlRender/htmlRenderGuide.ts";
 import { previewToolResult, type McpToolResult } from "./previewMcpTools.ts";
 
+/**
+ * The failure an agent reads word for word. Messages hold only authored text
+ * and values the agent supplied, such as image paths; never caught exception
+ * text, file contents or page source.
+ */
 export class ThreadToolError extends Data.TaggedError("ThreadToolError")<{
   readonly message: string;
 }> {}
+
+/** Keeps an authored ThreadToolError and replaces anything else with `fallback`. */
+export const keepThreadToolError =
+  (fallback: string) =>
+  (error: unknown): ThreadToolError =>
+    error instanceof ThreadToolError ? error : new ThreadToolError({ message: fallback });
 
 const GuideTarget = Schema.Struct({
   pr: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(2048))),
@@ -68,10 +84,9 @@ export const makeThreadMcpBroker = Effect.sync(() => {
           ? current(threadId, request).pipe(
               Effect.timeout("30 seconds"),
               Effect.mapError(
-                () =>
-                  new ThreadToolError({
-                    message: "Thread tool failed or timed out. Retry after refreshing the thread.",
-                  }),
+                keepThreadToolError(
+                  "Thread tool failed or timed out. Retry after refreshing the thread.",
+                ),
               ),
             )
           : Effect.fail(
@@ -156,27 +171,47 @@ export const THREAD_TOOL_DEFINITIONS = [
   {
     name: "html_render",
     title: "Render HTML in thread",
-    description:
-      "Save an HTML page in this thread. Local absolute image paths must stay inside the project, worktree or attachments. JavaScript runs in a sandboxed frame. The page sits on the thread's background, so leave html, body and the outermost element without a background color; a box that needs its own background gets at least 16px of padding and rounded corners.",
+    description: HTML_RENDER_DESCRIPTION,
     shape: {
-      html: z.string().max(512 * 1024),
+      html: z
+        .string()
+        .min(1)
+        .max(512 * 1024),
       title: z.string().min(1).max(80),
-      height: z.number().int().min(120).max(2000),
+      height: z
+        .number()
+        .int()
+        .min(1)
+        .max(100_000)
+        .describe(
+          "Pass contentHeight from html_preview; F5 clamps it to 120-2000 for the frame shown while loading.",
+        ),
     },
     annotations: annotations(false),
-    alwaysLoad: false,
+    alwaysLoad: true,
   },
   {
     name: "html_preview",
     title: "Preview HTML screenshot",
-    description:
-      "Render HTML in the connected desktop and return a PNG, content height and console output. No browser download is needed. html_render also works without a desktop.",
+    description: HTML_PREVIEW_DESCRIPTION,
     shape: {
-      html: z.string().max(512 * 1024),
-      width: z.number().int().min(200).max(2000).optional(),
-      appearance: z.enum(["light", "dark"]).optional(),
+      html: z
+        .string()
+        .min(1)
+        .max(512 * 1024),
+      width: z
+        .number()
+        .int()
+        .min(200)
+        .max(2000)
+        .optional()
+        .describe(`Default ${HTML_RENDER_COLUMN_WIDTH}; use about 390 for phones.`),
+      appearance: z
+        .enum(["light", "dark"])
+        .optional()
+        .describe("The reader's light or dark theme to render with. Default dark."),
     },
-    annotations: annotations(false),
+    annotations: annotations(true),
     alwaysLoad: false,
   },
 ] as const;
@@ -237,15 +272,19 @@ export async function callThreadTool(
       };
     }
   }
-  return Exit.isSuccess(result)
-    ? previewToolResult(result.value)
-    : {
-        content: [
-          {
-            type: "text",
-            text: "Thread tool could not complete. Check the input and current thread, then retry.",
-          },
-        ],
-        isError: true,
-      };
+  if (Exit.isSuccess(result)) return previewToolResult(result.value);
+  // Only an authored ThreadToolError reaches the agent; defects and anything else stay generic.
+  const failure = Cause.findErrorOption(result.cause);
+  return {
+    content: [
+      {
+        type: "text",
+        text:
+          Option.isSome(failure) && failure.value instanceof ThreadToolError
+            ? failure.value.message
+            : "Thread tool could not complete. Check the input and current thread, then retry.",
+      },
+    ],
+    isError: true,
+  };
 }
