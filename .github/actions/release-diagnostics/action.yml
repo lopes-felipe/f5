@@ -1,0 +1,31 @@
+name: Preserve release failure identity
+description: Keep non-secret component identity when packaging fails or is cancelled
+inputs:
+  component:
+    required: true
+    description: Desktop or CLI component name
+runs:
+  using: composite
+  steps:
+    - if: always()
+      shell: bash
+      env:
+        COMPONENT: ${{ inputs.component }}
+        CANCELLED: ${{ cancelled() }}
+      run: |
+        node --input-type=module -e '
+          import { writeFileSync } from "node:fs";
+          import { join } from "node:path";
+          const { COMPONENT, CANCELLED, GITHUB_SHA, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT } = process.env;
+          writeFileSync(join(process.env.RUNNER_TEMP, "release-failure.json"), JSON.stringify({
+            component: COMPONENT, cancelled: CANCELLED === "true", sourceSha: GITHUB_SHA,
+            runId: GITHUB_RUN_ID, attempt: GITHUB_RUN_ATTEMPT
+          }, null, 2) + "\n");
+        '
+    - if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: diagnostics-${{ inputs.component }}-attempt-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/release-failure.json
+        retention-days: 30
+        if-no-files-found: warn

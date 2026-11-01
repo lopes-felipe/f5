@@ -27,7 +27,25 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup
-      - if: vars.F5_RELEASE_AUTOMATION_MODE == 'beta' || vars.F5_RELEASE_AUTOMATION_MODE == 'all'
+      - id: lease
+        run: node scripts/reconcile-releases.ts --lease-only
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_AUTOMATION_MODE: ${{ vars.F5_RELEASE_AUTOMATION_MODE || 'shadow' }}
+      - if: steps.lease.outputs.selection_ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-lease-${{ steps.lease.outputs.lease_key }}-publisher-${{ github.run_attempt }}
+          path: release-publication-lease.json
+          if-no-files-found: error
+          retention-days: 1
+      - if: steps.lease.outputs.selection_ready == 'true' && (vars.F5_RELEASE_AUTOMATION_MODE == 'beta' || vars.F5_RELEASE_AUTOMATION_MODE == 'all')
+        name: Reconcile obsolete beta work
+        continue-on-error: true
+        run: gh workflow run release-coordinate.yml --ref main
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - if: steps.lease.outputs.candidate_run != '' && (vars.F5_RELEASE_AUTOMATION_MODE == 'beta' || vars.F5_RELEASE_AUTOMATION_MODE == 'all')
         uses: actions/create-github-app-token@v2
         id: app
         with:
@@ -36,7 +54,8 @@ jobs:
           permission-contents: write
           permission-actions: write
       - id: reconcile
-        run: node scripts/reconcile-releases.ts
+        if: steps.lease.outputs.candidate_run != ''
+        run: node scripts/reconcile-releases.ts --lease release-publication-lease.json
         env:
           GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
           RELEASE_AUTOMATION_MODE: ${{ vars.F5_RELEASE_AUTOMATION_MODE || 'shadow' }}

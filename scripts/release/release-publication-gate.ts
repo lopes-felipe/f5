@@ -1,22 +1,15 @@
 import type { ReleaseCandidate } from "./release-candidate.ts";
 import { pendingStableRequests } from "./release-candidate.ts";
-import {
-  git,
-  acceptanceOnlyCommit,
-  repository,
-  requireCi,
-  releaseProfileAt,
-  runs,
-  stableRequests,
-  trustedRun,
-} from "./release-github.ts";
+import { git, repository, requireCi, runs, stableRequests } from "./release-github.ts";
 import { fetchReleaseSummaries } from "../lib/release-profile.ts";
 import { upgradePlan } from "./release-upgrade-proof.ts";
+import { qualifiedSource } from "./release-selection.ts";
 
 /** Re-evaluate after downloads/uploads: a completed newer CI or recovery intent wins. */
 export function publicationGate(candidate: ReleaseCandidate, qualifiedUpgradeKey: string): void {
   git(["fetch", "origin", "main", "--tags"]);
   const main = git(["rev-parse", "origin/main"]);
+  requireCi(candidate.sourceSha, candidate.profile);
   const releases = fetchReleaseSummaries(repository);
   const published = new Map(
     releases
@@ -36,22 +29,13 @@ export function publicationGate(candidate: ReleaseCandidate, qualifiedUpgradeKey
     const history = git(["rev-list", "--first-parent", main]).split("\n");
     const index = history.indexOf(candidate.sourceSha);
     if (index < 0) throw new Error("Candidate is not on main's first-parent history");
-    const newer = new Set(history.slice(0, index));
-    const latest = new Map<string, ReturnType<typeof runs>[number]>();
-    for (const run of runs("ci.yml", git(["show", "-s", "--format=%cI", candidate.sourceSha])))
-      if (trustedRun(run, "ci.yml") && !latest.has(run.head_sha)) latest.set(run.head_sha, run);
-    for (const [sha, run] of latest) {
-      if (!newer.has(sha) || run.status !== "completed" || run.conclusion !== "success") continue;
-      if (acceptanceOnlyCommit(sha)) continue;
-      let qualified = false;
-      try {
-        requireCi(sha, releaseProfileAt(sha));
-        qualified = true;
-      } catch {
-        continue;
-      }
-      if (qualified)
-        throw new Error("Newer passing main commit supersedes this unpublished beta: " + sha);
-    }
+    const newer = qualifiedSource(
+      history.slice(0, index).toReversed(),
+      runs("ci.yml", git(["show", "-s", "--format=%cI", candidate.sourceSha])),
+    );
+    if (newer)
+      throw new Error(
+        "Newer passing main commit supersedes this unpublished beta: " + newer.sourceSha,
+      );
   }
 }

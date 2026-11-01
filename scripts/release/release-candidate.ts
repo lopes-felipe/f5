@@ -40,6 +40,7 @@ export interface ComponentReceipt {
   readonly runId: number;
   readonly runAttempt: number;
   readonly cliUpgradeBaseline?: string;
+  readonly signingRetries?: number;
   readonly toolchain: {
     readonly node: string;
     readonly bun: string;
@@ -142,6 +143,11 @@ export function candidateDmgSource(
   return candidate.sourceSha;
 }
 export function validateReceipt(receipt: ComponentReceipt, plan: ReleasePlan): void {
+  if (
+    receipt.signingRetries !== undefined &&
+    (!Number.isSafeInteger(receipt.signingRetries) || receipt.signingRetries < 0)
+  )
+    throw new Error("Invalid signing retry count");
   if (
     !releaseComponents(plan.profile).includes(receipt.component) ||
     receipt.sourceSha !== plan.sourceSha ||

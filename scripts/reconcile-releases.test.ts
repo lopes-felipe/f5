@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ReleaseCandidate, StableRequest } from "./release/release-candidate.ts";
 import type { WorkflowRun } from "./release/release-github.ts";
+import { appendFileSync } from "node:fs";
 
 const state = vi.hoisted(() => ({
   a: "a".repeat(40),
@@ -30,6 +31,7 @@ const state = vi.hoisted(() => ({
   gate: vi.fn(),
   api: vi.fn(),
   gh: vi.fn(),
+  timing: vi.fn(),
   writes: new Map<string, string>(),
 }));
 vi.mock("node:fs", async (original) => ({
@@ -81,6 +83,7 @@ vi.mock("./release/publish-candidate.ts", () => ({
   verifyPublishedCandidate: state.verifyPublished,
 }));
 vi.mock("./release/release-publication-gate.ts", () => ({ publicationGate: state.gate }));
+vi.mock("./release/release-timing.ts", () => ({ workflowTiming: state.timing }));
 vi.mock("./release/release-upgrade-proof.ts", () => ({
   sameBaselines: () => !state.changedBaselines,
   upgradePlan: () => ({
@@ -111,6 +114,7 @@ const run = (sha: string, id: number): WorkflowRun => ({
 });
 beforeEach(() => {
   vi.stubEnv("RELEASE_AUTOMATION_MODE", "shadow");
+  vi.stubEnv("GITHUB_RUN_ID", "");
   state.history = [state.b, state.a];
   state.candidate = {
     sourceSha: state.b,
@@ -137,6 +141,7 @@ beforeEach(() => {
   state.upgradeReads = 0;
   state.proofMissing = false;
   state.writes.clear();
+  state.timing.mockReset().mockReturnValue([]);
   for (const mock of [
     state.qualification,
     state.load,
@@ -197,6 +202,23 @@ it("checks only the newest eligible passing source in main order", async () => {
   expect(state.qualification.mock.calls.map((c) => c[0])).toEqual([state.c]);
   expect(state.load).toHaveBeenCalledWith(101);
 });
+it("records a publication lease before any shipping download or release mutation", async () => {
+  await reconcileReleases({ leaseOnly: true });
+  expect(JSON.parse(state.writes.get("release-publication-lease.json")!)).toEqual({
+    sourceSha: state.b,
+    candidateRun: 100,
+    attempt: 1,
+  });
+  expect(state.assemble).not.toHaveBeenCalled();
+  expect(state.publish).not.toHaveBeenCalled();
+  expect(JSON.parse(state.writes.get("release-summary.json")!).status).toBe("candidate-ready");
+});
+it("does not publish a different source when selection changes after the lease was recorded", async () => {
+  await reconcileReleases({ lease: { sourceSha: state.a, candidateRun: 99, attempt: 1 } });
+  expect(state.assemble).not.toHaveBeenCalled();
+  expect(state.publish).not.toHaveBeenCalled();
+  expect(JSON.parse(state.writes.get("release-summary.json")!).status).toBe("superseded-beta");
+});
 it("tries the next source only when the newest lacks its exact required jobs", async () => {
   state.history.unshift(state.c);
   state.ci.unshift(run(state.c, 201));
@@ -226,7 +248,38 @@ it("fails visibly when the selected candidate build has failed instead of fallin
   state.builds[0]!.conclusion = "failure";
   await expect(reconcileReleases()).rejects.toThrow("Candidate build is blocked");
   expect(state.load).not.toHaveBeenCalled();
+  expect(JSON.parse(state.writes.get("release-summary.json")!)).toMatchObject({
+    status: "blocked-build",
+    sourceSha: state.b,
+    candidateRun: 100,
+  });
 });
+it.each(["ci", "build", "stable", "upgrade", "artifact"])(
+  "always records the blocking or waiting outcome for %s",
+  async (kind) => {
+    if (kind === "ci") state.ci = [];
+    if (kind === "build") state.builds[0]!.status = "in_progress";
+    if (kind === "stable") {
+      state.intents = [pinned()];
+      state.failedCi.add(state.b);
+    }
+    if (kind === "upgrade") state.changedBaselines = true;
+    if (kind === "artifact") state.load.mockRejectedValueOnce(new Error("artifact expired"));
+    if (kind === "artifact") await expect(reconcileReleases()).rejects.toThrow("artifact expired");
+    else await reconcileReleases();
+    const status = {
+      ci: "waiting-ci",
+      build: "waiting-build",
+      stable: "blocked-stable-ci",
+      upgrade: "waiting-upgrade",
+      artifact: "failed",
+    }[kind];
+    expect(JSON.parse(state.writes.get("release-summary.json")!)).toMatchObject({
+      schemaVersion: 2,
+      status,
+    });
+  },
+);
 it.each(["success", "failure"])(
   "verifies an already-public candidate after a %s rerun without loading expired artifacts",
   async (conclusion) => {
@@ -304,4 +357,73 @@ it("retains the last-moment publication gate after reconciliation", async () => 
   });
   await expect(reconcileReleases()).rejects.toThrow("newer passing source");
   expect(state.gate).toHaveBeenCalledWith(state.candidate, "100-1-baselines");
+});
+it.each(["ci", "build", "published", "mode"])(
+  "records an explicit no-candidate selection for %s without allowing publication",
+  async (kind) => {
+    vi.stubEnv("GITHUB_OUTPUT", "/fixture/output");
+    vi.mocked(appendFileSync).mockClear();
+    if (kind === "ci") state.ci = [];
+    if (kind === "build") state.builds[0]!.status = "in_progress";
+    if (kind === "published")
+      state.releases.push({
+        tag_name: "v0.1.2-beta.1",
+        draft: false,
+        assets: [{ name: "f5-release-candidate.json" }],
+      });
+    if (kind === "mode") {
+      vi.stubEnv("RELEASE_AUTOMATION_MODE", "beta");
+      state.candidate = { ...state.candidate, kind: "stable" };
+    }
+    await reconcileReleases({ leaseOnly: true });
+    expect(JSON.parse(state.writes.get("release-publication-lease.json")!)).toEqual({
+      candidateRun: null,
+    });
+    expect(appendFileSync).toHaveBeenCalledWith(
+      "/fixture/output",
+      "selection_ready=true\nlease_key=none\n",
+    );
+    expect(state.assemble).not.toHaveBeenCalled();
+    expect(state.publish).not.toHaveBeenCalled();
+  },
+);
+it("does not mark a failed selection as complete", async () => {
+  state.load.mockRejectedValueOnce(new Error("artifact expired"));
+  await expect(reconcileReleases({ leaseOnly: true })).rejects.toThrow("artifact expired");
+  expect(state.writes.has("release-publication-lease.json")).toBe(false);
+});
+it.each(["beta", "shadow"])("preserves %s success when timing reads fail", async (mode) => {
+  vi.stubEnv("RELEASE_AUTOMATION_MODE", mode);
+  vi.stubEnv("GITHUB_RUN_ID", "999");
+  vi.stubEnv("GITHUB_OUTPUT", "/fixture/output");
+  vi.mocked(appendFileSync).mockClear();
+  state.timing.mockImplementation(() => {
+    throw new Error("jobs API unavailable");
+  });
+  await reconcileReleases();
+  const summary = JSON.parse(state.writes.get("release-summary.json")!);
+  expect(summary.status).toBe(mode === "shadow" ? "shadow-verified" : "published");
+  expect(summary.jobTimings).toEqual({ candidate: null, ci: null, publisher: null });
+  expect(summary.timingErrors).toHaveLength(3);
+  expect(state.assemble).toHaveBeenCalledOnce();
+  if (mode === "shadow")
+    expect(appendFileSync).toHaveBeenCalledWith(
+      "/fixture/output",
+      "cache_key=100-1-baselines-publisher-content-hash\n",
+    );
+  else expect(state.publish).toHaveBeenCalledOnce();
+});
+it("preserves publication success when public timestamp telemetry is unavailable", async () => {
+  vi.stubEnv("RELEASE_AUTOMATION_MODE", "beta");
+  const original = state.api.getMockImplementation()!;
+  state.api.mockImplementation((path: string) => {
+    if (path.startsWith("commits/")) throw new Error("commit API unavailable");
+    return original(path);
+  });
+  await reconcileReleases();
+  expect(JSON.parse(state.writes.get("release-summary.json")!)).toMatchObject({
+    status: "published",
+    mergeToPublicSeconds: null,
+    timingErrors: ["merge-to-public: Error: commit API unavailable"],
+  });
 });

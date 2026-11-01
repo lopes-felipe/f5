@@ -117,6 +117,10 @@ jobs:
           name: receipt-cli-${{ matrix.target }}-attempt-${{ github.run_attempt }}
           path: component-receipt/receipt.json
           retention-days: 30
+      - if: failure() || cancelled()
+        uses: ./.github/actions/release-diagnostics
+        with:
+          component: cli-${{ matrix.target }}
   windows-fixtures:
     needs: [preflight, windows-desktop]
     uses: ./.github/workflows/windows-release-checks.yml

@@ -64,9 +64,16 @@ stable preferences, beta clients retain beta preferences, and no path downgrades
 - `release.yml` plans the version and builds four desktops (macOS arm64/x64, Linux
   x64 and Windows x64) and five native CLI archives. It starts alongside main CI.
   It uses pinned runtimes, Bun/Electron/builder caches and the Windows Rust cache.
-  Every main merge currently builds the full candidate, including signing and
-  notarization. Supersession coalesces publication, not build costs. Stable builds
-  are never cancelled by a later merge.
+  Every main merge starts its candidate, including signing and notarization.
+  The independent release coordinator stops unfinished obsolete betas only after
+  a newer main source passes every required CI job. Stable requests, matching
+  reserved tags and active upgrade proofs remain protected. A publisher records
+  when selection finishes, including an explicit no-candidate marker while a
+  newer build is pending. Selected builds are normally already complete; the
+  lease additionally protects a rerun of that build while publication continues.
+  Unrelated obsolete betas can stop after selection. Missing markers fail closed.
+  Cancellation runs only in beta/all mode; shadow or an unset mode disables it.
+  Stable builds are never cancelled by a later merge.
 - macOS packages are signed/notarized. The final mounted DMG passes codesign,
   stapler, Gatekeeper and the bundled Claude SDK spawn check on its native runner.
 - Every native CLI archive passes clean-PATH runtime/server/backup smoke, a real
@@ -103,6 +110,19 @@ stable preferences, beta clients retain beta preferences, and no path downgrades
   A retry can remove an expected incomplete `starter` upload from its matching
   draft before uploading it again. Complete assets and public releases are never
   removed or replaced.
+- Draft creation uses the REST response's release ID, without relying on an
+  immediately consistent release listing. An ambiguous creation response gets
+  one discovery attempt after five seconds, never a blind repeated POST.
+  Downloads and uploads use at most three workers each; failures stop new work
+  and drain active transfers. Uploads and promotion use the validated release ID.
+- Main CI ends with its required validation result. Status issue reporting runs
+  independently after trusted main push CI completion, rejecting stale SHAs and
+  attempts inside a separate serialized reporting job. Pending reports queue
+  without cancelling one another; their runner queue cannot delay release eligibility.
+- A missing macOS signing timestamp gets one retry after five seconds against
+  the same compiled app. Certificate, entitlement and verification failures do
+  not retry. Signing retries are included in component receipts; all signing,
+  notarization and mounted-DMG gates still apply.
 - Public checks verify all installer/CLI download URLs, update manifests, candidate
   provenance, the Atom feed, and stable Latest aliases. Transient public/dependency
   failures retry once locally. Persistent failures remain visible for rerun.
@@ -194,9 +214,10 @@ Keep existing public releases untouched throughout rollout.
 4. Exercise a stable preparation PR in `all` mode. Verify the stable barrier
    while a later main merge completes, then stable Latest and beta preference
    retention. Verify a failed stable request remains held until explicit recovery.
-5. Interrupt an upload into an unpublished draft, rerun the publisher, and verify
+5. Use isolated fixture uploads to exercise interruption/retry, checking that
    existing asset IDs/digests stay unchanged. Exercise stale-baseline requalification
-   against existing artifacts and expired/corrupt artifact rejection.
+   against existing artifacts and expired/corrupt artifact rejection in fixtures.
+   Do not inject deliberate failures into production releases.
 
 To retry publication, rerun/dispatch **Release publisher**. To retry a failed
 upgrade-only qualification, rerun its failed jobs; reconciliation reuses its proof.
@@ -210,6 +231,54 @@ replacing or rebuilding the release.
 Manual UI acceptance for import, accessibility permissions, SmartScreen/Smart App
 Control, macOS Squirrel staging and AppImage behavior remains useful for product
 changes, but routine releases do not depend on laptop commands or an agent polling CI.
+
+### Finish the production rollout
+
+After merging release hardening, keep `beta` mode and require the merge's beta
+and the next legitimate main merge to publish through completion events without
+manual dispatch. Supersession may skip version numbers. Verify provenance,
+public feeds/downloads and stable Latest, then safely dispatch a duplicate
+publisher and confirm asset IDs/digests remain unchanged.
+
+Deliberate failure injection belongs only in fixture tests. The hosted workspace
+suite runs the local-HTTP release rehearsal on Linux/macOS: real archive hashing,
+reconciliation, assembly and resumable upload logic, with fixture GitHub responses,
+no production token and external network requests rejected. Additional fixtures
+cover cancellation protections, ordering, stable recovery, changed baselines,
+expired/corrupt artifacts and timestamp retry limits.
+
+Once unattended beta validation passes, run `bun run release:prepare --stable 0.1.2`.
+Review changelog/scope and green PR CI, confirm no unrelated pending request,
+then enable `all` before the maintainer merges that preparation PR. Its exact
+merge SHA is built once as stable; it is not a retag or byte-identical promotion
+of the preceding beta. Verify immutable stable assets, Latest, both Windows
+preferences, all CLI upgrades and mandatory certification. Subsequent main
+merges produce `0.1.3-beta.N`; stale baselines requalify retained artifacts only.
+
+After three routine beta publications, measure from the hardening merge SHA:
+
+```sh
+bun run release:performance --since <hardening-main-merge-sha>
+```
+
+This reads successful event/schedule-triggered publisher summaries and independently
+checks public release identities/timestamps. It records the first three distinct
+beta releases in beta or all mode, excluding stable releases and manual dispatches,
+and reports median merge-to-public
+against 1,500 seconds, including queues. Missing/expired evidence blocks the
+report; fewer than three samples remains pending. Missed targets leave the
+performance milestone open with a capacity/critical-path follow-up, without
+changing runners or weakening qualification.
+
+Summary schema v2 retains existing fields and adds outcome, component artifact
+IDs/attempts/signing retries, reused completed uploads, phase durations and
+transient retries, including waiting/blocked/failed runs. Parallel phase intervals
+are counted once. Per-job queue estimates use first-step start minus dependency
+completion; unresolved dependencies are null. The candidate/CI queue fields
+report the largest known individual job queue, not a sum; the publication field
+is eligibility-to-reconciliation delay. Timing API/parse failures record null
+measurements and diagnostics without invalidating verified publication or shadow
+memoization. Summary retention is 90 days.
 
 ## Build and validate CLI archives
 
