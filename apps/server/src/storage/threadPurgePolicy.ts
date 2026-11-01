@@ -42,6 +42,7 @@ export const threadPurgePolicy: Readonly<
   thread_pull_request_watches: { kind: "cascade" },
   thread_pull_request_watch_stops: { kind: "cascade" },
   thread_message_authorship: { kind: "cascade" },
+  thread_reference_grants: { kind: "cascade" },
   thread_settlement_requests: { kind: "cascade" },
   thread_settlement_hooks: { kind: "cascade" },
   mcp_app_instances: { kind: "cascade" },
@@ -123,6 +124,9 @@ export const threadPurgePolicy: Readonly<
 
 /** Static SQL handlers; schema introspection must never determine what gets deleted. */
 export const threadPurgeHandlers = {
+  // Grants held by the purged thread cascade; grants other threads hold on it go here.
+  thread_reference_grants: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
+    sql`DELETE FROM thread_reference_grants WHERE rowid IN (SELECT rowid FROM thread_reference_grants WHERE target_thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
   upstream_port_reviews: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
     sql`DELETE FROM upstream_port_reviews WHERE port_thread_id = ${threadId} RETURNING rowid`,
   native_history_retired_turns: (sql: SqlClient.SqlClient, threadId: ThreadId) =>

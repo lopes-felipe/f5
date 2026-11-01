@@ -47,6 +47,12 @@ guide starts generation with the model chosen under **Settings → Git**. Readin
 the saved guide and its running or failed state. See [HTML renders](html-renders.md) and
 [PR Hub](pr-hub-forges.md).
 
+`thread_read` reads another F5 thread that you referenced in this thread, as
+`[Title](f5://thread/<id>)`. It returns the latest proposed plan and the newest messages,
+with a cursor for older ones. It can read a thread only when you sent the reference yourself,
+or when you put it in the request of a planning or document workflow. Read-only workflow
+stages on Claude and Codex get a catalog that contains only `thread_read`.
+
 Computer control is opt-in on macOS. See **Settings → Browser & Computer → Agent support**
 for each enabled provider and a readable readiness reason.
 

@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { Effect } from "effect";
 import { NetService } from "@t3tools/shared/Net";
 import { waitForCliBootstrap } from "./cli-smoke-readiness.ts";
+import { stageCliSmokeArchiveTools } from "./cli-smoke-tools.ts";
 import {
   parseRelease,
   cliTarget,
@@ -52,6 +53,11 @@ export async function installedCliSmoke(
   );
   const target = cliTarget();
   const artifact = release.artifacts.find((a) => a.target === target)!;
+  const home = join(directory, "home"),
+    isolatedPath = join(directory, "isolated-path");
+  await mkdir(home);
+  await mkdir(isolatedPath);
+  await stageCliSmokeArchiveTools(isolatedPath);
   let manifest = release;
   const server = createServer(
     { key: await readFile(key), cert: await readFile(cert) },
@@ -75,13 +81,9 @@ export async function installedCliSmoke(
   if (!address || typeof address === "string") throw new Error("No HTTPS smoke address");
   const url = "https://127.0.0.1:" + address.port;
   manifest = { ...release, artifacts: [{ ...artifact, url: url + "/archive.tar.gz" }] };
-  const home = join(directory, "home"),
-    emptyPath = join(directory, "empty-path");
-  await mkdir(home);
-  await mkdir(emptyPath);
   const env = {
     ...Object.fromEntries(Object.entries(process.env).filter(([k]) => k.toUpperCase() !== "PATH")),
-    PATH: emptyPath,
+    PATH: isolatedPath,
     HOME: home,
     USERPROFILE: home,
     F5_HOME: join(home, ".f5"),

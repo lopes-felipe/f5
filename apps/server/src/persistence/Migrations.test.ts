@@ -125,6 +125,7 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 146, name: "ProjectionThreadMessagesReasoningTokens" },
       { migration_id: 147, name: "StorageMachineCleanupAudit" },
       { migration_id: 148, name: "ProjectionThreadActivitiesRankIndex" },
+      { migration_id: 149, name: "ThreadReferenceGrants" },
     ]);
     const activityIndexes = yield* sql<{
       name: string;
@@ -345,6 +346,30 @@ effectIt.layer(SqliteClient.layerMemory())("usage account history upgrade", (it)
       ]);
       expect(yield* sql`SELECT name FROM effect_sql_migrations WHERE migration_id = 116`).toEqual([
         { name: "UsageAccountHistory" },
+      ]);
+    }),
+  );
+});
+
+effectIt.layer(SqliteClient.layerMemory())("thread reference grants upgrade", (it) => {
+  it.effect("creates the grants table on a database already at 148", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const throughActivityRankIndex = Object.fromEntries(
+        Object.entries(MIGRATIONS).filter(([key]) => Number.parseInt(key, 10) <= 148),
+      );
+      yield* Migrator.make({})({ loader: Migrator.fromRecord(throughActivityRankIndex) });
+      const tables = () =>
+        sql<{ readonly name: string }>`
+          SELECT name FROM sqlite_master WHERE name = 'thread_reference_grants'`;
+      expect(yield* tables()).toEqual([]);
+
+      yield* runMigrations;
+      yield* runMigrations;
+
+      expect(yield* tables()).toEqual([{ name: "thread_reference_grants" }]);
+      expect(yield* sql`SELECT name FROM effect_sql_migrations WHERE migration_id = 149`).toEqual([
+        { name: "ThreadReferenceGrants" },
       ]);
     }),
   );

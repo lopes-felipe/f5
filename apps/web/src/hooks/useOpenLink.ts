@@ -6,6 +6,10 @@ import { ThreadId } from "@t3tools/contracts";
 import { type AppSettings, useAppSettingsSelector } from "../appSettings";
 import * as nativeApi from "../nativeApi";
 import { useRightPanelStore } from "../rightPanelStore";
+import { threadIdOfThreadReferenceUrl } from "@t3tools/shared/threadReferences";
+import { toastManager } from "../components/ui/toast";
+import { useStore } from "../store";
+import { selectThreadById } from "../threadSelectors";
 export function setMostRecentOpenLinkThread(_thread: ThreadId): void {}
 export const OpenLinkThread = createContext<ThreadId | undefined>(undefined);
 /** Web builds always use the system browser. Preview URLs require a current thread. */
@@ -25,6 +29,21 @@ export function useOpenLink(threadId?: ThreadId) {
   threadId ??= currentThread;
   return useCallback(
     async (url: string, options?: { external?: boolean }) => {
+      // A thread reference always opens in the app, even when an external open is requested;
+      // the OS opener would hand it back to F5 or to nothing.
+      const referencedThreadId = threadIdOfThreadReferenceUrl(url);
+      if (referencedThreadId) {
+        const referenced = selectThreadById(
+          useStore.getState(),
+          ThreadId.makeUnsafe(referencedThreadId),
+        );
+        if (!referenced || !router) {
+          toastManager.add({ type: "info", title: "That thread is no longer available." });
+          return;
+        }
+        await router.navigate({ to: "/$threadId", params: { threadId: referenced.id } });
+        return;
+      }
       const target = new URL(url, window.location.href);
       if (!["http:", "https:", "mailto:"].includes(target.protocol)) return;
       const owner = threadId;
