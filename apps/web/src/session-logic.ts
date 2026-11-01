@@ -148,6 +148,22 @@ export interface WorkLogEntry {
   codexCollaborationTool?: CodexCollaborationTool;
   subagentStates?: ReadonlyArray<CompactSubagentState>;
   subagentStatesTruncated?: boolean;
+  /** When the tool call first showed up; completed rows derive their duration from it. */
+  startedAt?: string;
+  /** A question request with its answers, rendered as a Q&A card. */
+  userInput?: WorkLogUserInput;
+}
+
+export interface WorkLogUserInputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  answers: ReadonlyArray<{ text: string; custom: boolean }>;
+}
+
+export interface WorkLogUserInput {
+  state: "answered" | "pending" | "unanswered";
+  questions: ReadonlyArray<WorkLogUserInputQuestion>;
 }
 
 export interface PendingApproval {
@@ -912,37 +928,86 @@ function collapseWhitespace(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-/** Each user-input request's question text, joined with " · " when it asked several. */
-function userInputQuestionTextByRequestId(
+/** Each user-input request's parsed questions; form-only elicitations have none. */
+function userInputQuestionsByRequestId(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
-): ReadonlyMap<string, string> {
-  const questions = new Map<string, string>();
+): ReadonlyMap<string, ReadonlyArray<UserInputQuestion>> {
+  const questions = new Map<string, ReadonlyArray<UserInputQuestion>>();
   for (const activity of activities) {
     if (activity.kind !== "user-input.requested") continue;
     const payload = workLogPayload(activity);
     if (typeof payload?.requestId !== "string") continue;
-    const text = (parseUserInputQuestions(payload) ?? [])
-      .map((question) => collapseWhitespace(question.question))
-      .filter(Boolean)
-      .join(" · ");
-    if (text) questions.set(payload.requestId, text);
+    const parsed = parseUserInputQuestions(payload);
+    if (parsed) questions.set(payload.requestId, parsed);
   }
   return questions;
+}
+
+/** The question text, joined with " · " when the request asked several. */
+function userInputQuestionText(questions: ReadonlyArray<UserInputQuestion> | undefined): string {
+  return (questions ?? [])
+    .map((question) => collapseWhitespace(question.question))
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** One question's answers: a string, a string array, or Codex's `{ answers }` record. */
+function userInputAnswerTexts(value: unknown): string[] {
+  const answer =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as { answers?: unknown }).answers
+      : value;
+  return (Array.isArray(answer) ? answer : [answer])
+    .filter((item): item is string => typeof item === "string")
+    .map(collapseWhitespace)
+    .filter(Boolean);
 }
 
 /** The submitted answers as one line; empty when nothing was answered. */
 function userInputAnswerPreview(answers: unknown): string {
   if (!answers || typeof answers !== "object") return "";
-  const values = Object.values(answers as Record<string, unknown>).flatMap((value) => {
-    const answer =
-      value && typeof value === "object" && !Array.isArray(value)
-        ? (value as { answers?: unknown }).answers
-        : value;
-    return (Array.isArray(answer) ? answer : [answer]).filter(
-      (item): item is string => typeof item === "string",
+  return Object.values(answers as Record<string, unknown>)
+    .flatMap(userInputAnswerTexts)
+    .join(" · ");
+}
+
+function workLogUserInput(
+  questions: ReadonlyArray<UserInputQuestion>,
+  answers: unknown,
+  unansweredState: "pending" | "unanswered",
+): WorkLogUserInput {
+  const answerRecord =
+    answers && typeof answers === "object" && !Array.isArray(answers)
+      ? (answers as Record<string, unknown>)
+      : {};
+  const items = questions.map((question) => {
+    const optionLabels = new Set(
+      question.options.map((option) => collapseWhitespace(option.label)),
     );
+    return {
+      id: question.id,
+      header: question.header,
+      question: question.question,
+      answers: userInputAnswerTexts(answerRecord[question.id]).map((text) => ({
+        text,
+        custom: !optionLabels.has(text),
+      })),
+    };
   });
-  return values.map(collapseWhitespace).filter(Boolean).join(" · ");
+  return {
+    state: items.some((item) => item.answers.length > 0) ? "answered" : unansweredState,
+    questions: items,
+  };
+}
+
+/** Claude's AskUserQuestion tool row repeats what the Q&A card already shows. */
+function isQuestionToolActivity(activity: OrchestrationThreadActivity): boolean {
+  if (!activity.kind.startsWith("tool.")) return false;
+  const toolPayload = readToolActivityPayload(activity.payload);
+  return (
+    toolPayload?.itemType === "dynamic_tool_call" &&
+    /^askuserquestion\s*:/i.test(toolPayload.detail ?? "")
+  );
 }
 
 function workLogPayload(activity: OrchestrationThreadActivity): Record<string, unknown> | null {
@@ -1519,11 +1584,42 @@ export function deriveWorkLogEntries(
       usageLimitRowByTurn.set(activity.turnId, activity);
     }
   }
-  const userInputQuestionByRequestId = userInputQuestionTextByRequestId(ordered);
+  const userInputQuestions = userInputQuestionsByRequestId(ordered);
+  const resolvedUserInputRequestIds = new Set<string>();
+  // Most `tool.started` activities are filtered out below, so collect start times first.
+  const toolStartedAtByProviderItemId = new Map<ProviderItemId, string>();
+  const toolProviderItemIdByActivity = new Map<OrchestrationThreadActivity, ProviderItemId>();
+  for (const activity of ordered) {
+    if (activity.kind === "user-input.resolved") {
+      const requestId = workLogPayload(activity)?.requestId;
+      if (typeof requestId === "string") resolvedUserInputRequestIds.add(requestId);
+      continue;
+    }
+    if (!activity.kind.startsWith("tool.")) continue;
+    const providerItemId = readToolActivityPayload(activity.payload)?.providerItemId;
+    if (!providerItemId) continue;
+    toolProviderItemIdByActivity.set(activity, providerItemId);
+    const startedAt = toolStartedAtByProviderItemId.get(providerItemId);
+    if (!startedAt || activity.createdAt < startedAt) {
+      toolStartedAtByProviderItemId.set(providerItemId, activity.createdAt);
+    }
+  }
   const entries = ordered
     .filter((activity) =>
       shouldKeepHistoricalWorkEntry(activity, latestTurnId, terminalCodexProviderItemIds),
     )
+    .filter((activity) => {
+      if (activity.kind === "user-input.requested") {
+        // The resolved row carries the questions and the answers.
+        const requestId = workLogPayload(activity)?.requestId;
+        return !(
+          typeof requestId === "string" &&
+          userInputQuestions.has(requestId) &&
+          resolvedUserInputRequestIds.has(requestId)
+        );
+      }
+      return !isQuestionToolActivity(activity);
+    })
     .filter(
       (activity) =>
         (activity.kind !== "runtime.warning" && activity.kind !== "runtime.error") ||
@@ -1572,15 +1668,39 @@ export function deriveWorkLogEntries(
     .filter((activity) => activity.summary !== "Checkpoint captured")
     .map((activity) => {
       const payload = workLogPayload(activity);
+      const questions =
+        (activity.kind === "user-input.resolved" || activity.kind === "user-input.requested") &&
+        typeof payload?.requestId === "string"
+          ? userInputQuestions.get(payload.requestId)
+          : undefined;
+      // Requested rows that reach here are unresolved: still open in the latest turn,
+      // abandoned in older ones. Elicitation receipts carry no answers and keep their row.
+      const userInput = !questions
+        ? undefined
+        : activity.kind === "user-input.requested"
+          ? workLogUserInput(
+              questions,
+              undefined,
+              (activity.turnId ?? undefined) === latestTurnId ? "pending" : "unanswered",
+            )
+          : payload?.receipt === undefined
+            ? workLogUserInput(questions, payload?.answers, "unanswered")
+            : undefined;
       // "User input submitted" buries what was asked: lead with the question and keep the
       // answer as the row's detail.
       const answeredQuestion =
-        activity.kind === "user-input.resolved" && typeof payload?.requestId === "string"
-          ? userInputQuestionByRequestId.get(payload.requestId)
-          : undefined;
-      // Only the warning label and the answered question depend on more than the activity.
+        activity.kind === "user-input.resolved" ? userInputQuestionText(questions) : "";
+      const toolProviderItemId = toolProviderItemIdByActivity.get(activity);
+      const toolStartedAt = toolProviderItemId
+        ? toolStartedAtByProviderItemId.get(toolProviderItemId)
+        : undefined;
+      const startedAt =
+        toolStartedAt && toolStartedAt < activity.createdAt ? toolStartedAt : undefined;
+      // Only these inputs depend on more than the activity itself.
       const cacheKey =
-        activity.kind === "runtime.warning" ? runtimeWarningVisibility : (answeredQuestion ?? "");
+        activity.kind === "runtime.warning"
+          ? runtimeWarningVisibility
+          : `${userInput ? JSON.stringify(userInput) : ""}|${startedAt ?? ""}`;
       const cached = workLogEntryByActivity.get(activity);
       if (cached?.cacheKey === cacheKey) {
         return cached.entry;
@@ -1618,6 +1738,8 @@ export function deriveWorkLogEntries(
         tone: usageLimit || activity.tone === "approval" ? "info" : activity.tone,
         activityKind: activity.kind,
         ...(answeredQuestion && answerPreview ? { detail: answerPreview } : {}),
+        ...(userInput ? { userInput } : {}),
+        ...(startedAt ? { startedAt } : {}),
       };
       if (activity.kind === "mcpApp") {
         const app = readMcpAppView(payload);

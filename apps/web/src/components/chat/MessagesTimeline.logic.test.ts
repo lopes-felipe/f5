@@ -1,5 +1,88 @@
 import { describe, expect, it } from "vitest";
-import { timelineIsAtEnd } from "./MessagesTimeline.logic";
+import {
+  describeDynamicToolEntry,
+  humanizeToolName,
+  mcpServerMonogram,
+  summarizeToolInputPairs,
+  timelineIsAtEnd,
+} from "./MessagesTimeline.logic";
+
+describe("describeDynamicToolEntry", () => {
+  const tool = (detail: string, overrides: { itemType?: string; toolTitle?: string } = {}) =>
+    describeDynamicToolEntry({
+      itemType: (overrides.itemType ?? "dynamic_tool_call") as "dynamic_tool_call",
+      label: "Tool call",
+      toolTitle: overrides.toolTitle ?? "Tool call",
+      detail,
+    });
+
+  it("names the tool and previews its telling input field", () => {
+    expect(tool('ToolSearch: {"query":"select:ExitPlanMode","max_results":1}')).toEqual({
+      heading: "Tool search",
+      preview: "select:ExitPlanMode",
+      icon: "search",
+    });
+    expect(tool('WebFetch: {"url":"https://docs.example.com/api","prompt":"Summarize"}')).toEqual({
+      heading: "Web fetch",
+      preview: "docs.example.com/api",
+      icon: "web",
+    });
+    expect(tool('TaskCreate: {"subject":"Add Q&A card","description":"Long text"}')).toEqual({
+      heading: "Task create",
+      preview: "Add Q&A card",
+      icon: "tasks",
+    });
+  });
+
+  it("keeps plain-text details and falls back to key: value pairs", () => {
+    expect(tool("TodoWrite: 3 tasks")).toEqual({
+      heading: "Todo write",
+      preview: "3 tasks",
+      icon: "tasks",
+    });
+    expect(tool('Frobnicate: {"level":3,"dry":true,"mode":"fast","extra":"x"}')?.preview).toBe(
+      "level: 3 · dry: true · mode: fast",
+    );
+  });
+
+  it("reads the telling field out of cut-off JSON", () => {
+    expect(tool('Skill: {"skill":"run","args":"--very long \\"quoted\\"...')?.preview).toBe("run");
+    expect(tool('WebSearchTool: {"query":"effect schema unions and')?.preview).toBe(
+      "effect schema unions and",
+    );
+  });
+
+  it("leaves named and non-generic rows alone", () => {
+    expect(tool('Read: {"file_path":"a.ts"}', { toolTitle: "Read file" })).toBeNull();
+    expect(tool("ToolSearch: x", { itemType: "mcp_tool_call" })).toBeNull();
+    expect(tool("no separator here")).toBeNull();
+  });
+});
+
+describe("tool naming helpers", () => {
+  it("humanizes tool names", () => {
+    expect(humanizeToolName("ToolSearch")).toBe("Tool search");
+    expect(humanizeToolName("mcp__f5_thread__html_render")).toBe("Html render");
+    expect(humanizeToolName("readMCPResource")).toBe("Read mcp resource");
+  });
+
+  it("builds MCP server monograms from up to two name segments", () => {
+    expect(mcpServerMonogram("f5_thread")).toBe("FT");
+    expect(mcpServerMonogram("github")).toBe("G");
+    expect(mcpServerMonogram("claudeAiDocs")).toBe("CA");
+  });
+
+  it("summarizes MCP input as quoted key: value pairs", () => {
+    expect(
+      summarizeToolInputPairs(
+        { title: "Card options", height: 780, nested: { a: 1 }, flag: false, more: "x" },
+        { quoteStrings: true },
+      ),
+    ).toBe('title: "Card options" · height: 780 · flag: false');
+    expect(summarizeToolInputPairs({ text: "a".repeat(80) })).toBe(`text: ${"a".repeat(59)}…`);
+    expect(summarizeToolInputPairs({ nested: {} })).toBeNull();
+  });
+});
 
 it("rearms following only in the last forty pixels, independently of viewport height", () => {
   expect(timelineIsAtEnd({ contentLength: 5_000, scrollLength: 2_000, scroll: 2_970 })).toBe(true);

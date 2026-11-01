@@ -416,6 +416,115 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Which repository?");
     expect(markup).toContain("The private one");
   });
+  it("renders answered questions as a standalone Q&A card in a collapsed prior turn", async () => {
+    const { MessagesTimeline, buildTimelineRows, createTimelineRowCache } =
+      await import("./MessagesTimeline");
+    const createdAt = "2026-03-17T19:12:28.000Z";
+    const timelineEntries: TimelineEntry[] = [
+      {
+        id: "before",
+        kind: "work",
+        createdAt,
+        entry: { id: "before", createdAt, tone: "tool", label: "Command run" },
+      },
+      {
+        id: "qa",
+        kind: "work",
+        createdAt,
+        entry: {
+          id: "qa",
+          createdAt,
+          tone: "info",
+          label: "How should focus motion feel? · Which states?",
+          activityKind: "user-input.resolved",
+          userInput: {
+            state: "answered",
+            questions: [
+              {
+                id: "motion",
+                header: "Focus motion",
+                question: "How should focus motion feel? It stays at 1.1× today.",
+                answers: [{ text: "Spring", custom: false }],
+              },
+              {
+                id: "states",
+                header: "Question 2",
+                question: "Which states?",
+                answers: [
+                  { text: "Pinned", custom: false },
+                  { text: "Only when idle", custom: true },
+                ],
+              },
+            ],
+          },
+        },
+      },
+      {
+        id: "new-turn",
+        kind: "message",
+        createdAt,
+        message: {
+          id: MessageId.makeUnsafe("new-turn"),
+          role: "user",
+          text: "Continue",
+          createdAt,
+          streaming: false,
+        },
+      },
+    ];
+    const rows = buildTimelineRows({
+      timelineEntries,
+      completionDividerBeforeEntryId: null,
+      completionSummary: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      liveActivity: null,
+      expandMcpToolCalls: false,
+      cache: createTimelineRowCache(),
+    });
+    expect(
+      rows
+        .filter((row) => row.kind === "work")
+        .map((row) => row.groupedEntries.map((entry) => entry.id)),
+    ).toEqual([["before"], ["qa"]]);
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        hasMessages
+        isWorking={false}
+        activeTurnStartedAt={null}
+        listRef={{ current: null }}
+        onIsAtEndChange={() => {}}
+        timelineEntries={timelineEntries}
+        completionDividerBeforeEntryId={null}
+        completionSummary={null}
+        turnDiffSummaryByAssistantMessageId={new Map()}
+        turnDiffSummaryByTurnId={new Map()}
+        expandedWorkGroups={{}}
+        onToggleWorkGroup={() => {}}
+        onOpenTurnDiff={() => {}}
+        revertTurnCountByUserMessageId={new Map()}
+        onRevertUserMessage={() => {}}
+        isRevertingCheckpoint={false}
+        onImageExpand={() => {}}
+        markdownCwd={undefined}
+        resolvedTheme="light"
+        timestampFormat="locale"
+        workspaceRoot={undefined}
+        expandedCommandExecutions={{}}
+        onToggleCommandExecution={() => {}}
+        allDirectoriesExpanded
+        onToggleAllDirectories={() => {}}
+      />,
+    );
+    expect(markup).toContain('data-slot="user-input-card"');
+    expect(markup).toContain(">Asked 2 questions</span>");
+    expect(markup).toContain(">Focus motion</p>");
+    // The adapter's generic "Question N" header adds nothing, so it gets no chip.
+    expect(markup).not.toContain(">Question 2</p>");
+    expect(markup).toContain("How should focus motion feel? It stays at 1.1× today.");
+    expect(markup).toContain("Spring</li>");
+    expect(markup).toContain("“Only when idle”</li>");
+  });
   it("labels the working row with the live activity, not the last finished tool", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const createdAt = "2026-03-17T19:12:28.000Z";
@@ -1295,7 +1404,9 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("MCP tool call");
+    expect(markup).toContain('data-testid="mcp-badge"');
+    expect(markup).toContain(">filesystem ›</span>");
+    expect(markup).toContain('data-testid="mcp-input-summary">path: &quot;README.md&quot;</p>');
     expect(markup).not.toContain("border-t border-border/60 px-3 py-3");
     expect(markup).not.toContain("read successfully");
   });
@@ -1319,6 +1430,8 @@ describe("MessagesTimeline", () => {
             entry: {
               id: "work-mcp-card",
               createdAt: "2026-03-17T19:12:28.000Z",
+              startedAt: "2026-03-17T19:12:27.160Z",
+              status: "completed",
               label: "MCP tool call",
               itemType: "mcp_tool_call",
               tone: "tool",
@@ -1354,6 +1467,18 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("group rounded-xl border border-border bg-card");
     expect(markup).toContain("border-t border-border px-3 py-3");
     expect(markup).toContain('viewBox="0 0 180 180"');
+    expect(markup).toContain(">filesystem ›</span>");
+    expect(markup).toContain(">read_text_file</span>");
+    expect(markup).toContain('data-testid="mcp-badge"');
+    expect(markup).toContain('aria-label="Completed"');
+    expect(markup).toContain("<span>840ms</span>");
+    expect(markup).toContain('data-testid="mcp-input-grid"');
+    expect(markup).toContain(">path</dt>");
+    expect(markup).toContain(">README.md</dd>");
+    expect(markup).toContain('aria-label="Copy input"');
+    expect(markup).toContain('aria-label="Copy result"');
+    // Open cards show the full input below instead of the one-line summary.
+    expect(markup).not.toContain('data-testid="mcp-input-summary"');
     expect(markup).not.toContain("rounded-xl border border-border/45 bg-card/25 px-2 py-1.5");
     expect(markup).not.toContain(
       '<span class="text-[10px] text-muted-foreground">Filesystem</span>',

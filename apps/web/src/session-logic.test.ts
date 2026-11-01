@@ -1102,6 +1102,166 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.find((entry) => entry.id === "receipt")?.label).toBe(
       "Provider received the requested input",
     );
+    expect(entries.find((entry) => entry.id === "receipt")?.userInput).toBeUndefined();
+  });
+
+  describe("Q&A cards", () => {
+    const turn = TurnId.makeUnsafe("turn-2");
+    const questions = [
+      {
+        id: "motion",
+        header: "Motion",
+        question: "How should focus motion feel?",
+        options: [
+          { label: "Spring", description: "" },
+          { label: "Linear", description: "" },
+        ],
+      },
+      {
+        id: "states",
+        header: "Question 2",
+        question: "Which states get a ring?",
+        options: [
+          { label: "Installed", description: "" },
+          { label: "Pinned", description: "" },
+        ],
+        multiSelect: true,
+      },
+    ];
+    const requested = (turnId = "turn-2") =>
+      makeActivity({
+        id: "q-requested",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        turnId,
+        kind: "user-input.requested",
+        summary: "User input requested",
+        tone: "info",
+        payload: { requestId: "req-q", questions },
+      });
+    const resolved = (answers: Record<string, unknown>) =>
+      makeActivity({
+        id: "q-resolved",
+        createdAt: "2026-02-23T00:00:05.000Z",
+        turnId: "turn-2",
+        kind: "user-input.resolved",
+        summary: "User input submitted",
+        tone: "info",
+        payload: { requestId: "req-q", answers },
+      });
+
+    it("pairs each question with its answers and flags typed ones", () => {
+      const entries = deriveWorkLogEntries(
+        [
+          requested(),
+          resolved({
+            motion: "Spring",
+            states: { answers: ["Installed", "Pinned", "Only when  idle"] },
+          }),
+        ],
+        turn,
+      );
+      expect(entries.map((entry) => entry.id)).toEqual(["q-resolved"]);
+      expect(entries[0]?.userInput).toEqual({
+        state: "answered",
+        questions: [
+          {
+            id: "motion",
+            header: "Motion",
+            question: "How should focus motion feel?",
+            answers: [{ text: "Spring", custom: false }],
+          },
+          {
+            id: "states",
+            header: "Question 2",
+            question: "Which states get a ring?",
+            answers: [
+              { text: "Installed", custom: false },
+              { text: "Pinned", custom: false },
+              { text: "Only when idle", custom: true },
+            ],
+          },
+        ],
+      });
+    });
+
+    it("accepts string-array answers and marks cancelled requests unanswered", () => {
+      const answered = deriveWorkLogEntries(
+        [requested(), resolved({ states: ["Pinned"] })],
+        turn,
+      )[0]?.userInput;
+      expect(answered?.state).toBe("answered");
+      expect(answered?.questions[1]?.answers).toEqual([{ text: "Pinned", custom: false }]);
+      expect(answered?.questions[0]?.answers).toEqual([]);
+
+      const cancelled = deriveWorkLogEntries([requested(), resolved({})], turn)[0];
+      expect(cancelled?.userInput?.state).toBe("unanswered");
+    });
+
+    it("shows an open request as pending in the latest turn only", () => {
+      const pending = deriveWorkLogEntries([requested()], turn);
+      expect(pending.map((entry) => entry.userInput?.state)).toEqual(["pending"]);
+      const abandoned = deriveWorkLogEntries([requested("turn-1")], undefined);
+      expect(abandoned.map((entry) => entry.userInput?.state)).toEqual(["unanswered"]);
+    });
+
+    it("drops the AskUserQuestion tool row but keeps other generic tool calls", () => {
+      const entries = deriveWorkLogEntries(
+        [
+          makeActivity({
+            id: "ask-tool",
+            createdAt: "2026-02-23T00:00:00.500Z",
+            turnId: "turn-2",
+            kind: "tool.updated",
+            payload: {
+              itemType: "dynamic_tool_call",
+              providerItemId: "tool-ask",
+              title: "Tool call",
+              detail: 'AskUserQuestion: {"questions":[{"question":"How should',
+            },
+          }),
+          makeActivity({
+            id: "search-tool",
+            createdAt: "2026-02-23T00:00:00.700Z",
+            turnId: "turn-2",
+            kind: "tool.completed",
+            payload: {
+              itemType: "dynamic_tool_call",
+              providerItemId: "tool-search",
+              title: "Tool call",
+              detail: 'ToolSearch: {"query":"select:Read"}',
+            },
+          }),
+          requested(),
+        ],
+        turn,
+      );
+      expect(entries.map((entry) => entry.id)).toEqual(["search-tool", "q-requested"]);
+    });
+  });
+
+  it("dates a tool row from its filtered-out start activity", () => {
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "mcp-started",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          turnId: "turn-1",
+          kind: "tool.started",
+          payload: { itemType: "mcp_tool_call", providerItemId: "mcp-1", status: "inProgress" },
+        }),
+        makeActivity({
+          id: "mcp-completed",
+          createdAt: "2026-02-23T00:00:02.500Z",
+          turnId: "turn-1",
+          kind: "tool.completed",
+          payload: { itemType: "mcp_tool_call", providerItemId: "mcp-1", status: "completed" },
+        }),
+      ],
+      TurnId.makeUnsafe("turn-1"),
+    );
+    expect(entries.map((entry) => [entry.id, entry.startedAt])).toEqual([
+      ["mcp-completed", "2026-02-23T00:00:01.000Z"],
+    ]);
   });
 
   it("coalesces a Codex collaboration lifecycle into one stable retained row", () => {

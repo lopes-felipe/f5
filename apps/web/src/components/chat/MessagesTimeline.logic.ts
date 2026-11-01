@@ -75,6 +75,163 @@ export function normalizedWorkEntryHeading(
   return normalizeCompactToolLabel(workEntry.toolTitle ?? workEntry.label).trim();
 }
 
+function collapsePreviewWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+/** "ToolSearch" → "Tool search"; MCP-style `mcp__server__tool` names keep the tool part. */
+export function humanizeToolName(name: string): string {
+  const base = name.split("__").findLast((segment) => segment.length > 0) ?? name;
+  const words = base
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .split(/[\s_-]+/)
+    .filter((word) => word.length > 0)
+    .map((word) => word.toLowerCase());
+  if (words.length === 0) return name;
+  const sentence = words.join(" ");
+  return `${sentence.charAt(0).toUpperCase()}${sentence.slice(1)}`;
+}
+
+/** Input fields that say what a call is about, most telling first. */
+const DYNAMIC_TOOL_PREVIEW_KEYS = [
+  "query",
+  "url",
+  "subject",
+  "description",
+  "prompt",
+  "pattern",
+  "skill",
+  "name",
+  "path",
+  "title",
+  "taskId",
+] as const;
+
+const PREVIEW_PAIR_VALUE_MAX_CHARS = 60;
+
+function formatToolPreviewValue(key: string, value: string): string {
+  const collapsed = collapsePreviewWhitespace(value);
+  return key === "url" ? collapsed.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "") : collapsed;
+}
+
+function truncatePreviewValue(value: string): string {
+  return value.length > PREVIEW_PAIR_VALUE_MAX_CHARS
+    ? `${value.slice(0, PREVIEW_PAIR_VALUE_MAX_CHARS - 1).trimEnd()}…`
+    : value;
+}
+
+/** Up to three primitive `key: value` pairs; strings optionally quoted. */
+export function summarizeToolInputPairs(
+  input: Record<string, unknown>,
+  options?: { quoteStrings?: boolean },
+): string | null {
+  const pairs = Object.entries(input)
+    .filter(
+      ([, value]) =>
+        typeof value === "string" || typeof value === "number" || typeof value === "boolean",
+    )
+    .slice(0, 3)
+    .map(([key, value]) => {
+      if (typeof value !== "string") return `${key}: ${String(value)}`;
+      const text = truncatePreviewValue(collapsePreviewWhitespace(value));
+      return `${key}: ${options?.quoteStrings ? `"${text}"` : text}`;
+    });
+  return pairs.length > 0 ? pairs.join(" · ") : null;
+}
+
+/** A JSON object, or null when the text isn't one. */
+export function parseJsonObject(text: string | undefined): Record<string, unknown> | null {
+  const trimmed = text?.trim();
+  if (!trimmed?.startsWith("{")) return null;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function dynamicToolPreview(rest: string): string | null {
+  const trimmed = rest.trim();
+  if (trimmed.length === 0) return null;
+  if (!trimmed.startsWith("{")) return collapsePreviewWhitespace(trimmed);
+  const input = parseJsonObject(trimmed);
+  if (input) {
+    for (const key of DYNAMIC_TOOL_PREVIEW_KEYS) {
+      const value = input[key];
+      if (typeof value === "string" && value.trim().length > 0) {
+        return formatToolPreviewValue(key, value);
+      }
+    }
+    return summarizeToolInputPairs(input);
+  }
+  // The adapter cuts long inputs mid-JSON; read the telling fields out of the prefix.
+  for (const key of DYNAMIC_TOOL_PREVIEW_KEYS) {
+    const match = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)`).exec(trimmed);
+    const raw = match?.[1];
+    if (!raw || raw.trim().length === 0) continue;
+    let value = raw;
+    try {
+      value = JSON.parse(`"${raw}"`) as string;
+    } catch {
+      // A cut escape sequence; the raw text still reads fine.
+    }
+    return formatToolPreviewValue(key, value);
+  }
+  return null;
+}
+
+/** Up to two initials from an MCP server name: "f5_thread" → "FT", "github" → "G". */
+export function mcpServerMonogram(serverName: string): string {
+  const segments = serverName
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(/[\s_.-]+/)
+    .filter((segment) => segment.length > 0);
+  const initials = segments
+    .slice(0, 2)
+    .map((segment) => segment.charAt(0).toUpperCase())
+    .join("");
+  return initials || "?";
+}
+
+export type DynamicToolIconKind = "search" | "web" | "tasks" | "tool";
+
+export interface DynamicToolDescription {
+  heading: string;
+  preview: string | null;
+  icon: DynamicToolIconKind;
+}
+
+function dynamicToolIconKind(toolName: string): DynamicToolIconKind {
+  const normalized = toolName.toLowerCase();
+  if (normalized === "toolsearch") return "search";
+  if (normalized === "webfetch") return "web";
+  if (normalized.startsWith("task") || normalized === "todowrite") return "tasks";
+  return "tool";
+}
+
+/**
+ * Generic tool calls arrive as "Tool call" with a `ToolName: {json}` detail.
+ * Names the tool and previews its input instead; null for every other row.
+ */
+export function describeDynamicToolEntry(
+  workEntry: Pick<WorkLogEntry, "itemType" | "detail" | "label" | "toolTitle">,
+): DynamicToolDescription | null {
+  if (workEntry.itemType !== "dynamic_tool_call" || !workEntry.detail) return null;
+  if (normalizedWorkEntryHeading(workEntry).toLowerCase() !== "tool call") return null;
+  const match = /^([A-Za-z][\w.-]*):\s*([\s\S]*)$/.exec(workEntry.detail.trim());
+  const toolName = match?.[1];
+  if (!toolName) return null;
+  return {
+    heading: humanizeToolName(toolName),
+    preview: dynamicToolPreview(match[2] ?? ""),
+    icon: dynamicToolIconKind(toolName),
+  };
+}
+
 export function normalizedSearchSummary(
   workEntry: Pick<WorkLogEntry, "command" | "searchSummary">,
 ): string | null {

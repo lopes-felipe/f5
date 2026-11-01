@@ -85,7 +85,7 @@ describe("AutomationSessionCard", () => {
 
     await steps.getByText("Took a screenshot").click();
     await expect.element(steps.getByText("Captured Google Chrome")).toBeVisible();
-    await expect.element(steps.getByText('{"sanitized":true}')).toBeVisible();
+    await expect.element(steps.getByTestId("mcp-input-grid")).toHaveTextContent("sanitizedtrue");
   });
 
   it("names the live action while a call is running", async () => {
