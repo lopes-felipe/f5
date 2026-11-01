@@ -13,6 +13,7 @@ import {
   type ElicitationReceiptState,
   type CodexCollaborationTool,
   type CompactSubagentState,
+  type ComputerStepSummary,
   ProviderItemId,
   type RuntimeItemStatus,
   type OrchestrationCommandExecutionSummary,
@@ -28,6 +29,7 @@ import {
   type TurnId,
 } from "@t3tools/contracts";
 import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStderr";
+import { automationToolSurface } from "@t3tools/shared/computerAction";
 import { ELICITATION_SUBMITTED_ACTIVITY_KIND } from "@t3tools/shared/pendingUserInputs";
 import {
   normalizeCodexCollaborationTool,
@@ -123,6 +125,7 @@ export interface WorkLogEntry {
   mcpServerName?: string;
   mcpToolName?: string;
   computerTool?: boolean;
+  computerStep?: ComputerStepSummary;
   mcpInput?: string;
   mcpResult?: string;
   mcpImages?: ReadonlyArray<{ attachmentId: string; mimeType: string; sizeBytes: number }>;
@@ -803,6 +806,7 @@ function workEntryVisibleSignature(entry: WorkLogEntry): string {
     mcpServerName: entry.mcpServerName,
     mcpToolName: entry.mcpToolName,
     computerTool: entry.computerTool,
+    computerStep: entry.computerStep,
     mcpInput: entry.mcpInput,
     mcpResult: entry.mcpResult,
     mcpImages: entry.mcpImages?.map((image) => image.attachmentId) ?? [],
@@ -861,11 +865,15 @@ function workEntryLifecyclePrecedence(entry: WorkLogEntry): number {
   return 0;
 }
 
-function coalesceCodexCollaborationEntries(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
+/**
+ * Folds every snapshot of one collaboration or computer/preview call into a single entry, so a
+ * session card counts one action per call and takes the final status.
+ */
+function coalesceProviderItemSnapshots(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
   const result: WorkLogEntry[] = [];
   const indexByProviderItemId = new Map<ProviderItemId, number>();
   for (const entry of entries) {
-    if (!entry.providerItemId || !entry.codexCollaborationTool) {
+    if (!entry.providerItemId || (!entry.codexCollaborationTool && !automationToolSurface(entry))) {
       result.push(entry);
       continue;
     }
@@ -1543,11 +1551,16 @@ export function deriveWorkLogEntries(
         readUsageLimitActivityDisplay(payload?.usageLimit) !== null;
       return alwaysVisible || runtimeWarningVisibility !== "hidden";
     })
-    .filter(
-      (activity) =>
-        activity.kind !== "tool.started" ||
-        Boolean(readToolActivityPayload(activity.payload)?.codexCollaborationTool),
-    )
+    .filter((activity) => {
+      if (activity.kind !== "tool.started") return true;
+      const payload = readToolActivityPayload(activity.payload);
+      // Codex reports MCP calls only as start + completion, so a running computer or
+      // preview call needs its start; coalescing below folds it into the completion.
+      return Boolean(
+        payload?.codexCollaborationTool ||
+        (payload?.providerItemId && automationToolSurface(payload)),
+      );
+    })
     .filter((activity) => activity.kind !== "runtime.configured")
     .filter((activity) => activity.kind !== REASONING_STATUS_ACTIVITY_KIND)
     .filter((activity) => activity.kind !== "account.updated")
@@ -1720,6 +1733,9 @@ export function deriveWorkLogEntries(
         entry.mcpServerName = toolPayload.mcpServerName;
       }
       if (toolPayload?.computerTool === true) entry.computerTool = true;
+      if (toolPayload?.computerTool === true && toolPayload.computerStep) {
+        entry.computerStep = toolPayload.computerStep;
+      }
       if (toolPayload?.mcpToolName) {
         entry.mcpToolName = toolPayload.mcpToolName;
       }
@@ -1777,7 +1793,7 @@ export function deriveWorkLogEntries(
     });
 
   const deduped = dedupeProviderItemWorkLogEntries(
-    coalesceCodexCollaborationEntries(correlateSubagentActivities(entries)),
+    coalesceProviderItemSnapshots(correlateSubagentActivities(entries)),
   );
   const paired = pairDiagnosticLifecycles(deduped);
   const modeFiltered = paired.filter((entry) => {

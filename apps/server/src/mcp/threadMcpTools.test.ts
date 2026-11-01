@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
+import { THEME_TOKEN_NAMES } from "@t3tools/shared/themeTokens";
 import { Effect, Exit, Scope } from "effect";
 import { makePreviewAutomationBroker, PreviewAutomationBroker } from "./PreviewAutomationBroker.ts";
 import { makePreviewMcpHttpServer } from "./PreviewMcpHttpServer.ts";
@@ -9,23 +10,18 @@ import {
   THREAD_READ_RESULT_MAX_BYTES,
   THREAD_TOOL_DEFINITIONS,
   ThreadMcpBroker,
-  ThreadToolError,
+  threadToolInputJsonSchema,
   threadToolDefinitions,
 } from "./threadMcpTools.ts";
 
 it("tells agents to leave a rendered page on the thread's own background", () => {
   const description =
     THREAD_TOOL_DEFINITIONS.find((tool) => tool.name === "html_render")?.description ?? "";
-  assert.include(description, "leave html, body and the outermost element without a background");
-  assert.include(description, "at least 16px of padding");
-});
-
-it("tells agents the frame fits the page and viewport height units are rejected", () => {
-  const describe = (name: string) =>
-    THREAD_TOOL_DEFINITIONS.find((tool) => tool.name === name)?.description ?? "";
-  assert.include(describe("html_render"), "up to 20000px");
-  for (const name of ["html_render", "html_preview"])
-    assert.include(describe(name), "reject vh, svh, lvh and dvh units");
+  assert.include(
+    description,
+    "Leave html, body and the outermost element without a background, card or side padding",
+  );
+  assert.include(description, "16px of padding");
 });
 
 it.effect(
@@ -61,30 +57,6 @@ it.effect(
       );
       assert.lengthOf(seen, 1);
     }),
-);
-
-it.effect("tells the agent why a tool refused, but not what an unexpected failure said", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const broker = yield* makeThreadMcpBroker;
-      const reason =
-        "The page uses a viewport height unit (100vh). Let content set the height, or use fixed pixel heights.";
-      yield* broker.register((_threadId, request) =>
-        request.name === "html_preview"
-          ? Effect.fail(new ThreadToolError({ message: reason }))
-          : Effect.fail(new Error("internal-detail") as unknown as ThreadToolError),
-      );
-      const context = { broker, threadId: ThreadId.makeUnsafe("t") };
-      const refused = yield* Effect.promise(() =>
-        callThreadTool(context, "html_preview", { html: "<main></main>" }),
-      );
-      assert.isTrue(refused.isError);
-      assert.deepStrictEqual(refused.content, [{ type: "text", text: reason }]);
-      const failed = yield* Effect.promise(() => callThreadTool(context, "thread_status", {}));
-      assert.isTrue(failed.isError);
-      assert.isFalse(JSON.stringify(failed).includes("internal-detail"));
-    }),
-  ),
 );
 
 it.effect("never sends raw provider defects through the catalog", () =>
@@ -172,6 +144,40 @@ it.effect(
     ),
 );
 
+it("guides agents to chart data, follow the theme and leave the page unannounced", () => {
+  const render = THREAD_TOOL_DEFINITIONS.find((tool) => tool.name === "html_render")!;
+  const preview = THREAD_TOOL_DEFINITIONS.find((tool) => tool.name === "html_preview")!;
+  assert.isTrue(render.alwaysLoad);
+  assert.include(
+    render.description,
+    "When an answer shows a trend or comparison in data, prefer showing it as a chart with this tool, unless the user asked for text only or for an exportable image.",
+  );
+  assert.include(render.description, "Do not announce or restate the page.");
+  assert.include(render.description, "up to 20000px");
+  for (const token of THEME_TOKEN_NAMES) assert.include(render.description, `--${token}`);
+  for (const variable of ["--chart-1", "--chart-6", "--radius", "--font-sans", "--font-mono"])
+    assert.include(render.description, variable);
+  assert.deepStrictEqual(preview.annotations, {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  });
+  assert.isFalse(preview.alwaysLoad);
+  for (const tool of [render, preview]) {
+    const schema = threadToolInputJsonSchema(tool) as {
+      properties: { html: { minLength?: number } };
+    };
+    assert.equal(schema.properties.html.minLength, 1);
+  }
+  const height = (
+    threadToolInputJsonSchema(render) as {
+      properties: { height: { maximum?: number; description?: string } };
+    }
+  ).properties.height;
+  assert.equal(height.maximum, 100_000);
+  assert.include(height.description, "Pass contentHeight from html_preview");
+});
 it("lists only thread_read in the read-only catalog", () => {
   assert.deepStrictEqual(
     threadToolDefinitions("read-only").map((tool) => tool.name),

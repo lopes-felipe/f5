@@ -40,7 +40,11 @@ import {
   isKnownProviderKind as isKnownProviderKindValue,
   ProviderKind as ProviderKindSchema,
 } from "./providerKind";
-import { TOOL_LIFECYCLE_ITEM_TYPES, ToolCompletionEnvelope } from "./toolLifecycle";
+import {
+  ComputerStepSummary,
+  TOOL_LIFECYCLE_ITEM_TYPES,
+  ToolCompletionEnvelope,
+} from "./toolLifecycle";
 import {
   ApprovalRequestId,
   CheckpointRef,
@@ -759,6 +763,7 @@ export type CompactSubagentState = typeof CompactSubagentState.Type;
 
 export const CompactToolActivityPayload = Schema.Struct({
   computerTool: Schema.optional(Schema.Boolean),
+  computerStep: Schema.optional(ComputerStepSummary),
   imagePath: Schema.optional(TrimmedNonEmptyString),
   itemType: CompactToolLifecycleItemType,
   providerItemId: Schema.optional(ProviderItemId),

@@ -1,26 +1,29 @@
 import {
-  HTML_RENDER_MAX_FIT_HEIGHT,
   HtmlRenderInput,
   HtmlPreviewInput,
   HtmlPreviewResult,
   type ThreadId,
 } from "@t3tools/contracts";
 import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
-import { Data, Effect, Exit, Layer, Option, Schema, ServiceMap } from "effect";
+import { Cause, Data, Effect, Exit, Layer, Option, Schema, ServiceMap } from "effect";
 import { z } from "zod";
+import { HTML_RENDER_COLUMN_WIDTH } from "@t3tools/shared/htmlRender";
+import {
+  HTML_PREVIEW_DESCRIPTION,
+  HTML_RENDER_DESCRIPTION,
+} from "../htmlRender/htmlRenderGuide.ts";
 import { previewToolResult, type McpToolResult } from "./previewMcpTools.ts";
 
-const HTML_RENDER_HEIGHT_RULE =
-  "Let content set the page's height. The frame grows to fit the page, so a height that follows the viewport makes it grow again and again: html_preview and html_render reject vh, svh, lvh and dvh units. They do not check for height:100% on html or body, which has the same problem, so avoid it too.";
-
+/**
+ * The failure an agent reads word for word. Messages hold only authored text
+ * and values the agent supplied, such as image paths; never caught exception
+ * text, file contents or page source.
+ */
 export class ThreadToolError extends Data.TaggedError("ThreadToolError")<{
   readonly message: string;
 }> {}
 
-/**
- * A ThreadToolError's message is written for the agent (why a page was refused, which PR to
- * name), so it passes through; any other failure gets the generic fallback.
- */
+/** Keeps an authored ThreadToolError and replaces anything else with `fallback`. */
 export const keepThreadToolError =
   (fallback: string) =>
   (error: unknown): ThreadToolError =>
@@ -226,32 +229,47 @@ export const THREAD_TOOL_DEFINITIONS = [
   {
     name: "html_render",
     title: "Render HTML in thread",
-    description: `Save an HTML page in this thread. Local absolute image paths must stay inside the project, worktree or attachments. JavaScript runs in a sandboxed frame. The page sits on the thread's background, so leave html, body and the outermost element without a background color; a box that needs its own background gets at least 16px of padding and rounded corners. F5 fits the frame to the page's height at each reader's width, up to ${HTML_RENDER_MAX_FIT_HEIGHT}px. ${HTML_RENDER_HEIGHT_RULE}`,
+    description: HTML_RENDER_DESCRIPTION,
     shape: {
-      html: z.string().max(512 * 1024),
+      html: z
+        .string()
+        .min(1)
+        .max(512 * 1024),
       title: z.string().min(1).max(80),
       height: z
         .number()
         .int()
-        .min(120)
-        .max(2000)
+        .min(1)
+        .max(100_000)
         .describe(
-          "The frame height in CSS pixels while the page loads. Use html_preview's contentHeight; the loaded page's own height replaces it.",
+          "Pass contentHeight from html_preview; F5 clamps it to 120-2000 for the frame shown while loading.",
         ),
     },
     annotations: annotations(false),
-    alwaysLoad: false,
+    alwaysLoad: true,
   },
   {
     name: "html_preview",
     title: "Preview HTML screenshot",
-    description: `Render HTML in the connected desktop and return a PNG, content height and console output. No browser download is needed. html_render also works without a desktop. ${HTML_RENDER_HEIGHT_RULE}`,
+    description: HTML_PREVIEW_DESCRIPTION,
     shape: {
-      html: z.string().max(512 * 1024),
-      width: z.number().int().min(200).max(2000).optional(),
-      appearance: z.enum(["light", "dark"]).optional(),
+      html: z
+        .string()
+        .min(1)
+        .max(512 * 1024),
+      width: z
+        .number()
+        .int()
+        .min(200)
+        .max(2000)
+        .optional()
+        .describe(`Default ${HTML_RENDER_COLUMN_WIDTH}; use about 390 for phones.`),
+      appearance: z
+        .enum(["light", "dark"])
+        .optional()
+        .describe("The reader's light or dark theme to render with. Default dark."),
     },
-    annotations: annotations(false),
+    annotations: annotations(true),
     alwaysLoad: false,
   },
 ] as const;
@@ -349,14 +367,15 @@ export async function callThreadTool(
       : { content: [{ type: "text", text }] };
   }
   if (Exit.isSuccess(result)) return previewToolResult(result.value);
-  const failure = Option.getOrUndefined(Exit.findErrorOption(result));
+  // Only an authored ThreadToolError reaches the agent; defects and anything else stay generic.
+  const failure = Cause.findErrorOption(result.cause);
   return {
     content: [
       {
         type: "text",
         text:
-          failure instanceof ThreadToolError
-            ? failure.message
+          Option.isSome(failure) && failure.value instanceof ThreadToolError
+            ? failure.value.message
             : "Thread tool could not complete. Check the input and current thread, then retry.",
       },
     ],

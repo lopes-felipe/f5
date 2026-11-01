@@ -1440,6 +1440,9 @@ function buildCompactToolLifecyclePayload(
   return {
     ...toolImages,
     ...(computerTool ? { computerTool: true } : {}),
+    ...(computerTool && event.payload.computerStep
+      ? { computerStep: event.payload.computerStep }
+      : {}),
     itemType: event.payload.itemType,
     ...(event.itemId ? { providerItemId: event.itemId } : {}),
     ...(event.payload.status ? { status: event.payload.status } : {}),

@@ -39,6 +39,8 @@ Use the reason keys in `rules.json`.
 - Keep f5 defaults for `autoResumeUsageLimitedThreads`, `resumeActiveTurnsAfterRestart`, `autoPullDefaultBranch` and `storageCleanup.enabled`.
 - Keep f5's Agents panel; port only fixes that improve it.
 - Reimplement inside f5's layers. Upstream `orchestration-v2`, `packages/provider-*`, `client-runtime` and `source-control-*` do not exist here.
+- f5 keeps its desktop-hosted `html_preview`. Upstream's server headless-Chrome preview and PreviewBrowser topics (#16872, #22895, #27224, #23771) do not apply.
+- f5 adopts proactive charts: agents answer trend and comparison data with an inline HTML chart unless the user asks for text only or an exportable image.
 
 ## Watch
 
