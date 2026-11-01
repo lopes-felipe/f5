@@ -212,6 +212,10 @@
       "types": "./src/promptLinks.ts",
       "import": "./src/promptLinks.ts"
     },
+    "./threadReferences": {
+      "types": "./src/threadReferences.ts",
+      "import": "./src/threadReferences.ts"
+    },
     "./threadWorkspace": {
       "types": "./src/threadWorkspace.ts",
       "import": "./src/threadWorkspace.ts"

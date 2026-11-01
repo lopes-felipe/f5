@@ -19,6 +19,10 @@ import { makeHtmlPreviewBroker } from "./htmlRender/HtmlPreviewBroker.ts";
 import { makeHtmlRenderRuntime } from "./htmlRender/HtmlRenderRuntime.ts";
 import { ThreadMcpBroker } from "./mcp/threadMcpTools.ts";
 import { makeThreadToolHandler } from "./mcp/threadToolRuntime.ts";
+import { ProjectionThreadMessageRepositoryLive } from "./persistence/Layers/ProjectionThreadMessages.ts";
+import { ProjectionThreadProposedPlanRepositoryLive } from "./persistence/Layers/ProjectionThreadProposedPlans.ts";
+import { ProjectionThreadMessageRepository } from "./persistence/Services/ProjectionThreadMessages.ts";
+import { ProjectionThreadProposedPlanRepository } from "./persistence/Services/ProjectionThreadProposedPlans.ts";
 import { PrHubFederation } from "./prHub/Layers/PrHubFederation.ts";
 import { PrHubReviewGuideService } from "./prHub/Layers/PrHubReviewGuideService.ts";
 import { publicOtlpConfiguration, resolveOtlpConfiguration } from "@t3tools/shared/observability";
@@ -365,7 +369,10 @@ import {
 import { isPrivateHttpPath, makeServerAuth } from "./serverAuth.ts";
 import { getReviewPreviewDiff } from "./git/ReviewDiffService.ts";
 import { decodeJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
-import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
+import {
+  getMessageTextLengthIssue,
+  getThreadReferenceLimitIssue,
+} from "@t3tools/shared/providerInput";
 import { CodexControlClientRegistry } from "./codex/CodexControlClientRegistry.ts";
 import { CodexMcpEventBus } from "./codex/CodexMcpEventBus.ts";
 import { CodexMcpSyncService } from "./codex/CodexMcpSyncService.ts";
@@ -1523,7 +1530,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       input.command as typeof input.command & {
         readonly dispatchSource?: unknown;
       };
-    const inputLengthIssue = getProviderTurnInputLengthIssue(turnStartCommand.message.text);
+    const inputLengthIssue =
+      getMessageTextLengthIssue(turnStartCommand.message.text) ??
+      getThreadReferenceLimitIssue(turnStartCommand.message.text);
     if (inputLengthIssue) {
       return yield* new RouteRequestError({
         message: inputLengthIssue.message,
@@ -2946,9 +2955,24 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           attachmentsDir: serverConfig.attachmentsDir,
           preview: htmlPreviewBroker,
         });
+        const threadContextRepositories = yield* Effect.gen(function* () {
+          return {
+            messages: yield* ProjectionThreadMessageRepository,
+            plans: yield* ProjectionThreadProposedPlanRepository,
+          };
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              ProjectionThreadMessageRepositoryLive,
+              ProjectionThreadProposedPlanRepositoryLive,
+            ),
+          ),
+        );
         yield* threadMcpBroker.value
           .register(
             makeThreadToolHandler({
+              ...threadContextRepositories,
+              sql,
               engine: orchestrationEngine,
               federation: threadMcpFederation.value,
               guides: prHubReviewGuide,

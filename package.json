@@ -75,6 +75,7 @@
     "perf:compare": "bun scripts/performance.ts compare",
     "screenshots:capture": "bun scripts/capture-screenshots.ts",
     "dist:cli:archive": "node scripts/build-cli-archive.ts",
+    "release:prepare": "node scripts/dispatch-release-preparation.ts",
     "dist:cli:manifest": "node scripts/merge-cli-release-manifests.ts",
     "test:cli-smoke": "node scripts/cli-archive-smoke.ts",
     "sdk:audit": "bun scripts/audit-claude-sdk.ts",

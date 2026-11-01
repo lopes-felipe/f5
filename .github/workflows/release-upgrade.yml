@@ -1,0 +1,113 @@
+name: Release upgrade qualification
+run-name: Upgrade ${{ inputs.key }}
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run: { description: Trusted candidate run ID, type: string, required: true }
+      key: { description: Candidate and baseline fingerprint, type: string, required: true }
+permissions:
+  contents: read
+  actions: read
+jobs:
+  plan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      version: ${{ steps.plan.outputs.version }}
+      channel: ${{ steps.plan.outputs.channel }}
+      source_sha: ${{ steps.plan.outputs.source_sha }}
+      artifact: ${{ steps.plan.outputs.artifact }}
+      windows_required: ${{ steps.plan.outputs.windows_required }}
+      cli_required: ${{ steps.plan.outputs.cli_required }}
+      cli_baseline: ${{ steps.plan.outputs.cli_baseline }}
+      cli_matrix: ${{ steps.plan.outputs.cli_matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - id: plan
+        run: node scripts/prepare-upgrade-requalification.ts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+          UPGRADE_KEY: ${{ inputs.key }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: upgrade-plan-${{ github.run_attempt }}
+          path: proof.json
+  upgrade:
+    needs: plan
+    if: needs.plan.outputs.windows_required == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    uses: ./.github/workflows/release-published-upgrade.yml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+      channel: ${{ needs.plan.outputs.channel }}
+      baseline: ${{ matrix.baseline }}
+      baseline_channel: ${{ matrix.baselineChannel }}
+      client_channel: ${{ matrix.clientChannel }}
+      source_sha: ${{ needs.plan.outputs.source_sha }}
+      artifact: ${{ needs.plan.outputs.artifact }}
+      run_id: ${{ fromJSON(inputs.candidate_run) }}
+  cli:
+    needs: plan
+    if: needs.plan.outputs.cli_required == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.cli_matrix) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      TARGET: ${{ matrix.target }}
+      CLI_BASELINE: ${{ needs.plan.outputs.cli_baseline }}
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          run-id: ${{ fromJSON(inputs.candidate_run) }}
+          github-token: ${{ github.token }}
+          path: release-cli
+      - run: node scripts/verify-candidate-component.ts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_RUN: ${{ inputs.candidate_run }}
+          ARTIFACT_NAME: ${{ matrix.artifact }}
+          ARTIFACT_DIR: release-cli
+          SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+      - run: node scripts/cli-archive-smoke.ts "release-cli/f5-$VERSION-$TARGET.tar.gz" "release-cli/f5-$VERSION-$TARGET.json"
+  proof:
+    needs: [plan, upgrade, cli]
+    if: >-
+      always() && !cancelled() && needs.plan.result == 'success' &&
+      (needs.upgrade.result == 'success' || needs.upgrade.result == 'skipped') &&
+      (needs.cli.result == 'success' || needs.cli.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: node scripts/record-requalification-proof.ts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPGRADE_KEY: ${{ inputs.key }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: upgrade-proof-${{ inputs.key }}-attempt-${{ github.run_attempt }}
+          path: proof.json
+          retention-days: 30

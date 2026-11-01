@@ -6,7 +6,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { makeGlobalSearch } from "./globalSearch.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
-import Migration0149 from "./persistence/Migrations/149_ExcludeImageOnlyPromptFromSearch.ts";
+import Migration0150 from "./persistence/Migrations/150_ExcludeImageOnlyPromptFromSearch.ts";
 
 const layer = it.layer(SqlitePersistenceMemory);
 
@@ -167,7 +167,7 @@ layer("GlobalSearch", (it) => {
         WHERE message_id = 'image-only'`;
       assert.equal((yield* search.query({ query: "additional text" })).results.length, 1);
 
-      // An index built before migration 149 still holds the prompt until the migration runs.
+      // An index built before migration 150 still holds the prompt until the migration runs.
       yield* sql`DELETE FROM projection_thread_messages WHERE message_id = 'image-only'`;
       yield* sql`
         INSERT INTO search_documents (
@@ -179,7 +179,7 @@ layer("GlobalSearch", (it) => {
         )
       `;
       assert.equal((yield* search.query({ query: "additional text" })).results.length, 1);
-      yield* Migration0149;
+      yield* Migration0150;
       assert.equal((yield* search.query({ query: "additional text" })).results.length, 0);
       const durable = yield* search.query({ query: "durable snapshot" });
       assert.equal(durable.results[0]?.messageId, "search-message");

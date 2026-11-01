@@ -5,6 +5,7 @@ import {
   type SerializedTextNode,
   type Spread,
 } from "lexical";
+import { threadReferencesToLabels } from "@t3tools/shared/threadReferences";
 
 export interface AssistantQuote {
   messageId: string;
@@ -12,7 +13,9 @@ export interface AssistantQuote {
   comment: string;
 }
 export function serializeAssistantQuote(quote: AssistantQuote): string {
-  const quoted = quote.text
+  // The agent wrote the quoted text, so its thread references become plain labels: only a
+  // reference a person adds grants the agent access to that thread.
+  const quoted = threadReferencesToLabels(quote.text)
     .slice(0, 4000)
     .replace(/\r\n?/g, "\n")
     .split("\n")

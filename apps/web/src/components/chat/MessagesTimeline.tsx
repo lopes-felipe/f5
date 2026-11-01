@@ -131,6 +131,8 @@ import type { RibbonPoint } from "./WorkingRibbon.logic";
 import { useReducedMotion } from "../../hooks/useReducedMotion";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { SkillInlineChip } from "./SkillInlineChip";
+import { ThreadReferenceChip } from "./ThreadReferenceChip";
+import { threadReferenceMatches } from "@t3tools/shared/threadReferences";
 import {
   deriveDisplayedUserMessageState,
   type ParsedTerminalContextEntry,
@@ -2063,8 +2065,30 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   );
 });
 
+/** `text` with each complete thread reference shown as a linked chip. */
+function renderWithThreadReferences(text: string): ReactNode {
+  const matches = threadReferenceMatches(text);
+  if (matches.length === 0) return text;
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  for (const match of matches) {
+    if (match.start > cursor) nodes.push(text.slice(cursor, match.start));
+    nodes.push(
+      <ThreadReferenceChip
+        key={`thread-reference:${match.start}`}
+        threadId={match.threadId}
+        label={match.label}
+        link
+      />,
+    );
+    cursor = match.end;
+  }
+  if (cursor < text.length) nodes.push(text.slice(cursor));
+  return nodes;
+}
+
 /**
- * A user message with its code spans, fences and bold rendered. The full
+ * A user message with its code spans, fences, bold and thread references rendered. The full
  * source is parsed and clipped to the displayed prefix, so a collapsed bubble
  * always shows the start of the expanded one.
  */
@@ -2106,7 +2130,16 @@ function UserMessageMarkupText(props: {
               </code>
             );
           case "bold":
-            return <strong key={segment.start}>{segment.value}</strong>;
+            return <strong key={segment.start}>{renderWithThreadReferences(segment.value)}</strong>;
+          case "thread-reference":
+            return (
+              <ThreadReferenceChip
+                key={segment.start}
+                threadId={segment.threadId}
+                label={segment.label}
+                link
+              />
+            );
           case "codeblock":
             return (
               <pre key={segment.start} className="user-message-codeblock">
@@ -2209,7 +2242,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
         if (matchIndex > cursor) {
           inlineNodes.push(
             <span key={`user-terminal-context-inline-before:${context.header}:${cursor}`}>
-              {textAfterSkillPrefix.slice(cursor, matchIndex)}
+              {renderWithThreadReferences(textAfterSkillPrefix.slice(cursor, matchIndex))}
             </span>,
           );
         }
@@ -2226,7 +2259,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
         if (cursor < textAfterSkillPrefix.length) {
           inlineNodes.push(
             <span key={`user-message-terminal-context-inline-rest:${cursor}`}>
-              {textAfterSkillPrefix.slice(cursor)}
+              {renderWithThreadReferences(textAfterSkillPrefix.slice(cursor))}
             </span>,
           );
         }
@@ -2260,7 +2293,9 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 
     if (textAfterSkillPrefix.length > 0) {
       inlineNodes.push(
-        <span key="user-message-terminal-context-inline-text">{textAfterSkillPrefix}</span>,
+        <span key="user-message-terminal-context-inline-text">
+          {renderWithThreadReferences(textAfterSkillPrefix)}
+        </span>,
       );
     } else if (inlinePrefix.length === 0) {
       return null;
@@ -2288,7 +2323,9 @@ const UserMessageBody = memo(function UserMessageBody(props: {
       >
         {skillNodes}
         {textAfterSkillPrefix.length > 0 ? (
-          <span key="user-message-skill-call-rest">{textAfterSkillPrefix}</span>
+          <span key="user-message-skill-call-rest">
+            {renderWithThreadReferences(textAfterSkillPrefix)}
+          </span>
         ) : null}
       </div>
     );
@@ -2309,7 +2346,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
       className="whitespace-pre-wrap wrap-break-word chat-plaintext leading-relaxed text-foreground"
       {...(testRenderCountProps ?? {})}
     >
-      {textAfterSkillPrefix}
+      {renderWithThreadReferences(textAfterSkillPrefix)}
     </pre>
   );
 });
