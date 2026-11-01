@@ -757,6 +757,14 @@ function shouldKeepHistoricalWorkEntry(
       ? (activity.payload as Record<string, unknown>)
       : null;
   const toolPayload = readToolActivityPayload(payload);
+  // Automation cards are part of the conversation history. Keep every lifecycle
+  // snapshot so coalescing retains the start time and handles lost completions.
+  const isHistoricalAutomation =
+    (activity.kind === "tool.started" ||
+      activity.kind === "tool.updated" ||
+      activity.kind === "tool.completed") &&
+    toolPayload !== null &&
+    automationToolSurface(toolPayload) !== undefined;
   const requestKind = extractWorkLogRequestKind(payload);
   const inferredStatus = inferWorkLogStatus(activity, toolPayload?.status);
   const isHistoricalFileChange =
@@ -772,6 +780,7 @@ function shouldKeepHistoricalWorkEntry(
   );
 
   return (
+    isHistoricalAutomation ||
     (isHistoricalFileChange && inferredStatus === "completed") ||
     isTerminalCodexCollaboration ||
     isLifecycleOfTerminalCodexCollaboration

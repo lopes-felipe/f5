@@ -124,11 +124,8 @@ export const AutomationSessionCard = memo(function AutomationSessionCard(props: 
   active: boolean;
   /** Renders the hook/review diagnostics correlated with the run's calls. */
   renderDiagnostics?: ((diagnostics: ReadonlyArray<WorkLogEntry>) => ReactNode) | undefined;
-  /** Present when a finished turn's card can fold back into its summary line. */
-  onCollapse?: (() => void) | undefined;
 }) {
-  const { surface, entries, timestampFormat, markdownCwd, onImageExpand, onCollapse, active } =
-    props;
+  const { surface, entries, timestampFormat, markdownCwd, onImageExpand, active } = props;
   const run = useMemo(
     () => buildAutomationRun(surface, entries, active),
     [surface, entries, active],
@@ -151,17 +148,6 @@ export const AutomationSessionCard = memo(function AutomationSessionCard(props: 
       data-status={run.status}
     >
       <div className="flex items-center gap-2.5 px-3 pt-2.5">
-        {onCollapse ? (
-          <button
-            type="button"
-            aria-expanded
-            aria-label="Collapse"
-            className="-ml-1 shrink-0 rounded-sm text-faint-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-            onClick={onCollapse}
-          >
-            <ChevronDownIcon className="size-3.5" />
-          </button>
-        ) : null}
         <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
           <SurfaceIcon className="size-3.5" />
         </span>

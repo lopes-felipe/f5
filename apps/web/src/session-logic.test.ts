@@ -1225,6 +1225,83 @@ describe("deriveWorkLogEntries", () => {
     ).toHaveLength(0);
   });
 
+  it.each(["computer", "preview"] as const)(
+    "retains and coalesces historical %s calls across later turns and reloads",
+    (surface) => {
+      const payload =
+        surface === "computer"
+          ? { computerTool: true, mcpToolName: "computer_click" }
+          : { mcpServerName: "__f5_preview", mcpToolName: "preview_click" };
+      const call = (
+        id: string,
+        kind: string,
+        second: number,
+        extra: Record<string, unknown> = {},
+      ) =>
+        makeActivity({
+          id,
+          kind,
+          createdAt: new Date(Date.UTC(2026, 1, 23, 0, 0, second)).toISOString(),
+          turnId: "turn-1",
+          payload: {
+            itemType: "mcp_tool_call",
+            providerItemId: "completed-call",
+            ...payload,
+            ...extra,
+          },
+        });
+      const image = { attachmentId: "saved-screenshot", mimeType: "image/png", sizeBytes: 10 };
+      const activities = [
+        call("started", "tool.started", 1, { status: "inProgress" }),
+        call("updated", "tool.updated", 2, {
+          status: "inProgress",
+          mcpImages: [image],
+        }),
+        // Some providers omit status on tool.completed.
+        call("completed", "tool.completed", 3),
+        call("failed", "tool.completed", 4, { providerItemId: "failed-call", status: "failed" }),
+        call("incomplete", "tool.started", 5, {
+          providerItemId: "incomplete-call",
+          status: "inProgress",
+        }),
+        call("without-item-id", "tool.completed", 6, { providerItemId: undefined }),
+      ];
+      for (const latestTurn of ["turn-1", "turn-2", "turn-4"]) {
+        // Fresh objects model activity restored from persistence after a provider switch.
+        const restored: OrchestrationThreadActivity[] = JSON.parse(JSON.stringify(activities));
+        const entries = deriveWorkLogEntries(restored, TurnId.makeUnsafe(latestTurn));
+        expect(entries).toHaveLength(4);
+        expect(entries[0]).toMatchObject({
+          id: "started",
+          createdAt: activities[0]!.createdAt,
+          turnId: "turn-1",
+          status: "completed",
+          mcpImages: [image],
+        });
+        expect(entries[1]).toMatchObject({ id: "failed", status: "failed" });
+        expect(entries[2]).toMatchObject({ id: "incomplete", status: "inProgress" });
+        expect(entries[3]).toMatchObject({ id: "without-item-id", status: "completed" });
+      }
+    },
+  );
+
+  it("does not retain unrelated historical tools or computer lookalikes", () => {
+    const activities = [
+      { mcpToolName: "computer_click" },
+      { computerTool: true, mcpToolName: "computer_unknown" },
+      { mcpServerName: "custom_preview", mcpToolName: "preview_click" },
+      { mcpServerName: "docs", mcpToolName: "read" },
+    ].map((payload, index) =>
+      makeActivity({
+        id: "unrelated-" + index,
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: { itemType: "mcp_tool_call", status: "completed", ...payload },
+      }),
+    );
+    expect(deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-2"))).toEqual([]);
+  });
+
   it("keeps collaboration rows without provider item ids on the generic path", () => {
     const entries = deriveWorkLogEntries(
       [
