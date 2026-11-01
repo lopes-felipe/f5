@@ -11,6 +11,7 @@ import {
 } from "../../composerDraftStore";
 import { isElectron } from "../../env";
 import { useCreateProjectBackedDraftThread } from "../../hooks/useCreateProjectBackedDraftThread";
+import { useStartScratchThread } from "../../hooks/useStartScratchThread";
 import {
   nativeThreadActionMenuItems,
   pickSnoozeMenuPreset,
@@ -69,6 +70,7 @@ export function useSidebarThreadActions(input: {
     input;
   const navigate = useNavigate();
   const createProjectBackedDraftThread = useCreateProjectBackedDraftThread();
+  const startScratchThread = useStartScratchThread();
   const markThreadUnread = useStore((store) => store.markThreadUnread);
   const setProjectExpanded = useStore((store) => store.setProjectExpanded);
   const toggleThreadSelection = useThreadSelectionStore((s) => s.toggleThread);
@@ -136,11 +138,12 @@ export function useSidebarThreadActions(input: {
   }, []);
 
   const handleNewThread = useCallback(
-    (projectId: ProjectId, options?: NewThreadOptions) => {
+    (projectId: ProjectId | null, options?: NewThreadOptions) => {
+      if (projectId === null) return startScratchThread(options);
       setProjectExpanded(projectId, true);
       return createProjectBackedDraftThread(projectId, options);
     },
-    [createProjectBackedDraftThread, setProjectExpanded],
+    [createProjectBackedDraftThread, setProjectExpanded, startScratchThread],
   );
 
   /**
@@ -149,7 +152,7 @@ export function useSidebarThreadActions(input: {
    * alternate workspace mode; Cmd/Ctrl+Shift opens the thread in a new window.
    */
   const createThreadInProject = useCallback(
-    (projectId: ProjectId, modifiers: NewThreadModifiers) => {
+    (projectId: ProjectId | null, modifiers: NewThreadModifiers) => {
       const intent = resolveSidebarNewThreadIntent(modifiers);
       const activeProjectThread = activeThread?.projectId === projectId ? activeThread : undefined;
       const activeProjectDraft =
@@ -159,7 +162,9 @@ export function useSidebarThreadActions(input: {
         worktreePath: activeProjectThread?.worktreePath ?? activeProjectDraft?.worktreePath ?? null,
         forceNonDefaultEnvMode: intent.forceNonDefaultEnvMode,
       })
-        .then(async ({ threadId }) => {
+        .then(async (result) => {
+          if (!result) return;
+          const { threadId } = result;
           if (!intent.openInNewWindow) return;
           const openThreadInNewWindow = window.desktopBridge?.openThreadInNewWindow;
           if (!openThreadInNewWindow) return;

@@ -70,16 +70,23 @@ export function resolveSidebarNewThreadIntent(input: {
  * else the first project.
  */
 export function resolvePrimaryNewThreadProjectId(input: {
+  readonly projects?: ReadonlyArray<{ readonly id: ProjectId }>;
   readonly activeThreadProjectId: ProjectId | null | undefined;
   readonly activeDraftProjectId: ProjectId | null | undefined;
   readonly mostRecentProjectId: ProjectId | null;
   readonly firstProjectId: ProjectId | null;
 }): ProjectId | null {
   return (
-    input.activeThreadProjectId ??
-    input.activeDraftProjectId ??
-    input.mostRecentProjectId ??
-    input.firstProjectId
+    [
+      input.activeThreadProjectId,
+      input.activeDraftProjectId,
+      input.mostRecentProjectId,
+      input.firstProjectId,
+    ].find(
+      (id): id is ProjectId =>
+        id != null &&
+        (input.projects === undefined || input.projects.some((project) => project.id === id)),
+    ) ?? null
   );
 }
 
