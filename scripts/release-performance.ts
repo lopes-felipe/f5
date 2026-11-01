@@ -95,7 +95,7 @@ export async function releasePerformance(
     }>(artifact, "release-summary.json");
     if (
       summary.status !== "published" ||
-      summary.mode !== "beta" ||
+      !["beta", "all"].includes(summary.mode ?? "") ||
       !eligible.has(summary.sourceSha) ||
       !/^\d+\.\d+\.\d+-beta\.\d+$/.test(summary.version)
     )

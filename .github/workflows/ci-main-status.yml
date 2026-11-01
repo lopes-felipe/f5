@@ -5,6 +5,7 @@ on:
     types: [completed]
     branches: [main]
 permissions:
+  actions: read
   contents: read
   issues: write
 jobs:

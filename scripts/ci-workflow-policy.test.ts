@@ -121,10 +121,31 @@ describe("CI workflow policy", () => {
   it("keeps the notifier outside concurrency groups that can cancel push runs", () => {
     expect(workflow.jobs["main-status"]).toBeUndefined();
     const reporter = readWorkflow("ci-main-status.yml").jobs.report!;
+    expect(readWorkflow("ci-main-status.yml").permissions.actions).toBe("read");
     expect(reporter.concurrency).toBeUndefined();
     expect(reporter.if).toContain("workflow_run.head_repository.full_name == github.repository");
     expect(reporter.if).toContain("workflow_run.event == 'push'");
     expect(reporter.steps?.some((step) => step.uses || step.run?.includes("download"))).toBe(false);
+  });
+  it("disables cancellation in shadow mode and publishes no-candidate selection markers", () => {
+    const coordinator = readWorkflow("release-coordinate.yml").jobs.coordinate!;
+    expect(coordinator.if).toContain("vars.F5_RELEASE_AUTOMATION_MODE == 'beta'");
+    expect(coordinator.if).toContain("vars.F5_RELEASE_AUTOMATION_MODE == 'all'");
+    expect(
+      coordinator.steps!.find((step) => step.run?.includes("coordinate-releases.ts"))!.env,
+    ).toHaveProperty(
+      "RELEASE_AUTOMATION_MODE",
+      "${{ vars.F5_RELEASE_AUTOMATION_MODE || 'shadow' }}",
+    );
+    const publisher = readWorkflow("release-publish.yml").jobs.reconcile!;
+    const marker = publisher.steps!.find((step) => step.uses === "actions/upload-artifact@v4")!;
+    expect(marker.if).toBe("steps.lease.outputs.selection_ready == 'true'");
+    expect(
+      publisher.steps!.find((step) => step.name === "Reconcile obsolete beta work")!.if,
+    ).toContain("steps.lease.outputs.selection_ready == 'true'");
+    expect(publisher.steps!.find((step) => step.id === "reconcile")!.if).toBe(
+      "steps.lease.outputs.candidate_run != ''",
+    );
   });
   it("classifies changes inside every heavy job without a scheduling prerequisite", () => {
     expect(workflow.jobs.changes).toBeUndefined();

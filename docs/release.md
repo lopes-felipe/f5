@@ -67,9 +67,12 @@ stable preferences, beta clients retain beta preferences, and no path downgrades
   Every main merge starts its candidate, including signing and notarization.
   The independent release coordinator stops unfinished obsolete betas only after
   a newer main source passes every required CI job. Stable requests, matching
-  drafts and active upgrade proofs remain protected. An executing publisher
-  protects its referenced build through a verified publication lease; unrelated
-  obsolete betas can stop while uploads continue. Missing leases fail closed.
+  reserved tags and active upgrade proofs remain protected. A publisher records
+  when selection finishes, including an explicit no-candidate marker while a
+  newer build is pending. Selected builds are normally already complete; the
+  lease additionally protects a rerun of that build while publication continues.
+  Unrelated obsolete betas can stop after selection. Missing markers fail closed.
+  Cancellation runs only in beta/all mode; shadow or an unset mode disables it.
   Stable builds are never cancelled by a later merge.
 - macOS packages are signed/notarized. The final mounted DMG passes codesign,
   stapler, Gatekeeper and the bundled Claude SDK spawn check on its native runner.
@@ -210,9 +213,10 @@ Keep existing public releases untouched throughout rollout.
 4. Exercise a stable preparation PR in `all` mode. Verify the stable barrier
    while a later main merge completes, then stable Latest and beta preference
    retention. Verify a failed stable request remains held until explicit recovery.
-5. Interrupt an upload into an unpublished draft, rerun the publisher, and verify
+5. Use isolated fixture uploads to exercise interruption/retry, checking that
    existing asset IDs/digests stay unchanged. Exercise stale-baseline requalification
-   against existing artifacts and expired/corrupt artifact rejection.
+   against existing artifacts and expired/corrupt artifact rejection in fixtures.
+   Do not inject deliberate failures into production releases.
 
 To retry publication, rerun/dispatch **Release publisher**. To retry a failed
 upgrade-only qualification, rerun its failed jobs; reconciliation reuses its proof.
@@ -228,12 +232,6 @@ Control, macOS Squirrel staging and AppImage behavior remains useful for product
 changes, but routine releases do not depend on laptop commands or an agent polling CI.
 
 ### Finish the production rollout
-
-The first verified rollout published `v0.1.2-beta.6` from
-`b88e926d05868b34e328b93965cdb25ad7cf4fe5`. A duplicate publisher preserved all
-23 asset IDs/digests. Candidate qualification took 1,468 seconds; merge-to-public
-took 3,327 seconds including shadow verification, runner queues and a draft lookup
-retry. This is evidence of artifact reuse, not achievement of the speed target.
 
 After merging release hardening, keep `beta` mode and require the merge's beta
 and the next legitimate main merge to publish through completion events without
@@ -264,7 +262,8 @@ bun run release:performance --since <hardening-main-merge-sha>
 
 This reads successful event/schedule-triggered publisher summaries and independently
 checks public release identities/timestamps. It records the first three distinct
-beta releases, excluding manual dispatches, and reports median merge-to-public
+beta releases in beta or all mode, excluding stable releases and manual dispatches,
+and reports median merge-to-public
 against 1,500 seconds, including queues. Missing/expired evidence blocks the
 report; fewer than three samples remains pending. Missed targets leave the
 performance milestone open with a capacity/critical-path follow-up, without
@@ -276,7 +275,9 @@ transient retries, including waiting/blocked/failed runs. Parallel phase interva
 are counted once. Per-job queue estimates use first-step start minus dependency
 completion; unresolved dependencies are null. The candidate/CI queue fields
 report the largest known individual job queue, not a sum; the publication field
-is eligibility-to-reconciliation delay. Summary retention is 90 days.
+is eligibility-to-reconciliation delay. Timing API/parse failures record null
+measurements and diagnostics without invalidating verified publication or shadow
+memoization. Summary retention is 90 days.
 
 ## Build and validate CLI archives
 

@@ -32,14 +32,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_AUTOMATION_MODE: ${{ vars.F5_RELEASE_AUTOMATION_MODE || 'shadow' }}
-      - if: steps.lease.outputs.candidate_run != ''
+      - if: steps.lease.outputs.selection_ready == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: release-lease-${{ steps.lease.outputs.candidate_run }}-${{ steps.lease.outputs.attempt }}-publisher-${{ github.run_attempt }}
+          name: release-lease-${{ steps.lease.outputs.lease_key }}-publisher-${{ github.run_attempt }}
           path: release-publication-lease.json
           if-no-files-found: error
           retention-days: 1
-      - if: steps.lease.outputs.candidate_run != ''
+      - if: steps.lease.outputs.selection_ready == 'true' && (vars.F5_RELEASE_AUTOMATION_MODE == 'beta' || vars.F5_RELEASE_AUTOMATION_MODE == 'all')
         name: Reconcile obsolete beta work
         continue-on-error: true
         run: gh workflow run release-coordinate.yml --ref main

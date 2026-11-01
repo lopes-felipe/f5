@@ -40,9 +40,28 @@ interface ReconcileOptions {
   lease?: PublicationLease;
 }
 export async function reconcileReleases(options: ReconcileOptions = {}): Promise<void> {
-  await observeRelease(() => reconcile(options));
+  await observeRelease(async () => {
+    const lease = await reconcile(options);
+    if (!options.leaseOnly) return;
+    // Publish a marker for every successful selection, including waiting/terminal
+    // outcomes. Missing markers still mean the publisher has not selected safely.
+    writeFileSync(
+      "release-publication-lease.json",
+      JSON.stringify(lease ?? { candidateRun: null }, null, 2) + "\n",
+    );
+    if (process.env.GITHUB_OUTPUT)
+      appendFileSync(
+        process.env.GITHUB_OUTPUT,
+        "selection_ready=true\nlease_key=" +
+          (lease ? lease.candidateRun + "-" + lease.attempt : "none") +
+          "\n" +
+          (lease
+            ? "candidate_run=" + lease.candidateRun + "\nattempt=" + lease.attempt + "\n"
+            : ""),
+      );
+  });
 }
-async function reconcile(options: ReconcileOptions): Promise<void> {
+async function reconcile(options: ReconcileOptions): Promise<PublicationLease | undefined> {
   const mode = automationMode(process.env.RELEASE_AUTOMATION_MODE);
   releaseFields({
     mode,
@@ -182,14 +201,8 @@ async function reconcile(options: ReconcileOptions): Promise<void> {
     return;
   }
   if (options.leaseOnly) {
-    writeFileSync("release-publication-lease.json", JSON.stringify(identity, null, 2) + "\n");
-    if (process.env.GITHUB_OUTPUT)
-      appendFileSync(
-        process.env.GITHUB_OUTPUT,
-        "candidate_run=" + candidate.runId + "\nattempt=" + candidate.runAttempt + "\n",
-      );
     releaseFields({ status: "candidate-ready" });
-    return;
+    return identity;
   }
   const fresh = upgradePlan(candidate, releases);
   const cacheKey = fresh.key + "-" + publisherIdentity();
@@ -326,11 +339,23 @@ async function reconcile(options: ReconcileOptions): Promise<void> {
     );
     await releasePhase("publicChecks", () => verifyPublicRelease(candidate));
   }
+  const timingErrors: string[] = [];
+  const timing = <T>(name: string, read: () => T): T | null => {
+    try {
+      return read();
+    } catch (error) {
+      timingErrors.push(name + ": " + String(error));
+      console.warn("Release timing unavailable:", name, String(error));
+      return null;
+    }
+  };
   const jobTimings = {
-    candidate: workflowTiming(build),
-    ci: workflowTiming(selected.ci),
+    candidate: timing("candidate", () => workflowTiming(build)),
+    ci: timing("ci", () => workflowTiming(selected.ci)),
     publisher: process.env.GITHUB_RUN_ID
-      ? workflowTiming(api<WorkflowRun>("actions/runs/" + process.env.GITHUB_RUN_ID))
+      ? timing("publisher", () =>
+          workflowTiming(api<WorkflowRun>("actions/runs/" + process.env.GITHUB_RUN_ID)),
+        )
       : null,
   };
   const maxQueue = (jobs: ReturnType<typeof workflowTiming> | null) => {
@@ -373,15 +398,17 @@ async function reconcile(options: ReconcileOptions): Promise<void> {
     mergeToPublicSeconds:
       mode === "shadow"
         ? null
-        : Math.round(
-            (Date.parse(
-              api<{ published_at: string }>("releases/tags/v" + candidate.version).published_at,
-            ) -
-              Date.parse(
-                api<{ commit: { committer: { date: string } } }>("commits/" + candidate.sourceSha)
-                  .commit.committer.date,
-              )) /
-              1000,
+        : timing("merge-to-public", () =>
+            Math.round(
+              (Date.parse(
+                api<{ published_at: string }>("releases/tags/v" + candidate.version).published_at,
+              ) -
+                Date.parse(
+                  api<{ commit: { committer: { date: string } } }>("commits/" + candidate.sourceSha)
+                    .commit.committer.date,
+                )) /
+                1000,
+            ),
           ),
     candidateSeconds: Math.round(
       (Date.parse(latest.get(candidate.sourceSha)!.updated_at) -
@@ -389,7 +416,7 @@ async function reconcile(options: ReconcileOptions): Promise<void> {
         1000,
     ),
   };
-  releaseFields({ ...summary, jobTimings });
+  releaseFields({ ...summary, jobTimings, timingErrors });
   if (mode === "shadow" && process.env.GITHUB_OUTPUT)
     appendFileSync(process.env.GITHUB_OUTPUT, "cache_key=" + cacheKey + "\n");
 }

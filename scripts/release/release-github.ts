@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import {
   createReadStream,
@@ -30,6 +31,7 @@ import {
   type CiWorkflow,
 } from "../lib/release-qualification.ts";
 
+const execAsync = promisify(execFile);
 export const repository = process.env.GITHUB_REPOSITORY ?? "lopes-felipe/f5";
 if (!/^[\w.-]+\/[\w.-]+$/.test(repository)) throw new Error("Invalid repository");
 function transientReleaseNetworkFailure(error: unknown): boolean {
@@ -283,15 +285,14 @@ export async function downloadArtifact(artifact: RemoteArtifact): Promise<string
       received = true;
       if ("sha256:" + (await hashFile(archive)) !== artifact.digest)
         throw new Error("Artifact ZIP digest mismatch");
-      const names = execFileSync("unzip", ["-Z1", archive], {
+      const { stdout } = await execAsync("unzip", ["-Z1", archive], {
         encoding: "utf8",
         maxBuffer: 8 * 1024 * 1024,
-      })
-        .trim()
-        .split("\n");
+      });
+      const names = stdout.trim().split("\n");
       artifactEntries(names);
       const destination = join(root, "files");
-      execFileSync("unzip", ["-q", "-n", archive, "-d", destination]);
+      await execAsync("unzip", ["-q", "-n", archive, "-d", destination]);
       if (readdirSync(destination).some((name) => !lstatSync(join(destination, name)).isFile()))
         throw new Error("Artifact contains a non-regular file");
       unlinkSync(archive);

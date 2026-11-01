@@ -4,6 +4,8 @@ const state = vi.hoisted(() => ({
   event: "schedule",
   trusted: true,
   reads: 0,
+  mode: "beta",
+  version: "0.1.2-beta.1",
 }));
 vi.mock("./release/release-github.ts", () => ({
   repository: "fixture/f5",
@@ -44,9 +46,9 @@ vi.mock("./release/release-github.ts", () => ({
     state.reads++;
     return {
       status: "published",
-      mode: "beta",
+      mode: state.mode,
       sourceSha: "a".repeat(40),
-      version: "0.1.2-beta.1",
+      version: state.version,
     };
   },
 }));
@@ -60,6 +62,8 @@ beforeEach(() => {
   state.event = "schedule";
   state.trusted = true;
   state.reads = 0;
+  state.mode = "beta";
+  state.version = "0.1.2-beta.1";
 });
 afterEach(() => vi.restoreAllMocks());
 const sample = (index: number, seconds: number): ReleaseSample => ({
@@ -109,4 +113,16 @@ it.each(["manual", "untrusted"])(
 it("blocks performance claims when required summary evidence has expired", async () => {
   state.expired = true;
   await expect(releasePerformance("a".repeat(40))).rejects.toThrow("missing or expired");
+});
+it("counts routine betas in all mode after stable automation is enabled", async () => {
+  state.mode = "all";
+  expect((await releasePerformance("a".repeat(40))).samples).toHaveLength(1);
+});
+it.each(["shadow", "stable"])("excludes %s from routine beta measurements", async (kind) => {
+  if (kind === "shadow") state.mode = "shadow";
+  else {
+    state.mode = "all";
+    state.version = "0.1.2";
+  }
+  expect((await releasePerformance("a".repeat(40))).samples).toEqual([]);
 });

@@ -23,7 +23,7 @@ function timestampFailure(error) {
     )
   )
     return false;
-  return /A timestamp was expected but was not found|timestamp (?:service|server).*(?:unavailable|timed? out|ECONNRESET|HTTP 50[234])/i.test(
+  return /A timestamp was expected but was not found|timestamp (?:service|server).*(?:unavailable|not available|timed? out|ECONNRESET|HTTP 50[234])/i.test(
     detail,
   );
 }

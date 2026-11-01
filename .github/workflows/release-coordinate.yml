@@ -16,6 +16,7 @@ concurrency:
 jobs:
   coordinate:
     if: >-
+      (vars.F5_RELEASE_AUTOMATION_MODE == 'beta' || vars.F5_RELEASE_AUTOMATION_MODE == 'all') &&
       github.repository == 'lopes-felipe/f5' && github.ref == 'refs/heads/main' &&
       (github.event_name != 'workflow_run' ||
       (github.event.workflow_run.event == 'push' &&
@@ -35,6 +36,7 @@ jobs:
       - run: node scripts/coordinate-releases.ts
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_AUTOMATION_MODE: ${{ vars.F5_RELEASE_AUTOMATION_MODE || 'shadow' }}
       - if: always()
         uses: actions/upload-artifact@v4
         with:

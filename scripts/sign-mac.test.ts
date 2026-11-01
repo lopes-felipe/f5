@@ -59,3 +59,17 @@ it("blocks a persistent timestamp failure after one retry", async () => {
   await expect(signWithRetry(sign, {}, async () => {})).rejects.toThrow("timestamp");
   expect(sign).toHaveBeenCalledTimes(2);
 });
+it.each([
+  "The timestamp service is not available.",
+  "timestamp server unavailable",
+  "timestamp service timed out",
+  "timestamp server ECONNRESET",
+  "timestamp service HTTP 503",
+])("retries the recognized timestamp failure once: %s", async (detail) => {
+  const options = { app: "/fixture/F5.app", timestamp: true };
+  const sign = vi.fn().mockRejectedValueOnce(new Error(detail)).mockResolvedValueOnce(undefined);
+  const delay = vi.fn().mockResolvedValue(undefined);
+  await signWithRetry(sign, options, delay);
+  expect(sign.mock.calls).toEqual([[options], [options]]);
+  expect(delay).toHaveBeenCalledExactlyOnceWith(5000);
+});
