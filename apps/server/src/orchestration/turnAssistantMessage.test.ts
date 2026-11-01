@@ -17,6 +17,7 @@ it("uses only the final completed text reply belonging to the requested turn", (
     { ...final, id: "commentary", text: "Working..." },
     final,
     { ...final, id: "reasoning-only", text: "", reasoningText: "Private reasoning" },
+    { ...final, id: "unicode-blank", text: "\u00a0\ufeff" },
     { ...final, id: "streaming", streaming: true },
     { ...final, id: "another-turn", turnId: "other" },
     { ...final, id: "user", role: "user" },
@@ -36,6 +37,7 @@ it.layer(SqlitePersistenceMemory)("persisted turn reply ownership", (it) => {
         VALUES ('commentary','a','shared-turn','assistant','Working',0,'1','1'),
           ('final','a','shared-turn','assistant','Final answer',0,'2','2'),
           ('reasoning','a','shared-turn','assistant','',0,'3','3'),
+          ('unicode-blank','a','shared-turn','assistant',${"\u00a0\ufeff"},0,'3','3'),
           ('streaming','a','shared-turn','assistant','Not finished',1,'4','4'),
           ('other-thread','b','shared-turn','assistant','Wrong thread',0,'5','5'),
           ('other-turn','a','other','assistant','Wrong turn',0,'6','6')`;

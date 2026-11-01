@@ -81,7 +81,7 @@ export function UpstreamPortQueue(props: { projectId: ProjectId; overview: Upstr
     <>
       {(queue.hasHistory || queue.queuedTopics + queue.running > 0) && (
         <Button size="xs" variant="ghost" onClick={() => setOpen(true)}>
-          Queue · {queue.running}/{queue.concurrency} running · {queue.queuedTopics} topics in {queue.queuedThreads} queued jobs
+          Queue · {queue.running}/{queue.concurrency} running · {queue.queuedTopics} {queue.queuedTopics === 1 ? "topic" : "topics"} in {queue.queuedThreads} queued {queue.queuedThreads === 1 ? "job" : "jobs"}
           {queue.paused ? " · Paused" : queue.hold ? ` · Waiting: ${queue.hold.message}` : ""}
           {queue.waitingOnFiles > 0 ? ` · ${queue.waitingOnFiles} jobs waiting on files` : ""}
         </Button>

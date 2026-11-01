@@ -1,3 +1,4 @@
+import { ASSISTANT_TEXT_WHITESPACE } from "@t3tools/shared/turnAssistantMessage";
 import { Effect } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -6,7 +7,7 @@ export default Effect.gen(function* () {
   yield* sql`CREATE TABLE upstream_port_topic_outcomes (
     project_id TEXT NOT NULL, topic_id TEXT NOT NULL, epoch INTEGER NOT NULL,
     thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, message_id TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('pr','equivalent','not-applicable','blocked')),
+    kind TEXT NOT NULL CHECK (kind IN ('pr','equivalent','not-applicable','blocked','invalid')),
     detail TEXT NOT NULL, explicit INTEGER NOT NULL, source_at TEXT NOT NULL,
     PRIMARY KEY(project_id,topic_id,epoch,thread_id)
   )`;
@@ -21,7 +22,7 @@ export default Effect.gen(function* () {
     SELECT m.message_id FROM projection_thread_messages m
     WHERE m.thread_id = t.thread_id AND m.turn_id = t.turn_id
       AND m.role = 'assistant' AND m.is_streaming = 0
-      AND length(trim(m.text, char(32,9,10,11,12,13))) > 0
+      AND length(trim(m.text, ${ASSISTANT_TEXT_WHITESPACE})) > 0
     ORDER BY m.created_at DESC,m.message_id DESC LIMIT 1
   ) WHERE NOT EXISTS (
     SELECT 1 FROM projection_thread_messages m
@@ -31,6 +32,6 @@ export default Effect.gen(function* () {
     SELECT 1 FROM projection_thread_messages m
     WHERE m.thread_id = t.thread_id AND m.turn_id = t.turn_id
       AND m.role = 'assistant' AND m.is_streaming = 0
-      AND length(trim(m.text, char(32,9,10,11,12,13))) > 0
+      AND length(trim(m.text, ${ASSISTANT_TEXT_WHITESPACE})) > 0
   )`;
 });

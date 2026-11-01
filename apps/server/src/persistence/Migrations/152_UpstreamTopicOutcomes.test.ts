@@ -22,6 +22,7 @@ it.layer(SqliteClient.layerMemory())("152_UpstreamTopicOutcomes", (it) => {
         ('old','a','turn','assistant',0,'Commentary','1'),
         ('final','a','turn','assistant',0,'Outcome','2'),
         ('reasoning','a','turn','assistant',0,'','3'),
+        ('unicode-blank','a','turn','assistant',0,${"\u00a0\ufeff"},'3'),
         ('unfinished','a','turn','assistant',1,'Partial','4'),
         ('valid-reply','a','valid','assistant',0,'Valid','1'),
         ('foreign-reply','b','missing','assistant',0,'Foreign','1')`;

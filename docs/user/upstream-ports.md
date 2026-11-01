@@ -158,6 +158,10 @@ the earlier threads and PRs blocking a file wait, including ports that need atte
 Recorded equivalent and not-applicable outcomes survive follow-up turns and restarts.
 Resolved topics release their file reservations once their threads and continuations are
 idle; unresolved ports keep their reservations even if their threads are archived.
+Newer outcomes can replace earlier decisions. Invalid corrections need attention and keep
+files reserved. For a batch's later PR, F5 checks topic trailers in the PR body and commits:
+included topics keep their reservations, while verified exclusions retain their earlier outcomes.
+If that evidence cannot be verified, F5 keeps the reservation and retries.
 At startup F5 also reconciles eligible historical outcomes before dispatching queued work,
 using the existing automatic-outcome setting and ledger publisher.
 

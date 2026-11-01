@@ -397,6 +397,7 @@ it("queues selected IDs beyond loaded pages and removes queued topics", async ()
     truncated: false,
   });
   await setup({ project: projectId, list: "ready" }, "Topic A", true);
+  await expect.element(page.getByRole("button", { name: /Queue · 0\/5 running · 1 topic in 1 queued job$/ })).toBeVisible();
   await expect.element(page.getByText("Queued", { exact: true })).toBeVisible();
   await selectAllMatching(250);
   await bulkButton("Queue selected…").click();

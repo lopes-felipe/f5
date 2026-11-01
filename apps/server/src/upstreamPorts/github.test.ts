@@ -36,6 +36,49 @@ function harness(
 
 const pr = { number: 7, html_url: "https://github.com/me/f5/pull/7", state: "open" };
 
+it.effect(
+  "reads body and commit topic trailers together and fails closed on partial evidence",
+  () =>
+    Effect.gen(function* () {
+      for (const commits of [
+        {
+          nodes: [{ commit: { message: "Port\n\nUpstream-Topic: pr-2" } }],
+          pageInfo: { hasNextPage: false },
+        },
+        { nodes: [{ commit: { message: "Port" } }], pageInfo: { hasNextPage: true } },
+        { nodes: [null], pageInfo: { hasNextPage: false } },
+        { pageInfo: { hasNextPage: false } },
+      ]) {
+        const github = makeUpstreamGitHub({
+          ...makeFakeGitHubCli().service,
+          runGraphql: (input) => {
+            assert.deepStrictEqual(input.variables, { owner: "me", name: "f5", number: 7 });
+            return Effect.succeed({
+              data: {
+                repository: {
+                  pullRequest: {
+                    body: "Upstream-Topic: pr-1",
+                    commits,
+                  },
+                },
+              },
+            });
+          },
+        });
+        const evidence = yield* github.readPullRequestTopicEvidence({
+          cwd: "/repo",
+          repo: fork,
+          number: 7,
+        });
+        assert.isTrue(evidence!.texts.includes("Upstream-Topic: pr-1"));
+        assert.equal(
+          evidence!.complete,
+          "nodes" in commits && commits.nodes?.[0]?.commit?.message?.includes("pr-2") === true,
+        );
+      }
+    }),
+);
+
 it.effect("maps the PR head repository, branch and SHA and the base ref", () =>
   Effect.gen(function* () {
     const { github } = harness(() => ({

@@ -293,7 +293,7 @@ export function makeQueueStore(sql: SqlClient.SqlClient) {
         ORDER BY requested_at DESC,row_id DESC LIMIT 1
       )
       WHERE l.state = 'active' AND u.state = 'completed' AND u.processing_quiesced_at IS NOT NULL
-      AND u.assistant_message_id IS NOT NULL AND (c.thread_id IS NULL OR
+      AND (c.thread_id IS NULL OR
         (c.result != 'preexisting' AND c.turn_id IS NOT u.turn_id) OR
         (c.result = 'failed' AND c.attempts < ${OUTCOME_CHECK_MAX_ATTEMPTS}))`.pipe(
       Effect.map((rows) => rows.map((row) => row.project_id)),

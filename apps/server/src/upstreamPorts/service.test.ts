@@ -52,6 +52,7 @@ interface Fixture {
   readonly make: (
     writer?: UpstreamPortsDeps["writer"],
     limits?: UpstreamPortsDeps["runLimits"],
+    sqlOverride?: SqlClient.SqlClient,
   ) => ReturnType<typeof makeUpstreamPortsService>;
 }
 
@@ -144,11 +145,12 @@ const setup = (
     const make: Fixture["make"] = (
       writer = { profileId: "p1", stateDir: "/state/p1", hostname: "host" },
       limits,
+      sqlOverride,
     ) =>
       makeUpstreamPortsService({
         host: host.host,
         store: makeUpstreamStore(sql),
-        sql,
+        sql: sqlOverride ?? sql,
         git: repo.git,
         github: gh.github,
         baseDir,
@@ -238,14 +240,213 @@ const completedThread = (id: string, turnId: string, messageId: string, state = 
       processingQuiescedAt: "2026-10-22T12:01:00.000Z",
       assistantMessageId: messageId,
     },
-  }) as never;
+  }) as unknown as OrchestrationThread;
 
 layer("upstream port queue", (it) => {
+  for (const correction of ["invalid", "single-topic"] as const)
+    it.effect("recovery respects the newer " + correction + " correction after restart", () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(1, 1);
+        yield* service.enqueuePort(queueInput(ids, "correct-" + correction));
+        yield* service.testing.awaitIdle;
+        const threadId = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!
+          .threadId!;
+        const sql = yield* SqlClient.SqlClient;
+        const original = "UPSTREAM-OUTCOME " + ids[0] + ": not-applicable No subsystem.";
+        const updated =
+          correction === "invalid"
+            ? "UPSTREAM-OUTCOME " + ids[0] + ": equivalent nonsense"
+            : "UPSTREAM-OUTCOME: equivalent src/new.ts:1";
+        yield* sql`INSERT INTO projection_turns
+          (thread_id,turn_id,state,requested_at,processing_quiesced_at,checkpoint_files_json)
+          VALUES (${threadId},'before-correction','completed','2026-10-22T12:00:00.000Z','2026-10-22T12:00:00.000Z','[]'),
+            (${threadId},'correction','completed','2026-10-22T12:01:00.000Z','2026-10-22T12:01:00.000Z','[]')`;
+        yield* sql`INSERT INTO projection_thread_messages
+          (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+          VALUES ('before-message',${threadId},'before-correction','assistant',${original},0,'2026-10-22T12:00:00.000Z','now'),
+            ('corrected-message',${threadId},'correction','assistant',${updated},0,'2026-10-22T12:01:00.000Z','now')`;
+        // Old admitted groups may lack command timestamps; the request is the durable fallback.
+        yield* sql`UPDATE upstream_port_groups SET command_json = json_remove(command_json,'$.createdAt')`;
+        fixture.host.threads = [
+          {
+            ...completedThread(threadId, "correction", "corrected-message"),
+            latestTurn: {
+              ...completedThread(threadId, "correction", "corrected-message").latestTurn!,
+              requestedAt: "2026-10-22T12:01:00.000Z",
+            },
+          },
+        ];
+        for (let restart = 0; restart < 2; restart++) {
+          const restarted = yield* fixture.make();
+          yield* restarted.testing.dispatchQueue(PROJECT_ID);
+          const row = (yield* restarted.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! })).row;
+          assert.equal(row.state, correction === "invalid" ? "in-progress" : "done");
+          const [receipt] = yield* sql`SELECT kind,turn_id FROM upstream_port_topic_outcomes`;
+          assert.equal(receipt!.kind, correction === "invalid" ? "invalid" : "equivalent");
+          assert.equal(receipt!.turn_id, "correction");
+          yield* sql`INSERT OR IGNORE INTO projection_thread_messages
+            (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+            VALUES ('status-message',${threadId},'status','assistant','Review complete.',0,'now','now')`;
+          fixture.host.threads = [
+            {
+              ...completedThread(threadId, "status", "status-message"),
+              latestTurn: {
+                ...completedThread(threadId, "status", "status-message").latestTurn!,
+                requestedAt: "2026-10-22T12:02:00.000Z",
+              },
+            },
+          ];
+        }
+      }),
+    );
+
+  for (const mode of ["recorded", "historical", "unverified"] as const)
+    it.effect("reserves " + mode + " batch PR topics while preserving verified exclusions", () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(3, 1, () => ["shared.ts"]);
+        yield* service.enqueuePort({
+          ...queueInput(ids.slice(0, 2), "reopened"),
+          grouping: "together",
+        });
+        yield* service.testing.awaitIdle;
+        const threadId = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!
+          .threadId!;
+        const sql = yield* SqlClient.SqlClient;
+        const text = ids
+          .slice(0, 2)
+          .map((id) => "UPSTREAM-OUTCOME " + id + ": not-applicable No subsystem.")
+          .join("\n");
+        yield* sql`INSERT INTO projection_turns
+        (thread_id,turn_id,state,requested_at,processing_quiesced_at,checkpoint_files_json)
+        VALUES (${threadId},'excluded','completed','2026-10-22T12:00:00.000Z','2026-10-22T12:00:00.000Z','[]')`;
+        yield* sql`INSERT INTO projection_thread_messages
+        (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+        VALUES ('excluded-message',${threadId},'excluded','assistant',${text},0,'2026-10-22T12:00:00.000Z','now')`;
+        fixture.host.threads = [completedThread(threadId, "excluded", "excluded-message")];
+        if (mode !== "historical") yield* service.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(
+          (yield* service.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! })).row.state,
+          mode === "historical" ? "in-progress" : "skipped",
+        );
+        const pr = {
+          repo: "o/f5",
+          number: 42,
+          url: "https://github.com/o/f5/pull/42",
+          state: "open" as const,
+          head: "reopened",
+          title: "Implement first topic",
+          body: "Upstream-Topic: " + ids[0],
+        };
+        if (mode !== "unverified") fixture.gh.prs.push(pr);
+        yield* sql`INSERT INTO projection_thread_messages
+        (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+        VALUES ('reopened-message',${threadId},'reopened','assistant','UPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/42',0,'2026-10-22T12:02:00.000Z','now')`;
+        fixture.host.threads = [
+          {
+            ...completedThread(threadId, "reopened", "reopened-message"),
+            latestTurn: {
+              ...completedThread(threadId, "reopened", "reopened-message").latestTurn!,
+              requestedAt: "2026-10-22T12:02:00.000Z",
+            },
+          },
+        ];
+        yield* service.enqueuePort(queueInput(ids.slice(2), "wait-reopened"));
+        yield* service.testing.awaitIdle;
+        yield* service.testing.dispatchQueue(PROJECT_ID);
+        if (mode === "unverified") {
+          const unresolved = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries.find(
+            (entry) => entry.status === "queued",
+          )!;
+          assert.lengthOf(unresolved.waitingOn, 2);
+          assert.isTrue(unresolved.waitingOn.every((blocker) => blocker.needsAttention));
+          fixture.gh.prs.push(pr);
+          fixture.clock.now = new Date(fixture.clock.now.getTime() + 16_000);
+          yield* service.testing.dispatchQueue(PROJECT_ID);
+        }
+        const waiting = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries.find(
+          (entry) => entry.status === "queued",
+        )!;
+        assert.deepStrictEqual(
+          waiting.waitingOn.map((blocker) => blocker.topicId),
+          [ids[0]],
+        );
+        const receipts =
+          yield* sql`SELECT topic_id,kind FROM upstream_port_topic_outcomes ORDER BY topic_id`;
+        assert.equal(receipts.find((row) => row.topic_id === ids[0])!.kind, "pr");
+        assert.equal(receipts.find((row) => row.topic_id === ids[1])!.kind, "not-applicable");
+      }),
+    );
+
+  it.effect("keeps a scoped PR out of unrelated topics after a status turn", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(2, 1);
+      yield* service.enqueuePort({ ...queueInput(ids, "scoped-pr"), grouping: "together" });
+      yield* service.testing.awaitIdle;
+      const threadId = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!
+        .threadId!;
+      const sql = yield* SqlClient.SqlClient;
+      const text = "UPSTREAM-OUTCOME " + ids[0] + ": pr https://github.com/o/f5/pull/42";
+      yield* sql`INSERT INTO projection_turns
+        (thread_id,turn_id,state,requested_at,processing_quiesced_at,checkpoint_files_json)
+        VALUES (${threadId},'scoped','completed','2026-10-22T12:00:00.000Z','2026-10-22T12:00:00.000Z','[]')`;
+      yield* sql`INSERT INTO projection_thread_messages
+        (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+        VALUES ('scoped-message',${threadId},'scoped','assistant',${text},0,'now','now'),
+          ('status-message',${threadId},'status','assistant','Review complete.',0,'now','now')`;
+      fixture.host.threads = [completedThread(threadId, "status", "status-message")];
+      yield* service.testing.dispatchQueue(PROJECT_ID);
+      assert.equal(
+        (yield* service.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! })).row.links[0]!.outcome
+          ?.kind,
+        "pr",
+      );
+      assert.isNull(
+        (yield* service.getTopic({ projectId: PROJECT_ID, topicId: ids[1]! })).row.links[0]!
+          .outcome,
+      );
+    }),
+  );
+
+  it.effect("keeps startup and queue dispatch alive when the recovery scan fails", () =>
+    Effect.gen(function* () {
+      const { fixture, service, ids } = yield* prepareQueue(1, 1);
+      yield* service.controlPortQueue({ projectId: PROJECT_ID, action: "pause" });
+      yield* service.enqueuePort(queueInput(ids, "startup-scan-error"));
+      yield* service.testing.awaitIdle;
+      const sql = yield* SqlClient.SqlClient;
+      let failed = false;
+      const flakySql = new Proxy(sql, {
+        apply(target, thisArg, args) {
+          if (!failed && String(args[0]).includes("SELECT DISTINCT l.project_id")) {
+            failed = true;
+            return sql`SELECT * FROM missing_recovery_scan_table`;
+          }
+          return Reflect.apply(target, thisArg, args);
+        },
+      });
+      const restarted = yield* fixture.make(undefined, undefined, flakySql);
+      yield* restarted.start;
+      assert.isTrue(failed);
+      yield* restarted.controlPortQueue({ projectId: PROJECT_ID, action: "resume" });
+      yield* restarted.testing.awaitIdle;
+      assert.equal(fixture.host.submissions.length, 1);
+    }),
+  );
+
   it.effect(
     "recovers mixed topic outcomes after a broken checkpoint pointer and later status turn",
     () =>
       Effect.gen(function* () {
         const { fixture, service, ids } = yield* prepareQueue(3, 1, () => ["shared.ts"]);
+        fixture.gh.prs.push({
+          repo: "o/f5",
+          number: 42,
+          url: "https://github.com/o/f5/pull/42",
+          state: "open",
+          head: "unrelated-port",
+          title: "Other topics",
+          body: "Upstream-Topic: pr-999",
+        });
         yield* service.enqueuePort({
           ...queueInput(ids.slice(0, 2), "recover-mixed"),
           grouping: "together",

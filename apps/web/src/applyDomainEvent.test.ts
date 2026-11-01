@@ -1650,6 +1650,46 @@ describe("applyDomainEvent", () => {
   });
 });
 
+it("keeps the actual same-turn reply when a synthetic checkpoint arrives", () => {
+  const turnId = TurnId.makeUnsafe("turn-final");
+  const replyId = MessageId.makeUnsafe("actual-final");
+  const thread = makeThread({
+    messages: [
+      {
+        id: replyId,
+        turnId,
+        role: "assistant",
+        text: "Final reply",
+        streaming: false,
+        createdAt: "2026-04-01T09:00:00.000Z",
+      },
+    ],
+    latestTurn: {
+      turnId,
+      state: "completed",
+      requestedAt: "2026-04-01T09:00:00.000Z",
+      startedAt: "2026-04-01T09:00:00.000Z",
+      completedAt: "2026-04-01T09:01:00.000Z",
+      assistantMessageId: replyId,
+    },
+  });
+  const next = applyDomainEvent(
+    makeState({ threads: [thread] }),
+    makeEvent("thread.turn-diff-completed", {
+      threadId: thread.id,
+      turnId,
+      checkpointTurnCount: 1,
+      checkpointRef: CheckpointRef.makeUnsafe("refs/f5/checkpoint/1"),
+      status: "ready",
+      files: [],
+      assistantMessageId: MessageId.makeUnsafe("assistant:toolu_missing"),
+      completedAt: "2026-04-01T09:02:00.000Z",
+    }),
+  );
+  expect(next.threads[0]?.latestTurn?.assistantMessageId).toBe(replyId);
+  expect(next.threads[0]?.turnDiffSummaries[0]?.assistantMessageId).toBe(replyId);
+});
+
 it.each(["running", "interrupted"] as const)(
   "keeps %s turn state when its checkpoint arrives",
   (state) => {

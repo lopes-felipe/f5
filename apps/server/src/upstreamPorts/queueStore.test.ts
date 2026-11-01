@@ -49,7 +49,7 @@ effectIt.layer(SqlitePersistenceMemory)("outcome recovery wakes", (it) => {
         VALUES ('p','pr-1',1,'idle-port','request',0,'active')`;
       yield* sql`INSERT INTO projection_turns
         (thread_id,turn_id,state,requested_at,processing_quiesced_at,assistant_message_id,checkpoint_files_json)
-        VALUES ('idle-port','settled','completed','2026-10-22','2026-10-22','reply','[]')`;
+        VALUES ('idle-port','settled','completed','2026-10-22','2026-10-22',NULL,'[]')`;
       yield* queue.upsertOutcomeCheck({
         projectId: "p",
         threadId: "idle-port",
