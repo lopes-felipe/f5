@@ -4,6 +4,39 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- Switch providers or provider instances within a thread, carrying a bounded text transcript to the new session and resuming previous sessions when possible.
+- Drag threads from the sidebar into the composer to give the agent conversation references it can read on demand.
+- Start threads without a project from Home, the sidebar or the command palette, with separate scratch folders for their files, attachments and terminals.
+- Show computer and browser-preview runs as session cards with grouped actions, status and screenshots.
+- Navigate desktop history with back/forward buttons and macOS trackpad swipes.
+
+### Changed
+
+- Inline HTML replies follow the app theme, support full-screen viewing and zoom, and offer desktop previews and clickable images. Tall replies fit their content up to 20,000 pixels, with clearer feedback when a page cannot be sized safely.
+
+### Performance
+
+- Keep interactive requests responsive by scheduling RPCs by priority, waiting for runtime readiness where required, and reducing startup snapshots.
+- Render large changed-files trees with only the rows near the viewport mounted.
+
+### Fixed
+
+- Keep scratch threads' provider sessions, file references, skills, attachments and HTML images in the correct workspace.
+- Recover interrupted scratch-folder cleanup and retry failed deletion without removing another thread's files.
+- Display image-only messages without the internal placeholder prompt, including queued messages, search results and generated thread titles.
+- Keep retained runtime-error details visible in the work log.
+- Render Windows file paths correctly in Markdown and preserve line and column when opening filename-only file links in the editor.
+- Shut down the desktop backend cleanly when its launcher disappears or its output pipes close.
+
+### Releases
+
+- Build desktop and CLI release candidates once alongside CI, then publish the exact qualified artifacts automatically. Stable preparation PRs record explicit release intent and preserve publication ordering.
+- Resume publication without replacing completed assets, transfer components concurrently, retry recognized transient macOS timestamp failures once, and stop obsolete beta builds after newer main commits pass required CI.
+- Verify native CLI installation and updates, Windows upgrade preferences and failure recovery, and public release assets and feeds. Release summaries record queue time, retries and artifact reuse.
+- macOS packages remain signed and notarized. Windows installers remain unsigned, and existing provider browser/computer certification requirements remain in force.
+
 ## [0.1.1] - 2026-10-30
 
 ### Installation
