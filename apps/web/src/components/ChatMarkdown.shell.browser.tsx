@@ -51,8 +51,22 @@ describe("executable shell fences", () => {
     await expect.element(button).toBeEnabled();
     execute.mockRejectedValueOnce(new Error("Terminal failed"));
     await button.click();
-    await expect.element(view.getByText("Could not run command. Try again.")).toBeVisible();
+    await expect.element(view.getByText("Terminal failed")).toBeVisible();
     expect(execute).toHaveBeenCalledTimes(2);
+    execute.mockResolvedValueOnce(undefined);
+    await button.click();
+    await expect.element(view.getByText("Terminal failed")).not.toBeInTheDocument();
+    expect(execute).toHaveBeenCalledTimes(3);
+  });
+
+  it("uses a readable fallback for unknown terminal failures", async () => {
+    const view = await render(
+      <TerminalCommandProvider value={() => Promise.reject(null)}>
+        <ChatMarkdown text={"```bash\necho hi\n```"} cwd={undefined} />
+      </TerminalCommandProvider>,
+    );
+    await view.getByRole("button", { name: "Run in terminal" }).click();
+    await expect.element(view.getByText("Could not run command. Try again.")).toBeVisible();
   });
 
   it.each([

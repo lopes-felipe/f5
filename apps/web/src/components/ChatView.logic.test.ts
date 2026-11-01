@@ -35,6 +35,12 @@ import {
   shouldRenderTimelineContent,
 } from "./ChatView.logic";
 import { appendTerminalContextsToPrompt } from "../lib/terminalContext";
+import { threadAttachmentWorkspaceRoots } from "@t3tools/shared/threadWorkspace";
+import {
+  sanitizeAttachedFileReferencePaths,
+  appendAttachedFilesToPrompt,
+  extractTrailingAttachedFiles,
+} from "../lib/attachedFiles";
 
 function createProjectSkill(overrides: Partial<ProjectSkill> = {}): ProjectSkill {
   return {
@@ -1005,6 +1011,38 @@ describe("readAttachedFileAbsolutePath", () => {
 });
 
 describe("resolveAttachedFileReferencePaths", () => {
+  it("round-trips own-folder scratch attachments without relativizing sibling-folder files", () => {
+    const workspaceRoots = threadAttachmentWorkspaceRoots(
+      { worktreePath: null, scratchPath: "/state/scratch/mine" },
+      { kind: "scratch", cwd: "/state/scratch" },
+    );
+    const files = [new File(["mine"], "notes.md"), new File(["sibling"], "image.png")];
+    const attached = resolveAttachedFileReferencePaths({
+      files,
+      workspaceRoots,
+      isElectron: true,
+      desktopBridge: {
+        getPathForFile: (file) =>
+          file.name === "notes.md"
+            ? "/state/scratch/mine/notes.md"
+            : "/state/scratch/sibling/image.png",
+      },
+      normalizeAbsolutePathForComparison: identityAbsolutePathNormalizer,
+    });
+    expect(attached.filePaths).toEqual(["notes.md", "/state/scratch/sibling/image.png"]);
+    const sanitized = sanitizeAttachedFileReferencePaths({
+      filePaths: attached.filePaths,
+      workspaceRoots,
+      normalizeAbsolutePathForComparison: identityAbsolutePathNormalizer,
+    });
+    expect(sanitized.filePaths).toEqual(attached.filePaths);
+    expect(
+      extractTrailingAttachedFiles(appendAttachedFilesToPrompt("Research", sanitized.filePaths)),
+    ).toEqual({
+      promptText: "Research",
+      filePaths: attached.filePaths,
+    });
+  });
   it("resolves workspace-relative attachment paths through the desktop bridge", () => {
     const file = new File(["test"], "example.ts");
 
