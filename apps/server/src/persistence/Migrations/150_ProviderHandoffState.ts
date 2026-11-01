@@ -16,5 +16,10 @@ export default Effect.gen(function* () {
     updated_at TEXT NOT NULL
   )`;
   // The prepared handoff of one delivery, reused byte-for-byte by its retries.
-  yield* sql`ALTER TABLE provider_turn_deliveries ADD COLUMN handoff_json TEXT`;
+  // Idempotent: development databases ran this as migration 147 before main took it.
+  const columns = yield* sql<{
+    name: string;
+  }>`SELECT name FROM pragma_table_info('provider_turn_deliveries')`;
+  if (!columns.some((column) => column.name === "handoff_json"))
+    yield* sql`ALTER TABLE provider_turn_deliveries ADD COLUMN handoff_json TEXT`;
 });

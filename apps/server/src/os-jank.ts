@@ -42,7 +42,7 @@ export async function fixPath(
   try {
     const shell = env.SHELL ?? "/bin/zsh";
     const result = readEnvironmentFromLoginShell(shell, ["PATH", "__MISE_DIFF"]);
-    if (result.PATH) {
+    if (result.PATH?.trim()) {
       env.PATH = result.PATH;
       // mise's record of the PATH entries it added. It must travel with the
       // shell's PATH, or `mise x` can rebuild PATH behind a same-named wrapper

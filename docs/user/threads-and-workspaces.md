@@ -20,6 +20,14 @@ The composer also takes [attachments](attachments-and-media.md), `@` file mentio
 commands, including provider and project skills. The context ring shows how full the model's
 context window is.
 
+To give the agent another thread as context, drag that thread from the sidebar into the
+composer. If you selected several threads, dragging one of them adds them all, up to 10 per
+message. Each one appears as a chip, and the agent reads it with the
+[`thread_read`](agent-tools.md#f5-browser-and-computer-tools) tool when it needs to. The agent
+can read only references you send yourself, or ones you put in the request of a planning or
+document workflow. References that arrive through Bots or scheduled tasks are not readable.
+Clicking a chip opens that thread.
+
 ## While the agent works
 
 In Supervised and Auto-accept edits modes the agent stops for approval, and its questions wait for

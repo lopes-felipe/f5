@@ -1,5 +1,6 @@
 import { resetDate } from "../usage/accountUsageJson.ts";
 import type { RuntimeUsageLimit, UsageAccount } from "@t3tools/contracts";
+import { CLAUDE_MONTHLY_SPEND_WINDOW_KEY } from "@t3tools/shared/usageLimit";
 /** Provider reset timestamps are epoch seconds; never render an invalid date. */
 export function usageLimitMessage(
   provider: string,
@@ -122,12 +123,14 @@ export function resolveAccountUsageLimit(
       continue;
     if (section.kind === "claude-usage") {
       for (const window of section.snapshot.data.windows) {
+        // A spent budget has no reset; it must not hide a rolling window's reset.
+        if (window.key === CLAUDE_MONTHLY_SPEND_WINDOW_KEY) continue;
         if (window.utilization !== null && window.utilization >= 100)
           windows.push({ id: window.key, label: window.label, resetsAt: window.resetsAt });
       }
     } else if (section.kind === "codex-limits") {
       for (const bucket of section.snapshot.data.rateLimits) {
-        for (const name of ["primary", "secondary"] as const) {
+        for (const name of ["primary", "secondary", "individual"] as const) {
           const window = bucket[name];
           if (window && window.usedPercent >= 100)
             windows.push({
@@ -143,7 +146,8 @@ export function resolveAccountUsageLimit(
   // Preserve unknown exhausted windows reported by the provider; a missing
   // account bucket cannot prove that a window has reset.
   const byId = new Map(limit.windows.map((window) => [window.id, window]));
-  for (const window of windows) byId.set(window.id, window);
+  for (const window of windows)
+    byId.set(window.id, { ...window, label: window.label ?? byId.get(window.id)?.label ?? null });
   const merged = [...byId.values()];
   return usageLimitFromWindows(merged, limit.evidence, "account");
 }

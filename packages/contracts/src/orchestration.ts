@@ -1031,6 +1031,12 @@ export const OrchestrationThread = Schema.Struct({
   ),
   messages: Schema.Array(OrchestrationMessage),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(Schema.withDecodingDefault(() => [])),
+  /**
+   * Set only by the startup snapshot for archived threads: `proposedPlans` is
+   * empty because it was not loaded, not because the thread has none. The
+   * thread's tail details carry them.
+   */
+  proposedPlansOmitted: Schema.optional(Schema.Boolean),
   tasks: Schema.Array(TaskItem).pipe(Schema.withDecodingDefault(() => [])),
   tasksTurnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(() => null)),
   tasksUpdatedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
@@ -1319,6 +1325,13 @@ const ThreadArchiveCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   createdAt: IsoDateTime,
+  cleanupExpectation: Schema.optional(
+    Schema.Struct({
+      worktreePath: FilesystemPath,
+      lastInteractionAt: IsoDateTime,
+      sessionUpdatedAt: Schema.NullOr(IsoDateTime),
+    }),
+  ),
 });
 
 const ThreadUnarchiveCommand = Schema.Struct({
@@ -3029,6 +3042,8 @@ export const OrchestrationThreadTailDetails = Schema.Struct({
   commandExecutions: Schema.Array(OrchestrationCommandExecutionSummary).pipe(
     Schema.withDecodingDefault(() => []),
   ),
+  /** Every plan of the thread, uncapped: replaces the client's plans, including ones a startup snapshot omitted. */
+  proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(Schema.withDecodingDefault(() => [])),
   tasks: Schema.Array(TaskItem).pipe(Schema.withDecodingDefault(() => [])),
   tasksTurnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(() => null)),
   tasksUpdatedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),

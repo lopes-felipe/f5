@@ -3,6 +3,7 @@ import { parse } from "yaml";
 import { expect, it } from "vitest";
 import {
   assertReleaseCiJobs,
+  dryRunReleaseVersion,
   requiredReleaseCiJobs,
   selectReleaseCiRun,
   type CiWorkflow,
@@ -21,6 +22,12 @@ const main: CiRun = {
   run_attempt: 1,
   run_number: 10,
 };
+it("preserves beta feed selection and stable tags in release rehearsals", () => {
+  expect(dryRunReleaseVersion("0.1.1-beta.2", "42")).toBe("0.1.1-beta.2.dryrun.42");
+  expect(dryRunReleaseVersion("0.1.1", "42")).toBe("0.1.1");
+  expect(() => dryRunReleaseVersion("v0.1.1", "42")).toThrow();
+  expect(() => dryRunReleaseVersion("0.1.1", "42\nchannel=beta")).toThrow();
+});
 it("requires a main push run and rejects failed latest attempts instead of using older green runs", () => {
   expect(
     selectReleaseCiRun([main, { ...main, head_branch: "feature", run_number: 11 }], "release"),
@@ -41,8 +48,10 @@ it("derives matrix jobs and release-platform skips from the workflow and release
     all = requiredReleaseCiJobs(workflow, "all");
   expect(windows).toContain("windows-server-unit (3)");
   expect(windows).toContain("server-unit (2)");
-  expect(windows).not.toContain("macos-suite");
-  expect(all).toContain("macos-suite");
+  expect(windows).not.toContain("macos-workspaces");
+  expect(all).toContain("macos-workspaces");
+  expect(all).toContain("macos-server-unit (3)");
+  expect(all).toContain("macos-git (GitCore)");
   const successful = all.map((name) => ({ name, conclusion: "success" }));
   expect(() => assertReleaseCiJobs(successful, all)).not.toThrow();
   expect(() =>

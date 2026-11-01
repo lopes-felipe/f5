@@ -1,0 +1,52 @@
+name: Prepare stable release
+on:
+  workflow_dispatch:
+    inputs:
+      version: { description: Stable version, type: string, default: "" }
+      request_id: { description: UUID identifying this request, required: true, type: string }
+      supersedes:
+        { description: Failed unpublished request UUID to recover, type: string, default: "" }
+      withdraws:
+        {
+          description: Comma-separated request UUIDs or invalid intent commit SHAs,
+          type: string,
+          default: "",
+        }
+      reason: { description: Reason for withdrawal, type: string, default: "" }
+permissions:
+  contents: read
+concurrency:
+  group: release-preparation
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    environment: release-publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - uses: actions/create-github-app-token@v2
+        id: app
+        with:
+          app-id: ${{ vars.F5_RELEASE_APP_ID }}
+          private-key: ${{ secrets.F5_RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - run: node scripts/create-stable-release-pr.ts
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          # Use gh's environment credential only for Git invocations; never persist the token.
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: credential.https://github.com.helper
+          GIT_CONFIG_VALUE_0: "!gh auth git-credential"
+          VERSION: ${{ inputs.version }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          SUPERSEDES: ${{ inputs.supersedes }}
+          WITHDRAWS: ${{ inputs.withdraws }}
+          WITHDRAW_REASON: ${{ inputs.reason }}

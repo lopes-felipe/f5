@@ -60,6 +60,7 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
       "clearMissingRegistration",
       "readRangeContext",
       "readDefaultBranch",
+      "readAdvertisedDefaultBranch",
       "readConfigValue",
       "listRemotes",
       "listBranches",
@@ -172,6 +173,8 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
     readRangeContext: () =>
       Effect.succeed({ commitSummary: "abc change", diffSummary: "1 file", diffPatch: "+change" }),
     readDefaultBranch: () => Effect.succeed(null),
+    readAdvertisedDefaultBranch: (cwd) =>
+      implementations.readDefaultBranch(cwd).pipe(Effect.orElseSucceed(() => null)),
     readConfigValue: () => Effect.succeed(null),
     listRemotes: () =>
       Effect.succeed([{ name: "origin", url: "https://github.com/t3tools/f5.git" }]),
@@ -354,6 +357,10 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
     readDefaultBranch: (cwd) => {
       record("readDefaultBranch", [cwd]);
       return implementations.readDefaultBranch(cwd);
+    },
+    readAdvertisedDefaultBranch: (cwd) => {
+      record("readAdvertisedDefaultBranch", [cwd]);
+      return implementations.readAdvertisedDefaultBranch(cwd);
     },
     readConfigValue: (cwd, key) => {
       record("readConfigValue", [cwd, key]);

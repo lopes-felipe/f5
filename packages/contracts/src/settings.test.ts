@@ -6,12 +6,75 @@ import { ProviderInstanceId } from "./providerInstance";
 import {
   ClientSettingsSchema,
   DEFAULT_SERVER_SETTINGS,
+  PROJECT_SCOPED_SERVER_SETTING_KEYS,
+  ProjectSettingsResult,
   ServerSettings,
   ServerSettingsPatch,
 } from "./settings";
 
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
+const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
+const decodeProjectSettingsResult = Schema.decodeUnknownSync(ProjectSettingsResult);
+
+describe("ServerSettings project overrides across versions", () => {
+  const projectId = ProjectId.make("project-a");
+
+  it("sends back an override key from a newer server when an older client edits the entry", () => {
+    // As an older client reads a newer server's settings, with one key it does not know.
+    const entry = decodeServerSettings({
+      projectSettingsOverrides: {
+        [projectId]: { autoPullDefaultBranch: true, addedByNewerServer: { mode: "kept" } },
+      },
+    }).projectSettingsOverrides[projectId];
+
+    const sent = encodeServerSettingsPatch({
+      projectSettingsOverrides: { [projectId]: { ...entry, autoPullDefaultBranch: false } },
+    });
+
+    expect(decodeServerSettingsPatch(sent).projectSettingsOverrides?.[projectId]).toEqual({
+      autoPullDefaultBranch: false,
+      addedByNewerServer: { mode: "kept" },
+    });
+  });
+
+  it("keeps unknown keys in the project settings overrides an editor starts from", () => {
+    const result = decodeProjectSettingsResult({
+      settings: {},
+      sources: Object.fromEntries(PROJECT_SCOPED_SERVER_SETTING_KEYS.map((key) => [key, "global"])),
+      overrides: { autoPullDefaultBranch: true, addedByNewerServer: 3 },
+    });
+    expect(result.overrides).toEqual({ autoPullDefaultBranch: true, addedByNewerServer: 3 });
+  });
+
+  it("keeps a known key's transformed value next to an unknown key", () => {
+    const entry = decodeServerSettings({
+      projectSettingsOverrides: {
+        [projectId]: {
+          textGenerationModelSelection: { provider: "codex", model: "gpt-5.4" },
+          addedByNewerServer: 3,
+        },
+      },
+    }).projectSettingsOverrides[projectId];
+    expect(entry).toEqual({
+      textGenerationModelSelection: { instanceId: "codex", model: "gpt-5.4" },
+      addedByNewerServer: 3,
+    });
+    expect(
+      decodeServerSettingsPatch(
+        encodeServerSettingsPatch({ projectSettingsOverrides: { [projectId]: entry! } }),
+      ).projectSettingsOverrides?.[projectId],
+    ).toEqual(entry);
+  });
+
+  it("still rejects an invalid known override key", () => {
+    expect(() =>
+      decodeServerSettings({
+        projectSettingsOverrides: { [projectId]: { autoPullDefaultBranch: "yes" } },
+      }),
+    ).toThrow();
+  });
+});
 
 describe("ServerSettings.computerUsePasswordMasking", () => {
   it("defaults new and legacy settings to fast and preserves conservative settings", () => {

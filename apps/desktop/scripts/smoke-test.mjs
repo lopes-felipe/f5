@@ -1,6 +1,14 @@
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+  rmSync,
+} from "node:fs";
 import { createRequire } from "node:module";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,6 +67,7 @@ app.setPath=(key,value)=>setPath(key,key==='userData'?${JSON.stringify(join(dire
 require(${JSON.stringify(join(desktopDir, "dist-electron/main.js"))});
 `,
 );
+const countMarker = (text, marker) => text.split(marker).length - 1;
 const env = Object.fromEntries(
   Object.entries(process.env).filter(
     ([key]) =>
@@ -606,7 +615,7 @@ try {
       });
       // The echoed shell command contains the marker once. Require actual
       // subprocess output as well, rather than passing on that echo alone.
-      if ((snapshot?.history.split(marker).length ?? 1) - 1 >= 3) return snapshot;
+      if (countMarker(snapshot?.history ?? "", marker) >= 3) return snapshot;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     throw new Error("Terminal smoke subprocess did not emit output");
@@ -623,6 +632,44 @@ try {
   };
   const recoveryTerminalMarker = "F5_BACKEND_RECOVERY_OUTPUT";
   await startTerminalStream(recoveryTerminalMarker);
+  // Recovery restores persisted history. On Windows the profile Stop below ends
+  // in a forced kill with no final flush (#300), so wait until the throttled
+  // history write has reached disk rather than racing it.
+  if (process.platform === "win32") {
+    const terminalLogs = join(state, "logs", "terminals");
+    const persistedDeadline = Date.now() + 15_000;
+    let lastError;
+    const historyPersisted = () => {
+      try {
+        return readdirSync(terminalLogs, { withFileTypes: true }).some(
+          (entry) =>
+            entry.isFile() &&
+            countMarker(
+              readFileSync(join(terminalLogs, entry.name), "utf8"),
+              recoveryTerminalMarker,
+            ) >= 3,
+        );
+      } catch (error) {
+        // Not created yet, or an atomic replace is in progress (EPERM on Windows).
+        lastError = error;
+        return false;
+      }
+    };
+    while (!historyPersisted()) {
+      if (Date.now() > persistedDeadline) {
+        let listing;
+        try {
+          listing = readdirSync(terminalLogs).join(", ") || "(empty)";
+        } catch (error) {
+          listing = `unreadable: ${error?.code ?? error}`;
+        }
+        throw new Error(
+          `Terminal history was never persisted (files: ${listing}; last error: ${lastError?.code ?? lastError ?? "none"})`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
   const retainedWsUrl = await page.evaluate(() => window.desktopBridge.getWsUrl());
   const retainedRendererUrl = page.url();
   const recoveryCount = () =>
@@ -644,7 +691,9 @@ try {
   await waitForRecovery(beforeSecondInstance);
   const restoredTerminal = await nativeRequest("terminal.open", terminalInput);
   if (!restoredTerminal.history.includes(recoveryTerminalMarker))
-    throw new Error("Backend recovery lost terminal history");
+    throw new Error(
+      `Backend recovery lost terminal history; restored tail: ${JSON.stringify(restoredTerminal.history.slice(-500))}`,
+    );
   if ((await page.evaluate(() => window.desktopBridge.getWsUrl())) !== retainedWsUrl)
     throw new Error("Reopening changed the retained window's connection");
   if (
@@ -800,11 +849,66 @@ try {
   await pressQuit();
   await new Promise((resolve) => setTimeout(resolve, 650));
   if (electronProcess.exitCode !== null) throw new Error("A single quit tap closed the app");
-  const closed = application.waitForEvent("close", { timeout: 30_000 });
+  // Count whole log lines, including a just-rotated file, so unrelated text that
+  // mentions the phrase cannot satisfy the wait.
+  const shutdowns = () =>
+    ["desktop-main.log.1", "desktop-main.log"]
+      .map((name) => {
+        try {
+          return readFileSync(join(state, "logs", name), "utf8");
+        } catch {
+          return "";
+        }
+      })
+      .join("")
+      .split("] shutdown complete\n").length - 1;
+  const shutdownsBeforeQuit = shutdowns();
+  let exited = false;
+  const closed = application.waitForEvent("close", { timeout: 0 }).then(() => {
+    exited = true;
+  });
+  // Only output after the quit can show the inspector hold of this exit.
+  let outputAfterQuit = "";
+  for (const stream of [electronProcess.stdout, electronProcess.stderr]) {
+    stream?.on("data", (chunk) => {
+      outputAfterQuit = (outputAfterQuit + chunk.toString()).slice(-65_536);
+    });
+  }
   // Dispatch both native taps in one synchronous main-process turn: a timer
   // between them can exceed the 500 ms gesture window under streaming load.
   await pressQuit(2);
-  await closed;
+  // F5's own completed shutdown is the evidence that the gesture quit. Node can
+  // then hold the exited main process open for Playwright's attached inspector
+  // ("Waiting for the debugger to disconnect..."), intermittently on Windows;
+  // only that hold is released here. Both waits are generous because a slow
+  // runner is not the failure this guards against.
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const quitDeadline = Date.now() + 30_000;
+  while (!exited && shutdowns() <= shutdownsBeforeQuit) {
+    if (Date.now() > quitDeadline) throw new Error("The double-tap quit did not shut F5 down");
+    await sleep(50);
+  }
+  const holdDeadline = Date.now() + 25_000;
+  while (!exited && !outputAfterQuit.includes("Waiting for the debugger to disconnect")) {
+    if (Date.now() > holdDeadline)
+      throw new Error("F5 completed shutdown but its process did not exit");
+    await sleep(50);
+  }
+  if (!exited) {
+    console.error("Desktop smoke: releasing an exited main process held by the inspector");
+    // On Windows Playwright launches through cmd.exe, so kill the whole tree.
+    if (process.platform === "win32" && electronProcess.pid)
+      spawnSync("taskkill", ["/pid", String(electronProcess.pid), "/T", "/F"], {
+        stdio: "ignore",
+      });
+    else electronProcess.kill();
+    await Promise.race([
+      closed,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("F5 did not exit after its shutdown")), 10_000),
+      ),
+    ]);
+  }
   // Reopen the same isolated profile after a real app quit with a live PTY.
   application = await _electron.launch({
     executablePath: requireDesktop("electron"),
@@ -827,7 +931,7 @@ try {
   await page.goto(providerRendererUrl);
   await page.locator('[contenteditable="true"]').waitFor({ timeout: 60_000 });
   const quitHistory = await nativeRequest("terminal.open", terminalInput);
-  if (quitHistory.history.split(quitTerminalMarker).length - 1 < 3)
+  if (countMarker(quitHistory.history, quitTerminalMarker) < 3)
     throw new Error("Desktop quit/reopen lost active terminal output");
   const restoredProviderMessages = await waitForProviderOutput();
   for (const before of providerMessages) {

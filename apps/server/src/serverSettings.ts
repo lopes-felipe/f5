@@ -2,6 +2,7 @@ import { AGENT_BRIDGE_ACTIVATION_VERSION } from "@t3tools/contracts";
 import { validateManagedHome } from "./profiles/providerIsolation";
 import { validateWorktreeLocation, unusedWorktreeLocation } from "./worktreeLocationValidation.ts";
 import { assertAccountEnvironmentOverrides } from "./providerProcessEnv";
+import { normalizeRepositorySearchRoots } from "./storage/storageDiscovery.ts";
 /**
  * ServerSettings - Server-authoritative settings service.
  *
@@ -180,6 +181,28 @@ const withBridgeActivation = (
   },
 });
 
+const normalizeStorageDiscoveryPatch = (patch: ServerSettingsPatch) =>
+  Effect.try({
+    try: () =>
+      patch.storageDiscovery
+        ? {
+            ...patch,
+            storageDiscovery: {
+              ...patch.storageDiscovery,
+              repositoryRoots: normalizeRepositorySearchRoots(
+                patch.storageDiscovery.repositoryRoots,
+              ),
+            },
+          }
+        : patch,
+    catch: (cause) =>
+      new ServerSettingsError({
+        settingsPath: "<storageDiscovery>",
+        detail: cause instanceof Error ? cause.message : String(cause),
+        cause,
+      }),
+  });
+
 export class ServerSettingsService extends ServiceMap.Service<
   ServerSettingsService,
   ServerSettingsShape
@@ -222,27 +245,31 @@ export class ServerSettingsService extends ServiceMap.Service<
               },
             ),
           updateSettings: (patch) =>
-            Ref.get(currentSettingsRef).pipe(
-              Effect.flatMap((currentSettings) =>
-                Schema.decodeEffect(ServerSettings)(
-                  withBridgeActivation(
-                    applyServerSettingsPatch(currentSettings, patch),
-                    currentSettings,
-                    patch,
+            normalizeStorageDiscoveryPatch(patch).pipe(
+              Effect.flatMap((patch) =>
+                Ref.get(currentSettingsRef).pipe(
+                  Effect.flatMap((currentSettings) =>
+                    Schema.decodeEffect(ServerSettings)(
+                      withBridgeActivation(
+                        applyServerSettingsPatch(currentSettings, patch),
+                        currentSettings,
+                        patch,
+                      ),
+                    ).pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new ServerSettingsError({
+                            settingsPath: "<memory>",
+                            detail: `failed to normalize server settings: ${summarizeSettingsIssue(cause.issue)}`,
+                            cause: summarizeSettingsIssue(cause.issue),
+                          }),
+                      ),
+                    ),
                   ),
-                ).pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new ServerSettingsError({
-                        settingsPath: "<memory>",
-                        detail: `failed to normalize server settings: ${summarizeSettingsIssue(cause.issue)}`,
-                        cause: summarizeSettingsIssue(cause.issue),
-                      }),
-                  ),
+                  Effect.tap((nextSettings) => Ref.set(currentSettingsRef, nextSettings)),
+                  Effect.tap((nextSettings) => PubSub.publish(changes, nextSettings)),
                 ),
               ),
-              Effect.tap((nextSettings) => Ref.set(currentSettingsRef, nextSettings)),
-              Effect.tap((nextSettings) => PubSub.publish(changes, nextSettings)),
             ),
           streamChanges: Stream.fromPubSub(changes),
           subscribeChanges: PubSub.subscribe(changes).pipe(Effect.map(Stream.fromSubscription)),
@@ -771,6 +798,7 @@ const makeServerSettings = Effect.gen(function* () {
     updateSettings: (patch) =>
       writeSemaphore.withPermits(1)(
         Effect.gen(function* () {
+          patch = yield* normalizeStorageDiscoveryPatch(patch);
           const migratedKeys = ["defaultThreadEnvMode", "enableAssistantStreaming"] as const;
           const markers = Object.fromEntries(
             migratedKeys

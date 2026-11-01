@@ -138,6 +138,7 @@ describe.skipIf(!optedIn)("Codex Chrome live certification", () => {
     const markers = {
       title: `cert-title-${run}`,
       after: `cert-after-interrupt-${run}`,
+      interrupt: `cert-interrupt-${run}`,
       fetch: `cert-bg-fetch-${run}`,
       pause: `cert-pause-${run}`,
       off: `cert-off-${run}`,
@@ -278,7 +279,7 @@ nodeRepl.write("finished");`;
     const server = new AppServer(child, answer);
     const appServerPid = child.pid!;
     const states: Array<[AgentCapabilityState, string | undefined]> = [];
-    const drains: Array<{ turnId: unknown; ok: boolean; result: string }> = [];
+    const drains: Array<{ turnId: unknown; ok: boolean; ms: number; result: string }> = [];
     let reloads = 0;
     const policy = { enabled: true };
     let session: CodexChromeSession | undefined;
@@ -446,20 +447,20 @@ nodeRepl.write("finished");`;
             let result: Record<string, unknown> | undefined;
             try {
               result = asRecord(
-                await server.request("mcpServer/tool/call", {
-                  threadId,
-                  server: SERVER,
-                  tool,
-                  arguments: args,
-                  _meta: meta,
-                }),
+                await server.request(
+                  "mcpServer/tool/call",
+                  { threadId, server: SERVER, tool, arguments: args, _meta: meta },
+                  // A drain can wait on the interrupted call; see how long, up to its deadline.
+                  tool === CODEX_CHROME_DRAIN_TOOL ? 150_000 : 30_000,
+                ),
               );
             } catch (error) {
               if (tool === CODEX_CHROME_DRAIN_TOOL)
                 drains.push({
                   turnId: args.turn_id,
                   ok: false,
-                  result: `error after ${Date.now() - startedAt} ms: ${errorText(error)}`,
+                  ms: Date.now() - startedAt,
+                  result: errorText(error),
                 });
               throw error;
             }
@@ -467,6 +468,7 @@ nodeRepl.write("finished");`;
               drains.push({
                 turnId: args.turn_id,
                 ok: result !== undefined && result.isError !== true,
+                ms: Date.now() - startedAt,
                 result: JSON.stringify(result ?? null).slice(0, 500),
               });
             return result;
@@ -532,11 +534,11 @@ nodeRepl.write("finished");`;
         items: turnItems(titleTurn.since),
       };
 
-      // Interrupt a real turn mid-call: F5 interrupts the turn, then drains it through
-      // node_repl's own hook; a fresh tab claim afterwards proves nothing stayed stuck.
-      const hungTurn = await startTurn(
-        "await new Promise((resolve) => setTimeout(resolve, 120000));\nnodeRepl.write('woke');",
-      );
+      // Interrupt a real turn while its call drives Chrome: F5 interrupts the turn, then
+      // drains it through node_repl's own hook. The call's tab loop must stop (it would
+      // otherwise keep driving Chrome after the user stopped the turn), the drain must
+      // succeed, and a fresh tab claim afterwards proves nothing stayed stuck.
+      const hungTurn = await startTurn(tabLoop(markers.interrupt));
       const hungStarted = await waitFor(
         () =>
           server.notifications.find((entry) => {
@@ -550,6 +552,14 @@ nodeRepl.write("finished");`;
           }),
         TURN_TIMEOUT_MS,
       );
+      // Interrupt only once the loop observably drives Chrome.
+      await waitFor(
+        () =>
+          fixture.hits(markers.interrupt).length >= DEFAULT_QUIET_WINDOW.minHitsBefore
+            ? true
+            : undefined,
+        30_000,
+      );
       const interruptedAt = Date.now();
       await server.request("turn/interrupt", { threadId, turnId: hungTurn.turnId });
       // As CodexAdapter.interruptTurn does.
@@ -558,19 +568,45 @@ nodeRepl.write("finished");`;
         () => server.turnCompleted(hungTurn.turnId, hungTurn.since),
         15_000,
       );
-      await waitFor(() => drains.find((drain) => drain.turnId === hungTurn.turnId), 10_000);
+      await delay(
+        Math.max(
+          0,
+          interruptedAt +
+            DEFAULT_QUIET_WINDOW.settleMs +
+            DEFAULT_QUIET_WINDOW.quietMs +
+            250 -
+            Date.now(),
+        ),
+      );
+      const loopHits = fixture.hits(markers.interrupt);
+      const loopStopped = stoppedAfter(loopHits, interruptedAt, Date.now());
+      await waitFor(() => drains.find((drain) => drain.turnId === hungTurn.turnId), 150_000);
       const drained = drains.find((drain) => drain.turnId === hungTurn.turnId);
+      // Counted again once the drain settled: a loop that outlives the quiet window shows here.
+      const finalLoopHits = fixture.hits(markers.interrupt);
       const after = await callJs(readTitle(markers.after), `f5-cert-after-${run}`);
       assertions["interrupt-drains"] =
         hungStarted !== undefined &&
         hungDone !== undefined &&
         asRecord(asRecord(hungDone.params)?.turn)?.status === "interrupted" &&
+        loopStopped &&
         drained?.ok === true &&
         after.includes(markerTitle(markers.after));
+      const lastLoopHit = finalLoopHits.at(-1);
       observations.interrupt = {
         callStarted: hungStarted !== undefined,
         completedAfterMs: hungDone ? hungDone.at - interruptedAt : undefined,
         status: asRecord(asRecord(hungDone?.params)?.turn)?.status,
+        // Whether the interrupted call kept driving Chrome, and for how long.
+        loop: {
+          hitsBefore: loopHits.filter((time) => time <= interruptedAt).length,
+          hitsInQuietWindow: loopHits.filter((time) => time > interruptedAt).length,
+          hitsAfterInterruptByDrain: finalLoopHits.filter((time) => time > interruptedAt).length,
+          lastHitAfterInterruptMs:
+            lastLoopHit !== undefined ? lastLoopHit - interruptedAt : undefined,
+          stopped: loopStopped,
+        },
+        // `ms` is how long `turn_ended` took after it was sent, right after the interrupt.
         drain: drained ?? { missing: true, drains },
         items: turnItems(hungTurn.since),
         afterPageLoads: fixture.hits(markers.after).length,

@@ -159,13 +159,18 @@ export async function ensureProfileConnection(
   runtime.backendWsUrl = websocketUrl(runtime.backendPort, runtime.backendAuthToken);
 }
 
-/** Coalesce concurrent window/menu requests before asynchronous port allocation. */
-export function singleProfileOpen<T>(open: (id: string) => Promise<T>): (id: string) => Promise<T> {
+/**
+ * Coalesce concurrent window/menu requests before asynchronous port allocation. A coalesced
+ * call shares the first caller's options.
+ */
+export function singleProfileOpen<T, O = undefined>(
+  open: (id: string, options?: O) => Promise<T>,
+): (id: string, options?: O) => Promise<T> {
   const pending = new Map<string, Promise<T>>();
-  return (id) => {
+  return (id, options) => {
     const existing = pending.get(id);
     if (existing) return existing;
-    const result = Promise.resolve().then(() => open(id));
+    const result = Promise.resolve().then(() => open(id, options));
     pending.set(id, result);
     void result
       .finally(() => {

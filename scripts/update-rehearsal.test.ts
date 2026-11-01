@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   rehearsalAppUpdateConfig,
   rehearsalVersions,
+  verifyRehearsalAppUpdateConfig,
   startUpdateFeedEmulator,
   type UpdateFeedEmulator,
 } from "./lib/update-rehearsal.ts";
@@ -40,6 +41,53 @@ async function emulator(): Promise<{ feed: UpdateFeedEmulator; url: (path: strin
 }
 
 describe("rehearsal versions and feed config", () => {
+  const productionConfig =
+    "owner: lopes-felipe\nrepo: f5\nprovider: github\nreleaseType: release\nchannel: beta\n";
+  it("keeps synthetic baselines unsigned and accepts a published unsigned baseline", () => {
+    expect(() =>
+      verifyRehearsalAppUpdateConfig(productionConfig, { channel: "beta" }),
+    ).not.toThrow();
+    expect(() =>
+      verifyRehearsalAppUpdateConfig(productionConfig, {
+        channel: "beta",
+        publishedBaseline: true,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      verifyRehearsalAppUpdateConfig(`${productionConfig}publisherName: F5 Publisher\n`, {
+        channel: "beta",
+      }),
+    ).toThrow(/Unsigned/);
+  });
+  it.each(["publisherName: F5 Publisher", "publisherName:\n  - F5 Publisher"])(
+    "preserves the signed published baseline's identity: %s",
+    (publisher) => {
+      const signed = `${productionConfig}${publisher}\n`;
+      verifyRehearsalAppUpdateConfig(signed, { channel: "beta", publishedBaseline: true });
+      expect(parseAppUpdateConfig(rehearsalAppUpdateConfig(signed, 4321)).publisherName).toEqual(
+        parseAppUpdateConfig(signed).publisherName,
+      );
+    },
+  );
+  it.each(["publisherName:", "publisherName: ''", "publisherName:\n  - One\n  - Two"])(
+    "rejects an invalid published signing identity: %s",
+    (publisher) => {
+      expect(() =>
+        verifyRehearsalAppUpdateConfig(`${productionConfig}${publisher}\n`, {
+          channel: "beta",
+          publishedBaseline: true,
+        }),
+      ).toThrow(/publisherName/);
+    },
+  );
+  it("still rejects a mismatched production feed for a signed published baseline", () => {
+    expect(() =>
+      verifyRehearsalAppUpdateConfig(
+        `${productionConfig.replace("repo: f5", "repo: fork")}publisherName: F5 Publisher\n`,
+        { channel: "beta", publishedBaseline: true },
+      ),
+    ).toThrow(/repo/);
+  });
   it("derives stable baseline and next patch target", () => {
     expect(rehearsalVersions("0.1.0", "latest")).toEqual({ baseline: "0.1.0", target: "0.1.1" });
     expect(rehearsalVersions("0.1.9-dryrun.42", "latest")).toEqual({

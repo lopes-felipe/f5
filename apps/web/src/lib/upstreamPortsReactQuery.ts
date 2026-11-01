@@ -17,7 +17,9 @@ import {
 import { useEffect } from "react";
 
 import { ensureNativeApi, readNativeApi } from "../nativeApi";
+import { getWsConnectionState, subscribeWsConnectionState } from "../wsConnectionState";
 import { onServerWelcome } from "../wsNativeApi";
+import { rpcQueryContext, rpcQueryMeta } from "./rpcQueryContext";
 
 export type UpstreamTopicFilter = NonNullable<UpstreamListTopicsInput["filter"]>;
 
@@ -57,7 +59,10 @@ export function upstreamProjectsQueryOptions() {
 export function upstreamOverviewQueryOptions(projectId: ProjectId) {
   return queryOptions({
     queryKey: upstreamPortsQueryKeys.overview(projectId),
-    queryFn: () => ensureNativeApi().upstreamPorts.getOverview({ projectId }),
+    // Event-driven refreshes of a loaded overview are background reads.
+    queryFn: (context) =>
+      ensureNativeApi().upstreamPorts.getOverview({ projectId }, rpcQueryContext(context)),
+    meta: rpcQueryMeta("refresh-background"),
     staleTime: 30_000,
   });
 }
@@ -74,15 +79,19 @@ export function upstreamTopicsQueryOptions(
 ) {
   return infiniteQueryOptions({
     queryKey: upstreamPortsQueryKeys.topics(projectId, list, filter, sort),
-    queryFn: ({ pageParam }) =>
-      ensureNativeApi().upstreamPorts.listTopics({
-        projectId,
-        list,
-        ...(Object.keys(filter).length ? { filter } : {}),
-        ...(sort ? { sort } : {}),
-        limit: UPSTREAM_LIST_DEFAULT_LIMIT,
-        ...(pageParam ? { cursor: pageParam } : {}),
-      }),
+    // The forwarded signal lets a cancelled refetch stop before its remaining pages.
+    queryFn: (context) =>
+      ensureNativeApi().upstreamPorts.listTopics(
+        {
+          projectId,
+          list,
+          ...(Object.keys(filter).length ? { filter } : {}),
+          ...(sort ? { sort } : {}),
+          limit: UPSTREAM_LIST_DEFAULT_LIMIT,
+          ...(context.pageParam ? { cursor: context.pageParam } : {}),
+        },
+        rpcQueryContext(context),
+      ),
     initialPageParam: null as string | null,
     getNextPageParam: (page) => (page.status === "ok" ? page.nextCursor : null),
     staleTime: 30_000,
@@ -136,58 +145,153 @@ export function invalidateUpstreamPorts(
 const msUntilLocalMidnight = (now = new Date()) =>
   new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5).getTime() - now.getTime();
 
+/** 0: queue membership; 1: links and topic content; 2: also projects and changed files. */
+type UpstreamChangeLevel = 0 | 1 | 2;
+
+/** `null` scopes every project: reconnects and the midnight rollover. */
+type UpstreamChangeScope = ProjectId | null;
+
+export const UPSTREAM_INVALIDATION_DEBOUNCE_MS = 150;
+
+const changeLevel = (reason: UpstreamPortsChanged["reason"]): UpstreamChangeLevel =>
+  reason === "queue-updated" ? 0 : reason === "links-updated" ? 1 : 2;
+
+const scopedKey = (kind: string, projectId: UpstreamChangeScope) =>
+  projectId === null ? ["upstreamPorts", kind] : ["upstreamPorts", kind, projectId];
+
 /**
- * Refetches every loaded upstream query on `upstreamPorts.changed`, on
- * reconnect, and at local midnight (derived Watch → Inbox changes by date).
+ * Reloads loaded topic lists from their first page: in-flight fetches are
+ * cancelled and later pages dropped, so the refetch costs one page and the
+ * rest load again on scroll.
+ */
+async function reloadTopicPages(queryClient: QueryClient, projectId: UpstreamChangeScope) {
+  const queryKey = scopedKey("topics", projectId);
+  await queryClient.cancelQueries({ queryKey });
+  queryClient.setQueriesData<InfiniteData<UpstreamListTopicsResult, string | null>>(
+    { queryKey },
+    (data) =>
+      data && data.pages.length > 1
+        ? { pages: data.pages.slice(0, 1), pageParams: data.pageParams.slice(0, 1) }
+        : undefined,
+  );
+  await queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false });
+}
+
+/** Resolves true when it joined a fetch that started before the change, so it may predate it. */
+async function refreshUpstreamScope(
+  queryClient: QueryClient,
+  projectId: UpstreamChangeScope,
+  level: UpstreamChangeLevel,
+): Promise<boolean> {
+  // Rows read queue membership from the overview, so queue changes leave topic lists alone.
+  const joinable = [scopedKey("overview", projectId), scopedKey("queue", projectId)];
+  // The selected topic's detail refreshes on its own; only active queries refetch.
+  if (level > 0) joinable.push(scopedKey("topic", projectId));
+  const joined = joinable.some((queryKey) => queryClient.isFetching({ queryKey }) > 0);
+  const others =
+    level === 2
+      ? [
+          upstreamPortsQueryKeys.projects(),
+          projectId === null
+            ? upstreamPortsQueryKeys.allTopicFiles
+            : ["upstreamPortsFiles", projectId],
+        ]
+      : [];
+  await Promise.all([
+    ...[...joinable, ...others].map((queryKey) =>
+      queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false }),
+    ),
+    level > 0 ? reloadTopicPages(queryClient, projectId) : null,
+  ]);
+  return joined;
+}
+
+/**
+ * Debounces upstream changes into scoped refreshes. Fetches in flight are
+ * joined rather than restarted; a change arriving while a scope refreshes,
+ * or a joined fetch that may predate the change, reruns that scope once.
+ */
+export function createUpstreamPortsInvalidator(queryClient: QueryClient) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let disposed = false;
+  const pending = new Map<UpstreamChangeScope, UpstreamChangeLevel>();
+  const dirty = new Map<UpstreamChangeScope, UpstreamChangeLevel>();
+  const running = new Set<UpstreamChangeScope>();
+  const mark = (
+    into: Map<UpstreamChangeScope, UpstreamChangeLevel>,
+    scope: UpstreamChangeScope,
+    level: UpstreamChangeLevel,
+  ) => into.set(scope, Math.max(into.get(scope) ?? 0, level) as UpstreamChangeLevel);
+  const run = (scope: UpstreamChangeScope, level: UpstreamChangeLevel) => {
+    if (disposed) return;
+    if (running.has(scope)) {
+      mark(dirty, scope, level);
+      return;
+    }
+    running.add(scope);
+    const settle = (joined: boolean) => {
+      running.delete(scope);
+      if (joined) mark(dirty, scope, level);
+      const next = dirty.get(scope);
+      if (next === undefined) return;
+      dirty.delete(scope);
+      run(scope, next);
+    };
+    void refreshUpstreamScope(queryClient, scope, level).then(settle, () => settle(false));
+  };
+  return {
+    schedule(payload?: UpstreamPortsChanged) {
+      if (disposed) return;
+      if (payload) mark(pending, payload.projectId, changeLevel(payload.reason));
+      else mark(pending, null, 2);
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        const batch = [...pending];
+        pending.clear();
+        for (const [scope, level] of batch) run(scope, level);
+      }, UPSTREAM_INVALIDATION_DEBOUNCE_MS);
+    },
+    dispose() {
+      disposed = true;
+      if (timer) clearTimeout(timer);
+    },
+  };
+}
+
+/**
+ * Refreshes loaded upstream queries on `upstreamPorts.changed`, on reconnect
+ * once synchronization is usable, and at local midnight (derived Watch → Inbox
+ * changes by date).
  */
 export function useUpstreamPortsInvalidation() {
   const queryClient = useQueryClient();
   useEffect(() => {
     const api = readNativeApi();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const pending = new Map<ProjectId, number>();
-    let refreshAll = false;
-    const schedule = (payload?: UpstreamPortsChanged) => {
-      if (payload)
-        pending.set(
-          payload.projectId,
-          Math.max(
-            pending.get(payload.projectId) ?? 0,
-            payload.reason === "queue-updated" ? 0 : payload.reason === "links-updated" ? 1 : 2,
-          ),
-        );
-      else refreshAll = true;
-      if (timer) return;
-      timer = setTimeout(() => {
-        timer = undefined;
-        if (refreshAll) void invalidateUpstreamPorts(queryClient, { files: true });
-        else
-          for (const [projectId, level] of pending) {
-            void queryClient.invalidateQueries({
-              predicate: (query) =>
-                query.queryKey[0] === "upstreamPorts" &&
-                ((query.queryKey[2] === projectId &&
-                  (level > 0 || query.queryKey[1] !== "topic")) ||
-                  (level === 2 && query.queryKey[1] === "projects")),
-            });
-            if (level === 2)
-              void queryClient.invalidateQueries({ queryKey: ["upstreamPortsFiles", projectId] });
-          }
-        pending.clear();
-        refreshAll = false;
-      }, 150);
-    };
-    const unsubscribeChanged = api?.upstreamPorts?.onChanged(schedule) ?? (() => {});
+    const invalidator = createUpstreamPortsInvalidator(queryClient);
+    const unsubscribeChanged =
+      api?.upstreamPorts?.onChanged((payload) => invalidator.schedule(payload)) ?? (() => {});
     let welcomed = false;
+    let reconnected = false;
+    const refetchOnceSynchronized = () => {
+      const connection = getWsConnectionState();
+      if (!reconnected || connection.phase !== "connected" || !connection.synchronized) return;
+      reconnected = false;
+      invalidator.schedule();
+    };
     const unsubscribeWelcome = onServerWelcome(() => {
       // The first welcome replays the current connection; only reconnects refetch.
-      if (welcomed) schedule();
+      if (welcomed) {
+        reconnected = true;
+        refetchOnceSynchronized();
+      }
       welcomed = true;
     });
+    const unsubscribeConnection = subscribeWsConnectionState(refetchOnceSynchronized);
     let midnight: ReturnType<typeof setTimeout>;
     const armMidnight = () => {
       midnight = setTimeout(() => {
-        schedule();
+        invalidator.schedule();
         armMidnight();
       }, msUntilLocalMidnight());
     };
@@ -195,8 +299,9 @@ export function useUpstreamPortsInvalidation() {
     return () => {
       unsubscribeChanged();
       unsubscribeWelcome();
+      unsubscribeConnection();
       clearTimeout(midnight);
-      if (timer) clearTimeout(timer);
+      invalidator.dispose();
     };
   }, [queryClient]);
 }

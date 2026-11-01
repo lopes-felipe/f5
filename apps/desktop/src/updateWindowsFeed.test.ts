@@ -14,23 +14,30 @@ const { GitHubProvider } = require("electron-updater/out/providers/GitHubProvide
 const { NsisUpdater } = require("electron-updater/out/NsisUpdater") as {
   NsisUpdater: typeof NsisType;
 };
-const { DigestTransform } = createRequire(require.resolve("electron-updater"))(
+const { DigestTransform, HttpError } = createRequire(require.resolve("electron-updater"))(
   "builder-util-runtime",
-) as { DigestTransform: new (expected: string) => NodeJS.ReadWriteStream };
+) as {
+  DigestTransform: new (expected: string) => NodeJS.ReadWriteStream;
+  HttpError: new (response: unknown) => Error;
+};
 
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-async function resolveStable(options: Record<string, unknown> = {}) {
+async function resolveStable(
+  options: Record<string, unknown> = {},
+  clientChannel = "latest",
+  currentVersion = "0.1.0",
+) {
   const requests: string[] = [];
   const provider = new GitHubProvider(
     { provider: "github", owner: "lopes-felipe", repo: "f5", ...options },
     {
-      channel: "latest",
-      allowPrerelease: false,
-      currentVersion: "0.1.0",
+      channel: clientChannel,
+      allowPrerelease: clientChannel === "beta",
+      currentVersion,
       fullChangelog: true,
     } as never,
     {
@@ -42,6 +49,8 @@ async function resolveStable(options: Record<string, unknown> = {}) {
           if (path.endsWith(".atom"))
             return `<feed><entry><link href="https://github.com/lopes-felipe/f5/releases/tag/v0.1.1"/><title>0.1.1</title><content>Notes</content></entry></feed>`;
           if (path.endsWith("/latest")) return JSON.stringify({ tag_name: "v0.1.1" });
+          if (path.endsWith("/beta.yml"))
+            throw new HttpError({ statusCode: 404, statusMessage: "Not Found", headers: {} });
           return `version: 0.1.1\nfiles:\n  - url: F5-0.1.1-x64.exe\n    sha512: hash\n    size: 1\npath: F5-0.1.1-x64.exe\nsha512: hash\nreleaseDate: '2026-10-17T00:00:00Z'\n`;
         },
       } as never,
@@ -51,6 +60,19 @@ async function resolveStable(options: Record<string, unknown> = {}) {
 }
 
 describe("pinned Windows stable feed", () => {
+  it("upgrades beta clients to a stable release through its real latest.yml fallback", async () => {
+    const { info, requests } = await resolveStable(
+      { host: "127.0.0.1:4321", protocol: "http" },
+      "beta",
+      "0.1.1-beta.2",
+    );
+    expect(info.version).toBe("0.1.1");
+    expect(requests).toEqual([
+      "/lopes-felipe/f5/releases.atom",
+      "/lopes-felipe/f5/releases/download/v0.1.1/beta.yml",
+      "/lopes-felipe/f5/releases/download/v0.1.1/latest.yml",
+    ]);
+  });
   it("resolves /releases/latest and reads latest.yml from that release", async () => {
     const { info, requests } = await resolveStable();
     expect(info.version).toBe("0.1.1");

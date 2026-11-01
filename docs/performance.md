@@ -245,7 +245,10 @@ Codex. Delta latency ends at the production push bus's send callback. Report-onl
 `diagnostics` contain queue entries/bytes, SQLite page growth/WAL bytes, event-loop
 percentiles, SQL admission/execution times, ingestion lookup, in-memory projection,
 per-projector time/counts and push admission. Snapshot transactions, worker entries,
-bytes/age/failures and shutdown phase durations also have production metrics. The
+bytes/age/failures and shutdown phase durations also have production metrics. Worker
+bytes are measured only for workers with a byte ceiling (keyed or rejecting jobs);
+lossless ingestion workers are bounded by entry count and report each entry as one
+unit, so admission never stringifies provider events on the main thread. The
 optional stage probe is disabled in normal execution and never records SQL parameters.
 
 The 2026-10-19 smoke used one warmup/two repetitions: Codex delta-to-push p95 was
@@ -448,3 +451,13 @@ file it resolves the selected profile's trace path. While local diagnostics is
 enabled, `SIGUSR2` explicitly writes a heap snapshot under the profile's
 `logs/observability` directory (except Windows). A heap snapshot pauses the
 process and can contain application data; it is never taken automatically.
+
+## Retained-activities index, 2026-10-30
+
+The `ProjectionThreadActivitiesRankIndex` migration adds
+`idx_projection_thread_activities_thread_rank` so the retained-activities
+query ranks rows from index keys and reads payloads only for the rows it keeps. Measured on a
+4.1 GB backup of a Work profile database with 344K activities: the index built in 0.56 s
+(the gate is under 60 s) and grew the file by 38 MB. The retained-activities query fell from
+2.24 s (cold) to 0.38 s and returned the same 82,485 rows. The migration logs its build
+duration, so production builds report their own timing.

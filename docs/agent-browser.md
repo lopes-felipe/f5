@@ -47,15 +47,32 @@ There is no unsandboxed fallback if the sandbox launcher fails.
 In the macOS desktop app, agents and F5 terminals can request browser logins through the profile's
 generated `$BROWSER` launcher or `open https://…` shim. A private Unix socket
 forwards only HTTP(S) URLs to Electron main over desktop IPC. Main rejects userinfo
-and URLs longer than 4096 characters, then shows a native dialog with the profile,
-host and a shortened URL. Choose Open, allow that hostname until F5 quits, Copy
-link, or Cancel. Host approvals are separate per profile, survive backend restarts,
+and URLs longer than 4096 characters, then shows a card in the bottom-right of the
+requesting profile's window with the ASCII (punycode) host, the URL (expandable to
+its full length), the profile and a countdown. Choose Open, allow that hostname
+until F5 quits (from the Open menu), Copy link, or Cancel. The card never takes
+focus, and F5 never activates for it: a hidden window is shown inactive, a
+minimized one stays minimized, and a closed one is reopened without focus. Unless
+the window was already focused, the Dock bounces and a system notification
+appears until the request settles. Closing the window cancels the request.
+
+Main remains the authority. It accepts an answer only from the profile's F5 app
+main frame on the app origin, and only for the request currently shown. Except for
+Cancel, the isolated preload must also have seen a trusted click or keypress
+anywhere in that window within the last second. That shows recent user activity,
+not that the user clicked the card. A wrong answer throws and leaves the request
+pending. This is not a widening: the app renderer can already open any HTTP(S) URL
+without a prompt through `desktop:open-external`. If no card acknowledges the
+request within three seconds (fifteen while the window is still loading), or the
+renderer crashes, main falls back to a native dialog with the same choices. Host
+approvals are separate per profile, survive backend restarts,
 and disappear when F5 quits; they are never written to disk or Keychain.
 Host approvals include HTTP and HTTPS on every port, including loopback hosts.
 Browser launches share a per-profile limit of ten per rolling minute; excess
 requests return `busy` without launching another tab.
 
-Only one consent dialog is active per profile, with up to three waiting requests.
+Only one consent card is active per profile, with up to three waiting requests; the
+card shows how many are waiting.
 Every request expires after five minutes, including queue time. The launcher
 prints the URL for manual copying before connecting, and exits 0 for opened/copied,
 1 for denied/busy/invalid, or 2 when the desktop bridge is unavailable. Programs

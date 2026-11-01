@@ -11,6 +11,26 @@ import { Schema } from "effect";
 export const HTML_PREVIEW_CHANNEL = "desktop:html-preview";
 const unavailable = (message: string): HtmlPreviewResult => ({ _tag: "Unavailable", message });
 
+/**
+ * `color-scheme` leaves `prefers-color-scheme` on the OS theme, so a page styled
+ * for that query could draw dark text on the dark preview background. Without
+ * the emulation the preview still renders, following the OS theme.
+ */
+async function emulateColorScheme(
+  window: BrowserWindow,
+  appearance: HtmlPreviewRequest["appearance"],
+): Promise<void> {
+  try {
+    const cdp = window.webContents.debugger;
+    if (!cdp.isAttached()) cdp.attach();
+    await cdp.sendCommand("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-color-scheme", value: appearance }],
+    });
+  } catch {
+    // Another debugger client owns the page; keep the OS color scheme.
+  }
+}
+
 export function createHtmlPreviewRenderer() {
   const busy = new Set<number>();
   const partitionPrefix = `f5-html-${randomUUID()}`;
@@ -63,6 +83,7 @@ export function createHtmlPreviewRenderer() {
         });
         await owner.webContents.session.clearStorageData();
         if (owner.isDestroyed()) return unavailable("HTML preview was cancelled.");
+        await emulateColorScheme(owner, input.appearance);
         await owner.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
         const height: unknown = await owner.webContents.executeJavaScript(
           "document.fonts.ready.then(()=>Math.ceil(Math.max(document.documentElement.scrollHeight,document.body?.scrollHeight||1)))",

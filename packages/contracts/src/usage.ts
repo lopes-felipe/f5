@@ -210,6 +210,8 @@ export const CodexAccountRateLimit = Schema.Struct({
   planType: Schema.NullOr(TrimmedNonEmptyString),
   primary: Schema.NullOr(CodexAccountRateLimitWindow),
   secondary: Schema.NullOr(CodexAccountRateLimitWindow),
+  /** Enterprise monthly credit allowance; absent in snapshots stored before it was read. */
+  individual: Schema.optional(Schema.NullOr(CodexAccountRateLimitWindow)),
   credits: Schema.NullOr(CodexAccountCredits),
 });
 export type CodexAccountRateLimit = typeof CodexAccountRateLimit.Type;

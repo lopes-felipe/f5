@@ -4,6 +4,7 @@ import { parse } from "yaml";
 import { inventories } from "./ci-test-summary.ts";
 
 interface Job {
+  environment?: string;
   needs?: string[];
   if?: string;
   "continue-on-error"?: boolean;
@@ -11,7 +12,14 @@ interface Job {
   concurrency?: unknown;
   permissions?: Record<string, string>;
   strategy?: { matrix?: unknown; "fail-fast"?: boolean };
-  steps?: { id?: string; uses?: string; if?: string; name?: string; run?: string }[];
+  steps?: {
+    id?: string;
+    uses?: string;
+    if?: string;
+    name?: string;
+    run?: string;
+    env?: Record<string, string>;
+  }[];
 }
 const workflow = parse(
   readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
@@ -29,6 +37,47 @@ export function assertWorkflowPolicy(jobs: Record<string, Job>) {
 }
 
 describe("CI workflow policy", () => {
+  it("isolates release App credentials in a main-only environment for both privileged jobs", () => {
+    for (const [file, id] of [
+      ["release-publish.yml", "reconcile"],
+      ["release-prepare.yml", "prepare"],
+    ]) {
+      const job = readWorkflow(file!).jobs[id!]!;
+      expect(job.environment).toBe("release-publish");
+      expect(job.if).toContain("github.ref == 'refs/heads/main'");
+    }
+  });
+  it("gates intent validation on the merge result through required static CI", () => {
+    expect(
+      workflow.jobs.static!.steps!.some(
+        (step) => step.run === "node scripts/check-release-intent.ts",
+      ),
+    ).toBe(true);
+    const owners = readFileSync(new URL("../.github/CODEOWNERS", import.meta.url), "utf8");
+    expect(owners).toContain("/release-intent.json @lopes-felipe");
+  });
+  it("installs dependencies before minting the preparation App token and never persists credentials", () => {
+    const preparation = readWorkflow("release-prepare.yml");
+    const steps = preparation.jobs.prepare!.steps!;
+    const setup = steps.findIndex((s) => s.uses === "./.github/actions/setup");
+    const token = steps.findIndex((s) => s.uses?.startsWith("actions/create-github-app-token@"));
+    expect(setup).toBeGreaterThan(-1);
+    expect(token).toBeGreaterThan(setup);
+    const checkout = steps.find((s) => s.uses?.startsWith("actions/checkout@")) as {
+      with: Record<string, unknown>;
+    };
+    expect(checkout.with["persist-credentials"]).toBe(false);
+    expect(checkout.with.token).toBeUndefined();
+    const prepare = steps.find((s) => s.run?.includes("create-stable-release-pr.ts"))!;
+    expect(prepare.env?.GIT_CONFIG_VALUE_0).toBe("!gh auth git-credential");
+    expect(prepare.env?.GH_TOKEN).toBe("${{ steps.app.outputs.token }}");
+  });
+  it("lets each workspace preserve its package report identity without overwriting sibling reports", () => {
+    for (const [id, job] of Object.entries(workflow.jobs))
+      for (const step of job.steps ?? [])
+        if (step.run?.includes("test:ci:workspaces"))
+          expect(step.env?.F5_CI_SUITE_ID, id).toBeUndefined();
+  });
   it("gates every job and bounds all jobs and matrices", () => assertWorkflowPolicy(workflow.jobs));
   it("has a report inventory for every configured server unit shard", () => {
     expect(workflow.jobs["server-unit"]!.strategy!.matrix).toEqual({ shard: [1, 2] });
@@ -40,6 +89,34 @@ describe("CI workflow policy", () => {
         expect(inventories[event]).toEqual([{ packageName: "suites", event }]);
       }
     }
+  });
+  it("uploads reports, including flaky records, from every job that prepares them", () => {
+    for (const [id, job] of Object.entries(workflow.jobs)) {
+      const runs = (job.steps ?? []).map((step) => step.run ?? "");
+      const prepares = runs.some((run) => run.includes("ci-test-summary.ts --prepare"));
+      if (runs.some((run) => run.includes("test:desktop-smoke")))
+        expect(prepares, `${id} records flaky smoke retries`).toBe(true);
+      if (!prepares) continue;
+      const upload = job.steps!.find(
+        (step) =>
+          step.uses?.startsWith("actions/upload-artifact@") &&
+          String((step as { with?: { name?: string } }).with?.name).startsWith("reports-"),
+      );
+      expect(upload, `${id} uploads reports`).toBeDefined();
+      expect(upload!.if, id).toMatch(/^always\(\)/);
+    }
+  });
+  it("retries desktop smoke only through ci-retry-once and wraps nothing else", () => {
+    const runs = Object.values(workflow.jobs).flatMap((job) =>
+      (job.steps ?? []).flatMap((step) => (step.run ? [step.run] : [])),
+    );
+    const smoke = runs.filter((run) => run.includes("test:desktop-smoke"));
+    expect(smoke).toHaveLength(3);
+    for (const run of smoke)
+      expect(run.trim()).toMatch(
+        /^node scripts\/ci-retry-once\.ts --step desktop-smoke -- (xvfb-run --auto-servernum )?bun run test:desktop-smoke$/,
+      );
+    expect(runs.filter((run) => run.includes("ci-retry-once"))).toEqual(smoke);
   });
   it("keeps the notifier outside concurrency groups that can cancel push runs", () => {
     expect(workflow.jobs["main-status"]!.concurrency).toBeUndefined();
@@ -134,7 +211,7 @@ describe("CI workflow policy", () => {
       with?: { path: string; key: string };
     }[];
     expect(steps.find((step) => step.name === "Install dependencies")!.run).toBe(
-      "bun install --frozen-lockfile",
+      "node scripts/retry-install.ts",
     );
     expect(steps.find((step) => step.name === "Verify Electron installation")!.run).toContain(
       "fs.existsSync(resolved)",
@@ -152,5 +229,69 @@ describe("CI workflow policy", () => {
     const jobs = structuredClone(workflow.jobs);
     jobs["ci-result"]!.needs = jobs["ci-result"]!.needs!.filter((id) => id !== "browser");
     expect(() => assertWorkflowPolicy(jobs)).toThrow();
+  });
+});
+
+const readWorkflow = (file: string) =>
+  parse(readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), "utf8")) as {
+    on: Record<string, unknown>;
+    permissions: Record<string, string>;
+    concurrency?: unknown;
+    jobs: Record<string, Job & { "runs-on"?: string; env?: Record<string, string> }>;
+  };
+
+describe("flake workflows", () => {
+  it("passes every variable the CI reporter reads through Turbo's strict env", () => {
+    const turbo = JSON.parse(readFileSync(new URL("../turbo.json", import.meta.url), "utf8")) as {
+      globalPassThroughEnv: string[];
+      tasks: { test: { passThroughEnv: string[] } };
+    };
+    const allowed = new Set([...turbo.globalPassThroughEnv, ...turbo.tasks.test.passThroughEnv]);
+    const source = readFileSync(new URL("./lib/ci-test-reports.ts", import.meta.url), "utf8");
+    const read = [...new Set([...source.matchAll(/\benv\.([A-Z][A-Z0-9_]*)/g)].map((m) => m[1]!))];
+    expect(read).toEqual(expect.arrayContaining(["F5_CI_REPORT_DIR", "F5_CI_TEST_RETRY"]));
+    expect(read.filter((name) => !allowed.has(name))).toEqual([]);
+  });
+
+  it("files flakes after CI with least privilege and never runs PR code", () => {
+    const ledger = readWorkflow("ci-flakes.yml");
+    expect(ledger.on).toEqual({ workflow_run: { workflows: ["CI"], types: ["completed"] } });
+    expect(ledger.permissions).toEqual({ contents: "read" });
+    // A pending run must not cancel the previous one and lose its occurrences.
+    expect(ledger.concurrency).toBeUndefined();
+    expect(Object.keys(ledger.jobs)).toEqual(["ledger"]);
+    const job = ledger.jobs.ledger!;
+    expect(job.permissions).toEqual({ contents: "read", actions: "read", issues: "write" });
+    expect(job["timeout-minutes"]).toBeGreaterThan(0);
+    expect(job.concurrency).toBeUndefined();
+    // Fork PRs control their artifacts; only same-repo runs may write issues.
+    expect(job.if).toContain(
+      "github.event.workflow_run.head_repository.full_name == github.repository",
+    );
+    const checkout = job.steps!.find((step) => step.uses?.startsWith("actions/checkout@")) as {
+      with?: Record<string, unknown>;
+    };
+    expect(checkout.with).toMatchObject({
+      "persist-credentials": false,
+      ref: "${{ github.event.repository.default_branch }}",
+    });
+    const runs = job.steps!.map((step) => step.run ?? "").join("\n");
+    // Untrusted event fields reach scripts only through the environment.
+    expect(runs).not.toContain("${{");
+    expect(runs).not.toMatch(/\bbun (install|run)\b|npm |npx /);
+    expect(runs).toContain("node scripts/ci-flake-ledger.ts");
+  });
+  it("repeats a single target on demand with bounded work and no write access", () => {
+    const repro = readWorkflow("ci-flake-repro.yml");
+    expect(Object.keys(repro.on)).toEqual(["workflow_dispatch"]);
+    expect(repro.permissions).toEqual({ contents: "read" });
+    const job = repro.jobs.repeat!;
+    expect(job.permissions).toBeUndefined();
+    expect(job["timeout-minutes"]).toBeGreaterThan(0);
+    expect(job["timeout-minutes"]).toBeLessThanOrEqual(90);
+    const runs = job.steps!.map((step) => step.run ?? "").join("\n");
+    expect(runs).not.toContain("${{");
+    expect(runs).toContain('node scripts/ci-repeat.ts "${flags[@]}" -- "${command[@]}"');
+    expect(job.env).toMatchObject({ FILTER: "${{ inputs.filter }}" });
   });
 });

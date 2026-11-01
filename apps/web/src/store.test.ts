@@ -283,6 +283,7 @@ function makeThreadDetails(
     checkpoints: [],
     activities: [],
     commandExecutions: [],
+    proposedPlans: [],
     tasks: [],
     tasksTurnId: null,
     tasksUpdatedAt: null,
@@ -2757,5 +2758,165 @@ describe("stream and detail coverage separation", () => {
       events: [],
     });
     expect(useStore.getState().threads[0]!.messages).toBe(messages);
+  });
+});
+
+describe("archived plans omitted from the startup snapshot", () => {
+  const threadId = ThreadId.makeUnsafe("thread-1");
+  const plan = (
+    id: string,
+    markdown: string,
+    updatedAt = "2026-04-01T09:00:00.000Z",
+  ): Thread["proposedPlans"][number] => ({
+    id,
+    turnId: null,
+    planMarkdown: markdown,
+    implementedAt: null,
+    implementationThreadId: null,
+    createdAt: `2026-04-01T09:00:0${id.slice(-1)}.000Z`,
+    updatedAt,
+  });
+  const archived = "2026-04-02T00:00:00.000Z";
+  const upsert = (proposedPlan: ReturnType<typeof plan>, sequence: number) =>
+    makeEvent("thread.proposed-plan-upserted", { threadId, proposedPlan }, { sequence });
+
+  it("flags an unknown archived thread and keeps plans this client already loaded", () => {
+    const omitted = makeReadModel(
+      makeReadModelThread({ archivedAt: archived, proposedPlans: [], proposedPlansOmitted: true }),
+    );
+    const fresh = syncStartupSnapshot({ ...makeState(makeThread()), threads: [] }, omitted);
+    expect(fresh.threads[0]?.proposedPlansOmitted).toBe(true);
+
+    const loaded = makeState(
+      makeThread({ archivedAt: archived, proposedPlans: [plan("p1", "# One")] }),
+    );
+    const kept = syncStartupSnapshot(loaded, omitted).threads[0]!;
+    expect(kept.proposedPlans.map((entry) => entry.id)).toEqual(["p1"]);
+    // Kept plans may be stale after a reconnect, so they stay flagged for refresh.
+    expect(kept.proposedPlansOmitted).toBe(true);
+  });
+
+  it("refreshes cached plans that another window changed while this one was disconnected", () => {
+    const loaded = syncThreadTailDetails(
+      makeState(makeThread({ archivedAt: archived, detailsLoaded: false })),
+      threadId,
+      makeThreadDetails({ proposedPlans: [plan("p1", "# Before")], detailSequence: 4 }),
+    );
+    expect(loaded.threads[0]?.proposedPlansOmitted).toBeUndefined();
+    const reconnected = syncStartupSnapshot(
+      loaded,
+      makeReadModel(
+        makeReadModelThread({
+          archivedAt: archived,
+          proposedPlans: [],
+          proposedPlansOmitted: true,
+        }),
+      ),
+    );
+    expect(reconnected.threads[0]?.proposedPlans[0]?.planMarkdown).toBe("# Before");
+    expect(reconnected.threads[0]?.proposedPlansOmitted).toBe(true);
+    const refreshed = syncThreadTailDetails(
+      reconnected,
+      threadId,
+      makeThreadDetails({
+        proposedPlans: [plan("p1", "# After", "2026-04-03T00:00:00.000Z")],
+        detailSequence: 12,
+      }),
+    );
+    expect(refreshed.threads[0]?.proposedPlans[0]?.planMarkdown).toBe("# After");
+    expect(refreshed.threads[0]?.proposedPlansOmitted).toBeUndefined();
+  });
+
+  it("keeps every plan a tail carries, beyond the live retention cap", () => {
+    const plans = Array.from({ length: 201 }, (_, index) => ({
+      ...plan(`p${index}`, `# ${index}`),
+      createdAt: new Date(Date.UTC(2026, 3, 1, 9, 0, index)).toISOString(),
+    }));
+    const next = syncThreadTailDetails(
+      makeState(makeThread({ proposedPlans: plans, detailsLoaded: false })),
+      threadId,
+      makeThreadDetails({ proposedPlans: plans.toReversed() }),
+    );
+    expect(next.threads[0]?.proposedPlans).toHaveLength(201);
+    expect(next.threads[0]?.proposedPlans[0]?.id).toBe("p0");
+  });
+
+  it("fills plans from tail details, sorted, and clears the flag", () => {
+    const state = makeState(
+      makeThread({ archivedAt: archived, detailsLoaded: false, proposedPlansOmitted: true }),
+    );
+    const next = syncThreadTailDetails(
+      state,
+      threadId,
+      makeThreadDetails({ proposedPlans: [plan("p2", "# Two"), plan("p1", "# One")] }),
+    );
+    expect(next.threads[0]?.proposedPlans.map((entry) => entry.id)).toEqual(["p1", "p2"]);
+    expect(next.threads[0]?.proposedPlansOmitted).toBeUndefined();
+  });
+
+  it("keeps an upsert that arrives while the tail hydrates", () => {
+    const state: AppState = {
+      ...makeState(
+        makeThread({ archivedAt: archived, detailsLoaded: false, proposedPlansOmitted: true }),
+      ),
+      detailEventBufferByThreadId: new Map([[threadId, { retainers: 1, events: [] }]]),
+    };
+    // Implementing the plan lands after the tail's read.
+    const implemented = { ...plan("p1", "# One"), implementedAt: "2026-04-03T00:00:00.000Z" };
+    const buffered = applyDomainEvent(state, upsert(implemented, 9));
+    const next = syncThreadTailDetails(
+      buffered,
+      threadId,
+      makeThreadDetails({ proposedPlans: [plan("p1", "# One")], detailSequence: 5 }),
+    );
+    expect(next.threads[0]?.proposedPlans[0]?.implementedAt).toBe("2026-04-03T00:00:00.000Z");
+  });
+
+  it("keeps an upsert that arrived during a hydration that then failed", () => {
+    const state: AppState = {
+      ...makeState(makeThread({ detailsLoaded: false, proposedPlans: [plan("p1", "# One")] })),
+      detailEventBufferByThreadId: new Map([[threadId, { retainers: 1, events: [] }]]),
+    };
+    const implemented = { ...plan("p1", "# One"), implementedAt: "2026-04-03T00:00:00.000Z" };
+    const buffered = applyDomainEvent(state, upsert(implemented, 9));
+    expect(buffered.detailEventBufferByThreadId.get(threadId)?.events).toHaveLength(1);
+    const failed = clearThreadDetailBuffer(buffered, threadId);
+    expect(failed.threads[0]?.proposedPlans[0]?.implementedAt).toBe("2026-04-03T00:00:00.000Z");
+  });
+
+  it("ignores an upsert already covered by a newer tail", () => {
+    const loaded = syncThreadTailDetails(
+      makeState(makeThread({ detailsLoaded: false })),
+      threadId,
+      makeThreadDetails({ proposedPlans: [plan("p1", "# New")], detailSequence: 8 }),
+    );
+    const next = applyDomainEvent(loaded, upsert(plan("p1", "# Old"), 6));
+    expect(next.threads[0]?.proposedPlans[0]?.planMarkdown).toBe("# New");
+  });
+
+  it("still applies upserts to a live thread whose details are not loaded", () => {
+    const state = makeState(makeThread({ detailsLoaded: false }));
+    const next = applyDomainEvent(state, upsert(plan("p1", "# Live"), 3));
+    expect(next.threads[0]?.proposedPlans.map((entry) => entry.planMarkdown)).toEqual(["# Live"]);
+  });
+
+  it("does not report plan-ready from omitted plans", () => {
+    const turnId = TurnId.makeUnsafe("turn-1");
+    const thread = makeThread({
+      interactionMode: "plan",
+      latestTurn: {
+        turnId,
+        state: "completed",
+        requestedAt: "2026-04-01T09:00:00.000Z",
+        startedAt: "2026-04-01T09:00:00.000Z",
+        completedAt: "2026-04-01T09:00:05.000Z",
+        assistantMessageId: null,
+      },
+      proposedPlans: [{ ...plan("p1", "# Plan"), turnId }],
+    });
+    expect(resolveThreadStatusForThread(thread)).toBe("plan-ready");
+    expect(
+      resolveThreadStatusForThread({ ...thread, archivedAt: archived, proposedPlansOmitted: true }),
+    ).not.toBe("plan-ready");
   });
 });

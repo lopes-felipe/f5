@@ -2,7 +2,7 @@ import { holdsWorktreeLifecycleLock } from "../../project/Layers/WorktreeLifecyc
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Cause, Effect, Layer, ManagedRuntime, Metric, Stream } from "effect";
+import { Cause, Effect, Layer, ManagedRuntime, Metric, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -10,6 +10,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import {
+  fetchMissingDefaultBranch,
+  resolveHeadInDefaultBranch,
+} from "../../project/worktreeMerge.ts";
 import { GitCoreTestLive as GitCoreLive } from "../testLayers.ts";
 import { GitCommandError } from "../Errors.ts";
 import { GitServiceLive } from "./GitService.ts";
@@ -43,6 +47,9 @@ function makeScriptedGitService(resolve: (input: ExecuteGitInput) => ScriptedRes
             return { code: 0, stdout: `${process.cwd()}\n`, stderr: "" };
           }
           const scripted = resolve(input);
+          // Like the real service, streaming consumers receive the output as chunks.
+          if (input.onStdoutChunk && scripted.stdout)
+            input.onStdoutChunk(new TextEncoder().encode(scripted.stdout));
           return {
             code: scripted.code ?? 0,
             stdout: scripted.stdout ?? "",
@@ -472,6 +479,36 @@ describe("GitCore unit", () => {
       "--",
       ":(literal)src/selected.ts",
     ]);
+  });
+
+  it("stops reading the staged patch once commit context has enough of it", async () => {
+    const indexPath = join(tmpdir(), `f5-fake-index-${crypto.randomUUID()}`);
+    const scripted = makeScriptedGitService((input) => {
+      if (argsEqual(input, ["rev-parse", "--path-format=absolute", "--git-path", "index"]))
+        return { stdout: indexPath };
+      if (input.args.includes("--name-status")) return { stdout: "A\tvendor/huge.js\n" };
+      return {};
+    });
+    let patchInterrupted = false;
+    const core = await makeCore({
+      execute: (input) =>
+        input.args.includes("--patch")
+          ? // A diff far larger than the cap that would otherwise run until its timeout.
+            Effect.sync(() => input.onStdoutChunk?.(new Uint8Array(2 * 1024 * 1024).fill(43))).pipe(
+              Effect.andThen(Effect.never),
+              Effect.onInterrupt(() =>
+                Effect.sync(() => {
+                  patchInterrupted = true;
+                }),
+              ),
+            )
+          : scripted.service.execute(input),
+    });
+
+    const context = await Effect.runPromise(core.prepareCommitContext(process.cwd()));
+    expect(context?.stagedSummary).toBe("A\tvendor/huge.js");
+    expect(context?.stagedPatch).toHaveLength(1024 * 1024);
+    expect(patchInterrupted).toBe(true);
   });
 
   it("commits the full index during a merge even when selected paths were requested", async () => {
@@ -1210,6 +1247,150 @@ describe("pull output beyond the output cap", () => {
   }, 30_000);
 });
 
+describe("default branch without a local origin/HEAD ref", () => {
+  const runGit = (cwd: string, args: string[]) =>
+    execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
+
+  it("asks origin for its advertised HEAD once and never guesses", async () => {
+    const root = mkdtempSync(join(tmpdir(), "f5-git-core-default-"));
+    try {
+      const [cwd, remote, unpublished] = ["local", "remote.git", "unpublished"].map((name) =>
+        join(root, name),
+      ) as [string, string, string];
+      for (const dir of [cwd, remote, unpublished]) mkdirSync(dir);
+      runGit(remote, ["init", "--bare", "--initial-branch=trunk"]);
+      for (const repo of [cwd, unpublished]) {
+        runGit(repo, ["init", "--initial-branch=main"]);
+        runGit(repo, ["config", "user.email", "test@test.com"]);
+        runGit(repo, ["config", "user.name", "Test"]);
+        runGit(repo, ["config", "commit.gpgsign", "false"]);
+        writeFileSync(join(repo, "README.md"), "initial\n");
+        runGit(repo, ["add", "README.md"]);
+        runGit(repo, ["commit", "-m", "initial"]);
+      }
+      runGit(cwd, ["remote", "add", "origin", remote]);
+      // `push -u` does not create refs/remotes/origin/HEAD.
+      runGit(cwd, ["push", "-u", "origin", "main:trunk", "main:main"]);
+
+      const core = await makeCore(
+        await Effect.runPromise(
+          Effect.service(GitService).pipe(
+            Effect.provide(GitServiceLive.pipe(Layer.provide(NodeServices.layer))),
+          ),
+        ),
+      );
+      expect(await Effect.runPromise(core.readDefaultBranch(cwd))).toBeNull();
+      expect(await Effect.runPromise(core.readAdvertisedDefaultBranch(cwd))).toBe("trunk");
+      // Cached: the remote is not asked again within the pass.
+      runGit(remote, ["symbolic-ref", "HEAD", "refs/heads/main"]);
+      expect(await Effect.runPromise(core.readAdvertisedDefaultBranch(cwd))).toBe("trunk");
+      // No remote to ask: no default, rather than "main".
+      expect(await Effect.runPromise(core.readAdvertisedDefaultBranch(unpublished))).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("fetches an advertised default that was never fetched, so merge checks can run", async () => {
+    const root = mkdtempSync(join(tmpdir(), "f5-git-core-default-"));
+    try {
+      const [cwd, remote] = ["local", "remote.git"].map((name) => join(root, name)) as [
+        string,
+        string,
+      ];
+      for (const dir of [cwd, remote]) mkdirSync(dir);
+      runGit(remote, ["init", "--bare", "--initial-branch=trunk"]);
+      runGit(cwd, ["init", "--initial-branch=feature"]);
+      runGit(cwd, ["config", "user.email", "test@test.com"]);
+      runGit(cwd, ["config", "user.name", "Test"]);
+      runGit(cwd, ["config", "commit.gpgsign", "false"]);
+      writeFileSync(join(cwd, "README.md"), "initial\n");
+      runGit(cwd, ["add", "README.md"]);
+      runGit(cwd, ["commit", "-m", "initial"]);
+      const head = runGit(cwd, ["rev-parse", "HEAD"]);
+      runGit(cwd, ["remote", "add", "origin", remote]);
+      runGit(cwd, ["push", "origin", "HEAD:trunk"]);
+      // Integrated upstream, but no origin/HEAD, tracking ref or local trunk.
+      runGit(cwd, ["update-ref", "-d", "refs/remotes/origin/trunk"]);
+
+      const core = await makeCore(
+        await Effect.runPromise(
+          Effect.service(GitService).pipe(
+            Effect.provide(GitServiceLive.pipe(Layer.provide(NodeServices.layer))),
+          ),
+        ),
+      );
+      expect(await Effect.runPromise(resolveHeadInDefaultBranch(core, cwd, head))).toEqual({
+        defaultBranch: "trunk",
+        merged: null,
+      });
+      await Effect.runPromise(fetchMissingDefaultBranch(core, cwd));
+      expect(await Effect.runPromise(resolveHeadInDefaultBranch(core, cwd, head))).toEqual({
+        defaultBranch: "trunk",
+        merged: true,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe.skipIf(process.platform === "win32")("pushes the remote refuses", () => {
+  const runGit = (cwd: string, args: string[]) =>
+    execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+
+  it("says the remote rejected the push without quoting the server", async () => {
+    const root = mkdtempSync(join(tmpdir(), "f5-git-core-push-"));
+    try {
+      const [cwd, remote] = ["local", "remote.git"].map((name) => join(root, name)) as [
+        string,
+        string,
+      ];
+      for (const dir of [cwd, remote]) mkdirSync(dir);
+      runGit(remote, ["init", "--bare", "--initial-branch=main"]);
+      runGit(cwd, ["init", "--initial-branch=main"]);
+      runGit(cwd, ["config", "user.email", "test@test.com"]);
+      runGit(cwd, ["config", "user.name", "Test"]);
+      runGit(cwd, ["config", "commit.gpgsign", "false"]);
+      writeFileSync(join(cwd, "README.md"), "initial\n");
+      runGit(cwd, ["add", "README.md"]);
+      runGit(cwd, ["commit", "-m", "initial"]);
+      runGit(cwd, ["remote", "add", "origin", remote]);
+      runGit(cwd, ["push", "-u", "origin", "main"]);
+      writeFileSync(
+        join(remote, "hooks", "pre-receive"),
+        "#!/bin/sh\necho secret-policy >&2\nexit 1\n",
+        {
+          mode: 0o755,
+        },
+      );
+      writeFileSync(join(cwd, "README.md"), "changed\n");
+      runGit(cwd, ["commit", "-am", "change"]);
+
+      const layer = GitCoreLive.pipe(
+        Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "f5-git-core-push-" })),
+        Layer.provide(GitServiceLive),
+        Layer.provide(NodeServices.layer),
+      );
+      const error = await Effect.runPromise(
+        Effect.flip(
+          Effect.service(GitCore).pipe(
+            Effect.flatMap((core) => core.pushCurrentBranch(cwd, null)),
+            Effect.provide(layer),
+          ),
+        ),
+      );
+      if (!Schema.is(GitCommandError)(error)) throw error;
+      expect(error.detail).toContain(
+        "The remote rejected the push. Push this branch from a terminal to see the server's message.",
+      );
+      expect(error.detail).not.toContain("secret-policy");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
 it("terminates option parsing before configuration keys", async () => {
   const scripted = makeScriptedGitService();
   const core = await makeCore(scripted.service);
@@ -1337,4 +1518,112 @@ describe("shared .git/config writes", () => {
     expect(order).toEqual(["rename:start", "rename:end"]);
     expect(scripted.calls.some((call) => call.args.includes("--set-upstream-to"))).toBe(true);
   });
+});
+
+describe("real repositories", () => {
+  const runGit = (cwd: string, args: string[]) =>
+    execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+  const makeRealCore = async () =>
+    makeCore(
+      await Effect.runPromise(
+        Effect.service(GitService).pipe(
+          Effect.provide(GitServiceLive.pipe(Layer.provide(NodeServices.layer))),
+        ),
+      ),
+    );
+  const makeRepo = (name = "local") => {
+    const root = mkdtempSync(join(tmpdir(), "f5-git-core-real-"));
+    roots.push(root);
+    const cwd = join(root, name);
+    mkdirSync(cwd);
+    runGit(cwd, ["init", "--initial-branch=main"]);
+    runGit(cwd, ["config", "user.email", "test@test.com"]);
+    runGit(cwd, ["config", "user.name", "Test"]);
+    runGit(cwd, ["config", "commit.gpgsign", "false"]);
+    return { root, cwd };
+  };
+  const commitFile = (cwd: string, file: string) => {
+    writeFileSync(join(cwd, file), `${file}\n`);
+    runGit(cwd, ["add", file]);
+    runGit(cwd, ["commit", "-m", file]);
+    return runGit(cwd, ["rev-parse", "HEAD"]);
+  };
+
+  it("reads the current branch by name when a tag shares it", async () => {
+    const { cwd } = makeRepo();
+    const head = commitFile(cwd, "README.md");
+    runGit(cwd, ["switch", "-c", "release"]);
+    runGit(cwd, ["update-ref", "refs/tags/release", "HEAD"]);
+    expect(runGit(cwd, ["symbolic-ref", "--short", "HEAD"])).toBe("heads/release");
+    const core = await makeRealCore();
+
+    expect((await Effect.runPromise(core.inspectCheckoutIdentity(cwd))).branch).toBe("release");
+    expect((await Effect.runPromise(core.inspectCheckout(cwd))).branch).toBe("release");
+    expect(
+      (await Effect.runPromise(core.statusDetails(cwd, { refreshUpstream: false }))).branch,
+    ).toBe("release");
+    await Effect.runPromise(core.fastForwardTo(cwd, head, "release"));
+  }, 30_000);
+
+  it("counts unpublished commits against the base branch, not a tag that shares its name", async () => {
+    const { cwd } = makeRepo();
+    const older = commitFile(cwd, "README.md");
+    commitFile(cwd, "base.txt");
+    runGit(cwd, ["update-ref", "refs/tags/main", older]);
+    runGit(cwd, ["switch", "-c", "feature"]);
+    commitFile(cwd, "feature.txt");
+    const core = await makeRealCore();
+
+    const status = await Effect.runPromise(core.statusDetails(cwd, { refreshUpstream: false }));
+    expect(status.hasUpstream).toBe(false);
+    expect(status.aheadCount).toBe(1);
+  }, 30_000);
+
+  // A fork whose local main lags `upstream/main`, with a feature branched from upstream.
+  const makeForkWithUpstreamBase = () => {
+    const { root, cwd } = makeRepo();
+    const lagging = commitFile(cwd, "README.md");
+    commitFile(cwd, "upstream-1.txt");
+    commitFile(cwd, "upstream-2.txt");
+    runGit(cwd, ["remote", "add", "upstream", join(root, "missing-upstream.git")]);
+    runGit(cwd, ["update-ref", "refs/remotes/upstream/main", "HEAD"]);
+    runGit(cwd, ["reset", "--hard", lagging]);
+    runGit(cwd, ["switch", "--no-track", "-c", "feature", "refs/remotes/upstream/main"]);
+    runGit(cwd, ["config", "branch.feature.gh-merge-base", "upstream/main"]);
+    return { root, cwd, lagging };
+  };
+
+  it("counts unpublished commits against a configured remote merge base", async () => {
+    const { cwd } = makeForkWithUpstreamBase();
+    commitFile(cwd, "feature.txt");
+    // A local branch named like the remote base must not shadow it.
+    runGit(cwd, ["branch", "upstream/main", "main"]);
+    const core = await makeRealCore();
+
+    const status = await Effect.runPromise(core.statusDetails(cwd, { refreshUpstream: false }));
+    expect(status.hasUpstream).toBe(false);
+    expect(status.aheadCount).toBe(1);
+  }, 30_000);
+
+  it("pushes a branch at its configured base when the published branch is behind", async () => {
+    const { root, cwd, lagging } = makeForkWithUpstreamBase();
+    const origin = join(root, "origin.git");
+    runGit(root, ["init", "--bare", "--initial-branch=main", origin]);
+    runGit(cwd, ["remote", "add", "origin", origin]);
+    runGit(cwd, ["push", "origin", `${lagging}:refs/heads/feature`]);
+    runGit(cwd, ["fetch", "origin"]);
+    const core = await makeRealCore();
+
+    const status = await Effect.runPromise(core.statusDetails(cwd, { refreshUpstream: false }));
+    expect(status.aheadCount).toBe(0);
+    const result = await Effect.runPromise(core.pushCurrentBranch(cwd, null));
+    expect(result.status).toBe("pushed");
+    expect(runGit(origin, ["rev-parse", "refs/heads/feature"])).toBe(
+      runGit(cwd, ["rev-parse", "HEAD"]),
+    );
+  }, 30_000);
 });

@@ -1,5 +1,25 @@
 import type { AccountUsageSection, CodexAccountRateLimitWindow } from "@t3tools/contracts";
 
+/** A usage-limit continue waits this long past the reset. */
+export const USAGE_RESUME_BUFFER_MS = 60_000;
+/** Scheduled continues must start within this horizon. */
+export const USAGE_RESUME_MAX_HORIZON_MS = 8 * 24 * 60 * 60_000;
+
+/** Whether continuing at a known reset fits the schedulable horizon. */
+export function canResumeAtUsageReset(resetsAt: string, nowMs: number): boolean {
+  const reset = Date.parse(resetsAt);
+  return (
+    Number.isFinite(reset) &&
+    Math.max(nowMs, reset) + USAGE_RESUME_BUFFER_MS <= nowMs + USAGE_RESUME_MAX_HORIZON_MS
+  );
+}
+
+/**
+ * Claude's monthly spend budget is a spend meter, not a rolling quota. It has
+ * no reset, so it never settles when a usage-limited turn can continue.
+ */
+export const CLAUDE_MONTHLY_SPEND_WINDOW_KEY = "monthly_spend";
+
 /** Stable identity shared by the server ledger and browser recovery controls. */
 export function usageLimitFailureKey(
   limit:
@@ -71,6 +91,7 @@ export function quotaWindowsFromSection(section: AccountUsageSection): Array<Quo
           [
             ["primary", limit.primary, "Primary limit"],
             ["secondary", limit.secondary, "Secondary limit"],
+            ["individual", limit.individual, "Monthly credit limit"],
           ] as const
         ).flatMap(([slot, window, fallback]) =>
           window

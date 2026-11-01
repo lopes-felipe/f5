@@ -140,7 +140,18 @@ export async function runBackupMaintenanceMode(): Promise<void> {
     }
     const request = JSON.parse(Buffer.concat(input).toString("utf8")) as
       | BackupMaintenanceInput
-      | { kind: "compact-database"; dbPath: string };
+      | { kind: "compact-database"; dbPath: string }
+      | { kind: "storage"; task: import("./storage/storageWorker.ts").StorageWorkerTask };
+    if ("kind" in request && request.kind === "storage") {
+      const { executeStorageTask } = await import("./storage/storageWorker.ts");
+      const storage = await executeStorageTask(request.task);
+      // A timed-out read-only traversal may still have an OS syscall outstanding.
+      // Exit the owned helper after flushing its partial response.
+      if (request.task.kind !== "remove")
+        process.stdout.write(JSON.stringify({ storage }), () => process.exit(0));
+      else process.stdout.write(JSON.stringify({ storage }));
+      return;
+    }
     if ("kind" in request && request.kind === "compact-database") {
       const { compactDatabaseFile } = await import("./storage/databaseMaintenance.ts");
       await compactDatabaseFile(request.dbPath);

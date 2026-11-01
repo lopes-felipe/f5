@@ -234,6 +234,7 @@ export const UPSTREAM_PORT_CONCURRENCY_DEFAULT = 5;
 export const UPSTREAM_PORT_CONCURRENCY_MAX = 10;
 export const UPSTREAM_LIST_DEFAULT_LIMIT = 200;
 export const UPSTREAM_LIST_MAX_LIMIT = 500;
+export const UPSTREAM_LIST_IDS_MAX = 10_000;
 
 const TopicIds = (max: number) =>
   Schema.Array(UpstreamTopicId).check(Schema.isMinLength(1), Schema.isMaxLength(max));
@@ -383,6 +384,11 @@ export const UpstreamOverview = Schema.Struct({
   portQueue: Schema.Struct({
     hasHistory: Schema.Boolean,
     queuedTopics: NonNegativeInt,
+    /**
+     * Topics waiting in the queue. Rows render their queued indicator from
+     * this set, so queue changes refresh the overview instead of topic pages.
+     */
+    queuedTopicIds: Schema.Array(UpstreamTopicId).check(Schema.isMaxLength(UPSTREAM_LIST_IDS_MAX)),
     queuedThreads: NonNegativeInt,
     running: NonNegativeInt,
     concurrency: PositiveInt,
@@ -412,7 +418,6 @@ export const UpstreamTopicList = UpstreamTopicState;
 export type UpstreamTopicList = UpstreamTopicState;
 
 export const UPSTREAM_QUERY_MAX = 200;
-export const UPSTREAM_LIST_IDS_MAX = 10_000;
 
 /** A suggested status, or `none` for topics without a suggestion. */
 export const UpstreamSuggestionFilter = Schema.Literals([

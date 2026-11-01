@@ -1,4 +1,7 @@
-import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
+import {
+  isKnownProjectOverrideKey,
+  projectProviderSnapshots,
+} from "@t3tools/shared/serverSettings";
 import { ThreadSettlementFields } from "./ThreadSettlementSettings";
 import { pickPreferredModel } from "@t3tools/shared/model";
 import { useComputerStatus, computerSettingsCanEnable } from "../../hooks/useComputerStatus";
@@ -309,7 +312,10 @@ export function ProjectOverridesResetCard() {
   const { save, saving, overrides } = useProjectScope();
   const { selectedProjectHasClaudeOverride, updateSelectedProjectClaudeSettings } =
     useSettingsRouteContext();
-  const count = Object.keys(overrides).length + (selectedProjectHasClaudeOverride ? 1 : 0);
+  // Keys from a newer version have no badge on any page, so they are not counted.
+  const count =
+    Object.keys(overrides).filter(isKnownProjectOverrideKey).length +
+    (selectedProjectHasClaudeOverride ? 1 : 0);
   return (
     <SettingsCard
       title="Overrides"
@@ -777,9 +783,10 @@ export function ProjectGitOverrides() {
                 defaultValue={settings.textGenerationModelSelection.model}
                 onBlur={(e) => {
                   const model = e.target.value.trim();
+                  // A new model must not inherit the previous model's options.
                   if (model && model !== settings.textGenerationModelSelection.model)
                     set("textGenerationModelSelection", {
-                      ...settings.textGenerationModelSelection,
+                      instanceId: settings.textGenerationModelSelection.instanceId,
                       model,
                     });
                 }}

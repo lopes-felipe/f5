@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import ts from "typescript";
 type BunLock = { packages: Record<string, unknown[]> } & Record<string, unknown>;
 function parseBunLock(text: string): BunLock {
@@ -23,6 +24,7 @@ export function seedStagedLockfile(
     readonly dependencies: Record<string, unknown>;
     readonly devDependencies?: Record<string, unknown>;
     readonly overrides?: Record<string, string>;
+    readonly patchedDependencies?: Record<string, string>;
   },
 ): string {
   const root = parseBunLock(rootText);
@@ -37,6 +39,9 @@ export function seedStagedLockfile(
           ...(manifest.devDependencies ? { devDependencies: manifest.devDependencies } : {}),
         },
       },
+      ...(manifest.patchedDependencies
+        ? { patchedDependencies: manifest.patchedDependencies }
+        : {}),
       ...(manifest.overrides ? { overrides: manifest.overrides } : {}),
       packages: Object.fromEntries(
         Object.entries(root.packages).filter(([, entry]) => !isLocalPackage(entry)),
@@ -61,6 +66,44 @@ export function verifyStagedLockfile(rootText: string, stagedText: string): void
       throw new Error(`Staged dependency is absent from root lockfile: ${entry[0]}`);
   }
 }
+/** `@scope/name@<version or URL>` → `@scope/name`. */
+const patchedPackageName = (specifier: string) =>
+  specifier.slice(0, specifier.indexOf("@", specifier.startsWith("@") ? 1 : 0));
+
+/**
+ * Fails unless every line a patch adds is present in the installed package. Bun
+ * applies `patchedDependencies` silently, and a missing key or patch file leaves
+ * the stock package in place with identical lockfile integrity.
+ */
+export function verifyAppliedPatches(
+  installRoot: string,
+  patchedDependencies: Record<string, string>,
+  readText: (path: string) => string = (path) => readFileSync(path, "utf8"),
+): void {
+  for (const [specifier, patchFile] of Object.entries(patchedDependencies)) {
+    const packageDir = join(installRoot, "node_modules", patchedPackageName(specifier));
+    let target: string | undefined;
+    const added = new Map<string, string[]>();
+    for (const line of readText(join(installRoot, patchFile)).split("\n")) {
+      const header = /^\+\+\+ b\/(.+)$/.exec(line);
+      if (header) {
+        target = header[1]!;
+        added.set(target, []);
+      } else if (target && line.startsWith("+") && line.slice(1).trim())
+        added.get(target)!.push(line.slice(1));
+    }
+    if (!added.size) throw new Error(`Patch ${patchFile} changes no files`);
+    for (const [file, lines] of added) {
+      const installed = readText(join(packageDir, file));
+      const missing = lines.find((line) => !installed.includes(line));
+      if (missing !== undefined)
+        throw new Error(
+          `Patch ${patchFile} is not applied to ${specifier} ${file}: ${missing.trim()}`,
+        );
+    }
+  }
+}
+
 if (process.argv[1]?.endsWith("verify-staged-lockfile.ts")) {
   const [root, staged] = process.argv.slice(2);
   if (!root || !staged) throw new Error("Usage: verify-staged-lockfile.ts ROOT STAGED");

@@ -1086,7 +1086,10 @@ describe("query-connected usage dashboard", () => {
         .element(page.getByText(/Project filtering is unsupported by this server/))
         .toBeVisible();
       await expect.element(page.getByText("Total tokens")).not.toBeInTheDocument();
-      expect(api.getSummary).toHaveBeenCalledWith(expect.objectContaining({ projectId: projectA }));
+      expect(api.getSummary).toHaveBeenCalledWith(
+        expect.objectContaining({ projectId: projectA }),
+        expect.anything(),
+      );
     } finally {
       await screen.unmount();
       queryClient.clear();
@@ -1136,6 +1139,7 @@ describe("query-connected usage dashboard", () => {
       await vi.waitFor(() =>
         expect(api.getSummary).toHaveBeenLastCalledWith(
           expect.objectContaining({ hiddenProviders: ["codex", "cursor"] }),
+          expect.anything(),
         ),
       );
       await expect
@@ -1207,7 +1211,10 @@ describe("query-connected usage dashboard", () => {
       await expect
         .element(page.getByRole("button", { name: "30 days" }))
         .toHaveAttribute("aria-pressed", "true");
-      expect(api.getSummary).toHaveBeenCalledWith(expect.objectContaining({ range: "30d" }));
+      expect(api.getSummary).toHaveBeenCalledWith(
+        expect.objectContaining({ range: "30d" }),
+        expect.anything(),
+      );
       await page.getByRole("button", { name: "7 days" }).click();
       expect(onSearchChange).toHaveBeenCalledWith({ range: "7d" });
       await page.getByRole("tab", { name: "Limits" }).click();
@@ -1428,6 +1435,63 @@ describe("limits", () => {
         .element(page.getByRole("progressbar", { name: "Claude · Extra usage" }))
         .toHaveAttribute("aria-valuetext", "0% remaining");
       await expect.element(page.getByText(/over limit \(105% used\)/)).toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("meters an overspent monthly budget once, in place of the extra-usage meter", async () => {
+    const fetchedAt = "2026-10-01T00:00:00.000Z";
+    const claude: UsageAccounts[number] = {
+      key: "claude:enterprise",
+      provider: "claudeAgent",
+      providerInstanceId: null,
+      displayName: "Claude",
+      enabled: true,
+      refreshState: "idle",
+      sections: [
+        {
+          kind: "claude-usage",
+          outcome: "available",
+          lastAttemptAt: fetchedAt,
+          errorCode: null,
+          snapshot: {
+            fetchedAt,
+            data: {
+              subscriptionLabel: null,
+              limitsAvailable: true,
+              windows: [
+                {
+                  key: "monthly_spend",
+                  label: "Monthly spend",
+                  utilization: 105.4,
+                  resetsAt: null,
+                },
+              ],
+              extraUsage: { enabled: true, utilization: 105.4 },
+            },
+          },
+        },
+      ],
+    };
+    const screen = await render(
+      <UsageDashboardView
+        summary={summary()}
+        accounts={[claude]}
+        range="7d"
+        onRangeChange={() => {}}
+        fetching={false}
+      />,
+    );
+    try {
+      await expect
+        .element(page.getByRole("progressbar", { name: "Claude · Monthly spend" }))
+        .toHaveAttribute("aria-valuetext", "0% remaining");
+      await expect.element(page.getByText(/over limit \(105% used\)/)).toBeVisible();
+      await expect.element(page.getByText("Extra usage enabled")).toBeVisible();
+      await expect
+        .element(page.getByRole("progressbar", { name: "Claude · Extra usage" }))
+        .not.toBeInTheDocument();
     } finally {
       await screen.unmount();
     }

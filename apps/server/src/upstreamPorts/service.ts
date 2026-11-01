@@ -13,6 +13,7 @@ import {
   BOOTSTRAP_THREAD_DELETED_ERROR_CODE,
   BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
   CommandId,
+  UPSTREAM_LIST_IDS_MAX,
   UpstreamPortsSettings,
   UpstreamTriageBatchResult,
   type ModelSelection,
@@ -1748,6 +1749,7 @@ export function makeUpstreamPortsService(
           portQueue: {
             hasHistory: false,
             queuedTopics: 0,
+            queuedTopicIds: [],
             queuedThreads: 0,
             running: 0,
             concurrency: context.settings.portConcurrency,
@@ -3092,6 +3094,10 @@ export function makeUpstreamPortsService(
         return {
           hasHistory: yield* queue.hasQueueHistory(context.projectId),
           queuedTopics: entries.reduce((sum, entry) => sum + entry.topicIds.length, 0),
+          queuedTopicIds: [...new Set(entries.flatMap((entry) => entry.topicIds))].slice(
+            0,
+            UPSTREAM_LIST_IDS_MAX,
+          ),
           queuedThreads: entries.length,
           running: (yield* runningThreads(context.projectId, snapshot)).size,
           concurrency: context.settings.portConcurrency,
@@ -3113,6 +3119,7 @@ export function makeUpstreamPortsService(
               Effect.succeed({
                 hasHistory: false,
                 queuedTopics: 0,
+                queuedTopicIds: [],
                 queuedThreads: 0,
                 running: 0,
                 concurrency: context.settings.portConcurrency,

@@ -1,6 +1,7 @@
 import { Effect } from "effect";
 import type { CodexControlClient } from "../codex/CodexControlClient.ts";
 import { describe, expect, it } from "vitest";
+import { quotaWindowsFromSection } from "@t3tools/shared/usageLimit";
 
 import { readCodexAccountSections } from "./codexAccountUsage.ts";
 
@@ -56,6 +57,72 @@ describe("Codex account usage", () => {
         },
       ],
     });
+  });
+
+  it("reads an Enterprise monthly credit allowance without a window duration", async () => {
+    const individualLimit = { remainingPercent: 99, resetsAt: 1_784_500_000 };
+    const client = {
+      readAccountTokenUsage: async () => ({}),
+      readAccountRateLimits: async () => ({
+        rateLimits: {
+          limitId: "codex",
+          planType: "enterprise_cbp_usage_based",
+          primary: null,
+          secondary: null,
+          individualLimit,
+        },
+      }),
+    } as unknown as CodexControlClient;
+
+    const sections = await Effect.runPromise(readCodexAccountSections(client));
+    const data = sections[1]?.snapshot?.data;
+    expect(data).toEqual({
+      rateLimits: [
+        {
+          id: "codex",
+          name: null,
+          planType: "enterprise_cbp_usage_based",
+          primary: null,
+          secondary: null,
+          individual: { usedPercent: 1, windowDurationMins: null, resetsAt: 1_784_500_000 },
+          credits: null,
+        },
+      ],
+    });
+    expect(quotaWindowsFromSection(sections[1]!)).toEqual([
+      {
+        windowKey: "codex:individual",
+        label: "Monthly credit limit",
+        usedPercent: 1,
+        resetsAt: "2026-07-19T22:26:40.000Z",
+      },
+    ]);
+  });
+
+  it("reads the shared monthly credit allowance only from the main Codex bucket", async () => {
+    const individualLimit = { remainingPercent: 60, resetsAt: 1_784_500_000 };
+    const client = {
+      readAccountTokenUsage: async () => ({}),
+      readAccountRateLimits: async () => ({
+        rateLimitsByLimitId: {
+          codex: { limitId: "codex", individualLimit },
+          codex_bengalfox: {
+            limitId: "codex_bengalfox",
+            limitName: "Spark",
+            primary: { usedPercent: 5, windowDurationMins: 300 },
+            individualLimit,
+          },
+        },
+      }),
+    } as unknown as CodexControlClient;
+
+    const sections = await Effect.runPromise(readCodexAccountSections(client));
+    expect(
+      quotaWindowsFromSection(sections[1]!).map((window) => [window.windowKey, window.usedPercent]),
+    ).toEqual([
+      ["codex:individual", 40],
+      ["codex_bengalfox:primary", 5],
+    ]);
   });
 
   it("keeps partial endpoint support usable", async () => {

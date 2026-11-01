@@ -8,6 +8,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ServerSettings,
@@ -46,6 +47,21 @@ const makeServerSettingsLayer = () =>
   );
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect("validates repository search folders before saving storage discovery", () =>
+    Effect.gen(function* () {
+      const settings = yield* ServerSettingsService;
+      const denied = yield* settings
+        .updateSettings({
+          storageDiscovery: { machineCleanupEnabled: false, repositoryRoots: ["relative"] },
+        })
+        .pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(denied));
+      const saved = yield* settings.updateSettings({
+        storageDiscovery: { machineCleanupEnabled: false, repositoryRoots: ["~/code", "~/code"] },
+      });
+      assert.deepEqual(saved.storageDiscovery.repositoryRoots, [NodePath.join(homedir(), "code")]);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
   it.effect("times out location validation without saving or holding the settings write lock", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsService;
@@ -213,6 +229,37 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       );
       assert.isTrue(Exit.isFailure(result));
       assert.equal(yield* fs.readFileString(config.settingsPath!), broken);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+  it.effect("keeps an override key a newer server saved when a project setting is edited", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const projectId = ProjectId.make("project-a");
+      yield* fs.writeFileString(
+        config.settingsPath!,
+        JSON.stringify({
+          projectSettingsOverrides: {
+            [projectId]: { autoPullDefaultBranch: true, addedByNewerServer: 3 },
+          },
+        }),
+      );
+      const loaded = yield* service.getSettings;
+
+      yield* service.updateSettings({
+        projectSettingsOverrides: {
+          [projectId]: {
+            ...loaded.projectSettingsOverrides[projectId],
+            autoPullDefaultBranch: false,
+          },
+        },
+      });
+
+      const saved = JSON.parse(yield* fs.readFileString(config.settingsPath!));
+      assert.deepEqual(saved.projectSettingsOverrides, {
+        [projectId]: { autoPullDefaultBranch: false, addedByNewerServer: 3 },
+      });
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
   it.effect("defaults legacy password masking to fast and persists a conservative choice", () =>

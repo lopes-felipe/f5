@@ -39,7 +39,7 @@ import {
   stopDeletedWorktreeClaims,
   removeWorktreeSafely,
 } from "../project/worktreeClaims.ts";
-import { resolveHeadInDefaultBranch } from "../project/worktreeMerge.ts";
+import { fetchMissingDefaultBranch, resolveHeadInDefaultBranch } from "../project/worktreeMerge.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import {
@@ -450,6 +450,28 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
     const model = yield* engine.getReadModel();
     const nowMs = Date.now();
     const activity = yield* activityByWorktree(model.threads);
+    // Once per project per pass, before the concurrent evaluations compare
+    // worktree heads against the default branch.
+    yield* Effect.forEach(
+      model.projects.filter((project) =>
+        model.threads.some(
+          (thread) =>
+            thread.projectId === project.id &&
+            thread.worktreePath !== null &&
+            thread.deletedAt === null,
+        ),
+      ),
+      (project) =>
+        rulesFor(global, project).pipe(
+          Effect.flatMap((rules) =>
+            rules?.unchanged || rules?.onMerge
+              ? fetchMissingDefaultBranch(git, project.workspaceRoot)
+              : Effect.void,
+          ),
+          Effect.ignore,
+        ),
+      { concurrency: EVALUATION_CONCURRENCY, discard: true },
+    );
     const evaluations = yield* Effect.forEach(
       model.threads.filter((thread) => thread.worktreePath !== null),
       (thread) =>

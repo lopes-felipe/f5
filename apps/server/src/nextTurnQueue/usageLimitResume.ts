@@ -6,7 +6,11 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { holdsAutomaticResume } from "@t3tools/shared/pendingUserInputs";
-import { usageLimitFailureKey } from "@t3tools/shared/usageLimit";
+import {
+  USAGE_RESUME_BUFFER_MS,
+  USAGE_RESUME_MAX_HORIZON_MS,
+  usageLimitFailureKey,
+} from "@t3tools/shared/usageLimit";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { executionProviderFingerprintFor } from "../provider/providerConfigurationFingerprint.ts";
 import { Effect, Option } from "effect";
@@ -15,8 +19,8 @@ import { NextTurnQueueStore } from "./Services/NextTurnQueueStore.ts";
 import { toNextTurnQueueStorageError } from "./Errors.ts";
 import { canonicalRequestHash } from "./canonicalRequestHash.ts";
 
-export const BUFFER_MS = 60_000;
-export const MAX_HORIZON_MS = 8 * 24 * 60 * 60_000;
+export const BUFFER_MS = USAGE_RESUME_BUFFER_MS;
+export const MAX_HORIZON_MS = USAGE_RESUME_MAX_HORIZON_MS;
 export const MAX_CONSECUTIVE_AUTO_RESUMES = 3;
 export const BACKOFF_MS = [60_000, 300_000] as const;
 export const MESSAGE = "continue";

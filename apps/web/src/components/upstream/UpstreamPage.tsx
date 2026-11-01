@@ -71,6 +71,7 @@ import {
   isControlTarget,
   isDialogTarget,
   isEditableTarget,
+  isUpstreamTopicQueued,
   liveUndoEntries,
   moveFocus,
   portableTopicIds,
@@ -162,6 +163,11 @@ export function UpstreamPage(props: {
     enabled: projectId !== null && Boolean(overview?.config),
   });
   const firstPage = topicsQuery.data?.pages[0];
+  const overviewQueuedTopicIds = overview?.portQueue.queuedTopicIds;
+  const queuedTopicIds = useMemo(
+    () => (overviewQueuedTopicIds ? new Set<string>(overviewQueuedTopicIds) : null),
+    [overviewQueuedTopicIds],
+  );
   const serverConfig = useQuery(serverConfigQueryOptions());
   const providers = serverConfig.data?.providers ?? [];
   const projectSettings = useQuery({
@@ -1045,6 +1051,7 @@ export function UpstreamPage(props: {
             <UpstreamTopicList
               ref={listRef}
               rows={rows}
+              queuedTopicIds={queuedTopicIds}
               repository={overview.config.repository}
               reasonLabels={overview.reasonLabels}
               focusedId={focused}
@@ -1059,7 +1066,9 @@ export function UpstreamPage(props: {
                   ids={ids}
                   selected={selectedVisible}
                   selectedCount={matching ? selected.size : selectedVisible.size}
-                  hasQueued={rows.some((row) => row.queued && selected.has(row.topic.id))}
+                  hasQueued={rows.some(
+                    (row) => isUpstreamTopicQueued(row, queuedTopicIds) && selected.has(row.topic.id),
+                  )}
                   total={total}
                   readOnly={readOnly}
                   busy={busy}

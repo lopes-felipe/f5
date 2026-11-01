@@ -9,7 +9,7 @@ import {
   F5_PI_RUNTIME_MODE_ENV,
   F5_PI_MCP_EXTENSION_PATH_ENV,
 } from "./PiEnvironment.ts";
-const F5_ORCHESTRATION_INSTRUCTIONS = `F5's MCP tools are scoped to this thread. Use thread_status to inspect it and thread_settle only when work is complete. PR watch tools create continuing work only when requested. Use html_preview to validate a visual before html_render publishes it in the thread. Discover available tools from the live catalog and follow their input schemas.`;
+const F5_ORCHESTRATION_INSTRUCTIONS = `F5's MCP tools are scoped to this thread. Use thread_status to inspect it and thread_settle only when work is complete. Use thread_read to read a thread the user referenced as [title](f5://thread/<id>). PR watch tools create continuing work only when requested. Use html_preview to validate a visual before html_render publishes it in the thread. Discover available tools from the live catalog and follow their input schemas.`;
 
 export const PI_F5_MCP_EXTENSION_FILENAME = "pi-f5-mcp-extension.ts";
 

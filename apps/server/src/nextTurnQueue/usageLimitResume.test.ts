@@ -36,6 +36,7 @@ import { ThreadId } from "@t3tools/contracts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { NextTurnQueueStore } from "./Services/NextTurnQueueStore.ts";
 import { scheduleUsageLimitResumeFor } from "./usageLimitResume.ts";
+import { canResumeAtUsageReset } from "@t3tools/shared/usageLimit";
 
 describe("recovery target calculation", () => {
   const threadId = ThreadId.makeUnsafe("limited-thread");
@@ -143,6 +144,36 @@ describe("recovery target calculation", () => {
           })
         ).result.kind,
       ).toBe("transient");
+    } finally {
+      clock.mockRestore();
+    }
+  });
+  it("agrees with the notice on monthly resets past the scheduling horizon", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    const monthly = (resetsAt: string) => ({
+      session: {
+        status: "error",
+        activeTurnId: null,
+        usageLimit: {
+          providerInstanceId: "codex",
+          turnId: "turn",
+          deliveryId: null,
+          resetsAt,
+          windows: [{ id: "codex:individual", label: "monthly credit", resetsAt }],
+          evidence: "typed",
+          resetSource: "provider",
+        },
+      },
+    });
+    try {
+      for (const [resetsAt, kind] of [
+        ["2026-11-01T00:00:00.000Z", "ineligible"],
+        ["2026-10-09T09:59:00.000Z", "created"],
+        ["2026-10-09T09:59:00.001Z", "ineligible"],
+      ] as const) {
+        expect((await schedule(monthly(resetsAt))).result.kind).toBe(kind);
+        expect(canResumeAtUsageReset(resetsAt, now)).toBe(kind === "created");
+      }
     } finally {
       clock.mockRestore();
     }

@@ -12,7 +12,7 @@ import { isManagedGitCommand, managedGitProcessEnvironment } from "./git/gitProc
 
 export interface ProcessRunOptions {
   cwd?: string | undefined;
-  timeoutMs?: number | undefined;
+  timeoutMs?: number | null | undefined;
   env: NodeJS.ProcessEnv;
   stdin?: string | undefined;
   allowNonZeroExit?: boolean | undefined;
@@ -21,6 +21,9 @@ export interface ProcessRunOptions {
   maxStderrBytes?: number | undefined;
   outputMode?: "error" | "truncate" | "tail" | undefined;
   signal?: AbortSignal | undefined;
+  /** Stream complete output while retaining only a bounded diagnostic tail. */
+  onStdoutChunk?: ((chunk: Uint8Array) => void) | undefined;
+  onStderrChunk?: ((chunk: Uint8Array) => void) | undefined;
 }
 
 export interface ProcessRunResult {
@@ -191,7 +194,7 @@ export async function runProcess(
   args: readonly string[],
   options: ProcessRunOptions,
 ): Promise<ProcessRunResult> {
-  const timeoutMs = options.timeoutMs ?? 60_000;
+  const timeoutMs = options.timeoutMs === undefined ? 60_000 : options.timeoutMs;
   const maxBufferBytes = options.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
   const maxStdoutBytes = options.maxStdoutBytes ?? maxBufferBytes;
   const maxStderrBytes = options.maxStderrBytes ?? maxBufferBytes;
@@ -269,8 +272,16 @@ export async function runProcess(
     };
     const finish = () => {
       const result: ProcessRunResult = {
-        stdout: outputMode === "tail" ? stdoutTail.toString() : stdout,
-        stderr: outputMode === "tail" ? stderrTail.toString() : stderr,
+        stdout: options.onStdoutChunk
+          ? stdout
+          : outputMode === "tail"
+            ? stdoutTail.toString()
+            : stdout,
+        stderr: options.onStderrChunk
+          ? stderr
+          : outputMode === "tail"
+            ? stderrTail.toString()
+            : stderr,
         code: exitCode,
         signal: exitSignal,
         timedOut,
@@ -304,10 +315,13 @@ export async function runProcess(
         drainTimer = setTimeout(drainPipes, 100);
       }, 1_000);
     };
-    const timeoutTimer = setTimeout(() => {
-      timedOut = true;
-      terminateProcessGroup();
-    }, timeoutMs);
+    const timeoutTimer =
+      timeoutMs === null
+        ? undefined
+        : setTimeout(() => {
+            timedOut = true;
+            terminateProcessGroup();
+          }, timeoutMs);
     const abortHandler = () => {
       aborted = true;
       terminateProcessGroup();
@@ -323,6 +337,17 @@ export async function runProcess(
     const appendOutput = (stream: "stdout" | "stderr", chunk: Buffer | string): Error | null => {
       if (processFailure) return null;
       const chunkBuffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+      const consume = stream === "stdout" ? options.onStdoutChunk : options.onStderrChunk;
+      if (consume) {
+        try {
+          consume(chunkBuffer);
+        } catch (error) {
+          return error instanceof Error ? error : new Error(String(error));
+        }
+        if (stream === "stdout") stdout = (stdout + chunkBuffer.toString()).slice(-4096);
+        else stderr = (stderr + chunkBuffer.toString()).slice(-4096);
+        return null;
+      }
       if (outputMode === "tail") {
         const previous = stream === "stdout" ? stdoutTail : stderrTail;
         const limit = stream === "stdout" ? maxStdoutBytes : maxStderrBytes;

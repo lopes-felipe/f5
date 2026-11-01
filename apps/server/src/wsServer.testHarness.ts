@@ -669,7 +669,30 @@ export async function connectAndAwaitWelcome(
   }
 }
 
+/**
+ * Like the web client, resends a request answered `ServerStarting` (nothing
+ * ran) until the runtime is ready, unless `retryServerStarting` is false.
+ */
 export async function sendRequest(
+  ws: WebSocket,
+  method: string,
+  params?: unknown,
+  options: { readonly retryServerStarting?: boolean } = {},
+): Promise<WebSocketResponse> {
+  const deadline = Date.now() + 60_000;
+  for (;;) {
+    const response = await sendRequestOnce(ws, method, params);
+    if (
+      options.retryServerStarting === false ||
+      response.error?.code !== "ServerStarting" ||
+      Date.now() > deadline
+    )
+      return response;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+async function sendRequestOnce(
   ws: WebSocket,
   method: string,
   params?: unknown,

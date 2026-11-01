@@ -26,6 +26,7 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS } from "@t3tools/shared/codexOAuthTiming";
+import { rpcLongRunningTimeoutMs } from "@t3tools/shared/rpcScheduling";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestServerProvider } from "./testServerProvider";
 
@@ -134,9 +135,9 @@ describe("wsNativeApi", () => {
       newBranch: "t3code/12345678",
     };
     await createWsNativeApi().git.prepareWorktree(input);
-    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.gitPrepareWorktree, input, {
-      timeoutMs: null,
-    });
+    // The transport takes the long lane's timeout from the shared method policy.
+    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.gitPrepareWorktree, input);
+    expect(rpcLongRunningTimeoutMs({ _tag: WS_METHODS.gitPrepareWorktree, ...input })).toBe(null);
   });
 
   it("forwards the project-scoped worktree inventory request", async () => {
@@ -638,16 +639,13 @@ describe("wsNativeApi", () => {
       serverName: "Observability",
     });
 
-    expect(requestMock).toHaveBeenCalledWith(
-      WS_METHODS.mcpStartLogin,
-      {
-        provider: "codex",
-        projectId: "project-1",
-        serverName: "Observability",
-      },
-      {
-        timeoutMs: CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS,
-      },
+    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.mcpStartLogin, {
+      provider: "codex",
+      projectId: "project-1",
+      serverName: "Observability",
+    });
+    expect(rpcLongRunningTimeoutMs({ _tag: WS_METHODS.mcpStartLogin, provider: "codex" })).toBe(
+      CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS,
     );
   });
 
@@ -729,6 +727,80 @@ describe("wsNativeApi", () => {
         allowPossibleDuplicate: false,
       }),
     ).rejects.toThrow();
+  });
+
+  it("drops config values a newer server sends that this build does not know", async () => {
+    const shortcut = {
+      key: "p",
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      modKey: true,
+    };
+    const settings = { opaque: { kept: "as sent" } };
+    requestMock.mockResolvedValueOnce({
+      cwd: "/repo",
+      keybindingsConfigPath: "/repo/.f5/keybindings.json",
+      keybindings: [
+        { command: "someFuture.toggle", shortcut },
+        { command: "terminal.toggle", shortcut },
+      ],
+      customKeybindings: [
+        { key: "mod+p", command: "someFuture.toggle" },
+        { key: "mod+j", command: "terminal.toggle" },
+      ],
+      issues: [{ kind: "keybindings.future-issue", message: "From a newer server" }],
+      providers: [{ driver: "some-future-provider" }],
+      availableEditors: ["some-future-editor", "zed"],
+      settings,
+    });
+    const { createWsNativeApi } = await import("./wsNativeApi");
+
+    const config = await createWsNativeApi().server.getConfig();
+
+    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.serverGetConfig);
+    expect(config.keybindings).toEqual([{ command: "terminal.toggle", shortcut }]);
+    expect(config.customKeybindings).toEqual([{ key: "mod+j", command: "terminal.toggle" }]);
+    expect(config.issues).toEqual([]);
+    expect(config.availableEditors).toEqual(["zed"]);
+    // Fields outside the forward-compatible arrays pass through untouched.
+    expect(config.providers).toEqual([{ driver: "some-future-provider" }]);
+    expect(config.settings).toBe(settings);
+  });
+
+  it("drops unknown commands from keybinding mutation results", async () => {
+    const shortcut = {
+      key: "j",
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      modKey: true,
+    };
+    requestMock.mockResolvedValue({
+      keybindings: [
+        { command: "someFuture.toggle", shortcut },
+        { command: "terminal.toggle", shortcut },
+      ],
+      customKeybindings: [{ key: "mod+p", command: "someFuture.toggle" }],
+      issues: [{ kind: "keybindings.future-issue", message: "From a newer server" }],
+    });
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const api = createWsNativeApi();
+    const expected = {
+      keybindings: [{ command: "terminal.toggle", shortcut }],
+      customKeybindings: [],
+      issues: [],
+    };
+    const rule = { key: "mod+j", command: "terminal.toggle" } as const;
+
+    await expect(api.server.upsertKeybinding(rule)).resolves.toEqual(expected);
+    await expect(api.server.addKeybinding({ rule })).resolves.toEqual(expected);
+    await expect(api.server.updateKeybinding({ target: rule, rule })).resolves.toEqual(expected);
+    await expect(api.server.removeKeybinding({ target: rule })).resolves.toEqual(expected);
+    await expect(api.server.resetKeybindings()).resolves.toEqual(expected);
+    expect(requestMock).toHaveBeenLastCalledWith(WS_METHODS.serverResetKeybindings, {});
   });
 
   it("treats an older server's void code-review retry response as started", async () => {

@@ -880,6 +880,23 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         command,
         threadId: command.threadId,
       });
+      if (command.cleanupExpectation) {
+        const expected = command.cleanupExpectation;
+        if (
+          thread.worktreePath !== expected.worktreePath ||
+          thread.lastInteractionAt !== expected.lastInteractionAt ||
+          (thread.session?.updatedAt ?? null) !== expected.sessionUpdatedAt ||
+          (thread.session?.activeTurnId !== null && thread.session?.activeTurnId !== undefined) ||
+          thread.session?.status === "starting" ||
+          thread.session?.status === "running"
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail:
+              "Conversation changed or started work before storage cleanup. Rescan before archiving.",
+          });
+        }
+      }
       const pinRevision = thread.pinnedAt != null ? (readModel.pinRevision ?? 0) + 1 : undefined;
       return {
         ...withEventBase({
