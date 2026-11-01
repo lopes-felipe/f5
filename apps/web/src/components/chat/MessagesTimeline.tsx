@@ -4066,9 +4066,8 @@ function WorkGroupRowContent(props: {
     <WorkEntryRow key={`app:${entry.id}`} workEntry={entry} {...entryProps} />
   ));
   if (!logEntries.length) return <div className="min-w-0 space-y-2">{appRows}</div>;
-  const expanded = externals.collapseOverride ?? !(row.isPriorTurn && collapseCompletedWorkLogs);
-  const canCollapse = row.isPriorTurn && canSetWorkGroupExpanded;
-  if (row.automationSurface && expanded) {
+  // Automation cards stay visible across turns; only their steps collapse.
+  if (row.automationSurface) {
     return (
       <div className="min-w-0 px-1 py-0.5">
         <AutomationSessionCard
@@ -4079,13 +4078,12 @@ function WorkGroupRowContent(props: {
           timestampFormat={timestampFormat}
           markdownCwd={markdownCwd}
           onImageExpand={actions.onImageExpand}
-          onCollapse={
-            canCollapse ? () => actions.onSetWorkGroupExpanded(groupId, false) : undefined
-          }
         />
       </div>
     );
   }
+  const expanded = externals.collapseOverride ?? !(row.isPriorTurn && collapseCompletedWorkLogs);
+  const canCollapse = row.isPriorTurn && canSetWorkGroupExpanded;
   const standaloneExpandedMcpEntry =
     row.groupedEntries.length === 1 &&
     (row.groupedEntries[0]?.htmlRender ||
@@ -4096,7 +4094,7 @@ function WorkGroupRowContent(props: {
           settingsExpandMcpToolCalls: expandMcpToolCalls,
         });
 
-  if (!appEntries.length && standaloneExpandedMcpEntry && !row.automationSurface) {
+  if (!appEntries.length && standaloneExpandedMcpEntry) {
     return (
       <div className="min-w-0 px-1 py-0.5">
         <WorkEntryRow workEntry={standaloneExpandedMcpEntry} {...entryProps} />

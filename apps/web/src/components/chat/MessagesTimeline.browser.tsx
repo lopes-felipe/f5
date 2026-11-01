@@ -17,6 +17,7 @@ import {
   EventId,
   MessageId,
   type NativeApi,
+  type OrchestrationThreadActivity,
   type OrchestrationFileChangeSummary,
   ThreadId,
   TurnId,
@@ -30,7 +31,7 @@ import { render } from "vitest-browser-react";
 
 import {
   deriveWorkLogEntries,
-  type deriveTimelineEntries,
+  deriveTimelineEntries,
   type LiveWorkActivity,
 } from "../../session-logic";
 import { parsePersistedAppSettings } from "../../appSettings";
@@ -635,6 +636,247 @@ describe("MessagesTimeline (LegendList)", () => {
       host.remove();
     }
   });
+
+  it.each([
+    { surface: "computer", collapse: true },
+    { surface: "computer", collapse: false },
+    { surface: "preview", collapse: true },
+    { surface: "preview", collapse: false },
+  ] as const)(
+    "keeps $surface cards across turns and remounts with work-log collapse=$collapse",
+    async ({ surface, collapse }) => {
+      persistAppSettings({ collapseCompletedWorkLogs: collapse });
+      let host = document.createElement("div");
+      document.body.append(host);
+      let api: TimelineHarnessApi | null = null;
+      const toolPayload =
+        surface === "computer"
+          ? {
+              computerTool: true,
+              mcpServerName: "__f5_computer",
+              mcpToolName: "computer_click",
+              // Deliberately omit computerStep to cover older saved calls.
+            }
+          : { mcpServerName: "__f5_preview", mcpToolName: "preview_click" };
+      const call = (
+        id: string,
+        second: number,
+        kind: string,
+        payload: Record<string, unknown>,
+        turnId = "turn-1",
+      ): OrchestrationThreadActivity => ({
+        id: EventId.makeUnsafe(id),
+        turnId: TurnId.makeUnsafe(turnId),
+        createdAt: new Date(Date.UTC(2026, 2, 4, 12, 0, second)).toISOString(),
+        kind,
+        tone: "tool",
+        summary: "Computer",
+        payload: { itemType: "mcp_tool_call", ...toolPayload, ...payload },
+      });
+      const activities = [
+        call("run-start", 1, "tool.started", {
+          providerItemId: "first-call",
+          status: "inProgress",
+        }),
+        call("run-complete", 2, "tool.completed", { providerItemId: "first-call" }),
+        call("run-failed", 3, "tool.completed", {
+          providerItemId: "failed-call",
+          status: "failed",
+        }),
+        call("run-incomplete", 4, "tool.started", {
+          providerItemId: "incomplete-call",
+          status: "inProgress",
+        }),
+      ];
+      const messages = [
+        makeUserEntry("automation-user-1", "Use the computer", 0),
+        makeAssistantEntry("automation-answer-1", "Finished.", 5),
+      ].flatMap((entry) => (entry.kind === "message" ? [entry.message] : []));
+      const entries = (latestTurn: string) =>
+        deriveTimelineEntries(
+          messages,
+          [],
+          deriveWorkLogEntries(activities, TurnId.makeUnsafe(latestTurn)),
+        );
+      const renderTimeline = (initialEntries: TimelineEntry[]) =>
+        render(
+          <TimelineHarness
+            initialEntries={initialEntries}
+            initialHeight={900}
+            onIsAtEndChangeSpy={() => {}}
+            setApi={(nextApi) => {
+              api = nextApi;
+            }}
+          />,
+          { container: host },
+        );
+      const cards = () =>
+        host.querySelectorAll<HTMLElement>('[data-testid="automation-session-card"]');
+      const firstCard = () => cards()[0]!;
+      const button = (card: HTMLElement, text: string) =>
+        page.elementLocator(card).getByRole("button", { name: text, exact: true });
+      const title = surface === "computer" ? "Used the computer" : "Used browser preview";
+      let screen = await renderTimeline(entries("turn-1"));
+      try {
+        await vi.waitFor(() => {
+          expect(cards()).toHaveLength(1);
+          expect(firstCard().textContent).toContain(title);
+        });
+        await expect.element(button(firstCard(), "Show 3 steps")).toBeVisible();
+        messages.push(
+          ...[makeUserEntry("automation-user-2", "Another turn", 10)].flatMap((entry) =>
+            entry.kind === "message" ? [entry.message] : [],
+          ),
+        );
+        api!.setTimelineState({ entries: entries("turn-2"), isWorking: true });
+        await vi.waitFor(() => {
+          expect(cards()).toHaveLength(1);
+          expect(firstCard().getAttribute("data-status")).toBe("done");
+          expect(firstCard().querySelector('[aria-label="Collapse"]')).toBeNull();
+        });
+        await expect.element(button(firstCard(), "Show 3 steps")).toBeVisible();
+        await button(firstCard(), "Show 3 steps").click();
+        await vi.waitFor(() => {
+          expect(firstCard().textContent).toContain("Clicking interrupted");
+          expect(firstCard().textContent).toContain("Clicking failed");
+        });
+
+        activities.push(
+          call("second-run", 12, "tool.completed", { status: "completed" }, "turn-2"),
+          {
+            id: EventId.makeUnsafe("provider-handoff"),
+            turnId: null,
+            createdAt: "2026-03-04T12:00:14.000Z",
+            kind: "provider.context-handoff",
+            tone: "info",
+            summary: "Context handed off from Codex to Claude",
+            payload: {},
+          },
+        );
+        messages.push(
+          ...[
+            makeAssistantEntry("automation-answer-2", "Finished again.", 13),
+            makeUserEntry("automation-user-3", "Continue with Claude", 15),
+          ].flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
+        );
+        api!.setTimelineState({ entries: entries("turn-3"), isWorking: true });
+        await vi.waitFor(() => {
+          expect(cards()).toHaveLength(2);
+        });
+        await expect.element(button(firstCard(), "Hide steps")).toBeVisible();
+        await expect.element(button(cards()[1]!, "Show 1 step")).toBeVisible();
+
+        await screen.unmount();
+        host.remove();
+        host = document.createElement("div");
+        document.body.append(host);
+        const restored: { activities: OrchestrationThreadActivity[]; messages: typeof messages } =
+          JSON.parse(JSON.stringify({ activities, messages }));
+        screen = await renderTimeline(
+          deriveTimelineEntries(
+            restored.messages,
+            [],
+            deriveWorkLogEntries(restored.activities, TurnId.makeUnsafe("turn-3")),
+          ),
+        );
+        await vi.waitFor(() => {
+          expect(cards()).toHaveLength(2);
+          expect(firstCard().textContent).toContain(title);
+        });
+        await expect.element(button(firstCard(), "Show 3 steps")).toBeVisible();
+        await expect.element(button(cards()[1]!, "Show 1 step")).toBeVisible();
+        await button(firstCard(), "Show 3 steps").click();
+        await vi.waitFor(() => {
+          expect(firstCard().textContent).toContain("Clicking interrupted");
+        });
+      } finally {
+        await screen.unmount();
+        host.remove();
+      }
+    },
+  );
+
+  it.each(["computer", "preview"] as const)(
+    "keeps separate %s cards and their expansion when intervening work becomes historical",
+    async (surface) => {
+      const payload =
+        surface === "computer"
+          ? { computerTool: true, mcpToolName: "computer_click" }
+          : { mcpServerName: "__f5_preview", mcpToolName: "preview_click" };
+      const activities: OrchestrationThreadActivity[] = [
+        { itemType: "mcp_tool_call", providerItemId: "first", ...payload },
+        { itemType: "dynamic_tool_call", command: "echo between runs" },
+        { itemType: "mcp_tool_call", providerItemId: "second", ...payload },
+      ].map((callPayload, index) => ({
+        id: EventId.makeUnsafe("separate-call-" + index),
+        turnId: TurnId.makeUnsafe("turn-1"),
+        createdAt: new Date(Date.UTC(2026, 2, 4, 12, 0, index + 1)).toISOString(),
+        kind: "tool.completed",
+        tone: "tool",
+        summary: "Tool",
+        payload: callPayload,
+      }));
+      const messages = [
+        makeUserEntry("separate-user-1", "Use two runs", 0),
+        makeAssistantEntry("separate-answer", "Done.", 4),
+      ].flatMap((entry) => (entry.kind === "message" ? [entry.message] : []));
+      const entries = (turn: string) =>
+        deriveTimelineEntries(
+          messages,
+          [],
+          deriveWorkLogEntries(activities, TurnId.makeUnsafe(turn)),
+        );
+      let api: TimelineHarnessApi | null = null;
+      const host = document.createElement("div");
+      document.body.append(host);
+      const screen = await render(
+        <TimelineHarness
+          initialEntries={entries("turn-1")}
+          initialHeight={900}
+          onIsAtEndChangeSpy={() => {}}
+          setApi={(nextApi) => {
+            api = nextApi;
+          }}
+        />,
+        { container: host },
+      );
+      const cards = () =>
+        host.querySelectorAll<HTMLElement>('[data-testid="automation-session-card"]');
+      try {
+        await vi.waitFor(() => expect(cards()).toHaveLength(2));
+        const first = cards()[0]!;
+        const second = cards()[1]!;
+        await page
+          .elementLocator(second)
+          .getByRole("button", { name: "Show 1 step", exact: true })
+          .click();
+        await expect
+          .element(page.elementLocator(second).getByRole("button", { name: "Hide steps" }))
+          .toBeVisible();
+        messages.push(
+          ...[makeUserEntry("separate-user-2", "Continue", 6)].flatMap((entry) =>
+            entry.kind === "message" ? [entry.message] : [],
+          ),
+        );
+        api!.setTimelineState({ entries: entries("turn-2"), isWorking: true });
+        await vi.waitFor(() => {
+          expect(cards()).toHaveLength(2);
+          expect(cards()[0]).toBe(first);
+          expect(cards()[1]).toBe(second);
+          expect(host.textContent).not.toContain("echo between runs");
+        });
+        await expect
+          .element(page.elementLocator(first).getByRole("button", { name: "Show 1 step" }))
+          .toBeVisible();
+        await expect
+          .element(page.elementLocator(second).getByRole("button", { name: "Hide steps" }))
+          .toBeVisible();
+      } finally {
+        await screen.unmount();
+        host.remove();
+      }
+    },
+  );
 
   it("routes sent-image right-clicks to the F5 image action menu", async () => {
     const onImageActionMenu = vi.fn();
