@@ -11,11 +11,20 @@ import { z } from "zod";
 import { previewToolResult, type McpToolResult } from "./previewMcpTools.ts";
 
 const HTML_RENDER_HEIGHT_RULE =
-  "Let content set the page's height. The frame grows to fit the page, so a height that follows the viewport makes it grow again and again: html_preview and html_render reject vh, svh, lvh and dvh units, and height:100% on html or body has the same problem.";
+  "Let content set the page's height. The frame grows to fit the page, so a height that follows the viewport makes it grow again and again: html_preview and html_render reject vh, svh, lvh and dvh units. They do not check for height:100% on html or body, which has the same problem, so avoid it too.";
 
 export class ThreadToolError extends Data.TaggedError("ThreadToolError")<{
   readonly message: string;
 }> {}
+
+/**
+ * A ThreadToolError's message is written for the agent (why a page was refused, which PR to
+ * name), so it passes through; any other failure gets the generic fallback.
+ */
+export const keepThreadToolError =
+  (fallback: string) =>
+  (error: unknown): ThreadToolError =>
+    error instanceof ThreadToolError ? error : new ThreadToolError({ message: fallback });
 
 const GuideTarget = Schema.Struct({
   pr: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(2048))),
@@ -93,10 +102,9 @@ export const makeThreadMcpBroker = Effect.sync(() => {
           ? current(threadId, request).pipe(
               Effect.timeout("30 seconds"),
               Effect.mapError(
-                () =>
-                  new ThreadToolError({
-                    message: "Thread tool failed or timed out. Retry after refreshing the thread.",
-                  }),
+                keepThreadToolError(
+                  "Thread tool failed or timed out. Retry after refreshing the thread.",
+                ),
               ),
             )
           : Effect.fail(
@@ -340,15 +348,18 @@ export async function callThreadTool(
         }
       : { content: [{ type: "text", text }] };
   }
-  return Exit.isSuccess(result)
-    ? previewToolResult(result.value)
-    : {
-        content: [
-          {
-            type: "text",
-            text: "Thread tool could not complete. Check the input and current thread, then retry.",
-          },
-        ],
-        isError: true,
-      };
+  if (Exit.isSuccess(result)) return previewToolResult(result.value);
+  const failure = Option.getOrUndefined(Exit.findErrorOption(result));
+  return {
+    content: [
+      {
+        type: "text",
+        text:
+          failure instanceof ThreadToolError
+            ? failure.message
+            : "Thread tool could not complete. Check the input and current thread, then retry.",
+      },
+    ],
+    isError: true,
+  };
 }

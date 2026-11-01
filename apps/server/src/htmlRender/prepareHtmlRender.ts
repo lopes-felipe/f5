@@ -33,13 +33,19 @@ const CSS_SOURCE =
   /<!--[\s\S]*?(?:-->|$)|<style\b[^>]*(?:>|$)([\s\S]*?)(?:<\/style\s*>|$)|\sstyle\s*=\s*(?:"([^"]*)(?:"|$)|'([^']*)(?:'|$)|([^\s>]+))/gi;
 // The lookbehind skips base64 runs, such as an inlined image that happens to contain "1vh".
 const VIEWPORT_HEIGHT_UNIT = /(?<![\w.+/])(?:\d+(?:\.\d+)?|\.\d+)[sld]?vh(?![\w-])/i;
+// CSS comments and strings never size anything. A string ends at a newline, as CSS's does, and
+// an unclosed comment runs to the end, so the pattern stays linear.
+const CSS_COMMENT_OR_STRING = /\/\*[\s\S]*?(?:\*\/|$)|"(?:[^"\\\n]|\\.)*"?|'(?:[^'\\\n]|\\.)*'?/g;
+
+function rejectViewportHeightInCss(css: string): void {
+  const found = VIEWPORT_HEIGHT_UNIT.exec(css.replace(CSS_COMMENT_OR_STRING, " "))?.[0];
+  if (found !== undefined) throw new HtmlRenderViewportHeightError(found);
+}
 
 /** Rejects vh, svh, lvh and dvh units: the frame fits the page, so they would grow it without end. */
 export function rejectViewportHeightUnits(html: string): void {
   for (const [, sheet, doubleQuoted, singleQuoted, unquoted] of html.matchAll(CSS_SOURCE)) {
-    const css = sheet ?? doubleQuoted ?? singleQuoted ?? unquoted ?? "";
-    const found = VIEWPORT_HEIGHT_UNIT.exec(css)?.[0];
-    if (found !== undefined) throw new HtmlRenderViewportHeightError(found);
+    rejectViewportHeightInCss(sheet ?? doubleQuoted ?? singleQuoted ?? unquoted ?? "");
   }
 }
 
@@ -62,6 +68,13 @@ export async function prepareHtmlRender(
     if ("childNodes" in node) pending.push(...node.childNodes);
     if ("content" in node) pending.push(node.content);
     if (!("tagName" in node)) continue;
+    // The raw scan above misses CSS the parser decodes: entities in style attributes, and
+    // in SVG <style> text.
+    for (const attribute of node.attrs)
+      if (attribute.name === "style") rejectViewportHeightInCss(attribute.value);
+    if (node.tagName === "style")
+      for (const child of node.childNodes)
+        if ("value" in child) rejectViewportHeightInCss(child.value);
     const names =
       node.tagName === "img" || node.tagName === "source"
         ? ["src"]

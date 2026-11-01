@@ -55,6 +55,10 @@ it("rejects viewport height units, which make the fitted frame grow without end"
     "<div style='top:.5svh'></div>",
     "<div style=height:100vh></div>",
     `<script>document.body.innerHTML = '<div style="height:100lvh"></div>'</script>`,
+    // Units the parser decodes from entities.
+    '<div style="height:100&#118;h"></div>',
+    "<svg><style>rect{height:50&#x76;h}</style></svg>",
+    "<style>main{content:'a';height:100vh}</style>",
   ])
     await expect(prepareHtmlRender(page, [project])).rejects.toBeInstanceOf(
       HtmlRenderViewportHeightError,
@@ -63,6 +67,11 @@ it("rejects viewport height units, which make the fitted frame grow without end"
     '<style>main{width:100vw;height:320px}</style><img src="data:image/png;base64,AB1vh+2vh/3vhC">',
     "<p>Avoid 100vh here.</p><!-- <div style=\"height:100vh\"></div> --><script>const unit = '100vh';</script>",
     `<style>${"1".repeat(200_000)}vx</style>`,
+    // CSS comments and strings never size anything.
+    "<style>/* avoid 100vh */ main{height:320px}</style>",
+    `<style>main::after{content:"100vh"}</style><p style="font-family:'100vh'">x</p>`,
+    `<style>/*${"*".repeat(200_000)}</style>`,
+    `<style>${'"'.repeat(100_000)}${"'a".repeat(50_000)}</style>`,
   ])
     await expect(prepareHtmlRender(page, [project])).resolves.toBeTypeOf("string");
 });

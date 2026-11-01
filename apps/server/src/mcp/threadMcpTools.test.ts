@@ -9,6 +9,7 @@ import {
   THREAD_READ_RESULT_MAX_BYTES,
   THREAD_TOOL_DEFINITIONS,
   ThreadMcpBroker,
+  ThreadToolError,
   threadToolDefinitions,
 } from "./threadMcpTools.ts";
 
@@ -60,6 +61,30 @@ it.effect(
       );
       assert.lengthOf(seen, 1);
     }),
+);
+
+it.effect("tells the agent why a tool refused, but not what an unexpected failure said", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeThreadMcpBroker;
+      const reason =
+        "The page uses a viewport height unit (100vh). Let content set the height, or use fixed pixel heights.";
+      yield* broker.register((_threadId, request) =>
+        request.name === "html_preview"
+          ? Effect.fail(new ThreadToolError({ message: reason }))
+          : Effect.fail(new Error("internal-detail") as unknown as ThreadToolError),
+      );
+      const context = { broker, threadId: ThreadId.makeUnsafe("t") };
+      const refused = yield* Effect.promise(() =>
+        callThreadTool(context, "html_preview", { html: "<main></main>" }),
+      );
+      assert.isTrue(refused.isError);
+      assert.deepStrictEqual(refused.content, [{ type: "text", text: reason }]);
+      const failed = yield* Effect.promise(() => callThreadTool(context, "thread_status", {}));
+      assert.isTrue(failed.isError);
+      assert.isFalse(JSON.stringify(failed).includes("internal-detail"));
+    }),
+  ),
 );
 
 it.effect("never sends raw provider defects through the catalog", () =>
