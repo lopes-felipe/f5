@@ -20,6 +20,7 @@ import { truncateUtf8 } from "../orchestration/threadTranscript.ts";
 import type { ProjectionThreadMessageRepositoryShape } from "../persistence/Services/ProjectionThreadMessages.ts";
 import type { ProjectionThreadProposedPlanRepositoryShape } from "../persistence/Services/ProjectionThreadProposedPlans.ts";
 import {
+  keepThreadToolError,
   THREAD_READ_RESULT_MAX_BYTES,
   ThreadToolError,
   type ThreadReadInput,
@@ -94,11 +95,9 @@ export function makeThreadToolHandler(input: {
         : input.guides.get({ ...target, mode: "force" });
     }).pipe(
       Effect.mapError(
-        () =>
-          new ThreadToolError({
-            message:
-              "Thread tool failed. Check the PR target, account and current thread, then retry.",
-          }),
+        keepThreadToolError(
+          "Thread tool failed. Check the PR target, account and current thread, then retry.",
+        ),
       ),
     );
 }
