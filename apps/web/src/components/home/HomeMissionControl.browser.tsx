@@ -305,9 +305,13 @@ describe("HomeMissionControl", () => {
       await view.router.navigate({ to: "/$threadId", params: { threadId: "elsewhere" } });
       finish({ projectId: SCRATCH.id });
       setTimeout(() => useStore.setState((state) => ({ projects: [...state.projects, SCRATCH] })));
-      await vi.waitFor(() =>
-        expect(useComposerDraftStore.getState().getDraftThreadByProjectId(SCRATCH.id)).toBeTruthy(),
-      );
+      await vi.waitFor(() => {
+        const draft = useComposerDraftStore.getState().getDraftThreadByProjectId(SCRATCH.id);
+        expect(draft).toBeTruthy();
+        expect(useComposerDraftStore.getState().draftsByThreadId[draft!.threadId]?.prompt).toBe(
+          "Do not steal focus",
+        );
+      });
       expect(view.pushedPaths).toEqual(["/elsewhere"]);
       expect(useComposerFocusRequestStore.getState().request).toBeNull();
     } finally {

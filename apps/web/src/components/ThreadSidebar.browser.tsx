@@ -1745,6 +1745,8 @@ describe("Thread sidebar", () => {
         expect(first.textContent).toContain("No project");
         expect(first.hasAttribute("aria-roledescription")).toBe(false);
         if (hasProjects) {
+          useStore.getState().setProjectExpanded(scratchProjectId, false);
+          await expect.element(page.elementLocator(first)).toHaveAttribute("aria-expanded", "false");
           document
             .querySelector<HTMLButtonElement>('[data-testid="sidebar-new-scratch-thread"]')!
             .click();
@@ -1754,6 +1756,7 @@ describe("Thread sidebar", () => {
             ).toHaveLength(1),
           );
           expect(ensureCalls).toBe(1);
+          await expect.element(page.elementLocator(first)).toHaveAttribute("aria-expanded", "true");
         }
       } finally {
         await mounted.cleanup();

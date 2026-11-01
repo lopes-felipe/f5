@@ -33,6 +33,7 @@ export function useStartScratchThread() {
           });
         }
         const projectId = existing?.id ?? (await pending.current!);
+        useStore.getState().setProjectExpanded(projectId, true);
         return await createDraftThread(projectId, options);
       } catch (error) {
         toastManager.add({
