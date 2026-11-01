@@ -152,6 +152,15 @@ a user pause. Two consecutive port-thread errors pause the queue until you check
 and choose **Resume**. **Clear queue** cancels remaining entries and leaves started threads
 running. **Remove from queue** removes selected topics without stopping started work.
 
+The queue chip distinguishes topic counts from queued jobs. A job can contain several
+topics, and all of its topics remain in Ready until it starts. The queue panel identifies
+the earlier threads and PRs blocking a file wait, including ports that need attention.
+Recorded equivalent and not-applicable outcomes survive follow-up turns and restarts.
+Resolved topics release their file reservations once their threads and continuations are
+idle; unresolved ports keep their reservations even if their threads are archived.
+At startup F5 also reconciles eligible historical outcomes before dispatching queued work,
+using the existing automatic-outcome setting and ledger publisher.
+
 Queue drain does not mean topics are Done. Done comes from default-branch evidence, never
 just a PR URL or a finished thread. The panel refreshes base evidence at most every two
 minutes while review work remains, and shows the evidence time or refresh error.

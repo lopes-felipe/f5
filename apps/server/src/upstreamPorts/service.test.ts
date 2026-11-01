@@ -7,6 +7,7 @@ import { assert, it } from "@effect/vitest";
 import {
   BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
   UPSTREAM_LEDGER_SCHEMA_VERSION,
+  type OrchestrationThread,
   type UpstreamTopic,
   type UpstreamTriageBatchResult,
 } from "@t3tools/contracts";
@@ -75,9 +76,12 @@ const setup = (
     yield* sql`DELETE FROM upstream_port_queue_state`;
     yield* sql`DELETE FROM upstream_port_queue_requests`;
     yield* sql`DELETE FROM upstream_port_outcome_checks`;
+    yield* sql`DELETE FROM upstream_port_topic_outcomes`;
+    yield* sql`DELETE FROM projection_turns`;
     yield* sql`DELETE FROM next_turn_queue`;
     yield* sql`DELETE FROM projection_pending_approvals`;
     yield* sql`DELETE FROM projection_thread_messages`;
+    yield* sql`DELETE FROM projection_threads`;
     const repo = new FakeGitRepo();
     repo.remotes.set("upstream", UPSTREAM_REPOSITORY);
     repo.remotes.set("origin", "https://github.com/o/f5.git");
@@ -237,6 +241,132 @@ const completedThread = (id: string, turnId: string, messageId: string, state = 
   }) as never;
 
 layer("upstream port queue", (it) => {
+  it.effect(
+    "recovers mixed topic outcomes after a broken checkpoint pointer and later status turn",
+    () =>
+      Effect.gen(function* () {
+        const { fixture, service, ids } = yield* prepareQueue(3, 1, () => ["shared.ts"]);
+        yield* service.enqueuePort({
+          ...queueInput(ids.slice(0, 2), "recover-mixed"),
+          grouping: "together",
+        });
+        yield* service.enqueuePort(queueInput(ids.slice(2), "recover-waiting"));
+        yield* service.testing.awaitIdle;
+        const first = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!;
+        const threadId = first.threadId!;
+        const sql = yield* SqlClient.SqlClient;
+        const at = "2026-10-22T12:00:00.000Z";
+        const text = [
+          "UPSTREAM-OUTCOME " + ids[0] + ": equivalent src/already.ts:1",
+          "UPSTREAM-OUTCOME " + ids[1] + ": not-applicable This subsystem is absent.",
+        ].join("\n");
+        yield* sql`INSERT INTO projection_turns
+        (thread_id,turn_id,state,requested_at,completed_at,processing_quiesced_at,assistant_message_id,checkpoint_files_json)
+        VALUES (${threadId},'original','completed',${at},${at},${at},'assistant:toolu_missing','[]')`;
+        yield* sql`INSERT INTO projection_thread_messages
+        (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+        VALUES ('actual-final',${threadId},'original','assistant',${text},0,${at},${at}),
+          ('status-final',${threadId},'status','assistant','UPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/42',0,'2026-10-22T12:02:00.000Z','2026-10-22T12:02:00.000Z')`;
+        fixture.host.threads = [
+          {
+            ...(completedThread(threadId, "status", "status-final") as OrchestrationThread),
+            archivedAt: "2026-10-22T12:03:00.000Z",
+          },
+        ];
+        yield* makeQueueStore(sql).upsertOutcomeCheck({
+          projectId: PROJECT_ID,
+          threadId,
+          turnId: "status",
+          result: "no-outcome",
+          detail: null,
+          checkedAt: at,
+          attempts: 0,
+          retryAt: null,
+        });
+        const restarted = yield* fixture.make();
+        yield* restarted.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(
+          (yield* restarted.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! })).row.state,
+          "done",
+        );
+        assert.equal(
+          (yield* restarted.getTopic({ projectId: PROJECT_ID, topicId: ids[1]! })).row.state,
+          "skipped",
+        );
+        assert.equal(fixture.host.submissions.length, 2);
+        const receipts =
+          yield* sql`SELECT topic_id,turn_id,message_id FROM upstream_port_topic_outcomes ORDER BY topic_id`;
+        assert.lengthOf(receipts, 2);
+        assert.isTrue(
+          receipts.every((row) => row.turn_id === "original" && row.message_id === "actual-final"),
+        );
+        const seq = yield* makeUpstreamStore(sql).maxSeq(PROJECT_ID);
+        yield* restarted.testing.dispatchQueue(PROJECT_ID);
+        const again = yield* fixture.make();
+        yield* again.testing.dispatchQueue(PROJECT_ID);
+        assert.equal(yield* makeUpstreamStore(sql).maxSeq(PROJECT_ID), seq);
+        assert.equal(fixture.host.submissions.length, 2);
+        assert.deepStrictEqual(
+          yield* sql`SELECT topic_id,turn_id,message_id FROM upstream_port_topic_outcomes ORDER BY topic_id`,
+          receipts,
+        );
+      }),
+  );
+
+  for (const kind of ["equivalent", "not-applicable"] as const)
+    it.effect(
+      "keeps " +
+        kind +
+        " files reserved during a continuation, then releases them after an unrelated turn",
+      () =>
+        Effect.gen(function* () {
+          const { fixture, service, ids } = yield* prepareQueue(2, 1, () => ["shared.ts"]);
+          yield* service.enqueuePort({
+            ...queueInput(ids, "sticky-" + kind),
+            grouping: "separately",
+          });
+          yield* service.testing.awaitIdle;
+          const first = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!;
+          const threadId = first.threadId!;
+          const sql = yield* SqlClient.SqlClient;
+          const text =
+            "UPSTREAM-OUTCOME: " +
+            kind +
+            (kind === "equivalent" ? " src/already.ts:1" : " No corresponding subsystem.");
+          fixture.host.threads = [completedThread(threadId, "resolved", "resolved-message")];
+          yield* sql`INSERT INTO projection_thread_messages
+          (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+          VALUES ('resolved-message',${threadId},'resolved','assistant',${text},0,'now','now')`;
+          yield* sql`INSERT INTO projection_threads
+          (thread_id,project_id,title,model,created_at,last_interaction_at,updated_at)
+          VALUES (${threadId},${PROJECT_ID},'Port','model','now','now','now')`;
+          yield* sql`INSERT INTO next_turn_queue
+          (item_id,thread_id,submission_id,command_id,message_id,position,status,command_json,created_at,updated_at)
+          VALUES ('sticky-continuation',${threadId},'sticky','sticky','sticky',0,'queued','{}','now','now')`;
+          yield* service.testing.dispatchQueue(PROJECT_ID);
+          assert.equal(fixture.host.submissions.length, 1);
+          assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.waitingOnFiles, 1);
+          assert.equal(
+            (yield* service.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! })).row.state,
+            kind === "equivalent" ? "done" : "skipped",
+          );
+          yield* sql`UPDATE next_turn_queue SET deleted_at = 'now' WHERE item_id = 'sticky-continuation'`;
+          fixture.host.threads = [completedThread(threadId, "follow-up", "follow-up-message")];
+          yield* makeQueueStore(sql).upsertOutcomeCheck({
+            projectId: PROJECT_ID,
+            threadId,
+            turnId: "follow-up",
+            result: "no-outcome",
+            detail: null,
+            checkedAt: "now",
+            attempts: 0,
+            retryAt: null,
+          });
+          yield* service.testing.dispatchQueue(PROJECT_ID);
+          assert.equal(fixture.host.submissions.length, 2);
+        }),
+    );
+
   it.effect("persists review choices through queue dispatch and preserves review opt-out", () =>
     Effect.gen(function* () {
       const { fixture, service, ids } = yield* prepareQueue(2, 2);
@@ -300,8 +430,8 @@ layer("upstream port queue", (it) => {
         fixture.host.threads = [completedThread(first.threadId!, "batch-turn", "batch-message")];
         const sql = yield* SqlClient.SqlClient;
         const text = `UPSTREAM-OUTCOME: ${kind}`;
-        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at)
-          VALUES ('batch-message',${first.threadId},'assistant',${text},0,'now','now')`;
+        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+          VALUES ('batch-message',${first.threadId},'assistant',${text},0,'now','now','batch-turn')`;
         yield* service.testing.dispatchQueue(PROJECT_ID);
         assert.equal(
           (yield* service.getPortQueue({ projectId: PROJECT_ID })).counts.needsAttention,
@@ -359,8 +489,8 @@ layer("upstream port queue", (it) => {
       const first = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!;
       fixture.host.threads = [completedThread(first.threadId!, "retry-turn", "retry-message")];
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at)
-        VALUES ('retry-message',${first.threadId},'assistant','UPSTREAM-OUTCOME: equivalent src/a.ts:1',0,'now','now')`;
+      yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+        VALUES ('retry-message',${first.threadId},'assistant','UPSTREAM-OUTCOME: equivalent src/a.ts:1',0,'now','now','retry-turn')`;
       const original = fixture.host.host.withRepositoryLock;
       let fail = true;
       Object.assign(fixture.host.host, {
@@ -436,8 +566,8 @@ layer("upstream port queue", (it) => {
         completedThread(first.threadId!, "not-applicable-turn", "not-applicable-message"),
       ];
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at)
-        VALUES ('not-applicable-message',${first.threadId},'assistant','UPSTREAM-OUTCOME: not-applicable This feature is absent from f5.',0,'now','now')`;
+      yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+        VALUES ('not-applicable-message',${first.threadId},'assistant','UPSTREAM-OUTCOME: not-applicable This feature is absent from f5.',0,'now','now','not-applicable-turn')`;
       yield* service.testing.dispatchQueue(PROJECT_ID);
       const progress = yield* service.getPortQueue({ projectId: PROJECT_ID });
       assert.equal(progress.counts.recorded, 1);
@@ -735,8 +865,8 @@ layer("upstream port queue", (it) => {
         completedThread(first.threadId!, "equivalent-turn", "equivalent-message"),
       ];
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at)
-        VALUES ('equivalent-message',${first.threadId},'assistant','UPSTREAM-OUTCOME: equivalent src/a.ts:1',0,'now','now')`;
+      yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+        VALUES ('equivalent-message',${first.threadId},'assistant','UPSTREAM-OUTCOME: equivalent src/a.ts:1',0,'now','now','equivalent-turn')`;
       yield* service.testing.dispatchQueue(PROJECT_ID);
       const before = fixture.repo.calls.filter((call) => call === "fetch origin/main").length;
       fixture.clock.now = new Date("2026-10-22T12:06:00.000Z");
@@ -888,8 +1018,8 @@ layer("upstream port queue", (it) => {
         const first = (yield* service.getPortQueue({ projectId: PROJECT_ID })).entries[0]!;
         fixture.host.threads = [completedThread(first.threadId!, "merge-turn", "merge-message")];
         const sql = yield* SqlClient.SqlClient;
-        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at)
-      VALUES ('merge-message',${first.threadId},'assistant','UPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/42',0,'now','now')`;
+        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+      VALUES ('merge-message',${first.threadId},'assistant','UPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/42',0,'now','now','merge-turn')`;
         yield* service.testing.dispatchQueue(PROJECT_ID);
         assert.equal(fixture.host.submissions.length, 1);
         const main = fixture.repo.refs.get("refs/remotes/origin/main")!;
@@ -938,8 +1068,8 @@ layer("upstream port queue", (it) => {
           gate === "invalid"
             ? "UPSTREAM-OUTCOME: equivalent ../invalid:1"
             : "UPSTREAM-OUTCOME: equivalent src/a.ts:1";
-        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at)
-      VALUES ('gated-message',${threadId},'assistant',${text},0,'now','now')`;
+        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+      VALUES ('gated-message',${threadId},'assistant',${text},0,'now','now','gated-turn')`;
         yield* service.testing.dispatchQueue(PROJECT_ID);
         assert.equal(
           (yield* service.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! })).row.topic.status,
@@ -968,8 +1098,8 @@ layer("upstream port queue", (it) => {
           }),
         };
         fixture.host.threads = [thread as never];
-        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at)
-      VALUES ('slot-message',${threadId},'assistant','UPSTREAM-OUTCOME: blocked review',0,'now','now')`;
+        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+      VALUES ('slot-message',${threadId},'assistant','UPSTREAM-OUTCOME: blocked review',0,'now','now','slot-turn')`;
         yield* sql`INSERT INTO projection_pending_approvals(request_id,thread_id,status,created_at) VALUES ('approval',${threadId},'pending','now')`;
         yield* service.testing.dispatchQueue(PROJECT_ID);
         assert.equal(fixture.host.submissions.length, 1);
@@ -1266,8 +1396,8 @@ layer("upstream port queue", (it) => {
         );
         const threadId = queue.entries[0]!.threadId!;
         fixture.host.threads = [completedThread(threadId, "turn-1", "message-1")];
-        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at)
-      VALUES ('message-1',${threadId},'assistant','UPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/42',0,'now','now')`;
+        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+      VALUES ('message-1',${threadId},'assistant','UPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/42',0,'now','now','turn-1')`;
         yield* service.testing.dispatchQueue(PROJECT_ID);
         queue = yield* service.getPortQueue({ projectId: PROJECT_ID });
         assert.equal(fixture.host.submissions.length, 3);
@@ -1311,8 +1441,8 @@ layer("upstream port queue", (it) => {
         )!;
         fixture.host.threads = [completedThread(first.threadId!, "turn-files", "message-files")];
         const sql = yield* SqlClient.SqlClient;
-        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at)
-      VALUES ('message-files',${first.threadId},'assistant','UPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/42',0,'now','now')`;
+        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+      VALUES ('message-files',${first.threadId},'assistant','UPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/42',0,'now','now','turn-files')`;
         yield* service.testing.dispatchQueue(PROJECT_ID);
         assert.equal(fixture.host.submissions.length, 2);
         assert.equal((yield* service.getOverview(PROJECT_ID)).portQueue.waitingOnFiles, 1);
@@ -1343,8 +1473,8 @@ layer("upstream port queue", (it) => {
         fixture.host.threads = [completedThread(threadId, "turn-outcome", "owned-message")];
         const sql = yield* SqlClient.SqlClient;
         const text = `UPSTREAM-OUTCOME ${ids[0]}: equivalent apps/server/a.ts:12\nUPSTREAM-OUTCOME: pr https://github.com/o/f5/pull/42`;
-        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at)
-      VALUES ('owned-message',${threadId},'assistant',${text},0,'2026-10-22','2026-10-22')`;
+        yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at,turn_id)
+      VALUES ('owned-message',${threadId},'assistant',${text},0,'2026-10-22','2026-10-22','turn-outcome')`;
         yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at)
       VALUES ('later-message',${threadId},'assistant','UPSTREAM-OUTCOME: not-applicable wrong message',0,'2026-10-23','2026-10-23')`;
         yield* service.testing.dispatchQueue(PROJECT_ID);

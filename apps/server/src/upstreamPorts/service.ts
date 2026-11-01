@@ -126,6 +126,8 @@ import { makeBackgroundWorker } from "../backgroundWorker.ts";
 import { canonicalJsonHash } from "../canonicalJsonHash.ts";
 import { isProviderUsable } from "../agentBridge/threadTools.ts";
 import { hasActiveThreadTurn } from "../nextTurnQueue/gate.ts";
+import { readTurnAssistantMessages } from "../orchestration/turnAssistantMessage.ts";
+import { makeTopicOutcomeStore, readSettledPortReplies } from "./topicOutcomes.ts";
 import { hasFreshUsageCapacity, scheduledUsageRetryAt } from "../usage/usageGate.ts";
 import {
   makeQueueStore,
@@ -434,6 +436,8 @@ export function makeUpstreamPortsService(
   return Effect.gen(function* () {
     const { host, store, git } = deps;
     const queue = makeQueueStore(deps.sql);
+    const topicOutcomes = makeTopicOutcomeStore(deps.sql);
+    const recoveredOutcomeThreads = new Map<string, string>();
     const portLocks = new Map<string, Semaphore.Semaphore>();
     const withPortLock = <A, E>(projectId: string, effect: Effect.Effect<A, E>) =>
       Effect.gen(function* () {
@@ -1243,34 +1247,56 @@ export function makeUpstreamPortsService(
             (thread) =>
               ids.has(thread.id) &&
               thread.latestTurn?.state === "completed" &&
-              thread.latestTurn.processingQuiescedAt != null &&
-              thread.latestTurn.assistantMessageId != null,
+              thread.latestTurn.processingQuiescedAt != null,
           ) ?? [];
-        const messageIds = turns.map((thread) => thread.latestTurn!.assistantMessageId!);
-        if (!messageIds.length) return new Map<string, ParsedUpstreamOutcomes>();
-        const messages = messageIds.length
-          ? yield* deps.sql<{ message_id: string; text: string }>`
-          SELECT message_id,text FROM projection_thread_messages WHERE role = 'assistant'
-          AND ${deps.sql.in("message_id", messageIds)}`
-          : [];
+        if (!turns.length) return new Map<string, ParsedUpstreamOutcomes>();
+        const messages = yield* readTurnAssistantMessages(
+          deps.sql,
+          turns.map((thread) => ({ threadId: thread.id, turnId: thread.latestTurn!.turnId })),
+        );
         const forkRepo = yield* forkRepoFor(context);
         const checks = yield* queue.getOutcomeChecks(context.projectId);
-        const byId = new Map(messages.map((message) => [message.message_id, message]));
-        return new Map(
-          turns.flatMap((thread) => {
-            const message = byId.get(thread.latestTurn!.assistantMessageId!);
-            return message
-              ? [
-                  [
-                    thread.id as string,
-                    (checks.get(thread.id)?.result === "preexisting"
-                      ? parseLegacyUpstreamOutcomes
-                      : parseUpstreamOutcomes)(message.text, { forkRepo }),
-                  ] as const,
-                ]
-              : [];
-          }),
-        );
+        const byThread = new Map(messages.map((message) => [message.threadId, message]));
+        const snapshot = yield* currentView(context);
+        const result = new Map<string, ParsedUpstreamOutcomes>();
+        for (const thread of turns) {
+          const message = byThread.get(thread.id);
+          const preexisting = checks.get(thread.id)?.result === "preexisting";
+          const parsed = (preexisting ? parseLegacyUpstreamOutcomes : parseUpstreamOutcomes)(
+            message?.text ?? "",
+            { forkRepo },
+          );
+          const receipts = preexisting
+            ? []
+            : (yield* topicOutcomes.list(context.projectId, thread.id)).filter(
+                (receipt) =>
+                  snapshot.view.topicsById.get(receipt.topicId)?.epoch === receipt.epoch &&
+                  snapshot.links.some(
+                    (link) =>
+                      link.state === "active" &&
+                      link.topicId === receipt.topicId &&
+                      link.epoch === receipt.epoch &&
+                      link.threadId === thread.id,
+                  ),
+              );
+          const byTopic = new Map(parsed.byTopic);
+          for (const receipt of receipts) {
+            if (
+              !byTopic.has(receipt.topicId) &&
+              !parsed.errors.has(receipt.topicId) &&
+              (receipt.explicit || !parsed.thread)
+            )
+              byTopic.set(receipt.topicId, receipt.outcome);
+          }
+          const previousPr = receipts
+            .filter((receipt) => receipt.outcome.kind === "pr")
+            .toSorted((a, b) => b.sourceAt.localeCompare(a.sourceAt))[0];
+          const outcome =
+            parsed.thread ?? (parsed.errors.has("thread") ? null : (previousPr?.outcome ?? null));
+          if (message || byTopic.size || outcome)
+            result.set(thread.id, { ...parsed, thread: outcome, byTopic });
+        }
+        return result;
       });
 
     const linkSummaries = (
@@ -2689,38 +2715,34 @@ export function makeUpstreamPortsService(
         return { revision: (yield* currentView(context)).revision };
       }).pipe(Effect.mapError(internal));
 
-    /** Recorded inapplicable topics have no port to merge. Release their files only
-     * after the originating turn and any continuation have relinquished the slot. */
+    /** Ledger decisions outlive the turn that recorded them. An idle resolved topic
+     * must not regain its reservation when a later turn reports a different result. */
     const conflictLinks = (context: ProjectContext, snapshot: CurrentView) =>
       Effect.gen(function* () {
         const open = snapshot.links.filter((link) => {
           const row = snapshot.rows.find((row) => row.topic.id === link.topicId);
-          return link.state === "active" && row?.topic.epoch === link.epoch && row.state !== "done";
+          return (
+            link.state === "active" &&
+            row?.topic.epoch === link.epoch &&
+            (row.state !== "done" || row.topic.status === "equivalent")
+          );
         });
-        const recordedSkips = new Set(
+        const resolvedTopics = new Set(
           snapshot.rows
             .filter(
               (row) =>
-                row.state === "skipped" &&
-                row.topic.decidedBy === "llm" &&
-                row.topic.reasonKey === "not-applicable",
+                row.topic.status === "equivalent" ||
+                (row.state === "skipped" &&
+                  row.topic.decidedBy === "llm" &&
+                  row.topic.reasonKey === "not-applicable"),
             )
             .map((row) => row.topic.id),
         );
-        if (!open.some((link) => recordedSkips.has(link.topicId))) return open;
-        const checks = yield* queue.getOutcomeChecks(context.projectId);
-        const model = yield* host.readModel;
+        if (!open.some((link) => resolvedTopics.has(link.topicId))) return open;
         const running = yield* runningThreads(context.projectId, snapshot);
-        return open.filter((link) => {
-          const turn = model.threads.find((thread) => thread.id === link.threadId)?.latestTurn;
-          const check = checks.get(link.threadId);
-          return (
-            !recordedSkips.has(link.topicId) ||
-            running.has(link.threadId) ||
-            check?.result !== "recorded" ||
-            check.turnId !== turn?.turnId
-          );
-        });
+        return open.filter(
+          (link) => !resolvedTopics.has(link.topicId) || running.has(link.threadId),
+        );
       });
 
     const openConflicts = (context: ProjectContext, snapshot: CurrentView) =>
@@ -2811,11 +2833,17 @@ export function makeUpstreamPortsService(
           );
           const turn = thread?.latestTurn;
           const check = checks.get(id);
+          const recoveryKey = canonicalJson([
+            turn?.turnId,
+            thread?.updatedAt,
+            turn?.assistantMessageId,
+          ]);
           return (
+            check?.result !== "preexisting" &&
             turn?.state === "completed" &&
             turn.processingQuiescedAt != null &&
-            turn.assistantMessageId != null &&
-            outcomeCheckPending(check, turn.turnId, now().getTime())
+            (outcomeCheckPending(check, turn.turnId, now().getTime()) ||
+              (check?.result !== "failed" && recoveredOutcomeThreads.get(id) !== recoveryKey))
           );
         });
         const outcomes = yield* readOutcomes(context, model, ids);
@@ -2830,13 +2858,66 @@ export function makeUpstreamPortsService(
             check?.result === "preexisting" ||
             !turn ||
             turn.state !== "completed" ||
-            turn.processingQuiescedAt == null ||
-            !turn.assistantMessageId ||
-            !outcomeCheckPending(check, turn.turnId, now().getTime())
+            turn.processingQuiescedAt == null
           )
             continue;
+          const threadLinks = links.filter((link) => link.threadId === threadId);
+          const recoveryKey = canonicalJson([
+            turn.turnId,
+            thread?.updatedAt,
+            turn.assistantMessageId,
+          ]);
+          if (recoveredOutcomeThreads.get(threadId) !== recoveryKey) {
+            const group = (yield* store.listGroups(
+              context.projectId,
+              threadLinks[0]!.clientRequestId,
+            )).find((group) => group.threadId === threadId);
+            const command = group?.command;
+            const admittedAt =
+              command &&
+              typeof command === "object" &&
+              "createdAt" in command &&
+              typeof command.createdAt === "string"
+                ? command.createdAt
+                : null;
+            if (admittedAt) {
+              const replies = yield* readSettledPortReplies(deps.sql, threadId, admittedAt);
+              const [latest] = yield* readTurnAssistantMessages(deps.sql, [
+                { threadId, turnId: turn.turnId },
+              ]);
+              if (
+                latest &&
+                turn.requestedAt >= admittedAt &&
+                !replies.some((reply) => reply.turnId === latest.turnId)
+              )
+                replies.push({ ...latest, sourceAt: turn.requestedAt });
+              const forkRepo = yield* forkRepoFor(context);
+              for (const reply of replies) {
+                const parsed = parseUpstreamOutcomes(reply.text, { forkRepo });
+                for (const link of threadLinks) {
+                  const topic = snapshot.view.topicsById.get(link.topicId)!;
+                  if (topic.decidedAt && topic.decidedAt > reply.sourceAt) continue;
+                  const outcome = outcomeForTopic(parsed, link.topicId, group!.topicIds.length);
+                  if (!outcome) continue;
+                  yield* topicOutcomes.put({
+                    projectId: context.projectId,
+                    topicId: link.topicId,
+                    epoch: link.epoch,
+                    threadId,
+                    turnId: reply.turnId,
+                    messageId: reply.id,
+                    outcome,
+                    explicit: parsed.byTopic.has(link.topicId),
+                    sourceAt: reply.sourceAt,
+                  });
+                }
+              }
+            }
+            recoveredOutcomeThreads.set(threadId, recoveryKey);
+          }
+          const receipts = yield* topicOutcomes.list(context.projectId, threadId);
           const parsed = outcomes.get(threadId);
-          if (!parsed) {
+          if (!parsed && !receipts.length) {
             if (projectionExpired(turn))
               yield* queue.upsertOutcomeCheck({
                 projectId: context.projectId,
@@ -2851,7 +2932,6 @@ export function makeUpstreamPortsService(
               });
             continue;
           }
-          const threadLinks = links.filter((link) => link.threadId === threadId);
           const candidates = threadLinks.filter(
             (link) =>
               links.filter((other) => other.topicId === link.topicId && other.epoch === link.epoch)
@@ -2879,15 +2959,15 @@ export function makeUpstreamPortsService(
                 )
               )
                 continue;
-              const single =
-                fresh.links.filter(
-                  (other) => other.threadId === threadId && other.state === "active",
-                ).length === 1;
+              const receipt = receipts.find(
+                (receipt) =>
+                  receipt.topicId === link.topicId &&
+                  receipt.epoch === link.epoch &&
+                  (!row.topic.decidedAt || receipt.sourceAt >= row.topic.decidedAt),
+              );
               const decision = decisionFromOutcome(
-                outcomeForTopic(parsed, link.topicId, single ? 1 : 2),
-                single && !parsed.byTopic.has(link.topicId)
-                  ? (summaries.get(threadId)?.prNumber ?? null)
-                  : null,
+                receipt?.outcome ?? null,
+                receipt && !receipt.explicit ? (summaries.get(threadId)?.prNumber ?? null) : null,
               );
               if (
                 !decision ||
@@ -3724,6 +3804,16 @@ export function makeUpstreamPortsService(
       for (const runRecord of interrupted)
         yield* finishScheduled({ ...runRecord, status: "interrupted" }).pipe(Effect.ignore);
       yield* reconcilePendingGroups.pipe(Effect.ignoreCause({ log: true }));
+      // Historical no-outcome checks may hide work even when the queue is empty.
+      // Scan eligible linked projects once at startup; normal wakes stay targeted.
+      const recoveryProjects = yield* deps.sql<{ project_id: string }>`
+        SELECT DISTINCT l.project_id FROM upstream_port_links l
+        LEFT JOIN upstream_port_outcome_checks c
+          ON c.project_id = l.project_id AND c.thread_id = l.thread_id
+        WHERE l.state = 'active' AND (c.result IS NULL OR c.result != 'preexisting')`.pipe(
+        Effect.orDie,
+      );
+      for (const project of recoveryProjects) yield* wakePortQueue(project.project_id);
       yield* wakePortQueue();
       yield* Effect.gen(function* () {
         while (true) {

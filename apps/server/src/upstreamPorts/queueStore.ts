@@ -288,10 +288,13 @@ export function makeQueueStore(sql: SqlClient.SqlClient) {
       UNION SELECT l.project_id FROM upstream_port_links l
       LEFT JOIN upstream_port_outcome_checks c ON c.project_id = l.project_id AND c.thread_id = l.thread_id
       LEFT JOIN projection_threads t ON t.thread_id = l.thread_id
-      LEFT JOIN projection_turns u ON u.thread_id = t.thread_id AND u.turn_id = t.latest_turn_id
+      LEFT JOIN projection_turns u ON u.row_id = (
+        SELECT row_id FROM projection_turns latest WHERE latest.thread_id = t.thread_id
+        ORDER BY requested_at DESC,row_id DESC LIMIT 1
+      )
       WHERE l.state = 'active' AND u.state = 'completed' AND u.processing_quiesced_at IS NOT NULL
       AND u.assistant_message_id IS NOT NULL AND (c.thread_id IS NULL OR
-        (c.result != 'preexisting' AND t.latest_turn_id IS NOT NULL AND c.turn_id IS NOT t.latest_turn_id) OR
+        (c.result != 'preexisting' AND c.turn_id IS NOT u.turn_id) OR
         (c.result = 'failed' AND c.attempts < ${OUTCOME_CHECK_MAX_ATTEMPTS}))`.pipe(
       Effect.map((rows) => rows.map((row) => row.project_id)),
     ),

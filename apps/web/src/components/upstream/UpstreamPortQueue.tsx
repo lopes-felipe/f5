@@ -81,9 +81,9 @@ export function UpstreamPortQueue(props: { projectId: ProjectId; overview: Upstr
     <>
       {(queue.hasHistory || queue.queuedTopics + queue.running > 0) && (
         <Button size="xs" variant="ghost" onClick={() => setOpen(true)}>
-          Queue · {queue.running}/{queue.concurrency} running · {queue.queuedTopics} queued
+          Queue · {queue.running}/{queue.concurrency} running · {queue.queuedTopics} topics in {queue.queuedThreads} queued jobs
           {queue.paused ? " · Paused" : queue.hold ? ` · Waiting: ${queue.hold.message}` : ""}
-          {queue.waitingOnFiles > 0 ? ` · ${queue.waitingOnFiles} waiting on files` : ""}
+          {queue.waitingOnFiles > 0 ? ` · ${queue.waitingOnFiles} jobs waiting on files` : ""}
         </Button>
       )}
       <Dialog open={open} onOpenChange={setOpen}>
@@ -119,6 +119,12 @@ export function UpstreamPortQueue(props: { projectId: ProjectId; overview: Upstr
               <p role="status">
                 {queue.hold.message}
                 {queue.hold.retryAt && ` Retry ${new Date(queue.hold.retryAt).toLocaleString()}.`}
+              </p>
+            )}
+            {queue.waitingOnFiles > 0 && (
+              <p role="status">
+                {queue.waitingOnFiles} of {queue.queuedThreads} queued jobs are waiting on earlier ports.
+                {" "}Open the blocking thread or PR below; ports marked needs attention require a decision.
               </p>
             )}
             {first && (

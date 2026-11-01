@@ -85,6 +85,8 @@ import { truncateMiddleByBytes } from "../outputTruncation.ts";
 import { canRepairErroredTurnFromSuccessfulSettlement } from "../turnStateTransitions.ts";
 import { revertTaskToolState } from "@t3tools/shared/claudeTaskToolProjection";
 import { REASONING_STATUS_ACTIVITY_KIND } from "@t3tools/shared/orchestrationActivityPayload";
+import { readTurnAssistantMessages } from "../turnAssistantMessage.ts";
+import { MessageId } from "@t3tools/contracts";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
   projects: "projection.projects",
@@ -2301,11 +2303,18 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             turnId: event.payload.turnId,
             checkpointTurnCount: event.payload.checkpointTurnCount,
           });
+          const [reply] = yield* readTurnAssistantMessages(sql, [event.payload]).pipe(
+            Effect.mapError(toPersistenceSqlError("ProjectionPipeline.checkpointReply")),
+          );
+          const assistantMessageId = reply
+            ? MessageId.makeUnsafe(reply.id)
+            : (Option.getOrNull(existingTurn)?.assistantMessageId ??
+              event.payload.assistantMessageId);
 
           if (Option.isSome(existingTurn)) {
             yield* projectionTurnRepository.upsertByTurnId({
               ...existingTurn.value,
-              assistantMessageId: event.payload.assistantMessageId,
+              assistantMessageId,
               state:
                 existingTurn.value.state === "running" || existingTurn.value.state === "interrupted"
                   ? existingTurn.value.state
@@ -2327,7 +2336,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             turnId: event.payload.turnId,
             threadId: event.payload.threadId,
             pendingMessageId: null,
-            assistantMessageId: event.payload.assistantMessageId,
+            assistantMessageId,
             state: nextState,
             requestedAt: event.payload.completedAt,
             startedAt: event.payload.completedAt,

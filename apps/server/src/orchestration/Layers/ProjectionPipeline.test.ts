@@ -69,6 +69,107 @@ const projectionLayer = it.layer(makeProjectionPipelineTestLayer(process.cwd()))
 
 projectionLayer("OrchestrationProjectionPipeline", (it) => {
   it.effect(
+    "preserves the actual reply through late synthetic checkpoints in live projection and replay",
+    () =>
+      runWithProjectionPipelineLayer(
+        process.cwd(),
+        Effect.gen(function* () {
+          const pipeline = yield* OrchestrationProjectionPipeline;
+          const store = yield* OrchestrationEventStore;
+          const sql = yield* SqlClient.SqlClient;
+          const threadId = ThreadId.makeUnsafe("checkpoint-reply");
+          const turnId = TurnId.makeUnsafe("checkpoint-turn");
+          const at = "2026-10-22T12:00:00.000Z";
+          const common = {
+            aggregateKind: "thread" as const,
+            aggregateId: threadId,
+            occurredAt: at,
+            commandId: null,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+          };
+          const created = yield* store.append({
+            ...common,
+            eventId: EventId.makeUnsafe("reply-thread"),
+            type: "thread.created",
+            payload: {
+              threadId,
+              projectId: ProjectId.makeUnsafe("checkpoint-project"),
+              title: "Port",
+              model: "model",
+              runtimeMode: "full-access",
+              branch: null,
+              worktreePath: null,
+              createdAt: at,
+              updatedAt: at,
+            },
+          });
+          yield* pipeline.projectEvent(created);
+          const checkpoint = {
+            threadId,
+            turnId,
+            checkpointTurnCount: 1,
+            checkpointRef: CheckpointRef.makeUnsafe("refs/t3/checkpoints/reply/1"),
+            files: [],
+            assistantMessageId: MessageId.makeUnsafe("assistant:toolu_placeholder"),
+            completedAt: at,
+          };
+          const placeholder = yield* store.append({
+            ...common,
+            eventId: EventId.makeUnsafe("reply-placeholder"),
+            type: "thread.turn-diff-completed",
+            payload: { ...checkpoint, status: "missing" },
+          });
+          yield* pipeline.projectEvent(placeholder);
+          const message = yield* store.append({
+            ...common,
+            eventId: EventId.makeUnsafe("reply-message"),
+            type: "thread.message-sent",
+            payload: {
+              threadId,
+              turnId,
+              messageId: MessageId.makeUnsafe("actual-reply"),
+              role: "assistant",
+              text: "Final answer",
+              streaming: false,
+              createdAt: at,
+              updatedAt: at,
+            },
+          });
+          yield* pipeline.projectEvent(message);
+          const ready = yield* store.append({
+            ...common,
+            eventId: EventId.makeUnsafe("reply-ready"),
+            type: "thread.turn-diff-completed",
+            payload: { ...checkpoint, status: "ready" },
+          });
+          yield* pipeline.projectEvent(ready);
+          const expected = [
+            {
+              assistant_message_id: "actual-reply",
+              checkpoint_status: "ready",
+              state: "completed",
+            },
+          ];
+          assert.deepStrictEqual(
+            yield* sql`SELECT assistant_message_id,checkpoint_status,state
+        FROM projection_turns WHERE thread_id = ${threadId}`,
+            expected,
+          );
+          yield* sql`DELETE FROM projection_turns WHERE thread_id = ${threadId}`;
+          yield* sql`DELETE FROM projection_state WHERE projector = 'projection.thread-turns'`;
+          yield* pipeline.bootstrap;
+          assert.deepStrictEqual(
+            yield* sql`SELECT assistant_message_id,checkpoint_status,state
+        FROM projection_turns WHERE thread_id = ${threadId}`,
+            expected,
+          );
+        }),
+      ),
+  );
+
+  it.effect(
     "commits cursors once per command, including ignored projectors, and rolls the entire command back on cursor failure",
     () =>
       runWithProjectionPipelineLayer(
