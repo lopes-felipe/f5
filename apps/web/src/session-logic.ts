@@ -1693,7 +1693,9 @@ export function deriveWorkLogEntries(
         }
         continue;
       }
-      resolvedUserInputRequestIds.add(requestId);
+      // An indeterminate receipt leaves the request open, as `derivePendingUserInputs` does,
+      // so its card stays until a final resolution replaces it.
+      if (payload?.receipt !== "indeterminate") resolvedUserInputRequestIds.add(requestId);
       if (payload?.answers && typeof payload.answers === "object") {
         answeredUserInputRequestIds.add(requestId);
       }

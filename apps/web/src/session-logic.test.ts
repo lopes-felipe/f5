@@ -1267,7 +1267,11 @@ describe("deriveWorkLogEntries", () => {
         ]);
       expect(stateFor("resolved")).toEqual([["q-receipt-resolved", "answered"]]);
       expect(stateFor("cancelled")).toEqual([["q-receipt-cancelled", "unanswered"]]);
-      expect(stateFor("indeterminate")).toEqual([["q-receipt-indeterminate", undefined]]);
+      // The request stays open, so its card stays beside the indeterminate row.
+      expect(stateFor("indeterminate")).toEqual([
+        ["q-requested", "pending"],
+        ["q-receipt-indeterminate", undefined],
+      ]);
     });
 
     it("keeps a failed AskUserQuestion row and one with no matching request", () => {

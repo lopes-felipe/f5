@@ -82,12 +82,20 @@ describe("tool naming helpers", () => {
     expect(humanizeToolName("readMCPResource")).toBe("Read mcp resource");
   });
 
-  it("refuses to parse JSON whose large integers would be rounded", () => {
+  it("refuses to parse JSON whose numbers would be rounded", () => {
     expect(parseJsonObject('{"id":9007199254740993}')).toBeNull();
     expect(parseJsonObject('{"id":-12345678901234567890}')).toBeNull();
-    expect(parseJsonObject('{"id":"9007199254740993","n":42}')).toEqual({
-      id: "9007199254740993",
-      n: 42,
+    expect(parseJsonObject('{"id":9.007199254740993e15}')).toBeNull();
+    expect(parseJsonObject('{"ratio":0.12345678901234567890123}')).toBeNull();
+    expect(parseJsonObject('{"big":1e400}')).toBeNull();
+    // Exact numbers in other spellings, and digits inside strings, still parse.
+    expect(
+      parseJsonObject(
+        '{"id":"9007199254740993","n":42,"half":5e-1,"one":1.0,"neg":-0.25,"e":"x1e999"}',
+      ),
+    ).toEqual({ id: "9007199254740993", n: 42, half: 0.5, one: 1, neg: -0.25, e: "x1e999" });
+    expect(parseJsonObject('{"q":"say \\"12345678901234567890\\""}')).toEqual({
+      q: 'say "12345678901234567890"',
     });
     expect(parseJsonObject('["not","an","object"]')).toBeNull();
   });

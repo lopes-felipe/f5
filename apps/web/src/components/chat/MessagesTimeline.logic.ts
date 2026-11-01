@@ -141,18 +141,52 @@ export function summarizeToolInputPairs(
   return pairs.length > 0 ? pairs.join(" · ") : null;
 }
 
-/**
- * Integer literals past 2^53 lose digits in `JSON.parse`. Conservative: digit runs inside
- * strings can match too, which only means the caller keeps the raw text.
- */
-function hasUnsafeIntegerLiteral(text: string): boolean {
-  return /(?<![\w."])-?\d{16,}/.test(text);
+/** A decimal literal as `sign|digits|exponent`, without leading or trailing zeros. */
+function canonicalDecimal(literal: string): string {
+  const match = /^(-?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/.exec(literal);
+  if (!match) return literal;
+  const [, sign = "", whole = "", fraction = "", exponent = "0"] = match;
+  const digits = `${whole}${fraction}`;
+  const leading = digits.length - digits.replace(/^0+/, "").length;
+  const significant = digits.slice(leading).replace(/0+$/, "");
+  if (significant.length === 0) return "0";
+  // Value = 0.significant × 10^(scale), counting from the first significant digit.
+  const scale = Number(exponent) + whole.length - leading;
+  return `${sign}|${significant}|${scale}`;
 }
 
-/** A JSON object, or null when the text isn't one or parsing would round a large integer. */
+/**
+ * Whether every number literal (outside strings) survives `JSON.parse` exactly. Large
+ * integers, long fractions and exponent forms can all be rounded to the nearest double.
+ */
+function preservesJsonNumbers(text: string): boolean {
+  let inString = false;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index]!;
+    if (inString) {
+      if (char === "\\") index++;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char !== "-" && (char < "0" || char > "9")) continue;
+    const literal = /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/.exec(text.slice(index))?.[0];
+    if (!literal) continue;
+    const parsed = Number(literal);
+    if (!Number.isFinite(parsed)) return false;
+    if (canonicalDecimal(String(parsed)) !== canonicalDecimal(literal)) return false;
+    index += literal.length - 1;
+  }
+  return true;
+}
+
+/** A JSON object, or null when the text isn't one or parsing would round one of its numbers. */
 export function parseJsonObject(text: string | undefined): Record<string, unknown> | null {
   const trimmed = text?.trim();
-  if (!trimmed?.startsWith("{") || hasUnsafeIntegerLiteral(trimmed)) return null;
+  if (!trimmed?.startsWith("{") || !preservesJsonNumbers(trimmed)) return null;
   try {
     const parsed: unknown = JSON.parse(trimmed);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
