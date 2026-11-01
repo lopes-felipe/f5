@@ -8,6 +8,7 @@ import { computerToolHeading, previewToolHeading } from "@t3tools/shared/compute
 import {
   automationRunEnd,
   classifyAutomationEntry,
+  isAutomationEntryFailed,
   summarizeAutomationRun,
   type AutomationSurface,
 } from "./AutomationSessionCard.logic";
@@ -65,11 +66,13 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   CircleAlertIcon,
+  CircleXIcon,
   ClockIcon,
   EyeIcon,
   GlobeIcon,
   HammerIcon,
   ImageIcon,
+  ListTodoIcon,
   LoaderCircleIcon,
   type LucideIcon,
   MessageSquarePlusIcon,
@@ -104,12 +107,17 @@ import {
   computeMessageDurationStart,
   deriveCodexCollaborationResponseRows,
   deriveTimelineTurnRailItems,
+  describeDynamicToolEntry,
+  type DynamicToolIconKind,
   findNearestMinimapMarkerIndex,
   formatWorkingLabel,
   isFileChangeWorkEntry,
   isFileReadWorkEntry,
   isSearchWorkEntry,
+  mcpServerMonogram,
   normalizeCompactToolLabel,
+  parseJsonObject,
+  summarizeToolInputPairs,
   normalizedSearchSummary,
   normalizedWorkEntryHeading,
   resolveActiveTurnRailIndex,
@@ -139,6 +147,7 @@ import type { RibbonPoint } from "./WorkingRibbon.logic";
 import { useReducedMotion } from "../../hooks/useReducedMotion";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { SkillInlineChip } from "./SkillInlineChip";
+import { UserInputCard } from "./UserInputCard";
 import { ThreadReferenceChip } from "./ThreadReferenceChip";
 import { threadReferenceMatches } from "@t3tools/shared/threadReferences";
 import {
@@ -1838,6 +1847,7 @@ function shouldRenderWorkEntryAsStandaloneRow(
 ): boolean {
   return (
     entry.activityKind === "user-input.resolved" ||
+    !!entry.userInput ||
     !!entry.htmlRender ||
     (entry.itemType === "mcp_tool_call" && options.settingsExpandMcpToolCalls)
   );
@@ -2787,10 +2797,12 @@ function workEntryPreview(
     | "cwd"
     | "changedFiles"
     | "itemType"
+    | "label"
     | "lineSummary"
     | "readPaths"
     | "requestKind"
     | "searchSummary"
+    | "toolTitle"
     | "turnId"
   >,
   turnDiffSummaryByTurnId: Map<TurnId, TurnDiffSummary>,
@@ -2820,11 +2832,20 @@ function workEntryPreview(
   if (isFileChangeRow && changedFilesPreview) {
     return changedFilesPreview;
   }
+  const dynamicTool = describeDynamicToolEntry(workEntry);
+  if (dynamicTool) return dynamicTool.preview ?? undefined;
   if (workEntry.detail) return workEntry.detail;
   return changedFilesPreview;
 }
 
 type TimelineEntryIcon = Icon | LucideIcon;
+
+const DYNAMIC_TOOL_ICONS: Record<DynamicToolIconKind, LucideIcon> = {
+  search: SearchIcon,
+  web: GlobeIcon,
+  tasks: ListTodoIcon,
+  tool: HammerIcon,
+};
 
 function workEntryIcon(workEntry: TimelineWorkEntry): TimelineEntryIcon {
   if (workEntry.requestKind === "command") {
@@ -2863,6 +2884,8 @@ function workEntryIcon(workEntry: TimelineWorkEntry): TimelineEntryIcon {
   if (workEntry.itemType === "image_view") return EyeIcon;
   if (workEntry.itemType === "image_generation") return ImageIcon;
   if (workEntry.itemType === "sleep") return ClockIcon;
+  const dynamicTool = describeDynamicToolEntry(workEntry);
+  if (dynamicTool) return DYNAMIC_TOOL_ICONS[dynamicTool.icon];
 
   switch (workEntry.itemType) {
     case "mcp_tool_call":
@@ -2954,6 +2977,10 @@ export function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
     if (inferredHeading) {
       return inferredHeading;
     }
+    const dynamicTool = describeDynamicToolEntry(workEntry);
+    if (dynamicTool) {
+      return dynamicTool.heading;
+    }
   }
   return capitalizePhrase(normalizedHeading);
 }
@@ -3012,6 +3039,12 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     : preview
       ? `${heading} - ${preview}`
       : heading;
+  // A humanized tool row still offers the raw call on hover.
+  const dynamicTool = describeDynamicToolEntry(workEntry);
+  const hoverText =
+    dynamicTool && !inlineFilePreview && heading === dynamicTool.heading && workEntry.detail
+      ? `${heading} - ${workEntry.detail}`
+      : displayText;
   const hasChangedFiles = fileChangeEntry
     ? fileChangePreviews.length > 0
     : (workEntry.changedFiles?.length ?? 0) > 0;
@@ -3077,7 +3110,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
               workToneClass(workEntry.tone),
               preview ? "text-muted-foreground" : "",
             )}
-            title={displayText}
+            title={hoverText}
           >
             {workEntry.itemType === "image_view" && workEntry.imagePath ? (
               <button
@@ -3257,6 +3290,17 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   );
 });
 
+function McpServerMonogram(props: { name: string }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="flex size-5.5 shrink-0 items-center justify-center rounded-md border border-border bg-secondary text-2xs font-semibold text-secondary-foreground"
+    >
+      {mcpServerMonogram(props.name)}
+    </span>
+  );
+}
+
 const McpToolCallRow = memo(function McpToolCallRow(props: {
   workEntry: TimelineWorkEntry;
   expandByDefault: boolean;
@@ -3279,14 +3323,21 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
     setOpen(defaultOpen);
   }, [defaultOpen, userOverrodeOpen]);
 
-  const iconConfig = workToneIcon(workEntry.tone);
-  const EntryIcon = workEntryIcon(workEntry);
-  const heading = formatMcpToolHeading(workEntry);
-  // Hover tooltip gets the fuller "MCP Call - <server>: <tool>" phrasing so a
-  // user scanning a dense timeline can confirm what kind of row this is
-  // without expanding it. The visible heading stays compact because the
-  // "MCP tool call" badge above already labels the kind.
+  // The tooltip keeps the fuller "MCP Call - <server>: <tool>" phrasing.
   const hoverTitle = toolWorkEntryHeading(workEntry);
+  const serverName = workEntry.mcpServerName;
+  const toolName = workEntry.mcpToolName ?? formatMcpToolHeading(workEntry);
+  // Matches automation step drawers: a declined call isn't a failure.
+  const failed = isAutomationEntryFailed(workEntry);
+  const running = !failed && workEntry.status === "inProgress";
+  const durationMs =
+    workEntry.startedAt && !running
+      ? Date.parse(workEntry.createdAt) - Date.parse(workEntry.startedAt)
+      : Number.NaN;
+  const inputSummary = useMemo(() => {
+    const input = parseJsonObject(workEntry.mcpInput);
+    return input ? summarizeToolInputPairs(input, { quoteStrings: true }) : null;
+  }, [workEntry.mcpInput]);
 
   const handleOpenChange = useCallback((nextOpen: boolean) => {
     setUserOverrodeOpen(true);
@@ -3298,47 +3349,69 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
       className="group rounded-xl border border-border bg-card"
       open={open}
       onOpenChange={handleOpenChange}
+      data-slot="mcp-tool-card"
     >
       <CollapsibleTrigger
         className={cn(
-          "flex w-full items-start gap-3 rounded-xl px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          "flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
           !hasNestedContent && "cursor-default",
         )}
         disabled={!hasNestedContent}
+        title={hoverTitle}
       >
-        <span className="mt-0.5 shrink-0 text-faint-foreground">
-          {hasNestedContent ? (
-            open ? (
-              <ChevronDownIcon className="size-4" />
-            ) : (
-              <ChevronRightIcon className="size-4" />
-            )
-          ) : (
-            <ChevronRightIcon className="size-4 opacity-0" />
-          )}
+        <McpServerMonogram name={serverName ?? toolName} />
+        <span className="flex min-w-0 flex-1 items-center gap-1.5 text-ui">
+          {serverName ? (
+            <span className="shrink-0 text-muted-foreground">{serverName} ›</span>
+          ) : null}
+          <span className="min-w-0 truncate font-medium text-foreground">{toolName}</span>
+          <span
+            className="inline-flex h-4.5 shrink-0 items-center gap-1 rounded-full border border-border px-1.5 text-2xs font-medium text-muted-foreground"
+            data-testid="mcp-badge"
+          >
+            <McpIcon aria-hidden="true" className="size-3" />
+            MCP
+          </span>
         </span>
-        <span
-          className={cn(
-            "mt-0.5 flex size-4 shrink-0 items-center justify-center",
-            iconConfig.className,
-          )}
-        >
-          <EntryIcon className="size-3.5" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="inline-flex h-5 items-center rounded-full border border-border bg-muted/50 px-2 text-2xs font-medium text-muted-foreground">
-              MCP tool call
+        <span className="flex shrink-0 items-center gap-2 text-2xs text-muted-foreground tabular-nums">
+          {running ? (
+            <LoaderCircleIcon
+              role="img"
+              aria-label="Running"
+              className="size-3.5 animate-spin text-info"
+            />
+          ) : failed ? (
+            <CircleXIcon role="img" aria-label="Failed" className="size-3.5 text-destructive" />
+          ) : workEntry.status === "completed" ? (
+            <CheckIcon role="img" aria-label="Completed" className="size-3.5 text-success" />
+          ) : null}
+          {durationMs > 0 ? (
+            <span title="Since the call started, including input streaming and any approval wait">
+              {formatDuration(durationMs)}
             </span>
-          </div>
-          <p className="mt-1.5 text-ui font-medium text-foreground" title={hoverTitle}>
-            {heading}
-          </p>
-        </div>
-        {props.timestamp}
+          ) : null}
+          {props.timestamp}
+          {hasNestedContent ? (
+            <ChevronDownIcon
+              aria-hidden="true"
+              className={cn(
+                "size-3.5 text-faint-foreground transition-transform duration-(--duration-fast)",
+                !open && "-rotate-90",
+              )}
+            />
+          ) : null}
+        </span>
       </CollapsibleTrigger>
+      {!open && inputSummary ? (
+        <p
+          className="-mt-1 truncate px-3 pb-2 pl-11.5 text-xs text-muted-foreground"
+          data-testid="mcp-input-summary"
+        >
+          {inputSummary}
+        </p>
+      ) : null}
       {workEntry.mcpImages && workEntry.mcpImages.length > 0 ? (
-        <div className="flex flex-wrap gap-2 px-3 pb-2.5 pl-13" data-testid="mcp-tool-images">
+        <div className="flex flex-wrap gap-2 px-3 pb-2.5 pl-11.5" data-testid="mcp-tool-images">
           {workEntry.mcpImages.map((image) => {
             const url = attachmentPreviewUrlForId(image.attachmentId);
             return (
@@ -3380,11 +3453,12 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
       ) : null}
       {hasNestedContent && (
         <CollapsiblePanel>
-          <div className="border-t border-border px-3 py-3">
+          <div className="border-t border-border px-3 py-3 pl-11.5">
             <McpToolCallDetails
               mcpInput={workEntry.mcpInput}
               mcpResult={workEntry.mcpResult}
               markdownCwd={markdownCwd}
+              failed={failed}
             />
           </div>
         </CollapsiblePanel>
@@ -3783,45 +3857,47 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
   // in the shared right gutter overlapped the card's corner whenever it was wider.
   const mcpCard =
     !workEntry.diagnostic && workEntry.itemType === "mcp_tool_call" && props.expandMcpToolCalls;
-  const row =
-    workEntry.mcpApp && threadId ? (
-      <McpAppFrame app={workEntry.mcpApp} threadId={threadId} />
-    ) : workEntry.htmlRender ? (
-      <HtmlRenderFrame reference={workEntry.htmlRender} onImageExpand={props.onImageExpand} />
-    ) : workEntry.diagnostic ? (
-      <DiagnosticWorkEntryRow workEntry={workEntry} />
-    ) : workEntry.itemType === "collab_agent_tool_call" ? (
-      <SubagentWorkEntryRow
-        workEntry={workEntry}
-        turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
-        workspaceRoot={props.workspaceRoot}
-        markdownCwd={props.markdownCwd}
-      />
-    ) : mcpCard ? (
-      <McpToolCallRow
-        workEntry={workEntry}
-        expandByDefault={props.expandMcpByDefault}
-        turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
-        workspaceRoot={props.workspaceRoot}
-        markdownCwd={props.markdownCwd}
-        timestamp={timestamp("shrink-0 pt-0.5")}
-        onImageExpand={props.onImageExpand}
-      />
-    ) : (
-      <SimpleWorkEntryRow
-        workEntry={workEntry}
-        turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
-        workspaceRoot={props.workspaceRoot}
-        resolvedTheme={props.resolvedTheme}
-        showFileChangeDiffsInline={props.showFileChangeDiffsInline}
-        chatDiffContext={props.chatDiffContext}
-        onOpenTurnDiff={props.onOpenTurnDiff}
-      />
-    );
+  const ownsTimestamp = mcpCard || Boolean(workEntry.userInput);
+  const row = workEntry.userInput ? (
+    <UserInputCard userInput={workEntry.userInput} timestamp={timestamp("shrink-0")} />
+  ) : workEntry.mcpApp && threadId ? (
+    <McpAppFrame app={workEntry.mcpApp} threadId={threadId} />
+  ) : workEntry.htmlRender ? (
+    <HtmlRenderFrame reference={workEntry.htmlRender} onImageExpand={props.onImageExpand} />
+  ) : workEntry.diagnostic ? (
+    <DiagnosticWorkEntryRow workEntry={workEntry} />
+  ) : workEntry.itemType === "collab_agent_tool_call" ? (
+    <SubagentWorkEntryRow
+      workEntry={workEntry}
+      turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
+      workspaceRoot={props.workspaceRoot}
+      markdownCwd={props.markdownCwd}
+    />
+  ) : mcpCard ? (
+    <McpToolCallRow
+      workEntry={workEntry}
+      expandByDefault={props.expandMcpByDefault}
+      turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
+      workspaceRoot={props.workspaceRoot}
+      markdownCwd={props.markdownCwd}
+      timestamp={timestamp("shrink-0")}
+      onImageExpand={props.onImageExpand}
+    />
+  ) : (
+    <SimpleWorkEntryRow
+      workEntry={workEntry}
+      turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
+      workspaceRoot={props.workspaceRoot}
+      resolvedTheme={props.resolvedTheme}
+      showFileChangeDiffsInline={props.showFileChangeDiffsInline}
+      chatDiffContext={props.chatDiffContext}
+      onOpenTurnDiff={props.onOpenTurnDiff}
+    />
+  );
 
   return (
-    <div className={cn("group/work-entry relative min-w-0", !mcpCard && "pr-14")}>
-      {mcpCard ? null : timestamp("absolute right-1 top-1.5")}
+    <div className={cn("group/work-entry relative min-w-0", !ownsTimestamp && "pr-14")}>
+      {ownsTimestamp ? null : timestamp("absolute right-1 top-1.5")}
       {row}
       {workEntry.nestedDiagnostics && workEntry.nestedDiagnostics.length > 0 ? (
         <NestedDiagnosticList diagnostics={workEntry.nestedDiagnostics} />
@@ -4088,7 +4164,8 @@ function WorkGroupRowContent(props: {
     row.groupedEntries.length === 1 &&
     (row.groupedEntries[0]?.htmlRender ||
       row.groupedEntries[0]?.mcpApp ||
-      row.groupedEntries[0]?.activityKind === "user-input.resolved")
+      row.groupedEntries[0]?.activityKind === "user-input.resolved" ||
+      row.groupedEntries[0]?.userInput)
       ? row.groupedEntries[0]
       : resolveStandaloneExpandedMcpWorkEntry(row.groupedEntries, {
           settingsExpandMcpToolCalls: expandMcpToolCalls,

@@ -2144,6 +2144,18 @@ export default memo(function ChatView({
     () => withoutSettledRewindFailures(threadActivities, openRewindOperationIds),
     [openRewindOperationIds, threadActivities],
   );
+  const pendingUserInputs = useMemo(
+    () =>
+      activeThread?.pendingUserInputs
+        ? activeThread.pendingUserInputs.map((input) => ({ ...input }))
+        : derivePendingUserInputs(threadActivities),
+    [threadActivities, activeThread?.pendingUserInputs],
+  );
+  // Q&A cards say "waiting" exactly while the composer still asks.
+  const pendingUserInputRequestIds = useMemo(
+    () => new Set<string>(pendingUserInputs.map((input) => input.requestId)),
+    [pendingUserInputs],
+  );
   const workLogEntries = useMemo(
     () =>
       deriveWorkLogEntries(workLogActivities, activeLatestTurn?.turnId ?? undefined, {
@@ -2151,10 +2163,12 @@ export default memo(function ChatView({
         suppressCommandToolLifecycle: showAgentCommandTranscripts && commandExecutions.length > 0,
         mode: workLogMode,
         filter: workLogFilter,
+        pendingUserInputRequestIds,
       }),
     [
       activeLatestTurn?.turnId,
       commandExecutions.length,
+      pendingUserInputRequestIds,
       settings.runtimeWarningVisibility,
       showAgentCommandTranscripts,
       workLogActivities,
@@ -2169,13 +2183,6 @@ export default memo(function ChatView({
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
-  );
-  const pendingUserInputs = useMemo(
-    () =>
-      activeThread?.pendingUserInputs
-        ? activeThread.pendingUserInputs.map((input) => ({ ...input }))
-        : derivePendingUserInputs(threadActivities),
-    [threadActivities, activeThread?.pendingUserInputs],
   );
   // The projected list is complete only once the server thread's details loaded.
   const pendingUserInputsLoaded =

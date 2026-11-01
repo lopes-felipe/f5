@@ -150,6 +150,22 @@ export interface WorkLogEntry {
   codexCollaborationTool?: CodexCollaborationTool;
   subagentStates?: ReadonlyArray<CompactSubagentState>;
   subagentStatesTruncated?: boolean;
+  /** When the tool call first showed up; completed rows derive their duration from it. */
+  startedAt?: string;
+  /** A question request with its answers, rendered as a Q&A card. */
+  userInput?: WorkLogUserInput;
+}
+
+export interface WorkLogUserInputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  answers: ReadonlyArray<{ text: string; custom: boolean }>;
+}
+
+export interface WorkLogUserInput {
+  state: "answered" | "pending" | "unanswered";
+  questions: ReadonlyArray<WorkLogUserInputQuestion>;
 }
 
 export interface PendingApproval {
@@ -980,37 +996,125 @@ function collapseWhitespace(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-/** Each user-input request's question text, joined with " · " when it asked several. */
-function userInputQuestionTextByRequestId(
+/** Each user-input request's parsed questions; form-only elicitations have none. */
+function userInputQuestionsByRequestId(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
-): ReadonlyMap<string, string> {
-  const questions = new Map<string, string>();
+): ReadonlyMap<string, ReadonlyArray<UserInputQuestion>> {
+  const questions = new Map<string, ReadonlyArray<UserInputQuestion>>();
   for (const activity of activities) {
     if (activity.kind !== "user-input.requested") continue;
     const payload = workLogPayload(activity);
     if (typeof payload?.requestId !== "string") continue;
-    const text = (parseUserInputQuestions(payload) ?? [])
-      .map((question) => collapseWhitespace(question.question))
-      .filter(Boolean)
-      .join(" · ");
-    if (text) questions.set(payload.requestId, text);
+    const parsed = parseUserInputQuestions(payload);
+    if (parsed) questions.set(payload.requestId, parsed);
   }
   return questions;
+}
+
+/** The question text, joined with " · " when the request asked several. */
+function userInputQuestionText(questions: ReadonlyArray<UserInputQuestion> | undefined): string {
+  return (questions ?? [])
+    .map((question) => collapseWhitespace(question.question))
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** One question's answers: a string, a string array, or Codex's `{ answers }` record. */
+function userInputAnswerTexts(value: unknown): string[] {
+  const answer =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as { answers?: unknown }).answers
+      : value;
+  return (Array.isArray(answer) ? answer : [answer])
+    .filter((item): item is string => typeof item === "string")
+    .map(collapseWhitespace)
+    .filter(Boolean);
 }
 
 /** The submitted answers as one line; empty when nothing was answered. */
 function userInputAnswerPreview(answers: unknown): string {
   if (!answers || typeof answers !== "object") return "";
-  const values = Object.values(answers as Record<string, unknown>).flatMap((value) => {
-    const answer =
-      value && typeof value === "object" && !Array.isArray(value)
-        ? (value as { answers?: unknown }).answers
-        : value;
-    return (Array.isArray(answer) ? answer : [answer]).filter(
-      (item): item is string => typeof item === "string",
+  return Object.values(answers as Record<string, unknown>)
+    .flatMap(userInputAnswerTexts)
+    .join(" · ");
+}
+
+/**
+ * An unresolved request is open while the composer still offers it. Callers without that
+ * projection fall back to "it belongs to the latest turn".
+ */
+function isUserInputStillPending(
+  requestId: string,
+  turnId: TurnId | null,
+  latestTurnId: TurnId | undefined,
+  pendingRequestIds: ReadonlySet<string> | undefined,
+): boolean {
+  if (pendingRequestIds) return pendingRequestIds.has(requestId);
+  return (turnId ?? undefined) === latestTurnId;
+}
+
+/**
+ * A resolved row's card. Answers render as pills; a value-free receipt (Muse, Pi) still
+ * says whether the questions were answered. An indeterminate receipt, or a receipt
+ * following a resolution that already carried the answers, keeps its own row.
+ */
+function userInputResolution(
+  payload: Record<string, unknown> | null,
+  answeredRequestIds: ReadonlySet<string>,
+  questions: ReadonlyArray<UserInputQuestion>,
+): WorkLogUserInput | undefined {
+  const receipt = payload?.receipt;
+  if (receipt === undefined) return workLogUserInput(questions, payload?.answers, "unanswered");
+  if (receipt === "indeterminate") return undefined;
+  if (typeof payload?.requestId === "string" && answeredRequestIds.has(payload.requestId)) {
+    return undefined;
+  }
+  return workLogUserInput(questions, undefined, receipt === "resolved" ? "answered" : "unanswered");
+}
+
+function workLogUserInput(
+  questions: ReadonlyArray<UserInputQuestion>,
+  answers: unknown,
+  /** The state when no answer values are known. */
+  fallbackState: WorkLogUserInput["state"],
+): WorkLogUserInput {
+  const answerRecord =
+    answers && typeof answers === "object" && !Array.isArray(answers)
+      ? (answers as Record<string, unknown>)
+      : {};
+  const items = questions.map((question) => {
+    const optionLabels = new Set(
+      question.options.map((option) => collapseWhitespace(option.label)),
     );
+    return {
+      id: question.id,
+      header: question.header,
+      question: question.question,
+      answers: userInputAnswerTexts(answerRecord[question.id]).map((text) => ({
+        text,
+        custom: !optionLabels.has(text),
+      })),
+    };
   });
-  return values.map(collapseWhitespace).filter(Boolean).join(" · ");
+  return {
+    state: items.some((item) => item.answers.length > 0) ? "answered" : fallbackState,
+    questions: items,
+  };
+}
+
+function isFailedToolActivity(activity: OrchestrationThreadActivity): boolean {
+  const status = inferWorkLogStatus(activity, readToolActivityPayload(activity.payload)?.status);
+  return status === "failed" || status === "declined" || activity.tone === "error";
+}
+
+/** Claude's AskUserQuestion tool row repeats what the Q&A card already shows. */
+function isQuestionToolActivity(activity: OrchestrationThreadActivity): boolean {
+  if (!activity.kind.startsWith("tool.")) return false;
+  const toolPayload = readToolActivityPayload(activity.payload);
+  return (
+    toolPayload?.itemType === "dynamic_tool_call" &&
+    /^askuserquestion\s*:/i.test(toolPayload.detail ?? "")
+  );
 }
 
 function workLogPayload(activity: OrchestrationThreadActivity): Record<string, unknown> | null {
@@ -1550,6 +1654,8 @@ export function deriveWorkLogEntries(
     readonly runtimeWarningVisibility?: RuntimeWarningVisibility;
     readonly mode?: WorkLogMode;
     readonly filter?: WorkLogFilter;
+    /** The requests the composer still offers; open Q&A cards follow it when given. */
+    readonly pendingUserInputRequestIds?: ReadonlySet<string>;
   },
 ): WorkLogEntry[] {
   const runtimeWarningVisibility = options?.runtimeWarningVisibility ?? "hidden";
@@ -1568,10 +1674,57 @@ export function deriveWorkLogEntries(
       terminalCodexProviderItemIds.add(providerCallKey(activity.turnId, payload.providerItemId));
     }
   }
+  const userInputQuestions = userInputQuestionsByRequestId(ordered);
+  const resolvedUserInputRequestIds = new Set<string>();
+  // Muse and Pi resolve with a value-free receipt; only these resolutions carry answers.
+  const answeredUserInputRequestIds = new Set<string>();
+  const questionRequestTurnIds = new Set<TurnId>();
+  // Most `tool.started` activities are filtered out below, so collect start times first.
+  const toolStartedAtByCallKey = new Map<string, string>();
+  const toolCallKeyByActivity = new Map<OrchestrationThreadActivity, string>();
+  for (const activity of ordered) {
+    if (activity.kind === "user-input.requested" || activity.kind === "user-input.resolved") {
+      const payload = workLogPayload(activity);
+      const requestId = typeof payload?.requestId === "string" ? payload.requestId : undefined;
+      if (!requestId) continue;
+      if (activity.kind === "user-input.requested") {
+        if (activity.turnId && userInputQuestions.has(requestId)) {
+          questionRequestTurnIds.add(activity.turnId);
+        }
+        continue;
+      }
+      // An indeterminate receipt leaves the request open, as `derivePendingUserInputs` does,
+      // so its card stays until a final resolution replaces it.
+      if (payload?.receipt !== "indeterminate") resolvedUserInputRequestIds.add(requestId);
+      if (payload?.answers && typeof payload.answers === "object") {
+        answeredUserInputRequestIds.add(requestId);
+      }
+      continue;
+    }
+    if (!activity.kind.startsWith("tool.")) continue;
+    const providerItemId = readToolActivityPayload(activity.payload)?.providerItemId;
+    if (!providerItemId) continue;
+    const callKey = providerCallKey(activity.turnId, providerItemId);
+    toolCallKeyByActivity.set(activity, callKey);
+    const startedAt = toolStartedAtByCallKey.get(callKey);
+    if (!startedAt || activity.createdAt < startedAt) {
+      toolStartedAtByCallKey.set(callKey, activity.createdAt);
+    }
+  }
+  const isQuestionUserInputActivity = (activity: OrchestrationThreadActivity) => {
+    if (activity.kind !== "user-input.requested" && activity.kind !== "user-input.resolved") {
+      return false;
+    }
+    const requestId = workLogPayload(activity)?.requestId;
+    return typeof requestId === "string" && userInputQuestions.has(requestId);
+  };
   const retainedActivityIds = new Set(
     ordered
-      .filter((activity) =>
-        shouldKeepHistoricalWorkEntry(activity, latestTurnId, terminalCodexProviderItemIds),
+      .filter(
+        (activity) =>
+          shouldKeepHistoricalWorkEntry(activity, latestTurnId, terminalCodexProviderItemIds) ||
+          // Q&A cards stay in the timeline after their turn ends.
+          isQuestionUserInputActivity(activity),
       )
       .map((activity) => String(activity.id)),
   );
@@ -1594,8 +1747,25 @@ export function deriveWorkLogEntries(
       usageLimitRowByTurn.set(activity.turnId, activity);
     }
   }
-  const userInputQuestionByRequestId = userInputQuestionTextByRequestId(ordered);
   const entries = ordered
+    .filter((activity) => {
+      if (activity.kind === "user-input.requested") {
+        // The resolved row carries the questions and the answers.
+        const requestId = workLogPayload(activity)?.requestId;
+        return !(
+          typeof requestId === "string" &&
+          userInputQuestions.has(requestId) &&
+          resolvedUserInputRequestIds.has(requestId)
+        );
+      }
+      // A failed call, or one rejected before any question was asked, keeps its tool row.
+      return !(
+        isQuestionToolActivity(activity) &&
+        activity.turnId !== null &&
+        questionRequestTurnIds.has(activity.turnId) &&
+        !isFailedToolActivity(activity)
+      );
+    })
     .filter(
       (activity) =>
         (activity.kind !== "runtime.warning" && activity.kind !== "runtime.error") ||
@@ -1644,15 +1814,40 @@ export function deriveWorkLogEntries(
     .filter((activity) => activity.summary !== "Checkpoint captured")
     .map((activity) => {
       const payload = workLogPayload(activity);
+      const questions =
+        (activity.kind === "user-input.resolved" || activity.kind === "user-input.requested") &&
+        typeof payload?.requestId === "string"
+          ? userInputQuestions.get(payload.requestId)
+          : undefined;
+      const userInput = !questions
+        ? undefined
+        : activity.kind === "user-input.requested"
+          ? workLogUserInput(
+              questions,
+              undefined,
+              isUserInputStillPending(
+                String(payload?.requestId),
+                activity.turnId,
+                latestTurnId,
+                options?.pendingUserInputRequestIds,
+              )
+                ? "pending"
+                : "unanswered",
+            )
+          : userInputResolution(payload, answeredUserInputRequestIds, questions);
       // "User input submitted" buries what was asked: lead with the question and keep the
       // answer as the row's detail.
       const answeredQuestion =
-        activity.kind === "user-input.resolved" && typeof payload?.requestId === "string"
-          ? userInputQuestionByRequestId.get(payload.requestId)
-          : undefined;
-      // Only the warning label and the answered question depend on more than the activity.
+        activity.kind === "user-input.resolved" ? userInputQuestionText(questions) : "";
+      const toolCallKey = toolCallKeyByActivity.get(activity);
+      const toolStartedAt = toolCallKey ? toolStartedAtByCallKey.get(toolCallKey) : undefined;
+      const startedAt =
+        toolStartedAt && toolStartedAt < activity.createdAt ? toolStartedAt : undefined;
+      // Only these inputs depend on more than the activity itself.
       const cacheKey =
-        activity.kind === "runtime.warning" ? runtimeWarningVisibility : (answeredQuestion ?? "");
+        activity.kind === "runtime.warning"
+          ? runtimeWarningVisibility
+          : JSON.stringify([userInput ?? null, answeredQuestion, startedAt ?? null]);
       const cached = workLogEntryByActivity.get(activity);
       if (cached?.cacheKey === cacheKey) {
         return cached.entry;
@@ -1690,6 +1885,8 @@ export function deriveWorkLogEntries(
         tone: usageLimit || activity.tone === "approval" ? "info" : activity.tone,
         activityKind: activity.kind,
         ...(answeredQuestion && answerPreview ? { detail: answerPreview } : {}),
+        ...(userInput ? { userInput } : {}),
+        ...(startedAt ? { startedAt } : {}),
       };
       if (activity.kind === "mcpApp") {
         const app = readMcpAppView(payload);

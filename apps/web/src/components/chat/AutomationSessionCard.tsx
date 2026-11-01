@@ -378,6 +378,7 @@ function AutomationStepRow(props: {
                 mcpInput={entry.mcpInput}
                 mcpResult={entry.mcpResult}
                 markdownCwd={markdownCwd}
+                failed={failed}
               />
             </div>
           </CollapsiblePanel>
