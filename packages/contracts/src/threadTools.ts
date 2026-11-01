@@ -34,11 +34,16 @@ export const HtmlPreviewInput = Schema.Struct({
   appearance: Schema.optional(Schema.Literals(["light", "dark"])),
 });
 export type HtmlPreviewInput = typeof HtmlPreviewInput.Type;
+/** The CSS custom property names a page theme may set; the page bootstrap checks the same. */
+export const HTML_RENDER_THEME_VARIABLE_PATTERN = /^--[a-z0-9-]+$/;
 /** The reader's palette as page CSS variables, so previews match what the thread shows. */
 export const HtmlRenderThemeSchema = Schema.Struct({
   appearance: Schema.Literals(["light", "dark"]),
   variables: Schema.Record(
-    Schema.String.check(Schema.isPattern(/^--[a-z0-9-]+$/), Schema.isMaxLength(64)),
+    Schema.String.check(
+      Schema.isPattern(HTML_RENDER_THEME_VARIABLE_PATTERN),
+      Schema.isMaxLength(64),
+    ),
     Schema.String.check(Schema.isMaxLength(512)),
   ).check(Schema.isMaxProperties(64)),
 });

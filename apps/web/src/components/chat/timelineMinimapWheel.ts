@@ -8,13 +8,14 @@ export interface TimelineWheelDelta {
 /**
  * Replays a wheel on the timeline as a cancelable pixel wheel, so its own
  * listeners (such as the one that stops following the tail) still see it,
- * then scrolls the timeline unless one of them cancelled.
+ * then scrolls the timeline unless one of them cancelled or `scroll` is false.
  */
 export function replayWheelOnTimeline(
   delta: TimelineWheelDelta,
   timeline: HTMLElement,
   options: {
     readonly maxPixels?: number;
+    readonly scroll?: boolean;
     readonly init?: Omit<WheelEventInit, "deltaX" | "deltaY" | "deltaMode">;
   } = {},
 ): void {
@@ -33,7 +34,7 @@ export function replayWheelOnTimeline(
     deltaY: top,
     deltaMode: WheelEvent.DOM_DELTA_PIXEL,
   });
-  if (!timeline.dispatchEvent(replayed)) return;
+  if (!timeline.dispatchEvent(replayed) || options.scroll === false) return;
   timeline.scrollBy({ left, top });
 }
 

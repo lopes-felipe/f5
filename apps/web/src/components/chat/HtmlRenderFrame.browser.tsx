@@ -402,6 +402,42 @@ it("sends the wheel to the thread over a capped page instead of scrolling inside
   }
 });
 
+it("lets a scroll box inside the page take the wheel, still telling the thread about wheels up", async () => {
+  source =
+    '<div id="box" style="height:200px;overflow:auto"><div style="width:3000px;height:2000px">Log</div></div><script>const box=document.getElementById("box");setInterval(()=>parent.postMessage({probe:true,top:box.scrollTop,left:box.scrollLeft},"*"),50)</script>';
+  const { reports, stop } = probes();
+  const wheels: number[] = [];
+  try {
+    active = await render(
+      <Harness
+        reference={freshReference()}
+        wrap={(frame) => (
+          <div data-testid="thread" style={{ height: "500px", overflowY: "auto" }}>
+            <div style={{ height: "200px" }} />
+            {frame}
+            <div style={{ height: "1000px" }} />
+          </div>
+        )}
+      />,
+    );
+    const thread = page.getByTestId("thread").element() as HTMLElement;
+    thread.addEventListener("wheel", (event) => wheels.push(event.deltaY));
+    await expect.poll(frameHeight).toBe(216);
+    const widget = page.getByTitle("HTML widget", { exact: true });
+    await userEvent.wheel(widget, { delta: { y: 300 } });
+    await expect.poll(() => reports.at(-1)?.data.top).toBe(300);
+    await userEvent.wheel(widget, { delta: { x: 400 } });
+    await expect.poll(() => reports.at(-1)?.data.left).toBe(400);
+    await userEvent.wheel(widget, { delta: { y: -100 } });
+    await expect.poll(() => reports.at(-1)?.data.top).toBe(200);
+    expect(thread.scrollTop).toBe(0);
+    // Only the wheel up reached the thread, without scrolling it, so live follow stops.
+    expect(wheels).toEqual([-100]);
+  } finally {
+    stop();
+  }
+});
+
 it("restyles a mounted page over the bridge without rebuilding its document", async () => {
   source =
     '<input aria-label="Name" style="display:block;width:100%;height:150px"><script>setInterval(()=>parent.postMessage({probe:true,scheme:getComputedStyle(document.documentElement).colorScheme,value:document.querySelector("input").value},"*"),50)</script>';

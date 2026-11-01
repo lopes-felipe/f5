@@ -46,7 +46,8 @@ every time keeps changing it, so that page grows to the 20,000-pixel limit inste
 
 `html_render` accepts up to 512 KiB of HTML and a title up to 80 characters. Absolute local
 image paths are inlined only from the thread's project, worktree or attachment folders; a
-thread without a project uses only its own scratch folder. Images must be at most 10 MiB each,
+scratch thread uses its own scratch folder and the attachments folder, never its siblings'.
+Images must be at most 10 MiB each,
 and the prepared page must fit within 25 MiB. F5 rejects pages that use viewport height units
 (`vh`, `svh`, `lvh`, `dvh`) in their styles. When a page is rejected, or an image path cannot
 be read, the agent gets a message that names the problem and fixes the page.

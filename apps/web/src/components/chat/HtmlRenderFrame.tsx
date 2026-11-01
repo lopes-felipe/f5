@@ -123,7 +123,7 @@ function HtmlRenderDocumentFrame(props: {
       if (measurement) current.onMeasure(measurement);
     }
     if (data.type === "wheel") {
-      const { x, y, mode } = (data.value ?? {}) as Record<string, unknown>;
+      const { x, y, mode, inside } = (data.value ?? {}) as Record<string, unknown>;
       if (
         typeof x === "number" &&
         typeof y === "number" &&
@@ -131,9 +131,14 @@ function HtmlRenderDocumentFrame(props: {
         Number.isFinite(y) &&
         (mode === 0 || mode === 1 || mode === 2)
       ) {
-        // A real wheel event on the timeline, so its listeners stop following the tail.
+        // A real wheel event on the timeline, so its listeners stop following the tail. A
+        // scroll box inside the page that took the wheel itself leaves the thread in place.
         const target = scrollableAncestor(frame.current?.parentElement);
-        if (target) replayWheelOnTimeline({ x, y, mode }, target, { maxPixels: 1000 });
+        if (target)
+          replayWheelOnTimeline({ x, y, mode }, target, {
+            maxPixels: 1000,
+            scroll: inside !== true,
+          });
       }
     }
     if (data.type === "keydown") {

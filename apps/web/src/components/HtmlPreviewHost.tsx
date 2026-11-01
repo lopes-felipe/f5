@@ -11,7 +11,10 @@ export function HtmlPreviewHost() {
   // Read through a ref, so a theme change neither re-registers the host nor drops requests.
   const current = useHtmlRenderThemes();
   const themes = useRef(current);
-  themes.current = current;
+  // After commit, so a discarded render cannot leave a theme that never showed.
+  useEffect(() => {
+    themes.current = current;
+  }, [current]);
   useEffect(() => {
     const render = window.desktopBridge?.htmlPreview;
     const api = readNativeApi()?.htmlRender;

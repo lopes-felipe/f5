@@ -1,3 +1,8 @@
+import { HTML_RENDER_THEME_VARIABLE_PATTERN } from "@t3tools/contracts";
+
+/** Characters stripped from a theme value, so it cannot end its declaration or the style element. */
+const THEME_VALUE_UNSAFE = /[;{}<>]/g;
+
 /**
  * Remote HTTPS images and scripts load only when allowed: either one is an
  * outbound request an agent-written page makes as soon as it renders.
@@ -204,8 +209,8 @@ export function htmlRenderDocument(
   options: { readonly allowRemoteContent?: boolean } = {},
 ): string {
   const variables = Object.entries(theme.variables)
-    .filter(([key]) => /^--[a-z0-9-]+$/.test(key))
-    .map(([key, value]) => `${key}:${value.replace(/[;{}<>]/g, "")}`)
+    .filter(([key]) => HTML_RENDER_THEME_VARIABLE_PATTERN.test(key))
+    .map(([key, value]) => `${key}:${value.replace(THEME_VALUE_UNSAFE, "")}`)
     .join(";");
   const script =
     `const __f5Bridge=${JSON.stringify(bridgeId).replaceAll("<", "\\u003c")};` +
@@ -216,7 +221,11 @@ export function htmlRenderDocument(
     const read={};for(const key of ['key','code','metaKey','ctrlKey','shiftKey','altKey','repeat','isComposing']){const getter=Object.getOwnPropertyDescriptor(KeyboardEvent.prototype,key)?.get;if(getter)read[key]=Function.prototype.call.bind(getter)}
     const prevent=Function.prototype.call.bind(Event.prototype.preventDefault);
     const root=document.documentElement;
-    let shortcuts=[],scroll=false,inner=false,mutation;channel.port1.onmessage=e=>{if(e.data?.type==='shortcuts')shortcuts=e.data.value;if(e.data?.type==='sizing'){const v=e.data.value;scroll=v==='scroll'||v==='scroll-inner';inner=v==='scroll-inner';if(scroll)root.style.setProperty('overflow','auto');else root.style.removeProperty('overflow');mutation?.takeRecords();last='';invalidate()}if(e.data?.type==='theme'){const t=e.data.value,s=document.getElementById('f5-html-theme');if(s&&t){let css=':root{color-scheme:'+(t.appearance==='light'?'light':'dark')+';';for(const key in t.variables)if(/^--[a-z0-9-]+$/.test(key))css+=key+':'+String(t.variables[key]).replace(/[;{}<>]/g,'')+';';s.textContent=css+'}'}}};
+    let shortcuts=[],scroll=false,inner=false,mutation;channel.port1.onmessage=e=>{if(e.data?.type==='shortcuts')shortcuts=e.data.value;if(e.data?.type==='sizing'){const v=e.data.value;scroll=v==='scroll'||v==='scroll-inner';inner=v==='scroll-inner';if(scroll)root.style.setProperty('overflow','auto');else root.style.removeProperty('overflow');mutation?.takeRecords();last='';invalidate()}if(e.data?.type==='theme'){const t=e.data.value,s=document.getElementById('f5-html-theme');if(s&&t){let css=':root{color-scheme:'+(t.appearance==='light'?'light':'dark')+';';for(const key in t.variables)if(` +
+    HTML_RENDER_THEME_VARIABLE_PATTERN +
+    String.raw`.test(key))css+=key+':'+String(t.variables[key]).replace(` +
+    THEME_VALUE_UNSAFE +
+    String.raw`,'')+';';s.textContent=css+'}'}}};
     parent.postMessage({f5HtmlRender:__f5Bridge,type:'connect'},'*',[channel.port2]);
     let last='',timer=0,frame=0,backstop=0,ran=-1e9,dirty=true;
     const measure=()=>{cancelAnimationFrame(frame);clearTimeout(backstop);frame=0;backstop=0;ran=performance.now();const height=` +
@@ -228,7 +237,9 @@ export function htmlRenderDocument(
     addEventListener('DOMContentLoaded',()=>{const resize=new ResizeObserver(invalidate);resize.observe(root);if(document.body)resize.observe(document.body);mutation=new MutationObserver(touch);mutation.observe(root,{subtree:true,childList:true,characterData:true,attributes:true});document.fonts?.ready.then(touch);document.fonts?.addEventListener('loadingdone',touch);addEventListener('pagehide',()=>{resize.disconnect();mutation.disconnect();clearTimeout(timer);clearTimeout(backstop);cancelAnimationFrame(frame);document.fonts?.removeEventListener('loadingdone',touch);removeEventListener('load',touch,true);removeEventListener('error',touch,true);removeEventListener('resize',invalidate)},{once:true});invalidate()},{once:true});
     document.addEventListener('click',e=>{if(!e.isTrusted)return;const a=e.composedPath().find(n=>n?.matches?.('a[href]'));if(a){prevent(e);try{const u=new URL(a.getAttribute('href'));if(/^https?:$/.test(u.protocol))emit('link',u.href)}catch{}return}const img=e.composedPath().find(n=>n?.tagName==='IMG');if(img&&!e.defaultPrevented)emit('image',{src:img.currentSrc||img.src,name:img.alt||'Rendered image'})},true);
     addEventListener('keydown',e=>{if(!e.isTrusted||read.isComposing(e))return;const key=read.key(e);if(key==='Escape'){prevent(e);emit('escape',null);return}const value={key,code:read.code(e),metaKey:read.metaKey(e),ctrlKey:read.ctrlKey(e),shiftKey:read.shiftKey(e),altKey:read.altKey(e),repeat:read.repeat(e)};if(shortcuts.some(s=>s.key===key.toLowerCase()&&s.metaKey===value.metaKey&&s.ctrlKey===value.ctrlKey&&s.shiftKey===value.shiftKey&&s.altKey===value.altKey)){prevent(e);emit('keydown',value)}},true);
-    addEventListener('wheel',e=>{if(!e.isTrusted||e.ctrlKey)return;if(inner){const s=document.scrollingElement||root,x=e.deltaX,y=e.deltaY;if((y<0&&s.scrollTop>0)||(y>0&&s.scrollTop+s.clientHeight<s.scrollHeight-1)||(x<0&&s.scrollLeft>0)||(x>0&&s.scrollLeft+s.clientWidth<s.scrollWidth-1))return}prevent(e);emit('wheel',{x:e.deltaX,y:e.deltaY,mode:e.deltaMode})},{passive:false});
+    const movable=(s,x,y)=>(y<0&&s.scrollTop>0)||(y>0&&s.scrollTop+s.clientHeight<s.scrollHeight-1)||(x<0&&s.scrollLeft>0)||(x>0&&s.scrollLeft+s.clientWidth<s.scrollWidth-1);
+    const box=(e,x,y)=>{for(const n of e.composedPath()){if(n===root||n===document.body)return false;if(!(n instanceof Element)||(n.scrollHeight<=n.clientHeight&&n.scrollWidth<=n.clientWidth))continue;const c=getComputedStyle(n);if(movable(n,/auto|scroll/.test(c.overflowX)?x:0,/auto|scroll/.test(c.overflowY)?y:0))return true}return false};
+    addEventListener('wheel',e=>{if(!e.isTrusted||e.ctrlKey)return;const x=e.deltaX,y=e.deltaY;if(box(e,x,y)){if(y<0)emit('wheel',{x:0,y,mode:e.deltaMode,inside:true});return}if(inner&&movable(document.scrollingElement||root,x,y))return;prevent(e);emit('wheel',{x,y,mode:e.deltaMode})},{passive:false});
   })();`;
   const base =
     "html{box-sizing:border-box;padding:8px;background:var(--background);color:var(--foreground);font-family:var(--font-sans,system-ui,sans-serif);font-size:14px;line-height:1.5;overflow:hidden}" +
