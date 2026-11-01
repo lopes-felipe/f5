@@ -510,6 +510,7 @@ const make = Effect.gen(function* () {
   const resolveThreadWorkspaceContext = Effect.fnUntraced(function* (
     threadId: ThreadId,
     operation: "start" | "steer" | "continuation" = "start",
+    reportFailure = true,
   ) {
     const readModel = yield* orchestrationEngine.getReadModel();
     const thread = readModel.threads.find((entry) => entry.id === threadId);
@@ -538,14 +539,15 @@ const make = Effect.gen(function* () {
       (!project && thread.scratchPath)
     ) {
       const detail = "The thread without a project has an invalid workspace folder or Git state.";
-      yield* appendProviderFailureActivity({
-        threadId,
-        kind: `provider.turn.${operation}.failed`,
-        summary: `Provider turn ${operation} failed`,
-        detail,
-        turnId: null,
-        createdAt: new Date().toISOString(),
-      });
+      if (reportFailure)
+        yield* appendProviderFailureActivity({
+          threadId,
+          kind: `provider.turn.${operation}.failed`,
+          summary: `Provider turn ${operation} failed`,
+          detail,
+          turnId: null,
+          createdAt: new Date().toISOString(),
+        });
       return yield* new ProviderTurnDeliveryError({
         certainty: "not_sent",
         retryable: false,
@@ -558,9 +560,13 @@ const make = Effect.gen(function* () {
   const resolveThreadInstructionContext = Effect.fnUntraced(function* (
     threadId: ThreadId,
     workflowExecutionProfile?: WorkflowTurnExecutionProfile,
+    reportWorkspaceFailure = true,
   ) {
-    const { thread, project, effectiveCwd, scratch } =
-      yield* resolveThreadWorkspaceContext(threadId);
+    const { thread, project, effectiveCwd, scratch } = yield* resolveThreadWorkspaceContext(
+      threadId,
+      "start",
+      reportWorkspaceFailure,
+    );
     yield* Effect.logInfo("provider command reactor resolved thread session start context", {
       threadId,
       threadWorktreePath: thread.worktreePath,
@@ -584,9 +590,11 @@ const make = Effect.gen(function* () {
   const resolveThreadSessionStartContext = Effect.fnUntraced(function* (
     threadId: ThreadId,
     resolvedContext?: Effect.Success<ReturnType<typeof resolveThreadInstructionContext>>,
+    reportWorkspaceFailure = true,
   ) {
     const { thread, instructionContext } =
-      resolvedContext ?? (yield* resolveThreadInstructionContext(threadId));
+      resolvedContext ??
+      (yield* resolveThreadInstructionContext(threadId, undefined, reportWorkspaceFailure));
     const persistedBindingOption = yield* providerSessionDirectory.getBinding(threadId);
 
     return {
@@ -702,6 +710,7 @@ const make = Effect.gen(function* () {
       readonly providerOptions?: ProviderStartOptions;
       readonly workflowExecutionProfile?: WorkflowTurnExecutionProfile;
       readonly keepWorkflowExecutionProfile?: boolean;
+      readonly reportWorkspaceFailure?: boolean;
       /** For an automation's turn: a new session asks no consent, and none restarts for one. */
       readonly unattended?: boolean;
       readonly resolvedContext?: Effect.Success<ReturnType<typeof resolveThreadInstructionContext>>;
@@ -711,6 +720,7 @@ const make = Effect.gen(function* () {
       const sessionContext = yield* resolveThreadSessionStartContext(
         threadId,
         options?.resolvedContext,
+        options?.reportWorkspaceFailure !== false,
       );
       const {
         thread,
@@ -2307,7 +2317,11 @@ const make = Effect.gen(function* () {
       return false;
     }
 
-    const sessionContext = yield* resolveThreadSessionStartContext(binding.threadId);
+    const sessionContext = yield* resolveThreadSessionStartContext(
+      binding.threadId,
+      undefined,
+      false,
+    );
     const activeSession = yield* providerService
       .listSessions()
       .pipe(
@@ -2883,6 +2897,7 @@ const make = Effect.gen(function* () {
             return;
           yield* ensureSessionForThread(threadId, createdAt, {
             keepWorkflowExecutionProfile: true,
+            reportWorkspaceFailure: false,
           });
         }),
       ).pipe(

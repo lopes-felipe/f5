@@ -42,6 +42,7 @@ import {
   Effect,
   Exit,
   Layer,
+  Logger,
   ManagedRuntime,
   Metric,
   Option,
@@ -238,6 +239,7 @@ describe("ProviderCommandReactor", () => {
     readonly recoverySummary?: string;
     /** Expose the fixture's database so tests can stamp submission provenance. */
     readonly withSql?: boolean;
+    readonly onLog?: (message: unknown) => void;
   }) {
     const simulateNativeFallback = input?.nativeFallback;
     const simulateOpenCodeFork = input?.openCodeFork;
@@ -810,7 +812,18 @@ describe("ProviderCommandReactor", () => {
       Layer.provideMerge(tracerLayer),
       Layer.provideMerge(NodeServices.layer),
     );
-    const runtime = ManagedRuntime.make(layer);
+    const runtime = ManagedRuntime.make(
+      input?.onLog
+        ? layer.pipe(
+            Layer.provide(
+              Logger.layer(
+                [Logger.make(({ message }) => input.onLog!(message)), Logger.tracerLogger],
+                { mergeWithExisting: false },
+              ),
+            ),
+          )
+        : layer,
+    );
 
     const engine = withFixtureWorkspaceWrites(
       await runtime.runPromise(Effect.service(OrchestrationEngineService)),
@@ -1071,7 +1084,7 @@ describe("ProviderCommandReactor", () => {
     ).instructionContext;
     expect(context.projectTitle).toBeUndefined();
     expect(context.projectMemories).toBeUndefined();
-    expect(context.cwd).toContain("/scratch/");
+    expect(path.dirname(String(context.cwd))).toBe(path.join(harness.stateDir, "scratch"));
     expect(harness.ensureWorktree).not.toHaveBeenCalled();
     const second = await pendingTurn(harness, threadId, "second");
     const model = await Effect.runPromise(harness.engine.getReadModel());
@@ -1083,6 +1096,72 @@ describe("ProviderCommandReactor", () => {
     expect(harness.startSession).toHaveBeenCalledTimes(1);
     expect(harness.sendTurn).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["runtime mode", "metadata", "MCP restart"] as const)(
+    "rejects malformed scratch workspace during %s refresh without inventing a failed turn",
+    async (operation) => {
+      const logs: unknown[] = [];
+      const harness = await createHarness({
+        bridgeTurnDelivery: false,
+        onLog: (message) => logs.push(...(Array.isArray(message) ? message : [message])),
+      });
+      const threadId = await scratchThread(harness);
+      const first = await pendingTurn(harness, threadId, "refresh");
+      await Effect.runPromise(harness.reactor.deliverTurnStart(first).pipe(Effect.scoped));
+      const model = await Effect.runPromise(harness.engine.getReadModel());
+      const thread = model.threads.find((entry) => entry.id === threadId)!;
+      Object.assign(thread, { scratchPath: null });
+      if (operation === "MCP restart") {
+        const instanceId = ProviderInstanceId.makeUnsafe("claudeAgent");
+        Object.assign(harness.runtimeSessions.find((entry) => entry.threadId === threadId)!, {
+          provider: "claudeAgent",
+          providerInstanceId: instanceId,
+        });
+        harness.upsertBinding({
+          ...harness.getBinding(threadId)!,
+          provider: "claudeAgent",
+          providerInstanceId: instanceId,
+          mcpEffectiveConfigVersion: "old-config",
+        });
+        const result = await Effect.runPromise(
+          harness.reactor.applyMcpConfigToLiveSessions({
+            scope: "project",
+            projectId: thread.projectId,
+          }),
+        );
+        expect(result.claudeRestarted).toBe(0);
+        expect(result.failures).toHaveLength(1);
+      } else {
+        await Effect.runPromise(
+          harness.engine.dispatch(
+            operation === "runtime mode"
+              ? {
+                  type: "thread.runtime-mode.set",
+                  commandId: CommandId.makeUnsafe("bad-scratch-refresh"),
+                  threadId,
+                  runtimeMode: "full-access",
+                  createdAt: new Date().toISOString(),
+                }
+              : {
+                  type: "thread.meta.update",
+                  commandId: CommandId.makeUnsafe("bad-scratch-refresh"),
+                  threadId,
+                  model: "gpt-5-codex",
+                },
+          ),
+        );
+        await waitFor(() => logs.includes("provider command reactor failed to refresh session"));
+      }
+      const current = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+        (entry) => entry.id === threadId,
+      )!;
+      expect(
+        current.activities.filter((activity) => activity.kind === "provider.turn.start.failed"),
+      ).toEqual([]);
+      expect(harness.startSession).toHaveBeenCalledTimes(1);
+      expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it.each(["steer", "continuation"] as const)(
     "reports malformed scratch workspace failures for the %s operation",
