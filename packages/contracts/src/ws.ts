@@ -75,6 +75,7 @@ export const WS_CHANNELS = {
   computerActivity: "computer.activity",
   computerObservationsInvalidated: "computer.observations.invalidated",
   serverWelcome: "server.welcome",
+  serverRuntimeReadiness: "server.runtimeReadiness",
   serverConfigUpdated: "server.configUpdated",
   providerAdvisoriesUpdated: "provider.advisoriesUpdated",
   mcpStatusUpdated: "mcp.statusUpdated",
@@ -104,9 +105,29 @@ export type WebSocketResponse = typeof WebSocketResponse.Type;
 export const WsPushSequence = NonNegativeInt;
 export type WsPushSequence = typeof WsPushSequence.Type;
 
+/**
+ * Whether routes that need the orchestration runtime can run. `revision`
+ * increases on every change within one backend incarnation.
+ */
+export const ServerRuntimeReadiness = Schema.Struct({
+  state: Schema.Literals(["starting", "ready", "failed"]),
+  revision: NonNegativeInt,
+  phase: Schema.optional(Schema.String),
+  /** Why startup failed; present only when `state` is `failed`. */
+  message: Schema.optional(Schema.String),
+});
+export type ServerRuntimeReadiness = typeof ServerRuntimeReadiness.Type;
+
+export const ServerRuntimeReadinessPayload = Schema.Struct({
+  ...ServerRuntimeReadiness.fields,
+  backendIncarnation: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerRuntimeReadinessPayload = typeof ServerRuntimeReadinessPayload.Type;
+
 export const WsWelcomePayload = Schema.Struct({
   // Legacy welcomes remain decodable so the protocol check can request an upgrade.
   backendIncarnation: Schema.optional(TrimmedNonEmptyString),
+  runtime: Schema.optional(ServerRuntimeReadiness),
   // Optional only to decode legacy welcomes and explicitly close them as upgrade-required.
   bootstrap: Schema.optional(ServerBootstrap),
   profile: Schema.optional(ProfileSummary),
@@ -125,6 +146,7 @@ export interface WsPushPayloadByChannel {
   readonly [AGENTS_WS_CHANNELS.snapshotUpdated]: typeof AgentsSnapshot.Type;
   readonly [AGENT_BRIDGE_WS_CHANNELS.stateChanged]: typeof AgentBridgeStateChanged.Type;
   readonly [WS_CHANNELS.serverWelcome]: WsWelcomePayload;
+  readonly [WS_CHANNELS.serverRuntimeReadiness]: ServerRuntimeReadinessPayload;
   readonly [WS_CHANNELS.serverConfigUpdated]: typeof ServerConfigUpdatedPayload.Type;
   readonly [WS_CHANNELS.providerAdvisoriesUpdated]: typeof ServerProviderAdvisoriesUpdatedPayload.Type;
   readonly [WS_CHANNELS.gitActionProgress]: typeof GitActionProgressEvent.Type;
@@ -181,6 +203,10 @@ export const WsPushProviderAccountEvent = makeWsPushSchema(
   ProviderAccountEvent,
 );
 export const WsPushServerWelcome = makeWsPushSchema(WS_CHANNELS.serverWelcome, WsWelcomePayload);
+export const WsPushServerRuntimeReadiness = makeWsPushSchema(
+  WS_CHANNELS.serverRuntimeReadiness,
+  ServerRuntimeReadinessPayload,
+);
 export const WsPushAgentsSnapshotUpdated = makeWsPushSchema(
   AGENTS_WS_CHANNELS.snapshotUpdated,
   AgentsSnapshot,
@@ -387,6 +413,7 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.nextTurnQueueUpdated,
   WS_CHANNELS.nextTurnQueueSummaryUpdated,
   WS_CHANNELS.worktreeSetupUpdated,
+  WS_CHANNELS.serverRuntimeReadiness,
   ORCHESTRATION_WS_CHANNELS.domainEvent,
   PR_HUB_WS_CHANNELS.changed,
   PR_HUB_WS_CHANNELS.advisoriesUpdated,
@@ -400,6 +427,7 @@ export const WsPush = Schema.Union([
   WsPushAgentsSnapshotUpdated,
   WsPushAgentBridgeStateChanged,
   WsPushServerWelcome,
+  WsPushServerRuntimeReadiness,
   WsPushServerConfigUpdated,
   WsPushProviderAdvisoriesUpdated,
   WsPushGitActionProgress,

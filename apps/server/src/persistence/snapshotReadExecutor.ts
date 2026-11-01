@@ -71,16 +71,32 @@ export const makeLeasedSqlClient = (client: SqlClient.SqlClient, cooperative = f
   }).pipe(Effect.provide(Reactivity.layer));
 };
 
+/** Reads that waited this long for their reader connection log the wait. */
+export const SLOW_SNAPSHOT_LEASE_WAIT_MS = 250;
+
 export const withSnapshotRead = <A, E, R>(
   client: SqlClient.SqlClient,
   lane: "foreground" | "background",
   effect: Effect.Effect<A, E, R>,
   isolateTransaction = true,
   budgetMs = 2_000,
+  /** Names the read in the slow-lease log, e.g. `getStartupSnapshot`. */
+  scope?: string,
 ) =>
   Effect.suspend(() => {
     const started = performance.now();
-    return client.withTransaction(effect).pipe(
+    // The transaction body starts once the reader lease is held and BEGIN has run.
+    const leased = Effect.suspend(() => {
+      const waitMs = performance.now() - started;
+      return waitMs >= SLOW_SNAPSHOT_LEASE_WAIT_MS
+        ? Effect.logWarning("snapshot read waited for its reader", {
+            lane,
+            ...(scope ? { scope } : {}),
+            waitMs,
+          }).pipe(Effect.andThen(effect))
+        : effect;
+    });
+    return client.withTransaction(leased).pipe(
       Effect.provideService(SnapshotReadDeadline, started + budgetMs),
       Effect.updateServices((services: ServiceMap.ServiceMap<R>) =>
         isolateTransaction

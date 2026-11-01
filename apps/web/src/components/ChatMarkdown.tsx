@@ -5,7 +5,7 @@ import { ChatAssetImage } from "./ChatAssetImage";
 import { createContext, useContext } from "react";
 import { RepositoryLinks } from "../repositoryLinkContext";
 import { remarkIssueReferences } from "../lib/remarkIssueReferences";
-import { remarkKeepWindowsPathDestinations } from "../lib/remarkWindowsPathDestinations";
+import { remarkKeepWindowsPaths } from "../lib/remarkWindowsPaths";
 import { remarkGfmAlerts } from "../lib/remarkGfmAlerts";
 import { isGfmAlertType, type GfmAlertType } from "@t3tools/shared/markdownAlerts";
 import { GitHubIcon } from "./Icons";
@@ -40,6 +40,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useDiffWordWrap } from "../appSettings";
 import { openFileInEditor } from "../lib/openFileInEditor";
+import { findWorkspaceBasenameFile } from "../lib/workspaceBasename";
+import { readNativeApi } from "../nativeApi";
 import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
 import { fnv1a32 } from "../lib/diffRendering";
 import { LRUCache } from "../lib/lruCache";
@@ -58,11 +60,14 @@ import {
   collectMarkdownLinkHrefs,
   chatMarkdownUrlTransform,
   isMarkdownFileLinkLabel,
+  resolveMarkdownFileEditorTarget,
   resolveMarkdownFileLinkMeta,
   type MarkdownFileLinkMeta,
 } from "../markdown-links";
 import { inferEntryKindFromPath } from "../vscode-icons";
 import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
+import { ThreadReferenceChip } from "./chat/ThreadReferenceChip";
+import { threadIdOfThreadReferenceUrl } from "@t3tools/shared/threadReferences";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { SurfaceErrorBoundary } from "./ui/SurfaceErrorBoundary";
 import { MermaidDiagram } from "./chat/MermaidDiagram";
@@ -216,6 +221,7 @@ function MarkdownFileChip({
   meta,
   disambiguator,
   theme,
+  cwd,
   anchorProps,
 }: {
   /** Omitted when there is no safe URL; the chip stays keyboard-reachable. */
@@ -223,6 +229,7 @@ function MarkdownFileChip({
   meta: MarkdownFileLinkMeta;
   disambiguator: string | null;
   theme: "light" | "dark";
+  cwd: string | undefined;
   anchorProps?: React.AnchorHTMLAttributes<HTMLAnchorElement>;
 }) {
   const handleFileNavigation = useFileNavigation();
@@ -233,7 +240,13 @@ function MarkdownFileChip({
     if (handleFileNavigation(meta.targetPath)) {
       return;
     }
-    void openFileInEditor(meta.targetPath);
+    const api = readNativeApi();
+    // The lookup runs after the editor grant is captured, so a slow search keeps the click valid.
+    void openFileInEditor(meta.targetPath, undefined, () =>
+      resolveMarkdownFileEditorTarget(meta, cwd, (name) =>
+        api && cwd ? findWorkspaceBasenameFile(api, cwd, name) : Promise.resolve(null),
+      ),
+    );
   };
 
   return (
@@ -415,6 +428,7 @@ function MarkdownCodeBlock({
               meta={fileMeta}
               disambiguator={null}
               theme={resolvedTheme === "dark" ? "dark" : "light"}
+              cwd={cwd}
             />
           ) : filePath ? (
             <span className="chat-markdown-codeblock-path">{filePath}</span>
@@ -779,6 +793,16 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         ) : null;
       },
       a({ node: _node, href, children, ...props }) {
+        // A thread reference only navigates; it never grants the agent access to the thread.
+        const referencedThreadId = href ? threadIdOfThreadReferenceUrl(href) : null;
+        if (referencedThreadId)
+          return (
+            <ThreadReferenceChip
+              threadId={referencedThreadId}
+              label={nodeToPlainText(children).trim() || "Thread"}
+              link
+            />
+          );
         // Resolve meta directly from the href so reference-style links and
         // balanced-paren hrefs (which the regex pre-scan misses) still
         // render as file chips — the pre-scan is only used for collision
@@ -832,6 +856,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
             meta={meta}
             disambiguator={disambiguatorMap.get(href) ?? null}
             theme={resolvedTheme === "dark" ? "dark" : "light"}
+            cwd={cwd}
             anchorProps={props}
           />
         );
@@ -951,7 +976,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         remarkPlugins={[
           remarkGfm,
           remarkGfmAlerts,
-          remarkKeepWindowsPathDestinations,
+          remarkKeepWindowsPaths,
           [remarkIssueReferences, repositoryLinks],
         ]}
         urlTransform={chatMarkdownUrlTransform}

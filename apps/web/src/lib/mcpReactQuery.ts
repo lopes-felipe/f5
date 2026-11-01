@@ -16,6 +16,7 @@ import type {
 import { queryOptions } from "@tanstack/react-query";
 import { getWsConnectionState } from "../wsConnectionState";
 import { ensureNativeApi } from "../nativeApi";
+import { rpcQueryContext, rpcQueryMeta } from "./rpcQueryContext";
 
 type CodexEnvironmentKeyPart = string | null;
 
@@ -142,14 +143,18 @@ export function mcpCodexStatusQueryOptions(input: {
       input.homePath ?? null,
     ),
     enabled: (input.enabled ?? true) && Boolean(input.projectId),
-    queryFn: async () => {
+    meta: rpcQueryMeta("refresh-background"),
+    queryFn: async (context) => {
       if (!input.projectId) {
         throw new Error("Codex MCP status is unavailable.");
       }
-      return ensureNativeApi().mcp.getCodexStatus({
-        projectId: input.projectId,
-        ...(input.instanceId ? { instanceId: input.instanceId } : {}),
-      });
+      return ensureNativeApi().mcp.getCodexStatus(
+        {
+          projectId: input.projectId,
+          ...(input.instanceId ? { instanceId: input.instanceId } : {}),
+        },
+        rpcQueryContext(context),
+      );
     },
   });
 }
@@ -170,15 +175,19 @@ export function mcpProviderStatusQueryOptions(input: {
       input.homePath ?? null,
     ),
     enabled: (input.enabled ?? true) && Boolean(input.projectId),
-    queryFn: async () => {
+    meta: rpcQueryMeta("refresh-background"),
+    queryFn: async (context) => {
       if (!input.projectId) {
         throw new Error("MCP provider status is unavailable.");
       }
-      return ensureNativeApi().mcp.getProviderStatus({
-        provider: input.provider,
-        projectId: input.projectId,
-        ...(input.instanceId ? { instanceId: input.instanceId } : {}),
-      });
+      return ensureNativeApi().mcp.getProviderStatus(
+        {
+          provider: input.provider,
+          projectId: input.projectId,
+          ...(input.instanceId ? { instanceId: input.instanceId } : {}),
+        },
+        rpcQueryContext(context),
+      );
     },
   });
 }
@@ -231,16 +240,20 @@ export function mcpServerStatusesQueryOptions(input: {
       runtimePollWindows.set(query, started);
       return shouldPollMcpRuntime(query.state.data, started) ? 2_000 : false;
     },
-    queryFn: async () => {
+    meta: rpcQueryMeta("refresh-background"),
+    queryFn: async (context) => {
       if (!input.projectId) {
         throw new Error("MCP server statuses are unavailable.");
       }
-      return ensureNativeApi().mcp.getServerStatuses({
-        provider: input.provider,
-        ...(input.threadId ? { threadId: input.threadId } : {}),
-        projectId: input.projectId,
-        ...(input.instanceId ? { instanceId: input.instanceId } : {}),
-      });
+      return ensureNativeApi().mcp.getServerStatuses(
+        {
+          provider: input.provider,
+          ...(input.threadId ? { threadId: input.threadId } : {}),
+          projectId: input.projectId,
+          ...(input.instanceId ? { instanceId: input.instanceId } : {}),
+        },
+        rpcQueryContext(context),
+      );
     },
   });
 }
