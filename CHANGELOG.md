@@ -25,7 +25,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 - Keep scratch threads' provider sessions, file references, skills, attachments and HTML images in the correct workspace.
 - Recover interrupted scratch-folder cleanup and retry failed deletion without removing another thread's files.
-- Display image-only messages without the internal placeholder prompt, including queued messages, search results and generated thread titles.
+- Show image-only messages as images, and keep the internal placeholder prompt out of queues, search results and generated thread titles.
 - Keep retained runtime-error details visible in the work log.
 - Render Windows file paths correctly in Markdown and preserve line and column when opening filename-only file links in the editor.
 - Shut down the desktop backend cleanly when its launcher disappears or its output pipes close.
@@ -35,7 +35,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Build desktop and CLI release candidates once alongside CI, then publish the exact qualified artifacts automatically. Stable preparation PRs record explicit release intent and preserve publication ordering.
 - Resume publication without replacing completed assets, transfer components concurrently, retry recognized transient macOS timestamp failures once, and stop obsolete beta builds after newer main commits pass required CI.
 - Verify native CLI installation and updates, Windows upgrade preferences and failure recovery, and public release assets and feeds. Release summaries record queue time, retries and artifact reuse.
-- macOS packages remain signed and notarized. Windows installers remain unsigned, and existing provider browser/computer certification requirements remain in force.
+- macOS desktop packages remain signed and notarized. Windows installers remain unsigned, and existing provider browser/computer certification requirements remain in force.
 
 ## [0.1.1] - 2026-10-30
 
