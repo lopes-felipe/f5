@@ -59,6 +59,8 @@ import { Cause, Effect, Layer, Option, Schema, Scope, Stream } from "effect";
 import { makeBackgroundWorker } from "../../backgroundWorker.ts";
 import { estimateMessageContextCharacters, inferProviderForModel } from "@t3tools/shared/model";
 import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
+import { threadReferencesToLabels } from "@t3tools/shared/threadReferences";
+import { projectProviderInput } from "../threadReferenceGrants.ts";
 import {
   areProviderModelOptionsEqual,
   areProviderStartOptionsEqual,
@@ -508,6 +510,7 @@ const make = Effect.gen(function* () {
   const resolveThreadWorkspaceContext = Effect.fnUntraced(function* (
     threadId: ThreadId,
     operation: "start" | "steer" | "continuation" = "start",
+    reportFailure = true,
   ) {
     const readModel = yield* orchestrationEngine.getReadModel();
     const thread = readModel.threads.find((entry) => entry.id === threadId);
@@ -536,14 +539,15 @@ const make = Effect.gen(function* () {
       (!project && thread.scratchPath)
     ) {
       const detail = "The thread without a project has an invalid workspace folder or Git state.";
-      yield* appendProviderFailureActivity({
-        threadId,
-        kind: `provider.turn.${operation}.failed`,
-        summary: `Provider turn ${operation} failed`,
-        detail,
-        turnId: null,
-        createdAt: new Date().toISOString(),
-      });
+      if (reportFailure)
+        yield* appendProviderFailureActivity({
+          threadId,
+          kind: `provider.turn.${operation}.failed`,
+          summary: `Provider turn ${operation} failed`,
+          detail,
+          turnId: null,
+          createdAt: new Date().toISOString(),
+        });
       return yield* new ProviderTurnDeliveryError({
         certainty: "not_sent",
         retryable: false,
@@ -556,9 +560,13 @@ const make = Effect.gen(function* () {
   const resolveThreadInstructionContext = Effect.fnUntraced(function* (
     threadId: ThreadId,
     workflowExecutionProfile?: WorkflowTurnExecutionProfile,
+    reportWorkspaceFailure = true,
   ) {
-    const { thread, project, effectiveCwd, scratch } =
-      yield* resolveThreadWorkspaceContext(threadId);
+    const { thread, project, effectiveCwd, scratch } = yield* resolveThreadWorkspaceContext(
+      threadId,
+      "start",
+      reportWorkspaceFailure,
+    );
     yield* Effect.logInfo("provider command reactor resolved thread session start context", {
       threadId,
       threadWorktreePath: thread.worktreePath,
@@ -582,9 +590,11 @@ const make = Effect.gen(function* () {
   const resolveThreadSessionStartContext = Effect.fnUntraced(function* (
     threadId: ThreadId,
     resolvedContext?: Effect.Success<ReturnType<typeof resolveThreadInstructionContext>>,
+    reportWorkspaceFailure = true,
   ) {
     const { thread, instructionContext } =
-      resolvedContext ?? (yield* resolveThreadInstructionContext(threadId));
+      resolvedContext ??
+      (yield* resolveThreadInstructionContext(threadId, undefined, reportWorkspaceFailure));
     const persistedBindingOption = yield* providerSessionDirectory.getBinding(threadId);
 
     return {
@@ -700,6 +710,7 @@ const make = Effect.gen(function* () {
       readonly providerOptions?: ProviderStartOptions;
       readonly workflowExecutionProfile?: WorkflowTurnExecutionProfile;
       readonly keepWorkflowExecutionProfile?: boolean;
+      readonly reportWorkspaceFailure?: boolean;
       /** For an automation's turn: a new session asks no consent, and none restarts for one. */
       readonly unattended?: boolean;
       readonly resolvedContext?: Effect.Success<ReturnType<typeof resolveThreadInstructionContext>>;
@@ -709,6 +720,7 @@ const make = Effect.gen(function* () {
       const sessionContext = yield* resolveThreadSessionStartContext(
         threadId,
         options?.resolvedContext,
+        options?.reportWorkspaceFailure !== false,
       );
       const {
         thread,
@@ -1315,6 +1327,8 @@ const make = Effect.gen(function* () {
     readonly deliveryId?: CommandId;
     readonly continuationRequestId?: string;
     readonly messageText: string;
+    /** The text the provider receives: the stored text plus any referenced-thread block. */
+    readonly providerInput: string;
     readonly submissionSource?: "human" | "automation";
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly provider?: ProviderKind;
@@ -1353,7 +1367,7 @@ const make = Effect.gen(function* () {
       return yield* providerService.sendTurn({
         threadId: input.threadId,
         continuationRequestId: input.continuationRequestId,
-        input: input.messageText,
+        input: input.providerInput,
         ...(input.deliveryId ? { deliveryId: input.deliveryId } : {}),
         submissionSource: "automation",
         ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
@@ -1415,7 +1429,7 @@ const make = Effect.gen(function* () {
         : {}),
       ...(input.submissionSource === "automation" ? { unattended: true } : {}),
     });
-    const normalizedInput = toNonEmptyProviderInput(input.messageText);
+    const normalizedInput = toNonEmptyProviderInput(input.providerInput);
     const normalizedAttachments = input.attachments ?? [];
     const activeSession = yield* providerService
       .listSessions()
@@ -1668,10 +1682,11 @@ const make = Effect.gen(function* () {
     const cwd = resolveThreadWorkspaceCwd({ thread, projects: readModel.projects });
     const explicitContext = formatThreadTitleRegenerationContext(thread.messages);
     const firstUserMessage = thread.messages.find((message) => message.role === "user");
-    const titleSourceText =
+    const titleSourceText = threadReferencesToLabels(
       event.payload.origin !== "first-turn"
         ? explicitContext.text
-        : (event.payload.titleSourceText ?? firstUserMessage?.text ?? "").trim();
+        : (event.payload.titleSourceText ?? firstUserMessage?.text ?? ""),
+    ).trim();
     const attachments =
       event.payload.origin !== "first-turn"
         ? explicitContext.attachments
@@ -1855,7 +1870,33 @@ const make = Effect.gen(function* () {
             Effect.provideService(SqlClient.SqlClient, sqlOption.value),
           )
         : undefined;
+    // A native continuation's fixed prompt carries no references, so it skips reference work.
+    const projectedInput =
+      event.type === "thread.turn-start-requested" && event.payload.continuationRequestId
+        ? message.text
+        : projectProviderInput({
+            text: message.text,
+            submissionSource,
+            readModel: yield* orchestrationEngine.getReadModel(),
+            threadId: thread.id,
+          });
+    // A person's message was admitted with room for the block. An automation prompt was not, so
+    // when the workflow's references would push it past the limit it goes without them.
+    const providerInput =
+      submissionSource !== "human" &&
+      projectedInput !== message.text &&
+      getProviderTurnInputLengthIssue(projectedInput) &&
+      !getProviderTurnInputLengthIssue(message.text)
+        ? message.text
+        : projectedInput;
     if (event.type === "thread.turn-steer-requested") {
+      const steerInputLengthIssue = getProviderTurnInputLengthIssue(providerInput);
+      if (steerInputLengthIssue)
+        return yield* new ProviderTurnDeliveryError({
+          certainty: "not_sent",
+          retryable: false,
+          detail: steerInputLengthIssue.message,
+        });
       const { project } = yield* resolveThreadWorkspaceContext(thread.id, "steer");
       if (!project)
         return yield* new ProviderTurnDeliveryError({
@@ -1892,13 +1933,14 @@ const make = Effect.gen(function* () {
         ...(event.payload.expectedSessionGeneration !== undefined
           ? { expectedSessionGeneration: event.payload.expectedSessionGeneration }
           : {}),
-        input: message.text,
+        input: providerInput,
         attachments: message.attachments ?? [],
         interactionMode: event.payload.interactionMode,
       });
     }
 
-    const inputLengthIssue = getProviderTurnInputLengthIssue(message.text);
+    // The reference reserve is enforced where people send; here only the final input counts.
+    const inputLengthIssue = getProviderTurnInputLengthIssue(providerInput);
     if (inputLengthIssue) {
       yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
@@ -1920,7 +1962,7 @@ const make = Effect.gen(function* () {
       branch: thread.branch,
       worktreePath: thread.worktreePath,
       messageId: message.id,
-      messageText: message.text,
+      messageText: threadReferencesToLabels(message.text),
       ...(submissionSource ? { submissionSource } : {}),
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
     });
@@ -1928,8 +1970,9 @@ const make = Effect.gen(function* () {
     yield* maybeRequestThreadTitleForFirstTurn({
       threadId: event.payload.threadId,
       messageId: message.id,
-      titleSourceText:
+      titleSourceText: threadReferencesToLabels(
         event.payload.titleSourceText !== undefined ? event.payload.titleSourceText : message.text,
+      ),
       ...(event.payload.titleGenerationModel !== undefined
         ? { titleGenerationModel: event.payload.titleGenerationModel }
         : {}),
@@ -1956,6 +1999,7 @@ const make = Effect.gen(function* () {
       threadId: event.payload.threadId,
       ...(event.commandId !== null ? { deliveryId: event.commandId } : {}),
       messageText: message.text,
+      providerInput,
       ...(submissionSource ? { submissionSource } : {}),
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
       ...(event.payload.provider !== undefined ? { provider: event.payload.provider } : {}),
@@ -2273,7 +2317,11 @@ const make = Effect.gen(function* () {
       return false;
     }
 
-    const sessionContext = yield* resolveThreadSessionStartContext(binding.threadId);
+    const sessionContext = yield* resolveThreadSessionStartContext(
+      binding.threadId,
+      undefined,
+      false,
+    );
     const activeSession = yield* providerService
       .listSessions()
       .pipe(
@@ -2849,6 +2897,7 @@ const make = Effect.gen(function* () {
             return;
           yield* ensureSessionForThread(threadId, createdAt, {
             keepWorkflowExecutionProfile: true,
+            reportWorkspaceFailure: false,
           });
         }),
       ).pipe(

@@ -138,14 +138,21 @@ describe("forceRefreshUsageAccounts", () => {
     const observer = new QueryObserver(client, usageAccountsQueryOptions());
     const unsubscribe = observer.subscribe(() => {});
     await flush();
-    expect(api.getAccounts).toHaveBeenLastCalledWith({ refresh: "if-stale" });
+    // The first load is interactive; once accounts are cached, polls yield to interactive reads.
+    expect(api.getAccounts).toHaveBeenLastCalledWith(
+      { refresh: "if-stale" },
+      { priority: "interactive" },
+    );
 
     const first = forceRefreshUsageAccounts(client);
     const duplicate = forceRefreshUsageAccounts(client);
     expect(duplicate).toBe(first);
     await first;
     expect(api.getAccounts).toHaveBeenCalledTimes(2);
-    expect(api.getAccounts).toHaveBeenLastCalledWith({ refresh: "force" });
+    expect(api.getAccounts).toHaveBeenLastCalledWith(
+      { refresh: "force" },
+      { priority: "interactive" },
+    );
     // The ordinary response arrives late and must not overwrite the forced one.
     ordinary.resolve(account("idle"));
     await flush();

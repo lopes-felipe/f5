@@ -15,6 +15,11 @@ const state = vi.hoisted(() => ({
     webContents: {
       on: ReturnType<typeof vi.fn>;
       setWindowOpenHandler: ReturnType<typeof vi.fn>;
+      debugger: {
+        isAttached: ReturnType<typeof vi.fn>;
+        attach: ReturnType<typeof vi.fn>;
+        sendCommand: ReturnType<typeof vi.fn>;
+      };
       session: {
         clearStorageData: ReturnType<typeof vi.fn>;
         setPermissionRequestHandler: ReturnType<typeof vi.fn>;
@@ -24,6 +29,7 @@ const state = vi.hoisted(() => ({
     url: string;
   }>,
   hang: false,
+  events: [] as string[],
 }));
 vi.mock("electron", () => ({
   BrowserWindow: class {
@@ -35,6 +41,13 @@ vi.mock("electron", () => ({
     webContents = {
       on: vi.fn(),
       setWindowOpenHandler: vi.fn(),
+      debugger: {
+        isAttached: vi.fn(() => false),
+        attach: vi.fn(),
+        sendCommand: vi.fn(async (method: string) => {
+          state.events.push(method);
+        }),
+      },
       session: {
         clearStorageData: vi.fn(async () => undefined),
         setPermissionRequestHandler: vi.fn(),
@@ -51,6 +64,7 @@ vi.mock("electron", () => ({
     }
     loadURL(url: string) {
       this.url = url;
+      state.events.push("loadURL");
       return state.hang ? new Promise<void>(() => undefined) : Promise.resolve();
     }
     setContentSize() {}
@@ -66,6 +80,7 @@ const input = {
 beforeEach(() => {
   state.windows.length = 0;
   state.hang = false;
+  state.events.length = 0;
 });
 afterEach(() => vi.useRealTimers());
 it("renders in an offscreen isolated sandbox, blocks navigation and destroys the window", async () => {
@@ -95,6 +110,27 @@ it("renders in an offscreen isolated sandbox, blocks navigation and destroys the
   }
   expect(decodeURIComponent(window.url)).toContain("default-src 'none'");
   expect(window.destroy).toHaveBeenCalledOnce();
+});
+it.each(["light", "dark"] as const)(
+  "emulates prefers-color-scheme: %s before the page loads",
+  async (appearance) => {
+    await createHtmlPreviewRenderer()({ ...input, appearance });
+    const window = state.windows[0]!;
+    expect(window.webContents.debugger.attach).toHaveBeenCalledOnce();
+    expect(window.webContents.debugger.sendCommand).toHaveBeenCalledWith(
+      "Emulation.setEmulatedMedia",
+      { features: [{ name: "prefers-color-scheme", value: appearance }] },
+    );
+    expect(state.events).toEqual(["Emulation.setEmulatedMedia", "loadURL"]);
+  },
+);
+it("still renders when the color scheme cannot be emulated", async () => {
+  const render = createHtmlPreviewRenderer();
+  const pending = render(input);
+  state.windows[0]!.webContents.debugger.sendCommand.mockRejectedValueOnce(
+    new Error("Another debugger is attached"),
+  );
+  expect(await pending).toMatchObject({ _tag: "Ready" });
 });
 it("caps concurrent renders and destroys hung pages at the deadline", async () => {
   vi.useFakeTimers();

@@ -178,7 +178,7 @@ function preparation(
     releases: vi.fn(() => published),
     download: vi.fn<(repository: string, baseline: string, names: string[], dir: string) => void>(),
   };
-  const run = () =>
+  const run = (extra: string[] = []) =>
     preparePublishedWindowsUpgrade(
       [
         "--target",
@@ -195,6 +195,7 @@ function preparation(
         baselineDir,
         "--log-dir",
         logDir,
+        ...extra,
       ],
       { GITHUB_REPOSITORY: "lopes-felipe/f5", GITHUB_OUTPUT: output },
       dependencies,
@@ -203,6 +204,17 @@ function preparation(
 }
 
 describe("published upgrade preparation entry point", () => {
+  it("finishes the pinned check after a newer baseline appears, without rebuilding the installer", () => {
+    const source = artifacts("latest", "0.1.1");
+    const prepared = preparation([release("0.1.1"), release("0.1.2")], "0.1.1", "beta", "beta");
+    prepared.dependencies.download.mockImplementation((_repository, _baseline, _names, dir) => {
+      cpSync(source.dir, dir, { recursive: true });
+    });
+    expect(() => prepared.run()).toThrow(/plan changed/);
+    prepared.run(["--pinned-baseline"]);
+    expect(readFileSync(prepared.output, "utf8")).toContain("baseline=0.1.1");
+    expect(prepared.dependencies.download).toHaveBeenCalledTimes(1);
+  });
   it("records a first-release skip and emits the outputs consumed by Actions", () => {
     const prepared = preparation();
     prepared.run();
@@ -267,37 +279,26 @@ describe("published upgrade preparation entry point", () => {
   });
 });
 
-it("blocks assembly on the published upgrade and uses the release artifact", () => {
+it("blocks candidate validation on upgrade checks that consume the shipping Windows artifact", () => {
   const workflow = parse(
     readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8"),
   );
-  expect(workflow.jobs.assemble.needs).toContain("windows-published-upgrade");
+  expect(workflow.jobs.candidate.needs).toContain("windows-published-upgrade");
   const upgrade = workflow.jobs["windows-published-upgrade"];
-  expect(upgrade.needs).toContain("build-desktop");
+  expect(upgrade.needs).toContain("windows-desktop");
+  expect(upgrade.needs).not.toContain("mac-desktop");
   expect(upgrade.strategy.matrix).toContain("needs.preflight.outputs.windows_upgrade_matrix");
-  expect(upgrade.steps).toContainEqual({
-    uses: "actions/download-artifact@v4",
-    with: { name: "desktop-win-x64", path: "published-upgrade/target" },
-  });
-  const run = upgrade.steps.find(
-    (step: { name?: string }) =>
-      step.name === "Upgrade the published installation to the release artifact",
+  expect(upgrade.uses).toBe("./.github/workflows/release-published-upgrade.yml");
+  expect(upgrade.with.artifact).toBe("desktop-win-x64-attempt-${{ github.run_attempt }}");
+  const reusable = parse(
+    readFileSync(
+      new URL("../.github/workflows/release-published-upgrade.yml", import.meta.url),
+      "utf8",
+    ),
   );
-  expect(run.if).toBe("steps.baseline.outputs.available == 'true'");
-  for (const argument of [
-    '--target "$VERSION"',
-    '--channel "$CHANNEL"',
-    '--baseline "$BASELINE"',
-    '--baseline-channel "$BASELINE_CHANNEL"',
-    '--client-channel "$CLIENT_CHANNEL"',
-    "--published-baseline",
-  ])
-    expect(run.run).toContain(argument);
-  expect(upgrade.env).toMatchObject({
-    VERSION: "${{ needs.preflight.outputs.version }}",
-    CHANNEL: "${{ needs.preflight.outputs.channel }}",
-    BASELINE: "${{ matrix.baseline }}",
-    BASELINE_CHANNEL: "${{ matrix.baselineChannel }}",
-    CLIENT_CHANNEL: "${{ matrix.clientChannel }}",
-  });
+  const steps = reusable.jobs.upgrade.steps;
+  expect(steps.some((step: { run?: string }) => step.run?.includes("--published-baseline"))).toBe(
+    true,
+  );
+  expect(steps.some((step: { run?: string }) => step.run?.includes("build-desktop"))).toBe(false);
 });

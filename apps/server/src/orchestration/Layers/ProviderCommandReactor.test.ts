@@ -42,6 +42,7 @@ import {
   Effect,
   Exit,
   Layer,
+  Logger,
   ManagedRuntime,
   Metric,
   Option,
@@ -65,6 +66,8 @@ import { OrchestrationEventStoreLive } from "../../persistence/Layers/Orchestrat
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { stampSubmissionSource } from "../../provider/submissionProvenance.ts";
+import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
 import {
   ProviderService,
   type ProviderServiceShape,
@@ -234,6 +237,9 @@ describe("ProviderCommandReactor", () => {
     readonly openCodeFork?: boolean;
     readonly bridgeTurnDelivery?: boolean;
     readonly recoverySummary?: string;
+    /** Expose the fixture's database so tests can stamp submission provenance. */
+    readonly withSql?: boolean;
+    readonly onLog?: (message: unknown) => void;
   }) {
     const simulateNativeFallback = input?.nativeFallback;
     const simulateOpenCodeFork = input?.openCodeFork;
@@ -787,7 +793,7 @@ describe("ProviderCommandReactor", () => {
     const layer = ProviderCommandReactorLive.pipe(
       Layer.provideMerge(settingsLayer),
       Layer.provideMerge(
-        input?.pullRequest
+        input?.pullRequest || input?.withSql
           ? orchestrationLayer.pipe(Layer.provideMerge(SqlitePersistenceMemory))
           : orchestrationLayer,
       ),
@@ -806,7 +812,18 @@ describe("ProviderCommandReactor", () => {
       Layer.provideMerge(tracerLayer),
       Layer.provideMerge(NodeServices.layer),
     );
-    const runtime = ManagedRuntime.make(layer);
+    const runtime = ManagedRuntime.make(
+      input?.onLog
+        ? layer.pipe(
+            Layer.provide(
+              Logger.layer(
+                [Logger.make(({ message }) => input.onLog!(message)), Logger.tracerLogger],
+                { mergeWithExisting: false },
+              ),
+            ),
+          )
+        : layer,
+    );
 
     const engine = withFixtureWorkspaceWrites(
       await runtime.runPromise(Effect.service(OrchestrationEngineService)),
@@ -919,6 +936,20 @@ describe("ProviderCommandReactor", () => {
       generateBranchName,
       generateThreadTitle,
       runtimeSessions,
+      stampSubmissionSource: (
+        commandId: CommandId,
+        threadId: ThreadId,
+        source: "human" | "automation",
+      ) =>
+        runtime.runPromise(
+          Effect.gen(function* () {
+            const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
+            if (Option.isNone(sql)) throw new Error("Fixture did not expose its database");
+            yield* stampSubmissionSource(commandId, threadId, source).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql.value),
+            );
+          }),
+        ),
       corruptTitleLink: () =>
         runtime.runPromise(
           Effect.gen(function* () {
@@ -1053,7 +1084,7 @@ describe("ProviderCommandReactor", () => {
     ).instructionContext;
     expect(context.projectTitle).toBeUndefined();
     expect(context.projectMemories).toBeUndefined();
-    expect(context.cwd).toContain("/scratch/");
+    expect(path.dirname(String(context.cwd))).toBe(path.join(harness.stateDir, "scratch"));
     expect(harness.ensureWorktree).not.toHaveBeenCalled();
     const second = await pendingTurn(harness, threadId, "second");
     const model = await Effect.runPromise(harness.engine.getReadModel());
@@ -1065,6 +1096,72 @@ describe("ProviderCommandReactor", () => {
     expect(harness.startSession).toHaveBeenCalledTimes(1);
     expect(harness.sendTurn).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["runtime mode", "metadata", "MCP restart"] as const)(
+    "rejects malformed scratch workspace during %s refresh without inventing a failed turn",
+    async (operation) => {
+      const logs: unknown[] = [];
+      const harness = await createHarness({
+        bridgeTurnDelivery: false,
+        onLog: (message) => logs.push(...(Array.isArray(message) ? message : [message])),
+      });
+      const threadId = await scratchThread(harness);
+      const first = await pendingTurn(harness, threadId, "refresh");
+      await Effect.runPromise(harness.reactor.deliverTurnStart(first).pipe(Effect.scoped));
+      const model = await Effect.runPromise(harness.engine.getReadModel());
+      const thread = model.threads.find((entry) => entry.id === threadId)!;
+      Object.assign(thread, { scratchPath: null });
+      if (operation === "MCP restart") {
+        const instanceId = ProviderInstanceId.makeUnsafe("claudeAgent");
+        Object.assign(harness.runtimeSessions.find((entry) => entry.threadId === threadId)!, {
+          provider: "claudeAgent",
+          providerInstanceId: instanceId,
+        });
+        harness.upsertBinding({
+          ...harness.getBinding(threadId)!,
+          provider: "claudeAgent",
+          providerInstanceId: instanceId,
+          mcpEffectiveConfigVersion: "old-config",
+        });
+        const result = await Effect.runPromise(
+          harness.reactor.applyMcpConfigToLiveSessions({
+            scope: "project",
+            projectId: thread.projectId,
+          }),
+        );
+        expect(result.claudeRestarted).toBe(0);
+        expect(result.failures).toHaveLength(1);
+      } else {
+        await Effect.runPromise(
+          harness.engine.dispatch(
+            operation === "runtime mode"
+              ? {
+                  type: "thread.runtime-mode.set",
+                  commandId: CommandId.makeUnsafe("bad-scratch-refresh"),
+                  threadId,
+                  runtimeMode: "full-access",
+                  createdAt: new Date().toISOString(),
+                }
+              : {
+                  type: "thread.meta.update",
+                  commandId: CommandId.makeUnsafe("bad-scratch-refresh"),
+                  threadId,
+                  model: "gpt-5-codex",
+                },
+          ),
+        );
+        await waitFor(() => logs.includes("provider command reactor failed to refresh session"));
+      }
+      const current = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+        (entry) => entry.id === threadId,
+      )!;
+      expect(
+        current.activities.filter((activity) => activity.kind === "provider.turn.start.failed"),
+      ).toEqual([]);
+      expect(harness.startSession).toHaveBeenCalledTimes(1);
+      expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it.each(["steer", "continuation"] as const)(
     "reports malformed scratch workspace failures for the %s operation",
@@ -1674,6 +1771,109 @@ describe("ProviderCommandReactor", () => {
     );
     expect(failureActivity?.payload).toMatchObject({
       detail: expect.stringContaining("120,000 character provider input limit"),
+    });
+  });
+
+  describe("thread references", () => {
+    const reference = "[Source thread](f5://thread/source-thread)";
+    const sentInput = (harness: { readonly sendTurn: { mock: { calls: unknown[][] } } }) =>
+      (harness.sendTurn.mock.calls[0]?.[0] as { readonly input?: string } | undefined)?.input;
+    const startWithReference = async (
+      harness: Awaited<ReturnType<typeof createHarness>>,
+      id: string,
+      text: string,
+      source?: "human" | "automation",
+    ) => {
+      const commandId = CommandId.makeUnsafe(`cmd-ref-${id}`);
+      if (source)
+        await harness.stampSubmissionSource(commandId, ThreadId.makeUnsafe("thread-1"), source);
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId,
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          message: {
+            messageId: asMessageId(`message-ref-${id}`),
+            role: "user",
+            text,
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: new Date().toISOString(),
+        }),
+      );
+    };
+
+    it("sends the reference block to the provider and labels to title generation", async () => {
+      const harness = await createHarness({ withSql: true, threadTitle: DEFAULT_NEW_THREAD_TITLE });
+      harness.generateThreadTitle.mockImplementation(() => Effect.succeed({ title: "Titled" }));
+      const text = `Continue from ${reference}`;
+      await startWithReference(harness, "human", text, "human");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      const input = String(sentInput(harness));
+      expect(input.startsWith(text)).toBe(true);
+      expect(input).toContain("<f5-thread-references>");
+      expect(input).toContain("- threadId: source-thread (unavailable)");
+      expect(getProviderTurnInputLengthIssue(input)).toBeNull();
+      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      const stored = readModel.threads
+        .find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"))
+        ?.messages.find((message) => message.id === asMessageId("message-ref-human"));
+      expect(stored?.text).toBe(text);
+      await waitFor(() => harness.generateThreadTitle.mock.calls.length >= 1);
+      expect(harness.generateThreadTitle.mock.calls[0]?.[0]).toMatchObject({
+        message: "Continue from Source thread",
+      });
+    });
+
+    it("does not authorize references in unstamped or automation sends", async () => {
+      const harness = await createHarness({ withSql: true });
+      await startWithReference(harness, "bot", `Bot says ${reference}`, "automation");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      expect(sentInput(harness)).toBe(`Bot says ${reference}`);
+    });
+
+    it("fails a near-limit start and steer as not sent before the provider", async () => {
+      const harness = await createHarness({ withSql: true });
+      // Fits the raw provider limit, but not once the reference block is appended.
+      const text = `${reference}${"x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS - reference.length - 100)}`;
+      expect(getProviderTurnInputLengthIssue(text)).toBeNull();
+      await startWithReference(harness, "long", text, "human");
+      await waitFor(async () => {
+        const readModel = await Effect.runPromise(harness.engine.getReadModel());
+        return Boolean(
+          readModel.threads
+            .find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"))
+            ?.activities.some((activity) => activity.kind === "provider.turn.start.failed"),
+        );
+      });
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+
+      const events = await Effect.runPromise(Stream.runCollect(harness.engine.readEvents(0)));
+      const start = Array.from(events).find(
+        (event) => event.type === "thread.turn-start-requested",
+      );
+      if (!start || start.type !== "thread.turn-start-requested")
+        throw new Error("Missing turn start intent.");
+      // A steer with the same text fills the provider input past its limit.
+      await startWithReference(harness, "steer", text, "human");
+      const steer = {
+        ...start,
+        type: "thread.turn-steer-requested" as const,
+        payload: {
+          ...start.payload,
+          messageId: asMessageId("message-ref-steer"),
+          expectedTurnId: TurnId.makeUnsafe("live-turn"),
+        },
+      };
+      const result = await Effect.runPromise(
+        harness.reactor.deliverTurnStart(steer).pipe(Effect.result, Effect.scoped),
+      );
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure")
+        expect(result.failure).toMatchObject({ certainty: "not_sent", retryable: false });
+      expect(harness.sendTurn).not.toHaveBeenCalled();
     });
   });
 

@@ -44,6 +44,11 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           bun run typecheck
+      - name: Validate release intent on the merge result
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/check-release-intent.ts
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: Boot server under Bun
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
@@ -582,9 +587,9 @@ jobs:
           bun run --cwd packages/shared test src/providerIntegrationCertification.test.ts
       - uses: ./.github/actions/assert-clean-worktree
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-  macos-suite:
+  macos-workspaces:
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     if: github.event_name != 'pull_request'
     defaults:
       run:
@@ -604,67 +609,240 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           node scripts/ci-test-summary.ts --prepare
-      - name: Check computer tier table drift
+      - name: Prepare AppKit compiler modules
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: |
-          node scripts/generate-computer-tiers.ts --check
-      - name: Test Swift computer helper
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: |
-          swift test --package-path apps/desktop/native/macos
-      - name: Check universal computer helper
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: |
-          node scripts/build-computer-helper.ts --platform mac --arch universal --check
+        # The former monolith warmed these through its native helper checks.
+        # Keep cold SDK compilation outside the bitmap fixture's 30-second hook.
+        run: swift -e 'import AppKit; print("AppKit compiler modules ready")'
       - name: Workspace suites
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: |
-          bun run test:ci:workspaces
-      - name: Server unit
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        env:
-          F5_CI_SUITE_ID: "server-unit"
-        run: |
-          bun run --cwd apps/server test:unit
-      - name: Server Git smoke
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        env:
-          F5_CI_SUITE_ID: "server-git-smoke"
-        run: |
-          bun run --cwd apps/server test:git:smoke
-      - name: Server integration
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        env:
-          F5_CI_SUITE_ID: "server-integration"
-        run: |
-          bun run --cwd apps/server test:integration
-      - name: Server Git extended
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        env:
-          F5_CI_SUITE_ID: "server-git-extended"
-        run: |
-          bun run --cwd apps/server test:git:extended
-      - name: Build desktop
-        # ARM64 Node defaults to a 2 GiB heap; declaration generation exceeds it.
         env:
           NODE_OPTIONS: --max-old-space-size=4096
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: |
-          bun run build:desktop
-      - name: Desktop smoke
-        # ARM64 Node defaults to a 2 GiB heap; declaration generation exceeds it.
-        env:
-          NODE_OPTIONS: --max-old-space-size=4096
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: |
-          node scripts/ci-retry-once.ts --step desktop-smoke -- bun run test:desktop-smoke
-      - name: Profile lifecycle
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: |
-          node scripts/profile-lifecycle-smoke.cjs
+        run: bun run test:ci:workspaces
       - name: Summarize test reports
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: node scripts/ci-test-summary.ts macos-suite
+        run: node scripts/ci-test-summary.ts macos-workspaces
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_REPORT_DIR || format('{0}/ci-reports/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostics-${{ github.job }}-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_ARTIFACT_DIR || format('{0}/ci-artifacts/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - uses: ./.github/actions/assert-clean-worktree
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+  macos-server-unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      F5_CI_DURATION_SHARDING: "true"
+    runs-on: macos-latest
+    timeout-minutes: 30
+    if: github.event_name != 'pull_request'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        id: install
+      - name: Set diagnostic paths
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          printf 'F5_CI_REPORT_DIR=%s/ci-reports/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+          printf 'F5_CI_ARTIFACT_DIR=%s/ci-artifacts/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+      - name: Prepare report directory
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/ci-test-summary.ts --prepare
+      - name: Server unit shard
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          F5_CI_SUITE_ID: "server-unit-${{ matrix.shard }}"
+        run: bun run test:server:shard --shard=${{ matrix.shard }}/3
+      - name: Summarize test reports
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci-test-summary.ts server-unit-${{ matrix.shard }}
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_REPORT_DIR || format('{0}/ci-reports/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostics-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_ARTIFACT_DIR || format('{0}/ci-artifacts/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - uses: ./.github/actions/assert-clean-worktree
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+  macos-integration:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    if: github.event_name != 'pull_request'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        id: install
+      - name: Set diagnostic paths
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          printf 'F5_CI_REPORT_DIR=%s/ci-reports/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+          printf 'F5_CI_ARTIFACT_DIR=%s/ci-artifacts/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+      - name: Prepare report directory
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/ci-test-summary.ts --prepare
+      - name: Git smoke
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          F5_CI_SUITE_ID: "server-git-smoke"
+        run: bun run --cwd apps/server test:git:smoke
+      - name: Integration
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          F5_CI_SUITE_ID: "server-integration"
+        run: bun run --cwd apps/server test:integration
+      - name: Summarize test reports
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci-test-summary.ts macos-integration
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_REPORT_DIR || format('{0}/ci-reports/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostics-${{ github.job }}-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_ARTIFACT_DIR || format('{0}/ci-artifacts/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - uses: ./.github/actions/assert-clean-worktree
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+  macos-git:
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [CheckpointStore, GitCore, GitManager, UpstreamGit, WorktreeRecovery]
+    runs-on: macos-latest
+    timeout-minutes: 30
+    if: github.event_name != 'pull_request'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        id: install
+      - name: Set diagnostic paths
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          printf 'F5_CI_REPORT_DIR=%s/ci-reports/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+          printf 'F5_CI_ARTIFACT_DIR=%s/ci-artifacts/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+      - name: Prepare report directory
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/ci-test-summary.ts --prepare
+      - name: Real Git extended
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          F5_CI_SUITE_ID: "server-git-extended"
+        run: bun run --cwd apps/server test:file integration/git/extended/${{ matrix.suite }}.extended.test.ts --sequence.concurrent --maxConcurrency=4
+      - name: Summarize test reports
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci-test-summary.ts macos-git
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_REPORT_DIR || format('{0}/ci-reports/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostics-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_ARTIFACT_DIR || format('{0}/ci-artifacts/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - uses: ./.github/actions/assert-clean-worktree
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+  macos-desktop:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    if: github.event_name != 'pull_request'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        id: install
+      - name: Set diagnostic paths
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          printf 'F5_CI_REPORT_DIR=%s/ci-reports/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+          printf 'F5_CI_ARTIFACT_DIR=%s/ci-artifacts/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+      - name: Prepare report directory
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/ci-test-summary.ts --prepare
+      - name: Build desktop
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          F5_CI_SUITE_ID: "Build desktop"
+        run: bun run build:desktop
+      - name: Desktop smoke
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          F5_CI_SUITE_ID: "Desktop smoke"
+        run: node scripts/ci-retry-once.ts --step desktop-smoke -- bun run test:desktop-smoke
+      - name: Profile lifecycle
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          F5_CI_SUITE_ID: "Profile lifecycle"
+        run: node scripts/profile-lifecycle-smoke.cjs
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -699,7 +877,11 @@ jobs:
         windows-build,
         macos-profiles,
         macos-descriptor-drift,
-        macos-suite,
+        macos-workspaces,
+        macos-server-unit,
+        macos-integration,
+        macos-git,
+        macos-desktop,
       ]
     steps:
       - name: Require every job verdict

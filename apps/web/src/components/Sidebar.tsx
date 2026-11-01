@@ -80,6 +80,7 @@ import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { setWorkflowArchived } from "../archiveActions";
 import {
+  polledSidebarGitStatusCwds,
   reconcileFrozenOrder,
   resolvePrimaryNewThreadProjectId,
   shouldClearThreadSelectionOnMouseDown,
@@ -267,6 +268,7 @@ export default function Sidebar() {
       threads.map((thread) => ({
         threadId: thread.id,
         branch: thread.branch,
+        archived: thread.archivedAt !== null,
         cwd: threadWorkspaceCwd(thread, projectById.get(thread.projectId)) ?? null,
       })),
     [projectById, threads],
@@ -282,6 +284,10 @@ export default function Sidebar() {
     ],
     [threadGitTargets],
   );
+  const polledGitStatusCwds = useMemo(
+    () => polledSidebarGitStatusCwds(threadGitTargets, routeThreadId),
+    [routeThreadId, threadGitTargets],
+  );
   const threadGitStatusQueries = useQueries({
     queries: threadGitStatusCwds.map((cwd) => ({
       ...gitStatusQueryOptions({
@@ -291,7 +297,12 @@ export default function Sidebar() {
         refetchIntervalMs: appSettings.gitStatusAutoRefreshIntervalSeconds * 1000,
         // Rows only show the branch's PR, so they never fetch from the remote.
         includeRemote: false,
+        // Focus and reconnect respect the 30 s stale time instead of refetching every row.
+        refetchOnFocus: true,
+        refetchOnReconnect: true,
+        priority: "background",
       }),
+      enabled: polledGitStatusCwds.has(cwd),
     })),
   });
   const prByThreadId = useMemo(() => {

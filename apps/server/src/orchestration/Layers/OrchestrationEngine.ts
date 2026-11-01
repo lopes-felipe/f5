@@ -888,6 +888,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   let replayFromSequence = 0;
   let bootstrapSource: "projection-snapshot" | "event-replay" = "event-replay";
+  const heapUsedBeforeHydrate = process.memoryUsage().heapUsed;
   const projectionSnapshotExit = yield* Effect.exit(
     withStartupPhaseTiming(
       "orchestration.snapshot.hydrate",
@@ -931,7 +932,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   hasDeletedThreads = readModel.threads.some((thread) => thread.deletedAt !== null);
   if (hasDeletedThreads) readModel = withoutDeletedThreadDetails(readModel);
-  yield* observeReadModelRetention(readModel);
+  yield* observeReadModelRetention(readModel, heapUsedBeforeHydrate);
 
   const worker = Effect.gen(function* () {
     for (;;) {
