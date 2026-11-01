@@ -4,6 +4,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-01
+
 ### Added
 
 - Switch providers or provider instances within a thread, carrying a bounded text transcript to the new session and resuming previous sessions when possible.
