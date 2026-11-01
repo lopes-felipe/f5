@@ -4,16 +4,17 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 const workflow = parse(
-  readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
+  readFileSync(new URL("../.github/workflows/ci-main-status.yml", import.meta.url), "utf8"),
 ) as {
   jobs: Record<string, { steps: { run: string }[] }>;
 };
-const reconcile = workflow.jobs["main-status"]!.steps[0]!.run;
+const reconcile = workflow.jobs.report!.steps[0]!.run;
 // Substitute only gh, so these cases exercise the exact inline workflow script.
 const mockGh = `
 gh() {
   case "$1 $2" in
     'api repos/example/f5/commits/main') printf '%s\\n' "$MAIN_HEAD" ;;
+    'api repos/example/f5/actions/runs/42') printf '%s\\n' "$CURRENT_ATTEMPT" ;;
     'issue list') printf '%s\\n' "$ISSUES" | jq "\${@: -1}" ;;
     'issue view') printf '%s\\n' "$ORIGINAL_BODY" ;;
     'api --paginate') printf '%s\\n' "$COMMENTS" ;;
@@ -31,14 +32,15 @@ function runStatus(env: Record<string, string>) {
     env: {
       ...process.env,
       GH_REPO: "example/f5",
-      GITHUB_SHA: "current",
+      SOURCE_SHA: "current",
       MAIN_HEAD: "current",
       RESULT: "failure",
       ISSUES: JSON.stringify([{ number: 1, title: "CI failing on main" }]),
       ORIGINAL_BODY: "",
       COMMENTS: "",
-      GITHUB_RUN_ID: "42",
-      GITHUB_RUN_ATTEMPT: "2",
+      SOURCE_RUN: "42",
+      SOURCE_ATTEMPT: "2",
+      CURRENT_ATTEMPT: "2",
       RUN_URL: "https://example.test/run/42",
       ...env,
     },
@@ -51,6 +53,8 @@ function runStatus(env: Record<string, string>) {
 describe.skipIf(process.platform === "win32")("main status reconciliation", () => {
   it("ignores stale SHAs", () =>
     expect(runStatus({ MAIN_HEAD: "newer" })).not.toContain("mutation:"));
+  it("ignores stale CI attempts", () =>
+    expect(runStatus({ CURRENT_ATTEMPT: "3" })).not.toContain("mutation:"));
   it("closes an open issue after success", () =>
     expect(runStatus({ RESULT: "success" })).toContain("mutation: close"));
   it("does nothing on success without an issue", () =>

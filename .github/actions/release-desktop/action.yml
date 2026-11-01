@@ -41,6 +41,7 @@ runs:
         umask 077
         printf '%s' "$APPLE_API_KEY_CONTENT" > "$key_path"
         echo "key_path=$key_path" >> "$GITHUB_OUTPUT"
+        echo "F5_SIGNING_RETRY_REPORT=$RUNNER_TEMP/f5-signing-retries-$GITHUB_RUN_ATTEMPT.txt" >> "$GITHUB_ENV"
     - name: Package signed macOS desktop
       shell: bash
       if: inputs.platform == 'mac'

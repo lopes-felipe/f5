@@ -119,7 +119,12 @@ describe("CI workflow policy", () => {
     expect(runs.filter((run) => run.includes("ci-retry-once"))).toEqual(smoke);
   });
   it("keeps the notifier outside concurrency groups that can cancel push runs", () => {
-    expect(workflow.jobs["main-status"]!.concurrency).toBeUndefined();
+    expect(workflow.jobs["main-status"]).toBeUndefined();
+    const reporter = readWorkflow("ci-main-status.yml").jobs.report!;
+    expect(reporter.concurrency).toBeUndefined();
+    expect(reporter.if).toContain("workflow_run.head_repository.full_name == github.repository");
+    expect(reporter.if).toContain("workflow_run.event == 'push'");
+    expect(reporter.steps?.some((step) => step.uses || step.run?.includes("download"))).toBe(false);
   });
   it("classifies changes inside every heavy job without a scheduling prerequisite", () => {
     expect(workflow.jobs.changes).toBeUndefined();

@@ -81,6 +81,7 @@ vi.mock("./release/publish-candidate.ts", () => ({
   verifyPublishedCandidate: state.verifyPublished,
 }));
 vi.mock("./release/release-publication-gate.ts", () => ({ publicationGate: state.gate }));
+vi.mock("./release/release-timing.ts", () => ({ workflowTiming: () => [] }));
 vi.mock("./release/release-upgrade-proof.ts", () => ({
   sameBaselines: () => !state.changedBaselines,
   upgradePlan: () => ({
@@ -226,7 +227,38 @@ it("fails visibly when the selected candidate build has failed instead of fallin
   state.builds[0]!.conclusion = "failure";
   await expect(reconcileReleases()).rejects.toThrow("Candidate build is blocked");
   expect(state.load).not.toHaveBeenCalled();
+  expect(JSON.parse(state.writes.get("release-summary.json")!)).toMatchObject({
+    status: "blocked-build",
+    sourceSha: state.b,
+    candidateRun: 100,
+  });
 });
+it.each(["ci", "build", "stable", "upgrade", "artifact"])(
+  "always records the blocking or waiting outcome for %s",
+  async (kind) => {
+    if (kind === "ci") state.ci = [];
+    if (kind === "build") state.builds[0]!.status = "in_progress";
+    if (kind === "stable") {
+      state.intents = [pinned()];
+      state.failedCi.add(state.b);
+    }
+    if (kind === "upgrade") state.changedBaselines = true;
+    if (kind === "artifact") state.load.mockRejectedValueOnce(new Error("artifact expired"));
+    if (kind === "artifact") await expect(reconcileReleases()).rejects.toThrow("artifact expired");
+    else await reconcileReleases();
+    const status = {
+      ci: "waiting-ci",
+      build: "waiting-build",
+      stable: "blocked-stable-ci",
+      upgrade: "waiting-upgrade",
+      artifact: "failed",
+    }[kind];
+    expect(JSON.parse(state.writes.get("release-summary.json")!)).toMatchObject({
+      schemaVersion: 2,
+      status,
+    });
+  },
+);
 it.each(["success", "failure"])(
   "verifies an already-public candidate after a %s rerun without loading expired artifacts",
   async (conclusion) => {

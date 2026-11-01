@@ -1,18 +1,15 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   api,
-  acceptanceOnlyCommit,
   gh,
   git,
   readArtifactJson,
   repository,
-  requireCi,
-  releaseProfileAt,
   publisherIdentity,
   runs,
   stableRequests,
@@ -21,7 +18,10 @@ import {
 } from "./release/release-github.ts";
 import { loadCandidate, runArtifacts } from "./release/candidate-store.ts";
 import { pendingStableRequests, type ReleaseCandidate } from "./release/release-candidate.ts";
-import { automationMode, selectPublication } from "./release/release-publication.ts";
+import { automationMode } from "./release/release-publication.ts";
+import { latestRuns, qualifiedSource } from "./release/release-selection.ts";
+import { observeRelease, releaseFields, releasePhase } from "./release/release-observability.ts";
+import { workflowTiming } from "./release/release-timing.ts";
 import {
   assembleCandidate,
   publishCandidate,
@@ -34,7 +34,18 @@ import { sameBaselines, upgradePlan } from "./release/release-upgrade-proof.ts";
 import { publicationGate } from "./release/release-publication-gate.ts";
 
 export async function reconcileReleases(): Promise<void> {
+  await observeRelease(reconcile);
+}
+async function reconcile(): Promise<void> {
   const mode = automationMode(process.env.RELEASE_AUTOMATION_MODE);
+  releaseFields({
+    mode,
+    status: "waiting-ci",
+    reason: "No main source has passed every required CI job",
+    publicationRun: process.env.GITHUB_RUN_ID ? Number(process.env.GITHUB_RUN_ID) : null,
+    publicationAttempt: Number(process.env.GITHUB_RUN_ATTEMPT ?? 1),
+    publicationEvent: process.env.GITHUB_EVENT_NAME ?? null,
+  });
   const reconciliationStarted = Date.now();
   const main = git(["rev-parse", "origin/main"]);
   const history = git(["rev-list", "--first-parent", main]).split("\n").toReversed();
@@ -45,45 +56,43 @@ export async function reconcileReleases(): Promise<void> {
       .map((r) => [r.tag_name.slice(1), git(["rev-list", "-n", "1", r.tag_name])]),
   );
   const pending = pendingStableRequests(stableRequests(main), published);
+  releaseFields({
+    requestId: pending[0]?.requestId ?? null,
+    sourceSha: pending[0]?.sourceSha ?? main,
+    version: pending[0]?.version ?? null,
+    status: pending.length ? "blocked-stable-ci" : "waiting-ci",
+  });
   const publicCommits = releases
     .filter((r) => !r.draft && /^v\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(r.tag_name))
     .map((r) => git(["rev-list", "-n", "1", r.tag_name]));
   const boundary = Math.max(-1, ...publicCommits.map((sha) => history.indexOf(sha)));
   const since = boundary < 0 ? undefined : git(["show", "-s", "--format=%cI", history[boundary]!]);
   const buildRuns = runs("release.yml", since).filter((r) => trustedRun(r, "release.yml"));
-  const latest = new Map<string, WorkflowRun>();
-  for (const run of buildRuns) if (!latest.has(run.head_sha)) latest.set(run.head_sha, run);
+  const latest = latestRuns(buildRuns);
   const ciRuns = pending.length ? [] : runs("ci.yml", since).filter((r) => trustedRun(r, "ci.yml"));
-  const latestCi = new Map<string, WorkflowRun>();
-  for (const run of ciRuns) if (!latestCi.has(run.head_sha)) latestCi.set(run.head_sha, run);
-  let selected: ReturnType<typeof selectPublication> = null;
-  const sources = pending.length ? [pending[0]!.sourceSha] : history.toReversed();
-  for (const sha of sources) {
-    const run = latestCi.get(sha);
-    const order = history.indexOf(sha);
-    if (
-      order < boundary ||
-      order < 0 ||
-      (!pending.length &&
-        (!run ||
-          run.conclusion !== "success" ||
-          run.status !== "completed" ||
-          acceptanceOnlyCommit(sha)))
-    )
-      continue;
-    try {
-      latestCi.set(sha, requireCi(sha, releaseProfileAt(sha)));
-      selected = selectPublication([{ sourceSha: sha, order }], pending);
-      break;
-    } catch (error) {
-      console.log("Waiting for exact-SHA CI:", sha, String(error));
-    }
-  }
+  const latestCi = latestRuns(ciRuns);
+  const selected = qualifiedSource(history, ciRuns, pending, boundary);
   if (!selected) {
     console.log("No publishable candidate; stable requests remain barriers until qualified.");
     return;
   }
+  latestCi.set(selected.sourceSha, selected.ci);
   const build = latest.get(selected.sourceSha);
+  releaseFields({
+    sourceSha: selected.sourceSha,
+    ciRun: selected.ci.id,
+    ciAttempt: selected.ci.run_attempt,
+    candidateRun: build?.id ?? null,
+    attempt: build?.run_attempt ?? null,
+    reason: selected.reason,
+    supersededSources: history.filter(
+      (sha) => history.indexOf(sha) < history.indexOf(selected.sourceSha) && latest.has(sha),
+    ),
+    workflowUrls: {
+      ci: "https://github.com/" + repository + "/actions/runs/" + selected.ci.id,
+      candidate: build ? "https://github.com/" + repository + "/actions/runs/" + build.id : null,
+    },
+  });
   const terminal = releases.find(
     (r) =>
       !r.draft &&
@@ -96,26 +105,20 @@ export async function reconcileReleases(): Promise<void> {
       selected.sourceSha,
       build.id,
     );
-    writeFileSync(
-      "release-summary.json",
-      JSON.stringify(
-        {
-          mode,
-          status: "already-published",
-          sourceSha: candidate.sourceSha,
-          version: candidate.version,
-          candidateRun: candidate.runId,
-          attempt: candidate.runAttempt,
-          artifactDownloads: 0,
-        },
-        null,
-        2,
-      ) + "\n",
-    );
+    releaseFields({
+      mode,
+      status: "already-published",
+      sourceSha: candidate.sourceSha,
+      version: candidate.version,
+      candidateRun: candidate.runId,
+      attempt: candidate.runAttempt,
+      artifactDownloads: 0,
+    });
     console.log("Matching immutable release is already published and verified:", terminal.tag_name);
     return;
   }
-  if (build?.status === "completed" && build.conclusion !== "success")
+  if (build?.status === "completed" && build.conclusion !== "success") {
+    releaseFields({ status: "blocked-build" });
     throw new Error(
       "Candidate build is blocked (" +
         build.conclusion +
@@ -124,14 +127,33 @@ export async function reconcileReleases(): Promise<void> {
         "/actions/runs/" +
         build.id,
     );
+  }
   if (!build || build.status !== "completed" || build.conclusion !== "success") {
+    releaseFields({
+      status: "waiting-build",
+      reason: "Newest qualified source awaits its candidate build",
+    });
     console.log(
       "Newest passing source awaits its candidate; older unpublished betas are superseded.",
     );
     return;
   }
   const candidate = await loadCandidate(build.id);
+  releaseFields({
+    version: candidate.version,
+    requestId: candidate.stableIntent?.requestId ?? null,
+    componentArtifacts: candidate.artifacts.map((a) => ({
+      component: a.component,
+      id: a.id,
+      attempt: a.receipt.runAttempt,
+      signingRetries: a.receipt.signingRetries ?? 0,
+    })),
+  });
   if (mode === "beta" && candidate.kind === "stable") {
+    releaseFields({
+      status: "blocked-stable-mode",
+      reason: "Stable publication requires all mode; later betas remain held",
+    });
     console.log("Stable publication awaits all mode; later betas remain held.");
     return;
   }
@@ -164,6 +186,11 @@ export async function reconcileReleases(): Promise<void> {
           result.attempt === candidate.runAttempt
         ) {
           console.log("Shadow verification already succeeded; artifacts reused:", cacheKey);
+          releaseFields({
+            status: "shadow-verified",
+            reusedVerification: run.id,
+            artifactDownloads: 0,
+          });
           return;
         }
       }
@@ -183,6 +210,11 @@ export async function reconcileReleases(): Promise<void> {
         r.head_branch === "main",
     );
     if (!proof) {
+      releaseFields({
+        status: "waiting-upgrade",
+        upgradeKey: fresh.key,
+        reason: "Changed upgrade baselines require qualification of retained artifacts",
+      });
       gh([
         "workflow",
         "run",
@@ -197,9 +229,20 @@ export async function reconcileReleases(): Promise<void> {
       console.log("Dispatched upgrade-only qualification", fresh.key);
       return;
     }
-    if (proof.status === "completed" && proof.conclusion !== "success")
+    releaseFields({
+      upgradeRun: proof.id,
+      upgradeAttempt: proof.run_attempt,
+      upgradeKey: fresh.key,
+    });
+    if (proof.status === "completed" && proof.conclusion !== "success") {
+      releaseFields({ status: "blocked-upgrade" });
       throw new Error("Upgrade qualification is blocked; rerun its failed jobs: " + proof.id);
+    }
     if (proof.status !== "completed") {
+      releaseFields({
+        status: "waiting-upgrade",
+        reason: "Matching upgrade qualification is still running",
+      });
       console.log("Upgrade qualification pending or blocked; rerun its failed jobs:", proof.id);
       return;
     }
@@ -220,12 +263,15 @@ export async function reconcileReleases(): Promise<void> {
   }
   const root = mkdtempSync(join(tmpdir(), "f5-release-publication-"));
   const directory = join(root, "assets");
-  await assembleCandidate(candidate, directory, {
-    key: fresh.key,
-    windowsBaselines: fresh.baselines,
-    cliBaseline: fresh.cliBaseline,
-    requalification,
-  });
+  releaseFields({ status: "verifying-candidate" });
+  await releasePhase("assembly", () =>
+    assembleCandidate(candidate, directory, {
+      key: fresh.key,
+      windowsBaselines: fresh.baselines,
+      cliBaseline: fresh.cliBaseline,
+      requalification,
+    }),
+  );
   if (mode === "shadow") await verifyCandidateCertification(candidate, directory);
   // No candidate executables run here; only trusted tooling parses and hashes the archives.
   if (mode !== "shadow") {
@@ -240,10 +286,26 @@ export async function reconcileReleases(): Promise<void> {
     const now = upgradePlan(candidate, fetchReleaseSummaries(repository));
     if (now.key !== fresh.key)
       throw new Error("Upgrade baselines changed again; reconciliation will qualify them");
-    await publishCandidate(candidate, directory, () => publicationGate(candidate, fresh.key));
-    await verifyPublicRelease(candidate);
+    releaseFields({ status: "publishing" });
+    await releasePhase("publication", () =>
+      publishCandidate(candidate, directory, () => publicationGate(candidate, fresh.key)),
+    );
+    await releasePhase("publicChecks", () => verifyPublicRelease(candidate));
   }
+  const jobTimings = {
+    candidate: workflowTiming(build),
+    ci: workflowTiming(selected.ci),
+    publisher: process.env.GITHUB_RUN_ID
+      ? workflowTiming(api<WorkflowRun>("actions/runs/" + process.env.GITHUB_RUN_ID))
+      : null,
+  };
+  const maxQueue = (jobs: ReturnType<typeof workflowTiming> | null) => {
+    const known =
+      jobs?.flatMap((job) => (job.queueSeconds === null ? [] : [job.queueSeconds])) ?? [];
+    return known.length ? Math.max(...known) : null;
+  };
   const summary = {
+    status: mode === "shadow" ? "shadow-verified" : "published",
     mode,
     sourceSha: candidate.sourceSha,
     version: candidate.version,
@@ -256,18 +318,9 @@ export async function reconcileReleases(): Promise<void> {
       (a) => a.receipt.runAttempt < candidate.runAttempt,
     ).length,
     queueSeconds: {
-      candidate: Math.max(
-        0,
-        Math.round((Date.parse(build.run_started_at) - Date.parse(build.created_at)) / 1000),
-      ),
-      ci: Math.max(
-        0,
-        Math.round(
-          (Date.parse(latestCi.get(candidate.sourceSha)!.run_started_at) -
-            Date.parse(latestCi.get(candidate.sourceSha)!.created_at)) /
-            1000,
-        ),
-      ),
+      // Maximum individual job queue; per-job details avoid summing parallel work.
+      candidate: maxQueue(jobTimings.candidate),
+      ci: maxQueue(jobTimings.ci),
       publication: Math.max(
         0,
         Math.round(
@@ -302,12 +355,7 @@ export async function reconcileReleases(): Promise<void> {
         1000,
     ),
   };
-  writeFileSync("release-summary.json", JSON.stringify(summary, null, 2) + "\n");
-  if (process.env.GITHUB_STEP_SUMMARY)
-    appendFileSync(
-      process.env.GITHUB_STEP_SUMMARY,
-      "Release result\n\n" + JSON.stringify(summary, null, 2) + "\n",
-    );
+  releaseFields({ ...summary, jobTimings });
   if (mode === "shadow" && process.env.GITHUB_OUTPUT)
     appendFileSync(process.env.GITHUB_OUTPUT, "cache_key=" + cacheKey + "\n");
 }

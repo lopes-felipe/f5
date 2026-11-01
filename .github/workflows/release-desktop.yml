@@ -71,3 +71,7 @@ jobs:
           platform: ${{ inputs.platform }}
           arch: ${{ inputs.arch }}
           target: ${{ inputs.target }}
+      - if: failure() || cancelled()
+        uses: ./.github/actions/release-diagnostics
+        with:
+          component: desktop-${{ inputs.platform }}-${{ inputs.arch }}

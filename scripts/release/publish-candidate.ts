@@ -11,17 +11,12 @@ import {
   git,
   hashFile,
   optionalApi,
-  pages,
   repository,
   requireCi,
   show,
 } from "./release-github.ts";
 import { validateCandidate, type ReleaseCandidate } from "./release-candidate.ts";
-import {
-  assertPublishableVersion,
-  missingUploads,
-  type UploadedAsset,
-} from "./release-publication.ts";
+import { assertPublishableVersion, missingUploads } from "./release-publication.ts";
 import { verifyReleaseAssets } from "../verify-release-assets.ts";
 import {
   desktopReleaseAssets,
@@ -35,14 +30,16 @@ import {
   validatePublicationQualification,
   type PublicationQualification,
 } from "./release-upgrade-proof.ts";
-
-interface RemoteRelease {
-  id: number;
-  draft: boolean;
-  prerelease: boolean;
-  tag_name: string;
-  assets: UploadedAsset[];
-}
+import { releasePool } from "./release-concurrency.ts";
+import { releaseFields, releasePhase, releaseRetry } from "./release-observability.ts";
+import {
+  createDraft,
+  findRelease,
+  promoteRelease,
+  uploadReleaseAsset,
+  validateRemoteRelease,
+  type RemoteRelease,
+} from "./release-remote.ts";
 /** No code from the candidate archive is executed in this privileged process. */
 export async function assembleCandidate(
   candidate: ReleaseCandidate,
@@ -51,7 +48,9 @@ export async function assembleCandidate(
 ): Promise<void> {
   validateCandidate(candidate);
   mkdirSync(directory, { recursive: true });
-  for (const artifact of candidate.artifacts) {
+  const inventory = candidate.artifacts.flatMap((a) => a.receipt.files.map((f) => f.name));
+  if (new Set(inventory).size !== inventory.length) throw new Error("Duplicate component file");
+  await releasePool(candidate.artifacts, async (artifact) => {
     const metadata = api<{
       id: number;
       name: string;
@@ -66,25 +65,27 @@ export async function assembleCandidate(
       metadata.workflow_run.head_sha !== candidate.sourceSha
     )
       throw new Error("Artifact identity changed");
-    const dir = await downloadArtifact(metadata);
-    const names = readdirSync(dir);
-    if (names.length !== artifact.receipt.files.length)
-      throw new Error("Artifact file inventory mismatch");
-    for (const expected of artifact.receipt.files) {
-      if (
-        !names.includes(expected.name) ||
-        statSync(join(dir, expected.name)).size !== expected.size ||
-        (await hashFile(join(dir, expected.name))) !== expected.sha256
-      )
-        throw new Error("Component file digest mismatch: " + expected.name);
-      const target = join(directory, expected.name);
-      if (readdirSync(directory).includes(expected.name))
-        throw new Error("Duplicate component file");
-      // Both are private directories under the runner temp filesystem. Moving
-      // avoids retaining a second multi-gigabyte copy of the verified files.
-      renameSync(join(dir, expected.name), target);
-    }
-  }
+    const dir = await releasePhase("download", () => downloadArtifact(metadata));
+    await releasePhase("componentVerification", async () => {
+      const names = readdirSync(dir);
+      if (names.length !== artifact.receipt.files.length)
+        throw new Error("Artifact file inventory mismatch");
+      for (const expected of artifact.receipt.files) {
+        if (
+          !names.includes(expected.name) ||
+          statSync(join(dir, expected.name)).size !== expected.size ||
+          (await hashFile(join(dir, expected.name))) !== expected.sha256
+        )
+          throw new Error("Component file digest mismatch: " + expected.name);
+        const target = join(directory, expected.name);
+        if (readdirSync(directory).includes(expected.name))
+          throw new Error("Duplicate component file");
+        // Both are private directories under the runner temp filesystem. Moving
+        // avoids retaining a second multi-gigabyte copy of the verified files.
+        renameSync(join(dir, expected.name), target);
+      }
+    });
+  });
   if (candidate.profile === "all") {
     execFileSync(
       process.execPath,
@@ -186,7 +187,7 @@ export async function publishCandidate(
   const tag = "v" + candidate.version;
   const releases = fetchReleaseSummaries(repository);
   assertReleaseProfileAllowed(candidate.profile, releases);
-  const listed = pages<RemoteRelease>("releases?per_page=100").find((r) => r.tag_name === tag);
+  const listed = findRelease(tag);
   const files = await Promise.all(
     readdirSync(directory)
       .sort()
@@ -201,6 +202,7 @@ export async function publishCandidate(
   if (!listed || listed.draft) await verifyCandidateCertification(candidate, directory);
   let release = listed;
   if (release) {
+    validateRemoteRelease(release, tag, candidate.kind === "beta");
     git(["fetch", "origin", "refs/tags/" + tag + ":refs/tags/" + tag]);
     const remote = remoteTagCommit(tag, {
       local: (name) => git(["rev-list", "-n", "1", name]),
@@ -242,6 +244,7 @@ export async function publishCandidate(
       if (!release.draft) throw new Error("Release became public during upload recovery");
     }
     const missing = missingUploads(files, release.assets);
+    releaseFields({ completedUploadsReused: files.length - missing.length, releaseId: release.id });
     if (!release.draft) {
       if (missing.length) throw new Error("Published immutable release is incomplete");
       return;
@@ -294,25 +297,15 @@ export async function publishCandidate(
           candidate.runId +
           "\n",
       );
-    gh([
-      "release",
-      "create",
-      tag,
-      "--repo",
-      repository,
-      "--verify-tag",
-      "--draft",
-      "--title",
-      "F5 " + tag,
-      "--notes-file",
-      notes,
-      ...(candidate.kind === "beta" ? ["--prerelease"] : []),
-    ]);
-    release = pages<RemoteRelease>("releases?per_page=100").find((r) => r.tag_name === tag);
-    if (!release) throw new Error("Draft was not created");
+    release = await releasePhase("draftCreation", () =>
+      createDraft(tag, candidate.kind === "beta", notes),
+    );
   }
-  for (const name of missingUploads(files, release.assets))
-    gh(["release", "upload", tag, join(directory, name), "--repo", repository]);
+  const releaseId = release.id;
+  const uploads = missingUploads(files, release.assets);
+  await releasePhase("upload", () =>
+    releasePool(uploads, (name) => uploadReleaseAsset(releaseId, name, join(directory, name))),
+  );
   release = api<RemoteRelease>("releases/" + release.id);
   if (missingUploads(files, release.assets).length) throw new Error("Release upload incomplete");
   // The gate refreshes origin/main. Check certification against that same final
@@ -345,15 +338,7 @@ export async function publishCandidate(
       .filter((r) => !r.draft && /^v\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(r.tag_name))
       .map((r) => r.tag_name.slice(1)),
   );
-  gh([
-    "release",
-    "edit",
-    tag,
-    "--repo",
-    repository,
-    "--draft=false",
-    ...(candidate.kind === "stable" ? ["--latest"] : []),
-  ]);
+  promoteRelease(release.id, candidate.kind === "beta");
 }
 async function publicFetch(url: string, method = "GET"): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
@@ -366,6 +351,7 @@ async function publicFetch(url: string, method = "GET"): Promise<Response> {
     } catch (error) {
       if (attempt) throw error;
     }
+    releaseRetry("public-check");
     await new Promise((resolve) => setTimeout(resolve, 5000));
   }
 }

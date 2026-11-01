@@ -1,0 +1,64 @@
+name: Main CI status
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  report:
+    if: >-
+      github.repository == 'lopes-felipe/f5' &&
+      github.event.workflow_run.path == '.github/workflows/ci.yml' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.repository.full_name == github.repository &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RESULT: ${{ github.event.workflow_run.conclusion }}
+      SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+      SOURCE_RUN: ${{ github.event.workflow_run.id }}
+      SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      RUN_URL: ${{ github.event.workflow_run.html_url }}
+    steps:
+      # No checkout, candidate artifacts, or source-controlled code execution.
+      - name: Reconcile main status issue
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_sha="$(gh api "repos/$GH_REPO/commits/main" --jq .sha)"
+          if [[ "$head_sha" != "$SOURCE_SHA" ]]; then
+            echo "Stale result for $SOURCE_SHA; main is $head_sha"
+            exit 0
+          fi
+          attempt="$(gh api "repos/$GH_REPO/actions/runs/$SOURCE_RUN" --jq .run_attempt)"
+          if [[ "$attempt" != "$SOURCE_ATTEMPT" ]]; then
+            echo "Stale CI attempt"
+            exit 0
+          fi
+          issue="$(gh issue list --state open --label ci-main-red --json number,title --jq '[.[] | select(.title == "CI failing on main")][0].number // empty')"
+          if [[ "$RESULT" == success ]]; then
+            if [[ -n "$issue" ]]; then
+              gh issue close "$issue" --comment "Green again at $SOURCE_SHA: $RUN_URL"
+            fi
+            exit 0
+          fi
+          gh label create ci-main-red --color B60205 --description 'Current main CI failure' --force
+          marker="<!-- ci-main:$SOURCE_RUN:$SOURCE_ATTEMPT -->"
+          body="CI failed at $SOURCE_SHA: $RUN_URL (attempt $SOURCE_ATTEMPT). $marker"
+          if [[ -z "$issue" ]]; then
+            gh issue create --title 'CI failing on main' --label ci-main-red --body "$body"
+          else
+            comments="$(gh api --paginate "repos/$GH_REPO/issues/$issue/comments" --jq '.[].body')"
+            original="$(gh issue view "$issue" --json body --jq .body)"
+            if [[ "$comments" != *"$marker"* && "$original" != *"$marker"* ]]; then
+              gh issue comment "$issue" --body "$body"
+            fi
+          fi

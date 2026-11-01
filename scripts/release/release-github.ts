@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { parse } from "yaml";
+import { releaseRetry } from "./release-observability.ts";
 import { parseReleaseProfile } from "../lib/release-profile.ts";
 import { artifactEntries } from "./release-publication.ts";
 import { SHA_PATTERN, type StableRequest } from "./release-candidate.ts";
@@ -72,6 +73,7 @@ export function gh(args: readonly string[]): string {
       return execFileSync("gh", [...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
     } catch (error) {
       if (attempt || !readOnly || !transientReleaseNetworkFailure(error)) throw error;
+      releaseRetry("api-read");
       console.warn("Transient release API read failure; retrying once.");
     }
   }
@@ -299,6 +301,7 @@ export async function downloadArtifact(artifact: RemoteArtifact): Promise<string
       // or published assets. Integrity/archive errors cannot enter the retry path.
       rmSync(root, { recursive: true, force: true });
       if (attempt || received || !transientReleaseNetworkFailure(error)) throw error;
+      releaseRetry("artifact-download");
       console.warn("Transient artifact transfer failure; retrying once.");
     }
   }

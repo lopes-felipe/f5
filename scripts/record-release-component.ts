@@ -1,5 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { mkdirSync, readdirSync, lstatSync, writeFileSync, readFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readdirSync,
+  lstatSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+} from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { hashFile } from "./release/release-github.ts";
@@ -15,6 +22,13 @@ for (const name of readdirSync(directory).sort()) {
   files.push({ name, size: lstatSync(file).size, sha256: await hashFile(file) });
 }
 const receipt: ComponentReceipt = {
+  ...(process.env.F5_SIGNING_RETRY_REPORT && existsSync(process.env.F5_SIGNING_RETRY_REPORT)
+    ? {
+        signingRetries: readFileSync(process.env.F5_SIGNING_RETRY_REPORT, "utf8")
+          .split("\n")
+          .filter((line) => line === "timestamp-retry").length,
+      }
+    : {}),
   ...(component!.startsWith("cli-")
     ? { cliUpgradeBaseline: JSON.parse(readFileSync("cli-upgrade-baseline.json", "utf8")).version }
     : {}),
