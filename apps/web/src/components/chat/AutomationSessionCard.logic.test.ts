@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { TurnId } from "@t3tools/contracts";
 
 import type { WorkLogEntry } from "../../session-logic";
 import {
@@ -92,6 +93,21 @@ describe("automationRunEnd", () => {
   it("stops at another tool or surface", () => {
     expect(end([computer("click"), other(), computer("key")])).toBe(1);
     expect(end([computer("click"), preview("click")])).toBe(1);
+  });
+
+  it("respects saved run boundaries and turn identities after filtering", () => {
+    expect(
+      end([
+        computer("click", { automationRunId: "run-1" }),
+        computer("click", { automationRunId: "run-2" }),
+      ]),
+    ).toBe(1);
+    expect(
+      end([
+        computer("click", { turnId: TurnId.makeUnsafe("turn-1") }),
+        computer("click", { turnId: TurnId.makeUnsafe("turn-2") }),
+      ]),
+    ).toBe(1);
   });
 });
 

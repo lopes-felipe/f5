@@ -26,6 +26,8 @@ type Entry = Pick<
   | "mcpToolName"
   | "computerTool"
   | "computerStep"
+  | "automationRunId"
+  | "turnId"
   | "mcpInput"
   | "mcpImages"
   | "mcpImagesOmitted"
@@ -78,6 +80,12 @@ export function automationRunEnd<T>(
   for (let cursor = start + 1; cursor < items.length; cursor += 1) {
     const entry = readEntry(items[cursor]!);
     if (!entry) break;
+    if (
+      entry.turnId !== first?.turnId ||
+      (classifyAutomationEntry(entry) === surface &&
+        entry.automationRunId !== first?.automationRunId)
+    )
+      break;
     if (classifyAutomationEntry(entry) === surface) end = cursor + 1;
     else if (entry.tone !== "thinking") break;
   }
