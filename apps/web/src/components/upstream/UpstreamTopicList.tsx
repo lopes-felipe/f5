@@ -15,6 +15,7 @@ import {
   formatConfidence,
   impactClassName,
   impactLabel,
+  isUpstreamTopicQueued,
   suggestionBadgeVariant,
   suggestionChipLabel,
   suggestionVerb,
@@ -69,6 +70,7 @@ function RowExtras(props: { readonly row: UpstreamTopicRow; readonly reasonLabel
 
 const UpstreamTopicRowView = (props: {
   readonly row: UpstreamTopicRow;
+  readonly queued: boolean;
   readonly repository: string;
   readonly reasonLabels: Readonly<Record<string, string>>;
   readonly focused: boolean;
@@ -128,7 +130,7 @@ const UpstreamTopicRowView = (props: {
       <div className="min-w-0 flex-1 space-y-0.5">
         <div className="flex items-center gap-2">
           <span className="truncate font-medium">{topic.title}</span>
-          {props.row.queued && (
+          {props.queued && (
             <Badge variant="outline" size="sm">
               Queued
             </Badge>
@@ -232,6 +234,8 @@ export const UpstreamTopicList = forwardRef<
   UpstreamTopicListHandle,
   {
     readonly rows: ReadonlyArray<UpstreamTopicRow>;
+    /** From the overview; `null` until it loads, when rows fall back to their own flag. */
+    readonly queuedTopicIds: ReadonlySet<string> | null;
     readonly repository: string;
     readonly reasonLabels: Readonly<Record<string, string>>;
     readonly focusedId: string | null;
@@ -265,14 +269,30 @@ export const UpstreamTopicList = forwardRef<
     if (index >= 0) void listRef.current?.scrollIndexIntoView({ index, animated: false });
   }, [focusedId, focusedLoaded]);
   const extraData = useMemo(
-    () => [focusedId, props.selected, props.pending, props.repository, props.quickActions],
-    [focusedId, props.selected, props.pending, props.repository, props.quickActions],
+    () => [
+      focusedId,
+      props.selected,
+      props.pending,
+      props.repository,
+      props.quickActions,
+      props.queuedTopicIds,
+    ],
+    [
+      focusedId,
+      props.selected,
+      props.pending,
+      props.repository,
+      props.quickActions,
+      props.queuedTopicIds,
+    ],
   );
-  const { onClickRow, onToggleRow, onOpenRow, onQuickAction, reasonLabels } = props;
+  const { onClickRow, onToggleRow, onOpenRow, onQuickAction, reasonLabels, queuedTopicIds } =
+    props;
   const renderItem = useCallback(
     ({ item }: { item: UpstreamTopicRow }) => (
       <UpstreamTopicRowView
         row={item}
+        queued={isUpstreamTopicQueued(item, queuedTopicIds)}
         repository={props.repository}
         reasonLabels={reasonLabels}
         focused={item.topic.id === focusedId}
@@ -291,6 +311,7 @@ export const UpstreamTopicList = forwardRef<
       props.pending,
       props.repository,
       props.quickActions,
+      queuedTopicIds,
       reasonLabels,
       onClickRow,
       onToggleRow,

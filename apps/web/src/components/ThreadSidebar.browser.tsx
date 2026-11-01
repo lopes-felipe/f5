@@ -47,6 +47,7 @@ import {
   type CreatePlanningWorkflowOptions,
 } from "../test/workflowFixtures";
 import { useThreadSelectionStore } from "../threadSelectionStore";
+import { readThreadReferenceDrag } from "../lib/threadReferenceDrag";
 import {
   THREAD_SIDEBAR_DEFAULT_WIDTH_PX,
   THREAD_SIDEBAR_MAX_WIDTH_PX,
@@ -1745,6 +1746,10 @@ describe("Thread sidebar", () => {
         expect(first.textContent).toContain("No project");
         expect(first.hasAttribute("aria-roledescription")).toBe(false);
         if (hasProjects) {
+          useStore.getState().setProjectExpanded(scratchProjectId, false);
+          await expect
+            .element(page.elementLocator(first))
+            .toHaveAttribute("aria-expanded", "false");
           document
             .querySelector<HTMLButtonElement>('[data-testid="sidebar-new-scratch-thread"]')!
             .click();
@@ -1754,6 +1759,7 @@ describe("Thread sidebar", () => {
             ).toHaveLength(1),
           );
           expect(ensureCalls).toBe(1);
+          await expect.element(page.elementLocator(first)).toHaveAttribute("aria-expanded", "true");
         }
       } finally {
         await mounted.cleanup();
@@ -3071,6 +3077,53 @@ describe("Thread sidebar", () => {
         });
       });
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("drags one thread, or the multi-selection, as thread references without navigating", async () => {
+    const otherId = "thread-sidebar-drag-other" as ThreadId;
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = createSnapshot([
+          createSnapshotThread({ id: THREAD_ID, title: "Drag source one" }),
+          createSnapshotThread({ id: otherId, title: "Drag source two" }),
+        ]);
+      },
+    });
+    const dragFrom = (element: HTMLElement) => {
+      const transfer = new DataTransfer();
+      element.dispatchEvent(
+        new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer: transfer }),
+      );
+      return transfer;
+    };
+    try {
+      const row = await waitForSidebarThreadRow("Drag source two");
+      expect(row.getAttribute("draggable")).toBe("true");
+      const requestCount = wsRequests.length;
+
+      const single = readThreadReferenceDrag(dragFrom(row));
+      expect(single).toEqual([{ threadId: otherId, title: "Drag source two" }]);
+
+      useThreadSelectionStore.getState().toggleThread(THREAD_ID);
+      useThreadSelectionStore.getState().toggleThread(otherId);
+      const selection = readThreadReferenceDrag(dragFrom(row));
+      expect(selection?.map((item) => item.threadId).toSorted()).toEqual(
+        [THREAD_ID, otherId].toSorted(),
+      );
+
+      expect(mounted.router.state.location.pathname).toBe(`/${THREAD_ID}`);
+      expect(useThreadSelectionStore.getState().selectedThreadIds.size).toBe(2);
+      expect(
+        wsRequests
+          .slice(requestCount)
+          .filter((entry) => entry._tag === ORCHESTRATION_WS_METHODS.dispatchCommand),
+      ).toEqual([]);
+    } finally {
+      useThreadSelectionStore.getState().clearSelection();
       await mounted.cleanup();
     }
   });

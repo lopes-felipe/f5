@@ -3442,3 +3442,139 @@ it("derives skill names for old tool history and live tool headings", () => {
     title: "Skill: team:review",
   });
 });
+
+describe("work log entry reuse", () => {
+  const toolActivity = (index: number) =>
+    makeActivity({
+      id: `stable-tool-${index}`,
+      kind: "tool.completed",
+      summary: "Ran command",
+      tone: "tool",
+      turnId: "turn-stable",
+      sequence: index,
+      payload: {
+        itemType: "command_execution",
+        providerItemId: `stable-tool-${index}`,
+        title: "Ran command",
+        status: "completed",
+        detail: `git status ${index}`,
+      },
+    });
+
+  it("reuses entries for unchanged activities when one is appended", () => {
+    const activities = [0, 1, 2].map(toolActivity);
+    const initial = deriveWorkLogEntries(activities.slice(0, 2), undefined);
+    const appended = deriveWorkLogEntries(activities, undefined);
+
+    expect(appended).toHaveLength(3);
+    expect(appended[0]).toBe(initial[0]);
+    expect(appended[1]).toBe(initial[1]);
+  });
+
+  it("rebuilds a warning row when the warning visibility changes", () => {
+    const warning = makeActivity({
+      id: "visible-warning",
+      kind: "runtime.warning",
+      summary: "Runtime warning",
+      tone: "info",
+      payload: { message: "Config file ignored" },
+    });
+
+    expect(
+      deriveWorkLogEntries([warning], undefined, { runtimeWarningVisibility: "summarized" })[0]
+        ?.label,
+    ).toBe("Runtime warning");
+    expect(
+      deriveWorkLogEntries([warning], undefined, { runtimeWarningVisibility: "full" })[0]?.label,
+    ).toBe("Config file ignored");
+  });
+
+  it("rebuilds an answered input row once its question arrives", () => {
+    const resolved = makeActivity({
+      id: "input-resolved",
+      createdAt: "2026-02-23T00:00:02.000Z",
+      kind: "user-input.resolved",
+      summary: "User input submitted",
+      tone: "info",
+      payload: { requestId: "req-1", answers: { choice: "Yes" } },
+    });
+    const requested = makeActivity({
+      id: "input-requested",
+      createdAt: "2026-02-23T00:00:01.000Z",
+      kind: "user-input.requested",
+      summary: "User input requested",
+      tone: "info",
+      payload: {
+        requestId: "req-1",
+        questions: [
+          {
+            id: "choice",
+            header: "Choice",
+            question: "Proceed?",
+            options: [{ label: "Yes", description: "Continue" }],
+          },
+        ],
+      },
+    });
+
+    expect(
+      deriveWorkLogEntries([resolved], undefined).find((entry) => entry.id === resolved.id)?.label,
+    ).toBe("User input submitted");
+    expect(
+      deriveWorkLogEntries([requested, resolved], undefined).find(
+        (entry) => entry.id === resolved.id,
+      ),
+    ).toMatchObject({ label: "Proceed?", detail: "Yes" });
+  });
+});
+
+describe("runtime errors in the work log", () => {
+  const retainedMessage =
+    "ERROR codex_core::codex: failed to load skill /repo/.agent/skills/scaffolding/SKILL.md: invalid YAML: mapping va...";
+  const runtimeError = (payload: Record<string, unknown>) =>
+    makeActivity({
+      id: "runtime-error",
+      kind: "runtime.error",
+      summary: "Runtime error",
+      tone: "error",
+      turnId: "turn-1",
+      payload,
+    });
+
+  it("shows the retained error message as the detail of the generic row", () => {
+    const [entry] = deriveWorkLogEntries([runtimeError({ message: retainedMessage })], undefined);
+
+    expect(entry).toMatchObject({ label: "Runtime error", detail: retainedMessage });
+  });
+
+  it("keeps an explicit detail when the error has one", () => {
+    const [entry] = deriveWorkLogEntries(
+      [runtimeError({ message: retainedMessage, detail: "Run claude auth login." })],
+      undefined,
+    );
+
+    expect(entry?.detail).toBe("Run claude auth login.");
+  });
+
+  it("does not repeat a message that matches the label", () => {
+    const [entry] = deriveWorkLogEntries([runtimeError({ message: "Runtime  error" })], undefined);
+
+    expect(entry?.detail).toBeUndefined();
+  });
+
+  it("does not read a message from other activity kinds", () => {
+    const [entry] = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "read-file",
+          kind: "tool.completed",
+          summary: "Read file",
+          payload: { message: retainedMessage },
+        }),
+      ],
+      undefined,
+    );
+
+    expect(entry?.detail).toBeUndefined();
+  });
+});

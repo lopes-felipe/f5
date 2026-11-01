@@ -1185,11 +1185,14 @@ it("shows Claude CLI preflight failures without starting a conversation", async 
     await page.getByRole("button", { name: "Claude", exact: true }).click();
     await vi.waitFor(() => expect(document.body.textContent).toContain("Unavailable"));
     expect(document.body.textContent).toContain("Claude CLI is not installed.");
-    expect(mocks.getProviderStatus).toHaveBeenCalledWith({
-      provider: "claudeAgent",
-      projectId: PROJECT_ID,
-      instanceId: "claudeAgent",
-    });
+    expect(mocks.getProviderStatus).toHaveBeenCalledWith(
+      {
+        provider: "claudeAgent",
+        projectId: PROJECT_ID,
+        instanceId: "claudeAgent",
+      },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   } finally {
     screen.unmount();
     queryClient.clear();

@@ -83,7 +83,7 @@ export function HomeQuickStart(props: {
         selection.kind === "none"
           ? await startScratchThread(options)
           : await createProjectBackedDraftThread(selection.projectId, options);
-      if (!result || !liveRef.current) return;
+      if (!result) return;
       const { threadId } = result;
       const trimmed = text.trim();
       if (trimmed.length > 0) {
@@ -93,6 +93,7 @@ export function HomeQuickStart(props: {
         // against the new prompt; appending keeps every mention range intact.
         draftStore.setPrompt(threadId, appendQuickStartText(existingPrompt, trimmed));
       }
+      if (!liveRef.current) return;
       requestComposerFocus(threadId);
       setText("");
       await navigate({ to: "/$threadId", params: { threadId } });

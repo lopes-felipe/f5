@@ -193,12 +193,39 @@ layer("NodeSqliteClient", (it) => {
       assert.equal(messages.length, 2);
       for (const message of messages) {
         assert.equal((message as unknown[])[0], "slow sql statement");
-        const detail = (message as [string, { durationMs: number; sql: string }])[1];
+        const detail = (
+          message as [string, { durationMs: number; wallMs: number; sql: string }]
+        )[1];
         assert.isAbove(detail.durationMs, 100);
+        assert.isAtLeast(detail.wallMs, 0);
+        assert.notProperty(detail, "rss");
         assert.isAtMost(detail.sql.length, 160);
         assert.include(detail.sql, "WITH RECURSIVE");
         assert.notInclude(JSON.stringify(message), "private-bound-value");
       }
+    }),
+  );
+  it.effect("adds process RSS to statements slower than 10 seconds", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const messages: unknown[] = [];
+      let elapsed = 0;
+      const clock = vi.spyOn(performance, "now").mockImplementation(() => (elapsed += 10_001));
+      yield* sql`SELECT 1`.pipe(
+        Effect.provide(
+          Logger.layer(
+            [
+              Logger.make((options) => {
+                messages.push(options.message);
+              }),
+            ],
+            { mergeWithExisting: false },
+          ),
+        ),
+        Effect.ensuring(Effect.sync(() => clock.mockRestore())),
+      );
+      const detail = (messages[0] as [string, { rss: number }])[1];
+      assert.isAbove(detail.rss, 0);
     }),
   );
   for (const values of [false, true]) {

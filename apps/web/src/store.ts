@@ -1149,10 +1149,14 @@ function buildThreadFromReadModel(
     sessionProviderName: thread.session?.providerName ?? null,
   });
   const session = mapSessionFromReadModel(thread.session, existing?.session);
-  const proposedPlans = mapProposedPlansFromReadModel(
-    thread.proposedPlans,
-    existing?.proposedPlans ?? [],
-  );
+  // A snapshot that omitted plans keeps whatever this client already loaded,
+  // but stays flagged: the plans may have changed while it was disconnected,
+  // so a view that renders them refreshes them through the thread tail.
+  const proposedPlansOmitted = thread.proposedPlansOmitted === true;
+  const keepExistingPlans = proposedPlansOmitted && existing !== undefined;
+  const proposedPlans = keepExistingPlans
+    ? existing.proposedPlans
+    : mapProposedPlansFromReadModel(thread.proposedPlans, existing?.proposedPlans ?? []);
   const latestTurn = mapLatestTurnFromReadModel(thread.latestTurn, existing?.latestTurn);
   const activities = detailFields
     ? detailFields.activities
@@ -1199,6 +1203,7 @@ function buildThreadFromReadModel(
     existing.messages === nextDetailFields.messages &&
     existing.commandExecutions === nextDetailFields.commandExecutions &&
     existing.proposedPlans === proposedPlans &&
+    (existing.proposedPlansOmitted ?? false) === proposedPlansOmitted &&
     existing.error === error &&
     existing.createdAt === thread.createdAt &&
     areUnknownEqual(existing.scheduledOrigin ?? null, thread.scheduledOrigin ?? null) &&
@@ -1258,6 +1263,7 @@ function buildThreadFromReadModel(
     messages: nextDetailFields.messages,
     commandExecutions: nextDetailFields.commandExecutions,
     proposedPlans,
+    ...(proposedPlansOmitted ? { proposedPlansOmitted: true } : {}),
     error,
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
@@ -1505,11 +1511,27 @@ export function syncThreadTailDetails(
   if (!canHydrateThreadTail(state, threadId, details)) return state;
 
   const detailFields = mapThreadTailFieldsFromReadModel(details, existingThread);
+  // Test doubles and cached pre-upgrade payloads may lack plans; leave them alone then.
+  // The tail carries every plan, as the startup snapshot does, so none is dropped here.
+  const proposedPlans =
+    details.proposedPlans === undefined
+      ? existingThread.proposedPlans
+      : mapProposedPlansFromReadModel(
+          details.proposedPlans.toSorted(
+            (left, right) =>
+              left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+          ),
+          existingThread.proposedPlans,
+        );
+  const proposedPlansOmitted =
+    details.proposedPlans === undefined && existingThread.proposedPlansOmitted === true;
   const threads = updateThread(state.threads, threadId, (thread) => {
     if (thread !== existingThread) {
       return thread;
     }
     if (
+      thread.proposedPlans === proposedPlans &&
+      (thread.proposedPlansOmitted ?? false) === proposedPlansOmitted &&
       thread.messages === detailFields.messages &&
       thread.commandExecutions === detailFields.commandExecutions &&
       thread.turnDiffSummaries === detailFields.turnDiffSummaries &&
@@ -1525,8 +1547,11 @@ export function syncThreadTailDetails(
     ) {
       return thread;
     }
+    const { proposedPlansOmitted: _omitted, ...rest } = thread;
     return {
-      ...thread,
+      ...rest,
+      proposedPlans,
+      ...(proposedPlansOmitted ? { proposedPlansOmitted: true } : {}),
       messages: detailFields.messages,
       commandExecutions: detailFields.commandExecutions,
       turnDiffSummaries: detailFields.turnDiffSummaries,

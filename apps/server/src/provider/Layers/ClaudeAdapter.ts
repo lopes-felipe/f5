@@ -5,7 +5,7 @@ import {
   type ClaudeSubagentLaunch,
 } from "../claudeSubagentSelection.ts";
 import type { ThreadMcpBroker } from "../../mcp/threadMcpTools.ts";
-import { makeClaudeThreadMcpServer } from "./claudeThreadTools.ts";
+import { isF5ThreadReadTool, makeClaudeThreadMcpServer } from "./claudeThreadTools.ts";
 import {
   makeClaudeAssistantText,
   extractAssistantTextBlocks,
@@ -76,6 +76,7 @@ import {
   claudeMandatoryPolicyOptions,
   evaluateClaudeMandatoryPolicy,
   isClaudePlanModeWorkspaceEdit,
+  type McpToolProvenance,
 } from "../claudeMandatoryPolicy.ts";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import type { ProviderSessionStartInput } from "@t3tools/contracts";
@@ -7540,6 +7541,19 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             }),
           );
 
+        // Set once the thread server is built below; only permission callbacks read it.
+        let threadServerName: string | undefined;
+        // Host MCP tools a read-only workflow stage may call: F5 preview observation and F5's
+        // own thread_read, each identified by exact server provenance.
+        const allowReadOnlyMcpTool = (
+          toolName: string,
+          mcpServer?: McpToolProvenance,
+          toolInput?: unknown,
+        ) =>
+          (classifyF5PreviewTool(toolName, agentBrowserState, mcpServer) === "observe" &&
+            !writesPreviewArtifact(toolName, toolInput)) ||
+          (threadServerName !== undefined &&
+            isF5ThreadReadTool(toolName, mcpServer, threadServerName));
         const canUseTool: CanUseTool = (toolName, toolInput, callbackOptions) =>
           Effect.runPromise(
             Effect.gen(function* () {
@@ -7725,8 +7739,13 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               if (input.workflowExecutionProfile) {
                 if (
                   !evaluateClaudeMandatoryPolicy(
-                    { workflowExecutionProfile: input.workflowExecutionProfile },
+                    {
+                      workflowExecutionProfile: input.workflowExecutionProfile,
+                      allowReadOnlyMcpTool,
+                    },
                     toolName,
+                    callbackOptions.mcpServer,
+                    toolInput,
                   )
                 ) {
                   return { behavior: "allow", updatedInput: toolInput } satisfies PermissionResult;
@@ -8278,9 +8297,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             {
               workflowExecutionProfile: input.workflowExecutionProfile,
               subagentsEnabled: providerOptions?.subagentsEnabled,
-              allowReadOnlyMcpTool: (toolName, mcpServer, toolInput) =>
-                classifyF5PreviewTool(toolName, agentBrowserState, mcpServer) === "observe" &&
-                !writesPreviewArtifact(toolName, toolInput),
+              allowReadOnlyMcpTool,
               evaluateDynamic: async (toolName, mcpServer, call) => {
                 const context = sessions.get(threadId);
                 const denial = evaluateMcpToolFilter(
@@ -8331,18 +8348,19 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             ...claudeDisallowedMcpToolNames(mcpToolFilters),
           ]),
         ];
-        const threadServer =
-          options?.threadMcpBroker && !input.workflowExecutionProfile
-            ? makeClaudeThreadMcpServer({
-                broker: options.threadMcpBroker,
-                threadId,
-                existingServerNames: new Set([
-                  ...Object.keys(translatedMcpServers ?? {}),
-                  ...(previewServer ? [previewServer.serverName] : []),
-                  ...(computerServer ? [computerServer.serverName] : []),
-                ]),
-              })
-            : undefined;
+        const threadServer = options?.threadMcpBroker
+          ? makeClaudeThreadMcpServer({
+              broker: options.threadMcpBroker,
+              threadId,
+              access: input.workflowExecutionProfile ? "read-only" : "full",
+              existingServerNames: new Set([
+                ...Object.keys(translatedMcpServers ?? {}),
+                ...(previewServer ? [previewServer.serverName] : []),
+                ...(computerServer ? [computerServer.serverName] : []),
+              ]),
+            })
+          : undefined;
+        threadServerName = threadServer?.serverName;
         const internalMcpServers: NonNullable<ClaudeQueryOptions["mcpServers"]> = {
           ...(threadServer ? { [threadServer.serverName]: threadServer.config } : {}),
           ...(previewServer ? { [previewServer.serverName]: previewServer.config } : {}),

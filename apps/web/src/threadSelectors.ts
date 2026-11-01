@@ -122,6 +122,7 @@ interface StatusMemo {
   readonly session: Thread["session"];
   readonly latestTurn: Thread["latestTurn"];
   readonly proposedPlans: Thread["proposedPlans"];
+  readonly proposedPlansOmitted: Thread["proposedPlansOmitted"];
   readonly interactionMode: Thread["interactionMode"];
   readonly lastVisitedAt: Thread["lastVisitedAt"];
   readonly status: ThreadStatus;
@@ -139,6 +140,7 @@ function threadStatusOf(thread: Thread): ThreadStatus {
     memo.session === thread.session &&
     memo.latestTurn === thread.latestTurn &&
     memo.proposedPlans === thread.proposedPlans &&
+    memo.proposedPlansOmitted === thread.proposedPlansOmitted &&
     memo.interactionMode === thread.interactionMode &&
     memo.lastVisitedAt === thread.lastVisitedAt
   ) {
@@ -150,6 +152,7 @@ function threadStatusOf(thread: Thread): ThreadStatus {
     session: thread.session,
     latestTurn: thread.latestTurn,
     proposedPlans: thread.proposedPlans,
+    proposedPlansOmitted: thread.proposedPlansOmitted,
     interactionMode: thread.interactionMode,
     lastVisitedAt: thread.lastVisitedAt,
     status,
@@ -399,6 +402,11 @@ export function useThread(threadId: ThreadId | null | undefined): Thread | undef
 
 export function useThreadExists(threadId: ThreadId | null | undefined): boolean {
   return useStore((state) => (threadId ? selectThreadIndexById(state).has(threadId) : false));
+}
+
+/** Only the title, so a streaming delta in the thread does not re-render the caller. */
+export function useThreadTitle(threadId: ThreadId | null | undefined): string | null {
+  return useStore((state) => selectThreadById(state, threadId)?.title ?? null);
 }
 
 export function useThreadIds(): ReadonlyArray<ThreadId> {
