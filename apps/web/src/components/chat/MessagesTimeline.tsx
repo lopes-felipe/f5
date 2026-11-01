@@ -4,7 +4,15 @@ import { highlightThreadFind } from "./threadFindHighlights";
 import { HtmlRenderFrame } from "./HtmlRenderFrame";
 import { recordTimelineRowRender } from "../../lib/performanceCounters";
 import { messageTextRevision, messageReasoningContent } from "../../lib/streamingTextRevision";
-import { computerToolHeading } from "@t3tools/shared/computerAction";
+import { computerToolHeading, previewToolHeading } from "@t3tools/shared/computerAction";
+import {
+  automationRunEnd,
+  classifyAutomationEntry,
+  summarizeAutomationRun,
+  type AutomationSurface,
+} from "./AutomationSessionCard.logic";
+import { AutomationSessionCard } from "./AutomationSessionCard";
+import { McpToolCallDetails } from "./McpToolCallDetails";
 import type { PromptLinkRepository } from "@t3tools/shared/promptLinks";
 import { NativeFilePreview } from "./NativeFilePreview";
 import { AttachmentFileChip } from "./AttachmentFileChip";
@@ -851,6 +859,22 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     });
   }, [listRef]);
 
+  const disclosurePinsEndRef = useRef(false);
+  const disclosureSettleFrameRef = useRef<number | null>(null);
+  // A jump or scroll away from the end: stop following the tail now, and drop
+  // any follow scroll or disclosure pin already queued for a later frame.
+  const leaveEnd = useCallback(() => {
+    manualScrollGenerationRef.current++;
+    isAtEndRef.current = false;
+    liveFollowEnabledRef.current = false;
+    setLiveFollowEnabled(false);
+    disclosurePinsEndRef.current = false;
+    if (disclosureSettleFrameRef.current !== null) {
+      window.cancelAnimationFrame(disclosureSettleFrameRef.current);
+      disclosureSettleFrameRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     if (!hasMessages && !isWorking) {
       return;
@@ -896,10 +920,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       if (scrollableNode instanceof HTMLElement) {
         const cancelFollow = () => {
           if (scrollableNode.scrollHeight <= scrollableNode.clientHeight) return;
-          manualScrollGenerationRef.current++;
-          isAtEndRef.current = false;
-          liveFollowEnabledRef.current = false;
-          setLiveFollowEnabled(false);
+          leaveEnd();
         };
         const wheel = (event: WheelEvent) => {
           if (event.deltaY < 0) cancelFollow();
@@ -946,7 +967,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         cleanup();
       }
     };
-  }, [hasMessages, isWorking, listRef, measureTurnRailGutter, syncIsAtEndFromListState]);
+  }, [hasMessages, isWorking, leaveEnd, listRef, measureTurnRailGutter, syncIsAtEndFromListState]);
 
   useLayoutEffect(() => {
     if (!threadId || !hasMessages) return;
@@ -977,8 +998,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   // A disclosure toggled at the end keeps the end in view while rows re-measure.
   // Anywhere else, maintainVisibleContentPosition holds the toggled row in place.
-  const disclosurePinsEndRef = useRef(false);
-  const disclosureSettleFrameRef = useRef<number | null>(null);
   const pinDisclosureToEnd = useCallback(() => {
     if (!disclosurePinsEndRef.current) return;
     const node = listRef.current?.getScrollableNode?.();
@@ -1019,14 +1038,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [],
   );
 
-  // A jump away from the end: stop following the tail now, and drop any
-  // follow scroll already queued for the next frame.
-  const leaveEnd = useCallback(() => {
-    manualScrollGenerationRef.current++;
-    isAtEndRef.current = false;
-    liveFollowEnabledRef.current = false;
-    setLiveFollowEnabled(false);
-  }, []);
   useLayoutEffect(() => {
     if (!leaveEndRef) return;
     leaveEndRef.current = leaveEnd;
@@ -1847,6 +1858,10 @@ type TimelineRow =
       groupedEntries: TimelineWorkEntry[];
       /** Above the newest user message, so eligible for collapsing. */
       isPriorTurn: boolean;
+      /** Set when the row is one computer or browser-preview run. */
+      automationSurface?: AutomationSurface;
+      /** The run belongs to the turn that is still working, so its calls may be live. */
+      automationActive?: boolean;
       workSummary: string;
     }
   | {
@@ -2905,6 +2920,11 @@ export function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
     ? computerToolHeading(workEntry.mcpToolName, workEntry.status)
     : undefined;
   if (computer) return `Computer · ${computer}`;
+  const preview =
+    classifyAutomationEntry(workEntry) === "preview"
+      ? previewToolHeading(workEntry.mcpToolName, workEntry.status)
+      : undefined;
+  if (preview) return `Browser · ${preview}`;
   if (workEntry.itemType === "mcp_tool_call") {
     return `MCP Call - ${formatMcpToolHeading(workEntry)}`;
   }
@@ -3357,28 +3377,11 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
       {hasNestedContent && (
         <CollapsiblePanel>
           <div className="border-t border-border px-3 py-3">
-            <div className="space-y-3">
-              {workEntry.mcpInput && (
-                <div>
-                  <p className="text-2xs font-medium text-muted-foreground">Input</p>
-                  <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap wrap-break-word rounded-md bg-muted/40 p-2 font-mono text-xs leading-5 text-foreground">
-                    {workEntry.mcpInput}
-                  </pre>
-                </div>
-              )}
-              {workEntry.mcpResult && (
-                <div>
-                  <p className="text-2xs font-medium text-muted-foreground">Result</p>
-                  <div className="mt-1 max-h-80 overflow-auto rounded-md bg-muted/40 p-2 text-ui text-foreground">
-                    <ChatMarkdown
-                      text={workEntry.mcpResult}
-                      cwd={markdownCwd}
-                      isStreaming={false}
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
+            <McpToolCallDetails
+              mcpInput={workEntry.mcpInput}
+              mcpResult={workEntry.mcpResult}
+              markdownCwd={markdownCwd}
+            />
           </div>
         </CollapsiblePanel>
       )}
@@ -3823,6 +3826,11 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
   );
 });
 
+// Session cards fold their calls' rows, so correlated hook and review results move into the card.
+const renderAutomationDiagnostics = (diagnostics: ReadonlyArray<TimelineWorkEntry>) => (
+  <NestedDiagnosticList diagnostics={diagnostics} className="ml-0" />
+);
+
 // ── Timeline rows ────────────────────────────────────────────────────
 
 type TimelineRevertImpact = ReturnType<typeof computeRevertImpact>;
@@ -4054,6 +4062,26 @@ function WorkGroupRowContent(props: {
     <WorkEntryRow key={`app:${entry.id}`} workEntry={entry} {...entryProps} />
   ));
   if (!logEntries.length) return <div className="min-w-0 space-y-2">{appRows}</div>;
+  const expanded = externals.collapseOverride ?? !(row.isPriorTurn && collapseCompletedWorkLogs);
+  const canCollapse = row.isPriorTurn && canSetWorkGroupExpanded;
+  if (row.automationSurface && expanded) {
+    return (
+      <div className="min-w-0 px-1 py-0.5">
+        <AutomationSessionCard
+          surface={row.automationSurface}
+          entries={row.groupedEntries}
+          active={row.automationActive ?? false}
+          renderDiagnostics={renderAutomationDiagnostics}
+          timestampFormat={timestampFormat}
+          markdownCwd={markdownCwd}
+          onImageExpand={actions.onImageExpand}
+          onCollapse={
+            canCollapse ? () => actions.onSetWorkGroupExpanded(groupId, false) : undefined
+          }
+        />
+      </div>
+    );
+  }
   const standaloneExpandedMcpEntry =
     row.groupedEntries.length === 1 &&
     (row.groupedEntries[0]?.htmlRender ||
@@ -4064,7 +4092,7 @@ function WorkGroupRowContent(props: {
           settingsExpandMcpToolCalls: expandMcpToolCalls,
         });
 
-  if (!appEntries.length && standaloneExpandedMcpEntry) {
+  if (!appEntries.length && standaloneExpandedMcpEntry && !row.automationSurface) {
     return (
       <div className="min-w-0 px-1 py-0.5">
         <WorkEntryRow workEntry={standaloneExpandedMcpEntry} {...entryProps} />
@@ -4072,8 +4100,6 @@ function WorkGroupRowContent(props: {
     );
   }
 
-  const expanded = externals.collapseOverride ?? !(row.isPriorTurn && collapseCompletedWorkLogs);
-  const canCollapse = row.isPriorTurn && canSetWorkGroupExpanded;
   const log = !expanded ? (
     <div className="min-w-0 px-1 py-0.5">
       <button
@@ -4779,16 +4805,28 @@ export function buildTimelineRows(input: {
 
     if (timelineEntry.kind === "work") {
       const groupedEntries = [timelineEntry.entry];
-      const shouldIsolateEntry = shouldRenderWorkEntryAsStandaloneRow(
-        timelineEntry.entry,
-        isolationOptions,
-      );
+      // Computer and preview runs become one session card, whatever the MCP expand setting.
+      const automationSurface = classifyAutomationEntry(timelineEntry.entry);
+      const shouldIsolateEntry =
+        !automationSurface &&
+        shouldRenderWorkEntryAsStandaloneRow(timelineEntry.entry, isolationOptions);
       let cursor = index + 1;
-      if (!shouldIsolateEntry) {
+      if (automationSurface) {
+        const end = automationRunEnd(timelineEntries, index, (candidate) =>
+          candidate.kind === "work" ? candidate.entry : undefined,
+        );
+        for (; cursor < end; cursor += 1) {
+          const nextEntry = timelineEntries[cursor];
+          if (nextEntry?.kind === "work") groupedEntries.push(nextEntry.entry);
+        }
+      } else if (!shouldIsolateEntry) {
         while (cursor < timelineEntries.length) {
           const nextEntry = timelineEntries[cursor];
           if (!nextEntry || nextEntry.kind !== "work") break;
-          if (shouldRenderWorkEntryAsStandaloneRow(nextEntry.entry, isolationOptions)) {
+          if (
+            classifyAutomationEntry(nextEntry.entry) ||
+            shouldRenderWorkEntryAsStandaloneRow(nextEntry.entry, isolationOptions)
+          ) {
             break;
           }
           groupedEntries.push(nextEntry.entry);
@@ -4799,15 +4837,26 @@ export function buildTimelineRows(input: {
       const isPriorTurn =
         index < lastUserMessageEntryIndex &&
         !groupedEntries.some((entry) => entry.subagentType && entry.status === "inProgress");
+      // Only the working turn's calls can still be running; elsewhere an in-progress
+      // snapshot is a completion that never arrived.
+      const automationActive =
+        automationSurface !== undefined && input.isWorking && index > lastUserMessageEntryIndex;
       nextRows.push(
-        reuse(timelineEntry.id, ["work", isPriorTurn, ...groupedEntries], () => ({
-          kind: "work",
-          id: timelineEntry.id,
-          createdAt: timelineEntry.createdAt,
-          groupedEntries,
-          isPriorTurn,
-          workSummary: summarizeWorkGroup(groupedEntries),
-        })),
+        reuse(
+          timelineEntry.id,
+          ["work", isPriorTurn, automationSurface, automationActive, ...groupedEntries],
+          () => ({
+            kind: "work",
+            id: timelineEntry.id,
+            createdAt: timelineEntry.createdAt,
+            groupedEntries,
+            isPriorTurn,
+            ...(automationSurface ? { automationSurface, automationActive } : {}),
+            workSummary: automationSurface
+              ? summarizeAutomationRun(automationSurface, groupedEntries, automationActive)
+              : summarizeWorkGroup(groupedEntries),
+          }),
+        ),
       );
       index = cursor - 1;
       continue;

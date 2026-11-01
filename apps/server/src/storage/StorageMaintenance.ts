@@ -1,4 +1,5 @@
 import { assertScheduledThreadPurgeable, purgeThreadRows } from "./threadPurgePolicy.ts";
+import { removeScratchThreadFolder } from "../project/scratchFolderCleanup.ts";
 import {
   retainedWorkflowThreadIds as workflowRetention,
   workflowEntries,
@@ -46,6 +47,8 @@ import { captureStorageActivity, type StorageActivitySnapshot } from "./storageA
 
 import {
   type CheckpointRef,
+  type ProjectId,
+  type ProjectKind,
   CommandId,
   type DiskSpaceReclaimableItem,
   type StorageCleanupCategoryId,
@@ -304,7 +307,7 @@ export class StorageMaintenance extends ServiceMap.Service<
 
 interface ThreadRow {
   readonly threadId: ThreadId;
-  readonly projectId: string;
+  readonly projectId: ProjectId;
   readonly title: string;
   readonly lastInteractionAt: string;
   readonly projectName: string | null;
@@ -312,6 +315,8 @@ interface ThreadRow {
   readonly archivedAt: string | null;
   readonly deletedAt: string | null;
   readonly workspaceRoot: string | null;
+  readonly projectKind: ProjectKind | null;
+  readonly scratchPath: string | null;
 }
 
 interface OrphanAttachmentRow {
@@ -864,6 +869,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
         thread.last_interaction_at AS "lastInteractionAt",
         project.title AS "projectName",
         thread.worktree_path AS "worktreePath",
+        thread.scratch_path AS "scratchPath",
+        project.kind AS "projectKind",
         thread.archived_at AS "archivedAt",
         thread.deleted_at AS "deletedAt",
         project.workspace_root AS "workspaceRoot"
@@ -3264,28 +3271,101 @@ const makeStorageMaintenance = Effect.gen(function* () {
                       message: "Provider session remained active after stop.",
                     });
                   return yield* Effect.gen(function* () {
+                    const assertPurgeStillSafe = () =>
+                      Effect.gen(function* () {
+                        const finalBlock = yield* purgeBlockReason(thread);
+                        if (
+                          (yield* terminals.listSessions).some(
+                            (terminal) =>
+                              terminal.threadId === thread.threadId &&
+                              (terminal.status === "running" || terminal.status === "starting"),
+                          )
+                        )
+                          return yield* new StorageMaintenanceError({
+                            operation: "purge.recheck",
+                            message: "A terminal became active during cleanup.",
+                          });
+                        if (
+                          finalBlock ||
+                          (segment && (yield* readBusyThreadSegments([thread])).has(segment))
+                        )
+                          return yield* new StorageMaintenanceError({
+                            operation: "purge.recheck",
+                            message: finalBlock ?? "Provider became busy.",
+                          });
+                      });
                     const purgeGate = yield* engine.acquireMaintenanceLock();
                     yield* Effect.addFinalizer(() => Scope.close(purgeGate, Exit.void));
-                    const finalBlock = yield* purgeBlockReason(thread);
-                    if (
-                      (yield* terminals.listSessions).some(
-                        (terminal) =>
-                          terminal.threadId === thread.threadId &&
-                          (terminal.status === "running" || terminal.status === "starting"),
-                      )
-                    )
-                      return yield* new StorageMaintenanceError({
-                        operation: "purge.recheck",
-                        message: "A terminal became active during cleanup.",
-                      });
-                    if (
-                      finalBlock ||
-                      (segment && (yield* readBusyThreadSegments([thread])).has(segment))
-                    )
-                      return yield* new StorageMaintenanceError({
-                        operation: "purge.recheck",
-                        message: finalBlock ?? "Provider became busy.",
-                      });
+                    yield* assertPurgeStillSafe();
+                    if (thread.projectKind === "scratch" || thread.scratchPath) {
+                      const cleanupScratch = (stageOnly: boolean) =>
+                        Effect.gen(function* () {
+                          const readModel = yield* engine.getReadModel();
+                          return yield* Effect.tryPromise({
+                            try: () =>
+                              removeScratchThreadFolder({
+                                readModel,
+                                threadId: thread.threadId,
+                                persisted: {
+                                  thread: {
+                                    id: thread.threadId,
+                                    projectId: thread.projectId,
+                                    scratchPath: thread.scratchPath,
+                                    deletedAt: thread.deletedAt,
+                                    archivedAt: thread.archivedAt,
+                                  },
+                                  project: thread.workspaceRoot
+                                    ? {
+                                        id: thread.projectId,
+                                        kind: thread.projectKind ?? "standard",
+                                        workspaceRoot: thread.workspaceRoot,
+                                      }
+                                    : undefined,
+                                },
+                                allowArchived: true,
+                                stageOnly,
+                              }),
+                            catch: (cause) =>
+                              new StorageMaintenanceError({
+                                operation: "purge.scratchFolder",
+                                message: String(cause),
+                              }),
+                          }).pipe(stageOnly ? Effect.uninterruptible : (effect) => effect);
+                        });
+                      const checkCleanup = (
+                        cleanup: Awaited<ReturnType<typeof removeScratchThreadFolder>>,
+                      ) =>
+                        Effect.gen(function* () {
+                          if (cleanup.kind === "refused") {
+                            if (cleanup.permanent) {
+                              warnings.push(
+                                warningFor(
+                                  thread.threadId,
+                                  `Workspace retained: ${cleanup.reason}`,
+                                ),
+                              );
+                              return;
+                            }
+                            return yield* new StorageMaintenanceError({
+                              operation: "purge.scratchFolder",
+                              message: cleanup.reason,
+                            });
+                          }
+                          if (cleanup.kind === "removed" || cleanup.kind === "staged")
+                            markStorageMutation(request.operationId);
+                        });
+                      const staged = yield* cleanupScratch(true);
+                      yield* checkCleanup(staged);
+                      if (staged.kind === "staged") {
+                        // The thread is already deleted. Retain its rows until the staged folder
+                        // is gone, so restart recovery can derive the exact same tombstone.
+                        yield* Scope.close(purgeGate, Exit.void);
+                        yield* checkCleanup(yield* cleanupScratch(false));
+                        const commitGate = yield* engine.acquireMaintenanceLock();
+                        yield* Effect.addFinalizer(() => Scope.close(commitGate, Exit.void));
+                        yield* assertPurgeStillSafe();
+                      }
+                    }
                     const transactionExit = yield* Effect.exit(
                       sql.withTransaction(
                         Effect.gen(function* () {

@@ -35,6 +35,7 @@ import {
 import { parsePersistedAppSettings } from "../../appSettings";
 import type { TurnDiffSummary } from "../../types";
 import { readTimelineScrollAnchor } from "./timelineScrollAnchors";
+import { replayWheelOnTimeline } from "./timelineMinimapWheel";
 import {
   buildTimelineRowExternals,
   buildTimelineRows,
@@ -3726,6 +3727,256 @@ describe("MessagesTimeline row stability", () => {
       });
     } finally {
       consoleError.mockRestore();
+      await screen.unmount();
+      host.remove();
+    }
+  });
+});
+
+describe("MessagesTimeline HTML renders", () => {
+  const originalFetch = globalThis.fetch;
+  let pages: Record<string, string> = {};
+  beforeEach(() => {
+    localStorage.clear();
+    persistAppSettings();
+    pages = {};
+    (window as typeof window & { nativeApi?: NativeApi }).nativeApi = nativeApiMock;
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const id = /\/attachments\/(html-[^/?]+)/.exec(String(input))?.[1];
+      return id && pages[id] !== undefined
+        ? Promise.resolve(new Response(pages[id], { headers: { "content-type": "text/html" } }))
+        : originalFetch(input, init);
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    document.body.innerHTML = "";
+  });
+
+  const makeHtmlRenderEntry = (id: string, page: string, offsetSeconds: number): TimelineEntry => {
+    pages[id] = page;
+    const createdAt = new Date(
+      Date.parse("2026-03-04T12:00:00.000Z") + offsetSeconds * 1000,
+    ).toISOString();
+    return {
+      id,
+      kind: "work",
+      createdAt,
+      entry: {
+        id,
+        createdAt,
+        label: "Chart",
+        tone: "tool",
+        htmlRender: { attachmentId: id, title: id, height: 120 },
+      },
+    } as unknown as TimelineEntry;
+  };
+  const frameFor = (host: HTMLElement, id: string) =>
+    host.querySelector<HTMLIFrameElement>(`iframe[title="${id}"]`);
+
+  it("stops following the tail when the wheel turns up over a page while a reply streams", async () => {
+    const initialEntries = [
+      ...makeOverflowEntries(16),
+      makeHtmlRenderEntry("html-follow", '<div style="height:300px">Chart</div>', 120),
+      makeAssistantEntry("follow-tail", "Reply", 121),
+    ];
+    let api: TimelineHarnessApi | null = null;
+    const isAtEndCalls: boolean[] = [];
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={initialEntries}
+        initialHeight={800}
+        initialIsWorking
+        onIsAtEndChangeSpy={(value) => isAtEndCalls.push(value)}
+        setApi={(nextApi) => {
+          api = nextApi;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const node = await waitForScrollContainer(host);
+      const distanceFromEnd = () => node.scrollHeight - node.clientHeight - node.scrollTop;
+      await vi.waitFor(() => {
+        expect(frameFor(host, "html-follow")?.getBoundingClientRect().height).toBe(316);
+        expect(distanceFromEnd()).toBeLessThan(8);
+      });
+      await userEvent.wheel(page.getByTitle("html-follow", { exact: true }), {
+        delta: { y: -200 },
+      });
+      await vi.waitFor(() => expect(distanceFromEnd()).toBeGreaterThan(150));
+      api!.setEntries([
+        ...initialEntries.slice(0, -1),
+        makeAssistantEntry(
+          "follow-tail",
+          Array.from({ length: 12 }, (_, index) => "Streamed paragraph " + index).join("\n\n"),
+          121,
+        ),
+      ]);
+      await waitForTimelineLayout(() => node);
+      await waitForTimelineLayout(() => node);
+      expect(distanceFromEnd()).toBeGreaterThan(150);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("stops following the tail when the wheel turns up over a paused page", async () => {
+    const initialEntries = [
+      ...makeOverflowEntries(16),
+      makeHtmlRenderEntry(
+        "html-paused",
+        "<style>body{min-height:100vh;margin:0}</style><p>Grows with its frame</p>",
+        120,
+      ),
+      makeAssistantEntry("paused-tail", "Reply", 121),
+    ];
+    let api: TimelineHarnessApi | null = null;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={initialEntries}
+        initialHeight={800}
+        initialIsWorking
+        onIsAtEndChangeSpy={() => {}}
+        setApi={(nextApi) => {
+          api = nextApi;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const node = await waitForScrollContainer(host);
+      const distanceFromEnd = () => node.scrollHeight - node.clientHeight - node.scrollTop;
+      await expect.element(page.getByRole("button", { name: "Retry sizing" })).toBeVisible();
+      // The notice grows the row after the thread settled, which LegendList does not follow.
+      node.scrollTop = node.scrollHeight;
+      await vi.waitFor(() => expect(distanceFromEnd()).toBeLessThan(8));
+      await userEvent.wheel(page.getByTitle("html-paused", { exact: true }), {
+        delta: { y: -200 },
+      });
+      await vi.waitFor(() => expect(distanceFromEnd()).toBeGreaterThan(150));
+      api!.setEntries([
+        ...initialEntries.slice(0, -1),
+        makeAssistantEntry(
+          "paused-tail",
+          Array.from({ length: 12 }, (_, index) => "Streamed paragraph " + index).join("\n\n"),
+          121,
+        ),
+      ]);
+      await waitForTimelineLayout(() => node);
+      await waitForTimelineLayout(() => node);
+      expect(distanceFromEnd()).toBeGreaterThan(150);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("drops a pending disclosure pin when a page's wheel leaves the end", async () => {
+    const commandId = "command-under-render";
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[
+          ...makeOverflowEntries(16),
+          makeHtmlRenderEntry("html-disclosure", '<div style="height:200px">Chart</div>', 120),
+          makeCommandEntry(commandId, {
+            output: Array.from({ length: 40 }, (_, line) => `line ${line}`).join("\n"),
+          }),
+        ]}
+        initialHeight={400}
+        initialIsWorking
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+    const toggle = () =>
+      host.querySelector<HTMLButtonElement>(
+        `[data-timeline-row-id="${commandId}"] button[aria-expanded]`,
+      );
+    try {
+      const node = await waitForScrollContainer(host);
+      const distanceFromEnd = () => node.scrollHeight - node.clientHeight - node.scrollTop;
+      await vi.waitFor(() => {
+        expect(toggle()).not.toBeNull();
+        expect(distanceFromEnd()).toBeLessThan(8);
+      });
+      toggle()!.click();
+      // What the frame does with a forwarded wheel, while the disclosure still pins the end.
+      replayWheelOnTimeline({ x: 0, y: -300, mode: 0 }, node);
+      await waitForTimelineLayout(() => node);
+      await waitForTimelineLayout(() => node);
+      await waitForTimelineLayout(() => node);
+      expect(toggle()?.getAttribute("aria-expanded")).toBe("true");
+      expect(distanceFromEnd()).toBeGreaterThan(150);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("keeps the reader's place when a page above the viewport grows past 3000px", async () => {
+    await page.viewport(1000, 800);
+    const host = document.createElement("div");
+    document.body.append(host);
+    let currentRef: LegendListRef | null = null;
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[
+          makeUserEntry("anchor-user", "Show the chart", 0),
+          makeHtmlRenderEntry(
+            "html-grows",
+            "<div id=g style=\"height:200px\">Chart</div><script>setTimeout(()=>{document.getElementById('g').style.height='3200px'},1500)</script>",
+            1,
+          ),
+          // More than the growth below the viewport: LegendList applies its anchor
+          // adjustment before the list grows, so the browser clamps it to the old end.
+          ...makeOverflowEntries(48),
+        ]}
+        initialHeight={500}
+        onIsAtEndChangeSpy={() => {}}
+        onListRefChange={(ref) => {
+          currentRef = ref;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const node = await waitForScrollContainer(host);
+      await scrollTimelineToOffset(currentRef, node, 0);
+      await vi.waitFor(() =>
+        expect(frameFor(host, "html-grows")?.getBoundingClientRect().height).toBe(216),
+      );
+      const frame = frameFor(host, "html-grows")!;
+      const frameBottom =
+        frame.getBoundingClientRect().bottom - node.getBoundingClientRect().top + node.scrollTop;
+      await scrollTimelineToOffset(currentRef, node, frameBottom + 40);
+      await waitForTimelineLayout(() => node);
+      const anchor = host.querySelector<HTMLElement>('[data-message-id="overflow-user-2"]')!;
+      expect(anchor).not.toBeNull();
+      const before = anchor.getBoundingClientRect().top;
+      const anchorTop = () =>
+        host
+          .querySelector<HTMLElement>('[data-message-id="overflow-user-2"]')!
+          .getBoundingClientRect().top;
+      // The page grows 1.5s after loading, while it sits above the viewport. Scrolling
+      // may recycle its row and reload the frame; it reconnects and still reports.
+      await vi.waitFor(
+        () =>
+          expect(frameFor(host, "html-grows")?.getBoundingClientRect().height).toBeGreaterThan(
+            3000,
+          ),
+        { timeout: 5000 },
+      );
+      await vi.waitFor(() => expect(Math.abs(anchorTop() - before)).toBeLessThan(4));
+      expect(node.scrollTop).toBeGreaterThan(3000);
+    } finally {
       await screen.unmount();
       host.remove();
     }

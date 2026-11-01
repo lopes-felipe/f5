@@ -53,7 +53,27 @@ import {
 } from "./SidebarWorkflowItem";
 import type { SidebarThreadActions } from "./useSidebarThreadActions";
 
-type SortableProjectHandleProps = Pick<ReturnType<typeof useSortable>, "attributes" | "listeners">;
+type SortableProjectHandleProps = Partial<
+  Pick<ReturnType<typeof useSortable>, "attributes" | "listeners">
+>;
+
+function ProjectItemWrapper(props: {
+  project: Project;
+  children: (handleProps: SortableProjectHandleProps) => React.ReactNode;
+}) {
+  if (isScratchProject(props.project)) {
+    return (
+      <li
+        className="group/menu-item relative rounded-lg"
+        data-sidebar="menu-item"
+        data-slot="sidebar-menu-item"
+      >
+        {props.children({})}
+      </li>
+    );
+  }
+  return <SortableProjectItem projectId={props.project.id}>{props.children}</SortableProjectItem>;
+}
 
 function SortableProjectItem({
   projectId,
@@ -293,7 +313,7 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
       }).length;
 
   return (
-    <SortableProjectItem projectId={project.id}>
+    <ProjectItemWrapper project={project}>
       {(dragHandleProps) => (
         <Collapsible className="group/collapsible" open={project.expanded}>
           <div className="group/project-header relative">
@@ -335,6 +355,7 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
               <span className="relative inline-flex size-4 shrink-0 items-center justify-center">
                 <ProjectIcon
                   projectId={project.id}
+                  kind={project.kind}
                   name={project.name}
                   icon={project.icon}
                   className="size-4 shrink-0 text-muted-foreground transition-opacity duration-(--duration-fast) group-hover/project-header:opacity-0 group-focus-within/project-header:opacity-0"
@@ -662,6 +683,6 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
           </CollapsibleContent>
         </Collapsible>
       )}
-    </SortableProjectItem>
+    </ProjectItemWrapper>
   );
 }

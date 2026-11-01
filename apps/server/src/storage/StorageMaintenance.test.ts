@@ -1,4 +1,12 @@
 import { vi } from "vitest";
+import {
+  removeScratchThreadFolder,
+  scratchThreadCleanupPath,
+} from "../project/scratchFolderCleanup.ts";
+vi.mock("../project/scratchFolderCleanup.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../project/scratchFolderCleanup.ts")>();
+  return { ...actual, removeScratchThreadFolder: vi.fn(actual.removeScratchThreadFolder) };
+});
 import { removeFileIfSafe } from "./storagePathSafety.ts";
 vi.mock("./storagePathSafety.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./storagePathSafety.ts")>();
@@ -161,6 +169,7 @@ function makeGitCoreStub(input?: {
 
 function makeOrchestrationEngineStub(input?: {
   readonly dispatch?: OrchestrationEngineShape["dispatch"];
+  readonly omitDeletedScratchThreads?: boolean;
   readonly getWorkflows?: () => Pick<
     OrchestrationReadModel,
     "planningWorkflows" | "codeReviewWorkflows" | "investigationWorkflows"
@@ -171,13 +180,24 @@ function makeOrchestrationEngineStub(input?: {
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         const projects =
-          yield* sql`SELECT project_id AS id, title, workspace_root AS "workspaceRoot", deleted_at AS "deletedAt" FROM projection_projects`;
+          yield* sql`SELECT project_id AS id, title, kind, workspace_root AS "workspaceRoot", deleted_at AS "deletedAt" FROM projection_projects`;
         const threads =
-          yield* sql`SELECT thread_id AS id, title, last_interaction_at AS "lastInteractionAt", project_id AS "projectId", worktree_path AS "worktreePath", archived_at AS "archivedAt", deleted_at AS "deletedAt" FROM projection_threads`;
+          yield* sql`SELECT thread_id AS id, title, last_interaction_at AS "lastInteractionAt", project_id AS "projectId", worktree_path AS "worktreePath", scratch_path AS "scratchPath", archived_at AS "archivedAt", deleted_at AS "deletedAt" FROM projection_threads`;
         return {
           ...input?.getWorkflows?.(),
-          projects,
-          threads: threads.map((thread) => ({ ...thread, session: null, activities: [] })),
+          projects: input?.omitDeletedScratchThreads
+            ? projects.filter((project) => project.kind !== "scratch")
+            : projects,
+          threads: threads
+            .filter(
+              (thread) =>
+                !input?.omitDeletedScratchThreads ||
+                thread.deletedAt === null ||
+                !projects.some(
+                  (project) => project.id === thread.projectId && project.kind === "scratch",
+                ),
+            )
+            .map((thread) => ({ ...thread, session: null, activities: [] })),
         } as never;
       }),
     readEvents: () => Stream.empty,
@@ -446,6 +466,144 @@ it.effect(
         ),
       ),
     ),
+);
+
+for (const mode of [
+  "failure",
+  "remove-failure",
+  "refusal",
+  "foreign-project",
+  "outside-root",
+  "removed-before-purge",
+  "archived",
+  "missing-metadata",
+  "missing-metadata-unallocated",
+] as const) {
+  it.effect(`handles guarded scratch folder purge (${mode})`, () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance;
+        const sql = yield* SqlClient.SqlClient;
+        const config = yield* ServerConfig;
+        const threadId = ThreadId.makeUnsafe(`scratch-purge-${mode}`);
+        const scratchRoot = NodePath.join(config.stateDir, "scratch");
+        const folder = NodePath.join(
+          mode === "outside-root" ? config.stateDir : scratchRoot,
+          "research-12345678",
+        );
+        const tombstone = scratchThreadCleanupPath(folder, threadId);
+        yield* seedThread({
+          sql,
+          threadId,
+          deletedAt: mode === "archived" ? null : daysAgo(90),
+          ...(mode === "archived" ? { archivedAt: daysAgo(90) } : {}),
+        });
+        yield* sql`UPDATE projection_projects SET kind='scratch', workspace_root=${scratchRoot} WHERE project_id='project-storage-maintenance'`;
+        if (mode !== "missing-metadata-unallocated") {
+          yield* sql`UPDATE projection_threads SET scratch_path=${folder} WHERE thread_id=${threadId}`;
+          yield* Effect.promise(() => writeFile(NodePath.join(folder, "notes.txt"), "research"));
+        }
+        if (mode === "removed-before-purge") {
+          yield* Effect.promise(() => NodeFS.rm(folder, { recursive: true }));
+        }
+        if (mode === "refusal") {
+          yield* Effect.promise(async () => {
+            await NodeFS.rm(folder, { recursive: true });
+            await NodeFS.symlink(config.stateDir, folder, "dir");
+          });
+        }
+        if (mode === "failure")
+          vi.mocked(removeScratchThreadFolder).mockRejectedValueOnce(new Error("EBUSY"));
+        if (mode === "remove-failure") {
+          const original = vi.mocked(removeScratchThreadFolder).getMockImplementation()!;
+          vi.mocked(removeScratchThreadFolder)
+            .mockImplementationOnce(original)
+            .mockRejectedValueOnce(new Error("EBUSY"));
+        }
+        if (mode === "foreign-project")
+          yield* sql`UPDATE projection_projects SET kind='standard' WHERE project_id='project-storage-maintenance'`;
+        const purge = (suffix: string) =>
+          storage.purgeThreads({
+            operationId: `scratch-${mode}-${suffix}`,
+            deletedBefore: daysAgo(30),
+            archivedBefore: mode === "archived" ? daysAgo(30) : null,
+            maxThreads: 1,
+          });
+        const result = yield* purge("first");
+        if (mode === "failure" || mode === "remove-failure") {
+          assert.equal(yield* countRows(sql, "projection_threads", threadId), 1);
+          assert.isTrue(
+            yield* Effect.promise(() => pathExists(mode === "remove-failure" ? tombstone : folder)),
+          );
+          yield* purge("retry");
+        }
+        assert.equal(yield* countRows(sql, "projection_threads", threadId), 0);
+        const retained =
+          mode === "refusal" || mode === "foreign-project" || mode === "outside-root";
+        assert.equal(yield* Effect.promise(() => pathExists(folder)), retained);
+        assert.isFalse(yield* Effect.promise(() => pathExists(tombstone)));
+        if (retained)
+          assert.isTrue(
+            result.warnings.some((warning) => warning.reason.includes("Workspace retained")),
+          );
+      }).pipe(
+        Effect.provide(
+          makeStorageTestLayer({
+            orchestrationEngine: makeOrchestrationEngineStub({
+              omitDeletedScratchThreads: mode.startsWith("missing-metadata"),
+            }),
+          }),
+        ),
+      ),
+    ),
+  );
+}
+
+it.effect("keeps an authorized archived purge deleted and retryable after SQL rollback", () =>
+  withHomeSandbox(
+    Effect.gen(function* () {
+      const storage = yield* StorageMaintenance;
+      const sql = yield* SqlClient.SqlClient;
+      const config = yield* ServerConfig;
+      const threadId = ThreadId.makeUnsafe("archived-scratch-sql-rollback");
+      const scratchRoot = NodePath.join(config.stateDir, "scratch");
+      const folder = NodePath.join(scratchRoot, "rollback-12345678");
+      yield* seedThread({ sql, threadId, archivedAt: daysAgo(90), deletedAt: null });
+      yield* sql`UPDATE projection_projects SET kind='scratch', workspace_root=${scratchRoot} WHERE project_id='project-storage-maintenance'`;
+      yield* sql`UPDATE projection_threads SET scratch_path=${folder} WHERE thread_id=${threadId}`;
+      yield* Effect.promise(() =>
+        writeFile(NodePath.join(folder, "notes.txt"), "authorized deletion"),
+      );
+      yield* sql`CREATE TRIGGER block_scratch_purge BEFORE DELETE ON projection_threads WHEN OLD.thread_id = 'archived-scratch-sql-rollback' BEGIN SELECT RAISE(ABORT, 'test SQL failure'); END`;
+      const result = yield* storage.purgeThreads({
+        operationId: "archived-scratch-sql-failure",
+        archivedBefore: daysAgo(30),
+        deletedBefore: daysAgo(0),
+        maxThreads: 1,
+      });
+      assert.deepEqual(result.purgedThreadIds, []);
+      const rows = yield* sql<{
+        deletedAt: string | null;
+      }>`SELECT deleted_at AS "deletedAt" FROM projection_threads WHERE thread_id=${threadId}`;
+      assert.lengthOf(rows, 1);
+      assert.isString(rows[0]?.deletedAt);
+      assert.isFalse(yield* Effect.promise(() => pathExists(folder)));
+      assert.isFalse(
+        yield* Effect.promise(() => pathExists(scratchThreadCleanupPath(folder, threadId))),
+      );
+      assert.isTrue(
+        result.warnings.some((warning) => warning.reason.startsWith("Deleted, cleanup incomplete")),
+      );
+      yield* sql`DROP TRIGGER block_scratch_purge`;
+      const retry = yield* storage.purgeThreads({
+        operationId: "archived-scratch-sql-retry",
+        archivedBefore: null,
+        deletedBefore: daysAgo(0),
+        maxThreads: 1,
+      });
+      assert.deepEqual(retry.purgedThreadIds, [threadId]);
+    }).pipe(Effect.provide(makeStorageTestLayer())),
+  ),
 );
 
 for (const mode of ["fallback", "another-copy", "remaining"] as const) {
@@ -1858,6 +2016,7 @@ for (const kind of ["planning", "codeReview", "investigation"] as const) {
 it.effect("keeps filesystem cleanup outside the exclusive orchestration gate", () => {
   let gateHeld = false;
   let removals = 0;
+  let scratchRemovals = 0;
   const base = makeOrchestrationEngineStub();
   const engine = {
     ...base,
@@ -1875,6 +2034,7 @@ it.effect("keeps filesystem cleanup outside the exclusive orchestration gate", (
       }),
   };
   const original = vi.mocked(removeFileIfSafe).getMockImplementation()!;
+  const originalScratch = vi.mocked(removeScratchThreadFolder).getMockImplementation()!;
   return withHomeSandbox(
     Effect.gen(function* () {
       const storage = yield* StorageMaintenance;
@@ -1882,6 +2042,22 @@ it.effect("keeps filesystem cleanup outside the exclusive orchestration gate", (
       const config = yield* ServerConfig;
       const threadId = ThreadId.makeUnsafe("slow-purge-outside-gate");
       yield* seedThread({ sql, threadId, archivedAt: daysAgo(90), deletedAt: null });
+      const scratchRoot = NodePath.join(config.stateDir, "scratch");
+      const folder = NodePath.join(scratchRoot, "slow-12345678");
+      yield* sql`UPDATE projection_projects SET kind='scratch', workspace_root=${scratchRoot} WHERE project_id='project-storage-maintenance'`;
+      yield* sql`UPDATE projection_threads SET scratch_path=${folder} WHERE thread_id=${threadId}`;
+      yield* Effect.promise(() => writeFile(NodePath.join(folder, "notes.txt"), "cleanup bytes"));
+      vi.mocked(removeScratchThreadFolder).mockImplementation((input) =>
+        originalScratch({
+          ...input,
+          remove: async (path) => {
+            assert.isFalse(gateHeld, "Recursive scratch cleanup must not freeze command writes");
+            scratchRemovals++;
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            await NodeFS.rm(path, { recursive: true, force: true });
+          },
+        }),
+      );
       const file = NodePath.join(
         config.providerLogsDir,
         toSafeThreadAttachmentSegment(threadId)! + ".log",
@@ -1900,10 +2076,16 @@ it.effect("keeps filesystem cleanup outside the exclusive orchestration gate", (
       });
       assert.deepEqual(result.purgedThreadIds, [threadId]);
       assert.equal(removals, 1);
+      assert.equal(scratchRemovals, 1);
       assert.isFalse(gateHeld);
     }).pipe(
       Effect.provide(makeStorageTestLayer({ orchestrationEngine: engine })),
-      Effect.ensuring(Effect.sync(() => vi.mocked(removeFileIfSafe).mockImplementation(original))),
+      Effect.ensuring(
+        Effect.sync(() => {
+          vi.mocked(removeFileIfSafe).mockImplementation(original);
+          vi.mocked(removeScratchThreadFolder).mockImplementation(originalScratch);
+        }),
+      ),
     ),
   );
 });

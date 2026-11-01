@@ -1,4 +1,4 @@
-import { computerToolHeading } from "@t3tools/shared/computerAction";
+import { computerToolHeading, extractComputerStep } from "@t3tools/shared/computerAction";
 import { readToolActivityPayload } from "@t3tools/shared/orchestrationActivityPayload";
 import type { ProviderRuntimeEvent } from "@t3tools/contracts";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
@@ -37,7 +37,7 @@ export function createAutomationRuntimeEventPreparer<E>(
         safe.type === "item.updated" ||
         safe.type === "item.completed"
       ) {
-        const { computerTool: _untrusted, ...payload } = safe.payload;
+        const { computerTool: _untrusted, computerStep: _untrustedStep, ...payload } = safe.payload;
         safe = { ...safe, payload };
       }
       if (
@@ -53,7 +53,19 @@ export function createAutomationRuntimeEventPreparer<E>(
           safe.type === "item.completed") &&
         computerToolHeading(readToolActivityPayload(safe.payload)?.mcpToolName, safe.payload.status)
       ) {
-        safe = { ...safe, payload: { ...safe.payload, computerTool: true } };
+        // Built from the raw call: the sanitized copy no longer has keys or text to summarize.
+        const computerStep = extractComputerStep(
+          readToolActivityPayload(event.payload)?.mcpToolName,
+          event.payload.data,
+        );
+        safe = {
+          ...safe,
+          payload: {
+            ...safe.payload,
+            computerTool: true,
+            ...(computerStep ? { computerStep } : {}),
+          },
+        };
         computerEvents.add(safe);
       }
       const extraction = extractToolResultImages(event.payload.data);
