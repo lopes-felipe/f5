@@ -40,6 +40,8 @@ scripts/upstream-ports.json.tmp-*
 # Standalone CLI build outputs.
 apps/server/dist-exe/
 release-cli/
+release-summary.json
+release-performance.json
 
 # Native computer helper build outputs.
 apps/desktop/dist-native/

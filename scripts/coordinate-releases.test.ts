@@ -14,6 +14,7 @@ const state = vi.hoisted(() => ({
   draft: false,
   currentCompleted: false,
   cancellationRace: false,
+  cancellationPosted: false,
   refreshes: 0,
   cancelled: [] as number[],
   summaries: [] as string[],
@@ -50,11 +51,15 @@ vi.mock("./release/release-github.ts", () => ({
   },
   api: () => ({
     ...state.builds[0],
-    status: state.currentCompleted || state.cancellationRace ? "completed" : "in_progress",
+    status:
+      state.currentCompleted || (state.cancellationRace && state.cancellationPosted)
+        ? "completed"
+        : "in_progress",
   }),
   pages: () => (state.draft ? [{ draft: true, tag_name: "v0.1.2-beta.1" }] : []),
   gh: (args: string[]) => {
     if (args.includes("POST")) {
+      state.cancellationPosted = true;
       if (state.cancellationRace) throw new Error("completed concurrently");
       state.cancelled.push(Number(args.at(-1)!.split("/").at(-2)));
       return "";
@@ -94,6 +99,7 @@ beforeEach(() => {
   state.acceptance.clear();
   state.failedCi.clear();
   state.draft = state.currentCompleted = state.cancellationRace = false;
+  state.cancellationPosted = false;
   state.refreshes = 0;
   state.cancelled = [];
   state.summaries = [];
@@ -130,6 +136,7 @@ it.each([
   if (kind === "complete") state.currentCompleted = true;
   await coordinateReleases();
   expect(state.cancelled).toEqual([]);
+  expect(state.cancellationPosted).toBe(false);
 });
 it("does not cancel a candidate when the current CI attempt regresses", async () => {
   state.ci.push({ ...state.ci[0]!, run_attempt: 2, conclusion: "failure" });
@@ -140,4 +147,5 @@ it("treats completion before cancellation as harmless", async () => {
   state.cancellationRace = true;
   await coordinateReleases();
   expect(state.cancelled).toEqual([]);
+  expect(state.cancellationPosted).toBe(true);
 });

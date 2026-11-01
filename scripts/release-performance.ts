@@ -68,7 +68,7 @@ export async function releasePerformance(
     .flatMap((page) => page.workflow_runs)
     .filter(
       (run) =>
-        run.event === "workflow_run" &&
+        ["workflow_run", "schedule"].includes(run.event) &&
         run.status === "completed" &&
         run.conclusion === "success" &&
         run.path === ".github/workflows/release-publish.yml" &&

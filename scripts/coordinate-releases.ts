@@ -102,6 +102,7 @@ export async function coordinateReleases(): Promise<void> {
       } catch (error) {
         // Completion racing cancellation is success, other failures remain visible.
         if (api<WorkflowRun>("actions/runs/" + run.id).status !== "completed") throw error;
+        continue;
       }
       cancelled.push(run.id);
       releaseFields({

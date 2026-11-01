@@ -260,7 +260,7 @@ After three routine beta publications, measure from the hardening merge SHA:
 bun run release:performance --since <hardening-main-merge-sha>
 ```
 
-This reads successful event-triggered publisher summaries and independently
+This reads successful event/schedule-triggered publisher summaries and independently
 checks public release identities/timestamps. It records the first three distinct
 beta releases, excluding manual dispatches, and reports median merge-to-public
 against 1,500 seconds, including queues. Missing/expired evidence blocks the
