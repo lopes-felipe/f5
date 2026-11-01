@@ -25,6 +25,7 @@ import {
 const state = vi.hoisted(() => ({
   source: "a".repeat(40),
   tag: "",
+  tagSource: "",
   draft: true,
   exists: false,
   assets: [] as { id?: number; name: string; size: number; digest: string | null; state: string }[],
@@ -93,7 +94,9 @@ vi.mock("./release/release-github.ts", async (importOriginal) => {
     acceptanceOnlyCommit: () => false,
     runs: (workflow: string) => [fixtureRun(workflow === "ci.yml" ? 200 : 100, workflow)],
     git: (args: string[]) => {
-      if (args[0] === "ls-remote") return state.source + "\trefs/tags/" + state.tag;
+      if (args[0] === "ls-remote")
+        return (state.tagSource || state.source) + "\trefs/tags/" + state.tag;
+      if (args[0] === "rev-list" && args.includes("-n")) return state.tagSource || state.source;
       if (args[0] === "show") return "2026-10-30T00:00:00Z";
       return state.source;
     },
@@ -120,7 +123,8 @@ vi.mock("./release/release-github.ts", async (importOriginal) => {
         return { ...release(), published_at: "2026-10-30T00:10:00Z" };
       throw new Error("Unexpected API call " + path);
     },
-    optionalApi: () => (state.tag ? { object: { sha: state.source } } : undefined),
+    optionalApi: () =>
+      state.tag ? { object: { sha: state.tagSource || state.source } } : undefined,
     pages: () => (state.exists ? [release()] : []),
     gh: (args: string[]) => {
       state.writes.push(args.join(" "));
@@ -139,7 +143,7 @@ vi.mock("./release/release-github.ts", async (importOriginal) => {
           state.assets = state.assets.filter((a) => a.id !== id);
           return "";
         }
-        if (args.includes("tag_name=" + state.tag) || args.includes("draft=true")) {
+        if (args.includes("draft=true")) {
           state.exists = true;
           state.tag = args.find((a) => a.startsWith("tag_name="))!.slice(9);
           return JSON.stringify(release());
@@ -151,35 +155,8 @@ vi.mock("./release/release-github.ts", async (importOriginal) => {
         state.tag = args
           .find((a) => a.startsWith("ref=refs/tags/"))!
           .slice("ref=refs/tags/".length);
+        state.tagSource = args.find((a) => a.startsWith("sha="))!.slice(4);
       }
-      if (args[1] === "create") {
-        state.exists = true;
-        state.tag = args[2]!;
-        state.draft = true;
-      }
-      if (args[1] === "upload") {
-        if (state.interrupt && state.assets.length === 2) {
-          state.interrupt = false;
-          if (state.partialInterrupt)
-            state.assets.push({
-              id: 900,
-              name: basename(args[3]!),
-              size: 0,
-              digest: null,
-              state: "starter",
-            });
-          throw new Error("connection interrupted");
-        }
-        const file = args[3]!,
-          bytes = readFileSync(file);
-        state.assets.push({
-          name: basename(file),
-          size: bytes.length,
-          digest: "sha256:" + createHash("sha256").update(bytes).digest("hex"),
-          state: "uploaded",
-        });
-      }
-      if (args[1] === "edit") state.draft = false;
       return "";
     },
   };
@@ -388,6 +365,7 @@ async function candidateFixture() {
 beforeEach(() => {
   state.source = "a".repeat(40);
   state.tag = "";
+  state.tagSource = "";
   state.draft = true;
   state.exists = false;
   state.assets = [];
@@ -651,6 +629,24 @@ describe("publisher integration with immutable platform fixtures", () => {
     state.assets[0]!.digest = "sha256:" + "e".repeat(64);
     const writes = state.writes.length;
     await expect(publishCandidate(candidate, directory)).rejects.toThrow("differs");
+    expect(state.writes).toHaveLength(writes);
+  });
+  it("never repins a reserved version to a recovery candidate from another source", async () => {
+    const first = await candidateFixture();
+    await assembleCandidate(first.candidate, first.directory);
+    state.interrupt = true;
+    await expect(publishCandidate(first.candidate, first.directory)).rejects.toThrow("interrupted");
+    const reserved = state.tagSource;
+    const retained = state.assets.map((asset) => ({ ...asset }));
+    state.source = "b".repeat(40);
+    const recovery = await candidateFixture();
+    await assembleCandidate(recovery.candidate, recovery.directory);
+    const writes = state.writes.length;
+    await expect(publishCandidate(recovery.candidate, recovery.directory)).rejects.toThrow(
+      "different identity",
+    );
+    expect(state.tagSource).toBe(reserved);
+    expect(state.assets).toEqual(retained);
     expect(state.writes).toHaveLength(writes);
   });
   it("retains the post-upload certification gate when mutable acceptance evidence changes", async () => {
