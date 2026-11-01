@@ -127,6 +127,7 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 148, name: "ProjectionThreadActivitiesRankIndex" },
       { migration_id: 149, name: "ThreadReferenceGrants" },
       { migration_id: 150, name: "ExcludeImageOnlyPromptFromSearch" },
+      { migration_id: 151, name: "ProviderHandoffState" },
     ]);
     const activityIndexes = yield* sql<{
       name: string;

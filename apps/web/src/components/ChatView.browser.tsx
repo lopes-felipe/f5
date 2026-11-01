@@ -2417,6 +2417,127 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it.each([true, false])(
+    "switches a started thread's provider only with context handoff (capability: %s)",
+    async (handoff) => {
+      serverBootstrapFixture = handoff
+        ? {
+            ...baseServerBootstrapFixture,
+            capabilities: [...baseServerBootstrapFixture.capabilities, "provider-context-handoff"],
+          }
+        : baseServerBootstrapFixture;
+      setServerBootstrap(serverBootstrapFixture);
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotForTargetUser({
+          targetMessageId: "msg-handoff-target" as MessageId,
+          targetText: "Remember the plan",
+          fillerPairCount: 2,
+          targetPairIndex: 0,
+        }),
+        configureFixture: (next) => {
+          next.serverConfig = {
+            ...next.serverConfig,
+            providers: [
+              createTestServerProvider("codex", { checkedAt: NOW_ISO }),
+              createTestServerProvider("claudeAgent", {
+                models: [
+                  {
+                    slug: "claude-fable-5",
+                    name: "Claude Fable 5",
+                    isCustom: false,
+                    capabilities: null,
+                  },
+                ],
+              }),
+            ],
+          };
+        },
+      });
+      try {
+        await vi.waitFor(() => expect(document.body.textContent).toContain("Remember the plan"));
+        const drafts = useComposerDraftStore.getState();
+        drafts.setProvider(THREAD_ID, "claudeAgent");
+        drafts.setProviderInstance(THREAD_ID, ProviderInstanceId.makeUnsafe("claudeAgent"));
+        drafts.setModel(THREAD_ID, "claude-fable-5");
+        drafts.setPrompt(THREAD_ID, "Continue with Claude");
+        if (handoff)
+          await vi.waitFor(() =>
+            expect(document.body.textContent).toContain(
+              "The conversation so far will be handed off",
+            ),
+          );
+        const send = await waitForSendButton();
+        await vi.waitFor(() => expect(send.disabled).toBe(false));
+        expect(document.body.textContent?.includes("Switching to")).toBe(handoff);
+        send.click();
+        await vi.waitFor(() => {
+          const command = getDispatchCommandRequests("thread.turn.start")[0]?.command as
+            | { modelSelection?: { instanceId: string } }
+            | undefined;
+          expect(command?.modelSelection?.instanceId).toBe(handoff ? "claudeAgent" : "codex");
+        });
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it("keeps a started thread's unavailable provider instead of handing off to another", async () => {
+    serverBootstrapFixture = {
+      ...baseServerBootstrapFixture,
+      capabilities: [...baseServerBootstrapFixture.capabilities, "provider-context-handoff"],
+    };
+    setServerBootstrap(serverBootstrapFixture);
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-unavailable-target" as MessageId,
+        targetText: "Remember the plan",
+        fillerPairCount: 2,
+        targetPairIndex: 0,
+      }),
+      configureFixture: (next) => {
+        next.serverConfig = {
+          ...next.serverConfig,
+          settings: {
+            ...DEFAULT_SERVER_SETTINGS,
+            providers: {
+              ...DEFAULT_SERVER_SETTINGS.providers,
+              codex: { ...DEFAULT_SERVER_SETTINGS.providers.codex, enabled: false },
+            },
+          },
+          providers: [
+            createTestServerProvider("codex", { enabled: false }),
+            createTestServerProvider("claudeAgent", {
+              models: [
+                {
+                  slug: "claude-fable-5",
+                  name: "Claude Fable 5",
+                  isCustom: false,
+                  capabilities: null,
+                },
+              ],
+            }),
+          ],
+        };
+      },
+    });
+    try {
+      await vi.waitFor(() => expect(document.body.textContent).toContain("Remember the plan"));
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Keep going");
+      await vi.waitFor(() =>
+        expect(document.body.textContent).toContain("It is turned off in Settings."),
+      );
+      expect(document.body.textContent).not.toContain("Switching to");
+      const send = await waitForSendButton();
+      expect(send.disabled).toBe(true);
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("runs the local usage command without an available provider", async () => {
     useComposerDraftStore.getState().setProjectDraftThreadId(PROJECT_ID, THREAD_ID);
     const mounted = await mountChatView({

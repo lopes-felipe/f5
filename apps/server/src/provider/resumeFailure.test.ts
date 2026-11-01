@@ -14,4 +14,20 @@ describe("resumeFailure", () => {
     expect(isProviderResumeFailureText("503 overloaded")).toBe(false);
     expect(isProviderResumeFailureText(null)).toBe(false);
   });
+
+  it("recognizes unrecoverable Pi and Claude resume states", () => {
+    expect(
+      isProviderResumeFailureText("Pi did not confirm the expected persisted session file."),
+    ).toBe(true);
+    expect(
+      isProviderResumeFailureText(
+        "Pi resume metadata is invalid; a fresh session was not created.",
+      ),
+    ).toBe(true);
+    expect(
+      isProviderResumeFailureText(
+        "No persisted Claude resume boundary has a complete parent chain. Use Repair transcript.",
+      ),
+    ).toBe(true);
+  });
 });

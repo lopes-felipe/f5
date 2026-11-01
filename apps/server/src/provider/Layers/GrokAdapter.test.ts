@@ -51,6 +51,20 @@ const GrokAdapterHardeningTestLayer = Layer.effect(
 );
 
 it.layer(GrokAdapterHardeningTestLayer)("GrokAdapterLive ACP hardening", (it) => {
+  it.effect("classifies only a leading slash command as native for a provider switch", () =>
+    Effect.gen(function* () {
+      const adapter = yield* GrokAdapter;
+      const threadId = ThreadId.makeUnsafe("grok-classify");
+      assert.strictEqual(adapter.classifyTurnInput?.(threadId, "/compact"), "native-command");
+      assert.strictEqual(
+        adapter.classifyTurnInput?.(threadId, " /skill:review x"),
+        "native-command",
+      );
+      assert.strictEqual(adapter.classifyTurnInput?.(threadId, "/Users/me/app.ts fails"), "prompt");
+      assert.strictEqual(adapter.classifyTurnInput?.(threadId, "run /compact later"), "prompt");
+    }),
+  );
+
   it.effect("ignores a late prompt from an older context with the same resumed session ID", () =>
     Effect.gen(function* () {
       const original = GrokAcpSupport.makeGrokAcpRuntime;

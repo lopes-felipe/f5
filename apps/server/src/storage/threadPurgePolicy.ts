@@ -61,6 +61,7 @@ export const threadPurgePolicy: Readonly<
   projection_threads: { kind: "root" },
   checkpoint_diff_blobs: { kind: "explicit" },
   provider_session_runtime: { kind: "explicit" },
+  provider_handoff_state: { kind: "explicit" },
   orchestration_event_compaction: { kind: "explicit" },
   provider_submission_provenance: { kind: "explicit" },
   provider_terminal_events: { kind: "explicit" },
@@ -153,6 +154,8 @@ export const threadPurgeHandlers = {
     sql`DELETE FROM projection_turn_usage_facts WHERE rowid IN (SELECT rowid FROM projection_turn_usage_facts WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
   provider_session_runtime: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
     sql`DELETE FROM provider_session_runtime WHERE rowid IN (SELECT rowid FROM provider_session_runtime WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
+  provider_handoff_state: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
+    sql`DELETE FROM provider_handoff_state WHERE thread_id = ${threadId} RETURNING rowid`,
   orchestration_event_compaction: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
     sql`DELETE FROM orchestration_event_compaction WHERE rowid IN (SELECT rowid FROM orchestration_event_compaction WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
   search_documents: (sql: SqlClient.SqlClient, threadId: ThreadId) =>

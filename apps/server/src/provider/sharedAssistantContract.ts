@@ -361,7 +361,7 @@ function formatClaudeRuntimeString(value: string): string {
   return JSON.stringify(value);
 }
 
-function formatUntrustedLiteralBlock(value: string): string {
+export function formatUntrustedLiteralBlock(value: string): string {
   return ["```text", value.replaceAll("```", "``\\`"), "```"].join("\n");
 }
 
