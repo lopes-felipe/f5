@@ -23,6 +23,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
+  type ChatAttachment,
   CommandId,
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_NEW_THREAD_TITLE,
@@ -39,6 +40,7 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import {
+  Cause,
   Effect,
   Exit,
   Layer,
@@ -65,6 +67,12 @@ import {
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { ProviderHandoffStateRepositoryLive } from "../../persistence/Layers/ProviderHandoffState.ts";
+import { ProviderHandoffStateRepository } from "../../persistence/Services/ProviderHandoffState.ts";
+import { ProviderTurnDeliveryRepositoryLive } from "./ProviderTurnDeliveryRepository.ts";
+import { ProviderTurnDeliveryRepository } from "../Services/ProviderTurnDeliveryRepository.ts";
+import { DeliveryAttemptContext } from "../../provider/deliveryAttemptContext.ts";
+import { ProviderInstanceRegistry } from "../../provider/Services/ProviderInstanceRegistry.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { stampSubmissionSource } from "../../provider/submissionProvenance.ts";
 import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
@@ -237,6 +245,10 @@ describe("ProviderCommandReactor", () => {
     readonly openCodeFork?: boolean;
     readonly bridgeTurnDelivery?: boolean;
     readonly recoverySummary?: string;
+    /** Provides the context-handoff store and an instance registry. */
+    readonly handoff?: boolean;
+    /** Provider-shaped cursors so native session identities can be proven. */
+    readonly nativeCursors?: boolean;
     /** Expose the fixture's database so tests can stamp submission provenance. */
     readonly withSql?: boolean;
     readonly onLog?: (message: unknown) => void;
@@ -244,6 +256,7 @@ describe("ProviderCommandReactor", () => {
     const simulateNativeFallback = input?.nativeFallback;
     const simulateOpenCodeFork = input?.openCodeFork;
     const recoverySummary = input?.recoverySummary;
+    const useNativeCursors = input?.nativeCursors === true;
     const now = new Date().toISOString();
     const stateDir = input?.stateDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "t3code-reactor-"));
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-project-"));
@@ -359,7 +372,14 @@ describe("ProviderCommandReactor", () => {
               ? { schemaVersion: 1, sessionId: "ses_original" }
               : simulateNativeFallback && sessionIndex === 1
                 ? { threadId: "replacement-native" }
-                : (resumeCursor ?? { opaque: `cursor-${sessionIndex}` }),
+                : (resumeCursor ??
+                  (useNativeCursors
+                    ? provider === "claudeAgent"
+                      ? {
+                          resume: `00000000-0000-4000-8000-${String(sessionIndex).padStart(12, "0")}`,
+                        }
+                      : { threadId: `${provider}-native-${sessionIndex}` }
+                    : { opaque: `cursor-${sessionIndex}` })),
         createdAt: now,
         updatedAt: now,
       };
@@ -583,6 +603,8 @@ describe("ProviderCommandReactor", () => {
         Effect.succeed({
           sessionModelSwitch: provider === "codex" ? "in-session" : "in-session",
         }),
+      classifyTurnInput: ({ text }) =>
+        Effect.succeed(text.trimStart().startsWith("/") ? "native-command" : "prompt"),
       readThread: () => unsupported(),
       rollbackConversation: () => unsupported(),
       runOneOffPrompt,
@@ -790,10 +812,32 @@ describe("ProviderCommandReactor", () => {
           Layer.provide(settingsLayer),
         )
       : Layer.succeed(ProviderService, service);
+    const handoffLayer = input?.handoff
+      ? Layer.mergeAll(
+          ProviderHandoffStateRepositoryLive,
+          ProviderTurnDeliveryRepositoryLive,
+          Layer.succeed(ProviderInstanceRegistry, {
+            getInstance: (instanceId: ProviderInstanceId) =>
+              Effect.succeed({
+                instanceId,
+                enabled: !instanceId.startsWith("disabled"),
+                driverKind: ProviderDriverKind.make(
+                  instanceId.startsWith("claude")
+                    ? "claudeAgent"
+                    : instanceId.startsWith("opencode")
+                      ? "opencode"
+                      : "codex",
+                ),
+              }),
+          } as never),
+          // Memoized: the same in-memory database the orchestration layer uses.
+        ).pipe(Layer.provide(SqlitePersistenceMemory))
+      : Layer.empty;
     const layer = ProviderCommandReactorLive.pipe(
       Layer.provideMerge(settingsLayer),
+      Layer.provideMerge(handoffLayer),
       Layer.provideMerge(
-        input?.pullRequest || input?.withSql
+        input?.pullRequest || input?.handoff || input?.withSql
           ? orchestrationLayer.pipe(Layer.provideMerge(SqlitePersistenceMemory))
           : orchestrationLayer,
       ),
@@ -968,6 +1012,39 @@ describe("ProviderCommandReactor", () => {
         upsertPersistedBinding(binding);
       },
       getBinding: (threadId: ThreadId) => persistedBindings.get(threadId),
+      /** Runs against the durable delivery store the reactor sees (handoff harness only). */
+      withDeliveries: <A, E>(
+        use: (repository: typeof ProviderTurnDeliveryRepository.Service) => Effect.Effect<A, E>,
+      ) =>
+        runtime.runPromise(
+          Effect.flatMap(Effect.service(ProviderTurnDeliveryRepository), use) as Effect.Effect<
+            A,
+            E
+          >,
+        ),
+      /** Releases accepted turn reservations, as their completed provider turns would. */
+      /** Runs a statement against the harness database (handoff harness only). */
+      withSql: <A, E>(use: (sql: SqlClient.SqlClient) => Effect.Effect<A, E>) =>
+        runtime.runPromise(
+          Effect.flatMap(Effect.service(SqlClient.SqlClient), use) as Effect.Effect<A, E>,
+        ),
+      completeAcceptedTurns: () =>
+        runtime.runPromise(
+          Effect.flatMap(
+            Effect.service(SqlClient.SqlClient),
+            (sql) =>
+              sql`UPDATE provider_turn_deliveries SET reservation_released_at = ${new Date().toISOString()}
+                WHERE state = 'accepted' AND reservation_released_at IS NULL`,
+          ) as Effect.Effect<unknown>,
+        ),
+      readHandoffState: (threadId: ThreadId) =>
+        runtime.runPromise(
+          Effect.serviceOption(ProviderHandoffStateRepository).pipe(
+            Effect.flatMap((repository) =>
+              Option.isSome(repository) ? repository.value.get(threadId) : Effect.succeed(null),
+            ),
+          ),
+        ),
       readBinding: providerSessionDirectory.getBinding,
       removeLiveSession: (threadId: ThreadId) => {
         const index = runtimeSessions.findIndex((session) => session.threadId === threadId);
@@ -5870,5 +5947,669 @@ describe("ProviderCommandReactor", () => {
     });
     expect(harness.startSession).toHaveBeenCalledTimes(1);
     expect(harness.sendTurn).not.toHaveBeenCalled();
+  });
+
+  describe("provider switch with context handoff", () => {
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const claude = {
+      instanceId: ProviderInstanceId.makeUnsafe("claudeAgent"),
+      model: "claude-sonnet-4-6",
+    };
+    const codex = { instanceId: ProviderInstanceId.makeUnsafe("codex"), model: "gpt-5.3-codex" };
+    const base = Date.parse("2026-10-30T10:00:00.000Z");
+    let tick = 0;
+    const nextAt = () => new Date(base + 1_000 * ++tick).toISOString();
+
+    type Harness = Awaited<ReturnType<typeof createHarness>>;
+
+    /**
+     * Commits a turn and delivers it through the reactor, returning the delivery exit.
+     * `durable` drives the outbox path: the committed delivery row is claimed, the
+     * reactor runs under its attempt, and the row is then accepted or requeued as
+     * the delivery worker would, so the stored payload and the receipt transaction
+     * are the real ones.
+     */
+    async function turn(
+      harness: Harness,
+      input: {
+        readonly id: string;
+        readonly text: string;
+        readonly selection: { readonly instanceId: ProviderInstanceId; readonly model: string };
+        readonly durable?: boolean;
+        readonly attachments?: ReadonlyArray<ChatAttachment>;
+      },
+    ) {
+      if (!input.durable) return deliver(harness, await commit(harness, input));
+      return deliverDurably(harness, await commit(harness, input));
+    }
+
+    async function commit(
+      harness: Harness,
+      input: {
+        readonly id: string;
+        readonly text: string;
+        readonly selection: { readonly instanceId: ProviderInstanceId; readonly model: string };
+        readonly attachments?: ReadonlyArray<ChatAttachment>;
+      },
+    ) {
+      const createdAt = nextAt();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe(input.id),
+          threadId,
+          message: {
+            messageId: asMessageId(`message-${input.id}`),
+            role: "user",
+            text: input.text,
+            attachments: [...(input.attachments ?? [])],
+          },
+          modelSelection: input.selection,
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt,
+        }),
+      );
+      const events = await Effect.runPromise(Stream.runCollect(harness.engine.readEvents(0)));
+      const intent = [...events].find(
+        (event) => event.type === "thread.turn-start-requested" && event.commandId === input.id,
+      );
+      if (!intent || intent.type !== "thread.turn-start-requested")
+        throw new Error("Missing turn intent");
+      return intent;
+    }
+
+    type TurnIntent = Awaited<ReturnType<typeof commit>>;
+
+    const deliver = (harness: Harness, intent: TurnIntent) =>
+      Effect.runPromise(harness.reactor.deliverTurnStart(intent).pipe(Effect.scoped, Effect.exit));
+
+    async function deliverDurably(harness: Harness, intent: TurnIntent) {
+      const deliveryId = intent.commandId as CommandId;
+      const claimed = await harness.withDeliveries((deliveries) =>
+        deliveries.claim(deliveryId, []),
+      );
+      const attemptId = claimed?.attemptId;
+      if (!attemptId) throw new Error(`Delivery ${deliveryId} was not claimable`);
+      const exit = await Effect.runPromise(
+        harness.reactor.deliverTurnStart(intent).pipe(
+          Effect.provideService(DeliveryAttemptContext, {
+            attemptId,
+            accepted: () => Effect.void,
+            prepared: () => Effect.void,
+          }),
+          Effect.scoped,
+          Effect.exit,
+        ),
+      );
+      await harness.withDeliveries((deliveries) =>
+        exit._tag === "Success"
+          ? deliveries.markAccepted({
+              deliveryId,
+              attemptId,
+              providerTurnId: asTurnId(`turn-${deliveryId}`),
+            })
+          : deliveries.requeue({
+              deliveryId,
+              notBefore: new Date(0).toISOString(),
+              errorCode: "not_sent",
+              errorDetail: "not sent",
+            }),
+      );
+      await harness.completeAcceptedTurns();
+      return exit;
+    }
+
+    const storedHandoff = async (harness: Harness, id: string) =>
+      (
+        await harness.withDeliveries((deliveries) =>
+          deliveries.getByCommandId(CommandId.makeUnsafe(id)),
+        )
+      )?.handoff ?? null;
+
+    async function assistant(harness: Harness, id: string, text: string) {
+      const createdAt = nextAt();
+      const messageId = asMessageId(`assistant-${id}`);
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.message.assistant.delta",
+          commandId: CommandId.makeUnsafe(`assistant-delta-${id}`),
+          threadId,
+          messageId,
+          delta: text,
+          turnId: asTurnId(`turn-${id}`),
+          createdAt,
+        }),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.message.assistant.complete",
+          commandId: CommandId.makeUnsafe(`assistant-complete-${id}`),
+          threadId,
+          messageId,
+          turnId: asTurnId(`turn-${id}`),
+          createdAt,
+        }),
+      );
+    }
+
+    const sentInput = (harness: Harness, index: number) =>
+      (harness.sendTurn.mock.calls[index]?.[0] as { input?: string } | undefined)?.input ?? "";
+    const activities = async (harness: Harness) =>
+      (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+        (thread) => thread.id === threadId,
+      )?.activities ?? [];
+
+    async function claudeConversation(durable = false) {
+      const harness = await createHarness({
+        handoff: true,
+        nativeCursors: true,
+        bridgeTurnDelivery: false,
+        threadModel: claude.model,
+      });
+      expect(
+        (
+          await turn(harness, {
+            id: "c1",
+            text: "Remember: always indent with tabs.",
+            selection: claude,
+            durable,
+          })
+        )._tag,
+      ).toBe("Success");
+      await assistant(harness, "c1", "Noted, tabs only.");
+      return harness;
+    }
+
+    it("hands the full conversation to a fresh target and parks the outgoing session", async () => {
+      const harness = await claudeConversation();
+      const exit = await turn(harness, { id: "x1", text: "What did I ask?", selection: codex });
+      expect(exit._tag).toBe("Success");
+
+      expect(harness.startSession).toHaveBeenCalledTimes(2);
+      expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+        provider: "codex",
+        providerInstanceId: "codex",
+      });
+      expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("resumeCursor");
+      expect(harness.runOneOffPrompt).not.toHaveBeenCalled();
+      const input = sentInput(harness, 1);
+      expect(input.startsWith("<f5-context-handoff v1>")).toBe(true);
+      expect(input).toContain("handled by another agent (Claude");
+      expect(input).toContain("Remember: always indent with tabs.");
+      expect(input).toContain("Noted, tabs only.");
+      expect(input.endsWith("</f5-context-handoff>\n\nWhat did I ask?")).toBe(true);
+      expect(input.split("What did I ask?").length).toBe(2);
+
+      await waitFor(async () =>
+        (await activities(harness)).some(
+          (activity) => activity.kind === "provider.context-handoff",
+        ),
+      );
+      const recorded = await activities(harness);
+      expect(
+        recorded.filter((activity) => activity.kind === "provider.context-handoff"),
+      ).toHaveLength(1);
+      expect(recorded.some((activity) => activity.summary === "Session context reset")).toBe(false);
+
+      const state = await harness.readHandoffState(threadId);
+      expect(state?.pending).toBeNull();
+      expect(state?.parked.claudeAgent).toMatchObject({
+        provider: "claudeAgent",
+        lastSeenMessageId: "assistant-c1",
+      });
+    });
+
+    it("resumes the parked session on the way back and sends only the delta", async () => {
+      const harness = await claudeConversation();
+      await turn(harness, { id: "x1", text: "Rename the helper.", selection: codex });
+      await assistant(harness, "x1", "Renamed helper to formatRow.");
+      const claudeCursor = harness.startSession.mock.calls[0]?.[1] as { resumeCursor?: unknown };
+      expect(claudeCursor.resumeCursor).toBeUndefined();
+
+      const exit = await turn(harness, { id: "c2", text: "Continue.", selection: claude });
+      expect(exit._tag).toBe("Success");
+      expect(harness.startSession).toHaveBeenCalledTimes(3);
+      expect(harness.startSession.mock.calls[2]?.[1]).toMatchObject({
+        provider: "claudeAgent",
+        resumeCursor: { resume: "00000000-0000-4000-8000-000000000001" },
+      });
+      const input = sentInput(harness, 2);
+      expect(input).toContain("You worked on this conversation earlier");
+      expect(input).toContain("Rename the helper.");
+      expect(input).toContain("Renamed helper to formatRow.");
+      expect(input).not.toContain("Remember: always indent with tabs.");
+      expect(input.endsWith("\n\nContinue.")).toBe(true);
+
+      await waitFor(async () =>
+        (await activities(harness)).some((activity) =>
+          activity.summary.endsWith("resumed its earlier session"),
+        ),
+      );
+      const state = await harness.readHandoffState(threadId);
+      expect(state?.pending).toBeNull();
+      expect(Object.keys(state?.parked ?? {})).toEqual(["codex"]);
+    });
+
+    it("falls back to a fresh, full handoff when the parked session cannot resume", async () => {
+      const harness = await claudeConversation();
+      await turn(harness, { id: "x1", text: "Rename the helper.", selection: codex });
+      await assistant(harness, "x1", "Renamed.");
+      harness.startSession.mockImplementationOnce(
+        () =>
+          Effect.fail(
+            new ProviderAdapterProcessError({
+              provider: "claudeAgent",
+              threadId,
+              detail: "No conversation found with session ID: 00000000",
+            }),
+          ) as never,
+      );
+      const exit = await turn(harness, { id: "c2", text: "Continue.", selection: claude });
+      expect(exit._tag).toBe("Success");
+      expect(harness.startSession).toHaveBeenCalledTimes(4);
+      expect(harness.startSession.mock.calls[3]?.[1]).not.toHaveProperty("resumeCursor");
+      const input = sentInput(harness, 2);
+      expect(input).toContain("handled by another agent (Codex");
+      expect(input).toContain("Remember: always indent with tabs.");
+      expect((await harness.readHandoffState(threadId))?.parked.claudeAgent).toBeUndefined();
+    });
+
+    it("keeps the parked session when the resume fails for another reason", async () => {
+      const harness = await claudeConversation();
+      await turn(harness, { id: "x1", text: "Rename the helper.", selection: codex });
+      await assistant(harness, "x1", "Renamed.");
+      harness.startSession.mockImplementationOnce(
+        () =>
+          Effect.fail(
+            new ProviderAdapterProcessError({
+              provider: "claudeAgent",
+              threadId,
+              detail: "401 Unauthorized",
+            }),
+          ) as never,
+      );
+      const exit = await turn(harness, { id: "c2", text: "Continue.", selection: claude });
+      expect(exit._tag).toBe("Failure");
+      expect(harness.startSession).toHaveBeenCalledTimes(3);
+      const state = await harness.readHandoffState(threadId);
+      expect(state?.parked.claudeAgent).toBeDefined();
+      // The pre-written marker still promises the history to the next attempt.
+      expect(state?.pending).toMatchObject({ targetInstanceId: "claudeAgent" });
+    });
+
+    it("keeps the marker when the send fails before reaching the provider", async () => {
+      const harness = await claudeConversation();
+      harness.sendTurn.mockImplementationOnce(
+        () =>
+          Effect.fail(
+            new ProviderAdapterRequestError({
+              provider: "codex",
+              method: "turn/start",
+              detail: "not connected",
+              deliveryCertainty: "not_sent",
+            }),
+          ) as never,
+      );
+      expect((await turn(harness, { id: "x1", text: "First try.", selection: codex }))._tag).toBe(
+        "Failure",
+      );
+      expect((await harness.readHandoffState(threadId))?.pending).toMatchObject({
+        targetInstanceId: "codex",
+      });
+      expect((await turn(harness, { id: "x2", text: "Second try.", selection: codex }))._tag).toBe(
+        "Success",
+      );
+      expect(sentInput(harness, 2)).toContain("Remember: always indent with tabs.");
+      expect((await harness.readHandoffState(threadId))?.pending).toBeNull();
+    });
+
+    it("refuses a switch before touching the source while an approval is open", async () => {
+      const harness = await claudeConversation();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.makeUnsafe("open-approval"),
+          threadId,
+          activity: {
+            id: EventId.makeUnsafe("open-approval"),
+            tone: "approval",
+            kind: "approval.requested",
+            summary: "Command approval requested",
+            payload: { requestId: "approval-1", requestKind: "command" },
+            turnId: null,
+            createdAt: nextAt(),
+          },
+          createdAt: nextAt(),
+        }),
+      );
+      const exit = await turn(harness, { id: "x1", text: "Switch now.", selection: codex });
+      expect(exit._tag).toBe("Failure");
+      if (exit._tag === "Failure")
+        expect(Cause.squash(exit.cause)).toMatchObject({ certainty: "not_sent", retryable: true });
+      expect(harness.startSession).toHaveBeenCalledTimes(1);
+      expect(harness.stopSession).not.toHaveBeenCalled();
+      expect(await harness.readHandoffState(threadId)).toBeNull();
+    });
+
+    it("refuses a switch started by a native command", async () => {
+      const harness = await claudeConversation();
+      const exit = await turn(harness, { id: "x1", text: "/compact", selection: codex });
+      expect(exit._tag).toBe("Failure");
+      if (exit._tag === "Failure")
+        expect(Cause.squash(exit.cause)).toMatchObject({ certainty: "not_sent", retryable: false });
+      expect(harness.startSession).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      [
+        "a provider operation is running",
+        (sql: SqlClient.SqlClient) =>
+          sql`INSERT INTO native_operations (operation_id, thread_id, generation, state, record_json, created_at, updated_at)
+            VALUES ('op-1', ${threadId}, 1, 'running', '{}', ${nextAt()}, ${nextAt()})`,
+        true,
+      ],
+      [
+        "a rewind is in progress",
+        (sql: SqlClient.SqlClient) =>
+          sql`INSERT INTO rewind_operations (operation_id, thread_id, target_message_id, provider_session_id, mode, expected_revision, state, relative_count, retained_count, boundary_json, draft_json, created_at, updated_at)
+            VALUES ('rw-1', ${threadId}, 'message-c1', 's', 'conversation', 1, 'prepared', 0, 0, '{}', '{}', ${nextAt()}, ${nextAt()})`,
+        true,
+      ],
+    ])("refuses a switch while %s", async (_label, seed, retryable) => {
+      const harness = await claudeConversation();
+      await harness.withSql(seed);
+      const exit = await turn(harness, { id: "x1", text: "Switch now.", selection: codex });
+      expect(exit._tag).toBe("Failure");
+      if (exit._tag === "Failure")
+        expect(Cause.squash(exit.cause)).toMatchObject({ certainty: "not_sent", retryable });
+      expect(harness.startSession).toHaveBeenCalledTimes(1);
+      expect(await harness.readHandoffState(threadId)).toBeNull();
+    });
+
+    it("refuses a switch while the provider's goal is still active", async () => {
+      const harness = await claudeConversation();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.makeUnsafe("native-goal"),
+          threadId,
+          activity: {
+            id: EventId.makeUnsafe("native-goal"),
+            tone: "info",
+            kind: "native.metadata",
+            summary: "Goal",
+            payload: { nativeGoal: { status: "active" } },
+            turnId: null,
+            createdAt: nextAt(),
+          },
+          createdAt: nextAt(),
+        }),
+      );
+      const exit = await turn(harness, { id: "x1", text: "Switch now.", selection: codex });
+      expect(exit._tag).toBe("Failure");
+      if (exit._tag === "Failure")
+        expect(Cause.squash(exit.cause)).toMatchObject({ certainty: "not_sent", retryable: true });
+      expect(harness.startSession).toHaveBeenCalledTimes(1);
+    });
+
+    it("refuses a switch to a disabled instance for good", async () => {
+      const harness = await claudeConversation();
+      const exit = await turn(harness, {
+        id: "x1",
+        text: "Switch now.",
+        selection: {
+          instanceId: ProviderInstanceId.makeUnsafe("disabled-codex"),
+          model: codex.model,
+        },
+      });
+      expect(exit._tag).toBe("Failure");
+      if (exit._tag === "Failure")
+        expect(Cause.squash(exit.cause)).toMatchObject({ certainty: "not_sent", retryable: false });
+      expect(harness.startSession).toHaveBeenCalledTimes(1);
+    });
+
+    it("hands the conversation off on an attachment-only switch", async () => {
+      const harness = await claudeConversation();
+      const at = nextAt();
+      await harness.withSql(
+        (sql) =>
+          sql`INSERT INTO attachments (attachment_id, thread_id, type, name, mime_type, size_bytes, content_hash, staging_path, final_path, lifecycle, created_at, updated_at)
+            VALUES ('shot-1', ${threadId}, 'image', 'shot.png', 'image/png', 10, 'hash', NULL, '/not/resolvable', 'ready', ${at}, ${at})`,
+      );
+      const exit = await turn(harness, {
+        id: "x1",
+        text: "",
+        selection: codex,
+        attachments: [
+          { type: "image", id: "shot-1", name: "shot.png", mimeType: "image/png", sizeBytes: 10 },
+        ],
+      });
+      expect(exit._tag).toBe("Success");
+      const input = sentInput(harness, 1);
+      expect(input.startsWith("<f5-context-handoff v1>")).toBe(true);
+      expect(input).toContain("Remember: always indent with tabs.");
+      expect(input.endsWith("</f5-context-handoff>")).toBe(true);
+      expect((await harness.readHandoffState(threadId))?.pending).toBeNull();
+    });
+
+    it("never restores compaction context next to the handoff, which carries the summary", async () => {
+      const harness = await claudeConversation();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.compacted.record",
+          commandId: CommandId.makeUnsafe("summary-compaction"),
+          threadId,
+          compaction: {
+            kind: "summary",
+            summary: "EARLIER WORK SUMMARY",
+            trigger: "manual",
+            estimatedTokens: 100,
+            modelContextWindowTokens: 200000,
+            createdAt: nextAt(),
+            direction: "up_to",
+            pivotMessageId: asMessageId("message-c1"),
+            fromTurnCount: null,
+            toTurnCount: null,
+          },
+          createdAt: nextAt(),
+        }),
+      );
+      expect((await turn(harness, { id: "x1", text: "Continue.", selection: codex }))._tag).toBe(
+        "Success",
+      );
+      const start = harness.startSession.mock.calls[1]?.[1] as Record<string, unknown>;
+      expect(start).not.toHaveProperty("priorWorkSummary");
+      expect(start).not.toHaveProperty("preservedTranscriptBefore");
+      expect(start).not.toHaveProperty("preservedTranscriptAfter");
+      const input = sentInput(harness, 1);
+      expect(input.split("EARLIER WORK SUMMARY").length).toBe(2);
+      expect(input.split("Continue.").length).toBe(2);
+      expect(harness.runOneOffPrompt).not.toHaveBeenCalled();
+    });
+
+    it("never switches instances on a selection refresh; the next turn hands off", async () => {
+      const harness = await claudeConversation();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("picker-change"),
+          threadId,
+          model: "claude-opus-4-6",
+          modelSelection: {
+            instanceId: ProviderInstanceId.makeUnsafe("claude-alt"),
+            model: "claude-opus-4-6",
+          },
+        }),
+      );
+      await harness.drain();
+      expect(harness.startSession).toHaveBeenCalledTimes(1);
+      expect(
+        (
+          await turn(harness, {
+            id: "a1",
+            text: "Carry on.",
+            selection: {
+              instanceId: ProviderInstanceId.makeUnsafe("claude-alt"),
+              model: "claude-opus-4-6",
+            },
+          })
+        )._tag,
+      ).toBe("Success");
+      expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+        providerInstanceId: "claude-alt",
+      });
+      expect(sentInput(harness, 1)).toContain("Remember: always indent with tabs.");
+      expect((await harness.readHandoffState(threadId))?.parked.claudeAgent).toBeDefined();
+    });
+
+    it("fails before dispatch when the message leaves no room for the conversation", async () => {
+      const harness = await claudeConversation();
+      const exit = await turn(harness, {
+        id: "x1",
+        text: "q".repeat(119_950),
+        selection: codex,
+      });
+      expect(exit._tag).toBe("Failure");
+      if (exit._tag === "Failure")
+        expect(Cause.squash(exit.cause)).toMatchObject({ certainty: "not_sent", retryable: false });
+      expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+      expect((await harness.readHandoffState(threadId))?.pending).toMatchObject({
+        targetInstanceId: "codex",
+      });
+    });
+
+    describe("through durable delivery", () => {
+      const notConnected = () =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: "codex",
+            method: "turn/start",
+            detail: "not connected",
+            deliveryCertainty: "not_sent",
+          }),
+        ) as never;
+
+      it("resends identical bytes on retry and clears the marker with the receipt", async () => {
+        const harness = await claudeConversation(true);
+        harness.sendTurn.mockImplementationOnce(notConnected);
+        const first = await commit(harness, {
+          id: "x1",
+          text: "What did I ask?",
+          selection: codex,
+        });
+        expect((await deliverDurably(harness, first))._tag).toBe("Failure");
+        const stored = await storedHandoff(harness, "x1");
+        expect(stored).toMatchObject({ disposition: "consumed", effectiveMode: "full" });
+        expect((await harness.readHandoffState(threadId))?.pending?.id).toBe(stored?.id);
+
+        expect((await deliverDurably(harness, first))._tag).toBe("Success");
+        expect(sentInput(harness, 2)).toBe(sentInput(harness, 1));
+        expect(sentInput(harness, 2)).toContain("Remember: always indent with tabs.");
+        // markAccepted settles the marker in the receipt transaction.
+        expect((await harness.readHandoffState(threadId))?.pending).toBeNull();
+        expect(await storedHandoff(harness, "x1")).toEqual(stored);
+
+        expect(
+          (await turn(harness, { id: "x2", text: "Next.", selection: codex, durable: true }))._tag,
+        ).toBe("Success");
+        expect(sentInput(harness, 3)).toBe("Next.");
+        expect(await storedHandoff(harness, "x2")).toBeNull();
+      });
+
+      it("rebuilds a stored delta as a full handoff when the session changed before the retry", async () => {
+        const harness = await claudeConversation(true);
+        await turn(harness, {
+          id: "x1",
+          text: "Rename the helper.",
+          selection: codex,
+          durable: true,
+        });
+        await assistant(harness, "x1", "Renamed helper to formatRow.");
+        harness.sendTurn.mockImplementationOnce(notConnected);
+        const back = await commit(harness, { id: "c2", text: "Continue.", selection: claude });
+        expect((await deliverDurably(harness, back))._tag).toBe("Failure");
+        expect(await storedHandoff(harness, "c2")).toMatchObject({ effectiveMode: "delta" });
+
+        // The resumed session is lost before the retry; a fresh one starts without it.
+        harness.removeLiveSession(threadId);
+        harness.upsertBinding({
+          threadId,
+          provider: "claudeAgent",
+          providerInstanceId: claude.instanceId,
+          resumeCursor: null,
+        });
+        expect((await deliverDurably(harness, back))._tag).toBe("Success");
+        const retried = sentInput(harness, 3);
+        expect(retried).toContain("handled by another agent (Codex");
+        expect(retried).toContain("Remember: always indent with tabs.");
+        expect(retried).toContain("Rename the helper.");
+        expect(await storedHandoff(harness, "c2")).toMatchObject({ effectiveMode: "full" });
+        expect((await harness.readHandoffState(threadId))?.pending).toBeNull();
+        expect(
+          (await activities(harness)).some(
+            (activity) => activity.summary === "Session context reset",
+          ),
+        ).toBe(false);
+      });
+
+      it("falls back to a full handoff when the provider rejects the resume at send time", async () => {
+        const harness = await claudeConversation(true);
+        await turn(harness, {
+          id: "x1",
+          text: "Rename the helper.",
+          selection: codex,
+          durable: true,
+        });
+        await assistant(harness, "x1", "Renamed.");
+        harness.sendTurn.mockImplementationOnce(
+          () =>
+            Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: "claudeAgent",
+                method: "turn/start",
+                detail:
+                  "Claude could not load the saved conversation, so this message was not sent.",
+                deliveryCertainty: "not_sent",
+                deliveryRetryable: false,
+              }),
+            ) as never,
+        );
+        const back = await commit(harness, { id: "c2", text: "Continue.", selection: claude });
+        const failed = await deliverDurably(harness, back);
+        expect(failed._tag).toBe("Failure");
+        if (failed._tag === "Failure")
+          expect(Cause.squash(failed.cause)).toMatchObject({
+            certainty: "not_sent",
+            retryable: true,
+          });
+        const state = await harness.readHandoffState(threadId);
+        expect(state?.pending).toMatchObject({ mode: "full", targetInstanceId: "claudeAgent" });
+        expect(state?.parked.claudeAgent).toBeUndefined();
+        expect(harness.getBinding(threadId)?.resumeCursor).toBeNull();
+
+        const starts = harness.startSession.mock.calls.length;
+        expect((await deliverDurably(harness, back))._tag).toBe("Success");
+        expect(harness.startSession.mock.calls[starts]?.[1]).not.toHaveProperty("resumeCursor");
+        const retried = sentInput(harness, 3);
+        expect(retried).toContain("handled by another agent (Codex");
+        expect(retried).toContain("Remember: always indent with tabs.");
+        expect((await harness.readHandoffState(threadId))?.pending).toBeNull();
+        // The retry starts a session that carries the handoff: no false context-reset
+        // warning, and no second summary of the conversation.
+        expect(
+          (await activities(harness)).some(
+            (activity) => activity.summary === "Session context reset",
+          ),
+        ).toBe(false);
+        expect(harness.runOneOffPrompt).not.toHaveBeenCalled();
+        // The session that could not resume is recorded for cleanup with the thread.
+        expect(
+          (await harness.readHandoffState(threadId))?.retired.some(
+            (session) => session.provider === "claudeAgent",
+          ),
+        ).toBe(true);
+      });
+    });
   });
 });

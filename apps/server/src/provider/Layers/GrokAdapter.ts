@@ -23,6 +23,7 @@ import {
   antigravityQuestionResponse,
 } from "../acp/AntigravityQuestions.ts";
 import { normalizeSupportedSlashCommands } from "../supportedSlashCommands.ts";
+import { leadingSlashCommandName } from "../nativeCommandInput.ts";
 import * as nodePath from "node:path";
 
 import {
@@ -1706,6 +1707,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         sessionModelSwitch: "in-session",
         runtimeCapabilities: providerRuntimeCapabilities(PROVIDER),
       },
+      // ACP agents read a slash command only as the leading prompt text, and learn
+      // their commands after the session starts, so any leading `/name` may be one.
+      classifyTurnInput: (_threadId, text) =>
+        leadingSlashCommandName(text) !== undefined ? "native-command" : "prompt",
       startSession,
       sendTurn,
       steerTurn: sendTurn,

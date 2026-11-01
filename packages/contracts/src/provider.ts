@@ -126,6 +126,12 @@ export const ProviderSendTurnInput = Schema.Struct({
 });
 export type ProviderSendTurnInput = typeof ProviderSendTurnInput.Type;
 
+/**
+ * Thread activity recorded when a provider switch handed the conversation to
+ * the next agent. Its payload carries endpoints, modes and counts, never text.
+ */
+export const PROVIDER_CONTEXT_HANDOFF_ACTIVITY_KIND = "provider.context-handoff";
+
 export const ProviderTurnStartResult = Schema.Struct({
   threadId: ThreadId,
   turnId: TurnId,

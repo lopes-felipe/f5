@@ -3013,6 +3013,14 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         ),
       );
 
+    const classifyTurnInput: NonNullable<ProviderServiceShape["classifyTurnInput"]> = (input) =>
+      registry.getByInstance(input.instanceId).pipe(
+        Effect.map(
+          (adapter) => adapter.classifyTurnInput?.(input.threadId, input.text) ?? "prompt",
+        ),
+        Effect.orElseSucceed(() => "prompt" as const),
+      );
+
     const getSessionCapabilities: ProviderServiceShape["getSessionCapabilities"] = (threadId) =>
       Effect.gen(function* () {
         const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
@@ -4114,6 +4122,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         ),
       listSessions,
       getCapabilities,
+      classifyTurnInput,
       getSessionCapabilities,
       assertSessionAction,
       mcpApps,

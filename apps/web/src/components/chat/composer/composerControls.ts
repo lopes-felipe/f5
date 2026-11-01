@@ -65,6 +65,8 @@ export interface ComposerModelControls {
   selectedModel: string;
   selectedModelForPickerWithCustomFallback: string;
   hasThreadStarted: boolean;
+  /** The started thread cannot switch providers (the server cannot hand it off). */
+  providerLocked?: boolean;
   modelOptionsByInstance: React.ComponentProps<
     typeof ProviderInstanceModelPicker
   >["modelOptionsByInstance"];

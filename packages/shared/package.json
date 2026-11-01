@@ -208,6 +208,10 @@
       "types": "./src/scratchProject.ts",
       "import": "./src/scratchProject.ts"
     },
+    "./conversationHandoff": {
+      "types": "./src/conversationHandoff.ts",
+      "import": "./src/conversationHandoff.ts"
+    },
     "./promptLinks": {
       "types": "./src/promptLinks.ts",
       "import": "./src/promptLinks.ts"

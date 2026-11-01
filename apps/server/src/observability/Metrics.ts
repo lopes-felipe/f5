@@ -52,6 +52,10 @@ export const providerSessionContextResetsTotal = Metric.counter(
   },
 );
 
+export const providerContextHandoffsTotal = Metric.counter("t3_provider_context_handoffs_total", {
+  description: "Total conversation handoffs delivered to a provider after a provider switch.",
+});
+
 export const providerTurnsTotal = Metric.counter("t3_provider_turns_total", {
   description: "Total provider turn lifecycle operations.",
 });
