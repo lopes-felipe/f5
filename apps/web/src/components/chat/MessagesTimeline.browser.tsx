@@ -714,17 +714,15 @@ describe("MessagesTimeline (LegendList)", () => {
         host.querySelectorAll<HTMLElement>('[data-testid="automation-session-card"]');
       const firstCard = () => cards()[0]!;
       const button = (card: HTMLElement, text: string) =>
-        Array.from(card.querySelectorAll<HTMLButtonElement>("button")).find(
-          (candidate) => candidate.textContent === text,
-        );
+        page.elementLocator(card).getByRole("button", { name: text, exact: true });
       const title = surface === "computer" ? "Used the computer" : "Used browser preview";
       let screen = await renderTimeline(entries("turn-1"));
       try {
         await vi.waitFor(() => {
           expect(cards()).toHaveLength(1);
           expect(firstCard().textContent).toContain(title);
-          expect(button(firstCard(), "Show 3 steps")).toBeDefined();
         });
+        await expect.element(button(firstCard(), "Show 3 steps")).toBeVisible();
         messages.push(
           ...[makeUserEntry("automation-user-2", "Another turn", 10)].flatMap((entry) =>
             entry.kind === "message" ? [entry.message] : [],
@@ -733,11 +731,11 @@ describe("MessagesTimeline (LegendList)", () => {
         api!.setTimelineState({ entries: entries("turn-2"), isWorking: true });
         await vi.waitFor(() => {
           expect(cards()).toHaveLength(1);
-          expect(button(firstCard(), "Show 3 steps")).toBeDefined();
           expect(firstCard().getAttribute("data-status")).toBe("done");
           expect(firstCard().querySelector('[aria-label="Collapse"]')).toBeNull();
         });
-        button(firstCard(), "Show 3 steps")!.click();
+        await expect.element(button(firstCard(), "Show 3 steps")).toBeVisible();
+        await button(firstCard(), "Show 3 steps").click();
         await vi.waitFor(() => {
           expect(firstCard().textContent).toContain("Clicking interrupted");
           expect(firstCard().textContent).toContain("Clicking failed");
@@ -764,9 +762,9 @@ describe("MessagesTimeline (LegendList)", () => {
         api!.setTimelineState({ entries: entries("turn-3"), isWorking: true });
         await vi.waitFor(() => {
           expect(cards()).toHaveLength(2);
-          expect(button(firstCard(), "Hide steps")).toBeDefined();
-          expect(button(cards()[1]!, "Show 1 step")).toBeDefined();
         });
+        await expect.element(button(firstCard(), "Hide steps")).toBeVisible();
+        await expect.element(button(cards()[1]!, "Show 1 step")).toBeVisible();
 
         await screen.unmount();
         host.remove();
@@ -784,13 +782,95 @@ describe("MessagesTimeline (LegendList)", () => {
         await vi.waitFor(() => {
           expect(cards()).toHaveLength(2);
           expect(firstCard().textContent).toContain(title);
-          expect(button(firstCard(), "Show 3 steps")).toBeDefined();
-          expect(button(cards()[1]!, "Show 1 step")).toBeDefined();
         });
-        button(firstCard(), "Show 3 steps")!.click();
+        await expect.element(button(firstCard(), "Show 3 steps")).toBeVisible();
+        await expect.element(button(cards()[1]!, "Show 1 step")).toBeVisible();
+        await button(firstCard(), "Show 3 steps").click();
         await vi.waitFor(() => {
           expect(firstCard().textContent).toContain("Clicking interrupted");
         });
+      } finally {
+        await screen.unmount();
+        host.remove();
+      }
+    },
+  );
+
+  it.each(["computer", "preview"] as const)(
+    "keeps separate %s cards and their expansion when intervening work becomes historical",
+    async (surface) => {
+      const payload =
+        surface === "computer"
+          ? { computerTool: true, mcpToolName: "computer_click" }
+          : { mcpServerName: "__f5_preview", mcpToolName: "preview_click" };
+      const activities: OrchestrationThreadActivity[] = [
+        { itemType: "mcp_tool_call", providerItemId: "first", ...payload },
+        { itemType: "dynamic_tool_call", command: "echo between runs" },
+        { itemType: "mcp_tool_call", providerItemId: "second", ...payload },
+      ].map((callPayload, index) => ({
+        id: EventId.makeUnsafe("separate-call-" + index),
+        turnId: TurnId.makeUnsafe("turn-1"),
+        createdAt: new Date(Date.UTC(2026, 2, 4, 12, 0, index + 1)).toISOString(),
+        kind: "tool.completed",
+        tone: "tool",
+        summary: "Tool",
+        payload: callPayload,
+      }));
+      const messages = [
+        makeUserEntry("separate-user-1", "Use two runs", 0),
+        makeAssistantEntry("separate-answer", "Done.", 4),
+      ].flatMap((entry) => (entry.kind === "message" ? [entry.message] : []));
+      const entries = (turn: string) =>
+        deriveTimelineEntries(
+          messages,
+          [],
+          deriveWorkLogEntries(activities, TurnId.makeUnsafe(turn)),
+        );
+      let api: TimelineHarnessApi | null = null;
+      const host = document.createElement("div");
+      document.body.append(host);
+      const screen = await render(
+        <TimelineHarness
+          initialEntries={entries("turn-1")}
+          initialHeight={900}
+          onIsAtEndChangeSpy={() => {}}
+          setApi={(nextApi) => {
+            api = nextApi;
+          }}
+        />,
+        { container: host },
+      );
+      const cards = () =>
+        host.querySelectorAll<HTMLElement>('[data-testid="automation-session-card"]');
+      try {
+        await vi.waitFor(() => expect(cards()).toHaveLength(2));
+        const first = cards()[0]!;
+        const second = cards()[1]!;
+        await page
+          .elementLocator(second)
+          .getByRole("button", { name: "Show 1 step", exact: true })
+          .click();
+        await expect
+          .element(page.elementLocator(second).getByRole("button", { name: "Hide steps" }))
+          .toBeVisible();
+        messages.push(
+          ...[makeUserEntry("separate-user-2", "Continue", 6)].flatMap((entry) =>
+            entry.kind === "message" ? [entry.message] : [],
+          ),
+        );
+        api!.setTimelineState({ entries: entries("turn-2"), isWorking: true });
+        await vi.waitFor(() => {
+          expect(cards()).toHaveLength(2);
+          expect(cards()[0]).toBe(first);
+          expect(cards()[1]).toBe(second);
+          expect(host.textContent).not.toContain("echo between runs");
+        });
+        await expect
+          .element(page.elementLocator(first).getByRole("button", { name: "Show 1 step" }))
+          .toBeVisible();
+        await expect
+          .element(page.elementLocator(second).getByRole("button", { name: "Hide steps" }))
+          .toBeVisible();
       } finally {
         await screen.unmount();
         host.remove();

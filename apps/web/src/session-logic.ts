@@ -127,6 +127,8 @@ export interface WorkLogEntry {
   mcpToolName?: string;
   computerTool?: boolean;
   computerStep?: ComputerStepSummary;
+  /** Derived before historical filtering so hidden work cannot join separate runs. */
+  automationRunId?: string;
   mcpInput?: string;
   mcpResult?: string;
   mcpImages?: ReadonlyArray<{ attachmentId: string; mimeType: string; sizeBytes: number }>;
@@ -740,7 +742,7 @@ function inferWorkLogStatus(
 function shouldKeepHistoricalWorkEntry(
   activity: OrchestrationThreadActivity,
   latestTurnId: TurnId | undefined,
-  terminalCodexProviderItemIds: ReadonlySet<ProviderItemId>,
+  terminalCodexProviderItemIds: ReadonlySet<string>,
 ): boolean {
   if (!latestTurnId || activity.kind === "htmlRender" || activity.kind === "mcpApp") {
     return true;
@@ -776,7 +778,8 @@ function shouldKeepHistoricalWorkEntry(
       inferredStatus === "failed" ||
       inferredStatus === "declined");
   const isLifecycleOfTerminalCodexCollaboration = Boolean(
-    toolPayload?.providerItemId && terminalCodexProviderItemIds.has(toolPayload.providerItemId),
+    toolPayload?.providerItemId &&
+    terminalCodexProviderItemIds.has(providerCallKey(activity.turnId, toolPayload.providerItemId)),
   );
 
   return (
@@ -826,9 +829,38 @@ function workEntryVisibleSignature(entry: WorkLogEntry): string {
   });
 }
 
+function providerCallKey(turnId: TurnId | null | undefined, itemId: string): string {
+  return JSON.stringify([turnId ?? null, itemId]);
+}
+
+function diagnosticCallKeyResolver(
+  calls: ReadonlyArray<{
+    turnId?: TurnId | null;
+    providerItemId?: ProviderItemId | null;
+  }>,
+): (entry: WorkLogEntry) => string | undefined {
+  const keysByItemId = new Map<ProviderItemId, Set<string>>();
+  for (const call of calls) {
+    if (!call.providerItemId) continue;
+    const keys = keysByItemId.get(call.providerItemId) ?? new Set<string>();
+    keys.add(providerCallKey(call.turnId, call.providerItemId));
+    keysByItemId.set(call.providerItemId, keys);
+  }
+  return (entry) => {
+    if (!entry.parentProviderItemId) return undefined;
+    const keys = keysByItemId.get(entry.parentProviderItemId);
+    if (entry.turnId) {
+      const key = providerCallKey(entry.turnId, entry.parentProviderItemId);
+      return keys?.has(key) ? key : undefined;
+    }
+    // Legacy diagnostics without a turn may attach only to an unambiguous call.
+    return keys?.size === 1 ? keys.values().next().value : undefined;
+  };
+}
+
 function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
   const deduped: Array<WorkLogEntry | null> = [];
-  const latestByProviderItemId = new Map<ProviderItemId, { index: number; signature: string }>();
+  const latestByProviderItemId = new Map<string, { index: number; signature: string }>();
   const terminalTieKeys = new Set<string>();
 
   for (const entry of entries) {
@@ -844,7 +876,8 @@ function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>):
     // regress a finished item to in-progress and hide its inline diff. A
     // later-stamped in-progress update (a task backgrounded after its tool
     // result, or a reused item id in another turn) is real and stays.
-    const tieKey = `${entry.providerItemId}\u0000${entry.createdAt}`;
+    const callKey = providerCallKey(entry.turnId, entry.providerItemId);
+    const tieKey = JSON.stringify([callKey, entry.createdAt]);
     if (workEntryLifecyclePrecedence(entry) === TERMINAL_LIFECYCLE_PRECEDENCE) {
       terminalTieKeys.add(tieKey);
     } else if (terminalTieKeys.has(tieKey)) {
@@ -852,13 +885,13 @@ function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>):
     }
 
     const signature = workEntryVisibleSignature(entry);
-    const previous = latestByProviderItemId.get(entry.providerItemId);
+    const previous = latestByProviderItemId.get(callKey);
     if (previous && previous.signature === signature) {
       deduped[previous.index] = null;
     }
 
     deduped.push(entry);
-    latestByProviderItemId.set(entry.providerItemId, {
+    latestByProviderItemId.set(callKey, {
       index: deduped.length - 1,
       signature,
     });
@@ -883,15 +916,16 @@ function workEntryLifecyclePrecedence(entry: WorkLogEntry): number {
  */
 function coalesceProviderItemSnapshots(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
   const result: WorkLogEntry[] = [];
-  const indexByProviderItemId = new Map<ProviderItemId, number>();
+  const indexByProviderItemId = new Map<string, number>();
   for (const entry of entries) {
     if (!entry.providerItemId || (!entry.codexCollaborationTool && !automationToolSurface(entry))) {
       result.push(entry);
       continue;
     }
-    const existingIndex = indexByProviderItemId.get(entry.providerItemId);
+    const callKey = providerCallKey(entry.turnId, entry.providerItemId);
+    const existingIndex = indexByProviderItemId.get(callKey);
     if (existingIndex === undefined) {
-      indexByProviderItemId.set(entry.providerItemId, result.length);
+      indexByProviderItemId.set(callKey, result.length);
       result.push(entry);
       continue;
     }
@@ -915,6 +949,31 @@ function coalesceProviderItemSnapshots(entries: ReadonlyArray<WorkLogEntry>): Wo
     };
   }
   return result;
+}
+
+const automationRunEntries = new WeakMap<WorkLogEntry, { runId: string; entry: WorkLogEntry }>();
+
+/** Assign boundaries while ordinary work is still present, without mutating cached entries. */
+function preserveAutomationRunBoundaries(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
+  let run: { surface: string; turnId: TurnId | undefined; id: string } | undefined;
+  const diagnosticCallKey = diagnosticCallKeyResolver(entries.filter((entry) => !entry.diagnostic));
+  return entries.map((entry) => {
+    // Correlated diagnostics nest under calls; they do not separate timeline rows.
+    if (entry.diagnostic && diagnosticCallKey(entry)) return entry;
+    const surface = entry.mcpApp || entry.htmlRender ? undefined : automationToolSurface(entry);
+    if (!surface) {
+      if (entry.tone !== "thinking") run = undefined;
+      return entry;
+    }
+    if (!run || run.surface !== surface || run.turnId !== entry.turnId) {
+      run = { surface, turnId: entry.turnId, id: entry.id };
+    }
+    const cached = automationRunEntries.get(entry);
+    if (cached?.runId === run.id) return cached.entry;
+    const annotated = { ...entry, automationRunId: run.id };
+    automationRunEntries.set(entry, { runId: run.id, entry: annotated });
+    return annotated;
+  });
 }
 
 function collapseWhitespace(text: string): string {
@@ -1099,7 +1158,7 @@ function pairDiagnosticLifecycles(entries: ReadonlyArray<WorkLogEntry>): WorkLog
       ) {
         return [];
       }
-      return [`${entry.diagnostic.type}:${entry.diagnostic.id}`];
+      return [providerCallKey(entry.turnId, entry.diagnostic.type + ":" + entry.diagnostic.id)];
     }),
   );
 
@@ -1110,7 +1169,7 @@ function pairDiagnosticLifecycles(entries: ReadonlyArray<WorkLogEntry>): WorkLog
     ) {
       return [entry];
     }
-    const key = `${entry.diagnostic.type}:${entry.diagnostic.id}`;
+    const key = providerCallKey(entry.turnId, entry.diagnostic.type + ":" + entry.diagnostic.id);
     if (completedKeys.has(key)) {
       return [];
     }
@@ -1497,7 +1556,7 @@ export function deriveWorkLogEntries(
   const mode = options?.mode ?? "essential";
   const selectedFilter = options?.filter ?? "all";
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
-  const terminalCodexProviderItemIds = new Set<ProviderItemId>();
+  const terminalCodexProviderItemIds = new Set<string>();
   for (const activity of ordered) {
     const payload = readToolActivityPayload(activity.payload);
     const status = inferWorkLogStatus(activity, payload?.status);
@@ -1506,9 +1565,16 @@ export function deriveWorkLogEntries(
       payload.codexCollaborationTool &&
       (status === "completed" || status === "failed" || status === "declined")
     ) {
-      terminalCodexProviderItemIds.add(payload.providerItemId);
+      terminalCodexProviderItemIds.add(providerCallKey(activity.turnId, payload.providerItemId));
     }
   }
+  const retainedActivityIds = new Set(
+    ordered
+      .filter((activity) =>
+        shouldKeepHistoricalWorkEntry(activity, latestTurnId, terminalCodexProviderItemIds),
+      )
+      .map((activity) => String(activity.id)),
+  );
   // A usage limit arrives as one warning per exhausted window and then as the
   // turn's error; show one row per turn. The error carries the combined reset,
   // so it wins; until it arrives, the latest warning stands in.
@@ -1530,9 +1596,6 @@ export function deriveWorkLogEntries(
   }
   const userInputQuestionByRequestId = userInputQuestionTextByRequestId(ordered);
   const entries = ordered
-    .filter((activity) =>
-      shouldKeepHistoricalWorkEntry(activity, latestTurnId, terminalCodexProviderItemIds),
-    )
     .filter(
       (activity) =>
         (activity.kind !== "runtime.warning" && activity.kind !== "runtime.error") ||
@@ -1838,7 +1901,15 @@ export function deriveWorkLogEntries(
         return true;
     }
   });
-  return coalesceProtocolWarnings(filtered);
+  const automationDiagnosticCallKey = diagnosticCallKeyResolver(
+    filtered.filter((entry) => automationToolSurface(entry) !== undefined),
+  );
+  const historical = preserveAutomationRunBoundaries(filtered).filter(
+    (entry) =>
+      retainedActivityIds.has(entry.id) ||
+      (entry.diagnostic !== undefined && automationDiagnosticCallKey(entry) !== undefined),
+  );
+  return coalesceProtocolWarnings(historical);
 }
 
 function asTrimmedString(value: unknown): string | undefined {
@@ -2073,21 +2144,26 @@ export function deriveTimelineEntries(
   );
   const diagnosticEntries = workEntries.filter((entry) => entry.diagnostic !== undefined);
   const regularWorkEntries = workEntries.filter((entry) => entry.diagnostic === undefined);
+  const diagnosticCallKey = diagnosticCallKeyResolver([
+    ...regularWorkEntries,
+    ...commandExecutions,
+  ]);
   const pendingDiagnosticsByProviderItemId = new Map<string, WorkLogEntry[]>();
   for (const diagnostic of diagnosticEntries) {
-    if (!diagnostic.parentProviderItemId) {
-      continue;
-    }
-    const key = String(diagnostic.parentProviderItemId);
+    const key = diagnosticCallKey(diagnostic);
+    if (!key) continue;
     const existing = pendingDiagnosticsByProviderItemId.get(key) ?? [];
     existing.push(diagnostic);
     pendingDiagnosticsByProviderItemId.set(key, existing);
   }
-  const takeDiagnostics = (providerItemId: ProviderItemId | null | undefined) => {
+  const takeDiagnostics = (
+    turnId: TurnId | null | undefined,
+    providerItemId: ProviderItemId | null | undefined,
+  ) => {
     if (!providerItemId) {
       return undefined;
     }
-    const key = String(providerItemId);
+    const key = providerCallKey(turnId, providerItemId);
     const diagnostics = pendingDiagnosticsByProviderItemId.get(key);
     if (!diagnostics) {
       return undefined;
@@ -2097,7 +2173,7 @@ export function deriveTimelineEntries(
   };
 
   const workRows: TimelineEntry[] = regularWorkEntries.map((entry) => {
-    const nestedDiagnostics = takeDiagnostics(entry.providerItemId);
+    const nestedDiagnostics = takeDiagnostics(entry.turnId, entry.providerItemId);
     return reuse(entry.id, [entry, ...(nestedDiagnostics ?? [])], () => {
       const nestedEntry = nestedDiagnostics ? { ...entry, nestedDiagnostics } : entry;
       return {
@@ -2112,7 +2188,7 @@ export function deriveTimelineEntries(
     .toSorted(compareCommandExecutions)
     .map((commandExecution) => {
       const providerItemId = commandExecution.providerItemId;
-      const nestedDiagnostics = takeDiagnostics(providerItemId);
+      const nestedDiagnostics = takeDiagnostics(commandExecution.turnId, providerItemId);
       return reuse(commandExecution.id, [commandExecution, ...(nestedDiagnostics ?? [])], () => {
         const row = commandTimelineEntry(commandExecution);
         if (!nestedDiagnostics) return row;
@@ -2122,11 +2198,10 @@ export function deriveTimelineEntries(
       });
     });
   const uncorrelatedDiagnosticRows: TimelineEntry[] = diagnosticEntries
-    .filter(
-      (entry) =>
-        !entry.parentProviderItemId ||
-        pendingDiagnosticsByProviderItemId.has(String(entry.parentProviderItemId)),
-    )
+    .filter((entry) => {
+      const key = diagnosticCallKey(entry);
+      return !key || pendingDiagnosticsByProviderItemId.has(key);
+    })
     .map((entry) =>
       reuse(entry.id, [entry], () => ({
         id: entry.id,

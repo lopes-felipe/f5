@@ -1302,6 +1302,140 @@ describe("deriveWorkLogEntries", () => {
     expect(deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-2"))).toEqual([]);
   });
 
+  it.each(["computer", "preview"] as const)(
+    "preserves %s run boundaries when intervening work leaves the historical log",
+    (surface) => {
+      const payload =
+        surface === "computer"
+          ? { computerTool: true, mcpToolName: "computer_click" }
+          : { mcpServerName: "__f5_preview", mcpToolName: "preview_click" };
+      const activities = [
+        makeActivity({
+          id: "first-run",
+          sequence: 1,
+          turnId: "turn-1",
+          kind: "tool.completed",
+          payload: { itemType: "mcp_tool_call", providerItemId: "first", ...payload },
+        }),
+        makeActivity({
+          id: "intervening-command",
+          sequence: 2,
+          turnId: "turn-1",
+          kind: "tool.completed",
+          payload: { itemType: "dynamic_tool_call", command: "echo between runs" },
+        }),
+        makeActivity({
+          id: "second-run",
+          sequence: 3,
+          turnId: "turn-1",
+          kind: "tool.completed",
+          payload: { itemType: "mcp_tool_call", providerItemId: "second", ...payload },
+        }),
+      ];
+      const live = deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-1"));
+      const historical = deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-2"));
+      expect(historical.map((entry) => entry.id)).toEqual(["first-run", "second-run"]);
+      expect(historical.map((entry) => entry.automationRunId)).toEqual([
+        live[0]!.automationRunId,
+        live[2]!.automationRunId,
+      ]);
+      expect(historical[0]!.automationRunId).not.toBe(historical[1]!.automationRunId);
+      // Stable annotated objects let unrelated turns reuse existing timeline rows.
+      expect(deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-3"))[0]).toBe(historical[0]);
+    },
+  );
+
+  it.each(["completed", "inProgress"] as const)(
+    "keeps a reused provider id in another turn separate when its status is %s",
+    (status) => {
+      const call = (id: string, turnId: string, tool: string, callStatus: string) =>
+        makeActivity({
+          id,
+          turnId,
+          sequence: turnId === "turn-1" ? 1 : 2,
+          kind: callStatus === "inProgress" ? "tool.started" : "tool.completed",
+          payload: {
+            itemType: "mcp_tool_call",
+            providerItemId: "reused-id",
+            computerTool: true,
+            mcpToolName: tool,
+            status: callStatus,
+          },
+        });
+      const entries = deriveWorkLogEntries(
+        [
+          call("old", "turn-1", "computer_click", "completed"),
+          call(
+            "new",
+            "turn-2",
+            status === "completed" ? "computer_click" : "computer_type",
+            status,
+          ),
+        ],
+        TurnId.makeUnsafe("turn-2"),
+      );
+      expect(entries).toHaveLength(2);
+      expect(entries[0]).toMatchObject({ id: "old", turnId: "turn-1", status: "completed" });
+      expect(entries[1]).toMatchObject({ id: "new", turnId: "turn-2", status });
+    },
+  );
+
+  it("preserves correlated historical diagnostics and scopes them to their call's turn", () => {
+    const activities = ["turn-1", "turn-2"].flatMap((turnId) => [
+      makeActivity({
+        id: turnId + "-call",
+        turnId,
+        kind: "tool.completed",
+        sequence: turnId === "turn-1" ? 1 : 4,
+        payload: {
+          itemType: "mcp_tool_call",
+          providerItemId: "reused",
+          computerTool: true,
+          mcpToolName: "computer_click",
+        },
+      }),
+      makeActivity({
+        id: turnId + "-hook",
+        turnId,
+        kind: "hook.completed",
+        payload: {
+          hookId: "reused-hook",
+          providerItemId: "reused",
+          rawStatus: "failed",
+          outcome: "error",
+        },
+      }),
+      makeActivity({
+        id: turnId + "-review",
+        turnId,
+        kind: "approval-review.completed",
+        payload: { reviewId: "reused-review", providerItemId: "reused", status: "denied" },
+      }),
+    ]);
+    const entries = deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-3"));
+    expect(entries).toHaveLength(6);
+    const timeline = deriveTimelineEntries([], [], entries);
+    expect(timeline).toHaveLength(2);
+    for (const row of timeline) {
+      if (row.kind !== "work") throw new Error("Expected a work row");
+      expect(row.entry.nestedDiagnostics?.map((entry) => entry.id).toSorted()).toEqual([
+        row.entry.turnId + "-hook",
+        row.entry.turnId + "-review",
+      ]);
+    }
+    const legacy = makeActivity({
+      id: "ambiguous-legacy-hook",
+      kind: "hook.completed",
+      payload: { hookId: "legacy", providerItemId: "reused", rawStatus: "failed" },
+    });
+    const withLegacy = deriveTimelineEntries(
+      [],
+      [],
+      deriveWorkLogEntries([...activities, legacy], undefined),
+    );
+    expect(withLegacy.some((row) => row.id === legacy.id)).toBe(true);
+  });
+
   it("keeps collaboration rows without provider item ids on the generic path", () => {
     const entries = deriveWorkLogEntries(
       [
