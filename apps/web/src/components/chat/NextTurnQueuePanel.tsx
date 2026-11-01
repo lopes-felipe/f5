@@ -42,24 +42,13 @@ import {
   isFoldedUsageLimitItem,
   mergeVisibleOrder,
   moveItemInOrder,
+  rebuildEditedText,
 } from "./NextTurnQueuePanel.logic";
 import { NextTurnQueueRow } from "./NextTurnQueueRow";
 import { COMPOSER_TRAY_PANEL_CLASS_NAME, type ComposerPanelVariant } from "./composer/ComposerTray";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Failed to update the queued turn.";
-}
-
-function rebuildEditedText(item: NextTurnQueueItem, visibleText: string): string {
-  const current = item.command.message.text;
-  const displayed = item.command.message.text.trim().length > 0 ? current : "";
-  const existingVisible =
-    displayed.length > 0
-      ? current.slice(0, current.length - (current.length - current.trimEnd().length))
-      : "";
-  const terminalMarker = current.search(/\n*<terminal_context>|\n*<attached_files>/u);
-  if (terminalMarker >= 0) return `${visibleText.trim()}${current.slice(terminalMarker)}`;
-  return existingVisible === current ? visibleText.trim() : `${visibleText.trim()}\n`;
 }
 
 /**

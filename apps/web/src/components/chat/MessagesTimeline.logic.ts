@@ -6,6 +6,7 @@ import type {
 } from "@t3tools/contracts";
 
 import { classifyCompactCommand } from "@t3tools/shared/commandSummary";
+import { isImageOnlyBootstrapPrompt } from "@t3tools/shared/composerSendText";
 
 /** A small pixel band prevents a large viewport from rearming while the reader is in history. */
 export const TIMELINE_AT_END_PX = 40;
@@ -430,7 +431,10 @@ function summarizeNames(names: ReadonlyArray<string>): string | null {
 function resolveTurnRailUserPreview(
   message: NonNullable<TimelineTurnRailRowSource["message"]>,
 ): string | null {
-  const attached = extractTrailingAttachedFiles(message.text);
+  // An image-only message previews its images, not the prompt sent in their place.
+  const attached = extractTrailingAttachedFiles(
+    isImageOnlyBootstrapPrompt(message.text) ? "" : message.text,
+  );
   const terminal = extractTrailingTerminalContexts(attached.promptText);
   return (
     compactTurnRailPreview(terminal.promptText) ??

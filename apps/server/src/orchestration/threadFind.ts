@@ -7,6 +7,7 @@ import {
   countThreadSearchOccurrences,
   findThreadSearchOccurrences,
 } from "@t3tools/shared/threadSearch";
+import { isImageOnlyBootstrapPrompt } from "@t3tools/shared/composerSendText";
 import { searchableThreadSegments } from "@t3tools/shared/threadFindText";
 import { Effect, Schema, Semaphore } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -39,6 +40,8 @@ export const makeThreadFind = Effect.gen(function* () {
               role: string;
             }>`SELECT plan_markdown AS text, 'plan' AS role FROM projection_thread_proposed_plans WHERE thread_id=${threadId} AND plan_id=${entry.id}`;
       if (!rows[0]) return yield* refused("The matching item is no longer available.");
+      // The timeline hides this prompt, so find must not match text nobody can see.
+      if (rows[0].role === "user" && isImageOnlyBootstrapPrompt(rows[0].text)) return [];
       // User bubbles show alert markers literally; other surfaces render them as titles.
       return searchableThreadSegments(rows[0].text, { renderAlerts: rows[0].role !== "user" });
     });

@@ -20,7 +20,8 @@ import Migration0145 from "./Migrations/145_UpstreamPortReviews.ts";
 import Migration0146 from "./Migrations/146_ProjectionThreadMessagesReasoningTokens.ts";
 import Migration0148 from "./Migrations/148_ProjectionThreadActivitiesRankIndex.ts";
 import Migration0149 from "./Migrations/149_ThreadReferenceGrants.ts";
-import Migration0150 from "./Migrations/150_ProviderHandoffState.ts";
+import Migration0150 from "./Migrations/150_ExcludeImageOnlyPromptFromSearch.ts";
+import Migration0151 from "./Migrations/151_ProviderHandoffState.ts";
 import Migration0127 from "./Migrations/127_ClearPlanningWorkflowLaneBranches.ts";
 import Migration0126 from "./Migrations/126_ProviderTerminalRecoveryIndexes.ts";
 import Migration0124 from "./Migrations/124_ProviderTerminalRetry.ts";
@@ -210,7 +211,8 @@ export const MIGRATIONS = {
   "146_ProjectionThreadMessagesReasoningTokens": Migration0146,
   "148_ProjectionThreadActivitiesRankIndex": Migration0148,
   "149_ThreadReferenceGrants": Migration0149,
-  "150_ProviderHandoffState": Migration0150,
+  "150_ExcludeImageOnlyPromptFromSearch": Migration0150,
+  "151_ProviderHandoffState": Migration0151,
   "122_StorageActivity": Migration0122,
   "123_WorkspaceMoveRecoveryIndex": Migration0123,
   "121_AttachmentDeletionGuards": Migration0121,

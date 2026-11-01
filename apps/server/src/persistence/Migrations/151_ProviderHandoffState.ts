@@ -16,7 +16,7 @@ export default Effect.gen(function* () {
     revision INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
   )`;
-  // Idempotent: development databases ran an earlier form of this as migration 147.
+  // Idempotent: development databases ran earlier forms of this as migrations 147 and 150.
   const columnsOf = (table: string) =>
     sql<{ name: string }>`SELECT name FROM pragma_table_info(${table})`.pipe(
       Effect.map((rows) => new Set(rows.map((row) => row.name))),
