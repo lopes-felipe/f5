@@ -55,6 +55,31 @@ export {
   buildComposerSkillReplacement,
   rewriteComposerRuntimeSkillInvocationForSend,
 } from "@t3tools/shared/slashCommands";
+/**
+ * The queue intent for a send. A send that switches provider instances never
+ * steers into the running turn of the old session: it is queued instead, so the
+ * switch runs after that turn settles and re-checks the server's guards.
+ */
+export function resolveSubmissionIntent(input: {
+  readonly bootstrap: boolean;
+  readonly intent: "auto" | "queue-tail" | "queue-head" | "send-now" | "steer" | undefined;
+  readonly running: boolean;
+  readonly followUpBehavior: string;
+  readonly switchesProvider: boolean;
+}): "auto" | "queue-tail" | "queue-head" | "steer" {
+  if (input.bootstrap) return "auto";
+  if (input.intent === "send-now") return "queue-head";
+  if (input.intent === "steer") return input.switchesProvider ? "queue-head" : "steer";
+  if (
+    (input.intent === undefined || input.intent === "auto") &&
+    input.running &&
+    input.followUpBehavior === "steer" &&
+    !input.switchesProvider
+  )
+    return "steer";
+  return input.intent ?? "auto";
+}
+
 export function shouldRenderTimelineContent(input: {
   detailsLoaded: boolean;
   hasRenderableMessage: boolean;

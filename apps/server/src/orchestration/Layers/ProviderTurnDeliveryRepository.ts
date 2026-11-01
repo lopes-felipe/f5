@@ -5,6 +5,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { toPersistenceDecodeError, toPersistenceSqlError } from "../../persistence/Errors.ts";
 import {
+  DELIVERY_HANDOFF_BODY_RETENTION,
+  DeliveryHandoff,
   DeliveryHistoryEvidence,
   DeliveryAcceptanceReceipt,
   ProviderTurnDelivery,
@@ -17,6 +19,7 @@ const DbRow = ProviderTurnDelivery.mapFields(
     preSendTurnIds: Schema.fromJsonString(Schema.Array(TurnId)),
     event: Schema.fromJsonString(OrchestrationEvent),
     historyEvidence: Schema.NullOr(Schema.fromJsonString(DeliveryHistoryEvidence)),
+    handoff: Schema.NullOr(Schema.fromJsonString(DeliveryHandoff)),
     acceptanceReceipt: Schema.NullOr(Schema.fromJsonString(DeliveryAcceptanceReceipt)),
     usageLimit: Schema.NullOr(Schema.fromJsonString(OrchestrationUsageLimit)),
   }),
@@ -54,7 +57,7 @@ const make = Effect.gen(function* () {
     SELECT
       delivery_id AS "deliveryId", thread_id AS "threadId", command_id AS "commandId",
       message_id AS "messageId", state, provider_turn_id AS "providerTurnId", attempt,
-      acceptance_receipt_json AS "acceptanceReceipt", attempt_id AS "attemptId", history_evidence_json AS "historyEvidence", pre_send_turn_ids_json AS "preSendTurnIds", event_json AS "event",
+      acceptance_receipt_json AS "acceptanceReceipt", attempt_id AS "attemptId", history_evidence_json AS "historyEvidence", handoff_json AS "handoff", pre_send_turn_ids_json AS "preSendTurnIds", event_json AS "event",
       error_code AS "errorCode", error_detail AS "errorDetail", usage_limit_json AS "usageLimit", certainty,
       not_before AS "notBefore", created_at AS "createdAt", updated_at AS "updatedAt",
       outcome_projected_at AS "outcomeProjectedAt"
@@ -125,7 +128,7 @@ const make = Effect.gen(function* () {
         `
             SELECT delivery_id AS "deliveryId", thread_id AS "threadId", command_id AS "commandId",
               message_id AS "messageId", state, provider_turn_id AS "providerTurnId", attempt,
-              acceptance_receipt_json AS "acceptanceReceipt", attempt_id AS "attemptId", history_evidence_json AS "historyEvidence", pre_send_turn_ids_json AS "preSendTurnIds", event_json AS "event",
+              acceptance_receipt_json AS "acceptanceReceipt", attempt_id AS "attemptId", history_evidence_json AS "historyEvidence", handoff_json AS "handoff", pre_send_turn_ids_json AS "preSendTurnIds", event_json AS "event",
               error_code AS "errorCode", error_detail AS "errorDetail", usage_limit_json AS "usageLimit", certainty,
               not_before AS "notBefore", created_at AS "createdAt", updated_at AS "updatedAt",
               outcome_projected_at AS "outcomeProjectedAt"
@@ -149,7 +152,7 @@ const make = Effect.gen(function* () {
         `SELECT delivery_id AS "deliveryId", thread_id AS "threadId",
              command_id AS "commandId", message_id AS "messageId", state,
              provider_turn_id AS "providerTurnId", attempt,
-             acceptance_receipt_json AS "acceptanceReceipt", attempt_id AS "attemptId", history_evidence_json AS "historyEvidence", pre_send_turn_ids_json AS "preSendTurnIds", event_json AS "event",
+             acceptance_receipt_json AS "acceptanceReceipt", attempt_id AS "attemptId", history_evidence_json AS "historyEvidence", handoff_json AS "handoff", pre_send_turn_ids_json AS "preSendTurnIds", event_json AS "event",
              error_code AS "errorCode", error_detail AS "errorDetail", usage_limit_json AS "usageLimit", certainty,
              not_before AS "notBefore", created_at AS "createdAt", updated_at AS "updatedAt",
              outcome_projected_at AS "outcomeProjectedAt"
@@ -180,7 +183,7 @@ const make = Effect.gen(function* () {
         `SELECT delivery_id AS "deliveryId", thread_id AS "threadId",
              command_id AS "commandId", message_id AS "messageId", state,
              provider_turn_id AS "providerTurnId", attempt,
-             acceptance_receipt_json AS "acceptanceReceipt", attempt_id AS "attemptId", history_evidence_json AS "historyEvidence", pre_send_turn_ids_json AS "preSendTurnIds", event_json AS "event",
+             acceptance_receipt_json AS "acceptanceReceipt", attempt_id AS "attemptId", history_evidence_json AS "historyEvidence", handoff_json AS "handoff", pre_send_turn_ids_json AS "preSendTurnIds", event_json AS "event",
              error_code AS "errorCode", error_detail AS "errorDetail", usage_limit_json AS "usageLimit", certainty,
              not_before AS "notBefore", created_at AS "createdAt", updated_at AS "updatedAt",
              outcome_projected_at AS "outcomeProjectedAt"
@@ -250,6 +253,20 @@ const make = Effect.gen(function* () {
       Effect.mapError(mapError("ProviderTurnDelivery.recordDispatchIntent")),
     );
 
+  const recordHandoff: ProviderTurnDeliveryRepositoryShape["recordHandoff"] = (input) =>
+    Effect.gen(function* () {
+      yield* sql`UPDATE provider_turn_deliveries SET handoff_json = ${JSON.stringify(input.handoff)}
+        WHERE delivery_id = ${input.deliveryId} AND attempt_id = ${input.attemptId}
+          AND state = 'sending' AND (handoff_json IS NULL OR ${input.replace === true ? 1 : 0} = 1)`;
+      const rows = yield* sql<{ readonly handoff: string | null }>`
+        SELECT handoff_json AS "handoff" FROM provider_turn_deliveries
+        WHERE delivery_id = ${input.deliveryId} AND attempt_id = ${input.attemptId} AND state = 'sending'`;
+      const stored = rows[0]?.handoff;
+      return stored
+        ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(DeliveryHandoff))(stored)
+        : null;
+    }).pipe(Effect.mapError(mapError("ProviderTurnDelivery.recordHandoff")));
+
   const claim: ProviderTurnDeliveryRepositoryShape["claim"] = (
     deliveryId,
     preSendTurnIds,
@@ -267,7 +284,7 @@ const make = Effect.gen(function* () {
           AND ${deliveryFifoAvailable}
         RETURNING delivery_id AS "deliveryId", thread_id AS "threadId", command_id AS "commandId",
           message_id AS "messageId", state, provider_turn_id AS "providerTurnId", attempt,
-          acceptance_receipt_json AS "acceptanceReceipt", attempt_id AS "attemptId", history_evidence_json AS "historyEvidence", pre_send_turn_ids_json AS "preSendTurnIds", event_json AS "event",
+          acceptance_receipt_json AS "acceptanceReceipt", attempt_id AS "attemptId", history_evidence_json AS "historyEvidence", handoff_json AS "handoff", pre_send_turn_ids_json AS "preSendTurnIds", event_json AS "event",
           error_code AS "errorCode", error_detail AS "errorDetail", usage_limit_json AS "usageLimit", certainty,
           not_before AS "notBefore", created_at AS "createdAt", updated_at AS "updatedAt",
           outcome_projected_at AS "outcomeProjectedAt"
@@ -306,6 +323,28 @@ const make = Effect.gen(function* () {
               AND EXISTS (SELECT 1 FROM projection_turns t WHERE t.thread_id = provider_turn_deliveries.thread_id
                 AND t.turn_id = ${input.providerTurnId} AND t.completed_at IS NOT NULL)`;
           yield* sql`UPDATE restart_continuations SET provider_turn_id = ${input.providerTurnId} WHERE continuation_id = ${input.deliveryId}`;
+          // A consumed handoff clears its pending marker in the same transaction as
+          // the receipt, so neither a crash nor a retry can lose or replay it.
+          yield* sql`UPDATE provider_handoff_state
+            SET pending_json = NULL, revision = revision + 1, updated_at = ${new Date().toISOString()}
+            WHERE pending_json IS NOT NULL
+              AND EXISTS (SELECT 1 FROM provider_turn_deliveries AS d
+                WHERE d.delivery_id = ${input.deliveryId}
+                  AND d.thread_id = provider_handoff_state.thread_id
+                  AND d.handoff_json IS NOT NULL
+                  AND json_extract(d.handoff_json, '$.disposition') = 'consumed'
+                  AND json_extract(d.handoff_json, '$.id') = json_extract(provider_handoff_state.pending_json, '$.id'))`;
+          // Settled handoff bodies beyond the newest few keep only their manifest.
+          yield* sql`UPDATE provider_turn_deliveries
+            SET handoff_json = json_set(handoff_json, '$.block', json('null'))
+            WHERE rowid IN (
+              SELECT d.rowid FROM provider_turn_deliveries AS d
+              WHERE d.thread_id = (SELECT thread_id FROM provider_turn_deliveries WHERE delivery_id = ${input.deliveryId})
+                AND d.state IN ('accepted', 'abandoned')
+                AND d.handoff_json IS NOT NULL
+                AND json_extract(d.handoff_json, '$.block') IS NOT NULL
+              ORDER BY d.updated_at DESC, d.rowid DESC
+              LIMIT -1 OFFSET ${DELIVERY_HANDOFF_BODY_RETENTION})`;
           return true;
         }),
       )
@@ -348,7 +387,7 @@ const make = Effect.gen(function* () {
          RETURNING delivery_id AS "deliveryId", thread_id AS "threadId",
            command_id AS "commandId", message_id AS "messageId", state,
            provider_turn_id AS "providerTurnId", attempt,
-           acceptance_receipt_json AS "acceptanceReceipt", attempt_id AS "attemptId", history_evidence_json AS "historyEvidence", pre_send_turn_ids_json AS "preSendTurnIds", event_json AS "event",
+           acceptance_receipt_json AS "acceptanceReceipt", attempt_id AS "attemptId", history_evidence_json AS "historyEvidence", handoff_json AS "handoff", pre_send_turn_ids_json AS "preSendTurnIds", event_json AS "event",
            error_code AS "errorCode", error_detail AS "errorDetail", usage_limit_json AS "usageLimit", certainty,
            not_before AS "notBefore", created_at AS "createdAt", updated_at AS "updatedAt",
            outcome_projected_at AS "outcomeProjectedAt"`,
@@ -381,6 +420,7 @@ const make = Effect.gen(function* () {
 
   return {
     recordDispatchIntent,
+    recordHandoff,
     listCandidateIds,
     listActionable,
     listSending,

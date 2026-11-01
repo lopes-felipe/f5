@@ -4511,7 +4511,7 @@ function readCodexProviderOptions(input: CodexAppServerStartSessionInput): {
 
 export const assertSupportedCodexCliVersion = probeCodexCliVersion;
 
-function readResumeCursorThreadId(resumeCursor: unknown): string | undefined {
+export function readResumeCursorThreadId(resumeCursor: unknown): string | undefined {
   if (!resumeCursor || typeof resumeCursor !== "object" || Array.isArray(resumeCursor)) {
     return undefined;
   }

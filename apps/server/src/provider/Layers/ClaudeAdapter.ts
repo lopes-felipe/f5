@@ -14,6 +14,7 @@ import {
 import type { ProviderAdapterSessionStartInput } from "../Services/ProviderAdapter.ts";
 import { createClaudeQueryWithPrivateMcp } from "../claudeMcpStartup.ts";
 import { classifyMcpOwnership } from "../mcpObservation.ts";
+import { leadingSlashCommandName } from "../nativeCommandInput.ts";
 import { mcpProviderReads, mcpContextKey } from "../../mcp/McpReadCoordinator.ts";
 import {
   assertMcpRuntimeConfig,
@@ -10005,6 +10006,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       previewClaudeFileRewind: (threadId, userMessageId) =>
         fileRewind(threadId, userMessageId, true),
       revertClaudeFiles: (threadId, userMessageId) => fileRewind(threadId, userMessageId, false),
+      // Claude Code recognizes slash commands only as the leading prompt text.
+      classifyTurnInput: (_threadId, text) =>
+        leadingSlashCommandName(text) !== undefined ? "native-command" : "prompt",
       startSession,
       sendTurn,
       steerTurn,

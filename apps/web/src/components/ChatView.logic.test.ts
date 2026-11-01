@@ -33,7 +33,36 @@ import {
   resolveAttachedFileReferencePaths,
   rewriteComposerRuntimeSkillInvocationForSend,
   shouldRenderTimelineContent,
+  resolveSubmissionIntent,
 } from "./ChatView.logic";
+
+describe("resolveSubmissionIntent", () => {
+  const base = {
+    bootstrap: false,
+    intent: undefined,
+    running: true,
+    followUpBehavior: "steer",
+    switchesProvider: false,
+  } as const;
+
+  it("auto-steers a running turn on the same provider", () => {
+    expect(resolveSubmissionIntent(base)).toBe("steer");
+    expect(resolveSubmissionIntent({ ...base, intent: "steer" })).toBe("steer");
+  });
+
+  it("never steers a send that switches providers into the old session", () => {
+    expect(resolveSubmissionIntent({ ...base, switchesProvider: true })).toBe("auto");
+    expect(resolveSubmissionIntent({ ...base, intent: "steer", switchesProvider: true })).toBe(
+      "queue-head",
+    );
+  });
+
+  it("keeps bootstrap, send-now and explicit queue intents", () => {
+    expect(resolveSubmissionIntent({ ...base, bootstrap: true, intent: "steer" })).toBe("auto");
+    expect(resolveSubmissionIntent({ ...base, intent: "send-now" })).toBe("queue-head");
+    expect(resolveSubmissionIntent({ ...base, intent: "queue-tail" })).toBe("queue-tail");
+  });
+});
 import { appendTerminalContextsToPrompt } from "../lib/terminalContext";
 
 function createProjectSkill(overrides: Partial<ProjectSkill> = {}): ProjectSkill {

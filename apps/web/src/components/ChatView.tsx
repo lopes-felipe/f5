@@ -32,6 +32,7 @@ import { getProviderModelCapabilities } from "../providerModels";
 import { OpenLinkThread } from "../hooks/useOpenLink";
 import { formatUsageLimits } from "../lib/usageLimits";
 import { useServerCapability } from "~/protocolState";
+import { hasHandoffableConversation } from "@t3tools/shared/conversationHandoff";
 import { describeTaskSync, ThreadTasksPanel } from "./chat/composer/ThreadTasksPanel";
 import {
   ComposerStatusStrip,
@@ -463,6 +464,7 @@ import {
   revokeComposerImagePreviewUrls,
   revokeUserMessagePreviewUrls,
   resolveThreadModelOptionsSeed,
+  resolveSubmissionIntent,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { ThreadDetailsLoadingState } from "./StartupLoadingState";
@@ -1485,16 +1487,37 @@ export default memo(function ChatView({
     activeThread && activeThread.session === null && !selectedProviderByThreadId
       ? (importedThreadProvider ?? inferProviderForModel(activeThread.model, "codex"))
       : null;
-  const lockedProvider: ProviderKind | null = hasThreadStarted
+  // A server that hands the conversation off lets a started thread switch
+  // providers; an older server keeps the started thread's provider locked.
+  const providerContextHandoff = useServerCapability("provider-context-handoff");
+  const providerLocked = hasThreadStarted && !providerContextHandoff;
+  /** The live session's instance; a send naming another one switches providers. */
+  const sessionInstanceId: ProviderInstanceId | null = activeThread?.session
+    ? (activeThread.session.providerInstanceId ??
+      defaultInstanceIdForDriver(ProviderDriverKind.make(activeThread.session.provider)))
+    : null;
+  const lockedProvider: ProviderKind | null = providerLocked
     ? (sessionProvider ??
       importedThreadProvider ??
       selectedProviderByThreadId ??
+      inferredThreadProvider)
+    : null;
+  // A started thread always requests its own instance, even when the session or
+  // an older thread never recorded one, so nothing falls back to another provider.
+  const startedThreadProvider = hasThreadStarted
+    ? (sessionProvider ??
+      selectedProviderByThreadId ??
+      importedThreadProvider ??
       inferredThreadProvider)
     : null;
   const requestedInstanceId =
     composerDraft.providerInstanceId ??
     activeThread?.session?.providerInstanceId ??
     activeThread?.modelSelection?.instanceId ??
+    sessionInstanceId ??
+    (startedThreadProvider
+      ? defaultInstanceIdForDriver(ProviderDriverKind.make(startedThreadProvider))
+      : undefined) ??
     activeProject?.defaultModelSelection?.instanceId;
   const selectedProviderEntry = useMemo(() => {
     const entries = deriveProviderInstanceEntries(providerStatuses);
@@ -1507,15 +1530,17 @@ export default memo(function ChatView({
     const preferred =
       selectedProviderByThreadId ?? (isServerThread ? inferredThreadProvider : null);
     return resolveComposerProviderInstance(entries, {
-      candidates: [hasThreadStarted ? lockedInstanceId : requestedInstanceId],
+      candidates: [providerLocked ? lockedInstanceId : requestedInstanceId],
       preferredDriver: preferred ? ProviderDriverKind.make(preferred) : undefined,
       lockedDriver: lockedProvider ? ProviderDriverKind.make(lockedProvider) : null,
-      lockedInstanceId: hasThreadStarted ? lockedInstanceId : undefined,
+      lockedInstanceId: providerLocked ? lockedInstanceId : undefined,
+      keepRequested: hasThreadStarted,
     });
   }, [
     providerStatuses,
     requestedInstanceId,
     lockedProvider,
+    providerLocked,
     hasThreadStarted,
     activeThread?.session?.providerInstanceId,
     activeThread?.modelSelection?.instanceId,
@@ -1526,6 +1551,7 @@ export default memo(function ChatView({
   const noProviderAvailable = selectedProviderEntry === undefined;
   const selectedProvider = (selectedProviderEntry?.driverKind ??
     lockedProvider ??
+    (hasThreadStarted ? (sessionProvider ?? importedThreadProvider) : null) ??
     selectedProviderByThreadId ??
     "codex") as ProviderKind;
   const selectedThreadTitleModel = resolveThreadTitleModel(settings);
@@ -1538,7 +1564,7 @@ export default memo(function ChatView({
     [selectedThreadTitleModel],
   );
   const providerSelectionChanged =
-    !hasThreadStarted &&
+    !providerLocked &&
     selectedProviderEntry !== undefined &&
     requestedInstanceId !== undefined &&
     requestedInstanceId !== selectedProviderEntry.instanceId;
@@ -2406,10 +2432,62 @@ export default memo(function ChatView({
     [activeLatestTurn, activeThread?.session, localDispatchStartedAt],
   );
   const isComposerApprovalState = activePendingApproval !== null;
+  // The next send switches provider instances; the server hands the conversation off.
+  const pendingProviderHandoff = useMemo(() => {
+    if (!providerContextHandoff || !activeThread || noProviderAvailable) return null;
+    if (!hasHandoffableConversation(activeThread.messages)) return null;
+    const fromInstanceId =
+      activeThread.session?.providerInstanceId ??
+      (activeThread.session
+        ? defaultInstanceIdForDriver(ProviderDriverKind.make(activeThread.session.provider))
+        : activeThread.modelSelection?.instanceId);
+    if (!fromInstanceId || fromInstanceId === selectedProviderInstanceId) return null;
+    const entries = deriveProviderInstanceEntries(providerStatuses);
+    const nameOf = (instanceId: ProviderInstanceId) =>
+      entries.find((entry) => entry.instanceId === instanceId)?.displayName ?? instanceId;
+    return {
+      from: { name: nameOf(fromInstanceId), model: activeThread.model ?? null },
+      to: { name: nameOf(selectedProviderInstanceId), model: selectedModel ?? null },
+    };
+  }, [
+    providerContextHandoff,
+    activeThread,
+    noProviderAvailable,
+    selectedProviderInstanceId,
+    selectedModel,
+    providerStatuses,
+  ]);
+  // A started thread keeps an unavailable selection rather than handing the
+  // conversation to a provider nobody picked; say why it cannot send.
+  const unavailableProviderSelection = useMemo(() => {
+    if (!providerContextHandoff || !hasThreadStarted || !noProviderAvailable) return null;
+    if (requestedInstanceId === undefined) return null;
+    const entry = deriveProviderInstanceEntries(providerStatuses).find(
+      (candidate) => candidate.instanceId === requestedInstanceId,
+    );
+    return {
+      name: entry?.displayName ?? requestedInstanceId,
+      reason: !entry
+        ? "It is no longer configured."
+        : !entry.enabled
+          ? "It is turned off in Settings."
+          : (entry.snapshot.unavailableReason ??
+            entry.snapshot.message ??
+            "It is not available right now."),
+    };
+  }, [
+    providerContextHandoff,
+    hasThreadStarted,
+    noProviderAvailable,
+    requestedInstanceId,
+    providerStatuses,
+  ]);
   const hasComposerHeader =
     isComposerApprovalState ||
     blockingUserInputs.length > 0 ||
-    (showPlanFollowUpPrompt && activeProposedPlan !== null);
+    (showPlanFollowUpPrompt && activeProposedPlan !== null) ||
+    pendingProviderHandoff !== null ||
+    unavailableProviderSelection !== null;
   const composerFooterHasWideActions = showPlanFollowUpPrompt || activePendingProgress !== null;
   const lastSyncedPendingInputRef = useRef<{
     requestId: string | null;
@@ -4172,16 +4250,16 @@ export default memo(function ChatView({
           .submit({
             submissionId: input.command.commandId,
             command: input.command,
-            intent: input.command.bootstrap
-              ? "auto"
-              : input.intent === "send-now"
-                ? "queue-head"
-                : input.intent === "steer" ||
-                    ((input.intent === undefined || input.intent === "auto") &&
-                      phase === "running" &&
-                      settings.followUpBehavior === "steer")
-                  ? "steer"
-                  : (input.intent ?? "auto"),
+            intent: resolveSubmissionIntent({
+              bootstrap: Boolean(input.command.bootstrap),
+              intent: input.intent,
+              running: phase === "running",
+              followUpBehavior: settings.followUpBehavior,
+              switchesProvider:
+                sessionInstanceId !== null &&
+                input.command.modelSelection !== undefined &&
+                input.command.modelSelection.instanceId !== sessionInstanceId,
+            }),
           })
           .then(async (submission) => {
             if (submission.disposition === "queued") {
@@ -4256,6 +4334,7 @@ export default memo(function ChatView({
       clearPendingTurnDispatch,
       recoveryEpoch,
       phase,
+      sessionInstanceId,
       settings.followUpBehavior,
       setStorePendingTurnDispatch,
       setThreadError,
@@ -6465,7 +6544,7 @@ export default memo(function ChatView({
         scheduleComposerFocus();
         return;
       }
-      if (hasThreadStarted && instanceId !== selectedProviderInstanceId) {
+      if (providerLocked && instanceId !== selectedProviderInstanceId) {
         scheduleComposerFocus();
         return;
       }
@@ -6482,7 +6561,7 @@ export default memo(function ChatView({
     [
       activeThread,
       composerDraft.modelOptions,
-      hasThreadStarted,
+      providerLocked,
       isPendingTurnDispatchBlocked,
       lockedProvider,
       modelOptionsByInstance,
@@ -7753,6 +7832,7 @@ export default memo(function ChatView({
     selectedModel,
     selectedModelForPickerWithCustomFallback,
     hasThreadStarted,
+    providerLocked,
     modelOptionsByInstance,
     isClaudeUltrathink,
     providerStatuses,
@@ -8295,6 +8375,8 @@ export default memo(function ChatView({
                       activeProject={activeProject}
                       resolvedTheme={resolvedTheme}
                       hasComposerHeader={hasComposerHeader}
+                      pendingProviderHandoff={pendingProviderHandoff}
+                      unavailableProviderSelection={unavailableProviderSelection}
                       isComposerFooterCompact={isComposerFooterCompact}
                       prompt={prompt}
                       mentions={composerDraft.mentions}

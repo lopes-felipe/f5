@@ -7,6 +7,10 @@ import {
 import { Effect, Layer, ManagedRuntime, Option, Scope, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
+import {
+  ProviderHandoffStateRepository,
+  type ProviderHandoffState,
+} from "../../persistence/Services/ProviderHandoffState.ts";
 import type { ProviderInstance } from "../../provider/ProviderDriver.ts";
 import { ProviderInstanceRegistry } from "../../provider/Services/ProviderInstanceRegistry.ts";
 import {
@@ -58,6 +62,7 @@ async function runCleanup(input: {
   readonly liveSession?: "stops" | "stuck";
   /** The instance shares its store with the user's CLI (no deleteNativeSession). */
   readonly sharedStore?: boolean;
+  readonly handoffStates?: ReadonlyArray<ProviderHandoffState>;
 }) {
   const deletions: Array<{ instanceId: string; sessionId: string }> = [];
   const events: string[] = [];
@@ -110,6 +115,15 @@ async function runCleanup(input: {
         } as never),
       ),
       Layer.provideMerge(
+        Layer.succeed(ProviderHandoffStateRepository, {
+          get: (threadId: ThreadId) =>
+            Effect.succeed(
+              input.handoffStates?.find((state) => state.threadId === threadId) ?? null,
+            ),
+          listAll: Effect.succeed(input.handoffStates ?? []),
+        } as never),
+      ),
+      Layer.provideMerge(
         Layer.succeed(ProviderInstanceRegistry, {
           getInstance: (id: ProviderInstanceId) =>
             Effect.succeed(id === INSTANCE ? instance : undefined),
@@ -129,6 +143,28 @@ async function runCleanup(input: {
   }
   lastEvents = events;
   return deletions;
+}
+
+function parkedState(threadId: string, sessionId: string): ProviderHandoffState {
+  return {
+    threadId: ThreadId.makeUnsafe(threadId),
+    pending: null,
+    parked: {
+      [INSTANCE]: {
+        provider: "claudeAgent",
+        providerInstanceId: INSTANCE,
+        resumeCursor: { resume: sessionId },
+        nativeIdentity: sessionId,
+        cwd: "/repo",
+        model: "opus",
+        lastSeenMessageId: "message" as never,
+        estimatedContextTokens: null,
+        parkedAt: "2026-10-08T00:00:00.000Z",
+      },
+    },
+    revision: 1,
+    updatedAt: "2026-10-08T00:00:00.000Z",
+  };
 }
 
 describe("claudeSessionIdOfBinding", () => {
@@ -211,6 +247,28 @@ describe("NativeSessionCleanupReactor", () => {
     });
     expect(lastEvents).toEqual(["stop"]);
     expect(result).toEqual([]);
+  });
+
+  it("deletes a Claude session parked by a provider switch", async () => {
+    const deletions = await runCleanup({
+      bindings: [binding("deleted", SESSION, "codex")],
+      deletedThreadIds: ["deleted"],
+      liveThreadIds: [],
+      events: [deletedEvent("deleted")],
+      handoffStates: [parkedState("deleted", OTHER_SESSION)],
+    });
+    expect(deletions).toEqual([{ instanceId: INSTANCE, sessionId: OTHER_SESSION }]);
+  });
+
+  it("skips a session another live thread keeps parked", async () => {
+    const deletions = await runCleanup({
+      bindings: [binding("deleted", SESSION)],
+      deletedThreadIds: ["deleted"],
+      liveThreadIds: ["fork"],
+      events: [deletedEvent("deleted")],
+      handoffStates: [parkedState("fork", SESSION)],
+    });
+    expect(deletions).toEqual([]);
   });
 
   it("never deletes from an instance whose store is shared with the user's CLI", async () => {

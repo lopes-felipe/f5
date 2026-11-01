@@ -1,4 +1,9 @@
-import { ThreadId, type ResolvedKeybindingsConfig } from "@t3tools/contracts";
+import {
+  defaultInstanceIdForDriver,
+  ProviderDriverKind,
+  ThreadId,
+  type ResolvedKeybindingsConfig,
+} from "@t3tools/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
@@ -6,6 +11,7 @@ import { useEffect, useRef } from "react";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { resolveShortcutBinding } from "../keybindings";
 import { isTerminalFocused } from "../lib/terminalFocus";
+import { hasServerCapability } from "../protocolState";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
 import {
   recordModelSelection,
@@ -23,10 +29,11 @@ const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
  * selection onto the composer draft for `threadId`, and re-record it so the
  * next invocation swaps back. Returns `true` when a swap happened.
  *
- * No-ops when the thread has already started and the previous MRU entry's
- * provider differs from the thread's locked provider — the server session is
- * bound to a single provider, so a cross-provider swap cannot be honored.
- * Mirrors the `lockedProvider` guard in `ChatView.onProviderModelSelect`.
+ * A cross-provider swap also moves the draft to that provider's default
+ * instance; the next send switches providers and the server hands the
+ * conversation off. Against a server without the `provider-context-handoff`
+ * capability a started thread stays on its provider, so the swap no-ops,
+ * mirroring the `lockedProvider` guard in `ChatView.onProviderModelSelect`.
  *
  * Exported for unit testing — the controller is a thin keydown wrapper over
  * this helper.
@@ -41,25 +48,28 @@ export function applyRecentModelSwap(threadId: ThreadId): boolean {
     return false;
   }
 
-  // Cross-provider swaps are forbidden once the thread has started. The
-  // session is pinned to one provider (codex vs claudeAgent) and cannot be
-  // hot-swapped. Keep `hasThreadStarted` / `lockedProvider` in sync with the
-  // derivation in `ChatView.tsx` (search: `lockedProvider: ProviderKind`).
+  // Keep `hasThreadStarted` / `providerLocked` in sync with the derivation in
+  // `ChatView.tsx` (search: `providerLocked`).
   const thread = useStore.getState().threads.find((t) => t.id === threadId) ?? null;
   const draft = useComposerDraftStore.getState().draftsByThreadId[threadId];
   const hasThreadStarted = Boolean(
     thread && (thread.latestTurn !== null || thread.messages.length > 0 || thread.session !== null),
   );
-  const lockedProvider = hasThreadStarted
-    ? (thread?.session?.provider ?? draft?.provider ?? null)
-    : null;
-  if (lockedProvider !== null && previous.provider !== lockedProvider) {
+  const currentProvider = thread?.session?.provider ?? draft?.provider ?? null;
+  const providerLocked = hasThreadStarted && !hasServerCapability("provider-context-handoff");
+  if (providerLocked && currentProvider !== null && previous.provider !== currentProvider) {
     return false;
   }
 
   const wrappedOptions = wrapProviderModelOptions(previous.provider, previous.options);
   const draftStore = useComposerDraftStore.getState();
   draftStore.setProvider(threadId, previous.provider);
+  // setProvider clears the draft's instance on a provider change; name the new one.
+  if (currentProvider !== null && previous.provider !== currentProvider)
+    draftStore.setProviderInstance(
+      threadId,
+      defaultInstanceIdForDriver(ProviderDriverKind.make(previous.provider)),
+    );
   draftStore.setModel(threadId, previous.model);
   draftStore.setModelOptions(threadId, wrappedOptions);
 

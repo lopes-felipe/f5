@@ -92,6 +92,18 @@ describe("usable provider defaults", () => {
     expect(
       resolveComposerProviderInstance(entries, { ...input, lockedDriver: codex.driver }),
     ).toBeUndefined();
+    // A started thread with context handoff keeps the request instead of handing
+    // the conversation to another provider.
+    expect(
+      resolveComposerProviderInstance(entries, { ...input, keepRequested: true }),
+    ).toBeUndefined();
+    expect(
+      resolveComposerProviderInstance(entries, {
+        ...input,
+        candidates: [undefined],
+        keepRequested: true,
+      })?.instanceId,
+    ).toBe(claude.instanceId);
     expect(
       resolveDefaultProviderModelSelection([disabled, claude], {
         instanceId: codex.instanceId,
