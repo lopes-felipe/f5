@@ -3,6 +3,7 @@ import {
   describeDynamicToolEntry,
   humanizeToolName,
   mcpServerMonogram,
+  parseJsonObject,
   summarizeToolInputPairs,
   timelineIsAtEnd,
 } from "./MessagesTimeline.logic";
@@ -52,6 +53,21 @@ describe("describeDynamicToolEntry", () => {
     );
   });
 
+  it("previews what an AskUserQuestion call asked", () => {
+    expect(
+      tool('AskUserQuestion: {"questions":[{"question":"Layout?"},{"question":"History?"}]}')
+        ?.preview,
+    ).toBe("Layout? · History?");
+    expect(tool('AskUserQuestion: {"questions":[{"question":"How should tile...')?.preview).toBe(
+      "How should tile...",
+    );
+  });
+
+  it("requires a space after the tool name's colon", () => {
+    expect(tool("https://example.com/path")).toBeNull();
+    expect(tool("C:\\Users\\me\\file.txt")).toBeNull();
+  });
+
   it("leaves named and non-generic rows alone", () => {
     expect(tool('Read: {"file_path":"a.ts"}', { toolTitle: "Read file" })).toBeNull();
     expect(tool("ToolSearch: x", { itemType: "mcp_tool_call" })).toBeNull();
@@ -64,6 +80,16 @@ describe("tool naming helpers", () => {
     expect(humanizeToolName("ToolSearch")).toBe("Tool search");
     expect(humanizeToolName("mcp__f5_thread__html_render")).toBe("Html render");
     expect(humanizeToolName("readMCPResource")).toBe("Read mcp resource");
+  });
+
+  it("refuses to parse JSON whose large integers would be rounded", () => {
+    expect(parseJsonObject('{"id":9007199254740993}')).toBeNull();
+    expect(parseJsonObject('{"id":-12345678901234567890}')).toBeNull();
+    expect(parseJsonObject('{"id":"9007199254740993","n":42}')).toEqual({
+      id: "9007199254740993",
+      n: 42,
+    });
+    expect(parseJsonObject('["not","an","object"]')).toBeNull();
   });
 
   it("builds MCP server monograms from up to two name segments", () => {

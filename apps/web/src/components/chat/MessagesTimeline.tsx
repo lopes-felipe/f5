@@ -8,6 +8,7 @@ import { computerToolHeading, previewToolHeading } from "@t3tools/shared/compute
 import {
   automationRunEnd,
   classifyAutomationEntry,
+  isAutomationEntryFailed,
   summarizeAutomationRun,
   type AutomationSurface,
 } from "./AutomationSessionCard.logic";
@@ -3326,8 +3327,8 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
   const hoverTitle = toolWorkEntryHeading(workEntry);
   const serverName = workEntry.mcpServerName;
   const toolName = workEntry.mcpToolName ?? formatMcpToolHeading(workEntry);
-  const failed =
-    workEntry.status === "failed" || workEntry.status === "declined" || workEntry.tone === "error";
+  // Matches automation step drawers: a declined call isn't a failure.
+  const failed = isAutomationEntryFailed(workEntry);
   const running = !failed && workEntry.status === "inProgress";
   const durationMs =
     workEntry.startedAt && !running
@@ -3374,13 +3375,21 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
         </span>
         <span className="flex shrink-0 items-center gap-2 text-2xs text-muted-foreground tabular-nums">
           {running ? (
-            <LoaderCircleIcon aria-label="Running" className="size-3.5 animate-spin text-info" />
+            <LoaderCircleIcon
+              role="img"
+              aria-label="Running"
+              className="size-3.5 animate-spin text-info"
+            />
           ) : failed ? (
-            <CircleXIcon aria-label="Failed" className="size-3.5 text-destructive" />
+            <CircleXIcon role="img" aria-label="Failed" className="size-3.5 text-destructive" />
           ) : workEntry.status === "completed" ? (
-            <CheckIcon aria-label="Completed" className="size-3.5 text-success" />
+            <CheckIcon role="img" aria-label="Completed" className="size-3.5 text-success" />
           ) : null}
-          {durationMs > 0 ? <span>{formatDuration(durationMs)}</span> : null}
+          {durationMs > 0 ? (
+            <span title="Since the call started, including input streaming and any approval wait">
+              {formatDuration(durationMs)}
+            </span>
+          ) : null}
           {props.timestamp}
           {hasNestedContent ? (
             <ChevronDownIcon
@@ -3871,7 +3880,7 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
       turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
       workspaceRoot={props.workspaceRoot}
       markdownCwd={props.markdownCwd}
-      timestamp={timestamp("shrink-0 pt-0.5")}
+      timestamp={timestamp("shrink-0")}
       onImageExpand={props.onImageExpand}
     />
   ) : (

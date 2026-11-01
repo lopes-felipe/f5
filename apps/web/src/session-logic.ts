@@ -1039,10 +1039,44 @@ function userInputAnswerPreview(answers: unknown): string {
     .join(" · ");
 }
 
+/**
+ * An unresolved request is open while the composer still offers it. Callers without that
+ * projection fall back to "it belongs to the latest turn".
+ */
+function isUserInputStillPending(
+  requestId: string,
+  turnId: TurnId | null,
+  latestTurnId: TurnId | undefined,
+  pendingRequestIds: ReadonlySet<string> | undefined,
+): boolean {
+  if (pendingRequestIds) return pendingRequestIds.has(requestId);
+  return (turnId ?? undefined) === latestTurnId;
+}
+
+/**
+ * A resolved row's card. Answers render as pills; a value-free receipt (Muse, Pi) still
+ * says whether the questions were answered. An indeterminate receipt, or a receipt
+ * following a resolution that already carried the answers, keeps its own row.
+ */
+function userInputResolution(
+  payload: Record<string, unknown> | null,
+  answeredRequestIds: ReadonlySet<string>,
+  questions: ReadonlyArray<UserInputQuestion>,
+): WorkLogUserInput | undefined {
+  const receipt = payload?.receipt;
+  if (receipt === undefined) return workLogUserInput(questions, payload?.answers, "unanswered");
+  if (receipt === "indeterminate") return undefined;
+  if (typeof payload?.requestId === "string" && answeredRequestIds.has(payload.requestId)) {
+    return undefined;
+  }
+  return workLogUserInput(questions, undefined, receipt === "resolved" ? "answered" : "unanswered");
+}
+
 function workLogUserInput(
   questions: ReadonlyArray<UserInputQuestion>,
   answers: unknown,
-  unansweredState: "pending" | "unanswered",
+  /** The state when no answer values are known. */
+  fallbackState: WorkLogUserInput["state"],
 ): WorkLogUserInput {
   const answerRecord =
     answers && typeof answers === "object" && !Array.isArray(answers)
@@ -1063,9 +1097,14 @@ function workLogUserInput(
     };
   });
   return {
-    state: items.some((item) => item.answers.length > 0) ? "answered" : unansweredState,
+    state: items.some((item) => item.answers.length > 0) ? "answered" : fallbackState,
     questions: items,
   };
+}
+
+function isFailedToolActivity(activity: OrchestrationThreadActivity): boolean {
+  const status = inferWorkLogStatus(activity, readToolActivityPayload(activity.payload)?.status);
+  return status === "failed" || status === "declined" || activity.tone === "error";
 }
 
 /** Claude's AskUserQuestion tool row repeats what the Q&A card already shows. */
@@ -1615,6 +1654,8 @@ export function deriveWorkLogEntries(
     readonly runtimeWarningVisibility?: RuntimeWarningVisibility;
     readonly mode?: WorkLogMode;
     readonly filter?: WorkLogFilter;
+    /** The requests the composer still offers; open Q&A cards follow it when given. */
+    readonly pendingUserInputRequestIds?: ReadonlySet<string>;
   },
 ): WorkLogEntry[] {
   const runtimeWarningVisibility = options?.runtimeWarningVisibility ?? "hidden";
@@ -1633,10 +1674,55 @@ export function deriveWorkLogEntries(
       terminalCodexProviderItemIds.add(providerCallKey(activity.turnId, payload.providerItemId));
     }
   }
+  const userInputQuestions = userInputQuestionsByRequestId(ordered);
+  const resolvedUserInputRequestIds = new Set<string>();
+  // Muse and Pi resolve with a value-free receipt; only these resolutions carry answers.
+  const answeredUserInputRequestIds = new Set<string>();
+  const questionRequestTurnIds = new Set<TurnId>();
+  // Most `tool.started` activities are filtered out below, so collect start times first.
+  const toolStartedAtByCallKey = new Map<string, string>();
+  const toolCallKeyByActivity = new Map<OrchestrationThreadActivity, string>();
+  for (const activity of ordered) {
+    if (activity.kind === "user-input.requested" || activity.kind === "user-input.resolved") {
+      const payload = workLogPayload(activity);
+      const requestId = typeof payload?.requestId === "string" ? payload.requestId : undefined;
+      if (!requestId) continue;
+      if (activity.kind === "user-input.requested") {
+        if (activity.turnId && userInputQuestions.has(requestId)) {
+          questionRequestTurnIds.add(activity.turnId);
+        }
+        continue;
+      }
+      resolvedUserInputRequestIds.add(requestId);
+      if (payload?.answers && typeof payload.answers === "object") {
+        answeredUserInputRequestIds.add(requestId);
+      }
+      continue;
+    }
+    if (!activity.kind.startsWith("tool.")) continue;
+    const providerItemId = readToolActivityPayload(activity.payload)?.providerItemId;
+    if (!providerItemId) continue;
+    const callKey = providerCallKey(activity.turnId, providerItemId);
+    toolCallKeyByActivity.set(activity, callKey);
+    const startedAt = toolStartedAtByCallKey.get(callKey);
+    if (!startedAt || activity.createdAt < startedAt) {
+      toolStartedAtByCallKey.set(callKey, activity.createdAt);
+    }
+  }
+  const isQuestionUserInputActivity = (activity: OrchestrationThreadActivity) => {
+    if (activity.kind !== "user-input.requested" && activity.kind !== "user-input.resolved") {
+      return false;
+    }
+    const requestId = workLogPayload(activity)?.requestId;
+    return typeof requestId === "string" && userInputQuestions.has(requestId);
+  };
   const retainedActivityIds = new Set(
     ordered
-      .filter((activity) =>
-        shouldKeepHistoricalWorkEntry(activity, latestTurnId, terminalCodexProviderItemIds),
+      .filter(
+        (activity) =>
+          shouldKeepHistoricalWorkEntry(activity, latestTurnId, terminalCodexProviderItemIds) ||
+          // Q&A cards stay in the timeline after their turn ends.
+          isQuestionUserInputActivity(activity),
       )
       .map((activity) => String(activity.id)),
   );
@@ -1659,26 +1745,6 @@ export function deriveWorkLogEntries(
       usageLimitRowByTurn.set(activity.turnId, activity);
     }
   }
-  const userInputQuestions = userInputQuestionsByRequestId(ordered);
-  const resolvedUserInputRequestIds = new Set<string>();
-  // Most `tool.started` activities are filtered out below, so collect start times first.
-  const toolStartedAtByProviderItemId = new Map<ProviderItemId, string>();
-  const toolProviderItemIdByActivity = new Map<OrchestrationThreadActivity, ProviderItemId>();
-  for (const activity of ordered) {
-    if (activity.kind === "user-input.resolved") {
-      const requestId = workLogPayload(activity)?.requestId;
-      if (typeof requestId === "string") resolvedUserInputRequestIds.add(requestId);
-      continue;
-    }
-    if (!activity.kind.startsWith("tool.")) continue;
-    const providerItemId = readToolActivityPayload(activity.payload)?.providerItemId;
-    if (!providerItemId) continue;
-    toolProviderItemIdByActivity.set(activity, providerItemId);
-    const startedAt = toolStartedAtByProviderItemId.get(providerItemId);
-    if (!startedAt || activity.createdAt < startedAt) {
-      toolStartedAtByProviderItemId.set(providerItemId, activity.createdAt);
-    }
-  }
   const entries = ordered
     .filter((activity) => {
       if (activity.kind === "user-input.requested") {
@@ -1690,7 +1756,13 @@ export function deriveWorkLogEntries(
           resolvedUserInputRequestIds.has(requestId)
         );
       }
-      return !isQuestionToolActivity(activity);
+      // A failed call, or one rejected before any question was asked, keeps its tool row.
+      return !(
+        isQuestionToolActivity(activity) &&
+        activity.turnId !== null &&
+        questionRequestTurnIds.has(activity.turnId) &&
+        !isFailedToolActivity(activity)
+      );
     })
     .filter(
       (activity) =>
@@ -1745,34 +1817,35 @@ export function deriveWorkLogEntries(
         typeof payload?.requestId === "string"
           ? userInputQuestions.get(payload.requestId)
           : undefined;
-      // Requested rows that reach here are unresolved: still open in the latest turn,
-      // abandoned in older ones. Elicitation receipts carry no answers and keep their row.
       const userInput = !questions
         ? undefined
         : activity.kind === "user-input.requested"
           ? workLogUserInput(
               questions,
               undefined,
-              (activity.turnId ?? undefined) === latestTurnId ? "pending" : "unanswered",
+              isUserInputStillPending(
+                String(payload?.requestId),
+                activity.turnId,
+                latestTurnId,
+                options?.pendingUserInputRequestIds,
+              )
+                ? "pending"
+                : "unanswered",
             )
-          : payload?.receipt === undefined
-            ? workLogUserInput(questions, payload?.answers, "unanswered")
-            : undefined;
+          : userInputResolution(payload, answeredUserInputRequestIds, questions);
       // "User input submitted" buries what was asked: lead with the question and keep the
       // answer as the row's detail.
       const answeredQuestion =
         activity.kind === "user-input.resolved" ? userInputQuestionText(questions) : "";
-      const toolProviderItemId = toolProviderItemIdByActivity.get(activity);
-      const toolStartedAt = toolProviderItemId
-        ? toolStartedAtByProviderItemId.get(toolProviderItemId)
-        : undefined;
+      const toolCallKey = toolCallKeyByActivity.get(activity);
+      const toolStartedAt = toolCallKey ? toolStartedAtByCallKey.get(toolCallKey) : undefined;
       const startedAt =
         toolStartedAt && toolStartedAt < activity.createdAt ? toolStartedAt : undefined;
       // Only these inputs depend on more than the activity itself.
       const cacheKey =
         activity.kind === "runtime.warning"
           ? runtimeWarningVisibility
-          : `${userInput ? JSON.stringify(userInput) : ""}|${startedAt ?? ""}`;
+          : JSON.stringify([userInput ?? null, answeredQuestion, startedAt ?? null]);
       const cached = workLogEntryByActivity.get(activity);
       if (cached?.cacheKey === cacheKey) {
         return cached.entry;

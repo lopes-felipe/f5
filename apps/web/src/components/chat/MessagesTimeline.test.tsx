@@ -1471,7 +1471,8 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain(">read_text_file</span>");
     expect(markup).toContain('data-testid="mcp-badge"');
     expect(markup).toContain('aria-label="Completed"');
-    expect(markup).toContain("<span>840ms</span>");
+    expect(markup).toContain('approval wait">840ms</span>');
+    expect(markup).toContain('role="img" aria-label="Completed"');
     expect(markup).toContain('data-testid="mcp-input-grid"');
     expect(markup).toContain(">path</dt>");
     expect(markup).toContain(">README.md</dd>");

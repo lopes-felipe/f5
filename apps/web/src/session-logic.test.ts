@@ -1204,6 +1204,111 @@ describe("deriveWorkLogEntries", () => {
       expect(abandoned.map((entry) => entry.userInput?.state)).toEqual(["unanswered"]);
     });
 
+    it("keeps prior-turn cards once a newer turn starts", () => {
+      const answered = deriveWorkLogEntries(
+        [requested(), resolved({ motion: "Linear" })],
+        TurnId.makeUnsafe("turn-3"),
+      );
+      expect(answered.map((entry) => [entry.id, entry.userInput?.state])).toEqual([
+        ["q-resolved", "answered"],
+      ]);
+
+      // The server closes a request still open at turn end as "dismissed", without answers.
+      const dismissed = deriveWorkLogEntries(
+        [
+          requested(),
+          makeActivity({
+            id: "q-dismissed",
+            createdAt: "2026-02-23T00:00:09.000Z",
+            turnId: "turn-2",
+            kind: "user-input.resolved",
+            summary: "User input dismissed because its turn ended",
+            tone: "info",
+            payload: { requestId: "req-q", resolution: "dismissed" },
+          }),
+        ],
+        TurnId.makeUnsafe("turn-3"),
+      );
+      expect(dismissed.map((entry) => [entry.id, entry.userInput?.state])).toEqual([
+        ["q-dismissed", "unanswered"],
+      ]);
+
+      const abandoned = deriveWorkLogEntries([requested()], TurnId.makeUnsafe("turn-3"));
+      expect(abandoned.map((entry) => entry.userInput?.state)).toEqual(["unanswered"]);
+    });
+
+    it("follows the composer's pending requests when they are given", () => {
+      const open = deriveWorkLogEntries([requested()], turn, {
+        pendingUserInputRequestIds: new Set(["req-q"]),
+      });
+      expect(open[0]?.userInput?.state).toBe("pending");
+      // The session stopped: the composer dropped the request without a resolved activity.
+      const stopped = deriveWorkLogEntries([requested()], turn, {
+        pendingUserInputRequestIds: new Set(),
+      });
+      expect(stopped[0]?.userInput?.state).toBe("unanswered");
+    });
+
+    it("reads value-free receipts as answered or not, keeping indeterminate rows", () => {
+      const receipt = (value: string) =>
+        makeActivity({
+          id: `q-receipt-${value}`,
+          createdAt: "2026-02-23T00:00:05.000Z",
+          turnId: "turn-2",
+          kind: "user-input.resolved",
+          summary: "Provider received the requested input",
+          tone: value === "indeterminate" ? "error" : "info",
+          payload: { requestId: "req-q", receipt: value },
+        });
+      const stateFor = (value: string) =>
+        deriveWorkLogEntries([requested(), receipt(value)], turn).map((entry) => [
+          entry.id,
+          entry.userInput?.state,
+        ]);
+      expect(stateFor("resolved")).toEqual([["q-receipt-resolved", "answered"]]);
+      expect(stateFor("cancelled")).toEqual([["q-receipt-cancelled", "unanswered"]]);
+      expect(stateFor("indeterminate")).toEqual([["q-receipt-indeterminate", undefined]]);
+    });
+
+    it("keeps a failed AskUserQuestion row and one with no matching request", () => {
+      const askTool = (id: string, turnId: string, status: string) =>
+        makeActivity({
+          id,
+          createdAt: turnId === "turn-4" ? "2026-02-23T00:01:00.000Z" : "2026-02-23T00:00:00.500Z",
+          turnId,
+          kind: "tool.completed",
+          tone: status === "failed" ? "error" : "tool",
+          payload: {
+            itemType: "dynamic_tool_call",
+            providerItemId: id,
+            status,
+            title: "Tool call",
+            detail: 'AskUserQuestion: {"questions":[{"question":"Too many?"}]}',
+          },
+        });
+      const entries = deriveWorkLogEntries(
+        [
+          askTool("ask-failed", "turn-2", "failed"),
+          askTool("ask-asked", "turn-2", "completed"),
+          requested(),
+          askTool("ask-rejected", "turn-4", "completed"),
+        ],
+        TurnId.makeUnsafe("turn-4"),
+      );
+      // turn-2's completed call is shown by its card; the failure and the
+      // request-less turn-4 call keep their rows.
+      expect(entries.map((entry) => entry.id)).toEqual(["q-requested", "ask-rejected"]);
+      const currentTurn = deriveWorkLogEntries(
+        [
+          askTool("ask-failed", "turn-2", "failed"),
+          askTool("ask-asked", "turn-2", "completed"),
+          requested(),
+        ],
+        turn,
+      );
+      expect(currentTurn.map((entry) => entry.id)).toEqual(["ask-failed", "q-requested"]);
+    });
+
     it("drops the AskUserQuestion tool row but keeps other generic tool calls", () => {
       const entries = deriveWorkLogEntries(
         [

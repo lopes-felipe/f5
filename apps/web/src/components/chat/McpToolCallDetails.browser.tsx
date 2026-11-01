@@ -53,6 +53,22 @@ describe("McpToolCallDetails", () => {
     }
   });
 
+  it("keeps the raw input when parsing would round a large integer", async () => {
+    const mcpInput = '{"accountId":9007199254740993}';
+    const screen = await render(
+      <McpToolCallDetails mcpInput={mcpInput} mcpResult={undefined} markdownCwd={undefined} />,
+    );
+    try {
+      await expect.element(page.getByText(mcpInput)).toBeVisible();
+      await page.getByRole("button", { name: "Copy input" }).click();
+      await vi.waitFor(() => {
+        expect(navigator.clipboard.writeText).toHaveBeenCalledWith(mcpInput);
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("caps a long result until it is expanded", async () => {
     const screen = await render(
       <McpToolCallDetails mcpInput="not json" mcpResult={longResult} markdownCwd={undefined} />,

@@ -1741,12 +1741,6 @@ function summarizeToolRequest(toolName: string, input: Record<string, unknown>):
     return `${toolName}: ${total} task${total === 1 ? "" : "s"}`;
   }
 
-  // The questions and answers reach the timeline through user-input activities.
-  if (toolName.toLowerCase() === "askuserquestion" && Array.isArray(input.questions)) {
-    const total = input.questions.length;
-    return `${toolName}: ${total} question${total === 1 ? "" : "s"}`;
-  }
-
   const filePath = fileOrientedToolDetail(toolName, input);
   if (filePath) return filePath;
 

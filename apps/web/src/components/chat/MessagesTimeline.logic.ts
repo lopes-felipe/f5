@@ -96,6 +96,7 @@ export function humanizeToolName(name: string): string {
 /** Input fields that say what a call is about, most telling first. */
 const DYNAMIC_TOOL_PREVIEW_KEYS = [
   "query",
+  "question",
   "url",
   "subject",
   "description",
@@ -140,10 +141,18 @@ export function summarizeToolInputPairs(
   return pairs.length > 0 ? pairs.join(" · ") : null;
 }
 
-/** A JSON object, or null when the text isn't one. */
+/**
+ * Integer literals past 2^53 lose digits in `JSON.parse`. Conservative: digit runs inside
+ * strings can match too, which only means the caller keeps the raw text.
+ */
+function hasUnsafeIntegerLiteral(text: string): boolean {
+  return /(?<![\w."])-?\d{16,}/.test(text);
+}
+
+/** A JSON object, or null when the text isn't one or parsing would round a large integer. */
 export function parseJsonObject(text: string | undefined): Record<string, unknown> | null {
   const trimmed = text?.trim();
-  if (!trimmed?.startsWith("{")) return null;
+  if (!trimmed?.startsWith("{") || hasUnsafeIntegerLiteral(trimmed)) return null;
   try {
     const parsed: unknown = JSON.parse(trimmed);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
@@ -166,6 +175,15 @@ function dynamicToolPreview(rest: string): string | null {
         return formatToolPreviewValue(key, value);
       }
     }
+    // AskUserQuestion: a failed call keeps its row, so say what it asked.
+    const questions = Array.isArray(input.questions)
+      ? input.questions
+          .map((item) =>
+            item && typeof item === "object" ? (item as { question?: unknown }).question : null,
+          )
+          .filter((text): text is string => typeof text === "string" && text.trim().length > 0)
+      : [];
+    if (questions.length > 0) return questions.map(collapsePreviewWhitespace).join(" · ");
     return summarizeToolInputPairs(input);
   }
   // The adapter cuts long inputs mid-JSON; read the telling fields out of the prefix.
@@ -222,7 +240,8 @@ export function describeDynamicToolEntry(
 ): DynamicToolDescription | null {
   if (workEntry.itemType !== "dynamic_tool_call" || !workEntry.detail) return null;
   if (normalizedWorkEntryHeading(workEntry).toLowerCase() !== "tool call") return null;
-  const match = /^([A-Za-z][\w.-]*):\s*([\s\S]*)$/.exec(workEntry.detail.trim());
+  // The space after the colon keeps URLs ("https://…") and drive paths ("C:\…") out.
+  const match = /^([A-Za-z][\w.-]*):\s+([\s\S]*)$/.exec(workEntry.detail.trim());
   const toolName = match?.[1];
   if (!toolName) return null;
   return {
