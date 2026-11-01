@@ -9,6 +9,12 @@ function endpointLabel(endpoint: ProviderHandoffEndpoint): string {
   return endpoint.model ? `${endpoint.name} · ${endpoint.model}` : endpoint.name;
 }
 
+/** Server reasons are free text; end them as a sentence before the fixed one. */
+function asSentence(text: string): string {
+  const trimmed = text.trim();
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
 /** Tells the user the next send switches providers and hands the conversation off. */
 export const ComposerProviderHandoffBanner = memo(function ComposerProviderHandoffBanner({
   from,
@@ -56,7 +62,7 @@ export const ComposerProviderUnavailableBanner = memo(function ComposerProviderU
         <span className="min-w-0 flex-1 truncate text-sm font-medium">{name} is unavailable</span>
       </div>
       <div className="mt-1 text-xs text-muted-foreground">
-        {reason} Pick another provider to hand the conversation off to it.
+        {asSentence(reason)} Pick another provider to hand the conversation off to it.
       </div>
     </div>
   );
