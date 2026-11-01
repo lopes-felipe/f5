@@ -3811,7 +3811,11 @@ export function makeUpstreamPortsService(
         LEFT JOIN upstream_port_outcome_checks c
           ON c.project_id = l.project_id AND c.thread_id = l.thread_id
         WHERE l.state = 'active' AND (c.result IS NULL OR c.result != 'preexisting')`.pipe(
-        Effect.orDie,
+        Effect.catch((error) =>
+          Effect.logWarning("upstreamPorts.startup.recoveryScan.failed", {
+            detail: describe(error),
+          }).pipe(Effect.as([] as Array<{ project_id: string }>)),
+        ),
       );
       for (const project of recoveryProjects) yield* wakePortQueue(project.project_id);
       yield* wakePortQueue();
