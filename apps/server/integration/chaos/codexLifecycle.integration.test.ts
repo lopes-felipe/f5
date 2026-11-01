@@ -12,6 +12,7 @@ import {
 } from "../OrchestrationEngineHarness.integration.ts";
 import { makeClientTransport } from "./transport.ts";
 import { connectStoreClient } from "./client.ts";
+import { chaosTimeout } from "./timeouts.ts";
 
 it.live(
   "desktop stdio output converges after interruption and provider source shutdown",
@@ -105,5 +106,5 @@ it.live(
         ),
       ),
     ),
-  30_000,
+  chaosTimeout(30_000),
 );
