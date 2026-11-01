@@ -80,6 +80,26 @@ export function resolveSubmissionIntent(input: {
   return input.intent ?? "auto";
 }
 
+/**
+ * Whether `/review` runs as Codex's native review on the live session. Not when
+ * another provider instance is selected: that send switches providers, and the
+ * review must not run on the session being left.
+ */
+export function shouldRunNativeReviewShortcut(input: {
+  readonly prompt: string;
+  readonly sessionProvider: string;
+  readonly sessionInstanceId: string | null;
+  readonly selectedInstanceId: string;
+  readonly nativeReviewSupported: boolean;
+}): boolean {
+  return (
+    /^\/review(?:\s|$)/.test(input.prompt.trim()) &&
+    input.sessionProvider === "codex" &&
+    input.sessionInstanceId === input.selectedInstanceId &&
+    input.nativeReviewSupported
+  );
+}
+
 export function shouldRenderTimelineContent(input: {
   detailsLoaded: boolean;
   hasRenderableMessage: boolean;

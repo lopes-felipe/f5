@@ -34,7 +34,30 @@ import {
   rewriteComposerRuntimeSkillInvocationForSend,
   shouldRenderTimelineContent,
   resolveSubmissionIntent,
+  shouldRunNativeReviewShortcut,
 } from "./ChatView.logic";
+
+describe("shouldRunNativeReviewShortcut", () => {
+  const base = {
+    prompt: "/review current diff",
+    sessionProvider: "codex",
+    sessionInstanceId: "codex",
+    selectedInstanceId: "codex",
+    nativeReviewSupported: true,
+  };
+
+  it("runs on the live Codex session it was typed for", () => {
+    expect(shouldRunNativeReviewShortcut(base)).toBe(true);
+    expect(shouldRunNativeReviewShortcut({ ...base, prompt: "/reviewer" })).toBe(false);
+    expect(shouldRunNativeReviewShortcut({ ...base, nativeReviewSupported: false })).toBe(false);
+  });
+
+  it("never runs on the outgoing session when another provider is selected", () => {
+    expect(shouldRunNativeReviewShortcut({ ...base, selectedInstanceId: "claudeAgent" })).toBe(
+      false,
+    );
+  });
+});
 
 describe("resolveSubmissionIntent", () => {
   const base = {

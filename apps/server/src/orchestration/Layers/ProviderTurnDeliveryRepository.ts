@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { OrchestrationEvent, OrchestrationUsageLimit, TurnId } from "@t3tools/contracts";
+import {
+  type CommandId,
+  OrchestrationEvent,
+  OrchestrationUsageLimit,
+  TurnId,
+} from "@t3tools/contracts";
 import { Effect, Layer, Schema, Struct } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -334,24 +339,33 @@ const make = Effect.gen(function* () {
                   AND d.handoff_json IS NOT NULL
                   AND json_extract(d.handoff_json, '$.disposition') = 'consumed'
                   AND json_extract(d.handoff_json, '$.id') = json_extract(provider_handoff_state.pending_json, '$.id'))`;
-          // Settled handoff bodies beyond the newest few keep only their manifest.
-          yield* sql`UPDATE provider_turn_deliveries
-            SET handoff_json = json_set(handoff_json, '$.block', json('null'))
-            WHERE rowid IN (
-              SELECT d.rowid FROM provider_turn_deliveries AS d
-              WHERE d.thread_id = (SELECT thread_id FROM provider_turn_deliveries WHERE delivery_id = ${input.deliveryId})
-                AND d.state IN ('accepted', 'abandoned')
-                AND d.handoff_json IS NOT NULL
-                AND json_extract(d.handoff_json, '$.block') IS NOT NULL
-              ORDER BY d.updated_at DESC, d.rowid DESC
-              LIMIT -1 OFFSET ${DELIVERY_HANDOFF_BODY_RETENTION})`;
+          yield* trimHandoffBodies(input.deliveryId);
           return true;
         }),
       )
       .pipe(Effect.mapError(mapError("ProviderTurnDelivery.markAccepted")));
 
+  /**
+   * Settled handoff bodies beyond the newest few on the thread keep only their
+   * manifest. A retried rejected or ambiguous delivery rebuilds a trimmed body.
+   */
+  const trimHandoffBodies = (deliveryId: CommandId) =>
+    sql`UPDATE provider_turn_deliveries
+      SET handoff_json = json_set(handoff_json, '$.block', json('null'))
+      WHERE rowid IN (
+        SELECT d.rowid FROM provider_turn_deliveries AS d
+        WHERE d.thread_id = (SELECT thread_id FROM provider_turn_deliveries WHERE delivery_id = ${deliveryId})
+          AND d.state IN ('accepted', 'abandoned', 'rejected', 'ambiguous')
+          AND d.handoff_json IS NOT NULL
+          AND json_extract(d.handoff_json, '$.block') IS NOT NULL
+        ORDER BY d.updated_at DESC, d.rowid DESC
+        LIMIT -1 OFFSET ${DELIVERY_HANDOFF_BODY_RETENTION})`;
+
   const markRejected: ProviderTurnDeliveryRepositoryShape["markRejected"] = (input) =>
-    sql`
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const rows = yield* sql`
       UPDATE provider_turn_deliveries
       SET state = ${input.ambiguous ? "ambiguous" : "rejected"},
           error_code = ${input.errorCode}, error_detail = ${input.errorDetail},
@@ -361,10 +375,13 @@ const make = Effect.gen(function* () {
       WHERE delivery_id = ${input.deliveryId} AND state = 'sending'
         AND (${input.attemptId ?? null} IS NULL OR attempt_id = ${input.attemptId ?? null})
       RETURNING delivery_id
-    `.pipe(
-      Effect.map((rows) => rows.length > 0),
-      Effect.mapError(mapError("ProviderTurnDelivery.markRejected")),
-    );
+    `;
+          if (rows.length === 0) return false;
+          yield* trimHandoffBodies(input.deliveryId);
+          return true;
+        }),
+      )
+      .pipe(Effect.mapError(mapError("ProviderTurnDelivery.markRejected")));
 
   const requeue: ProviderTurnDeliveryRepositoryShape["requeue"] = (input) =>
     sql`

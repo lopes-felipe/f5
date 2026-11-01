@@ -425,6 +425,23 @@ function hasNonterminalNativeGoal(thread: OrchestrationThread): boolean {
 }
 
 /** Every message and detail along an error's cause chain. */
+/**
+ * Instructions without the restored compaction summary and preserved
+ * transcripts. Those are unbounded and overlap the handoff block, which carries
+ * the same history within the target's budget.
+ */
+function withoutRestoredHistory(
+  context: Partial<SharedInstructionInput>,
+): Partial<SharedInstructionInput> {
+  const {
+    priorWorkSummary: _summary,
+    preservedTranscriptBefore: _before,
+    preservedTranscriptAfter: _after,
+    ...rest
+  } = context;
+  return rest;
+}
+
 function errorText(error: unknown): string {
   const parts: string[] = [];
   const seen = new Set<unknown>();
@@ -652,9 +669,14 @@ const make = Effect.gen(function* () {
       );
   });
 
-  /** Bookkeeping after a handoff reached the provider; failures never fail the turn. */
+  /**
+   * Bookkeeping after a handoff reached the provider; failures never fail the turn.
+   * Every failure here errs towards sending history again rather than losing it:
+   * an ambiguous delivery or a lost marker clear leaves the marker for the next turn.
+   */
   const recordHandoffDelivered = (input: {
     readonly threadId: ThreadId;
+    readonly deliveryId: CommandId | undefined;
     readonly handoff: DeliveryHandoff;
     /** False when no durable delivery cleared the marker with the receipt. */
     readonly consumedWithReceipt: boolean;
@@ -663,14 +685,23 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const { handoff } = input;
       if (!input.consumedWithReceipt && Option.isSome(handoffStates)) {
-        const state = yield* handoffStates.value.get(input.threadId);
-        if (state?.pending?.id === handoff.id)
-          yield* handoffStates.value.compareAndSet({
+        const repository = handoffStates.value;
+        const clear = Effect.gen(function* () {
+          const state = yield* repository.get(input.threadId);
+          if (state?.pending?.id !== handoff.id) return true;
+          const cleared = yield* repository.compareAndSet({
             threadId: input.threadId,
             expectedRevision: state.revision,
             pending: null,
             parked: state.parked,
           });
+          return cleared !== null;
+        });
+        if (!((yield* clear) || (yield* clear)))
+          yield* Effect.logWarning(
+            "provider command reactor could not clear a delivered handoff marker; the next turn hands off again",
+            { threadId: input.threadId, handoffId: handoff.id },
+          );
       }
       const from = handoffEndpointLabel(handoff.fromProvider as ProviderKind, handoff.fromModel);
       const to = handoffEndpointLabel(handoff.toProvider as ProviderKind, handoff.toModel);
@@ -679,7 +710,11 @@ const make = Effect.gen(function* () {
         commandId: serverCommandId("provider-context-handoff"),
         threadId: input.threadId,
         activity: {
-          id: EventId.makeUnsafe(`provider-handoff:${handoff.id}`),
+          // One activity per delivery: a marker an ambiguous delivery kept can be
+          // delivered again by a later turn.
+          id: EventId.makeUnsafe(
+            `provider-handoff:${handoff.id}:${input.deliveryId ?? crypto.randomUUID()}`,
+          ),
           tone: "info",
           kind: PROVIDER_CONTEXT_HANDOFF_ACTIVITY_KIND,
           summary:
@@ -737,10 +772,12 @@ const make = Effect.gen(function* () {
       const { handoff } = input;
       if (Option.isNone(handoffStates)) return yield* Effect.fail(input.error);
       const repository = handoffStates.value;
+      let dropped: ParkedNativeSession | undefined;
       const promote = Effect.gen(function* () {
         const state = yield* repository.get(input.threadId);
         if (state?.pending?.id !== handoff.id) return false;
         const parked = { ...state.parked };
+        dropped = parked[handoff.toInstanceId];
         delete parked[handoff.toInstanceId];
         const written = yield* repository.compareAndSet({
           threadId: input.threadId,
@@ -757,6 +794,23 @@ const make = Effect.gen(function* () {
       });
       const ready = yield* Effect.gen(function* () {
         if (!((yield* promote) || (yield* promote))) return false;
+        // The session that could not resume, and any parked one, are unreachable now.
+        const unresumable = yield* providerSessionDirectory
+          .getBinding(input.threadId)
+          .pipe(Effect.map(Option.getOrUndefined));
+        yield* retireNativeSessions(input.threadId, [
+          ...(dropped ? [dropped] : []),
+          ...(unresumable
+            ? [
+                {
+                  provider: unresumable.provider,
+                  providerInstanceId:
+                    unresumable.providerInstanceId ?? (handoff.toInstanceId as ProviderInstanceId),
+                  resumeCursor: unresumable.resumeCursor,
+                },
+              ]
+            : []),
+        ]);
         yield* providerService.stopSession({ threadId: input.threadId }).pipe(
           Effect.catch((cause) =>
             Effect.logWarning("provider handoff fallback could not stop the unresumable session", {
@@ -792,9 +846,48 @@ const make = Effect.gen(function* () {
       return yield* new ProviderTurnDeliveryError({
         certainty: "not_sent",
         retryable: true,
-        detail: `${handoffEndpointLabel(handoff.toProvider as ProviderKind, handoff.toModel)} could not resume its earlier session, so this message was not sent. The next attempt starts a fresh session with the full conversation.`,
+        detail: `${handoffEndpointLabel(handoff.toProvider as ProviderKind, handoff.toModel)} could not resume its earlier session, so this message was not sent. Retrying it starts a fresh session with the full conversation.`,
       });
     });
+
+  /**
+   * Records native sessions a switch discarded without resuming, so deleting the
+   * thread still removes their transcripts. Best effort: never fails the turn.
+   */
+  const retireNativeSessions = (
+    threadId: ThreadId,
+    sessions: ReadonlyArray<{
+      readonly provider: ProviderKind;
+      readonly providerInstanceId: ProviderInstanceId;
+      readonly resumeCursor: unknown;
+    }>,
+  ) => {
+    const retired = sessions.filter(
+      (session) => session.resumeCursor !== undefined && session.resumeCursor !== null,
+    );
+    if (Option.isNone(handoffStates) || retired.length === 0) return Effect.void;
+    const retiredAt = new Date().toISOString();
+    return handoffStates.value
+      .retire({
+        threadId,
+        sessions: retired.map((session) => ({
+          provider: session.provider,
+          providerInstanceId: session.providerInstanceId,
+          resumeCursor: session.resumeCursor,
+          retiredAt,
+        })),
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : Effect.logWarning("provider switch could not record a discarded native session", {
+                threadId,
+                cause: Cause.pretty(cause),
+              }),
+        ),
+      );
+  };
 
   const setThreadSession = (input: {
     readonly threadId: ThreadId;
@@ -1158,10 +1251,17 @@ const make = Effect.gen(function* () {
       const startProviderSession = (input?: {
         readonly resumeCursor?: unknown;
         readonly provider?: ProviderKind;
-        /** A handoff carries the conversation; never summarize it a second time. */
-        readonly skipNativeRecovery?: boolean;
+        /**
+         * The session's first turn carries a context handoff, which delivers the
+         * conversation within its own budget: never summarize it a second time, and
+         * never restore the compaction summary and transcripts next to it.
+         */
+        readonly carriesHandoff?: boolean;
       }) => {
         const providerForStart = input?.provider ?? preferredProvider;
+        const startInstructionContext = input?.carriesHandoff
+          ? withoutRestoredHistory(instructionContext)
+          : instructionContext;
 
         return Effect.gen(function* () {
           yield* Effect.annotateCurrentSpan({
@@ -1187,7 +1287,7 @@ const make = Effect.gen(function* () {
               }),
           });
           const needsNativeRecovery =
-            input?.skipNativeRecovery !== true &&
+            input?.carriesHandoff !== true &&
             thread.compaction?.kind === "native" &&
             instructionContext.priorWorkSummary === undefined;
           const recoverSummary = () =>
@@ -1247,7 +1347,7 @@ const make = Effect.gen(function* () {
             projectId: thread.projectId,
             ...(providerForStart ? { provider: providerForStart } : {}),
             ...(preferredInstanceId ? { providerInstanceId: preferredInstanceId } : {}),
-            ...instructionContext,
+            ...startInstructionContext,
             ...(recoverySummary ? { priorWorkSummary: recoverySummary } : {}),
             ...(desiredModel ? { model: desiredModel } : {}),
             ...(options?.modelSelection !== undefined
@@ -1378,25 +1478,46 @@ const make = Effect.gen(function* () {
         });
 
         let parkedForStart: ParkedNativeSession | undefined;
+        let discardedByPrewrite: Array<{
+          readonly provider: ProviderKind;
+          readonly providerInstanceId: ProviderInstanceId;
+          readonly resumeCursor: unknown;
+        }> = [];
         const pendingId = crypto.randomUUID();
         const prewrite = Effect.gen(function* () {
           const state = yield* repository.get(threadId);
           const parked: Record<string, ParkedNativeSession> = { ...state?.parked };
           const previous = state?.pending ?? null;
+          const outgoingSession = {
+            provider: input.outgoingProvider,
+            providerInstanceId: input.outgoingInstanceId,
+            resumeCursor: outgoingCursor,
+          };
+          const previouslyParked = parked[input.outgoingInstanceId];
+          discardedByPrewrite = [];
           if (previous?.mode === "full" && previous.targetInstanceId === input.outgoingInstanceId) {
             // The outgoing session never received the history it was switched in for.
             delete parked[input.outgoingInstanceId];
+            discardedByPrewrite = [
+              outgoingSession,
+              ...(previouslyParked ? [previouslyParked] : []),
+            ];
           } else {
             const lastSeen =
               previous?.mode === "delta" && previous.targetInstanceId === input.outgoingInstanceId
                 ? previous.sinceMessageId
                 : (lastHandoffable?.id ?? null);
-            if (
+            const parkable =
               outgoingCursor !== undefined &&
               outgoingCursor !== null &&
               outgoingIdentity !== undefined &&
-              lastSeen !== null
-            )
+              lastSeen !== null;
+            // Parking replaces an older session of the same instance, or leaves the
+            // outgoing one unreachable when it cannot be parked.
+            if (previouslyParked && previouslyParked.nativeIdentity !== outgoingIdentity)
+              discardedByPrewrite.push(previouslyParked);
+            if (!parkable) discardedByPrewrite.push(outgoingSession);
+            if (parkable)
               parked[input.outgoingInstanceId] = {
                 provider: input.outgoingProvider,
                 providerInstanceId: input.outgoingInstanceId,
@@ -1423,7 +1544,6 @@ const make = Effect.gen(function* () {
                   mode: "delta",
                   sinceMessageId: candidate.lastSeenMessageId,
                   excludeMessageId: input.messageId,
-                  targetConsumesResumedContext: false,
                 }).messages,
               ),
               userTextChars: input.userText.length,
@@ -1454,19 +1574,24 @@ const make = Effect.gen(function* () {
           return yield* providerSwitchRefused(
             "Another change to this thread raced the provider switch. Try again.",
           );
+        yield* retireNativeSessions(threadId, discardedByPrewrite);
 
         const dropParked = (instanceId: ProviderInstanceId) =>
           Effect.gen(function* () {
             const state = yield* repository.get(threadId);
-            if (!state?.parked[instanceId]) return;
+            const dropped = state?.parked[instanceId];
+            if (!state || !dropped) return;
             const parked = { ...state.parked };
             delete parked[instanceId];
-            yield* repository.compareAndSet({
-              threadId,
-              expectedRevision: state.revision,
-              pending: state.pending,
-              parked,
-            });
+            if (
+              yield* repository.compareAndSet({
+                threadId,
+                expectedRevision: state.revision,
+                pending: state.pending,
+                parked,
+              })
+            )
+              yield* retireNativeSessions(threadId, [dropped]);
           }).pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("provider switch could not drop an unresumable parked session", {
@@ -1479,7 +1604,7 @@ const make = Effect.gen(function* () {
         const startTarget = (resumeCursor?: unknown) =>
           startProviderSession({
             provider: input.targetProvider,
-            skipNativeRecovery: true,
+            carriesHandoff: true,
             ...(resumeCursor !== undefined ? { resumeCursor } : {}),
           });
         const resumeFrom = parkedForStart;
@@ -1507,6 +1632,9 @@ const make = Effect.gen(function* () {
           const state = yield* repository.get(threadId);
           if (!state?.pending || state.pending.id !== pendingId) return true;
           const parked = { ...state.parked };
+          // The started session replaces this slot; unless it resumed it, the
+          // parked session is unreachable from now on.
+          const replaced = resumed ? undefined : parked[startedInstanceId];
           delete parked[startedInstanceId];
           const finalized = yield* repository.compareAndSet({
             threadId,
@@ -1520,6 +1648,7 @@ const make = Effect.gen(function* () {
             },
             parked,
           });
+          if (finalized !== null && replaced) yield* retireNativeSessions(threadId, [replaced]);
           return finalized !== null;
         });
         // The pre-written full marker already delivers the history if this fails.
@@ -1558,6 +1687,15 @@ const make = Effect.gen(function* () {
       const targetInstanceId =
         preferredInstanceId ??
         (preferredProvider ? defaultInstanceForProvider(preferredProvider) : undefined);
+      // A start for the instance a pending handoff targets (such as the retry after a
+      // resume fallback) carries that handoff, whichever path it takes.
+      const startCarriesHandoff =
+        targetInstanceId !== undefined && Option.isSome(handoffStates)
+          ? yield* handoffStates.value.get(threadId).pipe(
+              Effect.map((state) => state?.pending?.targetInstanceId === targetInstanceId),
+              Effect.catch(() => Effect.succeed(false)),
+            )
+          : false;
       const handoffRequest = options?.handoff;
       if (
         handoffRequest !== undefined &&
@@ -1748,6 +1886,7 @@ const make = Effect.gen(function* () {
         const restartedSession = yield* startProviderSession({
           ...(resumeCursor !== undefined ? { resumeCursor } : {}),
           ...(requestedProvider !== undefined ? { provider: requestedProvider } : {}),
+          ...(startCarriesHandoff ? { carriesHandoff: true } : {}),
         });
         yield* Effect.logInfo("provider command reactor restarted provider session", {
           threadId,
@@ -1761,7 +1900,11 @@ const make = Effect.gen(function* () {
         const contextResetReason =
           resumeCursorDropReason ??
           (resumeCursor === undefined ? "missing-resume-cursor" : undefined);
-        if (contextResetReason !== undefined && hasPriorConversationContext(thread)) {
+        if (
+          contextResetReason !== undefined &&
+          !startCarriesHandoff &&
+          hasPriorConversationContext(thread)
+        ) {
           yield* appendProviderContextResetActivity({
             threadId,
             provider: restartedSession.provider,
@@ -1808,11 +1951,13 @@ const make = Effect.gen(function* () {
         ...(resumeCursorForStoppedSession !== undefined
           ? { resumeCursor: resumeCursorForStoppedSession }
           : {}),
+        ...(startCarriesHandoff ? { carriesHandoff: true } : {}),
       });
       yield* bindSessionToThread(startedSession);
       yield* recordEffectiveStartConfig();
       if (
         resumeCursorForStoppedSession === undefined &&
+        !startCarriesHandoff &&
         persistedBinding !== undefined &&
         hasPriorConversationContext(thread)
       ) {
@@ -1909,6 +2054,7 @@ const make = Effect.gen(function* () {
     if (handoff?.disposition === "consumed")
       yield* recordHandoffDelivered({
         threadId: input.threadId,
+        deliveryId: input.deliveryId,
         handoff,
         consumedWithReceipt,
         createdAt: new Date().toISOString(),
@@ -1982,7 +2128,16 @@ const make = Effect.gen(function* () {
         // A retry resends identical bytes only while they are still right: the same
         // marker, and a delta only for the session it was prepared for. Otherwise the
         // earlier attempt was not sent, so its payload is rebuilt for the session now.
-        if (stored.id === pending.id && (stored.effectiveMode === "full" || deltaStillValid))
+        // Retention keeps only the manifest of older bodies; a trimmed one is rebuilt.
+        const bodyTrimmed =
+          stored.disposition === "consumed" &&
+          stored.block === null &&
+          (stored.includedCount > 0 || stored.summaryIncluded);
+        if (
+          stored.id === pending.id &&
+          !bodyTrimmed &&
+          (stored.effectiveMode === "full" || deltaStillValid)
+        )
           return { handoff: stored, input: compose(stored), durable };
         replaceStored = true;
       }
@@ -2049,8 +2204,6 @@ const make = Effect.gen(function* () {
         mode: requestedMode,
         sinceMessageId: pending.sinceMessageId,
         excludeMessageId: input.messageId,
-        targetConsumesResumedContext:
-          activeSession.provider === "codex" || activeSession.provider === "claudeAgent",
         evictedFirstUserMessage,
       });
       const images = input.attachments.filter((attachment) => attachment.type === "image").length;
@@ -2068,6 +2221,7 @@ const make = Effect.gen(function* () {
           otherAttachmentCount: input.attachments.length - images,
         }),
         participants: { fromLabel: handoffEndpointLabel(pending.fromProvider, pending.fromModel) },
+        targetProvider: activeSession.provider,
       });
       const nothingToHandOff = source.messages.length === 0 && source.summary === null;
       // Sending the request alone would silently drop the conversation, and a later
@@ -2280,17 +2434,20 @@ const make = Effect.gen(function* () {
       );
     // Re-read under the turn gate: the session start may have rewound or
     // reconciled the thread, and the handoff must describe what it is now.
-    const handoffThread =
-      input.messageId !== undefined && normalizedInput && activeSession
-        ? yield* resolveThread(input.threadId)
-        : undefined;
+    // An attachment-only turn carries a pending handoff too: otherwise the target
+    // gets no history, and a later turn hands it its own reply as another agent's.
+    const handoffEligible =
+      input.messageId !== undefined &&
+      activeSession !== undefined &&
+      (normalizedInput !== undefined || normalizedAttachments.length > 0);
+    const handoffThread = handoffEligible ? yield* resolveThread(input.threadId) : undefined;
     const prepared =
-      handoffThread && input.messageId !== undefined && normalizedInput && activeSession
+      handoffThread && input.messageId !== undefined && activeSession
         ? yield* prepareHandoffForTurn({
             thread: handoffThread,
             messageId: input.messageId,
             deliveryId: input.deliveryId,
-            userText: normalizedInput,
+            userText: normalizedInput ?? "",
             mcpAppContext,
             attachments: normalizedAttachments,
             activeSession,

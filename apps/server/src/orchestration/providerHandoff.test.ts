@@ -61,7 +61,6 @@ describe("selectHandoffSource", () => {
       mode: "full",
       sinceMessageId: null,
       excludeMessageId: "u3",
-      targetConsumesResumedContext: false,
     });
     expect(selected.effectiveMode).toBe("full");
     expect(selected.messages.map((entry) => entry.id)).toEqual(["u1", "a1", "u2"]);
@@ -73,7 +72,6 @@ describe("selectHandoffSource", () => {
       mode: "delta",
       sinceMessageId: "a1",
       excludeMessageId: "u3",
-      targetConsumesResumedContext: false,
     });
     expect(delta.effectiveMode).toBe("delta");
     expect(delta.messages.map((entry) => entry.id)).toEqual(["u2"]);
@@ -83,7 +81,6 @@ describe("selectHandoffSource", () => {
       mode: "delta",
       sinceMessageId: "rewound-away",
       excludeMessageId: "u3",
-      targetConsumesResumedContext: false,
     });
     expect(degraded.effectiveMode).toBe("full");
     expect(degraded.messages.map((entry) => entry.id)).toEqual(["u1", "a1", "u2"]);
@@ -95,7 +92,6 @@ describe("selectHandoffSource", () => {
       mode: "delta",
       sinceMessageId: "u1",
       excludeMessageId: "u3",
-      targetConsumesResumedContext: false,
     });
     expect(selected.messages.map((entry) => entry.id)).toEqual(["a1", "u2"]);
   });
@@ -106,7 +102,6 @@ describe("selectHandoffSource", () => {
       mode: "full",
       sinceMessageId: null,
       excludeMessageId: "u3",
-      targetConsumesResumedContext: false,
       evictedFirstUserMessage: message("u0", "user", "very first", 0),
     });
     expect(selected.messages.map((entry) => entry.id)).toEqual(["u0", "a1", "u2"]);
@@ -133,27 +128,12 @@ describe("selectHandoffSource", () => {
       toTurnCount: null,
     });
 
-    it("sends only post-compaction messages to Codex and Claude", () => {
-      for (const direction of ["from", "up_to"] as const) {
-        const selected = selectHandoffSource({
-          thread: thread(messages, compaction(direction)),
-          mode: "full",
-          sinceMessageId: null,
-          excludeMessageId: null,
-          targetConsumesResumedContext: true,
-        });
-        expect(selected.summary).toBeNull();
-        expect(selected.messages.map((entry) => entry.id)).toEqual(["u3"]);
-      }
-    });
-
-    it("sends the summary plus every uncovered message to other targets", () => {
+    it("sends the summary plus every uncovered message to any target", () => {
       const until = selectHandoffSource({
         thread: thread(messages, compaction("up_to")),
         mode: "full",
         sinceMessageId: null,
         excludeMessageId: null,
-        targetConsumesResumedContext: false,
       });
       expect(until.summary).toBe("SUMMARY");
       expect(until.messages.map((entry) => entry.id)).toEqual(["a2", "u3"]);
@@ -163,7 +143,6 @@ describe("selectHandoffSource", () => {
         mode: "full",
         sinceMessageId: null,
         excludeMessageId: null,
-        targetConsumesResumedContext: false,
       });
       expect(from.messages.map((entry) => entry.id)).toEqual(["u1", "a1", "u3"]);
     });
@@ -344,6 +323,20 @@ describe("renderProviderHandoff", () => {
         participants,
       }).delivered,
     ).toBe(false);
+  });
+
+  it("checks the input limit on what Claude is sent after an Ultrathink keyword", () => {
+    const userText = `Ultrathink: ${"q".repeat(116_000)}`;
+    const rendered = renderProviderHandoff({
+      source: source([message("u1", "user", "x".repeat(2_000), 1)]),
+      userText,
+      allowanceChars: 32_000,
+      participants,
+      targetProvider: "claudeAgent",
+    });
+    expect(rendered.delivered).toBe(true);
+    expect(rendered.input.startsWith("Ultrathink:\n<f5-context-handoff v1>")).toBe(true);
+    expect(rendered.input.trim().length).toBeLessThanOrEqual(120_000);
   });
 
   it("renders the delta sentence", () => {

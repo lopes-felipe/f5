@@ -7,6 +7,7 @@ import {
   ParkedNativeSession,
   PendingProviderHandoff,
   ProviderHandoffStateRepository,
+  RetiredNativeSession,
   type ParkedNativeSessions,
   type ProviderHandoffState,
   type ProviderHandoffStateRepositoryShape,
@@ -16,12 +17,14 @@ interface Row {
   readonly threadId: string;
   readonly pendingJson: string | null;
   readonly parkedJson: string;
+  readonly retiredJson: string | null;
   readonly revision: number;
   readonly updatedAt: string;
 }
 
 const decodePending = Schema.decodeUnknownOption(PendingProviderHandoff);
 const decodeParked = Schema.decodeUnknownOption(ParkedNativeSession);
+const decodeRetired = Schema.decodeUnknownOption(RetiredNativeSession);
 
 function parseJson(text: string | null): unknown {
   if (text === null) return null;
@@ -36,6 +39,7 @@ function parseJson(text: string | null): unknown {
 export function decodeProviderHandoffStateRow(row: Row): ProviderHandoffState {
   const pendingRaw = parseJson(row.pendingJson);
   const parkedRaw = parseJson(row.parkedJson);
+  const retiredRaw = parseJson(row.retiredJson);
   const parked: Record<string, ParkedNativeSession> = {};
   if (parkedRaw && typeof parkedRaw === "object" && !Array.isArray(parkedRaw)) {
     for (const [instanceId, entry] of Object.entries(parkedRaw)) {
@@ -44,10 +48,14 @@ export function decodeProviderHandoffStateRow(row: Row): ProviderHandoffState {
         parked[instanceId] = decoded.value;
     }
   }
+  const retired = Array.isArray(retiredRaw)
+    ? retiredRaw.flatMap((entry) => Option.toArray(decodeRetired(entry)))
+    : [];
   return {
     threadId: ThreadId.makeUnsafe(row.threadId),
     pending: pendingRaw === null ? null : Option.getOrNull(decodePending(pendingRaw)),
     parked,
+    retired,
     revision: Number(row.revision),
     updatedAt: row.updatedAt,
   };
@@ -65,7 +73,7 @@ const make = Effect.gen(function* () {
 
   const get: ProviderHandoffStateRepositoryShape["get"] = (threadId) =>
     sql<Row>`SELECT thread_id AS "threadId", pending_json AS "pendingJson",
-        parked_json AS "parkedJson", revision, updated_at AS "updatedAt"
+        parked_json AS "parkedJson", retired_json AS "retiredJson", revision, updated_at AS "updatedAt"
       FROM provider_handoff_state WHERE thread_id = ${threadId}`.pipe(
       Effect.map((rows) => (rows[0] ? decodeProviderHandoffStateRow(rows[0]) : null)),
       Effect.mapError(mapError("ProviderHandoffState.get")),
@@ -81,18 +89,28 @@ const make = Effect.gen(function* () {
             VALUES (${input.threadId}, ${pendingJson}, ${parkedJson}, 1, ${now})
             ON CONFLICT(thread_id) DO NOTHING
             RETURNING thread_id AS "threadId", pending_json AS "pendingJson",
-              parked_json AS "parkedJson", revision, updated_at AS "updatedAt"`
+              parked_json AS "parkedJson", retired_json AS "retiredJson", revision, updated_at AS "updatedAt"`
         : sql<Row>`UPDATE provider_handoff_state
             SET pending_json = ${pendingJson}, parked_json = ${parkedJson},
                 revision = revision + 1, updated_at = ${now}
             WHERE thread_id = ${input.threadId} AND revision = ${input.expectedRevision}
             RETURNING thread_id AS "threadId", pending_json AS "pendingJson",
-              parked_json AS "parkedJson", revision, updated_at AS "updatedAt"`;
+              parked_json AS "parkedJson", retired_json AS "retiredJson", revision, updated_at AS "updatedAt"`;
     return write.pipe(
       Effect.map((rows) => (rows[0] ? decodeProviderHandoffStateRow(rows[0]) : null)),
       Effect.mapError(mapError("ProviderHandoffState.compareAndSet")),
     );
   };
+
+  const retire: ProviderHandoffStateRepositoryShape["retire"] = (input) =>
+    Effect.forEach(
+      input.sessions,
+      (session) =>
+        sql`UPDATE provider_handoff_state
+          SET retired_json = json_insert(COALESCE(retired_json, '[]'), '$[#]', json(${JSON.stringify(session)}))
+          WHERE thread_id = ${input.threadId}`,
+      { discard: true },
+    ).pipe(Effect.mapError(mapError("ProviderHandoffState.retire")));
 
   const deleteByThreadId: ProviderHandoffStateRepositoryShape["deleteByThreadId"] = (threadId) =>
     sql`DELETE FROM provider_handoff_state WHERE thread_id = ${threadId}`.pipe(
@@ -102,7 +120,7 @@ const make = Effect.gen(function* () {
 
   const listAll: ProviderHandoffStateRepositoryShape["listAll"] = sql<Row>`
     SELECT thread_id AS "threadId", pending_json AS "pendingJson",
-      parked_json AS "parkedJson", revision, updated_at AS "updatedAt"
+      parked_json AS "parkedJson", retired_json AS "retiredJson", revision, updated_at AS "updatedAt"
     FROM provider_handoff_state`.pipe(
     Effect.map((rows) => rows.map(decodeProviderHandoffStateRow)),
     Effect.mapError(mapError("ProviderHandoffState.listAll")),
@@ -111,6 +129,7 @@ const make = Effect.gen(function* () {
   return {
     get,
     compareAndSet,
+    retire,
     deleteByThreadId,
     listAll,
   } satisfies ProviderHandoffStateRepositoryShape;

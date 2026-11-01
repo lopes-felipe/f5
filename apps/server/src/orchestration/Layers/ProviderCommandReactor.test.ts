@@ -23,6 +23,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
+  type ChatAttachment,
   CommandId,
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_NEW_THREAD_TITLE,
@@ -817,7 +818,7 @@ describe("ProviderCommandReactor", () => {
             getInstance: (instanceId: ProviderInstanceId) =>
               Effect.succeed({
                 instanceId,
-                enabled: true,
+                enabled: !instanceId.startsWith("disabled"),
                 driverKind: ProviderDriverKind.make(
                   instanceId.startsWith("claude")
                     ? "claudeAgent"
@@ -1009,6 +1010,11 @@ describe("ProviderCommandReactor", () => {
           >,
         ),
       /** Releases accepted turn reservations, as their completed provider turns would. */
+      /** Runs a statement against the harness database (handoff harness only). */
+      withSql: <A, E>(use: (sql: SqlClient.SqlClient) => Effect.Effect<A, E>) =>
+        runtime.runPromise(
+          Effect.flatMap(Effect.service(SqlClient.SqlClient), use) as Effect.Effect<A, E>,
+        ),
       completeAcceptedTurns: () =>
         runtime.runPromise(
           Effect.flatMap(
@@ -5734,6 +5740,7 @@ describe("ProviderCommandReactor", () => {
         readonly text: string;
         readonly selection: { readonly instanceId: ProviderInstanceId; readonly model: string };
         readonly durable?: boolean;
+        readonly attachments?: ReadonlyArray<ChatAttachment>;
       },
     ) {
       if (!input.durable) return deliver(harness, await commit(harness, input));
@@ -5746,6 +5753,7 @@ describe("ProviderCommandReactor", () => {
         readonly id: string;
         readonly text: string;
         readonly selection: { readonly instanceId: ProviderInstanceId; readonly model: string };
+        readonly attachments?: ReadonlyArray<ChatAttachment>;
       },
     ) {
       const createdAt = nextAt();
@@ -5758,7 +5766,7 @@ describe("ProviderCommandReactor", () => {
             messageId: asMessageId(`message-${input.id}`),
             role: "user",
             text: input.text,
-            attachments: [],
+            attachments: [...(input.attachments ?? [])],
           },
           modelSelection: input.selection,
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -6057,6 +6065,133 @@ describe("ProviderCommandReactor", () => {
       expect(harness.startSession).toHaveBeenCalledTimes(1);
     });
 
+    it.each([
+      [
+        "a provider operation is running",
+        (sql: SqlClient.SqlClient) =>
+          sql`INSERT INTO native_operations (operation_id, thread_id, generation, state, record_json, created_at, updated_at)
+            VALUES ('op-1', ${threadId}, 1, 'running', '{}', ${nextAt()}, ${nextAt()})`,
+        true,
+      ],
+      [
+        "a rewind is in progress",
+        (sql: SqlClient.SqlClient) =>
+          sql`INSERT INTO rewind_operations (operation_id, thread_id, target_message_id, provider_session_id, mode, expected_revision, state, relative_count, retained_count, boundary_json, draft_json, created_at, updated_at)
+            VALUES ('rw-1', ${threadId}, 'message-c1', 's', 'conversation', 1, 'prepared', 0, 0, '{}', '{}', ${nextAt()}, ${nextAt()})`,
+        true,
+      ],
+    ])("refuses a switch while %s", async (_label, seed, retryable) => {
+      const harness = await claudeConversation();
+      await harness.withSql(seed);
+      const exit = await turn(harness, { id: "x1", text: "Switch now.", selection: codex });
+      expect(exit._tag).toBe("Failure");
+      if (exit._tag === "Failure")
+        expect(Cause.squash(exit.cause)).toMatchObject({ certainty: "not_sent", retryable });
+      expect(harness.startSession).toHaveBeenCalledTimes(1);
+      expect(await harness.readHandoffState(threadId)).toBeNull();
+    });
+
+    it("refuses a switch while the provider's goal is still active", async () => {
+      const harness = await claudeConversation();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.makeUnsafe("native-goal"),
+          threadId,
+          activity: {
+            id: EventId.makeUnsafe("native-goal"),
+            tone: "info",
+            kind: "native.metadata",
+            summary: "Goal",
+            payload: { nativeGoal: { status: "active" } },
+            turnId: null,
+            createdAt: nextAt(),
+          },
+          createdAt: nextAt(),
+        }),
+      );
+      const exit = await turn(harness, { id: "x1", text: "Switch now.", selection: codex });
+      expect(exit._tag).toBe("Failure");
+      if (exit._tag === "Failure")
+        expect(Cause.squash(exit.cause)).toMatchObject({ certainty: "not_sent", retryable: true });
+      expect(harness.startSession).toHaveBeenCalledTimes(1);
+    });
+
+    it("refuses a switch to a disabled instance for good", async () => {
+      const harness = await claudeConversation();
+      const exit = await turn(harness, {
+        id: "x1",
+        text: "Switch now.",
+        selection: {
+          instanceId: ProviderInstanceId.makeUnsafe("disabled-codex"),
+          model: codex.model,
+        },
+      });
+      expect(exit._tag).toBe("Failure");
+      if (exit._tag === "Failure")
+        expect(Cause.squash(exit.cause)).toMatchObject({ certainty: "not_sent", retryable: false });
+      expect(harness.startSession).toHaveBeenCalledTimes(1);
+    });
+
+    it("hands the conversation off on an attachment-only switch", async () => {
+      const harness = await claudeConversation();
+      const at = nextAt();
+      await harness.withSql(
+        (sql) =>
+          sql`INSERT INTO attachments (attachment_id, thread_id, type, name, mime_type, size_bytes, content_hash, staging_path, final_path, lifecycle, created_at, updated_at)
+            VALUES ('shot-1', ${threadId}, 'image', 'shot.png', 'image/png', 10, 'hash', NULL, '/not/resolvable', 'ready', ${at}, ${at})`,
+      );
+      const exit = await turn(harness, {
+        id: "x1",
+        text: "",
+        selection: codex,
+        attachments: [
+          { type: "image", id: "shot-1", name: "shot.png", mimeType: "image/png", sizeBytes: 10 },
+        ],
+      });
+      expect(exit._tag).toBe("Success");
+      const input = sentInput(harness, 1);
+      expect(input.startsWith("<f5-context-handoff v1>")).toBe(true);
+      expect(input).toContain("Remember: always indent with tabs.");
+      expect(input.endsWith("</f5-context-handoff>")).toBe(true);
+      expect((await harness.readHandoffState(threadId))?.pending).toBeNull();
+    });
+
+    it("never restores compaction context next to the handoff, which carries the summary", async () => {
+      const harness = await claudeConversation();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.compacted.record",
+          commandId: CommandId.makeUnsafe("summary-compaction"),
+          threadId,
+          compaction: {
+            kind: "summary",
+            summary: "EARLIER WORK SUMMARY",
+            trigger: "manual",
+            estimatedTokens: 100,
+            modelContextWindowTokens: 200000,
+            createdAt: nextAt(),
+            direction: "up_to",
+            pivotMessageId: asMessageId("message-c1"),
+            fromTurnCount: null,
+            toTurnCount: null,
+          },
+          createdAt: nextAt(),
+        }),
+      );
+      expect((await turn(harness, { id: "x1", text: "Continue.", selection: codex }))._tag).toBe(
+        "Success",
+      );
+      const start = harness.startSession.mock.calls[1]?.[1] as Record<string, unknown>;
+      expect(start).not.toHaveProperty("priorWorkSummary");
+      expect(start).not.toHaveProperty("preservedTranscriptBefore");
+      expect(start).not.toHaveProperty("preservedTranscriptAfter");
+      const input = sentInput(harness, 1);
+      expect(input.split("EARLIER WORK SUMMARY").length).toBe(2);
+      expect(input.split("Continue.").length).toBe(2);
+      expect(harness.runOneOffPrompt).not.toHaveBeenCalled();
+    });
+
     it("never switches instances on a selection refresh; the next turn hands off", async () => {
       const harness = await claudeConversation();
       await Effect.runPromise(
@@ -6175,6 +6310,11 @@ describe("ProviderCommandReactor", () => {
         expect(retried).toContain("Rename the helper.");
         expect(await storedHandoff(harness, "c2")).toMatchObject({ effectiveMode: "full" });
         expect((await harness.readHandoffState(threadId))?.pending).toBeNull();
+        expect(
+          (await activities(harness)).some(
+            (activity) => activity.summary === "Session context reset",
+          ),
+        ).toBe(false);
       });
 
       it("falls back to a full handoff when the provider rejects the resume at send time", async () => {
@@ -6219,6 +6359,20 @@ describe("ProviderCommandReactor", () => {
         expect(retried).toContain("handled by another agent (Codex");
         expect(retried).toContain("Remember: always indent with tabs.");
         expect((await harness.readHandoffState(threadId))?.pending).toBeNull();
+        // The retry starts a session that carries the handoff: no false context-reset
+        // warning, and no second summary of the conversation.
+        expect(
+          (await activities(harness)).some(
+            (activity) => activity.summary === "Session context reset",
+          ),
+        ).toBe(false);
+        expect(harness.runOneOffPrompt).not.toHaveBeenCalled();
+        // The session that could not resume is recorded for cleanup with the thread.
+        expect(
+          (await harness.readHandoffState(threadId))?.retired.some(
+            (session) => session.provider === "claudeAgent",
+          ),
+        ).toBe(true);
       });
     });
   });

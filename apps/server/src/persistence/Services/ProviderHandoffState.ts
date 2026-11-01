@@ -47,10 +47,23 @@ export type ParkedNativeSession = typeof ParkedNativeSession.Type;
 /** Parked sessions keyed by exact provider instance id. */
 export type ParkedNativeSessions = Readonly<Record<string, ParkedNativeSession>>;
 
+/**
+ * A native session discarded without being resumed. Its transcript is no longer
+ * reachable from the thread, so thread deletion cleans it up with the rest.
+ */
+export const RetiredNativeSession = Schema.Struct({
+  provider: ProviderKind,
+  providerInstanceId: ProviderInstanceId,
+  resumeCursor: Schema.Unknown,
+  retiredAt: Schema.String,
+});
+export type RetiredNativeSession = typeof RetiredNativeSession.Type;
+
 export interface ProviderHandoffState {
   readonly threadId: ThreadId;
   readonly pending: PendingProviderHandoff | null;
   readonly parked: ParkedNativeSessions;
+  readonly retired: ReadonlyArray<RetiredNativeSession>;
   readonly revision: number;
   readonly updatedAt: string;
 }
@@ -72,6 +85,14 @@ export interface ProviderHandoffStateRepositoryShape {
     readonly pending: PendingProviderHandoff | null;
     readonly parked: ParkedNativeSessions;
   }) => Effect.Effect<ProviderHandoffState | null, ProviderHandoffStateRepositoryError>;
+  /**
+   * Appends discarded sessions to an existing row. Outside the revision fence:
+   * it never races the pending marker or the parked sessions.
+   */
+  readonly retire: (input: {
+    readonly threadId: ThreadId;
+    readonly sessions: ReadonlyArray<RetiredNativeSession>;
+  }) => Effect.Effect<void, ProviderHandoffStateRepositoryError>;
   readonly deleteByThreadId: (
     threadId: ThreadId,
   ) => Effect.Effect<void, ProviderHandoffStateRepositoryError>;

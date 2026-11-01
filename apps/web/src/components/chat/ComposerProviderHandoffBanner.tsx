@@ -18,7 +18,11 @@ export const ComposerProviderHandoffBanner = memo(function ComposerProviderHando
   to: ProviderHandoffEndpoint;
 }) {
   return (
-    <div className="px-4 py-3.5 sm:px-5 sm:py-4" data-testid="composer-provider-handoff">
+    <div
+      role="status"
+      className="px-4 py-3.5 sm:px-5 sm:py-4"
+      data-testid="composer-provider-handoff"
+    >
       <div className="flex flex-wrap items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-sm font-medium">
           Switching to {endpointLabel(to)}
@@ -43,7 +47,11 @@ export const ComposerProviderUnavailableBanner = memo(function ComposerProviderU
   reason: string;
 }) {
   return (
-    <div className="px-4 py-3.5 sm:px-5 sm:py-4" data-testid="composer-provider-unavailable">
+    <div
+      role="status"
+      className="px-4 py-3.5 sm:px-5 sm:py-4"
+      data-testid="composer-provider-unavailable"
+    >
       <div className="flex flex-wrap items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-sm font-medium">{name} is unavailable</span>
       </div>

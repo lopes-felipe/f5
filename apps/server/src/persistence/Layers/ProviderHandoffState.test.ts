@@ -234,8 +234,8 @@ layer("markAccepted handoff consumption", (it) => {
           VALUES (${`old-${index}`}, ${threadId}, ${`old-${index}`}, ${`old-message-${index}`}, ${state}, '{}',
             ${JSON.stringify(handoff(`old-${index}`, "consumed"))}, ${at}, ${at},
             ${`2026-09-01T00:00:${String(index).padStart(2, "0")}.000Z`})`;
-      for (let index = 0; index < 22; index += 1) yield* settled(index, "accepted");
-      yield* settled(22, "ambiguous");
+      yield* settled(0, "ambiguous");
+      for (let index = 1; index <= 22; index += 1) yield* settled(index, "accepted");
       const { deliveryId, attemptId } = yield* insertClaimedDelivery(threadId, "retention");
       yield* deliveries.recordHandoff({ deliveryId, attemptId, handoff: handoff("h", "consumed") });
       yield* deliveries.markAccepted({
@@ -247,10 +247,26 @@ layer("markAccepted handoff consumption", (it) => {
         SELECT delivery_id AS "id", state, json_extract(handoff_json, '$.block') IS NOT NULL AS "hasBody"
         FROM provider_turn_deliveries WHERE thread_id = ${threadId}`;
       assert.equal(rows.filter((row) => row.state === "accepted" && row.hasBody).length, 20);
-      // The newest delivery keeps its body; an ambiguous one is never cleared.
+      // The newest delivery keeps its body; an old ambiguous one is trimmed like the rest.
       assert.isTrue(rows.some((row) => row.id === deliveryId && row.hasBody));
-      assert.isTrue(rows.some((row) => row.state === "ambiguous" && row.hasBody));
+      assert.isTrue(rows.some((row) => row.state === "ambiguous" && !row.hasBody));
       assert.equal(rows.filter((row) => row.state === "accepted" && !row.hasBody).length, 3);
+
+      // A rejection trims the same way, once the accepted turn finished.
+      yield* sql`UPDATE provider_turn_deliveries SET reservation_released_at = ${at} WHERE delivery_id = ${deliveryId}`;
+      const rejected = yield* insertClaimedDelivery(threadId, "retention-rejected");
+      yield* deliveries.recordHandoff({ ...rejected, handoff: handoff("r", "consumed") });
+      yield* deliveries.markRejected({
+        ...rejected,
+        errorCode: "failed",
+        errorDetail: "failed",
+        certainty: "not_sent",
+        ambiguous: false,
+      });
+      const afterRejection = yield* sql<{ hasBody: number }>`
+        SELECT json_extract(handoff_json, '$.block') IS NOT NULL AS "hasBody"
+        FROM provider_turn_deliveries WHERE thread_id = ${threadId}`;
+      assert.equal(afterRejection.filter((row) => row.hasBody).length, 20);
     }),
   );
 });

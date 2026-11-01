@@ -47,7 +47,8 @@ with it:
   messages in front of your message, once. Long threads are trimmed to fit the new model's context
   window. F5 keeps the latest exchange and your first message, fills the rest newest first, and
   shortens very long messages in the middle. The transcript states how many messages it left out.
-  Where the thread was compacted, the compaction summary stands in for the older messages.
+  Where the thread was compacted, the compaction summary stands in for the older messages, inside
+  the same budget.
 - **Switching back.** F5 keeps the session you left. When you return to that provider, it resumes
   the session and sends only the messages since you left. If the session cannot be resumed, or F5
   cannot confirm it is the same session, the provider starts fresh with the full transcript instead.
@@ -62,14 +63,17 @@ with it:
 
 F5 refuses the switch, and the message stays unsent, while an approval or question is waiting, a
 provider goal or rewind is in progress, or background work is still running. It also refuses when
-the message is a provider command such as `/compact`, because the command would run without the
-conversation; send an ordinary message first. A message that starts with a path such as
-`/Users/me/app.ts` is not a command. A message so long that no history fits beside it is not sent;
-shorten it or remove attachments.
+the message starts with a command for the new provider, such as `/compact`, because the command
+would run without the conversation; send an ordinary message first. Codex takes no such commands. A message that starts with a path
+such as `/Users/me/app.ts` is not a command. A message so long that no history fits beside it is
+not sent; shorten it or remove attachments. A message with only attachments carries the transcript
+like any other.
 
 If the thread's selected provider is turned off or unavailable, the composer says so and sending
 waits; F5 does not move the conversation to another provider. Switching models within the same
-provider needs none of this. The thread records each handoff as an activity.
+provider instance needs none of this, but switching between two instances of one provider, such as
+two Codex accounts, hands the conversation off the same way. The thread records each handoff as an
+activity.
 
 ## Panels
 

@@ -32,6 +32,8 @@ const HANDOFF_ATTACHMENT_TOKENS = 4_096;
 /** A message is cut to fit only while at least this much of it would remain. */
 const HANDOFF_MIN_FITTED_CHARS = 1_000;
 const CHARS_PER_TOKEN = 4;
+/** Each entry follows an empty spacer line: two newlines when joined. */
+const ENTRY_SEPARATOR_CHARS = 2;
 
 export type ProviderHandoffMode = "full" | "delta";
 
@@ -57,8 +59,6 @@ export function selectHandoffSource(input: {
   readonly sinceMessageId: string | null;
   /** The submission being delivered; it follows the block as the live request. */
   readonly excludeMessageId: string | null;
-  /** Codex and Claude already receive the compaction summary and preserved transcripts. */
-  readonly targetConsumesResumedContext: boolean;
   /** The thread's first user message when the read model evicted it. */
   readonly evictedFirstUserMessage?: HandoffMessage | null;
 }): HandoffSource {
@@ -85,18 +85,13 @@ export function selectHandoffSource(input: {
       direction: compaction.direction,
       pivotMessageId: compaction.pivotMessageId,
     });
+    // A handoff target never receives the restored compaction context, so the
+    // summary travels in the block, within its budget, for every provider.
     const covered = new Set(
       range.compactedMessages
         .filter((message) => message.createdAt <= compaction.createdAt)
         .map((message) => message.id),
     );
-    if (input.targetConsumesResumedContext) {
-      return {
-        effectiveMode: "full",
-        messages: all.filter((message) => message.createdAt > compaction.createdAt),
-        summary: null,
-      };
-    }
     return {
       effectiveMode: "full",
       messages: all.filter((message) => !covered.has(message.id)),
@@ -233,6 +228,8 @@ export function renderProviderHandoff(input: {
   readonly userText: string;
   readonly allowanceChars: number;
   readonly participants: HandoffParticipants;
+  /** The receiving provider; the input limit is checked on what it is sent. */
+  readonly targetProvider?: string;
   readonly maxInputChars?: number;
 }): RenderedHandoff {
   const rendered = renderWithinBudget(input, true);
@@ -265,7 +262,7 @@ function renderWithinBudget(
   if (includeSummary && input.source.summary !== null) {
     const cap = Math.min(HANDOFF_SUMMARY_MAX_CHARS, Math.floor(input.allowanceChars / 3));
     const candidate = truncateForHandoff(input.source.summary.trim(), cap);
-    const cost = renderSummaryEntry(candidate).length + 1;
+    const cost = renderSummaryEntry(candidate).length + ENTRY_SEPARATOR_CHARS;
     if (candidate.length > 0 && cost <= remaining) {
       summary = candidate;
       remaining -= cost;
@@ -277,7 +274,7 @@ function renderWithinBudget(
   for (const message of priority) {
     const text = stripContextHandoffBlocks(message.text).trim();
     const capped = truncateForHandoff(text, HANDOFF_MESSAGE_MAX_CHARS);
-    const cost = renderMessageEntry(message, capped).length + 1;
+    const cost = renderMessageEntry(message, capped).length + ENTRY_SEPARATOR_CHARS;
     if (cost <= remaining) {
       selected.set(message.id, capped);
       remaining -= cost;
@@ -287,7 +284,7 @@ function renderWithinBudget(
     const fitted = remaining - overhead;
     if (fitted >= HANDOFF_MIN_FITTED_CHARS) {
       const shortened = truncateForHandoff(text, fitted);
-      const shortenedCost = renderMessageEntry(message, shortened).length + 1;
+      const shortenedCost = renderMessageEntry(message, shortened).length + ENTRY_SEPARATOR_CHARS;
       if (shortenedCost <= remaining) {
         selected.set(message.id, shortened);
         remaining -= shortenedCost;
@@ -311,7 +308,11 @@ function renderWithinBudget(
       entries,
       totalCount,
     });
-    const rendered = `${block}\n\n${input.userText}`;
+    const rendered = composeHandoffInput({
+      block,
+      userText: input.userText,
+      targetProvider: input.targetProvider ?? "",
+    });
     if (rendered.trim().length <= maxInputChars) {
       return {
         delivered: true,
@@ -343,6 +344,8 @@ export function composeHandoffInput(input: {
   readonly userText: string;
   readonly targetProvider: string;
 }): string {
+  // An attachment-only turn: the block is the whole text input.
+  if (input.userText.length === 0) return input.block;
   if (
     input.targetProvider === "claudeAgent" &&
     input.userText.startsWith(CLAUDE_ULTRATHINK_PROMPT_PREFIX)

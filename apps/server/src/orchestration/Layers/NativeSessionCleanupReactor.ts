@@ -8,7 +8,8 @@ import { makeShutdownSourceScope, registerShutdown } from "../../shutdown.ts";
  * shortly after. The transcript is removed from the bound instance's own
  * config dir, and skipped when any other live F5 thread still binds the same
  * Claude session id (a fork or import that resumes it). Claude sessions parked
- * by a provider switch are cleaned up the same way, one job per session. Every
+ * by a provider switch, or discarded by one without being resumed, are cleaned
+ * up the same way, one job per session. Every
  * failure is logged and swallowed: cleanup never blocks or fails the deletion.
  *
  * @module NativeSessionCleanupReactor
@@ -55,16 +56,24 @@ export function claudeSessionIdOfBinding(
   return readClaudeResumeState(binding.resumeCursor)?.resume;
 }
 
-/** The thread's active Claude session plus every Claude session parked by a provider switch. */
+/**
+ * The thread's active Claude session plus every Claude session a provider switch
+ * parked, or discarded without resuming it.
+ */
 export function claudeSessionsForThread(
   binding: Pick<ProviderRuntimeBinding, "provider" | "resumeCursor" | "providerInstanceId"> | null,
-  handoffState: Pick<ProviderHandoffState, "parked"> | null,
+  handoffState:
+    | (Pick<ProviderHandoffState, "parked"> & Partial<Pick<ProviderHandoffState, "retired">>)
+    | null,
 ): ReadonlyArray<{ readonly sessionId: string; readonly instanceId: ProviderInstanceId }> {
   const sessions = new Map<string, ProviderInstanceId>();
   const active = binding ? claudeSessionIdOfBinding(binding) : undefined;
   if (binding && active)
     sessions.set(active, binding.providerInstanceId ?? defaultInstanceIdForDriver(CLAUDE_DRIVER));
-  for (const parked of Object.values(handoffState?.parked ?? {})) {
+  for (const parked of [
+    ...Object.values(handoffState?.parked ?? {}),
+    ...(handoffState?.retired ?? []),
+  ]) {
     if (parked.provider !== "claudeAgent") continue;
     const sessionId = readClaudeResumeState(parked.resumeCursor)?.resume;
     if (sessionId && !sessions.has(sessionId)) sessions.set(sessionId, parked.providerInstanceId);

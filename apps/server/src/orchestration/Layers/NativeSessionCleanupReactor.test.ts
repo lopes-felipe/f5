@@ -162,6 +162,7 @@ function parkedState(threadId: string, sessionId: string): ProviderHandoffState 
         parkedAt: "2026-10-08T00:00:00.000Z",
       },
     },
+    retired: [],
     revision: 1,
     updatedAt: "2026-10-08T00:00:00.000Z",
   };

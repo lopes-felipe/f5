@@ -15,18 +15,19 @@ export interface HandoffableMessageLike {
   readonly createdAt: string;
 }
 
+// Only where the renderer puts it: first in the input, after Claude's optional
+// `Ultrathink:` keyword. A message that merely quotes the tags keeps its text.
 const HANDOFF_BLOCK_PATTERN = new RegExp(
-  `${escapeRegExp(CONTEXT_HANDOFF_OPEN_TAG)}[\\s\\S]*?${escapeRegExp(CONTEXT_HANDOFF_CLOSE_TAG)}`,
-  "g",
+  `^(\\s*(?:Ultrathink:\\s*)?)${escapeRegExp(CONTEXT_HANDOFF_OPEN_TAG)}[\\s\\S]*?${escapeRegExp(CONTEXT_HANDOFF_CLOSE_TAG)}`,
 );
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Removes earlier rendered handoff blocks so history is never handed off twice. */
+/** Removes an earlier rendered handoff block so history is never handed off twice. */
 export function stripContextHandoffBlocks(text: string): string {
-  return text.includes(CONTEXT_HANDOFF_OPEN_TAG) ? text.replace(HANDOFF_BLOCK_PATTERN, "") : text;
+  return text.includes(CONTEXT_HANDOFF_OPEN_TAG) ? text.replace(HANDOFF_BLOCK_PATTERN, "$1") : text;
 }
 
 const compareMessages = (left: HandoffableMessageLike, right: HandoffableMessageLike) =>

@@ -479,6 +479,7 @@ import {
   revokeUserMessagePreviewUrls,
   resolveThreadModelOptionsSeed,
   resolveSubmissionIntent,
+  shouldRunNativeReviewShortcut,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { ThreadDetailsLoadingState } from "./StartupLoadingState";
@@ -5428,12 +5429,17 @@ export default memo(function ChatView({
     }
     if (noProviderAvailable) return;
     if (
-      /^\/review(?:\s|$)/.test(promptRef.current.trim()) &&
-      activeThread.session?.provider === "codex" &&
       api.nativeOperations &&
-      activeThread.session.capabilities?.actions.some(
-        (action) => action.action === "nativeReview" && action.supported,
-      )
+      activeThread.session?.capabilities &&
+      shouldRunNativeReviewShortcut({
+        prompt: promptRef.current,
+        sessionProvider: activeThread.session.provider,
+        sessionInstanceId,
+        selectedInstanceId: selectedProviderInstanceId,
+        nativeReviewSupported: activeThread.session.capabilities.actions.some(
+          (action) => action.action === "nativeReview" && action.supported,
+        ),
+      })
     ) {
       const argument = promptRef.current.trim().slice(7).trim();
       sendInFlightRef.current = true;

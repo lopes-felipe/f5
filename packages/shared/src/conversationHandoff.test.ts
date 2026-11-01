@@ -56,9 +56,16 @@ describe("conversationHandoff", () => {
     expect(hasHandoffableConversation([messages[1]!], "a")).toBe(false);
   });
 
-  it("strips earlier rendered handoff blocks", () => {
+  it("strips an earlier rendered handoff block only where the renderer puts it", () => {
     expect(
       stripContextHandoffBlocks("<f5-context-handoff v1>\nx\n</f5-context-handoff>\n\nkeep").trim(),
     ).toBe("keep");
+    expect(
+      stripContextHandoffBlocks(
+        "Ultrathink:\n<f5-context-handoff v1>\nx\n</f5-context-handoff>\n\nkeep",
+      ).replace(/\s+/g, " "),
+    ).toBe("Ultrathink: keep");
+    const quoted = "Why does `<f5-context-handoff v1>` pair with `</f5-context-handoff>`?";
+    expect(stripContextHandoffBlocks(quoted)).toBe(quoted);
   });
 });
