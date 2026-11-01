@@ -81,5 +81,8 @@ export function workflowTiming(run: WorkflowRun): ReturnType<typeof jobTiming> {
     if (dependencies.some((dependency) => !byId.get(dependency)?.length)) continue;
     for (const name of byId.get(id) ?? []) needs[name] = names;
   }
-  return jobTiming(jobs, run.created_at, needs);
+  // A rerun retains its original creation date, but has a fresh attempt start.
+  // Keep initial queue time for attempt 1; never count the operator's wait to retry.
+  const readyAt = run.run_attempt > 1 ? run.run_started_at || run.created_at : run.created_at;
+  return jobTiming(jobs, readyAt, needs);
 }

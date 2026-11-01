@@ -122,7 +122,11 @@ describe("CI workflow policy", () => {
     expect(workflow.jobs["main-status"]).toBeUndefined();
     const reporter = readWorkflow("ci-main-status.yml").jobs.report!;
     expect(readWorkflow("ci-main-status.yml").permissions.actions).toBe("read");
-    expect(reporter.concurrency).toBeUndefined();
+    expect(reporter.concurrency).toEqual({
+      group: "main-ci-status-reporting",
+      "cancel-in-progress": false,
+      queue: "max",
+    });
     expect(reporter.if).toContain("workflow_run.head_repository.full_name == github.repository");
     expect(reporter.if).toContain("workflow_run.event == 'push'");
     expect(reporter.steps?.some((step) => step.uses || step.run?.includes("download"))).toBe(false);

@@ -10,6 +10,12 @@ permissions:
   issues: write
 jobs:
   report:
+    # Serialize only reporting. Retain pending results; freshness is checked
+    # inside the serialized job, independently of CI/release qualification.
+    concurrency:
+      group: main-ci-status-reporting
+      cancel-in-progress: false
+      queue: max
     if: >-
       github.repository == 'lopes-felipe/f5' &&
       github.event.workflow_run.path == '.github/workflows/ci.yml' &&

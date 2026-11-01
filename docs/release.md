@@ -117,7 +117,8 @@ stable preferences, beta clients retain beta preferences, and no path downgrades
   and drain active transfers. Uploads and promotion use the validated release ID.
 - Main CI ends with its required validation result. Status issue reporting runs
   independently after trusted main push CI completion, rejecting stale SHAs and
-  attempts, so its runner queue cannot delay release eligibility.
+  attempts inside a separate serialized reporting job. Pending reports queue
+  without cancelling one another; their runner queue cannot delay release eligibility.
 - A missing macOS signing timestamp gets one retry after five seconds against
   the same compiled app. Certificate, entitlement and verification failures do
   not retry. Signing retries are included in component receipts; all signing,

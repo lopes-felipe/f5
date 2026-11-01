@@ -1,7 +1,14 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import type { WorkflowRun } from "./release/release-github.ts";
 import { releasePool } from "./release/release-concurrency.ts";
 import { intervalSeconds } from "./release/release-observability.ts";
-import { jobTiming } from "./release/release-timing.ts";
+import { jobTiming, workflowTiming } from "./release/release-timing.ts";
+const timingState = vi.hoisted(() => ({ gh: vi.fn() }));
+vi.mock("./release/release-github.ts", () => ({
+  repository: "fixture/f5",
+  gh: timingState.gh,
+  show: () => "jobs:\n  test: {}\n  result:\n    needs: test\n",
+}));
 
 it("bounds transfers, stops scheduling on failure, and drains active work", async () => {
   let active = 0,
@@ -58,4 +65,44 @@ it("counts overlapping phase intervals once and measures dependency-ready queuei
     { name: "result", queueSeconds: 20, executionSeconds: 1 },
   ]);
   expect(jobTiming(jobs, time(0), {})[0]!.queueSeconds).toBeNull();
+});
+it.each([
+  { attempt: 1, started: 100, queue: 102 },
+  { attempt: 2, started: 100, queue: 2 },
+  { attempt: 2, started: null, queue: 102 },
+])("measures queueing for attempt $attempt starting at $started", ({ attempt, started, queue }) => {
+  const time = (seconds: number) => new Date(seconds * 1000).toISOString();
+  timingState.gh.mockReset().mockReturnValue(
+    JSON.stringify([
+      {
+        jobs: [
+          {
+            name: "test",
+            started_at: time(100),
+            completed_at: time(110),
+            steps: [{ started_at: time(102), completed_at: time(110) }],
+          },
+          {
+            name: "result",
+            started_at: time(110),
+            completed_at: time(131),
+            steps: [{ started_at: time(130), completed_at: time(131) }],
+          },
+        ],
+      },
+    ]),
+  );
+  const run = {
+    id: 10,
+    run_attempt: attempt,
+    head_sha: "a".repeat(40),
+    path: ".github/workflows/ci.yml",
+    created_at: time(0),
+    run_started_at: started === null ? undefined : time(started),
+  } as WorkflowRun;
+  expect(workflowTiming(run)).toEqual([
+    { name: "test", queueSeconds: queue, executionSeconds: 8 },
+    { name: "result", queueSeconds: 20, executionSeconds: 1 },
+  ]);
+  expect(timingState.gh.mock.calls[0]![0].at(-1)).toContain("/attempts/" + attempt + "/jobs?");
 });
