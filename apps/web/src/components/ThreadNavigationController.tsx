@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import { useRouter } from "@tanstack/react-router";
 import { resolveShortcutCommand, useServerKeybindings } from "~/keybindings";
+import { MODAL_DIALOG_SELECTOR } from "~/lib/modalDialogs";
+import { navigateHistory } from "~/navigationHistory";
 import { setSearchParamsForSurface } from "~/rightPanelNavigation";
 import { useRightPanelStore } from "~/rightPanelStore";
 import {
@@ -11,9 +13,6 @@ import {
 } from "~/threadUndo";
 
 const MODIFIER_KEYS = new Set(["Alt", "Control", "Meta", "Shift"]);
-// Toasts, including the undo notice itself, are non-modal dialogs and must not block shortcuts.
-const MODAL_DIALOG_SELECTOR =
-  '[role="dialog"]:not([aria-modal="false"]), [role="alertdialog"]:not([aria-modal="false"])';
 
 function shortcutTargetContext(event: KeyboardEvent) {
   const target = event.target instanceof Element ? event.target : null;
@@ -85,10 +84,10 @@ export function ThreadNavigationController() {
       });
       if (command === "navigation.back") {
         event.preventDefault();
-        router.history.back();
+        navigateHistory(router.history, "back");
       } else if (command === "navigation.forward") {
         event.preventDefault();
-        router.history.forward();
+        navigateHistory(router.history, "forward");
       } else if (command === "rightPanel.reopenClosed") {
         event.preventDefault();
         // History is app-wide, so this also returns to the tab's thread from

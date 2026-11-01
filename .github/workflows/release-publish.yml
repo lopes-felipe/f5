@@ -1,0 +1,55 @@
+name: Release publisher
+on:
+  workflow_run:
+    workflows: [CI, Release candidate, Release upgrade qualification]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: write
+# Ordering comes from main history and durable intent, never the order of queued events.
+concurrency:
+  group: release-publication
+  cancel-in-progress: false
+jobs:
+  reconcile:
+    if: github.repository == 'lopes-felipe/f5' && github.ref == 'refs/heads/main'
+    environment: release-publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - if: vars.F5_RELEASE_AUTOMATION_MODE == 'beta' || vars.F5_RELEASE_AUTOMATION_MODE == 'all'
+        uses: actions/create-github-app-token@v2
+        id: app
+        with:
+          app-id: ${{ vars.F5_RELEASE_APP_ID }}
+          private-key: ${{ secrets.F5_RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-actions: write
+      - id: reconcile
+        run: node scripts/reconcile-releases.ts
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
+          RELEASE_AUTOMATION_MODE: ${{ vars.F5_RELEASE_AUTOMATION_MODE || 'shadow' }}
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-summary.json
+          if-no-files-found: ignore
+          retention-days: 90
+      - if: steps.reconcile.outputs.cache_key != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadow-verified-${{ steps.reconcile.outputs.cache_key }}
+          path: release-summary.json
+          retention-days: 30

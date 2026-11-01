@@ -2,7 +2,7 @@ import { formatAttachmentMetadata } from "@t3tools/shared/attachmentMetadata";
 
 import type { ProviderResolvedAttachment } from "./Services/ProviderAdapter.ts";
 
-function escapeRuntimeContextLine(value: string): string {
+export function escapeRuntimeContextLine(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 

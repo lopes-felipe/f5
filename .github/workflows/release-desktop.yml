@@ -1,0 +1,73 @@
+name: Build desktop candidate
+on:
+  workflow_call:
+    inputs:
+      version: { type: string, required: true }
+      channel: { type: string, required: true }
+      os: { type: string, required: true }
+      platform: { type: string, required: true }
+      arch: { type: string, required: true }
+      target: { type: string, required: true }
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ${{ inputs.os }}
+    environment: release
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ inputs.version }}
+      CHANNEL: ${{ inputs.channel }}
+      T3CODE_DESKTOP_UPDATE_CHANNEL: ${{ inputs.channel }}
+      WINDOWS_SIGNING_REQUIRED: ${{ vars.F5_WINDOWS_SIGNING_REQUIRED }}
+      PLATFORM: ${{ inputs.platform }}
+      ARCH: ${{ inputs.arch }}
+      TARGET: ${{ inputs.target }}
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        if: runner.os == 'Windows'
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        if: runner.os == 'Windows'
+        with:
+          workspaces: apps/desktop/native/windows -> target
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cache/electron-builder
+            ~/Library/Caches/electron-builder
+            ~/AppData/Local/electron-builder/Cache
+          key: builder-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock') }}
+          restore-keys: builder-${{ runner.os }}-${{ runner.arch }}-
+      - name: Compile application without signing credentials
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: |
+          node scripts/update-release-package-versions.ts "$VERSION"
+          bun run build:desktop
+      # Signing credentials exist only during the packaging step.
+      - uses: ./.github/actions/release-desktop
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+        with:
+          platform: ${{ inputs.platform }}
+          arch: ${{ inputs.arch }}
+          target: ${{ inputs.target }}

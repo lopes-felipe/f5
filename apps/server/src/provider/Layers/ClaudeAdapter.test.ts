@@ -2,6 +2,7 @@ import { afterAll, beforeAll, vi } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { makeThreadMcpBroker } from "../../mcp/threadMcpTools.ts";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -93,6 +94,7 @@ function makeHarness(config?: {
   readonly computerAutomationBroker?: ClaudeAdapterLiveOptions["computerAutomationBroker"];
   readonly chromeRuntime?: ClaudeAdapterLiveOptions["chromeRuntime"];
   readonly reportedModelCapabilities?: ClaudeAdapterLiveOptions["reportedModelCapabilities"];
+  readonly threadMcpBroker?: ClaudeAdapterLiveOptions["threadMcpBroker"];
 }) {
   const query = new FakeClaudeQuery();
   const queries = [query];
@@ -160,6 +162,7 @@ function makeHarness(config?: {
     ...(config?.previewAutomationBroker
       ? { previewAutomationBroker: config.previewAutomationBroker }
       : {}),
+    ...(config?.threadMcpBroker ? { threadMcpBroker: config.threadMcpBroker } : {}),
   };
 
   return {
@@ -12978,6 +12981,35 @@ describe("ClaudeAdapterLive", () => {
       }).pipe(Effect.provide(harness.layer));
     },
   );
+
+  it.effect("lets a read-only workflow stage call only F5's own thread_read", () => {
+    const harness = makeHarness({ threadMcpBroker: Effect.runSync(makeThreadMcpBroker) });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      const options = harness.getLastCreateQueryInput()!.options;
+      assert.ok(options.mcpServers?.["f5_thread"]);
+      const decide = (mcpServer: { source: "sdk" | "stdio"; name: string }) =>
+        Effect.promise(() =>
+          options.canUseTool!("mcp__f5_thread__thread_read", { threadId: "source-thread" }, {
+            signal: new AbortController().signal,
+            toolUseID: `thread-read-${mcpServer.source}`,
+            requestId: `thread-read-${mcpServer.source}`,
+            mcpServer,
+          } as Parameters<NonNullable<typeof options.canUseTool>>[2]),
+        );
+      assert.equal((yield* decide({ source: "sdk", name: "f5_thread" }))?.behavior, "allow");
+      assert.notEqual((yield* decide({ source: "stdio", name: "f5_thread" }))?.behavior, "allow");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
 
   it.effect("allows full-access repo edits again after leaving plan mode", () => {
     const harness = makeHarness();
