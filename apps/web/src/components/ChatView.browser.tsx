@@ -1,4 +1,6 @@
 import { writePullRequestReferenceDrag } from "../lib/pullRequestReference";
+import { F5_THREAD_REFERENCE_MIME, writeThreadReferenceDrag } from "../lib/threadReferenceDrag";
+import { promptLinkScheme } from "./promptLinks/copyPromptLink";
 import { waitForTimelineLayout } from "../test/timeline";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { resetProtocolStateForTests, setServerBootstrap } from "../protocolState";
@@ -6142,6 +6144,104 @@ describe("ChatView timeline (full app)", () => {
         wsRequests.filter((request) => request._tag === WS_METHODS.projectsAuthorizeEntry),
       ).toEqual([]);
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("drops dragged threads as reference chips and keeps the canonical text through send", async () => {
+    const toast = vi.spyOn(toastManager, "add");
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-thread-drag" as MessageId,
+        targetText: "Thread target",
+      }),
+    });
+    const dropThreads = async (threads: Array<{ threadId: string; title: string }>) => {
+      const transfer = new DataTransfer();
+      expect(writeThreadReferenceDrag(transfer, threads)).toBe(true);
+      (await waitForComposerShell()).dispatchEvent(
+        new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }),
+      );
+    };
+    const promptOf = () => useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt;
+    try {
+      await dropThreads([{ threadId: THREAD_ID, title: "Self" }]);
+      await vi.waitFor(() =>
+        expect(toast).toHaveBeenCalledWith(
+          expect.objectContaining({ type: "info", title: "A thread can't reference itself." }),
+        ),
+      );
+      expect(promptOf() ?? "").toBe("");
+
+      await dropThreads([
+        { threadId: "source-a", title: "Source A" },
+        { threadId: "source-b", title: "Source B" },
+      ]);
+      const first = `[Source A](${promptLinkScheme}://thread/source-a)`;
+      const second = `[Source B](${promptLinkScheme}://thread/source-b)`;
+      await vi.waitFor(() => {
+        expect(promptOf()).toBe(`${first} ${second} `);
+        expect(document.querySelectorAll("[data-composer-thread-reference]")).toHaveLength(2);
+      });
+
+      // A thread already referenced is not added twice.
+      await dropThreads([{ threadId: "source-a", title: "Source A" }]);
+      expect(promptOf()).toBe(`${first} ${second} `);
+
+      // The cap counts references already in the prompt.
+      await dropThreads(
+        Array.from({ length: 10 }, (_, index) => ({ threadId: `extra-${index}`, title: "Extra" })),
+      );
+      await vi.waitFor(() =>
+        expect(toast).toHaveBeenCalledWith(
+          expect.objectContaining({ title: "Up to 10 thread references per message." }),
+        ),
+      );
+      await vi.waitFor(() =>
+        expect(document.querySelectorAll("[data-composer-thread-reference]")).toHaveLength(10),
+      );
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+
+      const expected = promptOf()!.trim();
+      (await waitForSendButton()).click();
+      await vi.waitFor(() =>
+        expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(1),
+      );
+      const command = getSubmittedTurnCommand(getDispatchCommandRequests("thread.turn.start")[0]!);
+      expect(command?.message?.text).toBe(expected);
+    } finally {
+      toast.mockRestore();
+      await mounted.cleanup();
+    }
+  });
+
+  it("refuses an invalid thread drag payload", async () => {
+    const toast = vi.spyOn(toastManager, "add");
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-thread-drag-invalid" as MessageId,
+        targetText: "Thread target",
+      }),
+    });
+    try {
+      const transfer = new DataTransfer();
+      transfer.setData(F5_THREAD_REFERENCE_MIME, JSON.stringify({ version: 2, threads: [] }));
+      (await waitForComposerShell()).dispatchEvent(
+        new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }),
+      );
+      await vi.waitFor(() =>
+        expect(toast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "error",
+            title: "Unable to add the thread reference to chat.",
+          }),
+        ),
+      );
+      expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "").toBe("");
+    } finally {
+      toast.mockRestore();
       await mounted.cleanup();
     }
   });

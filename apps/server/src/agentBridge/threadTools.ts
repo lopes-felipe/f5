@@ -1,3 +1,4 @@
+import { truncateUtf8 } from "../orchestration/threadTranscript.ts";
 import { buildNewThreadSubmission } from "../turnSubmission.ts";
 import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
 import { isListedModel, pickPreferredModel } from "@t3tools/shared/model";
@@ -111,16 +112,6 @@ export interface ThreadToolsDeps {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
-
-export function truncateUtf8(
-  text: string,
-  maxBytes: number,
-): { readonly text: string; readonly truncated: boolean } {
-  if (Buffer.byteLength(text, "utf8") <= maxBytes) return { text, truncated: false };
-  const bytes = Buffer.from(text, "utf8").subarray(0, maxBytes);
-  // Drop a trailing partial multi-byte sequence.
-  return { text: bytes.toString("utf8").replace(/�+$/u, ""), truncated: true };
-}
 
 const toolError = (message: string, extra?: { retryAfterSeconds?: number }) =>
   new AgentBridgeToolError({ message, ...extra });
