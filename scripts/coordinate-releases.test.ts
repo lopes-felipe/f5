@@ -18,6 +18,8 @@ const state = vi.hoisted(() => ({
   refreshes: 0,
   cancelled: [] as number[],
   summaries: [] as string[],
+  leaseRun: null as number | null,
+  tagProtected: false,
 }));
 vi.mock("node:fs", async (original) => ({
   ...(await original<typeof import("node:fs")>()),
@@ -30,6 +32,7 @@ vi.mock("./release/release-github.ts", () => ({
       state.refreshes++;
       return "";
     }
+    if (args[0] === "for-each-ref") return state.tagProtected ? "v0.1.2-beta.1" : "";
     if (args[0] === "rev-parse") return state.tip;
     if (args[1] === "--first-parent") return [state.tip, state.next, state.old].join("\n");
     return state.old;
@@ -49,15 +52,41 @@ vi.mock("./release/release-github.ts", () => ({
     if (state.failedCi.has(sha)) throw new Error("missing required matrix job");
     return state.ci.find((run) => run.head_sha === sha)!;
   },
-  api: () => ({
-    ...state.builds[0],
-    status:
-      state.currentCompleted || (state.cancellationRace && state.cancellationPosted)
-        ? "completed"
-        : "in_progress",
+  api: (path: string) =>
+    path.endsWith("/artifacts")
+      ? {
+          artifacts: state.leaseRun
+            ? [{ id: 99, name: "release-lease-" + state.leaseRun + "-1", expired: false }]
+            : [],
+        }
+      : {
+          ...state.builds[0],
+          status:
+            state.currentCompleted || (state.cancellationRace && state.cancellationPosted)
+              ? "completed"
+              : "in_progress",
+        },
+  readArtifactJson: async () => ({
+    sourceSha: state.old,
+    candidateRun: state.leaseRun,
+    attempt: 1,
   }),
   pages: () => (state.draft ? [{ draft: true, tag_name: "v0.1.2-beta.1" }] : []),
   gh: (args: string[]) => {
+    if (args.at(-1)!.includes("/artifacts?"))
+      return JSON.stringify([
+        {
+          artifacts: state.leaseRun
+            ? [
+                {
+                  id: 99,
+                  name: "release-lease-" + state.leaseRun + "-1-publisher-1",
+                  expired: false,
+                },
+              ]
+            : [],
+        },
+      ]);
     if (args.includes("POST")) {
       state.cancellationPosted = true;
       if (state.cancellationRace) throw new Error("completed concurrently");
@@ -103,6 +132,8 @@ beforeEach(() => {
   state.refreshes = 0;
   state.cancelled = [];
   state.summaries = [];
+  state.leaseRun = null;
+  state.tagProtected = false;
 });
 afterEach(() => vi.unstubAllEnvs());
 it("cancels only an older trusted beta after rechecking durable ordering", async () => {
@@ -149,3 +180,17 @@ it("treats completion before cancellation as harmless", async () => {
   expect(state.cancelled).toEqual([]);
   expect(state.cancellationPosted).toBe(true);
 });
+it("protects a reserved tag even when a read-only token cannot list its draft", async () => {
+  state.tagProtected = true;
+  await coordinateReleases();
+  expect(state.cancelled).toEqual([]);
+});
+it.each([10, 99])(
+  "uses an active publication lease for candidate %s without blocking unrelated cleanup",
+  async (id) => {
+    state.publishers = [run(state.tip, 30, "release-publish.yml")];
+    state.leaseRun = id;
+    await coordinateReleases();
+    expect(state.cancelled).toEqual(id === 10 ? [] : [10]);
+  },
+);

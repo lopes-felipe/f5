@@ -112,6 +112,7 @@ const run = (sha: string, id: number): WorkflowRun => ({
 });
 beforeEach(() => {
   vi.stubEnv("RELEASE_AUTOMATION_MODE", "shadow");
+  vi.stubEnv("GITHUB_RUN_ID", "");
   state.history = [state.b, state.a];
   state.candidate = {
     sourceSha: state.b,
@@ -197,6 +198,23 @@ it("checks only the newest eligible passing source in main order", async () => {
   await reconcileReleases();
   expect(state.qualification.mock.calls.map((c) => c[0])).toEqual([state.c]);
   expect(state.load).toHaveBeenCalledWith(101);
+});
+it("records a publication lease before any shipping download or release mutation", async () => {
+  await reconcileReleases({ leaseOnly: true });
+  expect(JSON.parse(state.writes.get("release-publication-lease.json")!)).toEqual({
+    sourceSha: state.b,
+    candidateRun: 100,
+    attempt: 1,
+  });
+  expect(state.assemble).not.toHaveBeenCalled();
+  expect(state.publish).not.toHaveBeenCalled();
+  expect(JSON.parse(state.writes.get("release-summary.json")!).status).toBe("candidate-ready");
+});
+it("does not publish a different source when selection changes after the lease was recorded", async () => {
+  await reconcileReleases({ lease: { sourceSha: state.a, candidateRun: 99, attempt: 1 } });
+  expect(state.assemble).not.toHaveBeenCalled();
+  expect(state.publish).not.toHaveBeenCalled();
+  expect(JSON.parse(state.writes.get("release-summary.json")!).status).toBe("superseded-beta");
 });
 it("tries the next source only when the newest lacks its exact required jobs", async () => {
   state.history.unshift(state.c);

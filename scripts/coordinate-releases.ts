@@ -6,6 +6,7 @@ import {
   gh,
   git,
   pages,
+  readArtifactJson,
   repository,
   runs,
   stableRequests,
@@ -14,6 +15,8 @@ import {
 } from "./release/release-github.ts";
 import { qualifiedSource } from "./release/release-selection.ts";
 import { observeRelease, releaseFields } from "./release/release-observability.ts";
+import { parsePublicationLease } from "./release/release-lease.ts";
+import { runArtifacts } from "./release/candidate-store.ts";
 
 function records(workflow: string): WorkflowRun[] {
   return (
@@ -27,7 +30,7 @@ function records(workflow: string): WorkflowRun[] {
     ) as { workflow_runs: WorkflowRun[] }[]
   ).flatMap((page) => page.workflow_runs);
 }
-function eligibleSnapshot(): { older: Set<string>; protectedRuns: Set<number> } {
+async function eligibleSnapshot(): Promise<{ older: Set<string>; protectedRuns: Set<number> }> {
   git(["fetch", "origin", "main", "--tags"]);
   const main = git(["rev-parse", "origin/main"]);
   // Invalid durable intent blocks cancellation as well as publication.
@@ -36,25 +39,43 @@ function eligibleSnapshot(): { older: Set<string>; protectedRuns: Set<number> } 
   const selected = qualifiedSource(history, runs("ci.yml"));
   if (!selected) return { older: new Set(), protectedRuns: new Set() };
   const older = new Set(history.slice(0, history.indexOf(selected.sourceSha)));
-  // A publisher may be creating its draft now; conservatively wait for it.
-  if (
-    records("release-publish.yml").some(
-      (r) =>
-        r.repository.full_name === repository &&
-        r.head_repository.full_name === repository &&
-        r.path === ".github/workflows/release-publish.yml" &&
-        r.head_branch === "main" &&
-        r.status === "in_progress",
+  // Read-only tokens may not see draft releases. Every automation draft reserves
+  // its immutable tag first, so protect all version-tagged sources independently.
+  for (const tag of git(["for-each-ref", "--format=%(refname:short)", "refs/tags/v*"]).split("\n"))
+    if (/^v\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(tag))
+      older.delete(git(["rev-list", "-n", "1", tag]));
+  const protectedRuns = new Set<number>();
+  for (const run of records("release-publish.yml").filter(
+    (r) =>
+      r.repository.full_name === repository &&
+      r.head_repository.full_name === repository &&
+      r.path === ".github/workflows/release-publish.yml" &&
+      r.head_branch === "main" &&
+      r.status === "in_progress",
+  )) {
+    const leases = runArtifacts(run.id).filter(
+      (artifact) =>
+        artifact.name.startsWith("release-lease-") &&
+        artifact.name.endsWith("-publisher-" + run.run_attempt),
+    );
+    // Old publishers and the short pre-lease interval fail closed.
+    if (leases.length !== 1 || leases[0]!.expired) return { older: new Set(), protectedRuns };
+    const lease = parsePublicationLease(
+      await readArtifactJson(leases[0]!, "release-publication-lease.json"),
+    );
+    if (
+      leases[0]!.name !==
+      "release-lease-" + lease.candidateRun + "-" + lease.attempt + "-publisher-" + run.run_attempt
     )
-  )
-    return { older: new Set(), protectedRuns: new Set() };
+      throw new Error("Publication lease artifact identity mismatch");
+    protectedRuns.add(lease.candidateRun);
+  }
   for (const release of pages<{ draft: boolean; tag_name: string }>("releases?per_page=100"))
     if (release.draft) {
       // Missing/invalid draft tags must fail closed rather than guess the source.
       const sha = git(["rev-list", "-n", "1", release.tag_name]);
       older.delete(sha);
     }
-  const protectedRuns = new Set<number>();
   for (const run of records("release-upgrade.yml")) {
     if (
       run.repository.full_name !== repository ||
@@ -79,7 +100,7 @@ export async function coordinateReleases(): Promise<void> {
       (r) => trustedRun(r, "release.yml") && r.status !== "completed",
     )) {
       // Recompute durable ordering and protected references immediately before each mutation.
-      const snapshot = eligibleSnapshot();
+      const snapshot = await eligibleSnapshot();
       if (!snapshot.older.has(run.head_sha) || snapshot.protectedRuns.has(run.id)) continue;
       // At its original SHA, a stable request cannot be hidden by a later withdrawal/recovery.
       if (stableRequests(run.head_sha).some((intent) => intent.sourceSha === run.head_sha))

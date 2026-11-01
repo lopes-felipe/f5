@@ -67,8 +67,10 @@ stable preferences, beta clients retain beta preferences, and no path downgrades
   Every main merge starts its candidate, including signing and notarization.
   The independent release coordinator stops unfinished obsolete betas only after
   a newer main source passes every required CI job. Stable requests, matching
-  drafts and active upgrade proofs remain protected. It conservatively waits
-  while a publisher is executing. Stable builds are never cancelled by a later merge.
+  drafts and active upgrade proofs remain protected. An executing publisher
+  protects its referenced build through a verified publication lease; unrelated
+  obsolete betas can stop while uploads continue. Missing leases fail closed.
+  Stable builds are never cancelled by a later merge.
 - macOS packages are signed/notarized. The final mounted DMG passes codesign,
   stapler, Gatekeeper and the bundled Claude SDK spawn check on its native runner.
 - Every native CLI archive passes clean-PATH runtime/server/backup smoke, a real

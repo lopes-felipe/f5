@@ -42,6 +42,7 @@ apps/server/dist-exe/
 release-cli/
 release-summary.json
 release-performance.json
+release-publication-lease.json
 
 # Native computer helper build outputs.
 apps/desktop/dist-native/

@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { appendFileSync, mkdtempSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { parseArgs } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolve } from "node:path";
@@ -32,11 +33,16 @@ import {
 import { fetchReleaseSummaries } from "./lib/release-profile.ts";
 import { sameBaselines, upgradePlan } from "./release/release-upgrade-proof.ts";
 import { publicationGate } from "./release/release-publication-gate.ts";
+import { parsePublicationLease, type PublicationLease } from "./release/release-lease.ts";
 
-export async function reconcileReleases(): Promise<void> {
-  await observeRelease(reconcile);
+interface ReconcileOptions {
+  leaseOnly?: boolean;
+  lease?: PublicationLease;
 }
-async function reconcile(): Promise<void> {
+export async function reconcileReleases(options: ReconcileOptions = {}): Promise<void> {
+  await observeRelease(() => reconcile(options));
+}
+async function reconcile(options: ReconcileOptions): Promise<void> {
   const mode = automationMode(process.env.RELEASE_AUTOMATION_MODE);
   releaseFields({
     mode,
@@ -86,7 +92,10 @@ async function reconcile(): Promise<void> {
     attempt: build?.run_attempt ?? null,
     reason: selected.reason,
     supersededSources: history.filter(
-      (sha) => history.indexOf(sha) < history.indexOf(selected.sourceSha) && latest.has(sha),
+      (sha) =>
+        history.indexOf(sha) < history.indexOf(selected.sourceSha) &&
+        !publicCommits.includes(sha) &&
+        latest.has(sha),
     ),
     workflowUrls: {
       ci: "https://github.com/" + repository + "/actions/runs/" + selected.ci.id,
@@ -155,6 +164,31 @@ async function reconcile(): Promise<void> {
       reason: "Stable publication requires all mode; later betas remain held",
     });
     console.log("Stable publication awaits all mode; later betas remain held.");
+    return;
+  }
+  const identity = {
+    sourceSha: candidate.sourceSha,
+    candidateRun: candidate.runId,
+    attempt: candidate.runAttempt,
+  };
+  if (
+    options.lease &&
+    JSON.stringify(identity) !== JSON.stringify(parsePublicationLease(options.lease))
+  ) {
+    releaseFields({
+      status: candidate.kind === "beta" ? "superseded-beta" : "blocked-stable-lease",
+      reason: "Selection changed after publication lease; reconcile again",
+    });
+    return;
+  }
+  if (options.leaseOnly) {
+    writeFileSync("release-publication-lease.json", JSON.stringify(identity, null, 2) + "\n");
+    if (process.env.GITHUB_OUTPUT)
+      appendFileSync(
+        process.env.GITHUB_OUTPUT,
+        "candidate_run=" + candidate.runId + "\nattempt=" + candidate.runAttempt + "\n",
+      );
+    releaseFields({ status: "candidate-ready" });
     return;
   }
   const fresh = upgradePlan(candidate, releases);
@@ -359,5 +393,14 @@ async function reconcile(): Promise<void> {
   if (mode === "shadow" && process.env.GITHUB_OUTPUT)
     appendFileSync(process.env.GITHUB_OUTPUT, "cache_key=" + cacheKey + "\n");
 }
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  await reconcileReleases();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const { values } = parseArgs({
+    options: { "lease-only": { type: "boolean" }, lease: { type: "string" } },
+  });
+  await reconcileReleases({
+    leaseOnly: values["lease-only"] ?? false,
+    ...(values.lease
+      ? { lease: parsePublicationLease(JSON.parse(readFileSync(values.lease, "utf8"))) }
+      : {}),
+  });
+}
