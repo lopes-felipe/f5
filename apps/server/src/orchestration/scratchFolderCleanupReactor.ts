@@ -1,5 +1,5 @@
 import type { ThreadId } from "@t3tools/contracts";
-import { Cause, Effect, Stream, type Scope } from "effect";
+import { Cause, Effect, Exit, Scope, Stream } from "effect";
 
 import { makeBackgroundWorker } from "../backgroundWorker.ts";
 import { removeScratchThreadFolder } from "../project/scratchFolderCleanup.ts";
@@ -17,10 +17,21 @@ export function startScratchFolderCleanupReactor(
         Effect.gen(function* () {
           const delays = [1_000, 5_000, 30_000];
           for (let attempt = 0; ; attempt++) {
-            const readModel = yield* orchestrationEngine.getReadModel();
-            const result = yield* Effect.tryPromise(() =>
-              removeScratchThreadFolder({ readModel, threadId, ...(remove ? { remove } : {}) }),
-            ).pipe(Effect.result);
+            const result = yield* Effect.gen(function* () {
+              const staged = yield* Effect.gen(function* () {
+                const gate = yield* orchestrationEngine.acquireMaintenanceLock();
+                yield* Effect.addFinalizer(() => Scope.close(gate, Exit.void));
+                const readModel = yield* orchestrationEngine.getReadModel();
+                return yield* Effect.tryPromise(() =>
+                  removeScratchThreadFolder({ readModel, threadId, stageOnly: true }),
+                ).pipe(Effect.uninterruptible);
+              }).pipe(Effect.scoped);
+              if (staged.kind !== "staged") return staged;
+              const readModel = yield* orchestrationEngine.getReadModel();
+              return yield* Effect.tryPromise(() =>
+                removeScratchThreadFolder({ readModel, threadId, ...(remove ? { remove } : {}) }),
+              );
+            }).pipe(Effect.result);
             if (result._tag === "Success") {
               if (result.success.kind === "refused") {
                 yield* Effect.logWarning("scratch folder cleanup refused", {

@@ -7,7 +7,11 @@ import { Effect, Exit, Queue, Scope, Stream } from "effect";
 import { afterEach, expect, it, vi } from "vitest";
 import { it as effectIt } from "@effect/vitest";
 import { TestClock } from "effect/testing";
-import { removeScratchThreadFolder } from "../project/scratchFolderCleanup.ts";
+import {
+  removeScratchThreadFolder,
+  scratchThreadCleanupPath,
+} from "../project/scratchFolderCleanup.ts";
+import { makeStorageMaintenanceLock } from "../storage/StorageMaintenanceLock.ts";
 
 import { startScratchFolderCleanupReactor } from "./scratchFolderCleanupReactor.ts";
 import type { OrchestrationEngineShape } from "./Services/OrchestrationEngine.ts";
@@ -43,6 +47,7 @@ async function run(
 ) {
   const events = await Effect.runPromise(Queue.unbounded<OrchestrationEvent>());
   const engine = {
+    acquireMaintenanceLock: () => Scope.make("sequential"),
     getReadModel: () => Effect.succeed(readModel as OrchestrationReadModel),
     streamDomainEvents: Stream.fromQueue(events),
   } as unknown as OrchestrationEngineShape;
@@ -72,7 +77,7 @@ it("removes a deleted thread's own scratch folder", async () => {
       threads: [thread("gone", mine, "2026-10-23T10:00:00.000Z"), thread("live", kept, null)],
     },
     ["gone"],
-    () => !FS.existsSync(mine),
+    () => !FS.existsSync(scratchThreadCleanupPath(mine, "gone" as never)) && !FS.existsSync(mine),
   );
   expect(FS.existsSync(kept)).toBe(true);
 });
@@ -86,7 +91,7 @@ it("recovers a deletion missed while the server was down", async () => {
       threads: [thread("gone", mine, "2026-10-23T10:00:00Z")],
     },
     [],
-    () => !FS.existsSync(mine),
+    () => !FS.existsSync(scratchThreadCleanupPath(mine, "gone" as never)) && !FS.existsSync(mine),
   );
 });
 
@@ -163,6 +168,124 @@ it("uses retained SQL metadata without overriding current thread, project, or li
   expect(FS.existsSync(mine)).toBe(false);
 });
 
+it.each(["root", "nested", "alias", "worktree"] as const)(
+  "protects a live standard workspace in a deleted scratch folder (%s)",
+  async (mode) => {
+    const { root, folder, thread } = fixture();
+    const mine = folder("protected-12345678");
+    const nested = Path.join(mine, "checkout");
+    FS.mkdirSync(nested);
+    const outside = FS.realpathSync(FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-project-owner-")));
+    roots.push(outside);
+    const alias = Path.join(outside, "alias");
+    if (mode === "alias")
+      FS.symlinkSync(nested, alias, process.platform === "win32" ? "junction" : "dir");
+    const model = {
+      projects: [
+        { id: "scratch", kind: "scratch", workspaceRoot: root },
+        {
+          id: "project",
+          kind: "standard",
+          workspaceRoot:
+            mode === "root"
+              ? mine
+              : mode === "nested"
+                ? nested
+                : mode === "alias"
+                  ? alias
+                  : outside,
+        },
+      ],
+      threads: [
+        thread("gone", mine, "2026-10-23T10:00:00Z"),
+        ...(mode === "worktree"
+          ? [
+              {
+                ...thread("live", "", null),
+                projectId: "project",
+                scratchPath: null,
+                worktreePath: nested,
+              },
+            ]
+          : []),
+      ],
+    } as unknown as OrchestrationReadModel;
+    expect(
+      await removeScratchThreadFolder({ readModel: model, threadId: "gone" as never }),
+    ).toMatchObject({ kind: "refused" });
+    expect(FS.existsSync(Path.join(mine, "notes.md"))).toBe(true);
+    expect(FS.existsSync(scratchThreadCleanupPath(mine, "gone" as never))).toBe(false);
+  },
+);
+
+it("recovers an atomically staged folder after restart without scanning untracked folders", async () => {
+  const { root, folder, thread } = fixture();
+  const mine = folder("staged-12345678");
+  const untracked = folder("untracked-12345678");
+  const model = {
+    projects: [{ id: "scratch", kind: "scratch", workspaceRoot: root }],
+    threads: [thread("gone", mine, "2026-10-23T10:00:00Z")],
+  } as unknown as OrchestrationReadModel;
+  expect(
+    await removeScratchThreadFolder({
+      readModel: model,
+      threadId: "gone" as never,
+      stageOnly: true,
+    }),
+  ).toEqual({ kind: "staged" });
+  const tombstone = scratchThreadCleanupPath(mine, "gone" as never);
+  expect(FS.existsSync(tombstone)).toBe(true);
+  await run(model, [], () => !FS.existsSync(tombstone));
+  expect(FS.existsSync(untracked)).toBe(true);
+});
+
+it("admits an unrelated command while recursive folder removal is blocked", async () => {
+  const { root, folder, thread } = fixture();
+  const mine = folder("slow-12345678");
+  const model = {
+    projects: [{ id: "scratch", kind: "scratch", workspaceRoot: root }],
+    threads: [thread("gone", mine, "2026-10-23T10:00:00Z")],
+  } as unknown as OrchestrationReadModel;
+  const lock = await Effect.runPromise(makeStorageMaintenanceLock);
+  const engine = {
+    getReadModel: () => Effect.succeed(model),
+    streamDomainEvents: Stream.never,
+    acquireMaintenanceLock: lock.acquireExclusive,
+    dispatch: () => lock.withShared(Effect.succeed({ sequence: 1 })),
+  } as unknown as OrchestrationEngineShape;
+  let started = false;
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const scope = await Effect.runPromise(Scope.make("sequential"));
+  try {
+    await Effect.runPromise(
+      startScratchFolderCleanupReactor(engine, async (path) => {
+        started = true;
+        await blocked;
+        FS.rmSync(path, { recursive: true, force: true });
+      }).pipe(Scope.provide(scope)),
+    );
+    await vi.waitFor(() => expect(started).toBe(true));
+    await expect(
+      Effect.runPromise(
+        engine
+          .dispatch({
+            type: "thread.turn.interrupt",
+            commandId: "unrelated-interrupt" as never,
+            threadId: "other-thread" as never,
+            createdAt: new Date().toISOString(),
+          })
+          .pipe(Effect.timeout("2 seconds")),
+      ),
+    ).resolves.toEqual({ sequence: 1 });
+  } finally {
+    release();
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+  }
+});
+
 effectIt.effect("retries transient failures and deduplicates concurrent deletion events", () =>
   Effect.gen(function* () {
     const { root, folder, thread } = fixture();
@@ -174,6 +297,7 @@ effectIt.effect("retries transient failures and deduplicates concurrent deletion
     const events = yield* Queue.unbounded<OrchestrationEvent>();
     let reads = 0;
     const engine = {
+      acquireMaintenanceLock: () => Scope.make("sequential"),
       getReadModel: () =>
         Effect.sync(() => {
           reads++;
@@ -192,7 +316,9 @@ effectIt.effect("retries transient failures and deduplicates concurrent deletion
         type: "thread.deleted",
         payload: { threadId: "gone" },
       } as unknown as OrchestrationEvent);
-    yield* advanceUntil(() => !FS.existsSync(mine));
+    yield* advanceUntil(
+      () => calls === 2 && !FS.existsSync(scratchThreadCleanupPath(mine, "gone" as never)),
+    );
     expect(calls).toBe(2);
     expect(reads).toBeGreaterThanOrEqual(3);
   }).pipe(Effect.scoped),
@@ -209,6 +335,7 @@ effectIt.effect(
         threads: [thread("gone", mine, "2026-10-23T10:00:00Z")],
       };
       const engine = {
+        acquireMaintenanceLock: () => Scope.make("sequential"),
         getReadModel: () => Effect.succeed(model as unknown as OrchestrationReadModel),
         streamDomainEvents: Stream.never,
       } as unknown as OrchestrationEngineShape;
@@ -221,7 +348,7 @@ effectIt.effect(
       yield* advanceUntil(() => calls === 4);
       yield* TestClock.adjust("1 minute");
       expect(calls).toBe(4);
-      expect(FS.existsSync(mine)).toBe(true);
+      expect(FS.existsSync(scratchThreadCleanupPath(mine, "gone" as never))).toBe(true);
       expect(model.threads).toHaveLength(1);
       yield* Scope.close(scope, Exit.void);
       const nextScope = yield* Scope.make("sequential");
@@ -240,7 +367,8 @@ it("leaves folders it does not own as a deleted thread's own", async () => {
   const { root, folder, thread } = fixture();
   const shared = folder("2026-10-23-shared-abcd1234");
   const marker = folder("2026-10-23-marker-00000000");
-  const markerHandled = () => !FS.existsSync(marker);
+  const markerHandled = () =>
+    !FS.existsSync(marker) && !FS.existsSync(scratchThreadCleanupPath(marker, "marker" as never));
   const outside = FS.realpathSync(FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-not-scratch-")));
   roots.push(outside);
   const remove = await run(
@@ -266,7 +394,7 @@ it("leaves folders it does not own as a deleted thread's own", async () => {
     // Each deletion is handled in order, so a final marker deletion shows the rest are done.
     () => markerHandled(),
   );
-  expect(remove.mock.calls).toEqual([[marker]]);
+  expect(remove.mock.calls).toEqual([[scratchThreadCleanupPath(marker, "marker" as never)]]);
   expect(FS.existsSync(shared)).toBe(true);
   expect(FS.existsSync(outside)).toBe(true);
 });
