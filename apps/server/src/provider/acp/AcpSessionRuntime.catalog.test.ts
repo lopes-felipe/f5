@@ -8,6 +8,40 @@ import { AcpSessionRuntime } from "./AcpSessionRuntime";
 import { writeAcpWrapper } from "../../testUtils/cli";
 
 describe("ACP catalog startup wire payloads", () => {
+  it("redacts whole API keys in process-exit stderr and request failure traces", async () => {
+    const failures: unknown[] = [];
+    const secret = "sk-ant-api03-AbCdEf_GhIjKlMnOpQr-StUvWx_yz0123456789-AA";
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const context = yield* Layer.build(
+          AcpSessionRuntime.layer({
+            spawn: {
+              command: process.execPath,
+              args: [
+                "-e",
+                'process.stdin.once("data", () => { process.stderr.write(process.env.F5_TEST_DIAGNOSTIC); process.exit(7); });',
+              ],
+              env: { F5_TEST_DIAGNOSTIC: secret },
+            },
+            cwd: process.cwd(),
+            clientInfo: { name: "test", version: "1" },
+            requestLogger: (event) =>
+              Effect.sync(() => {
+                if (event.failure) failures.push(event.failure);
+              }),
+          }),
+        );
+        const runtime = yield* Effect.service(AcpSessionRuntime).pipe(Effect.provide(context));
+        return yield* runtime.start().pipe(Effect.result);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    );
+    expect(result._tag).toBe("Failure");
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(secret);
+    expect(serialized).toContain("[redacted]");
+    expect(JSON.stringify(failures)).not.toContain(secret);
+    expect(JSON.stringify(failures)).toContain("[redacted]");
+  });
   it.each(["new", "load", "load-fallback", "resume", "resume-fallback"] as const)(
     "sends validated MCP configuration on %s",
     async (branch) => {

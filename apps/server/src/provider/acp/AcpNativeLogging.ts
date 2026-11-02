@@ -1,4 +1,5 @@
 import type { ProviderKind, ThreadId } from "@t3tools/contracts";
+import { redactProviderFailureText } from "../failureText.ts";
 import { Effect } from "effect";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
 
@@ -33,6 +34,8 @@ function writeNativeAcpLog(input: {
 }
 
 const REDACTED = "[redacted elicitation answer]";
+export const redactAcpDiagnosticText = (text: string): string =>
+  redactProviderFailureText(text).replaceAll("[REDACTED]", "[redacted]");
 
 /**
  * Elicitation answers (`{ action: "accept", content }`, nested under the ACP
@@ -61,7 +64,7 @@ export class AcpCredentialScrubber {
   }
   scrub(text: string): string {
     for (const credential of this.credentials) text = text.replaceAll(credential, "[redacted]");
-    return text;
+    return redactAcpDiagnosticText(text);
   }
 }
 
@@ -75,7 +78,7 @@ export function redactAcpLogPayload(
 ): unknown {
   if (depth > 32) return "[redacted]";
   if (typeof value === "string") {
-    const safe = scrubber?.scrub(value) ?? value;
+    const safe = scrubber?.scrub(value) ?? redactAcpDiagnosticText(value);
     if (depth === 0) {
       try {
         return safe

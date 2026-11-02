@@ -1,4 +1,5 @@
 import { assertScheduledDeliveryAllowed } from "../../scheduledTasks/deliveryGate.ts";
+import { redactProviderFailureText } from "../../provider/failureText.ts";
 import { fenceScheduledRun } from "../../scheduledTasks/cancellation.ts";
 import { scheduledSendGate } from "../../scheduledTasks/sendGate.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -440,10 +441,11 @@ const make = Effect.gen(function* () {
           cause: Cause.pretty(exit.cause),
         });
       }
-      const detail =
+      const detail = redactProviderFailureText(
         typedDeliveryError?.message ??
-        requestError?.message ??
-        "The provider delivery outcome is unknown. Recheck provider history before retrying.";
+          requestError?.message ??
+          "The provider delivery outcome is unknown. Recheck provider history before retrying.",
+      );
       if (
         notSent &&
         !rejectedLimit &&

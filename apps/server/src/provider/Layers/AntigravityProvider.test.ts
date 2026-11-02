@@ -5,13 +5,28 @@ import { antigravityProfileDirectory } from "../acp/AntigravityAcpSupport.ts";
 import { Effect, Schema } from "effect";
 import { AntigravitySettings } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vitest";
-import { checkAntigravityProviderStatus } from "./AntigravityProvider.ts";
+import { buildAntigravityModels, checkAntigravityProviderStatus } from "./AntigravityProvider.ts";
 import {
   AntigravityInstallation,
   AntigravityUpdateRequiredError,
 } from "../AntigravityInstallation.ts";
 
 describe("Antigravity status", () => {
+  it("labels repeated names, removes duplicate IDs and falls back to the ID for blank names", () => {
+    expect(
+      buildAntigravityModels([
+        { value: "flash", name: "Gemini Flash" },
+        { value: "flash-preview", name: "Gemini Flash" },
+        { value: "flash", name: "Duplicate" },
+        { value: "", name: "Empty" },
+        { value: "custom", name: " " },
+      ]).map(({ slug, name }) => ({ slug, name })),
+    ).toEqual([
+      { slug: "flash", name: "Gemini Flash" },
+      { slug: "flash-preview", name: "Gemini Flash (flash-preview)" },
+      { slug: "custom", name: "custom" },
+    ]);
+  });
   it("explains the required update without downloading or misreporting an existing version", async () => {
     const resolve = vi
       .spyOn(AntigravityInstallation.prototype, "resolve")

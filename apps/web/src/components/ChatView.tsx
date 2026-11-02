@@ -7128,6 +7128,7 @@ export default memo(function ChatView({
       options?: { suppressAutocomplete?: boolean },
     ) => {
       if (activePendingProgress?.activeQuestion && activePendingUserInput) {
+        if (activePendingProgress.activeQuestion.allowCustomAnswer === false) return;
         onChangeActivePendingUserInputCustomAnswer(
           activePendingProgress.activeQuestion.id,
           nextPrompt,

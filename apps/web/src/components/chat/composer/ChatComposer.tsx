@@ -785,7 +785,9 @@ export function ChatComposer({
                   isComposerApprovalState
                     ? (activePendingApproval?.detail ?? "Resolve this approval request to continue")
                     : activePendingProgress
-                      ? "Type your own answer, or leave this blank to use the selected option"
+                      ? activePendingProgress.activeQuestion?.allowCustomAnswer === false
+                        ? "Choose one of the options above"
+                        : "Type your own answer, or leave this blank to use the selected option"
                       : showPlanFollowUpPrompt && activeProposedPlan
                         ? "Add feedback to refine the plan, or leave this blank to implement it"
                         : revertInProgress
@@ -796,7 +798,12 @@ export function ChatComposer({
                               ? "Ask for follow-up changes or attach files"
                               : "Ask F5 to build, fix, or explain... (@ files, / commands)"
                 }
-                disabled={isConnecting || isComposerApprovalState || isPendingTurnDispatchBlocked}
+                disabled={
+                  isConnecting ||
+                  isComposerApprovalState ||
+                  isPendingTurnDispatchBlocked ||
+                  activePendingProgress?.activeQuestion?.allowCustomAnswer === false
+                }
                 id={composerEditorId}
                 ariaLabel="Message"
                 suggestionListId={composerSuggestionListId}

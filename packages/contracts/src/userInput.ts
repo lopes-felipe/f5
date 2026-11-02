@@ -4,6 +4,8 @@ import { ElicitationDescriptor, ElicitationReceiptState } from "./elicitation";
 export const UserInputQuestionOption = Schema.Struct({
   label: TrimmedNonEmptyString,
   description: TrimmedNonEmptyString,
+  /** Provider wire value; the label remains presentation text. */
+  value: Schema.optional(TrimmedNonEmptyString),
 });
 export type UserInputQuestionOption = typeof UserInputQuestionOption.Type;
 
@@ -16,6 +18,7 @@ export const UserInputQuestion = Schema.Struct({
   initialAnswer: Schema.optional(Schema.String.check(Schema.isMaxLength(64 * 1024))),
   multiSelect: Schema.optional(Schema.Boolean),
   optional: Schema.optional(Schema.Boolean),
+  allowCustomAnswer: Schema.optional(Schema.Boolean),
 });
 export type UserInputQuestion = typeof UserInputQuestion.Type;
 
