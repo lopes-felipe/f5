@@ -27,6 +27,7 @@ function PopoverPopup({
   alignOffset = 0,
   tooltipStyle = false,
   anchor,
+  touchBackdrop = false,
   ...props
 }: PopoverPrimitive.Popup.Props & {
   side?: PopoverPrimitive.Positioner.Props["side"];
@@ -35,11 +36,19 @@ function PopoverPopup({
   alignOffset?: PopoverPrimitive.Positioner.Props["alignOffset"];
   tooltipStyle?: boolean;
   anchor?: PopoverPrimitive.Positioner.Props["anchor"];
+  touchBackdrop?: boolean;
 }) {
   const finalFocus = usePopupFocus();
   const ownerAttributes = usePopupOwnerAttributes();
   return (
     <PopoverPrimitive.Portal>
+      {touchBackdrop ? (
+        // Intercept outside taps so dismissing the popup cannot activate a control below it.
+        <PopoverPrimitive.Backdrop
+          className="fixed inset-0 z-[130] hidden pointer-coarse:block"
+          data-slot="popover-backdrop"
+        />
+      ) : null}
       <PopoverPrimitive.Positioner
         align={align}
         alignOffset={alignOffset}

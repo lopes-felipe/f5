@@ -9,6 +9,7 @@ import {
   isControlEvent,
 } from "../commandAdmission.ts";
 import { readPersistedSessionGeneration } from "../../provider/sessionCapabilities.ts";
+import { readSubmissionSource } from "../../provider/submissionProvenance.ts";
 import { registerShutdown, AcceptedShutdownWork } from "../../shutdown.ts";
 import {
   WorkspaceWriteContext,
@@ -668,7 +669,25 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               let nextReadModel = commandReadModel;
 
               for (const nextEvent of eventBases) {
-                const savedEvent = yield* eventStore.append(nextEvent);
+                // Stamp the durable event as well as the live push so recall behaves
+                // identically before and after reconnecting or replaying history.
+                const authorship =
+                  nextEvent.type === "thread.message-sent" &&
+                  nextEvent.payload.role === "user" &&
+                  nextEvent.commandId
+                    ? envelope.command.type === "thread.turn.start" &&
+                      envelope.command.presentation === "continuation"
+                      ? "automation"
+                      : yield* readSubmissionSource(
+                          nextEvent.commandId,
+                          nextEvent.payload.threadId,
+                        ).pipe(Effect.provideService(SqlClient.SqlClient, sql))
+                    : undefined;
+                const savedEvent = yield* eventStore.append(
+                  nextEvent.type === "thread.message-sent" && authorship === "automation"
+                    ? { ...nextEvent, payload: { ...nextEvent.payload, authorship } }
+                    : nextEvent,
+                );
                 appendedEventIds.add(savedEvent.eventId);
                 nextReadModel = yield* measurePerformanceStage(
                   probe,

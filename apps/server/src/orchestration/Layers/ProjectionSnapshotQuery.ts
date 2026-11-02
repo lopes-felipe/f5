@@ -76,7 +76,6 @@ import { ProjectionStateRepository } from "../../persistence/Services/Projection
 import { ProjectionThreadActivity } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import { ProjectionThreadMessage } from "../../persistence/Services/ProjectionThreadMessages.ts";
-import { ProjectionThreadMessageRepository } from "../../persistence/Services/ProjectionThreadMessages.ts";
 import { ProjectionThreadProposedPlan } from "../../persistence/Services/ProjectionThreadProposedPlans.ts";
 import { ProjectionThreadSession } from "../../persistence/Services/ProjectionThreadSessions.ts";
 import { ProjectionThread } from "../../persistence/Services/ProjectionThreads.ts";
@@ -120,6 +119,7 @@ const ProjectionProjectSkillDbRowSchema = ProjectionProjectSkill.mapFields(
 );
 const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
+    authorship: Schema.NullOr(Schema.Literal("automation")),
     isStreaming: Schema.Number,
     reasoningText: Schema.NullOr(Schema.String),
     reasoningTokens: Schema.NullOr(Schema.Number),
@@ -474,6 +474,7 @@ function toReadModelMessage(
     id: row.messageId,
     role: row.role,
     text: row.text,
+    ...(row.authorship !== null ? { authorship: row.authorship } : {}),
     ...(row.reasoningText !== null ? { reasoningText: row.reasoningText } : {}),
     ...reasoningTokenFieldsFromRow(row),
     ...(row.skillCall !== null ? { skillCall: row.skillCall } : {}),
@@ -640,6 +641,7 @@ function mapThreadDetailMessages(
     id: message.messageId,
     role: message.role,
     text: message.text,
+    ...(message.authorship !== undefined ? { authorship: message.authorship } : {}),
     turnId: message.turnId,
     streaming: message.isStreaming,
     createdAt: message.createdAt,
@@ -736,6 +738,7 @@ function toProjectionThreadMessageRecord(
     turnId: row.turnId,
     role: row.role,
     text: row.text,
+    ...(row.authorship !== null ? { authorship: row.authorship } : {}),
     ...(row.reasoningText !== null ? { reasoningText: row.reasoningText } : {}),
     ...reasoningTokenFieldsFromRow(row),
     ...(row.skillCall !== null ? { skillCall: row.skillCall } : {}),
@@ -916,6 +919,16 @@ function buildThreadHistoryPageResult(params: {
 
 const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  // Indexed by message identity; this also covers messages predating the event stamp.
+  const messageAuthorshipSql = (
+    messageId = sql`projection_thread_messages.message_id`,
+    threadId = sql`projection_thread_messages.thread_id`,
+  ) => sql`(
+    SELECT source FROM thread_message_authorship a
+    WHERE a.message_id = ${messageId}
+      AND a.thread_id = ${threadId}
+      AND a.source = 'automation'
+  )`;
   const reader = yield* Effect.serviceOption(ReadSqlClient);
   const searchThread = yield* makeThreadFind.pipe(
     Effect.provideService(
@@ -978,7 +991,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     );
   const projectionThreadRepository = yield* ProjectionThreadRepository;
   const projectionThreadActivityRepository = yield* ProjectionThreadActivityRepository;
-  const projectionThreadMessageRepository = yield* ProjectionThreadMessageRepository;
   const projectionCheckpointRepository = yield* ProjectionCheckpointRepository;
   const projectionStateRepository = yield* ProjectionStateRepository;
 
@@ -1156,6 +1168,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           reasoning_tokens AS "reasoningTokens",
           reasoning_tokens_estimated AS "reasoningTokensEstimated",
           skill_call_json AS "skillCall",
+          ${messageAuthorshipSql()} AS authorship,
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
@@ -1203,6 +1216,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           "reasoningTokens",
           "reasoningTokensEstimated",
           "skillCall",
+          ${messageAuthorshipSql(sql`ranked_messages."messageId"`, sql`ranked_messages."threadId"`)} AS authorship,
           "attachments",
           "isStreaming",
           "createdAt",
@@ -1459,6 +1473,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           reasoning_tokens AS "reasoningTokens",
           reasoning_tokens_estimated AS "reasoningTokensEstimated",
           skill_call_json AS "skillCall",
+          ${messageAuthorshipSql()} AS authorship,
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
@@ -1493,6 +1508,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           reasoning_tokens AS "reasoningTokens",
           reasoning_tokens_estimated AS "reasoningTokensEstimated",
           skill_call_json AS "skillCall",
+          ${messageAuthorshipSql()} AS authorship,
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
@@ -3159,7 +3175,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           kind: "query",
           scope: "getThreadDetails",
           name: "listThreadMessages",
-          effect: projectionThreadMessageRepository.listByThreadId(input),
+          effect: listThreadMessageRows(input.threadId).pipe(
+            Effect.map((rows) => rows.map(toProjectionThreadMessageRecord)),
+          ),
         });
         const checkpoints = yield* withTimedLog({
           kind: "query",

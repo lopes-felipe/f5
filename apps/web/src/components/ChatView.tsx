@@ -6139,6 +6139,7 @@ export default memo(function ChatView({
       }
       return;
     }
+    if (!activePendingProgress.canAdvance) return;
     setActivePendingUserInputQuestionIndex(activePendingProgress.questionIndex + 1);
   }, [
     activePendingIsResponding,

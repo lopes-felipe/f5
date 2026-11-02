@@ -357,6 +357,7 @@ function mapMessagesFromReadModel(
       existing &&
       existing.role === message.role &&
       existing.text === message.text &&
+      existing.authorship === message.authorship &&
       existing.reasoningText === message.reasoningText &&
       existing.reasoningTokens === message.reasoningTokens &&
       existing.reasoningTokensEstimated === message.reasoningTokensEstimated &&
@@ -374,6 +375,7 @@ function mapMessagesFromReadModel(
       id: message.id,
       role: message.role,
       text: message.text,
+      ...(message.authorship !== undefined ? { authorship: message.authorship } : {}),
       ...(message.reasoningText !== undefined ? { reasoningText: message.reasoningText } : {}),
       ...(message.reasoningTokens !== undefined
         ? { reasoningTokens: message.reasoningTokens }
