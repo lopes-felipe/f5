@@ -8794,11 +8794,20 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T10:34:33.867Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/PiAdapter.ts:492"
+        ],
+        "f5Refs": [
+          "f72e2590bef5ac90f2fd517a1578854d0f73fb0a"
+        ]
+      },
       "id": "pr-15368",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -10019,11 +10028,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T10:34:33.867Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-15672",
-      "status": "port",
+      "reason": "f5 has no OpenCode 2 runtime, and its OpenCode adapter already shows `session.status` retries as runtime warnings.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -18619,11 +18630,22 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T10:34:33.867Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "packages/shared/src/claudeTaskToolProjection.ts:170",
+          "packages/shared/src/claudeTaskToolProjection.ts:473",
+          "apps/server/src/orchestration/projector.ts:123"
+        ],
+        "f5Refs": [
+          "f72e2590bef5ac90f2fd517a1578854d0f73fb0a"
+        ]
+      },
       "id": "pr-18398",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -22279,11 +22301,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T10:34:33.867Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-19154",
-      "status": "port",
+      "reason": "f5 launches the configured Codex binary and has no managed Codex install to fall back to, so there is no local-versus-managed resolution to gate.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -50139,11 +50163,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T10:34:33.867Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-24615",
-      "status": "port",
+      "reason": "f5 uses ACP protocol v1, where prompt failures arrive as RPC errors, so there are no ACP v2 idle `state_update` completions that could be reported as completed turns.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
