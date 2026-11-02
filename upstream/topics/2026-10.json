@@ -1266,14 +1266,16 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
-      "decidedAt": "2026-10-28T20:58:34.870Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T09:55:14.993Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-10120",
+      "reason": "f5's provider runtime ingestion reads threads, messages and plans from the in-memory orchestration read model (`orchestrationEngine.getReadModel()`), not full DB thread reads.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-10108"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "server",
@@ -1996,11 +1998,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T09:55:20.631Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-10700",
-      "status": "port",
+      "reason": "f5's usage accounts are per-instance snapshots without the email, workspace or credential identity upstream uses to merge subscriptions, so instances cannot be grouped safely.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "usage",
@@ -2607,11 +2611,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
-      "decidedAt": "2026-10-28T20:58:35.069Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T09:55:15.013Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-11198",
-      "status": "port",
+      "reason": "f5 renders code blocks in the still-streaming part of a message as plain `<pre>` (apps/web/src/components/ChatMarkdown.tsx:860) and highlights a block only once it is complete, so streamed chunks never rebuild highlighted tokens; the change also depends on upstream's incremental highlighter (pr-1119",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline",
@@ -11270,11 +11276,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-28T20:58:23.068Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T09:55:18.312Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-16146",
-      "status": "port",
+      "reason": "f5's Cursor provider runs over ACP (`agent acp`), not the Cursor Agent SDK, and ACP prompt failures already carry the agent's error message (apps/server/src/provider/acp/AcpAdapterSupport.ts:33).",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -11716,11 +11724,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
-      "decidedAt": "2026-10-28T20:58:36.952Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T09:55:15.754Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-16291",
-      "status": "port",
+      "reason": "f5 reorders pinned threads by replacing the whole list via replacePinnedThreads and has no per-server order-key drop planner, so offline rows cannot block a drop.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "sidebar"
@@ -15961,14 +15971,16 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T09:55:20.127Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-17672",
+      "reason": "f5's desktop window doesn't enable Electron's titleBarOverlay, so the overlay height is always zero and the tooltip change would do nothing.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-6049"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
@@ -16324,14 +16336,16 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T09:55:20.631Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-17759",
+      "reason": "f5 has no local OpenCode history scanner; its OpenCode limits fetch already reads each instance's own environment.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-17769"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "usage",
@@ -17652,11 +17666,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T20:52:57.683Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T09:55:17.331Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-18175",
-      "status": "port",
+      "reason": "f5 has no \"Close with comment\" control; closing a PR always goes through the PR action confirmation panel.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "pr-hub"
@@ -20197,14 +20213,16 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T09:55:20.631Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-18723",
+      "reason": "f5 has no live mid-turn usage writes, and each account-usage capability has one serialized writer, so an older probe cannot race a newer one.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-15116"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "usage",
@@ -23741,14 +23759,16 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T09:55:20.631Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-19465",
+      "reason": "f5 has no per-cwd provider workspace scans; project skills are scanned by a single serialized background worker in ProjectSkillSyncService.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-18309"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -32342,11 +32362,20 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-28T20:58:30.311Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T09:55:18.313Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:4888"
+        ],
+        "f5Refs": [
+          "f72e2590bef5ac90f2fd517a1578854d0f73fb0a"
+        ]
+      },
       "id": "pr-21151",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -39712,11 +39741,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T09:55:20.631Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-22558",
-      "status": "port",
+      "reason": "f5 has no Codex rollout token_count scanner; it records per-turn usage from turn.completed events, so there is no cumulative counter reconciliation or skipped-usage warning to fix.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "usage",
@@ -41505,11 +41536,20 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-10-28T20:52:53.342Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T09:55:15.013Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "packages/shared/src/path.ts:28"
+        ],
+        "f5Refs": [
+          "f72e2590bef5ac90f2fd517a1578854d0f73fb0a"
+        ]
+      },
       "id": "pr-22853",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "timeline",
@@ -42206,11 +42246,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-10-28T20:52:53.859Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T09:55:17.331Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-22917",
-      "status": "port",
+      "reason": "f5's PrFilesTab builds its files directly from the infinite query data, so there is no separate slice state for a refetch with the same identity to leave empty.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "pr-hub"
@@ -42325,14 +42367,23 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-10-28T20:52:54.192Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T09:55:17.331Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "packages/shared/src/sourceControl.ts:315"
+        ],
+        "f5Refs": [
+          "f72e2590bef5ac90f2fd517a1578854d0f73fb0a"
+        ]
+      },
       "id": "pr-22937",
+      "reason": "Already present in f5",
       "relatedTopics": [
         "pr-18775"
       ],
-      "status": "port",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "pr-hub",
@@ -46433,11 +46484,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T09:55:21.750Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-23900",
-      "status": "port",
+      "reason": "f5 has no subagent thread lineage (no `parentThreadId`/`lineage`); subagents run as background work inside one thread, so a deleted thread never shares its worktree with a subagent chain.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "worktrees",
@@ -70728,14 +70781,16 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T09:55:20.127Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-6049",
+      "reason": "f5's desktop window doesn't use the Windows window-controls overlay, and `--workspace-native-controls-inset` doesn't exist here, so no native controls overlap the PR page header.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-16869"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "PR hub",
@@ -71531,11 +71586,13 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T09:55:19.297Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-6485",
-      "status": "port",
+      "reason": "f5 has no iterative OKLCH gamut mapping; colors go through culori parse/formatHex with clamped chroma, so extreme finite chroma can't cause a loop.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "settings",
@@ -71828,14 +71885,24 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
-      "decidedAt": "2026-10-28T20:58:34.427Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T09:55:14.993Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts:2276",
+          "packages/shared/src/orchestrationActivityPayload.ts:778"
+        ],
+        "f5Refs": [
+          "f72e2590bef5ac90f2fd517a1578854d0f73fb0a"
+        ]
+      },
       "id": "pr-6675",
+      "reason": "Already present in f5",
       "relatedTopics": [
         "pr-4622"
       ],
-      "status": "port",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "server",
@@ -75719,11 +75786,22 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T09:55:19.298Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/components/settings/ThemeSettings.tsx:36",
+          "apps/web/src/components/settings/ThemeSettings.tsx:139",
+          "apps/web/src/components/settings/ThemeSettings.tsx:242"
+        ],
+        "f5Refs": [
+          "f72e2590bef5ac90f2fd517a1578854d0f73fb0a"
+        ]
+      },
       "id": "pr-9847",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "settings",
