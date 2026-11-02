@@ -697,6 +697,7 @@ function OpenCommandPaletteDialog(props: {
       if (!targetThreadId) {
         if (!searchProject) return;
         const created = await handleNewThread(searchProject.id);
+        if (!created) return;
         targetThreadId = created.threadId;
       }
       const surface = openFileRightPanelSurface(targetThreadId, {

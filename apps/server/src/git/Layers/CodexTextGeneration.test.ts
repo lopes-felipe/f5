@@ -661,6 +661,25 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
     ),
   );
 
+  it.effect("sends thread title instructions to the Codex prompt", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({ title: "Reconnect failures", needsRefinement: false }),
+        stdinMustContain: "- Additional instructions:\nUse two to four words.",
+      },
+      Effect.gen(function* () {
+        const textGeneration = yield* TextGeneration;
+        const generated = yield* textGeneration.generateThreadTitle({
+          cwd: process.cwd(),
+          message: "Investigate reconnect failures",
+          instructions: "Use two to four words.",
+        });
+
+        expect(generated.title).toBe("Reconnect failures");
+      }),
+    ),
+  );
+
   it.effect.each([false, true])("preserves thread title needsRefinement=%s", (needsRefinement) =>
     withFakeCodexEnv(
       { output: JSON.stringify({ title: "Fix sidebar sizing", needsRefinement }) },

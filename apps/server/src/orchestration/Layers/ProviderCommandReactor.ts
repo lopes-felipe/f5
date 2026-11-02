@@ -2740,6 +2740,7 @@ const make = Effect.gen(function* () {
       titleSourceText,
       attachments,
       ...(linkedContext !== undefined ? { linkedContext } : {}),
+      instructions: settings.threadTitleInstructions,
       titleGenerationModel: requestedSelection.model,
       titleGenerationModelSelection: requestedSelection,
       ...(event.payload.origin === "explicit" ? { previousTitle: thread.title } : {}),

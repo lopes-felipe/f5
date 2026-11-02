@@ -138,6 +138,46 @@ export function messageListStructure(messages: ChatMessage[]): object {
   }
   return structure;
 }
+const derivedStructures = new WeakMap<
+  object,
+  {
+    readonly overlays: ReadonlyArray<unknown>;
+    readonly sourceAttachment: object;
+    readonly message: object;
+    readonly attachment: object;
+  }
+>();
+/**
+ * A list derived from another (attachment preview handoff, optimistic sends)
+ * keeps one structural identity while the source's structure and every overlay
+ * are unchanged, so streaming text through it stays on the cheap path. The
+ * caller must keep unchanged derived messages referentially stable.
+ */
+export function linkDerivedMessageList(
+  source: ChatMessage[],
+  next: ChatMessage[],
+  overlays: ReadonlyArray<unknown>,
+): ChatMessage[] {
+  if (next === source) return next;
+  const sourceMessage = messageListStructure(source);
+  const sourceAttachment = attachmentStructure(source);
+  const cached = derivedStructures.get(sourceMessage);
+  const sameOverlays =
+    cached !== undefined &&
+    cached.overlays.length === overlays.length &&
+    cached.overlays.every((overlay, index) => Object.is(overlay, overlays[index]));
+  const linked = {
+    overlays,
+    sourceAttachment,
+    message: sameOverlays ? cached.message : {},
+    attachment:
+      sameOverlays && cached.sourceAttachment === sourceAttachment ? cached.attachment : {},
+  };
+  derivedStructures.set(sourceMessage, linked);
+  messageStructures.set(next, linked.message);
+  attachmentStructures.set(next, linked.attachment);
+  return next;
+}
 export function recordMessageListChange(
   previous: ChatMessage[],
   next: ChatMessage[],

@@ -36,6 +36,7 @@ import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
+  threadTitleInstructionRules,
   threadTitleLinkedContextSections,
 } from "../Prompts.ts";
 import {
@@ -667,6 +668,7 @@ export const makeCodexTextGeneration = (
           "- No trailing punctuation.",
           "- Be specific, but do not copy the full prompt verbatim.",
           "- If images are attached, use them as primary context for visual or UI issues.",
+          ...threadTitleInstructionRules(input.instructions).map((rule) => `- ${rule}`),
           "",
           input.previousTitle !== undefined ? "Thread contents:" : "User message:",
           limitSection(input.message, 8_000),
