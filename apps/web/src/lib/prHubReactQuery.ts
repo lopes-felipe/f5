@@ -1,5 +1,10 @@
 import { infiniteQueryOptions, queryOptions, type InfiniteData } from "@tanstack/react-query";
-import type { PrHubListInput, PrHubListPage, PullRequestKey } from "@t3tools/contracts";
+import type {
+  PrHubListInput,
+  PrHubListPage,
+  PrHubReviewComment,
+  PullRequestKey,
+} from "@t3tools/contracts";
 
 import { ensureNativeApi } from "../nativeApi";
 import { getPrHubSelectedAccountId, getPrHubAccountGeneration } from "./prHubAccount";
@@ -55,6 +60,53 @@ export function prHubTimelineQueryOptions(key: PullRequestKey) {
       }),
     getNextPageParam: (page) =>
       page.pageInfo.hasNextPage ? (page.pageInfo.endCursor ?? undefined) : undefined,
+    staleTime: 30_000,
+  });
+}
+
+/** Shared by the review threads tab and the timeline, which groups replies by thread. */
+export function prHubReviewThreadsQueryOptions(key: PullRequestKey) {
+  const accountGeneration = getPrHubAccountGeneration();
+  return infiniteQueryOptions({
+    queryKey: ["prHub", "reviewThreads", accountGeneration, key] as const,
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) =>
+      ensureNativeApi().prHub.getReviewThreads({
+        key,
+        accountGeneration,
+        ...(pageParam ? { cursor: pageParam } : {}),
+      }),
+    getNextPageParam: (page) =>
+      page.pageInfo.hasNextPage ? (page.pageInfo.endCursor ?? undefined) : undefined,
+    staleTime: 30_000,
+  });
+}
+
+/** Comment pages one thread read can walk before the rest is left to the host. */
+const THREAD_COMMENT_PAGES = 5;
+
+/** Every comment of one review thread, for threads the threads read cut short. */
+export function prHubReviewThreadCommentsQueryOptions(key: PullRequestKey, threadId: string) {
+  const accountGeneration = getPrHubAccountGeneration();
+  return queryOptions({
+    // Under the threads key, so the invalidations after replies and resolution reach it.
+    queryKey: ["prHub", "reviewThreads", accountGeneration, key, threadId, "all"] as const,
+    queryFn: async () => {
+      const comments: PrHubReviewComment[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < THREAD_COMMENT_PAGES; page++) {
+        const result = await ensureNativeApi().prHub.getReviewThreads({
+          key,
+          accountGeneration,
+          threadId,
+          ...(cursor ? { cursor } : {}),
+        });
+        comments.push(...result.threads.flatMap((thread) => thread.comments));
+        cursor = result.pageInfo.hasNextPage ? (result.pageInfo.endCursor ?? undefined) : undefined;
+        if (!cursor) return { comments, hasNextPage: false };
+      }
+      return { comments, hasNextPage: true };
+    },
     staleTime: 30_000,
   });
 }

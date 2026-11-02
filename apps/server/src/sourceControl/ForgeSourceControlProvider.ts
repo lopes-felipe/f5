@@ -135,6 +135,8 @@ const rows = (value: unknown): Json[] =>
 const text = (value: unknown) => (typeof value === "string" ? value : "");
 const enc = encodeURIComponent;
 const pathParts = (value: string) => value.split("/").map(enc).join("/");
+/** The largest merge request `/diffs` page every supported GitLab version answers. */
+const GITLAB_MERGE_REQUEST_DIFF_PAGE_SIZE = 30;
 
 /** Each request resolves an account independently. There is no process-global active account. */
 export function makeForgeSourceControlProvider(options: {
@@ -354,15 +356,15 @@ export function makeForgeSourceControlProvider(options: {
           ),
         );
     });
-  const pagedRows = (ref: SourceControlPullRequestRef, suffix: string) =>
+  const pagedRows = (ref: SourceControlPullRequestRef, suffix: string, pageSize = 100) =>
     Effect.gen(function* () {
       if (kind === "azure-devops") return rows(yield* request(ref, undefined, suffix));
       const result: Json[] = [];
-      for (let page = 1; page <= 10; page++) {
+      for (let page = 1; page <= Math.ceil(1_000 / pageSize); page++) {
         const response = yield* request(
           ref,
           undefined,
-          `${suffix}${suffix.includes("?") ? "&" : "?"}${kind === "gitlab" ? "per_page" : kind === "bitbucket" ? "pagelen" : "limit"}=100&page=${page}`,
+          `${suffix}${suffix.includes("?") ? "&" : "?"}${kind === "gitlab" ? "per_page" : kind === "bitbucket" ? "pagelen" : "limit"}=${pageSize}&page=${page}`,
         );
         if (!Array.isArray(response) && !Array.isArray(object(response).values))
           return yield* error(
@@ -372,7 +374,7 @@ export function makeForgeSourceControlProvider(options: {
           );
         const values = rows(response);
         result.push(...values);
-        const more = kind === "bitbucket" ? !!object(response).next : values.length === 100;
+        const more = kind === "bitbucket" ? !!object(response).next : values.length >= pageSize;
         if (!more) return result;
       }
       return yield* error(
@@ -954,6 +956,9 @@ export function makeForgeSourceControlProvider(options: {
             const result = yield* pagedRows(
               ref,
               `${pull(ref)}/${kind === "gitlab" ? "diffs" : kind === "bitbucket" ? "diffstat" : "files"}`,
+              // GitLab 15.7 through 17.10 answer merge request `/diffs` with a 500 for any
+              // `per_page` above 30 (fixed in 17.11).
+              kind === "gitlab" ? GITLAB_MERGE_REQUEST_DIFF_PAGE_SIZE : undefined,
             );
             const diff =
               kind === "gitlab"

@@ -247,6 +247,12 @@ async function renderTabs() {
     prHub: {
       getDetail: vi.fn().mockResolvedValue(detail),
       getTimeline: vi.fn().mockResolvedValue(timeline),
+      getReviewThreads: vi.fn().mockResolvedValue({
+        threads: [],
+        pageInfo: { hasNextPage: false, endCursor: null, truncated: false },
+        comparisonVersion: "comparison",
+        refreshedAt: "2026-01-02T00:00:00.000Z",
+      }),
       getFiles: vi.fn().mockResolvedValue(filesPage()),
       getReviewOperation: vi.fn().mockImplementation(() => Promise.resolve(savedOperation)),
       prepareReview: nativeApiRef.prepareReview,
@@ -494,6 +500,130 @@ describe("PrDetailsTabs", () => {
     await expect
       .element(page.getByRole("button", { name: "Reopen conversation" }))
       .toBeInTheDocument();
+  });
+
+  it("keeps review thread replies with their finding and folds resolved threads", async () => {
+    await renderTabs();
+    const reviewComment = (id: string, body: string, createdAt: string) => ({
+      type: "comment" as const,
+      id,
+      databaseId: null,
+      kind: "review-comment" as const,
+      author: { login: id, name: null, avatarUrl: null },
+      body,
+      createdAt,
+      updatedAt: null,
+      url: `https://github.com/octo/repo/pull/1#${id}`,
+      path: "src/detail.ts",
+      line: 2,
+      reviewState: "COMMENTED",
+      viewerCanUpdate: false,
+      reactions: [],
+    });
+    const threadComment = (id: string) => ({
+      id,
+      author: id,
+      bodyText: `Thread copy of ${id}`,
+      url: `https://github.com/octo/repo/pull/1#${id}`,
+      createdAt: null,
+      updatedAt: null,
+      outdated: false,
+      diffHunk: null,
+    });
+    const api = nativeApiRef.current!.prHub;
+    api.getTimeline = vi.fn().mockResolvedValue({
+      ...timelinePage("Unrelated comment"),
+      entries: [
+        reviewComment("late", "Late reply", "2026-01-05T00:00:00.000Z"),
+        reviewComment("reply", "Fixed in the next commit", "2026-01-04T00:00:00.000Z"),
+        ...timelinePage("Unrelated comment").entries,
+        {
+          ...reviewComment("dropped", "Dismissed nit", "2026-01-01T00:00:00.000Z"),
+          reviewState: "DISMISSED",
+        },
+        reviewComment("finding", "Explain this", "2026-01-01T00:00:00.000Z"),
+        reviewComment("settled", "Old nit", "2026-01-01T00:00:00.000Z"),
+      ],
+    });
+    const pageInfo = (endCursor: string | null) => ({
+      hasNextPage: endCursor !== null,
+      endCursor,
+      truncated: false,
+    });
+    const threadsPage = (threads: ReadonlyArray<unknown>, endCursor: string | null = null) => ({
+      threads,
+      pageInfo: pageInfo(endCursor),
+      comparisonVersion: "comparison",
+      refreshedAt: "2026-01-05T00:00:00.000Z",
+    });
+    const settledThread = {
+      id: "thread-2",
+      path: "src/other.ts",
+      line: 9,
+      originalLine: 9,
+      isResolved: true,
+      comments: [threadComment("settled")],
+      // The threads read stops at the first comments of a long thread.
+      commentsPageInfo: pageInfo("more-comments"),
+    };
+    api.getReviewThreads = vi.fn().mockImplementation(async (input) => {
+      if (input.threadId === "thread-2")
+        return threadsPage([
+          {
+            ...settledThread,
+            comments: ["settled", "late"].map(threadComment),
+            commentsPageInfo: pageInfo(null),
+          },
+        ]);
+      if (input.cursor === "threads-2")
+        return threadsPage([
+          {
+            id: "thread-3",
+            path: "src/gone.ts",
+            line: 4,
+            originalLine: 4,
+            isResolved: false,
+            comments: [threadComment("dropped")],
+          },
+        ]);
+      return threadsPage(
+        [
+          {
+            id: "thread-1",
+            path: "src/detail.ts",
+            line: 2,
+            originalLine: 2,
+            isResolved: false,
+            comments: ["finding", "reply", "missing"].map(threadComment),
+          },
+          settledThread,
+        ],
+        "threads-2",
+      );
+    });
+
+    await page.getByRole("tab", { name: "Timeline" }).click();
+    const thread = page.getByRole("region", { name: "Review thread on src/detail.ts" });
+    await expect.element(thread.getByText("Fixed in the next commit")).toBeInTheDocument();
+    await expect.element(thread.getByText("Explain this")).toBeInTheDocument();
+    // A thread comment the timeline has not loaded is shown from the thread's own copy.
+    await expect.element(thread.getByText("Thread copy of missing")).toBeInTheDocument();
+    const text = (await thread.element().textContent) ?? "";
+    expect(text.indexOf("Explain this")).toBeLessThan(text.indexOf("Fixed in the next commit"));
+
+    // Threads on a later page group too, and a dismissed finding folds like a resolved one.
+    const dismissed = page.getByRole("region", { name: "Review thread on src/gone.ts" });
+    await expect.element(dismissed.getByText("Review dismissed")).toBeInTheDocument();
+    await expect.element(page.getByText("Dismissed nit")).not.toBeInTheDocument();
+
+    // A long resolved thread is completed, so its late reply folds with the finding.
+    const resolved = page.getByRole("region", { name: "Review thread on src/other.ts" });
+    await expect.element(resolved.getByText("Resolved")).toBeInTheDocument();
+    await expect.element(page.getByText("Late reply")).not.toBeInTheDocument();
+    await expect.element(resolved.getByText("More replies")).not.toBeInTheDocument();
+    await resolved.getByRole("button", { name: /src\/other\.ts:9/ }).click();
+    await expect.element(resolved.getByText("Old nit")).toBeInTheDocument();
+    await expect.element(resolved.getByText("Late reply")).toBeInTheDocument();
   });
 
   it("retains an edited comment draft when the remote mutation fails", async () => {
