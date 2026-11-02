@@ -1,4 +1,5 @@
 import { once } from "node:events";
+import { writeCliScript } from "../testUtils/cli.ts";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -22,6 +23,76 @@ import {
   loadOpenCodeSkills,
   toOpenCodeFileParts,
 } from "./opencodeRuntime.ts";
+
+describe("OpenCode startup locks", () => {
+  for (const keepPipesOpen of [false, true]) {
+    it.each(["transient", "permanent", "configuration", "unrelated"] as const)(
+      "bounds %s startup attempts (inherited pipes: " + keepPipesOpen + ")",
+      async (mode) => {
+        const directory = mkdtempSync(path.join(tmpdir(), "f5-opencode-lock-"));
+        const attemptsPath = path.join(directory, "attempts");
+        const executable = writeCliScript(
+          path.join(directory, "opencode"),
+          [
+            'const { readFileSync, writeFileSync, writeSync } = require("node:fs");',
+            'const { spawn } = require("node:child_process");',
+            "const file = process.env.F5_LOCK_ATTEMPTS;",
+            "let attempts = 0;",
+            'try { attempts = Number(readFileSync(file, "utf8")); } catch {}',
+            "writeFileSync(file, String(++attempts));",
+            "if (" + JSON.stringify(mode) + ' !== "transient" || attempts < 3) {',
+            keepPipesOpen
+              ? 'const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 3000)"], { stdio: ["ignore", "inherit", "inherit"] }); child.unref();'
+              : "",
+            mode === "unrelated"
+              ? 'writeSync(1, "note: database is locked was seen earlier\\n");'
+              : "",
+            "writeSync(2, " +
+              JSON.stringify(
+                mode === "configuration" || mode === "unrelated"
+                  ? "Invalid configuration\n"
+                  : "SQLiteError: database is locked (SQLITE_BUSY)\n",
+              ) +
+              ");",
+            "process.exit(1);",
+            "}",
+            'console.log("opencode server listening on http://127.0.0.1:54321");',
+            "setInterval(() => {}, 1000);",
+          ].join("\n"),
+        );
+        try {
+          const result = await Effect.runPromise(
+            Effect.gen(function* () {
+              const runtime = yield* OpenCodeRuntime;
+              return yield* runtime
+                .startOpenCodeServerProcess({
+                  binaryPath: executable,
+                  environment: { ...process.env, F5_LOCK_ATTEMPTS: attemptsPath },
+                  timeoutMs: 2000,
+                })
+                .pipe(Effect.result);
+            }).pipe(
+              Effect.scoped,
+              Effect.provide(OpenCodeRuntimeLive.pipe(Layer.provide(NodeServices.layer))),
+            ),
+          );
+          expect(result._tag).toBe(mode === "transient" ? "Success" : "Failure");
+          expect(Number(readFileSync(attemptsPath, "utf8"))).toBe(
+            mode === "transient" ? 3 : mode === "permanent" ? 4 : 1,
+          );
+          if (result._tag === "Failure") {
+            expect(result.failure.reason).toBe(mode === "permanent" ? "databaseLocked" : undefined);
+            expect(result.failure.cause).toMatchObject({ exitCode: 1 });
+            expect(result.failure.detail).toContain("stderr:");
+          }
+        } finally {
+          rmSync(directory, { recursive: true, force: true });
+        }
+      },
+      15_000,
+    );
+  }
+});
 
 it("formats an error whose message is not a string", () => {
   const timeout = new Error("placeholder");

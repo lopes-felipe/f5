@@ -185,6 +185,7 @@ import {
   normalizeModelSlug,
   resolveModelCapabilities,
   resolveReasoningEffortForProvider,
+  resolveClaudeModelEffort,
   resolveSupportedEffort,
   supportsClaudeContextWindow,
   claudeModelSupportsAdaptiveThinking,
@@ -1472,7 +1473,7 @@ function resolveClaudeRuntimeTraits(
   );
   // An unsupported explicit effort is dropped rather than replaced by the default.
   const effort = requestedEffort
-    ? (resolveSupportedEffort(capabilities, requestedEffort) as ClaudeCodeEffort | null)
+    ? resolveClaudeModelEffort(selectedModel, requestedEffort, reported)
     : ((capabilities.defaultEffort as ClaudeCodeEffort | undefined) ?? null);
   const fastMode =
     getProviderOptionBooleanSelectionValue(selection.options, "fastMode") === true &&

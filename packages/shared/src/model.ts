@@ -840,14 +840,10 @@ export function normalizeClaudeModelOptions(
   reported?: ModelCapabilities | null,
 ): ClaudeModelOptions | undefined {
   const capabilities = resolveModelCapabilities("claudeAgent", model, reported);
-  const reasoningOptions = capabilities.effortOptions;
   const defaultReasoningEffort = capabilities.defaultEffort;
-  const resolvedEffort = resolveReasoningEffortForProvider("claudeAgent", modelOptions?.effort);
+  const resolvedEffort = resolveClaudeModelEffort(model, modelOptions?.effort, reported);
   const effort =
-    resolvedEffort &&
-    resolvedEffort !== "ultrathink" &&
-    reasoningOptions.includes(resolvedEffort) &&
-    resolvedEffort !== defaultReasoningEffort
+    resolvedEffort && resolvedEffort !== "ultrathink" && resolvedEffort !== defaultReasoningEffort
       ? resolvedEffort
       : undefined;
   const thinking =
@@ -1067,6 +1063,26 @@ export function resolveSupportedEffort(
     return trimmed as ProviderReasoningEffort;
   }
   return null;
+}
+
+/** Preserve explicit SDK efforts when no catalog or runtime effort facts are known. */
+export function resolveClaudeModelEffort(
+  model: string | null | undefined,
+  requested: string | null | undefined,
+  reported?: ModelCapabilities | null,
+): ClaudeCodeEffort | null {
+  const effort = resolveReasoningEffortForProvider("claudeAgent", requested);
+  const capabilities = resolveModelCapabilities("claudeAgent", model, reported);
+  if (
+    !getClaudeModelMetadata(model) &&
+    !(
+      reported?.source === "reported" &&
+      (reported.supportsEffort === false || selectDescriptor(reported, "effort"))
+    )
+  ) {
+    return getEffectiveClaudeCodeEffort(effort);
+  }
+  return resolveSupportedEffort(capabilities, effort) as ClaudeCodeEffort | null;
 }
 
 /**

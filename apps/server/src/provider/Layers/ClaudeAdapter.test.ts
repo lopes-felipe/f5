@@ -3068,6 +3068,25 @@ describe("ClaudeAdapterLive", () => {
     },
   );
 
+  it.effect("forwards explicit effort for an uncatalogued Claude model", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "custom-model",
+        runtimeMode: "full-access",
+        modelOptions: { claudeAgent: { effort: "max" } },
+      });
+      assert.equal(harness.getLastCreateQueryInput()?.options.model, "custom-model");
+      assert.equal(harness.getLastCreateQueryInput()?.options.effort, "max");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("forwards claude effort levels into query options", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

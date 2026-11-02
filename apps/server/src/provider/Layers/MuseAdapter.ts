@@ -105,6 +105,11 @@ import {
   salvageMuseDeny,
 } from "../msp/MuseEventMapping.ts";
 import { memoryNativeCommandIdStore, type NativeCommandIdStore } from "../msp/nativeCommandIds.ts";
+import {
+  decodeMuseSubscriptionUsage,
+  museUsageLimit,
+  type MuseSubscriptionUsage,
+} from "../msp/MuseUsageLimits.ts";
 import { type MuseAdapterShape } from "../Services/MuseAdapter.ts";
 import { writeProviderEventLog, type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
@@ -194,6 +199,7 @@ interface MuseSessionContext {
   activeTurnId: string | undefined;
   currentModelId: string | undefined;
   currentEffort: string | undefined;
+  latestSubscriptionUsage?: MuseSubscriptionUsage;
   stopped: boolean;
   diverged: boolean;
   readonly turnSettleWaiters: Map<string, Set<() => void>>;
@@ -730,6 +736,7 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
         readonly reason?: string;
         readonly usage?: unknown;
         readonly errorMessage?: string;
+        readonly quota?: unknown;
       },
     ) =>
       Effect.gen(function* () {
@@ -737,12 +744,35 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
           if (item.turnId === turnId) yield* emitItem(ctx, item as Item);
         }
         endTurn(ctx, turnId);
+        const state = museTurnState(outcome.terminal);
+        const message = outcome.errorMessage ?? outcome.reason;
+        const usageLimit =
+          state === "failed"
+            ? museUsageLimit(
+                ctx.latestSubscriptionUsage,
+                Date.parse(yield* nowIso),
+                message,
+                outcome.quota,
+              )
+            : undefined;
+        if (usageLimit) {
+          yield* offer({
+            type: "runtime.error",
+            ...(yield* stamp(ctx, turnId)),
+            payload: {
+              message: message ?? "Muse usage limit reached.",
+              class: "provider_error",
+              usageLimit,
+            },
+          });
+        }
         yield* offer({
           type: "turn.completed",
           ...(yield* stamp(ctx, turnId)),
           ...cursorField(ctx, true),
           payload: {
-            state: museTurnState(outcome.terminal),
+            state,
+            ...(usageLimit ? { usageLimit } : {}),
             stopReason: outcome.reason ?? outcome.terminal,
             ...(outcome.usage ? { usage: outcome.usage } : {}),
             ...(outcome.errorMessage ? { errorMessage: outcome.errorMessage } : {}),
@@ -812,6 +842,7 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
           yield* completeTurn(ctx, turnId, {
             terminal: String(turn.terminal ?? "completed"),
             ...(turn.error?.message?.trim() ? { errorMessage: turn.error.message.trim() } : {}),
+            quota: turn.error?.quota,
           });
         } else if (
           turnId &&
@@ -857,6 +888,18 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
     const handleNotification = (ctx: MuseSessionContext, notification: Notification) =>
       Effect.gen(function* () {
         const params = (notification.params ?? {}) as Record<string, unknown>;
+        if (ctx.stopped) return;
+        // Subscription reports are account-wide and carry no session id.
+        if (notification.method === "usage/changed") {
+          const usage = decodeMuseSubscriptionUsage(params);
+          if (usage) ctx.latestSubscriptionUsage = usage;
+          yield* offer({
+            type: "account.rate-limits.updated",
+            ...(yield* stamp(ctx)),
+            payload: { rateLimits: params },
+          });
+          return;
+        }
         if (params.sessionId !== ctx.mspSessionId || ctx.stopped) return;
         if (typeof params.viewCursor === "string") ctx.viewCursor = params.viewCursor;
         yield* logNative(ctx.threadId, notification.method, params);
@@ -881,12 +924,13 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
           }
           case "turn/completed": {
             if (!turnId) return;
-            const error = params.error as { message?: string } | undefined;
+            const error = params.error as { message?: string; quota?: unknown } | undefined;
             return yield* completeTurn(ctx, turnId, {
               terminal: typeof params.terminal === "string" ? params.terminal : "completed",
               ...(typeof params.reason === "string" ? { reason: params.reason } : {}),
               ...(params.usage ? { usage: params.usage } : {}),
               ...(error?.message?.trim() ? { errorMessage: error.message.trim() } : {}),
+              quota: error?.quota,
             });
           }
           case "turn/retracted": {
@@ -987,13 +1031,6 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
             });
             return;
           }
-          case "usage/changed":
-            yield* offer({
-              type: "account.rate-limits.updated",
-              ...(yield* stamp(ctx)),
-              payload: { rateLimits: params },
-            });
-            return;
           case "turn/retryScheduled":
           case "turn/modelRetryScheduled":
             yield* offer({

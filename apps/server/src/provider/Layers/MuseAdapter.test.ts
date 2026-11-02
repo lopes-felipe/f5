@@ -89,6 +89,41 @@ const start = (harness: Harness, threadId: ThreadId, runtimeMode = "auto-accept-
   });
 
 it.layer(HarnessLayer)("MuseAdapter", (it) => {
+  it.effect("marks subscription quota stops as usage limited using account-wide reports", () =>
+    Effect.gen(function* () {
+      const harness = yield* MuseHarness;
+      harness.configure = () => undefined;
+      const { events, stop } = yield* collect(harness.adapter);
+      const threadId = ThreadId.make("muse-quota");
+      yield* start(harness, threadId);
+      const host = harness.hosts.at(-1)!;
+      const resetsAtMs = Date.now() + 60_000;
+      host.notify("usage/changed", {
+        sessionId: undefined,
+        observedAtMs: Date.now(),
+        tier: "tier-1",
+        window: { usedPercent: 103, windowDurationMins: 300, resetsAtMs },
+        weekly: { usedPercent: 5, resetsAtMs: resetsAtMs + 60_000 },
+      });
+      host.notify("usage/changed", { sessionId: undefined, window: "bad" });
+      yield* harness.adapter.sendTurn({ threadId, input: "hello" });
+      host.notify("turn/started", { turnId: "turn-1" });
+      host.notify("turn/completed", {
+        turnId: "turn-1",
+        terminal: "failed",
+        error: { message: "API error 429: Subscription quota exhausted." },
+      });
+      yield* tick();
+      const terminal = events.find((event) => event.type === "turn.completed");
+      assert.equal(terminal?.payload.state, "failed");
+      assert.equal(terminal?.payload.usageLimit?.resetsAt, new Date(resetsAtMs).toISOString());
+      const error = events.find((event) => event.type === "runtime.error");
+      assert.deepEqual(error?.payload.usageLimit, terminal?.payload.usageLimit);
+      assert.isTrue(yield* harness.adapter.hasSession(threadId));
+      yield* stop;
+    }),
+  );
+
   it.effect("drains final MSP output before its single terminal lifecycle event", () =>
     Effect.scoped(
       Effect.gen(function* () {

@@ -256,6 +256,27 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
       );
     }
   }
+  it.effect("forwards explicit SDK effort for an uncatalogued model", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({ structured_output: { ok: true } }),
+        argsMustContain: "--model custom-model --effort max",
+      },
+      (generation) =>
+        generation.generateStructuredJson({
+          cwd: process.cwd(),
+          operation: "custom-effort",
+          prompt: "Return JSON",
+          outputSchema: Schema.Struct({ ok: Schema.Boolean }),
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("claudeAgent"),
+            "custom-model",
+            [{ id: "effort", value: "max" }],
+          ),
+        }),
+    ),
+  );
+
   it.effect("ignores unsupported Haiku ultrathink and preserves prompt whitespace", () =>
     withFakeClaudeEnv(
       {
