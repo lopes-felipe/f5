@@ -919,6 +919,27 @@ describe("store read model sync", () => {
     expect(next.threads[0]?.messages[0]?.skillCall).toEqual({ name: "review" });
   });
 
+  it("updates authorship from refreshed read models even when the message text is unchanged", () => {
+    const message = {
+      id: MessageId.makeUnsafe("automated-message"),
+      role: "user" as const,
+      text: "scheduled prompt",
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-03-10T09:00:00.000Z",
+      updatedAt: "2026-03-10T09:00:01.000Z",
+    };
+    const initial = syncServerReadModel(
+      makeState(makeThread()),
+      makeReadModel(makeReadModelThread({ messages: [message] })),
+    );
+    const next = syncServerReadModel(
+      initial,
+      makeReadModel(makeReadModelThread({ messages: [{ ...message, authorship: "automation" }] })),
+    );
+    expect(next.threads[0]?.messages[0]?.authorship).toBe("automation");
+  });
+
   it("maps persisted thread tasks from the read model", () => {
     const initialState = makeState(makeThread());
     const readModel = makeReadModel(

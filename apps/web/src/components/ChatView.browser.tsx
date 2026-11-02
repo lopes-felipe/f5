@@ -3287,6 +3287,62 @@ describe("ChatView timeline (full app)", () => {
     },
   );
 
+  it("does not skip unanswered questions when Enter submits the composer", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "unanswered-user" as MessageId,
+      targetText: "Ask me",
+    });
+    const question = createThreadActivity({
+      id: "unanswered",
+      createdAt: isoAt(201),
+      kind: "user-input.requested",
+      summary: "Questions",
+      payload: {
+        requestId: "unanswered-request",
+        questions: [
+          { id: "name", header: "Name", question: "Enter a name", options: [] },
+          { id: "detail", header: "Detail", question: "Enter a detail", options: [] },
+        ],
+      },
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) => ({ ...thread, activities: [question] })),
+      },
+    });
+    try {
+      const editor = page.elementLocator(await waitForComposerEditor());
+      await editor.click();
+      await userEvent.keyboard("{Enter}");
+      await expect.element(page.getByText("Enter a name", { exact: true })).toBeVisible();
+      await expect
+        .element(page.getByRole("button", { name: "Next question", exact: true }))
+        .toBeDisabled();
+      await editor.fill("Ada");
+      await userEvent.keyboard("{Enter}");
+      await expect.element(page.getByText("Enter a detail", { exact: true })).toBeVisible();
+      await userEvent.keyboard("{Enter}");
+      await expect.element(page.getByText("Enter a detail", { exact: true })).toBeVisible();
+      expect(getDispatchCommandRequests("thread.user-input.respond")).toHaveLength(0);
+      await editor.fill("A detail");
+      await userEvent.keyboard("{Enter}");
+      await vi.waitFor(() =>
+        expect(wsRequests).toContainEqual(
+          expect.objectContaining({
+            command: expect.objectContaining({
+              type: "thread.user-input.respond",
+              answers: { name: "Ada", detail: "A detail" },
+            }),
+          }),
+        ),
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("submits a form with required free text and an empty optional field", async () => {
     const snapshot = createSnapshotForTargetUser({
       targetMessageId: "form-user" as MessageId,

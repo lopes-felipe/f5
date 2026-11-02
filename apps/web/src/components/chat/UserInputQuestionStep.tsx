@@ -12,6 +12,7 @@ import { CheckIcon, ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 
 import { cn } from "~/lib/utils";
 import ChatMarkdown from "../ChatMarkdown";
+import { useStableCallback } from "../../hooks/useStableCallback";
 
 /**
  * Where custom text answers are typed: an inline "Other…" field inside the
@@ -99,6 +100,8 @@ export function UserInputQuestionStep({
   // question switch inside the 200ms window doesn't fire `onAdvance()` with
   // an unrelated active question.
   const autoAdvanceQuestionIdRef = useRef<string | null>(null);
+  // Picking an option updates the draft before the timer fires.
+  const advance = useStableCallback(onAdvance);
 
   const clearAutoAdvance = useCallback(() => {
     if (autoAdvanceTimerRef.current !== null) {
@@ -133,10 +136,10 @@ export function UserInputQuestionStep({
           return;
         }
         autoAdvanceQuestionIdRef.current = null;
-        onAdvance();
+        advance();
       }, AUTO_ADVANCE_DELAY_MS);
     },
-    [clearAutoAdvance, isLastQuestion, onAdvance, onSelectOption, question.id, suppressAutoSubmit],
+    [advance, clearAutoAdvance, isLastQuestion, onSelectOption, question.id, suppressAutoSubmit],
   );
 
   const pickOption = useCallback(

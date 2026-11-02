@@ -30,7 +30,9 @@ function Questions() {
         selectedOptionLabels={answers[id] ? [answers[id]!] : []}
         onSelectOption={(label) => setAnswers({ ...answers, [id]: label })}
         onToggleOption={() => {}}
-        onAdvance={() => setIndex((current) => current + 1)}
+        onAdvance={() => {
+          if (answers[id]) setIndex((current) => current + 1);
+        }}
       />
     </>
   );

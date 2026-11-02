@@ -9,6 +9,7 @@ import type {
   OrchestrationThreadActivity,
   OrchestrationThreadActivityCursor,
   OrchestrationMessageCursor,
+  OrchestrationMessage,
   ThreadCompaction as ContractThreadCompaction,
   PlanningWorkflowSummary as ContractPlanningWorkflow,
   ProjectMemory as ContractProjectMemory,
@@ -105,6 +106,7 @@ export interface ChatMessage {
   id: MessageId;
   role: "user" | "assistant" | "system";
   text: string;
+  authorship?: OrchestrationMessage["authorship"];
   reasoningText?: string;
   reasoningTokens?: number;
   reasoningTokensEstimated?: boolean;
