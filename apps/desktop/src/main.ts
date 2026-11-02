@@ -84,6 +84,7 @@ import { ComputerLeaseAuthority } from "./computer/ComputerLeaseAuthority";
 import { ComputerController } from "./computer/ComputerController";
 import { ComputerOverlay } from "./computer/ComputerOverlay";
 import { ComputerConsentAuthority } from "./computer/ComputerConsentAuthority";
+import { IntegrationConsentStore, fileConsentIo } from "./computer/IntegrationConsentStore";
 import { ComputerHostChannel } from "./computer/ComputerHostChannel";
 import { BrowserOpenAuthority } from "./browser/BrowserOpenAuthority";
 import {
@@ -531,6 +532,10 @@ function initializeComputerSystem(): void {
   // One owner-aware registration covers native holders, the Chrome lease and a pending
   // takeover. Returns false when the chord could not be registered.
   let killChordRegistered = false;
+  // "Always allow" for a profile's provider integration sessions, owned by main.
+  const integrationConsents = new IntegrationConsentStore(
+    fileConsentIo(Path.join(app.getPath("userData"), "computer", "integration-consent.json")),
+  );
   // Provider-integration children are registered here so main can stop them and observe
   // their exit without the (possibly frozen) profile server.
   const supervisor = new ChromeProcessSupervisor({
@@ -631,6 +636,8 @@ function initializeComputerSystem(): void {
         isIntegrationCertified("codex-computer", process.platform, process.arch),
       supervisor,
       verifyAdoption: (parentPid, runtimePid) => verifyCodexChromeAdoption(parentPid, runtimePid),
+      alwaysAllowed: (profileId, integration) =>
+        integrationConsents.allowed(profileId, integration),
       changed: () => {
         if (!syncKillChord()) throw new Error("The computer-control kill shortcut is unavailable.");
       },
@@ -714,8 +721,13 @@ function initializeComputerSystem(): void {
       );
       return parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options);
     },
+    alwaysAllow: (profileId, integration) => integrationConsents.allow(profileId, integration),
   });
   registerComputerIpc(ipcMain, {
+    integrationConsents: {
+      list: (profileId) => integrationConsents.list(profileId),
+      revoke: (profileId, integration) => integrationConsents.revoke(profileId, integration),
+    },
     authorize: (event) => authorizeAppMainFrame(event, "Computer controls"),
     status: rendererStatus,
     retry: () => {

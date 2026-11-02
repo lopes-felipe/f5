@@ -848,4 +848,9 @@ export interface DesktopComputerAutomationBridge {
   readonly answerAccess: (answer: ComputerAccessAnswer) => Promise<void>;
   readonly setPaused: (threadId: string, paused: boolean) => Promise<void>;
   readonly onStatus: (callback: (status: ComputerAutomationBackendStatus) => void) => () => void;
+  /** Integrations this profile always allows; only main's consent dialog adds one. */
+  readonly integrationConsents?: () => Promise<ReadonlyArray<"codex-chrome" | "codex-computer">>;
+  readonly revokeIntegrationConsent?: (
+    integration: "codex-chrome" | "codex-computer",
+  ) => Promise<void>;
 }

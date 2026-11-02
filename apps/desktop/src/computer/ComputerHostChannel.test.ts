@@ -20,9 +20,11 @@ function setup(
       url: string,
     ) => Promise<import("@t3tools/contracts").OpenExternalUrlStatus>;
     cancelBrowserOpen?: (profileId: string) => void;
+    alwaysAllowed?: (profileId: string, integration: "codex-chrome" | "codex-computer") => boolean;
   } = {},
 ) {
-  const { notification, supervisor, verifyAdoption } = options;
+  const { notification, supervisor, verifyAdoption, alwaysAllowed } = options;
+  const attention = vi.fn();
   const controller = {
     disconnect: vi.fn(),
     setPaused: vi.fn(),
@@ -39,11 +41,12 @@ function setup(
   const channel = new ComputerHostChannel(
     controller as unknown as ComputerController,
     () => ({ available: true }),
-    vi.fn(),
+    attention,
     {
       certified: () => certified,
       ...(supervisor ? { supervisor } : {}),
       ...(verifyAdoption ? { verifyAdoption } : {}),
+      ...(alwaysAllowed ? { alwaysAllowed } : {}),
     },
     undefined,
     {
@@ -69,7 +72,7 @@ function setup(
       protocolVersion: 1,
       ...(capabilities ? { capabilities } : {}),
     });
-  return { channel, controller, process, hello };
+  return { channel, controller, process, hello, attention };
 }
 describe("private computer host channel", () => {
   it("negotiates browser opening and routes the correlated result to its owning backend", async () => {
@@ -662,6 +665,52 @@ describe("background capability negotiation", () => {
     h.controller.acquire.mockReturnValue(appHolder);
     h.process.emit("message", { type: "leaseAcquire", requestId: "ok", holder: appHolder });
     expect(h.controller.acquire).toHaveBeenCalledOnce();
+  });
+  it("answers a session request the profile always allows, and asks for everything else", () => {
+    const alwaysAllowed = vi.fn(
+      (profileId: string, integration: string) =>
+        profileId === "profile" && integration === "codex-chrome",
+    );
+    const h = setup(false, undefined, { alwaysAllowed });
+    h.hello();
+    const session = (requestId: string, integration: "codex-chrome" | "codex-computer") => ({
+      type: "accessRequested",
+      request: {
+        requestId,
+        threadId: "t",
+        sessionGeneration: "s",
+        reason: "Allow this provider integration for this session?",
+        kind: "chrome-session",
+        chromeSession: { integration },
+        apps: [],
+      },
+    });
+    h.process.emit("message", session("chrome", "codex-chrome"));
+    expect(sent(h).at(-1)).toEqual({
+      type: "accessAnswer",
+      answer: {
+        requestId: "chrome",
+        backendIncarnation: "incarnation",
+        decisions: [],
+        allowChromeSession: true,
+      },
+    });
+    expect(h.attention).not.toHaveBeenCalled();
+    h.process.emit("message", session("computer", "codex-computer"));
+    expect(h.attention).toHaveBeenCalledOnce();
+    // Other kinds never consult the grant.
+    h.process.emit("message", {
+      type: "accessRequested",
+      request: {
+        requestId: "setup",
+        threadId: "t",
+        reason: "r",
+        kind: "chrome-setup",
+        apps: [],
+      },
+    });
+    expect(h.attention).toHaveBeenCalledTimes(2);
+    expect(alwaysAllowed).toHaveBeenCalledTimes(2);
   });
   it("arms an approved takeover only after consent and keeps it across consent cleanup", async () => {
     const h = setup();

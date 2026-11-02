@@ -795,7 +795,13 @@ access, so F5 controls the session's runtime, not single calls (`identity.admiss
 (`apps/server/src/provider/codexChromeSession.ts`) does it:
 
 - the user consents once per session generation (consent kind `chrome-session`) before
-  the MCP config that starts `node_repl` is built; declining leaves the entry out. A
+  the MCP config that starts `node_repl` is built; declining leaves the entry out. Main's
+  native dialog offers "Always allow for this profile": main keeps that grant in
+  `<userData>/computer/integration-consent.json`, keyed by profile, integration and a
+  digest of the disclosures shown (changing them asks again), and then answers the
+  profile's `chrome-session` requests itself without a dialog. Only that dialog adds a
+  grant; the renderer can list and revoke it (Settings → Browser & Computer, "Always
+  allowed for this profile"), and backends can't touch it. A
   session an automation starts (a scheduled run's turn) asks nothing and gets no
   `node_repl`; the next person's turn restarts it with Chrome, and an automation's turn
   never restarts a session for Chrome;

@@ -125,6 +125,9 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.on("desktop-computer:status-changed", handler);
       return () => ipcRenderer.removeListener("desktop-computer:status-changed", handler);
     },
+    integrationConsents: () => ipcRenderer.invoke("desktop-computer:integration-consents"),
+    revokeIntegrationConsent: (integration) =>
+      ipcRenderer.invoke("desktop-computer:revoke-integration-consent", integration),
   },
   getSystemLocale: () => systemLocale,
   setQuitShortcutMode: (mode) => ipcRenderer.invoke("desktop:quit-mode", mode),

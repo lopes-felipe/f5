@@ -53,6 +53,11 @@ export class ComputerHostChannel {
       supervisor?: ChromeProcessSupervisor;
       /** Signature check for an adopted process and its parent, by PID; returns why it fails. */
       verifyAdoption?: (parentPid: number, runtimePid: number) => Promise<string | undefined>;
+      /** The profile chose "always allow" for this integration's sessions in main's dialog. */
+      alwaysAllowed?: (
+        profileId: string,
+        integration: "codex-chrome" | "codex-computer",
+      ) => boolean;
     },
     private readonly grants = new ComputerGrantAuthority(
       process.platform === "win32" ? "win32" : "darwin",
@@ -632,10 +637,30 @@ export class ComputerHostChannel {
           break;
         case "resumeRequested":
           break;
-        case "accessRequested":
+        case "accessRequested": {
           backend.pendingAccess.set(message.request.requestId, message.request);
+          const integration = message.request.chromeSession?.integration;
+          // An earlier "always allow" answers here, without a dialog. The grant is main's own.
+          if (
+            message.request.kind === "chrome-session" &&
+            integration &&
+            this.chromeOptions?.alwaysAllowed?.(profileId, integration)
+          ) {
+            try {
+              this.answerAccess(profileId, {
+                requestId: message.request.requestId,
+                backendIncarnation: backend.incarnation,
+                decisions: [],
+                allowChromeSession: true,
+              });
+              break;
+            } catch {
+              // Not answerable here (backend not ready): ask as usual.
+            }
+          }
           this.attention(profileId, message.request);
           break;
+        }
         default:
           child.disconnect();
       }

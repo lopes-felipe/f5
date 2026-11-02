@@ -4,6 +4,7 @@ import { defaultInstanceIdForDriver, ProviderDriverKind } from "@t3tools/contrac
 import { INTEGRATION_DISCLOSURES } from "@t3tools/shared/providerIntegrationCertification";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { readNativeApi } from "../../nativeApi";
+import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import { SettingsRow } from "./SettingsCard";
 
@@ -76,6 +77,44 @@ function useChromeReadiness(ids: ReadonlyArray<string>, enabled: boolean) {
   return readiness;
 }
 
+/** "Always allow" for Codex Chrome sessions, kept by desktop main for this profile. */
+function CodexChromeAlwaysAllowRow() {
+  const bridge = window.desktopBridge?.computerAutomation;
+  const [allowed, setAllowed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let current = true;
+    void bridge
+      ?.integrationConsents?.()
+      .then((list) => current && setAllowed(list.includes("codex-chrome")))
+      .catch(() => undefined);
+    return () => {
+      current = false;
+    };
+  }, [bridge]);
+  if (!allowed || !bridge?.revokeIntegrationConsent) return null;
+  const revoke = async () => {
+    setBusy(true);
+    try {
+      await bridge.revokeIntegrationConsent?.("codex-chrome");
+      setAllowed(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <SettingsRow
+      title="Always allowed for this profile"
+      description="New Codex sessions use Chrome without asking. Revoke to be asked once per session again."
+      control={
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => void revoke()}>
+          {busy ? "Revoking…" : "Revoke"}
+        </Button>
+      }
+    />
+  );
+}
+
 export function ChromeIntegrationRows({ provider }: { provider: keyof typeof INTEGRATIONS }) {
   const integration = INTEGRATIONS[provider];
   const settings = useSettings();
@@ -139,6 +178,7 @@ export function ChromeIntegrationRows({ provider }: { provider: keyof typeof INT
           />
         );
       })}
+      {provider === "codex" ? <CodexChromeAlwaysAllowRow /> : null}
     </>
   );
 }
