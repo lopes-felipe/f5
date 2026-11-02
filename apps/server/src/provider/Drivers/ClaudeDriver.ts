@@ -63,7 +63,7 @@ import { buildAccountExecutionEnvironment } from "../../providerProcessEnv";
 import {
   claudeAccountUsageIdentity,
   makeClaudeContinuationGroupKey,
-  makeClaudeEnvironment,
+  makeClaudeProcessEnvironment,
 } from "./ClaudeHome.ts";
 import { parseClaudeLaunchArgs } from "@t3tools/shared/cliArgs";
 
@@ -132,13 +132,18 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       });
       const serverCwd = serverConfig.cwd;
       const eventLoggers = yield* ProviderEventLoggers;
-      const processEnv = buildAccountExecutionEnvironment({
+      const accountEnvironment = buildAccountExecutionEnvironment({
         purpose: "provider",
         profile: serverConfig.profile,
         stateDir: serverConfig.stateDir,
         baseEnv: process.env,
         instance: environment,
       });
+      const processEnv = yield* makeClaudeProcessEnvironment(
+        config,
+        accountEnvironment,
+        environment,
+      );
       yield* Effect.tryPromise({
         try: () =>
           validateProviderCompatibility(serverConfig, DRIVER_KIND, config.binaryPath, processEnv),
@@ -174,7 +179,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       // (the same ones the composer shows) instead of only F5's static table.
       const probedModels = yield* Ref.make<ReadonlyArray<ServerProviderModel>>([]);
       // The CLI child's environment; every instance-private path resolves from it.
-      const claudeProcessEnvironment = yield* makeClaudeEnvironment(effectiveConfig, processEnv);
+      const claudeProcessEnvironment = processEnv;
       const adapter = yield* makeClaudeAdapter({
         reportedModelCapabilities: (model) =>
           Ref.get(probedModels).pipe(

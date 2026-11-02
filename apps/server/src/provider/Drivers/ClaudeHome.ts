@@ -1,10 +1,82 @@
 import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
-import type { ClaudeSettings } from "@t3tools/contracts";
-import { Effect, Path } from "effect";
+import type { ClaudeSettings, ProviderInstanceEnvironment } from "@t3tools/contracts";
+import { fromLenientJson } from "@t3tools/shared/schemaJson";
+import { Effect, FileSystem, Path, Schema } from "effect";
 
 import { expandHomePath } from "../../pathExpansion.ts";
 import { accountUsageIdentity } from "../../usage/accountUsage.ts";
+import { claudeManagedSettingsDir } from "../claudeInventory.ts";
+
+/**
+ * Resolve the config directory as the CLI child does, including its home,
+ * working directory, and Unicode normalization.
+ */
+export function resolveClaudeConfigDir(
+  env: NodeJS.ProcessEnv,
+  cwd?: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const home = (platform === "win32" ? env.USERPROFILE : env.HOME) || NodeOS.homedir();
+  const configDir = env.CLAUDE_CONFIG_DIR ?? NodePath.join(home, ".claude");
+  return NodePath.resolve(cwd ?? process.cwd(), configDir.normalize("NFC"));
+}
+
+const decodeSettingsEnv = Schema.decodeUnknownEffect(
+  fromLenientJson(
+    Schema.Struct({ env: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)) }),
+  ),
+);
+
+/**
+ * Prepare Claude's child environment after account isolation and instance env
+ * merging. Ignore the host's entrypoint, but honor an explicit instance value.
+ * Claude reads this identifier before applying settings env, so copy its user
+ * and managed settings override into the process environment ourselves.
+ */
+export const makeClaudeProcessEnvironment = Effect.fn("makeClaudeProcessEnvironment")(function* (
+  config: Pick<ClaudeSettings, "homePath">,
+  baseEnv: NodeJS.ProcessEnv,
+  instanceEnvironment: ProviderInstanceEnvironment | undefined,
+  platform: NodeJS.Platform = process.platform,
+): Effect.fn.Return<NodeJS.ProcessEnv, never, FileSystem.FileSystem | Path.Path> {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const environment = yield* makeClaudeEnvironment(config, baseEnv, platform);
+  const entrypoint =
+    instanceEnvironment?.findLast((variable) =>
+      platform === "win32"
+        ? variable.name.toUpperCase() === "CLAUDE_CODE_ENTRYPOINT"
+        : variable.name === "CLAUDE_CODE_ENTRYPOINT",
+    )?.value ?? "t3-code";
+  const managedSettingsPath =
+    platform === "win32"
+      ? baseEnv.PROGRAMDATA?.trim()
+        ? path.join(baseEnv.PROGRAMDATA.trim(), "ClaudeCode", "managed-settings.json")
+        : undefined
+      : path.join(claudeManagedSettingsDir(platform), "managed-settings.json");
+  let settingsEntrypoint: string | undefined;
+  for (const file of [
+    path.join(resolveClaudeConfigDir(environment, undefined, platform), "settings.json"),
+    ...(managedSettingsPath ? [managedSettingsPath] : []),
+  ]) {
+    const value = yield* fs.readFileString(file).pipe(
+      Effect.flatMap(decodeSettingsEnv),
+      Effect.map((settings) => settings.env?.CLAUDE_CODE_ENTRYPOINT),
+      Effect.orElseSucceed(() => undefined),
+    );
+    if (typeof value === "string") settingsEntrypoint = value;
+  }
+  const result: NodeJS.ProcessEnv = { ...environment };
+  if (platform === "win32") {
+    for (const key of Object.keys(result)) {
+      if (key.toUpperCase() === "CLAUDE_CODE_ENTRYPOINT") delete result[key];
+    }
+  }
+  result.CLAUDE_CODE_ENTRYPOINT = settingsEntrypoint || entrypoint;
+  return result;
+});
 
 /**
  * Account identity for persisted usage history. Hashes the environment the

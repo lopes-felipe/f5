@@ -123,6 +123,9 @@ import * as NodeFs from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as EffectNodePath from "@effect/platform-node/NodePath";
+import { resolveClaudeConfigDir } from "../Drivers/ClaudeHome.ts";
+
+export { resolveClaudeConfigDir };
 
 import {
   type CanUseTool,
@@ -723,32 +726,6 @@ export interface ClaudeSessionProbeInput {
    * settings point the CLI at a different directory.
    */
   readonly claudeConfigDir: string;
-}
-
-/**
- * Mirrors the Claude CLI's config dir resolution:
- * `(CLAUDE_CONFIG_DIR ?? join(os.homedir(), ".claude")).normalize("NFC")`,
- * evaluated as the CLI child would see it.
- *
- * `os.homedir()` in the child reads `USERPROFILE` on Windows and `HOME`
- * elsewhere, so the matching variable is read from the child env for
- * `platform`. Relative values are resolved against `cwd`, the child's working
- * directory. When `cwd` is undefined the child inherits the server's cwd, so
- * `process.cwd()` is the right base.
- */
-export function resolveClaudeConfigDir(
-  env: NodeJS.ProcessEnv,
-  cwd?: string,
-  platform: NodeJS.Platform = process.platform,
-): string {
-  const configDir =
-    env.CLAUDE_CONFIG_DIR ?? NodePath.join(resolveChildHomeDir(env, platform), ".claude");
-  return NodePath.resolve(cwd ?? process.cwd(), configDir.normalize("NFC"));
-}
-
-function resolveChildHomeDir(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
-  const home = platform === "win32" ? env.USERPROFILE : env.HOME;
-  return home ? home : NodeOS.homedir();
 }
 
 const CLAUDE_TRANSCRIPT_REJOIN_BUDGET_MS = 30_000;
