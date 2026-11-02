@@ -1,6 +1,7 @@
 import type { AccountUsageSection, UsageAccount } from "@t3tools/contracts";
 import { Cache, Cause, Clock, Deferred, Duration, Effect, Exit, Ref } from "effect";
 import { accountUsageErrorCode } from "../accountUsageErrors.ts";
+import { mergeProviderUsageWindows } from "../providerUsageWindows.ts";
 
 import { ACCOUNT_ATTEMPT_TTL_MS, type AccountUsageCapability } from "../accountUsage.ts";
 export type { AccountUsageCapability } from "../accountUsage.ts";
@@ -128,6 +129,27 @@ export const makeAccountUsageCapability = <E>(
                 ...current,
                 sections: sections.map((section) => {
                   const prior = current.sections.find((entry) => entry.kind === section.kind);
+                  // An unavailable reader-supplied snapshot is partial: retain missing
+                  // buckets and higher prior readings until a complete probe recovers.
+                  if (
+                    section.kind === "provider-limits" &&
+                    section.outcome === "unavailable" &&
+                    section.snapshot
+                  ) {
+                    const previous = prior?.kind === "provider-limits" ? prior.snapshot : null;
+                    return {
+                      ...section,
+                      snapshot: {
+                        fetchedAt: previous?.fetchedAt ?? section.snapshot.fetchedAt,
+                        data: {
+                          windows: mergeProviderUsageWindows([
+                            previous?.data.windows ?? [],
+                            section.snapshot.data.windows,
+                          ]),
+                        },
+                      },
+                    };
+                  }
                   // A successful empty snapshot replaces old data; only failed reads retain it.
                   return section.outcome === "available"
                     ? section

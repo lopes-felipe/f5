@@ -19,16 +19,21 @@ const hubResponse = (body: unknown, status_code = 200) =>
 
 async function probe(
   respond: (endpoint: URL, signal: AbortSignal) => Response | Promise<Response>,
+  options: { discoveryDelayMs?: number; stallDiscovery?: boolean } = {},
 ) {
   const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
     expect(new URL(url).hostname).toBe("hub.example");
     expect(init.headers).toMatchObject({ Authorization: "Bearer management-key" });
-    if (new URL(url).pathname === "/v0/management/auth-files")
+    if (new URL(url).pathname === "/v0/management/auth-files") {
+      if (options.stallDiscovery) return new Promise<Response>(() => {});
+      if (options.discoveryDelayMs)
+        await new Promise((resolve) => setTimeout(resolve, options.discoveryDelayMs));
       return new Response(
         JSON.stringify({
           files: [{ id: "chosen", provider: "antigravity", auth_index: "selected" }],
         }),
       );
+    }
     const request = JSON.parse(String(init.body));
     expect(request).toMatchObject({
       auth_index: "selected",
@@ -40,7 +45,7 @@ async function probe(
     return respond(new URL(request.url), init.signal!);
   });
   vi.stubGlobal("fetch", fetchMock);
-  const snapshot = await Effect.runPromise(
+  const refreshed = await Effect.runPromise(
     Effect.gen(function* () {
       const capability = yield* makeProviderLimits({
         provider: "antigravity",
@@ -55,15 +60,28 @@ async function probe(
         },
       });
       const permits = yield* Semaphore.make(1);
-      return (yield* capability.refreshAccount!(permits)).snapshot;
+      return yield* capability.refreshAccount!(permits);
     }).pipe(Effect.scoped),
   );
-  const section = snapshot.sections[0];
+  const section = refreshed.snapshot.sections[0];
   if (section?.kind !== "provider-limits") throw new Error("Missing provider limits");
-  return { section, fetchMock };
+  return { section, fetchMock, fresh: refreshed.fresh };
 }
 
-afterEach(() => vi.unstubAllGlobals());
+async function timedProbe(
+  respond: Parameters<typeof probe>[0],
+  options: Parameters<typeof probe>[1] = {},
+) {
+  vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+  const pending = probe(respond, options);
+  await vi.advanceTimersByTimeAsync(7_500);
+  return pending;
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 describe("Antigravity hub quotas", () => {
   it("queries both hosts concurrently and keeps Gemini and the most-used duplicate buckets", async () => {
@@ -108,24 +126,92 @@ describe("Antigravity hub quotas", () => {
     expect(windows.get("gemini-5h")?.resetsAt).toBe("2026-11-03T00:00:00.000Z");
   });
 
-  it.each(["network", "http", "provider", "json", "timeout"] as const)(
+  it.each(["network", "http", "provider", "json"] as const)(
     "keeps usable quotas when one host has a %s failure",
     async (failure) => {
-      const { section, fetchMock } = await probe((endpoint, signal) => {
+      const { section, fetchMock, fresh } = await probe((endpoint) => {
         if (endpoint.hostname === STANDARD)
           return hubResponse({ buckets: [bucket("gemini-5h", 0.75)] });
         if (failure === "network") throw new Error("offline");
         if (failure === "http") return new Response("", { status: 503 });
         if (failure === "provider") return hubResponse({}, 503);
-        if (failure === "timeout")
-          return new Promise<Response>((_, reject) => {
-            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-          });
         return new Response(JSON.stringify({ status_code: 200, body: "malformed" }));
       });
-      expect(section.outcome).toBe("available");
+      expect(section.outcome).toBe("unavailable");
+      expect(section.errorCode).toBe("temporary-failure");
+      expect(fresh).toBe(false);
       expect(section.snapshot?.data.windows).toMatchObject([{ id: "gemini-5h", usedPercent: 25 }]);
-      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    },
+  );
+
+  it("keeps usable quotas when one host ignores abort and stalls through both operations", async () => {
+    const { section, fresh } = await timedProbe((endpoint) =>
+      endpoint.hostname === STANDARD
+        ? hubResponse({ buckets: [bucket("gemini-5h", 0.75)] })
+        : new Promise<Response>(() => {}),
+    );
+    expect(section.outcome).toBe("unavailable");
+    expect(section.errorCode).toBe("temporary-failure");
+    expect(section.snapshot?.data.windows).toMatchObject([{ id: "gemini-5h", usedPercent: 25 }]);
+    expect(fresh).toBe(false);
+  });
+
+  it("includes slow discovery in the budget without losing the fulfilled host's quotas", async () => {
+    const { section } = await timedProbe(
+      (endpoint) =>
+        endpoint.hostname === STANDARD
+          ? hubResponse({ buckets: [bucket("gemini-5h", 0.75)] })
+          : new Promise<Response>(() => {}),
+      { discoveryDelayMs: 5_500 },
+    );
+    expect(section.snapshot?.data.windows).toMatchObject([{ id: "gemini-5h", usedPercent: 25 }]);
+    expect(section.errorCode).toBe("temporary-failure");
+  });
+
+  it("reserves model fallback time after slow discovery and a stalled summary", async () => {
+    const { section, fresh } = await timedProbe(
+      (endpoint) => {
+        if (endpoint.hostname === DAILY) return hubResponse({ buckets: [bucket("3p-5h", 0.5)] });
+        if (endpoint.pathname.endsWith(":retrieveUserQuotaSummary"))
+          return new Promise<Response>(() => {});
+        return hubResponse({ models: { gemini: { quotaInfo: { remainingFraction: 0.75 } } } });
+      },
+      { discoveryDelayMs: 5_500 },
+    );
+    expect(section.outcome).toBe("available");
+    expect(section.snapshot?.data.windows.map((window) => window.id).sort()).toEqual([
+      "3p-5h",
+      "gemini",
+    ]);
+    expect(fresh).toBe(true);
+  });
+
+  it("bounds discovery even when the transport ignores cancellation", async () => {
+    const { section, fetchMock } = await timedProbe(() => hubResponse({}), {
+      stallDiscovery: true,
+    });
+    expect(section).toMatchObject({ outcome: "unavailable", errorCode: "timeout", snapshot: null });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["empty", "http", "unrecognized"] as const)(
+    "falls back on a host's %s summary even when the other host has shared buckets",
+    async (summary) => {
+      const { section, fresh } = await probe((endpoint) => {
+        if (endpoint.hostname === DAILY) return hubResponse({ buckets: [bucket("3p-5h", 0.5)] });
+        if (endpoint.pathname.endsWith(":retrieveUserQuotaSummary"))
+          return summary === "http"
+            ? hubResponse({}, 503)
+            : hubResponse(summary === "empty" ? { buckets: [] } : {});
+        return hubResponse({ models: { gemini: { quotaInfo: { remainingFraction: 0.75 } } } });
+      });
+      expect(section.outcome).toBe("available");
+      expect(fresh).toBe(true);
+      expect(section.snapshot?.data.windows.map((window) => window.id).sort()).toEqual([
+        "3p-5h",
+        "gemini",
+      ]);
     },
   );
 
@@ -144,24 +230,34 @@ describe("Antigravity hub quotas", () => {
         },
       });
     });
-    expect(called.map((url) => new URL(url).pathname)).toEqual([
-      "/v1internal:retrieveUserQuotaSummary",
-      "/v1internal:retrieveUserQuotaSummary",
-      "/v1internal:fetchAvailableModels",
-      "/v1internal:fetchAvailableModels",
-    ]);
+    for (const host of [DAILY, STANDARD])
+      expect(
+        called.filter((url) => new URL(url).hostname === host).map((url) => new URL(url).pathname),
+      ).toEqual(["/v1internal:retrieveUserQuotaSummary", "/v1internal:fetchAvailableModels"]);
     const windows = new Map(section.snapshot?.data.windows.map((window) => [window.id, window]));
     expect([...windows.keys()].sort()).toEqual(["claude", "gemini", "shared"]);
     expect(windows.get("shared")?.usedPercent).toBe(80);
   });
 
-  it("reports unusable responses as retryable failure", async () => {
+  it("reports successful responses with no recognizable quotas as unsupported", async () => {
     const { section } = await probe(() => hubResponse({}));
+    expect(section).toMatchObject({
+      outcome: "unsupported",
+      errorCode: "unsupported",
+      snapshot: null,
+    });
+  });
+
+  it("reports failed requests as a temporary failure rather than unsupported", async () => {
+    const { section, fresh } = await probe(() => {
+      throw new Error("offline");
+    });
     expect(section).toMatchObject({
       outcome: "unavailable",
       errorCode: "temporary-failure",
       snapshot: null,
     });
+    expect(fresh).toBe(false);
   });
 
   it("keeps model fallback quotas when the other host fails", async () => {
@@ -173,7 +269,7 @@ describe("Antigravity hub quotas", () => {
         models: { gemini: { quotaInfo: { remainingFraction: 0.75 } } },
       });
     });
-    expect(section.outcome).toBe("available");
+    expect(section.outcome).toBe("unavailable");
     expect(section.snapshot?.data.windows).toMatchObject([{ id: "gemini", usedPercent: 25 }]);
   });
 
