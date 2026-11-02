@@ -3,10 +3,13 @@ import "../index.css";
 import { afterEach, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
+import { ThreadId } from "@t3tools/contracts";
+
 import ChatMarkdown from "./ChatMarkdown";
+import { OpenLinkThread } from "../hooks/useOpenLink";
 
 const openLink = vi.hoisted(() =>
-  vi.fn(async (_url: string, _options?: { external?: boolean }) => {}),
+  vi.fn(async (_url: string, _options?: { external?: boolean; preview?: boolean }) => {}),
 );
 vi.mock("../hooks/useOpenLink", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../hooks/useOpenLink")>()),
@@ -91,4 +94,41 @@ it("keeps the default menu for non-web links and outside the desktop app", async
   vi.stubGlobal("desktopBridge", {});
   expect(contextMenu(view.getByRole("link", { name: "mail" }).element() as HTMLElement)).toBe(true);
   expect(showContextMenu).not.toHaveBeenCalled();
+});
+
+it("offers the link menu on pull request links", async () => {
+  const href = "https://github.com/org/repo/pull/7";
+  const view = await render(<ChatMarkdown text={`[the PR](${href})`} cwd={undefined} />);
+  const link = view.getByRole("link", { name: "the PR" }).element() as HTMLElement;
+  vi.stubGlobal("desktopBridge", {});
+  showContextMenu.mockResolvedValueOnce("open-external");
+
+  expect(contextMenu(link)).toBe(false);
+  await vi.waitFor(() => expect(openLink).toHaveBeenCalledWith(href, { external: true }));
+  expect(showContextMenu).toHaveBeenCalledWith(
+    expect.arrayContaining([{ id: "copy-link", label: "Copy Link" }]),
+    { x: 0, y: 0 },
+  );
+});
+
+it("offers the integrated browser for a link in a thread", async () => {
+  vi.stubGlobal("desktopBridge", { preview: {}, setTheme: async () => {} });
+  showContextMenu.mockResolvedValueOnce("open-in-preview");
+  const href = "https://example.com/docs";
+  const view = await render(
+    <OpenLinkThread.Provider value={ThreadId.makeUnsafe("thread-with-preview")}>
+      <ChatMarkdown text={`[docs](${href})`} cwd={undefined} />
+    </OpenLinkThread.Provider>,
+  );
+
+  contextMenu(view.getByRole("link", { name: "docs" }).element() as HTMLElement);
+  await vi.waitFor(() => expect(openLink).toHaveBeenCalledWith(href, { preview: true }));
+  expect(showContextMenu).toHaveBeenCalledWith(
+    [
+      { id: "open-in-preview", label: "Open in integrated browser" },
+      { id: "open-external", label: "Open in system browser" },
+      { id: "copy-link", label: "Copy Link" },
+    ],
+    { x: 0, y: 0 },
+  );
 });

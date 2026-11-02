@@ -13,7 +13,7 @@ function harness(selection: ExternalLinkContextMenuAction | null, canOpenInPrevi
     openInPreview: vi.fn(async (_href: string) => {}),
     openExternal: vi.fn(async (_href: string) => {}),
     copyLink: vi.fn(async (_href: string) => {}),
-    onCopyFailure: vi.fn(),
+    onFailure: vi.fn(),
   };
 }
 
@@ -68,28 +68,33 @@ describe("chat link context menu", () => {
     }
   });
 
-  it("reports a failed copy and tolerates menu and open failures", async () => {
-    const copy = harness("copy-link");
-    const cause = new Error("clipboard denied");
-    copy.copyLink.mockRejectedValue(cause);
+  it.each([
+    ["copy-link", "copyLink"],
+    ["open-in-preview", "openInPreview"],
+    ["open-external", "openExternal"],
+  ] as const)("reports a failed %s action", async (selection, callback) => {
+    const callbacks = harness(selection);
+    const cause = new Error("failed");
+    callbacks[callback].mockRejectedValue(cause);
     await showExternalLinkContextMenu({
       href: "https://a.test",
       position: { x: 0, y: 0 },
-      ...copy,
+      ...callbacks,
     });
-    expect(copy.onCopyFailure).toHaveBeenCalledWith(cause);
+    expect(callbacks.onFailure).toHaveBeenCalledExactlyOnceWith(selection, cause);
+  });
 
-    const menu = harness(null);
-    menu.showContextMenu.mockRejectedValue(new Error("menu unavailable"));
-    await expect(
-      showExternalLinkContextMenu({ href: "https://a.test", position: { x: 0, y: 0 }, ...menu }),
-    ).resolves.toBeUndefined();
-
-    const open = harness("open-external");
-    open.openExternal.mockRejectedValue(new Error("open failed"));
-    await expect(
-      showExternalLinkContextMenu({ href: "https://a.test", position: { x: 0, y: 0 }, ...open }),
-    ).resolves.toBeUndefined();
+  it("reports a menu that cannot be shown and runs no action", async () => {
+    const callbacks = harness("copy-link");
+    const cause = new Error("menu unavailable");
+    callbacks.showContextMenu.mockRejectedValue(cause);
+    await showExternalLinkContextMenu({
+      href: "https://a.test",
+      position: { x: 0, y: 0 },
+      ...callbacks,
+    });
+    expect(callbacks.onFailure).toHaveBeenCalledExactlyOnceWith("show-link-context-menu", cause);
+    expect(callbacks.copyLink).not.toHaveBeenCalled();
   });
 
   it.each([

@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { renderMermaid } from "../../lib/renderMermaid";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { peekRenderedMermaid, renderMermaid } from "../../lib/renderMermaid";
 
 export function MermaidDiagram({
   source,
@@ -11,14 +11,30 @@ export function MermaidDiagram({
   code: ReactNode;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const [visible, setVisible] = useState(false);
+  const key = `${theme}\u0000${source}`;
+  // Streaming and settled messages are separate trees, so a diagram remounts when its
+  // response finishes. A cached render shows immediately instead of loading again.
+  const [result, setResult] = useState<{ key: string; svg?: string; failed?: boolean } | null>(
+    () => {
+      const svg = peekRenderedMermaid(source, theme);
+      return svg === null ? null : { key, svg };
+    },
+  );
+  const [visible, setVisible] = useState(result !== null);
   const [showCode, setShowCode] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  const [result, setResult] = useState<{ key: string; url?: string; failed?: boolean } | null>(
-    null,
-  );
-  const key = `${theme}\u0000${source}`;
   const current = result?.key === key ? result : null;
+  const svg = current?.svg;
+  const [image, setImage] = useState<{ svg: string; url: string } | null>(null);
+  const url = svg !== undefined && image?.svg === svg ? image.url : undefined;
+
+  // Before paint, so a cached diagram never shows the loading state.
+  useLayoutEffect(() => {
+    if (svg === undefined) return;
+    const objectUrl = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+    setImage({ svg, url: objectUrl });
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [svg]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -39,21 +55,18 @@ export function MermaidDiagram({
   useEffect(() => {
     if (!visible) return;
     const controller = new AbortController();
-    let url: string | undefined;
     void renderMermaid(source, theme, controller.signal).then(
-      (svg) => {
+      (rendered) => {
         if (controller.signal.aborted) return;
-        url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
-        setResult({ key, url });
+        setResult((previous) =>
+          previous?.key === key && previous.svg === rendered ? previous : { key, svg: rendered },
+        );
       },
       () => {
         if (!controller.signal.aborted) setResult({ key, failed: true });
       },
     );
-    return () => {
-      controller.abort();
-      if (url) URL.revokeObjectURL(url);
-    };
+    return () => controller.abort();
   }, [attempt, key, source, theme, visible]);
 
   return (
@@ -89,17 +102,23 @@ export function MermaidDiagram({
           </p>
           {code}
         </div>
-      ) : current?.url ? (
+      ) : url ? (
         <img
-          src={current.url}
+          src={url}
           alt="Mermaid diagram"
           className="mx-auto h-auto max-w-full p-3"
           onError={() => setResult({ key, failed: true })}
         />
       ) : (
-        <p role="status" className="px-3 py-6 text-xs text-muted-foreground">
-          Rendering diagram…
-        </p>
+        // The source holds its own height, so streamed text below does not jump twice.
+        <>
+          <p role="status" className="sr-only">
+            Rendering diagram…
+          </p>
+          <div className="invisible" aria-hidden="true">
+            {code}
+          </div>
+        </>
       )}
     </div>
   );

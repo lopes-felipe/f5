@@ -2,6 +2,10 @@ import type { ContextMenuItem } from "@t3tools/contracts";
 
 export type ExternalLinkContextMenuAction = "open-in-preview" | "open-external" | "copy-link";
 
+export type ExternalLinkContextMenuFailure =
+  | "show-link-context-menu"
+  | ExternalLinkContextMenuAction;
+
 /** Only http(s) links get the link menu; other schemes keep the default menu. */
 export function isExternalWebLink(href: string | undefined): href is string {
   if (!href) return false;
@@ -36,16 +40,23 @@ export async function showExternalLinkContextMenu(input: {
   openInPreview: (href: string) => Promise<void>;
   openExternal: (href: string) => Promise<void>;
   copyLink: (href: string) => Promise<void>;
-  onCopyFailure: (cause: unknown) => void;
+  onFailure: (failure: ExternalLinkContextMenuFailure, cause: unknown) => void;
 }): Promise<void> {
-  const action = await input
-    .showContextMenu(externalLinkContextMenuItems(input.canOpenInPreview), input.position)
-    .catch(() => null);
-  if (action === "open-in-preview") {
-    await input.openInPreview(input.href).catch(() => undefined);
-  } else if (action === "open-external") {
-    await input.openExternal(input.href).catch(() => undefined);
-  } else if (action === "copy-link") {
-    await input.copyLink(input.href).catch(input.onCopyFailure);
+  let action: ExternalLinkContextMenuAction | null;
+  try {
+    action = await input.showContextMenu(
+      externalLinkContextMenuItems(input.canOpenInPreview),
+      input.position,
+    );
+  } catch (cause) {
+    input.onFailure("show-link-context-menu", cause);
+    return;
+  }
+  try {
+    if (action === "open-in-preview") await input.openInPreview(input.href);
+    else if (action === "open-external") await input.openExternal(input.href);
+    else if (action === "copy-link") await input.copyLink(input.href);
+  } catch (cause) {
+    if (action) input.onFailure(action, cause);
   }
 }

@@ -12,7 +12,8 @@ describe("executable shell fences", () => {
   it("renders a completed Mermaid fence while the response is still streaming", async () => {
     const host = document.body.appendChild(document.createElement("div"));
     const open = "```mermaid\nflowchart LR\n First --> Second";
-    const closed = `${open}\n\`\`\`\n`;
+    // The stream can end exactly on the closing fence.
+    const closed = `${open}\n\`\`\``;
     const view = await render(<ChatMarkdown text={open} cwd={undefined} isStreaming />, {
       container: host,
     });
@@ -20,18 +21,32 @@ describe("executable shell fences", () => {
     expect(host.textContent).toContain("First --> Second");
     await view.rerender(<ChatMarkdown text={closed} cwd={undefined} isStreaming />);
     await expect.element(view.getByRole("img", { name: "Mermaid diagram" })).toBeVisible();
-    const diagram = host.querySelector('img[alt="Mermaid diagram"]');
-    await view.rerender(
-      <ChatMarkdown text={`${closed}\nThe remaining explanation.`} cwd={undefined} isStreaming />,
-    );
-    expect(host.querySelector('img[alt="Mermaid diagram"]')).toBe(diagram);
+    const final = `${closed}\n\nThe remaining explanation.`;
+    await view.rerender(<ChatMarkdown text={final} cwd={undefined} isStreaming />);
+    expect(host.querySelector('img[alt="Mermaid diagram"]')).not.toBeNull();
     expect(host.textContent).toContain("The remaining explanation.");
-    await view.rerender(
-      <ChatMarkdown text={`${closed}\nThe remaining explanation.`} cwd={undefined} />,
-    );
-    await expect.element(view.getByRole("img", { name: "Mermaid diagram" })).toBeVisible();
+    // Settling remounts the message; the cached diagram shows without a loading state.
+    await view.rerender(<ChatMarkdown text={final} cwd={undefined} />);
+    expect(host.querySelector('img[alt="Mermaid diagram"]')).not.toBeNull();
+    expect(host.textContent).not.toContain("Rendering diagram");
     await view.getByRole("button", { name: "Show code" }).click();
     expect(host.querySelector("pre")?.textContent).toContain("First --> Second");
+  });
+
+  it("keeps a streamed diagram's view while later prose extends its list", async () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    const list = "- Diagram\n\n  ```mermaid\n  flowchart LR\n  Third --> Fourth\n  ```\n";
+    const view = await render(<ChatMarkdown text={list} cwd={undefined} isStreaming />, {
+      container: host,
+    });
+    await expect.element(view.getByRole("img", { name: "Mermaid diagram" })).toBeVisible();
+    await view.getByRole("button", { name: "Show code" }).click();
+    await view.rerender(
+      <ChatMarkdown text={`${list}  More about the diagram`} cwd={undefined} isStreaming />,
+    );
+    expect(host.textContent).toContain("More about the diagram");
+    await expect.element(view.getByRole("button", { name: "Show diagram" })).toBeVisible();
+    expect(host.querySelector("pre")?.textContent).toContain("Third --> Fourth");
   });
 
   it.each([

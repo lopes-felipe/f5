@@ -88,7 +88,11 @@ flowchart LR
       />,
       { container: host },
     );
-    expect(host.querySelector("img,pre")).toBeNull();
+    expect(host.querySelector("img")).toBeNull();
+    // Until it renders, the source only reserves its height.
+    expect(host.querySelector(".invisible[aria-hidden='true']")?.textContent).toBe(
+      "Oversized source",
+    );
     host.style.marginTop = "0";
     await expect
       .element(view.getByText("Unable to render diagram. You can view or copy its source."))
