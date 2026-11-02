@@ -341,6 +341,8 @@ export type WorktreeCleanup = typeof WorktreeCleanup.Type;
 export const StorageDiscoverySettings = Schema.Struct({
   machineCleanupEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   repositoryRoots: Schema.Array(TrimmedNonEmptyString).pipe(Schema.withDecodingDefault(() => [])),
+  /** Search project folders that are not repositories, such as a folder of clones, for repositories. */
+  searchProjectFolders: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
 });
 export type StorageDiscoverySettings = typeof StorageDiscoverySettings.Type;
 

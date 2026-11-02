@@ -17,10 +17,12 @@ export function StorageDiscoverySettings({
   const client = useQueryClient();
   const [roots, setRoots] = useState(settings.repositoryRoots.join("\n"));
   const [enabled, setEnabled] = useState(settings.machineCleanupEnabled);
+  const [searchProjectFolders, setSearchProjectFolders] = useState(settings.searchProjectFolders);
   const [pending, setPending] = useState(false);
   useEffect(() => {
     setRoots(settings.repositoryRoots.join("\n"));
     setEnabled(settings.machineCleanupEnabled);
+    setSearchProjectFolders(settings.searchProjectFolders);
   }, [settings]);
   const save = async () => {
     setPending(true);
@@ -34,7 +36,7 @@ export function StorageDiscoverySettings({
         ),
       ];
       await ensureNativeApi().server.updateSettings({
-        storageDiscovery: { machineCleanupEnabled: enabled, repositoryRoots },
+        storageDiscovery: { machineCleanupEnabled: enabled, repositoryRoots, searchProjectFolders },
       });
       await client.invalidateQueries({ queryKey: serverQueryKeys.config() });
       await ensureNativeApi().storage.getUsage({ force: true });
@@ -76,7 +78,16 @@ export function StorageDiscoverySettings({
           disabled={pending}
         />
       </label>
-      {implicitRoots.length > 0 ? (
+      <label className="flex items-center justify-between gap-3 text-sm">
+        Search project folders that are not repositories, such as a folder of clones
+        <Switch
+          aria-label="Search project folders for repositories"
+          checked={searchProjectFolders}
+          disabled={pending}
+          onCheckedChange={setSearchProjectFolders}
+        />
+      </label>
+      {searchProjectFolders && implicitRoots.length > 0 ? (
         <div className="space-y-1 text-xs">
           <span>From projects</span>
           <ul
@@ -88,7 +99,9 @@ export function StorageDiscoverySettings({
             ))}
           </ul>
           <p className="text-muted-foreground">
-            These projects are folders of repositories, so they are searched automatically.
+            Their repositories' worktrees, dependency folders and interrupted Git downloads are
+            offered for cleanup. Your home folder and the folders above it are never searched this
+            way.
           </p>
         </div>
       ) : null}

@@ -25,7 +25,9 @@ export type StorageWorkerTask =
       kind: "checkoutScan";
       checkouts: Array<{ root: string; commonDir: string | null }>;
       nowMs: number;
+      discoveryBudgetMs: number;
       sizeBudgetMs: number;
+      known?: ReadonlyArray<{ path: string; identity: FileIdentity; bytes: number }>;
     }
   | { kind: "removeDependencyFolder"; path: string; checkoutRoot: string; identity: FileIdentity }
   | { kind: "inspectBatch"; items: Array<{ path: string; application?: "chrome" | "bambu" }> }

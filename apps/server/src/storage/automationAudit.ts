@@ -158,10 +158,24 @@ export const readSkipsSinceLastSuccess = (job: StorageAutomationJob) =>
 export const pruneStorageAutomationAudit = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const cutoff = new Date(Date.now() - AUDIT_RETENTION_MS).toISOString();
-  yield* sql`DELETE FROM storage_automation_audit WHERE created_at < ${cutoff}`;
+  // The first compaction skip since its last success dates how long space has
+  // been stuck (readSkipsSinceLastSuccess); losing it would restart that clock.
+  const [waiting] = yield* sql<{ readonly auditId: string }>`
+    SELECT audit_id AS "auditId" FROM storage_automation_audit
+    WHERE job = 'database-vacuum' AND result = 'skipped'
+      AND created_at > (
+        SELECT COALESCE(MAX(created_at), '') FROM storage_automation_audit
+        WHERE job = 'database-vacuum' AND result = 'removed'
+      )
+    ORDER BY created_at ASC, rowid ASC LIMIT 1
+  `;
+  const keep = waiting?.auditId ?? "";
+  yield* sql`
+    DELETE FROM storage_automation_audit WHERE created_at < ${cutoff} AND audit_id != ${keep}
+  `;
   yield* sql`
     DELETE FROM storage_automation_audit
-    WHERE audit_id NOT IN (
+    WHERE audit_id != ${keep} AND audit_id NOT IN (
       SELECT audit_id FROM storage_automation_audit
       ORDER BY created_at DESC
       LIMIT ${AUDIT_MAX_ROWS}

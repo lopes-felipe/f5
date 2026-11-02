@@ -2863,9 +2863,10 @@ it.effect("schedules a compaction for the next start and runs it once the server
       yield* Effect.scoped(
         Effect.gen(function* () {
           yield* storage.startScheduledCompaction(Deferred.await(ready));
-          // The request is gone before compaction starts, and the lock is already held.
+          // The request is gone before compaction starts. No lock is taken until
+          // the server is ready, so startup repairs can still dispatch commands.
           assert.isFalse(yield* Effect.promise(() => pathExists(marker)));
-          assert.equal(locks, 1);
+          assert.equal(locks, 0);
           assert.lengthOf(yield* audits(), 0);
           yield* Deferred.succeed(ready, undefined);
           for (let attempt = 0; attempt < 1000 && (yield* audits()).length === 0; attempt++)
@@ -2878,6 +2879,7 @@ it.effect("schedules a compaction for the next start and runs it once the server
         ["skipped"],
       );
       assert.match((yield* audits())[0]!.reason, /already returns free space in steps/);
+      assert.equal(locks, 0);
       // A compaction that is not stuck is not offered.
       assert.isNull(yield* storage.getPendingCompaction);
     }),
@@ -3542,7 +3544,11 @@ it.layer(
         runGit(repo.root, "worktree", "add", "-q", "-b", "unregistered-worktree", target, "main");
         const previous = (yield* settings.getSettings).storageDiscovery;
         yield* settings.updateSettings({
-          storageDiscovery: { machineCleanupEnabled: false, repositoryRoots: [repo.root, target] },
+          storageDiscovery: {
+            machineCleanupEnabled: false,
+            repositoryRoots: [repo.root, target],
+            searchProjectFolders: true,
+          },
         });
         yield* Effect.addFinalizer(() =>
           settings.updateSettings({ storageDiscovery: previous }).pipe(Effect.orDie),
@@ -3640,6 +3646,23 @@ it.layer(
             ),
             [],
           );
+
+          // Turned off, the folder is no longer searched.
+          const settings = yield* ServerSettingsService;
+          const previous = (yield* settings.getSettings).storageDiscovery;
+          yield* settings.updateSettings({
+            storageDiscovery: { ...previous, searchProjectFolders: false },
+          });
+          yield* Effect.addFinalizer(() =>
+            settings.updateSettings({ storageDiscovery: previous }).pipe(Effect.orDie),
+          );
+          const off = yield* storage.inspect({ force: true });
+          assert.deepStrictEqual(off.implicitDiscoveryRoots, []);
+          assert.notInclude(
+            off.categories.find((c) => c.id === "dependencyFolders")?.targets.map((t) => t.path) ??
+              [],
+            worktreeModules,
+          );
         }),
       ),
   );
@@ -3657,6 +3680,32 @@ it.layer(
           sql,
           threadId: ThreadId.makeUnsafe("thread-recent-checkout"),
           worktreePath: repo.root,
+          deletedAt: null,
+        });
+        const report = yield* storage.inspect({ force: true });
+        const target = report.categories
+          .find((c) => c.id === "dependencyFolders")
+          ?.targets.find((t) => t.path === modules);
+        assert.isFalse(target?.safeToDelete);
+        assert.equal(target?.disabledReason, "A thread used this checkout in the last 24 hours.");
+      }),
+    ),
+  );
+  it.effect("keeps dependency folders of checkouts inside a folder a thread used recently", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance,
+          sql = yield* SqlClient.SqlClient;
+        const repo = yield* Effect.promise(() => makeClonedRepo("f5-parent-folder-checkout-"));
+        yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+        const modules = NodePath.join(repo.root, "node_modules");
+        yield* Effect.promise(() => writeFile(NodePath.join(modules, "pkg", "index.js"), "x"));
+        yield* seedProject({ sql, projectId: "parent-folder-checkout", workspaceRoot: repo.root });
+        // The thread works in the folder holding the checkout, as in a folder-of-repositories project.
+        yield* seedThread({
+          sql,
+          threadId: ThreadId.makeUnsafe("thread-parent-folder"),
+          worktreePath: NodePath.dirname(repo.root),
           deletedAt: null,
         });
         const report = yield* storage.inspect({ force: true });

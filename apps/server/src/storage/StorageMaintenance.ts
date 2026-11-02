@@ -26,6 +26,7 @@ import { canonicalJsonHash } from "../canonicalJsonHash.ts";
 import { makeUsageScanCoordinator } from "./usageScanCoordinator.ts";
 import { withProviderThreadAccess } from "../provider/providerThreadAccess.ts";
 import { cleanupRequiresTypedDelete } from "@t3tools/shared/storageCleanup";
+import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { userFacingCauseMessage } from "../causeMessage.ts";
 import {
   type DiscardableChanges,
@@ -54,7 +55,7 @@ import {
   readStorageProcesses,
   type StorageActivitySnapshot,
 } from "./storageActivity.ts";
-import type { CheckoutGarbageScan } from "./checkoutGarbage.ts";
+import type { CheckoutGarbageScan, KnownDependencyFolder } from "./checkoutGarbage.ts";
 
 import {
   type CheckpointRef,
@@ -170,8 +171,8 @@ const AUTO_CONVERT_QUIET_MS = 30 * 60 * 1_000;
 /** Automatic conversion skipped this long is offered to run now or at the next start. */
 const PENDING_COMPACTION_AFTER_MS = 3 * 24 * 60 * 60 * 1_000;
 export const AUTO_CONVERT_SKIP_PREFIX = "switching to incremental auto-vacuum waits: ";
-/** A compaction scheduled for the next start waits this long at most for the server to be ready. */
-const SCHEDULED_COMPACTION_READY_WAIT = "20 seconds";
+/** A compaction scheduled for the next start is skipped if the server is not ready by then. */
+const SCHEDULED_COMPACTION_READY_WAIT = "2 minutes";
 export const PURGE_FAILURE_BACKOFF_MS = 24 * 60 * 60 * 1_000;
 
 const WORKTREE_SCAN_MAX_DEPTH = 4;
@@ -179,6 +180,8 @@ const DOCKER_IMAGES_TARGET_ID = "docker:unused-images";
 /** Dependency folders of a checkout a thread used this recently are kept. */
 const CHECKOUT_RECENT_USE_MS = 24 * 60 * 60 * 1_000;
 const CHECKOUT_SIZE_BUDGET_MS = 60_000;
+/** Searching checkouts, including each candidate's nested-Git check; within the worker's 120 s. */
+const CHECKOUT_DISCOVERY_BUDGET_MS = 40_000;
 const GIT_WORKTREE_METADATA_UNRESOLVED = "Git worktree metadata could not be resolved.";
 
 export class StorageMaintenanceError extends Schema.TaggedErrorClass<StorageMaintenanceError>()(
@@ -829,9 +832,14 @@ const makeStorageMaintenance = Effect.gen(function* () {
           Effect.orElseSucceed(() => ({
             machineCleanupEnabled: false,
             repositoryRoots: [] as string[],
+            searchProjectFolders: false,
           })),
         )
-      : Effect.succeed({ machineCleanupEnabled: false, repositoryRoots: [] as string[] });
+      : Effect.succeed({
+          machineCleanupEnabled: false,
+          repositoryRoots: [] as string[],
+          searchProjectFolders: false,
+        });
   const managedWorktreesRoots = readWorktreesSettings.pipe(
     Effect.flatMap((settings) => validManagedWorktreesDirectories(settings, config.worktreesDir)),
   );
@@ -860,9 +868,9 @@ const makeStorageMaintenance = Effect.gen(function* () {
   );
   const withSql = Effect.provideService(SqlClient.SqlClient, sql);
   const readPages = withSql(readDatabasePages);
-  const compactDatabase = (operationId?: string, heldGate?: Scope.Closeable) =>
+  const compactDatabase = (operationId?: string) =>
     Effect.gen(function* () {
-      const gate = heldGate ?? (yield* engine.acquireMaintenanceLock());
+      const gate = yield* engine.acquireMaintenanceLock();
       return yield* Effect.scoped(
         Effect.gen(function* () {
           if (operationId && cancelledOperations.has(operationId))
@@ -1561,14 +1569,19 @@ const makeStorageMaintenance = Effect.gen(function* () {
     readonly value: { readonly configured: ReadonlyArray<string>; readonly implicit: string[] };
   } | null = null;
   const readRepositorySearchRoots = Effect.gen(function* () {
-    const configured = (yield* readDiscovery).repositoryRoots;
+    const discovery = yield* readDiscovery;
+    const configured = discovery.repositoryRoots;
+    if (!discovery.searchProjectFolders) return { configured, implicit: [] as string[] };
     const projects = yield* listProjectRoots();
     const key = JSON.stringify([configured, projects.map((entry) => entry.root)]);
     if (searchRootsCache?.key === key && Date.now() - searchRootsCache.atMs < 60_000)
       return searchRootsCache.value;
+    const home = (yield* canonicalOrNull(OS.homedir())) ?? Path.resolve(OS.homedir());
     const implicit: string[] = [];
     for (const { project, root } of projects) {
-      if (root === null || root === Path.parse(root).root || root === OS.homedir()) continue;
+      // The home folder and anything holding it (`/`, `/Users`) would search
+      // far beyond the project; those take an explicit search folder.
+      if (root === null || pathContainsOrEquals(root, home)) continue;
       if ((yield* commonDirOf(project.workspaceRoot)) !== null) continue;
       if ([...configured, ...implicit].some((other) => pathContainsOrEquals(other, root))) continue;
       implicit.push(root);
@@ -1850,9 +1863,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
 
   /**
    * Per checkout: whether an agent is working in it, and the latest
-   * interaction of a thread bound to it. A thread binds to the innermost
-   * checkout containing its folder; one working in a folder of repositories
-   * binds to none of them.
+   * interaction of a thread whose folder is inside, or is a parent of, it.
    */
   const readCheckoutThreadUse = (input: {
     readonly threads: ReadonlyArray<ThreadRow>;
@@ -1865,7 +1876,12 @@ const makeStorageMaintenance = Effect.gen(function* () {
       const canonicalDirs = new Map<string, string>();
       for (const thread of input.threads) {
         if (thread.deletedAt !== null) continue;
-        const directory = thread.worktreePath ?? thread.workspaceRoot;
+        const directory = threadWorkspaceCwd(
+          thread,
+          thread.workspaceRoot
+            ? { kind: thread.projectKind ?? undefined, workspaceRoot: thread.workspaceRoot }
+            : null,
+        );
         if (!directory) continue;
         const segment = toSafeThreadAttachmentSegment(thread.threadId);
         const busy = segment !== null && input.busySegments.has(segment);
@@ -1876,15 +1892,15 @@ const makeStorageMaintenance = Effect.gen(function* () {
           canonical = (yield* canonicalOrNull(directory)) ?? Path.resolve(directory);
           canonicalDirs.set(directory, canonical);
         }
-        const owner = input.checkoutRoots
-          .filter((root) => pathContainsOrEquals(root, canonical))
-          .toSorted((left, right) => right.length - left.length)[0];
-        if (!owner) continue;
-        const previous = use.get(owner);
-        use.set(owner, {
-          busy: (previous?.busy ?? false) || busy,
-          recent: (previous?.recent ?? false) || recent,
-        });
+        for (const root of input.checkoutRoots) {
+          if (!pathContainsOrEquals(root, canonical) && !pathContainsOrEquals(canonical, root))
+            continue;
+          const previous = use.get(root);
+          use.set(root, {
+            busy: (previous?.busy ?? false) || busy,
+            recent: (previous?.recent ?? false) || recent,
+          });
+        }
       }
       return (root: string): string | undefined => {
         const entry = use.get(root);
@@ -1909,6 +1925,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
    * every known checkout: project and discovered repositories, their linked
    * worktrees, and F5's managed worktrees.
    */
+  /** Dependency folders the last complete scan sized and checked, reused while unchanged. */
+  let knownDependencyFolders: ReadonlyArray<KnownDependencyFolder> = [];
   const computeCheckoutGarbageTargets = (input: {
     readonly threads: ReadonlyArray<ThreadRow>;
     readonly busySegments: ReadonlySet<string>;
@@ -1934,7 +1952,9 @@ const makeStorageMaintenance = Effect.gen(function* () {
             kind: "checkoutScan",
             checkouts: [...checkouts].map(([root, commonDir]) => ({ root, commonDir })),
             nowMs,
+            discoveryBudgetMs: CHECKOUT_DISCOVERY_BUDGET_MS,
             sizeBudgetMs: CHECKOUT_SIZE_BUDGET_MS,
+            known: knownDependencyFolders,
           },
           input.signal,
         ),
@@ -1954,6 +1974,13 @@ const makeStorageMaintenance = Effect.gen(function* () {
           ],
         };
       const scan = scanned.success;
+      // Partial sizes are not reused; a complete scan replaces the whole list.
+      if (scan.measured)
+        knownDependencyFolders = scan.folders.map(({ path, identity, bytes }) => ({
+          path,
+          identity,
+          bytes,
+        }));
       const threadBlock = yield* readCheckoutThreadUse({
         threads: input.threads,
         busySegments: input.busySegments,
@@ -2586,11 +2613,11 @@ const makeStorageMaintenance = Effect.gen(function* () {
             section: "machine",
             title: "Unused Docker images",
             description:
-              "Runs docker image prune --all for images no container uses. Volumes, containers and build cache are kept.",
+              "Runs docker image prune --all for images no container uses. Locally built images without a registry copy are lost. Volumes, containers and build cache are kept. With Docker Desktop, Colima and similar, the space returns to this disk only once their VM disk shrinks.",
             bytes: docker.status === "ready" ? docker.totalBytes : 0,
             reclaimableBytes: dockerReclaimableBytes,
             defaultSelected: false,
-            impact: "low",
+            impact: "medium",
             disabledReason:
               docker.status === "unavailable"
                 ? docker.reason
@@ -5153,6 +5180,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
         const outcome = yield* Effect.tryPromise(() =>
           runStorageTask<{
             activity: StorageFileInspection["activity"];
+            outcome: "removed" | "absent" | "busy" | "refused";
+            reason?: string;
             removedBytes: number;
             warnings: StoragePathWarning[];
           }>(
@@ -5166,6 +5195,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
           ),
         ).pipe(Effect.ensuring(Effect.sync(() => clearInterval(timer))), Effect.result);
         if (outcome._tag === "Failure") {
+          // Thrown only once deletion may have started.
           warnings.push(
             warningFor(
               id,
@@ -5173,24 +5203,41 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 String(outcome.failure),
             ),
           );
+          perTargetReclaimed.push({ id, path: id, reclaimedBytes: 0, status: "Failed" });
           continue;
         }
-        if (outcome.success.activity.state !== "idle") {
-          warnings.push(warningFor(id, outcome.success.activity.reason));
-          continue;
+        const result = outcome.success;
+        warnings.push(...result.warnings);
+        switch (result.outcome) {
+          case "removed":
+            perTargetReclaimed.push({
+              id,
+              path: id,
+              reclaimedBytes: result.removedBytes,
+              status: "Removed",
+            });
+            break;
+          case "absent":
+            warnings.push(warningFor(id, "Already gone; nothing was deleted."));
+            perTargetReclaimed.push({ id, path: id, reclaimedBytes: 0, status: "Skipped" });
+            break;
+          case "busy":
+            warnings.push(
+              warningFor(id, result.activity.state === "idle" ? "In use." : result.activity.reason),
+            );
+            perTargetReclaimed.push({ id, path: id, reclaimedBytes: 0, status: "Skipped" });
+            break;
+          case "refused":
+            warnings.push(warningFor(id, result.reason ?? "Refused; nothing was deleted."));
+            perTargetReclaimed.push({ id, path: id, reclaimedBytes: 0, status: "Skipped" });
+            break;
         }
-        warnings.push(...outcome.success.warnings);
-        if (outcome.success.removedBytes > 0 || outcome.success.warnings.length === 0)
-          perTargetReclaimed.push({
-            id,
-            path: id,
-            reclaimedBytes: outcome.success.removedBytes,
-            status: "Removed",
-          });
       }
       return resultFor({
         categoryId: "dependencyFolders",
-        status: perTargetReclaimed.length ? "Cleaned" : "Skipped",
+        status: perTargetReclaimed.some((target) => target.status === "Removed")
+          ? "Cleaned"
+          : "Skipped",
         warnings,
         perTargetReclaimed,
         reclaimedBytes: perTargetReclaimed.reduce((sum, target) => sum + target.reclaimedBytes, 0),
@@ -5816,7 +5863,12 @@ const makeStorageMaintenance = Effect.gen(function* () {
         }),
     });
 
-  const runScheduledCompaction = (gate: Scope.Closeable) => {
+  /**
+   * Runs a compaction the user scheduled for this start, published as a
+   * cleanup operation so Storage shows it running, can cancel it, and no
+   * other cleanup starts meanwhile. Agents pause while it holds the lock.
+   */
+  const runScheduledCompaction = (ready: boolean) => {
     const operationId = `scheduled-compaction-${Crypto.randomUUID()}`;
     const audit = (result: "removed" | "skipped" | "failed", reason: string) =>
       recordStorageAutomationAudit({
@@ -5827,6 +5879,11 @@ const makeStorageMaintenance = Effect.gen(function* () {
         reason,
       }).pipe(withSql, Effect.asVoid);
     return Effect.gen(function* () {
+      if (!ready)
+        return yield* audit(
+          "skipped",
+          "scheduled compaction skipped: F5 did not finish starting in time",
+        );
       const pages = yield* readPages;
       if (pages.autoVacuum === AUTO_VACUUM_INCREMENTAL)
         return yield* audit(
@@ -5845,13 +5902,106 @@ const makeStorageMaintenance = Effect.gen(function* () {
         : "free disk space cannot be inspected";
       if (shortfall !== null)
         return yield* audit("skipped", `scheduled compaction skipped: ${shortfall}`);
+      if (cleanupStatus && activeStates.has(cleanupStatus.state))
+        return yield* audit("skipped", "scheduled compaction skipped: a cleanup was running");
+
+      const startedAt = nowIso();
+      const record = {
+        hash: operationId,
+        acceptedAt: Date.now(),
+        status: {
+          operationId,
+          state: "running",
+          startedAt,
+          completedAt: null,
+          progress: {
+            operationId,
+            categoryId: "databaseVacuum",
+            phase: "compacting",
+            message: "Compacting the database as scheduled. Agents resume when it finishes.",
+            completedTargets: 0,
+            totalTargets: 1,
+          },
+          result: null,
+          error: null,
+          omittedCount: 0,
+        } as StorageCleanupStatus,
+        results: [] as ReadonlyArray<StorageCleanupCategoryResult>,
+      };
+      operations.set(operationId, record);
+      cleanupStatus = record.status;
+      operationRevision++;
+      cancellableOperations.add(operationId);
+      const finish = (
+        patch: Pick<StorageCleanupStatus, "state" | "error"> & {
+          readonly categoryResult: StorageCleanupCategoryResult;
+        },
+      ) =>
+        Effect.sync(() => {
+          const completedAt = nowIso();
+          record.results = [patch.categoryResult];
+          record.status = {
+            ...record.status,
+            state: patch.state,
+            error: patch.error,
+            completedAt,
+            progress: null,
+            result: {
+              operationId,
+              startedAt,
+              completedAt,
+              reclaimedBytes: patch.categoryResult.reclaimedBytes,
+              results: [patch.categoryResult],
+              warnings: [],
+              cancelled: patch.state === "cancelled",
+            },
+          };
+          cleanupStatus = record.status;
+          operationRevision++;
+        });
+
       const beforeBytes = yield* Effect.promise(() => databaseFileBytes(config.dbPath));
-      yield* compactDatabase(undefined, gate);
+      const exit = yield* Effect.exit(compactDatabase(operationId));
+      const cancelled = cancelledOperations.has(operationId);
+      cancelledOperations.delete(operationId);
+      cancellableOperations.delete(operationId);
+      if (Exit.isFailure(exit)) {
+        const message = cancelled
+          ? "Database compaction was cancelled."
+          : storageCauseMessage(exit.cause);
+        yield* finish({
+          state: cancelled ? "cancelled" : "failed",
+          error: cancelled ? null : message,
+          categoryResult: {
+            categoryId: "databaseVacuum",
+            status: cancelled ? "Skipped" : "Failed",
+            reclaimedBytes: 0,
+            perTargetReclaimed: [],
+            warnings: [],
+          },
+        });
+        return yield* audit(
+          cancelled ? "skipped" : "failed",
+          cancelled ? "scheduled compaction cancelled" : message,
+        );
+      }
       const afterBytes = yield* Effect.promise(() => databaseFileBytes(config.dbPath));
+      const reclaimedBytes = Math.max(0, beforeBytes - afterBytes);
       yield* noteStorageMutated;
+      yield* finish({
+        state: "succeeded",
+        error: null,
+        categoryResult: {
+          categoryId: "databaseVacuum",
+          status: "Cleaned",
+          reclaimedBytes,
+          perTargetReclaimed: [],
+          warnings: [],
+        },
+      });
       yield* audit(
         "removed",
-        `scheduled compaction switched to incremental auto-vacuum; the file shrank by ${Math.max(0, beforeBytes - afterBytes)} bytes`,
+        `scheduled compaction switched to incremental auto-vacuum; the file shrank by ${reclaimedBytes} bytes`,
       );
     }).pipe(
       Effect.catchCause((cause) =>
@@ -5880,11 +6030,20 @@ const makeStorageMaintenance = Effect.gen(function* () {
         ),
       );
       if (!scheduled) return;
-      const gate = yield* engine.acquireMaintenanceLock();
-      yield* Effect.logInfo("compacting the database as scheduled for this start");
-      yield* Effect.race(ready, Effect.sleep(SCHEDULED_COMPACTION_READY_WAIT)).pipe(
-        Effect.andThen(runScheduledCompaction(gate)),
-        Effect.ensuring(Scope.close(gate, Exit.void).pipe(Effect.ignore)),
+      // Startup repairs dispatch commands under the shared maintenance lock,
+      // so the exclusive lock is only taken once the server is ready.
+      yield* ready.pipe(
+        Effect.as(true),
+        Effect.timeoutOrElse({
+          duration: SCHEDULED_COMPACTION_READY_WAIT,
+          onTimeout: () => Effect.succeed(false),
+        }),
+        Effect.tap((isReady) =>
+          isReady
+            ? Effect.logInfo("compacting the database as scheduled for this start")
+            : Effect.void,
+        ),
+        Effect.flatMap(runScheduledCompaction),
         Effect.forkScoped,
       );
     });

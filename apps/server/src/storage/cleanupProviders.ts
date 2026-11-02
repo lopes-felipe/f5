@@ -222,7 +222,7 @@ export function cleanupProviders(input: {
       section: "machine",
       impact: "low",
       children: /^[^.]/,
-      childMinAgeMs: () => 0,
+      childMinAgeMs: () => DAY_MS,
     },
     {
       id: "playwrightBrowsers",
@@ -235,7 +235,10 @@ export function cleanupProviders(input: {
       ],
       section: "machine",
       impact: "low",
-      children: /^[^.]/,
+      // Only Playwright's own browser folders, so a mis-set
+      // PLAYWRIGHT_BROWSERS_PATH offers nothing else.
+      children:
+        /^(?:chromium|chromium_headless_shell|chromium-headless-shell|firefox|firefox-beta|webkit|ffmpeg|winldd|android)-\d+$/,
       childMinAgeMs: () => 0,
     },
     {
@@ -245,6 +248,11 @@ export function cleanupProviders(input: {
       roots: [env.ELECTRON_CACHE ?? join(cache, "electron")],
       section: "machine",
       impact: "low",
+      // @electron/get's URL-hash folders and older flat downloads only, so a
+      // mis-set ELECTRON_CACHE offers nothing else.
+      children:
+        /^(?:[0-9a-f]{64}|https?github\.com.+|(?:electron|chromedriver|ffmpeg|mksnapshot)-v.+|SHASUMS256\.txt.*)$/,
+      childMinAgeMs: () => DAY_MS,
     },
     {
       id: "nodeGypCache",

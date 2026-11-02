@@ -67,6 +67,7 @@ const STATUS_MAX_AGE_MS = 5_000;
  */
 const TURN_START_CHECK_TIMEOUT = "3 seconds";
 const CHECK_INTERVAL = "1 minute";
+const PENDING_COMPACTION_READ_TIMEOUT = "1 second";
 /**
  * The reclaimable scan walks userdata and worktrees and sizes purgeable
  * threads in the database, which shares its connection; keep it rare.
@@ -210,10 +211,25 @@ export const makeDiskSpaceMonitor = (options?: {
       ),
     );
 
+    // Reads the database, whose connection a compaction holds for minutes. It
+    // runs after free space is sampled and is bounded, so the banner keeps
+    // updating while disk usage peaks; a timed-out read keeps the last value.
     const refreshPendingCompaction = Effect.suspend(() => readPendingCompaction).pipe(
-      Effect.map((pending) => {
-        pendingCompaction = pending;
-      }),
+      Effect.timeout(PENDING_COMPACTION_READ_TIMEOUT),
+      Effect.flatMap((pending) =>
+        Effect.suspend(() => {
+          pendingCompaction = pending;
+          if (current === null) return Effect.void;
+          const { pendingCompaction: _previous, ...rest } = current.status;
+          const status: DiskSpaceStatus = {
+            ...rest,
+            ...(pending ? { pendingCompaction: pending } : {}),
+          };
+          current = { ...current, status };
+          return publishIfChanged(status);
+        }),
+      ),
+      Effect.ignore,
     );
 
     const noteStorageChanged: DiskSpaceMonitorShape["noteStorageChanged"] = Effect.suspend(() => {
@@ -222,7 +238,7 @@ export const makeDiskSpaceMonitor = (options?: {
       reclaimableGeneration += 1;
       if (current !== null)
         current = { ...current, status: { ...current.status, reclaimable: [] } };
-      return refreshPendingCompaction.pipe(Effect.andThen(getStatus({ force: true })));
+      return getStatus({ force: true }).pipe(Effect.andThen(refreshPendingCompaction));
     }).pipe(Effect.asVoid);
 
     const start: DiskSpaceMonitorShape["start"] = ({ estimateReclaimable, pendingCompaction }) =>
@@ -261,8 +277,8 @@ export const makeDiskSpaceMonitor = (options?: {
             Effect.ensuring(Effect.sync(() => (estimating = false))),
           );
         });
-        const tick = refreshPendingCompaction.pipe(
-          Effect.andThen(getStatus({ force: true })),
+        const tick = getStatus({ force: true }).pipe(
+          Effect.andThen(refreshPendingCompaction),
           Effect.andThen(refreshReclaimable.pipe(Effect.forkScoped)),
           Effect.asVoid,
           Effect.catchCause((cause) =>

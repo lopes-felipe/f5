@@ -115,6 +115,17 @@ describe("cleanup provider locations and boundaries", () => {
     expect(providers.find((p) => p.id === "electronDownloadCache")?.roots).toEqual([
       "/opt/electron",
     ]);
+    // Overrides only offer the tools' own entries, in case the variable points elsewhere.
+    const playwright = providers.find((p) => p.id === "playwrightBrowsers")!;
+    expect(playwright.children?.test("chromium-1155")).toBe(true);
+    expect(playwright.children?.test("chromium_headless_shell-1155")).toBe(true);
+    expect(playwright.children?.test("webkit-2123")).toBe(true);
+    expect(playwright.children?.test("projects")).toBe(false);
+    expect(playwright.children?.test("chromium")).toBe(false);
+    const electron = providers.find((p) => p.id === "electronDownloadCache")!;
+    expect(electron.children?.test("a".repeat(64))).toBe(true);
+    expect(electron.children?.test("electron-v38.1.0-darwin-arm64.zip")).toBe(true);
+    expect(electron.children?.test("Documents")).toBe(false);
     // "0" means browsers live inside node_modules; there is no shared cache to clean.
     expect(
       cleanupProviders({

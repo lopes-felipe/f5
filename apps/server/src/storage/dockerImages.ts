@@ -67,10 +67,49 @@ function unavailableReason(result: ProcessRunResult): string {
   return `Docker could not report disk usage: ${output.trim().split("\n")[0] || `exit ${result.code}`}`;
 }
 
+function startFailure(error: unknown): string {
+  return /command not found|ENOENT/i.test(String(error))
+    ? "The Docker CLI is not installed."
+    : `Docker could not be started: ${error instanceof Error ? error.message : String(error)}`;
+}
+
+/**
+ * Null when the CLI talks to an engine on this machine (a unix socket or
+ * named pipe), otherwise why images are not offered. DOCKER_HOST overrides
+ * the active context, as it does for the CLI.
+ */
+async function remoteEngineReason(
+  run: DockerRunner,
+  signal: AbortSignal | undefined,
+  env: NodeJS.ProcessEnv,
+): Promise<string | null> {
+  let host = env.DOCKER_HOST?.trim();
+  if (!host) {
+    let result: ProcessRunResult;
+    try {
+      result = await run(["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"], {
+        timeoutMs: INSPECT_TIMEOUT_MS,
+        signal,
+      });
+    } catch (error) {
+      signal?.throwIfAborted();
+      return startFailure(error);
+    }
+    if (result.code !== 0 || result.timedOut) return unavailableReason(result);
+    host = result.stdout.trim();
+  }
+  return /^(?:unix|npipe):\/\//i.test(host)
+    ? null
+    : `Docker uses an engine that is not on this machine (${host}); its images do not use this disk.`;
+}
+
 export async function inspectDockerImages(
   run: DockerRunner = runDocker,
   signal?: AbortSignal,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<DockerImagesInspection> {
+  const remote = await remoteEngineReason(run, signal, env);
+  if (remote !== null) return { status: "unavailable", reason: remote };
   let result: ProcessRunResult;
   try {
     result = await run(["system", "df", "--format", "{{json .}}"], {
@@ -79,12 +118,7 @@ export async function inspectDockerImages(
     });
   } catch (error) {
     signal?.throwIfAborted();
-    return {
-      status: "unavailable",
-      reason: /command not found|ENOENT/i.test(String(error))
-        ? "The Docker CLI is not installed."
-        : `Docker could not be started: ${error instanceof Error ? error.message : String(error)}`,
-    };
+    return { status: "unavailable", reason: startFailure(error) };
   }
   if (result.code !== 0 || result.timedOut)
     return { status: "unavailable", reason: unavailableReason(result) };
@@ -115,7 +149,11 @@ export async function inspectDockerImages(
 export async function pruneDockerImages(
   run: DockerRunner = runDocker,
   signal?: AbortSignal,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<number> {
+  // The context may have changed since review.
+  const remote = await remoteEngineReason(run, signal, env);
+  if (remote !== null) throw new Error(remote);
   let result: ProcessRunResult;
   try {
     result = await run(["image", "prune", "--all", "--force"], {
@@ -123,12 +161,7 @@ export async function pruneDockerImages(
       signal,
     });
   } catch (error) {
-    throw new Error(
-      /command not found|ENOENT/i.test(String(error))
-        ? "The Docker CLI is not installed."
-        : `Docker could not be started: ${error instanceof Error ? error.message : String(error)}`,
-      { cause: error },
-    );
+    throw new Error(startFailure(error), { cause: error });
   }
   if (result.code !== 0 || result.timedOut) throw new Error(unavailableReason(result));
   const reclaimed = /Total reclaimed space:\s*(\S+)/i.exec(result.stdout)?.[1];

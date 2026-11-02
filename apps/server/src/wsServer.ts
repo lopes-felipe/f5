@@ -3083,7 +3083,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         ),
       );
       yield* Scope.provide(worktreeSetup.startup, subscriptionsScope);
-      // Takes the maintenance lock before the queue dispatcher can resume a turn.
+      // Clears a scheduled compaction's request now, and runs it once startup is ready.
       yield* Scope.provide(
         storageMaintenance.startScheduledCompaction(
           Deferred.await(orchestrationRuntime).pipe(Effect.ignore),

@@ -6,6 +6,7 @@ import type { StoragePathWarning } from "@t3tools/contracts";
 import {
   allocatedBytes,
   fileIdentity,
+  enumerateFiles,
   measureTree,
   recursiveSize,
   storageLstat,
@@ -14,6 +15,7 @@ import {
 } from "./diskUsage.ts";
 import {
   activityForTarget,
+  inspectWindowsFileUse,
   readStorageProcesses,
   type StorageActivity,
   type StorageProcess,
@@ -135,6 +137,8 @@ async function restoreHint(path: string, kind: DependencyFolderKind): Promise<st
 export async function findDependencyFolders(
   checkoutRoot: string,
   signal?: AbortSignal,
+  /** Folders an earlier scan already found free of Git checkouts, unchanged since. */
+  isKnownClean: (path: string, identity: FileIdentity) => boolean = () => false,
 ): Promise<{
   readonly folders: ReadonlyArray<{
     readonly path: string;
@@ -163,8 +167,14 @@ export async function findDependencyFolders(
       const kind = await classify(directory, entry.name);
       if (kind) {
         const stat = await safeLstat(path).catch(() => null);
-        if (stat?.isDirectory() && !stat.isSymbolicLink())
-          folders.push({ path, kind, identity: fileIdentity(stat) });
+        if (stat?.isDirectory() && !stat.isSymbolicLink()) {
+          // A package may itself be a checkout. Keep its Git history and
+          // unpushed work out of dependency cleanup, including nested repos.
+          // Deletion checks again whatever the scan reused.
+          const identity = fileIdentity(stat);
+          if (!isKnownClean(path, identity) && (await containsGitEntry(path, signal))) continue;
+          folders.push({ path, kind, identity });
+        }
         continue;
       }
       if (depth + 1 >= DEPENDENCY_SCAN_MAX_DEPTH) continue;
@@ -175,6 +185,27 @@ export async function findDependencyFolders(
   const root = await safeLstat(checkoutRoot).catch(() => null);
   if (root?.isDirectory() && !root.isSymbolicLink()) await visit(checkoutRoot, 0);
   return { folders, warnings };
+}
+
+async function containsGitEntry(root: string, signal?: AbortSignal): Promise<boolean> {
+  const visit = async (directory: string): Promise<boolean> => {
+    signal?.throwIfAborted();
+    let entries: Dirent[];
+    try {
+      entries = await storageReadDir(directory, { withFileTypes: true }, signal);
+    } catch {
+      signal?.throwIfAborted();
+      // Fail closed if part of the candidate cannot be checked.
+      return true;
+    }
+    for (const entry of entries) {
+      if (entry.name === ".git") return true;
+      if (!entry.isDirectory()) continue;
+      if (await visit(Path.join(directory, entry.name))) return true;
+    }
+    return false;
+  };
+  return visit(root);
 }
 
 /** Temporary pack files Git left in one repository, older than a day. */
@@ -207,14 +238,37 @@ export async function findTemporaryPacks(
   return packs;
 }
 
+/** A folder an earlier scan sized completely and found free of Git checkouts. */
+export interface KnownDependencyFolder {
+  readonly path: string;
+  readonly identity: FileIdentity;
+  readonly bytes: number;
+}
+
+const sameFolder = (left: FileIdentity, right: FileIdentity) =>
+  left.dev === right.dev && left.ino === right.ino && left.mtimeMs === right.mtimeMs;
+
 export async function scanCheckoutGarbage(input: {
   readonly checkouts: ReadonlyArray<CheckoutInput>;
   readonly nowMs: number;
+  /** Search budget across every checkout; folders past it are not listed. */
+  readonly discoveryBudgetMs: number;
   /** Sizing budget across every folder; sizes are partial past it. */
   readonly sizeBudgetMs: number;
+  /**
+   * Reused without walking them again while their root is unchanged. A
+   * package added or removed changes the root's mtime; changes deeper inside
+   * leave the estimate stale until the folder itself changes.
+   */
+  readonly known?: ReadonlyArray<KnownDependencyFolder>;
   readonly signal?: AbortSignal;
 }): Promise<CheckoutGarbageScan> {
   const warnings: StoragePathWarning[] = [];
+  const known = new Map((input.known ?? []).map((folder) => [folder.path, folder]));
+  const reusable = (path: string, identity: FileIdentity) => {
+    const previous = known.get(path);
+    return previous !== undefined && sameFolder(previous.identity, identity);
+  };
   const found: Array<{
     path: string;
     checkoutRoot: string;
@@ -222,8 +276,27 @@ export async function scanCheckoutGarbage(input: {
     identity: FileIdentity;
   }> = [];
   const seenFolders = new Set<string>();
+  const discoveryBudget =
+    input.discoveryBudgetMs > 0
+      ? AbortSignal.timeout(input.discoveryBudgetMs)
+      : AbortSignal.abort();
+  const discoverySignal = input.signal
+    ? AbortSignal.any([input.signal, discoveryBudget])
+    : discoveryBudget;
   for (const checkout of input.checkouts) {
-    const result = await findDependencyFolders(checkout.root, input.signal);
+    let result: Awaited<ReturnType<typeof findDependencyFolders>>;
+    try {
+      result = await findDependencyFolders(checkout.root, discoverySignal, reusable);
+    } catch (error) {
+      input.signal?.throwIfAborted();
+      if (!discoveryBudget.aborted) throw error;
+      // Keep what was found; a folder whose Git check was cut short is not listed.
+      warnings.push({
+        path: checkout.root,
+        reason: "Dependency folder search ran out of time; some folders are not listed.",
+      });
+      break;
+    }
     warnings.push(...result.warnings);
     for (const folder of result.folders) {
       if (seenFolders.has(folder.path)) continue;
@@ -244,7 +317,9 @@ export async function scanCheckoutGarbage(input: {
   }
   const budget = AbortSignal.timeout(input.sizeBudgetMs);
   const signal = input.signal ? AbortSignal.any([input.signal, budget]) : budget;
-  const paths = found.map((folder) => folder.path);
+  const paths = found
+    .filter((folder) => !reusable(folder.path, folder.identity))
+    .map((folder) => folder.path);
   const sized = paths.length
     ? await measureTree(paths, { checkpoints: paths, allowPartial: true, maxDepth: 64, signal })
     : null;
@@ -259,7 +334,9 @@ export async function scanCheckoutGarbage(input: {
   for (const folder of found)
     folders.push({
       ...folder,
-      bytes: sized?.byCheckpoint.get(Path.resolve(folder.path))?.bytes ?? 0,
+      bytes: reusable(folder.path, folder.identity)
+        ? known.get(folder.path)!.bytes
+        : (sized?.byCheckpoint.get(Path.resolve(folder.path))?.bytes ?? 0),
       restoreHint: await restoreHint(folder.path, folder.kind),
     });
   return { folders, packs, measured, warnings };
@@ -279,25 +356,54 @@ export async function removeDependencyFolder(
   readProcesses: () => Promise<StorageProcess[]> = () => readStorageProcesses(),
 ): Promise<{
   readonly activity: StorageActivity;
+  /**
+   * `absent`: already gone. `refused`: left untouched, see `reason`. A thrown
+   * error means deletion may have started; a quarantine is offered again.
+   */
+  readonly outcome: "removed" | "absent" | "busy" | "refused";
+  readonly reason?: string;
   readonly removedBytes: number;
   readonly warnings: ReadonlyArray<StoragePathWarning>;
 }> {
+  const untouched = (
+    outcome: "absent" | "busy" | "refused",
+    activity: StorageActivity,
+    reason?: string,
+  ) => ({ activity, outcome, ...(reason ? { reason } : {}), removedBytes: 0, warnings: [] });
   // Anything running inside the checkout may be using its dependencies.
   const activity = activityForTarget(await FS.realpath(input.checkoutRoot), await readProcesses());
-  if (activity.state !== "idle") return { activity, removedBytes: 0, warnings: [] };
+  if (activity.state !== "idle") return untouched("busy", activity);
   const validation = await validateDeletablePath({
     path: input.path,
     allowedRoot: input.checkoutRoot,
     expectedIdentity: input.identity,
     directoryIdentityOnly: true,
   });
-  if (validation.kind === "absent") return { activity, removedBytes: 0, warnings: [] };
+  if (validation.kind === "absent") return untouched("absent", activity);
   if (validation.kind !== "validated")
-    throw new Error(validation.kind === "refused" ? validation.reason : "Cleanup target changed.");
-  if (!validation.stat.isDirectory()) throw new Error("Refused to delete a non-directory.");
+    return untouched(
+      "refused",
+      activity,
+      validation.kind === "refused" ? validation.reason : "Cleanup target changed.",
+    );
+  if (!validation.stat.isDirectory())
+    return untouched("refused", activity, "Refused to delete a non-directory.");
   // An install since review changes the folder's mtime; leave it for a rescan.
   if (validation.stat.mtimeMs !== input.identity.mtimeMs)
-    throw new Error("Folder changed since review. Rescan before deletion.");
+    return untouched("refused", activity, "Folder changed since review. Rescan before deletion.");
+  if (process.platform === "win32") {
+    const files = await enumerateFiles(input.path, { maxDepth: 64 });
+    if (files.errors.length)
+      return untouched("refused", activity, "Could not inspect dependency files for active use.");
+    const fileUse = await inspectWindowsFileUse(files.files.map((file) => file.path));
+    if (fileUse.state !== "idle") return untouched("busy", fileUse);
+  }
+  if (await containsGitEntry(input.path))
+    return untouched(
+      "refused",
+      activity,
+      "Folder contains a Git checkout. Rescan after moving or removing it.",
+    );
   let quarantine = input.path;
   if (!Path.basename(input.path).startsWith(DEPENDENCY_QUARANTINE_PREFIX)) {
     quarantine = Path.join(Path.dirname(input.path), DEPENDENCY_QUARANTINE_PREFIX + randomUUID());
@@ -314,9 +420,12 @@ export async function removeDependencyFolder(
     directoryIdentityOnly: true,
     recursive: true,
   });
-  if (removal.kind === "removed") return { activity, removedBytes: size.bytes, warnings: [] };
+  if (removal.kind === "removed")
+    return { activity, outcome: "removed", removedBytes: size.bytes, warnings: [] };
   return {
     activity,
+    outcome: "refused",
+    reason: "The folder was moved aside but not deleted; it is offered again after a rescan.",
     removedBytes: 0,
     warnings: removal.warning ? [removal.warning] : [],
   };

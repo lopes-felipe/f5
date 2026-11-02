@@ -29,7 +29,7 @@ async function age(path: string, ms: number) {
   await FS.utimes(path, when, when);
 }
 const relative = (paths: ReadonlyArray<{ readonly path: string }>) =>
-  paths.map((entry) => Path.relative(root, entry.path)).toSorted();
+  paths.map((entry) => Path.relative(root, entry.path).split(Path.sep).join("/")).toSorted();
 const noProcesses = async () => [];
 
 describe("dependency folders", () => {
@@ -48,7 +48,9 @@ describe("dependency folders", () => {
       "node_modules",
       "tools/.venv",
     ]);
-    expect(result.folders.find((f) => f.path.endsWith("tools/.venv"))?.kind).toBe(".venv");
+    expect(result.folders.find((f) => f.path.endsWith(Path.join("tools", ".venv")))?.kind).toBe(
+      ".venv",
+    );
   });
 
   it("skips symlinks, nested checkouts, .git and folders past the depth limit", async () => {
@@ -72,6 +74,24 @@ describe("dependency folders", () => {
     }
   });
 
+  it("excludes dependency folders containing nested Git checkouts and rechecks before deletion", async () => {
+    const path = Path.join(root, "node_modules");
+    await write(Path.join(path, "ordinary", "index.js"));
+    await write(Path.join(path, "pkg", ".git", "HEAD"));
+    expect(relative((await findDependencyFolders(root)).folders)).toEqual([]);
+
+    await FS.rm(Path.join(path, "pkg", ".git"), { recursive: true });
+    const identity = fileIdentity(await FS.lstat(path));
+    await write(Path.join(path, "pkg", ".git", "HEAD"));
+    expect(
+      await removeDependencyFolder({ path, checkoutRoot: root, identity }, noProcesses),
+    ).toMatchObject({
+      outcome: "refused",
+      reason: expect.stringMatching(/contains a Git checkout/),
+    });
+    expect(await FS.readFile(Path.join(path, "pkg", ".git", "HEAD"), "utf8")).toBe("x");
+  });
+
   it("offers a quarantine an interrupted cleanup left behind", async () => {
     await write(Path.join(root, `${DEPENDENCY_QUARANTINE_PREFIX}1234`, "pkg", "index.js"));
     const result = await findDependencyFolders(root);
@@ -87,6 +107,7 @@ describe("dependency folders", () => {
       kind: "checkoutScan",
       checkouts: [{ root, commonDir: null }],
       nowMs: Date.now(),
+      discoveryBudgetMs: 30_000,
       sizeBudgetMs: 30_000,
     });
     expect(scan.measured).toBe(true);
@@ -94,6 +115,45 @@ describe("dependency folders", () => {
     expect(modules?.bytes).toBeGreaterThanOrEqual(10_000);
     expect(modules?.restoreHint).toBe("restore with bun install");
     expect(scan.folders.find((f) => f.kind === ".venv")?.restoreHint).toBe("restore with uv sync");
+  });
+
+  it("reuses an unchanged folder's size and Git check, and re-walks a changed one", async () => {
+    const path = Path.join(root, "node_modules");
+    await write(Path.join(path, "pkg", "index.js"), "x".repeat(10_000));
+    const identity = fileIdentity(await FS.lstat(path));
+    const scan = (
+      known: ReadonlyArray<{ path: string; identity: typeof identity; bytes: number }>,
+    ) =>
+      scanCheckoutGarbage({
+        checkouts: [{ root, commonDir: null }],
+        nowMs: Date.now(),
+        discoveryBudgetMs: 30_000,
+        sizeBudgetMs: 30_000,
+        known,
+      });
+    // A recorded size is trusted while the folder's root is unchanged.
+    expect((await scan([{ path, identity, bytes: 123 }])).folders[0]?.bytes).toBe(123);
+    // A package added since moves the mtime: measured again.
+    await write(Path.join(path, "added", "index.js"));
+    const later = new Date(identity.mtimeMs + 5_000);
+    await FS.utimes(path, later, later);
+    expect((await scan([{ path, identity, bytes: 123 }])).folders[0]?.bytes).toBeGreaterThan(
+      10_000,
+    );
+  });
+
+  it("lists what it found when the search runs out of time", async () => {
+    await write(Path.join(root, "node_modules", "pkg", "index.js"));
+    const result = await scanCheckoutGarbage({
+      checkouts: [{ root, commonDir: null }],
+      nowMs: Date.now(),
+      discoveryBudgetMs: 0,
+      sizeBudgetMs: 30_000,
+    });
+    expect(result.folders).toEqual([]);
+    expect(result.warnings.map((warning) => warning.reason)).toContain(
+      "Dependency folder search ran out of time; some folders are not listed.",
+    );
   });
 
   it("quarantines and deletes a reviewed folder", async () => {
@@ -104,9 +164,13 @@ describe("dependency folders", () => {
       { path, checkoutRoot: root, identity },
       noProcesses,
     );
-    expect(result.activity.state).toBe("idle");
+    expect(result.outcome).toBe("removed");
     expect(result.removedBytes).toBeGreaterThanOrEqual(5_000);
     expect(await FS.readdir(root)).toEqual([]);
+    // Deleting it again reports that nothing was there.
+    expect(
+      await removeDependencyFolder({ path, checkoutRoot: root, identity }, noProcesses),
+    ).toMatchObject({ outcome: "absent", removedBytes: 0 });
   });
 
   it("refuses a folder that changed or was replaced since review", async () => {
@@ -116,15 +180,19 @@ describe("dependency folders", () => {
     // A reinstall adds packages: the folder's mtime moves.
     await write(Path.join(path, "added", "index.js"));
     await age(path, -5_000);
-    await expect(
-      removeDependencyFolder({ path, checkoutRoot: root, identity }, noProcesses),
-    ).rejects.toThrow(/changed since review/);
-    await FS.rm(path, { recursive: true });
+    expect(
+      await removeDependencyFolder({ path, checkoutRoot: root, identity }, noProcesses),
+    ).toMatchObject({ outcome: "refused", reason: expect.stringMatching(/changed since review/) });
+    // A different folder with the reviewed mtime. The original stays on disk
+    // so its inode cannot be reused.
+    await FS.rename(path, Path.join(root, "original"));
     await write(Path.join(path, "pkg", "index.js"));
-    await expect(
-      removeDependencyFolder({ path, checkoutRoot: root, identity }, noProcesses),
-    ).rejects.toThrow(/identity changed/);
-    expect(await FS.readdir(root)).toEqual(["node_modules"]);
+    const reviewedTime = new Date(identity.mtimeMs);
+    await FS.utimes(path, reviewedTime, reviewedTime);
+    expect(
+      await removeDependencyFolder({ path, checkoutRoot: root, identity }, noProcesses),
+    ).toMatchObject({ outcome: "refused", reason: expect.stringMatching(/identity changed/) });
+    expect((await FS.readdir(root)).toSorted()).toEqual(["node_modules", "original"]);
   });
 
   it("keeps the folder while a process runs inside the checkout", async () => {
@@ -134,7 +202,7 @@ describe("dependency folders", () => {
       { path, checkoutRoot: root, identity: fileIdentity(await FS.lstat(path)) },
       async () => [{ pid: 42, name: "node", cwd: root, paths: [] }],
     );
-    expect(result.activity).toMatchObject({ state: "busy" });
+    expect(result).toMatchObject({ outcome: "busy", activity: { state: "busy" } });
     expect(await FS.readdir(root)).toEqual(["node_modules"]);
   });
 });

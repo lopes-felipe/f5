@@ -52,12 +52,20 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const settings = yield* ServerSettingsService;
       const denied = yield* settings
         .updateSettings({
-          storageDiscovery: { machineCleanupEnabled: false, repositoryRoots: ["relative"] },
+          storageDiscovery: {
+            machineCleanupEnabled: false,
+            repositoryRoots: ["relative"],
+            searchProjectFolders: true,
+          },
         })
         .pipe(Effect.exit);
       assert.isTrue(Exit.isFailure(denied));
       const saved = yield* settings.updateSettings({
-        storageDiscovery: { machineCleanupEnabled: false, repositoryRoots: ["~/code", "~/code"] },
+        storageDiscovery: {
+          machineCleanupEnabled: false,
+          repositoryRoots: ["~/code", "~/code"],
+          searchProjectFolders: true,
+        },
       });
       assert.deepEqual(saved.storageDiscovery.repositoryRoots, [NodePath.join(homedir(), "code")]);
     }).pipe(Effect.provide(makeServerSettingsLayer())),

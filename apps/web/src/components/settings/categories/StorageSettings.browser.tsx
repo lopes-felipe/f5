@@ -587,6 +587,7 @@ describe("StorageSettings", () => {
           storageDiscovery: {
             machineCleanupEnabled: true,
             repositoryRoots: ["/work/repos", "/work/other"],
+            searchProjectFolders: true,
           },
         }),
       );
