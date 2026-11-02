@@ -48,6 +48,27 @@ export function claudeLimitState(info: Record<string, unknown>): {
   };
 }
 
+/**
+ * The CLI suppresses an unchanged rate_limit_event, but repeats the limit as
+ * undeclared `api_error_params.rate_limit_info` on each blocked assistant
+ * message. Read it so a quick retry still knows when the limit resets.
+ */
+export function claudeBlockedAssistantLimit(
+  message: unknown,
+): ReturnType<typeof claudeLimitState> | undefined {
+  const params = asObject(asObject(message)?.api_error_params);
+  const info = asObject(params?.rate_limit_info);
+  if (!info) return undefined;
+  const limit = claudeLimitState(info);
+  return limit.blocked ? limit : undefined;
+}
+
+function asObject(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
 export function usageLimitFromWindows(
   windows: RuntimeUsageLimit["windows"],
   evidence: RuntimeUsageLimit["evidence"] = "typed",

@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   applyGrokAcpModelSelection,
   buildGrokAcpSpawnInput,
+  currentGrokModelIdFromSessionSetup,
+  offeredAcpModelIds,
   resolveGrokAcpBaseModelId,
 } from "./GrokAcpSupport.ts";
 
@@ -85,5 +87,73 @@ describe("GrokAcpSupport", () => {
       ),
     ).toBe("grok-heavy");
     expect(setSessionModel).not.toHaveBeenCalled();
+  });
+
+  const conflictingSetup = {
+    sessionId: "session-1",
+    models: {
+      currentModelId: "state-b",
+      availableModels: [
+        { modelId: "state-a", name: "A" },
+        { modelId: "state-b", name: "B" },
+      ],
+    },
+    configOptions: [
+      {
+        id: "llm",
+        name: "Model",
+        category: "model",
+        type: "select",
+        currentValue: "option-a",
+        options: [
+          { group: "main", name: "Main", options: [{ value: "option-a", name: "A" }] },
+          { group: "more", name: "More", options: [{ value: "option-b", name: "B" }] },
+        ],
+      },
+    ],
+  } satisfies EffectAcpSchema.NewSessionResponse;
+
+  it("reads the current model from the selector the runtime writes", () => {
+    expect(currentGrokModelIdFromSessionSetup(conflictingSetup)).toBe("state-b");
+    expect(currentGrokModelIdFromSessionSetup(conflictingSetup, "config-option")).toBe("option-a");
+    expect(
+      currentGrokModelIdFromSessionSetup(
+        { ...conflictingSetup, configOptions: [] },
+        "config-option",
+      ),
+    ).toBe("state-b");
+    expect(offeredAcpModelIds(conflictingSetup)).toEqual(["option-a", "option-b"]);
+    expect(offeredAcpModelIds({ ...conflictingSetup, configOptions: [] })).toEqual([
+      "state-a",
+      "state-b",
+    ]);
+    expect(offeredAcpModelIds({ sessionId: "session-1" })).toBeUndefined();
+  });
+
+  it("skips a startup model the agent no longer offers unless it is a custom model", async () => {
+    const setSessionModel = vi.fn((_model: string) =>
+      Effect.succeed({} satisfies EffectAcpSchema.SetSessionModelResponse),
+    );
+    const select = (requestedModelId: string, offered: ReadonlyArray<string> | undefined) =>
+      Effect.runPromise(
+        applyGrokAcpModelSelection({
+          runtime: { setSessionModel },
+          defaultModelId: "acp-default",
+          currentModelId: "option-a",
+          requestedModelId,
+          availableModels: { offered, custom: ["my-custom"] },
+          mapError: (error) => error,
+        }),
+      );
+    expect(await select("expired", ["option-a", "option-b"])).toBe("option-a");
+    expect(setSessionModel).not.toHaveBeenCalled();
+    expect(await select("option-b", ["option-a", "option-b"])).toBe("option-b");
+    expect(await select("my-custom", ["option-a"])).toBe("my-custom");
+    expect(await select("unlisted", undefined)).toBe("unlisted");
+    expect(setSessionModel.mock.calls.map(([model]) => model)).toEqual([
+      "option-b",
+      "my-custom",
+      "unlisted",
+    ]);
   });
 });

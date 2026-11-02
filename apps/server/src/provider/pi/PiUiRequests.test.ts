@@ -100,6 +100,22 @@ it("distinguishes an empty editor answer from dismissal and retains prefill meta
     requests.answer({ requestId: "host-2", generation: "generation-1", now: 101 }),
   ).toMatchObject({ record: { cancelled: true } });
 });
+it("asks the first non-blank message or placeholder and falls back to the title", () => {
+  const requests = new PiUiRequests("generation-1");
+  const question = (fields: Record<string, unknown>, requestId: string) => {
+    const opened = requests.open(
+      { ...event, id: requestId, method: "input", title: "Branch name", ...fields },
+      requestId,
+      100,
+    );
+    if (opened.type !== "opened") throw new Error("Expected pending dialog.");
+    return opened.request.question?.question;
+  };
+  expect(question({ message: "", placeholder: "feature/x" }, "host-1")).toBe("feature/x");
+  expect(question({ message: "  ", placeholder: "" }, "host-2")).toBe("Branch name");
+  expect(question({ message: undefined, placeholder: "   " }, "host-3")).toBe("Branch name");
+  expect(question({ message: "Name it", placeholder: "feature/x" }, "host-4")).toBe("Name it");
+});
 it("maps unambiguous UI option labels back to native values, including duplicates and blank options", () => {
   const requests = new PiUiRequests("generation-1");
   const opened = requests.open(

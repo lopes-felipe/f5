@@ -83,12 +83,14 @@ import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapa
 import type { ProviderSessionStartInput } from "@t3tools/contracts";
 import type { RuntimeUsageLimit } from "@t3tools/contracts";
 import {
+  claudeBlockedAssistantLimit,
   claudeGatewayUsageLimit,
   claudeLimitState,
   usageLimitFromWindows,
   usageLimitMessage,
 } from "../usageLimitMessages.ts";
 import { isProviderResumeFailureText } from "../resumeFailure.ts";
+import { claudeApiErrorText } from "../claudeApiErrorText.ts";
 import { appendClaudeStderrTail, parseClaudeProcessExit } from "../claudeProcessExit.ts";
 import { makeClaudeProcessGroupSpawner } from "../claudeProcessGroup.ts";
 import { resolveClaudeToolSearchOverride } from "../claudeToolSearch.ts";
@@ -382,6 +384,11 @@ interface ClaudeTurnState {
   thinkingTokens?: ClaudeThinkingTokenAccount;
   authenticationFailureMessage?: string;
   rateLimitFailure?: true;
+  /**
+   * The limit repeated on the latest blocked root assistant response. The CLI
+   * suppresses an unchanged rate_limit_event, so this can be the only reset time.
+   */
+  assistantUsageLimit?: ReturnType<typeof claudeLimitState>;
   rejectedUsageLimits?: Map<string, ReturnType<typeof claudeLimitState>>;
   announcedUsageLimits?: Set<string>;
   interruptRequested: boolean;
@@ -2035,7 +2042,13 @@ ${promptText}`
 
 function turnStatusFromResult(result: SDKResultMessage): ProviderRuntimeTurnStatus {
   if (isInterruptedResult(result)) return "interrupted";
-  if (result.terminal_reason === "blocking_limit" || result.terminal_reason === "prompt_too_long")
+  // api_error means Claude gave up after repeated API errors, even when the
+  // result is not flagged is_error.
+  if (
+    result.terminal_reason === "blocking_limit" ||
+    result.terminal_reason === "prompt_too_long" ||
+    result.terminal_reason === "api_error"
+  )
     return "failed";
   if (result.subtype === "success") {
     return result.is_error ? "failed" : "completed";
@@ -5215,7 +5228,19 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             context.turnState.authenticationFailureMessage =
               "Claude login expired or is invalid. Run /login in this provider account, then retry.";
           }
-          if (message.error === "rate_limit") context.turnState.rateLimitFailure = true;
+          if (!parentToolUseId) {
+            // Only the latest root response's rate limit counts; a recovered
+            // response clears the evidence of an earlier blocked one.
+            if (message.error === "rate_limit") {
+              context.turnState.rateLimitFailure = true;
+              const limit = claudeBlockedAssistantLimit(message);
+              if (limit) context.turnState.assistantUsageLimit = limit;
+              else delete context.turnState.assistantUsageLimit;
+            } else {
+              delete context.turnState.rateLimitFailure;
+              delete context.turnState.assistantUsageLimit;
+            }
+          } else if (message.error === "rate_limit") context.turnState.rateLimitFailure = true;
           context.turnState.items.push(message.message);
           yield* backfillAssistantTextBlocksFromSnapshot(context, message);
         }
@@ -5334,6 +5359,14 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // blocking_limit also means a full context window. A rejected window,
         // an assistant rate_limit error or HTTP 429 supplies usage evidence.
         const blockingLimit = message.terminal_reason === "blocking_limit";
+        // A rate_limit_event stays authoritative for its window.
+        const assistantLimit = context.turnState.assistantUsageLimit;
+        const rejectedLimits = [
+          ...(context.rejectedUsageLimits?.values() ?? []),
+          ...(assistantLimit && !context.rejectedUsageLimits?.has(assistantLimit.window)
+            ? [assistantLimit]
+            : []),
+        ];
         const typedRateLimit =
           context.turnState.rateLimitFailure ||
           (message.subtype === "success" && message.api_error_status === 429);
@@ -5347,7 +5380,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const hint = permissionDenied
           ? message.result.trim() || undefined
           : (context.turnState?.authenticationFailureMessage ??
-            [...(context.rejectedUsageLimits?.values() ?? [])][0]?.message ??
+            rejectedLimits[0]?.message ??
             (typedRateLimit && !gatewayUsageLimit
               ? usageLimitMessage("Claude", undefined, undefined)
               : undefined));
@@ -5355,7 +5388,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           resultUserFacingError(message) ??
           (gatewayUsageLimit && message.subtype === "success" ? message.result : undefined);
         const errorMessage =
-          message.terminal_reason === "prompt_too_long" || (blockingLimit && !hint)
+          (message.terminal_reason === "prompt_too_long" || (blockingLimit && !hint)
             ? CLAUDE_CONTEXT_WINDOW_FULL_ERROR
             : blockingLimit && hint
               ? hint
@@ -5364,8 +5397,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   (!originalError ||
                     /usage.?limit|rate.?limit|authentication|unauthorized/i.test(originalError))
                 ? [originalError, hint].filter(Boolean).join(" ")
-                : originalError;
-        const rejectedWindows = [...(context.rejectedUsageLimits?.values() ?? [])]
+                : originalError) ??
+          claudeApiErrorText(message) ??
+          (status === "failed" && message.terminal_reason === "api_error"
+            ? "Claude gave up after repeated API errors."
+            : undefined);
+        const rejectedWindows = rejectedLimits
           .filter((limit) => limit.resettable)
           .map((limit) => limit.structuredWindow);
         const usageLimit =

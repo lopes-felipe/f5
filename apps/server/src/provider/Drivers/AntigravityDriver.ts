@@ -20,6 +20,7 @@ import { makeGrokTextGeneration } from "../../git/Layers/GrokTextGeneration.ts";
 import { makeGrokAdapter } from "../Layers/GrokAdapter.ts";
 import { checkAntigravityProviderStatus } from "../Layers/AntigravityProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
+import { findModelConfigOption } from "../acp/AcpRuntimeModel.ts";
 import { makeAntigravityAcpRuntime } from "../acp/AntigravityAcpSupport.ts";
 import type { GrokAcpRuntimeInput } from "../acp/GrokAcpSupport.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
@@ -80,11 +81,8 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
           onRuntimeReady: (runtime) =>
             Effect.gen(function* () {
               readModelChoices = Effect.gen(function* () {
-                const configOptions = yield* runtime.getConfigOptions;
-                const model = configOptions.find(
-                  (option) => option.id === "model" || option.category === "model",
-                );
-                if (model?.type === "select") {
+                const model = findModelConfigOption(yield* runtime.getConfigOptions);
+                if (model) {
                   const choices = model.options.flatMap((option) =>
                     "value" in option ? [option] : option.options,
                   );
