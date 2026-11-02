@@ -52,6 +52,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-14989",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "files",
+          "server"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Data correctness fix in workspace file reads. The symptom can occur in f5.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Workspace file reads loop until all requested bytes arrive. Short reads on SMB, NFS or sshfs no longer open a silently truncated file.",
+      "title": "Files panel reads whole files on network filesystems",
+      "upstreamPrs": [
+        14989
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-15000",
@@ -94,6 +116,73 @@
       "title": "Stopping a Claude turn no longer hangs without an acknowledgement",
       "upstreamPrs": [
         16419
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-18416",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "sidebar",
+          "client-state",
+          "performance"
+        ],
+        "confidence": 0.55,
+        "model": "claude-opus-5-5",
+        "reason": "Client performance improvement. client-runtime doesn't exist in f5, so it would need reimplementing in f5's shell or store layer.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The environment shell state applies all thread deltas in a received batch together, instead of copying the state once per event.",
+      "title": "Shell state merges stream deltas once per received batch",
+      "upstreamPrs": [
+        18416
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-18421",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "files",
+          "panels"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Performance improvement in the Files panel, which f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Refreshes requested while a directory load is in flight share one follow-up load, instead of each queuing another full reload.",
+      "title": "Overlapping file tree refreshes are coalesced",
+      "upstreamPrs": [
+        18421
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-21277",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline",
+          "subagents"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "Small performance gain for subagent tooltips with large results. Output is unchanged.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "subagentDetailPreview stops normalizing once it has enough characters for the 280-character preview, instead of processing the whole result.",
+      "title": "Subagent previews process only the visible prefix",
+      "upstreamPrs": [
+        21277
       ]
     },
     {
@@ -247,6 +336,50 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-22022",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "pr-hub",
+          "git"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Reliability and performance fix for PR sync polling. It needs reimplementing outside orchestration-v2.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "For an open GitHub PR with an unchanged updatedAt, the last known mergeability is kept when GitHub briefly reports unknown. This avoids extra persisted updates and repeated stack reads.",
+      "title": "Transient GitHub 'unknown' mergeability no longer churns PR sync",
+      "upstreamPrs": [
+        22022
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-22119",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git",
+          "pr hub"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "A git action bug that can lead users to create a duplicate repository. It applies to f5's git status.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "hasPrimaryRemote is true when any remote exists, not only origin. Repos cloned with --origin github no longer get 'Publish repository', which created a new hosted repo.",
+      "title": "A repository whose only remote isn't named origin gets Push and Create PR",
+      "upstreamPrs": [
+        22119
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-22291",
@@ -371,6 +504,27 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-22499",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "A trivial performance improvement on a hot git status path. Cheap to port.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Drops a redundant toSorted before the final sort in local git status reads.",
+      "title": "Working-tree file list is sorted once per status read",
+      "upstreamPrs": [
+        22499
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-22503",
@@ -392,6 +546,21 @@
       "title": "Generated PR and commit text reads source diffs, not textconv output",
       "upstreamPrs": [
         22503
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-22529",
+      "reason": "No user-visible behavior change",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "summary": "",
+      "title": "test(server): stopped-queue steering test no longer races queue promotion (#22529)",
+      "upstreamPrs": [
+        22529
       ]
     },
     {
@@ -472,6 +641,21 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-22926",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): single-comment PR discussions say \"1 comment\", not \"1 comments\" (#22926)",
+      "upstreamPrs": [
+        22926
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-22941",
@@ -494,6 +678,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-23024",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "projects",
+          "command-palette"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "UX fix in the web Add Project command palette. The mobile part doesn't apply.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Owner-only GitHub input such as 'owner/' shows 'Repository name incomplete' instead of a generic lookup failure.",
+      "title": "Add Project rejects an incomplete GitHub owner/ path",
+      "upstreamPrs": [
+        23024
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-23129",
@@ -512,6 +718,28 @@
       "title": "PR diffs list .logic.test.ts files beside their source",
       "upstreamPrs": [
         23129
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-23136",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings",
+          "themes"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "A one-line theme editor bug fix in a file f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "handleHexChange in ThemeColorPicker appends alphaSuffix, as the RGB and HSV paths already do, so translucent roles stay translucent.",
+      "title": "Typing a hex value keeps a theme color's alpha",
+      "upstreamPrs": [
+        23136
       ]
     },
     {
@@ -698,6 +926,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-23168",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings",
+          "providers"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Prevents silent loss of a provider credential in ProviderInstanceCard, which f5 has.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Disables rename and the plain-text toggle for redacted stored secrets, and adds a hint to enter a new value. Before, either action silently erased the provider's API key.",
+      "title": "Saved sensitive provider variables can't be renamed or unlocked into an empty value",
+      "upstreamPrs": [
+        23168
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-23171",
@@ -716,6 +966,28 @@
       "title": "Untouched header rename no longer overwrites a newer title",
       "upstreamPrs": [
         23171
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-23176",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "mcp",
+          "threads"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "A measurable SQLite performance gain for agent thread reads. Reimplement it in f5's projection store.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "getTimelinePage reads all payloads on a page through a single json_each join instead of one SQLite query per item, which was 50–100 queries per read.",
+      "title": "t3_thread_read loads a page's item payloads in one query",
+      "upstreamPrs": [
+        23176
       ]
     },
     {
@@ -893,6 +1165,65 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-23241",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): use loaded branch for untouched worktree base (#23241)",
+      "upstreamPrs": [
+        23241
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-23242",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git",
+          "pr hub"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a false 'Action failed' in the git Create PR flow, which f5 has.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "After createChangeRequest succeeds, a failed findOpenPr lookup (502, rate limit, CLI timeout) is logged and treated as an empty lookup. The action no longer reports failure for a PR that already exists.",
+      "title": "Created PR is reported as created when the follow-up lookup fails",
+      "upstreamPrs": [
+        23242
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-23270",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "opencode"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "An OpenCode provider bug that f5 can hit. Reimplement in f5's OpenCode adapter.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "steerTurn now sends the same agent, variant and system prompt as startTurn. Steering no longer drops OpenCode back to the build agent, which can edit files during a Plan turn, and no longer loses T3's runtime instructions.",
+      "title": "OpenCode steers keep the turn's agent, variant and system instructions",
+      "upstreamPrs": [
+        23270
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-23360",
@@ -911,6 +1242,21 @@
       "title": "Custom snooze Date and Time fields line up",
       "upstreamPrs": [
         23360
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-23387",
+      "reason": "Upstream release or CI only",
+      "reasonKey": "release-ci",
+      "status": "skip",
+      "summary": "",
+      "title": "perf(ci): skip PR vouch jobs for ordinary comments (#23387)",
+      "upstreamPrs": [
+        23387
       ]
     },
     {
@@ -986,6 +1332,27 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-23588",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "pr hub"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes ordering in the PR hub that f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Timeline events and list rankings compare parsed instants instead of ISO strings. UTC offsets and mixed fractional precision no longer put older activity first.",
+      "title": "PR lists and timelines sort by actual time, not timestamp text",
+      "upstreamPrs": [
+        23588
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-23621",
@@ -1005,6 +1372,21 @@
       "title": "Copy and Save image work for data URL images",
       "upstreamPrs": [
         23621
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-23633",
+      "reason": "Upstream release or CI only",
+      "reasonKey": "release-ci",
+      "status": "skip",
+      "summary": "",
+      "title": "perf(ci): thread transfer report stops paging all main CI runs (#23633)",
+      "upstreamPrs": [
+        23633
       ]
     },
     {
@@ -1030,6 +1412,29 @@
       "title": "Review guide stops no longer show the same lines twice",
       "upstreamPrs": [
         23725
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-23782",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "mcp",
+          "auth",
+          "server"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes valid MCP clients being rejected and improves auth diagnostics.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The Bearer scheme is matched case-insensitively. MCP middleware reuses the shared parser, and rejections give distinct reasons for each failure.",
+      "title": "MCP and HTTP auth accept bearer schemes in any case",
+      "upstreamPrs": [
+        23782
       ]
     },
     {
@@ -1100,6 +1505,29 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-24005",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git",
+          "forges",
+          "projects"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes broken clone URLs in Add Project and in the HTTPS fallback after SSH fails, for Azure DevOps users.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "cloneUrlForProtocol maps between ssh.dev.azure.com/v3 and dev.azure.com/_git forms in both directions. Userinfo containing @ is also handled.",
+      "title": "Azure DevOps clone URLs stay valid when switching SSH and HTTPS",
+      "upstreamPrs": [
+        24005
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-24050",
@@ -1148,6 +1576,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-24134",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "keybindings",
+          "settings"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Keybinding bug fix: shortcuts could fire, or fail to fire, while a text field was focused.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "When a caller omits editableFocus, resolveShortcutCommand detects it from the event target or the active element, so editableFocus conditions work in every handler.",
+      "title": "Shortcut conditions honor editableFocus in standalone handlers",
+      "upstreamPrs": [
+        24134
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-24148",
@@ -1189,6 +1639,32 @@
       "title": "Webhook 'Replay key' becomes 'Duplicate request key'",
       "upstreamPrs": [
         24149
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-24164",
+      "reason": "Developer tooling only, with no app behavior change.",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "tooling"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "Developer tooling only, with no app behavior change.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "The contributor script runs Vite+'s JavaScript entry with Node on Windows.",
+      "title": "check:changed launches on Windows without the vp shim",
+      "upstreamPrs": [
+        24164
       ]
     },
     {
@@ -1257,6 +1733,168 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-24362",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "usage",
+          "connection"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Reliability fix: provider health and usage limits could stop refreshing until reload. The web part applies.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Each activity report gets a 15 s timeout. A live connection that never answers no longer stalls reporting and lets the provider-status lease expire.",
+      "title": "Client activity reports time out so provider status keeps refreshing",
+      "upstreamPrs": [
+        24362
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-24485",
+      "reason": "Affects only T3 Connect and the relay tunnel.",
+      "reasonKey": "relay-cloud",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "relay"
+        ],
+        "confidence": 0.95,
+        "model": "claude-opus-5-5",
+        "reason": "Affects only T3 Connect and the relay tunnel.",
+        "reasonKey": "relay-cloud",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "The managed cloudflared output goes to a rotating relay-client log file.",
+      "title": "T3 Connect keeps a log file of its tunnel connector",
+      "upstreamPrs": [
+        24485
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-24494",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings",
+          "keybindings"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Prevents silent data loss in settings keybindings, a file f5 shares.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Settings edits keep raw entries from keybindings.json that this build can't decode, such as typos or commands from newer builds, instead of dropping them. Saves also report issues instead of an empty list.",
+      "title": "Saving a shortcut no longer deletes keybinding rules it can't read",
+      "upstreamPrs": [
+        24494
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-24655",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings",
+          "providers"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a settings bug f5 can hit. Reimplement outside client-runtime.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The provider install single-flight is keyed by environment and input, so a second provider's Install click no longer receives the first provider's result.",
+      "title": "Installing two providers at once starts both",
+      "upstreamPrs": [
+        24655
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-24664",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "codex"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "A Codex provider correctness fix in a file f5 has.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "When no home path is configured, the instance's environment CODEX_HOME sets its continuation identity. Switching between instances then does the handoff instead of resuming in the wrong home.",
+      "title": "Codex instance switches respect each instance's CODEX_HOME variable",
+      "upstreamPrs": [
+        24664
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-24665",
+      "reason": "Changes only the developer seeding script, with no user-visible effect.",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "dev tooling"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "Changes only the developer seeding script, with no user-visible effect.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "The migrate-dev-db script no longer rejects ledgers with site-local names below the server's tolerance slot.",
+      "title": "Dev database seeding accepts migration histories the server boots",
+      "upstreamPrs": [
+        24665
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-24673",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a settings UX bug that can set 1 s or disabled intervals.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Provider health, Git fetch and host monitor interval fields commit on blur through a shared IntervalSecondsField. Retyping no longer applies intermediate values like 0 or 1 second, and clearing the field no longer saves 0.",
+      "title": "Interval settings save when editing ends, not on every keystroke",
+      "upstreamPrs": [
+        24673
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "decidedAt": "2026-11-01T11:11:31.013Z",
       "decidedBy": "llm",
@@ -1280,6 +1918,72 @@
       "title": "Relay fits Live Activity payloads under the APNs limit",
       "upstreamPrs": [
         24679
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-24684",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer",
+          "threads"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes composer data loss in f5's threads and composer.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "When a plan feedback send fails, the old text is restored only if the draft is still empty. Composer refs are written only while the follow-up's thread is on screen.",
+      "title": "Failed plan follow-up no longer overwrites the next draft",
+      "upstreamPrs": [
+        24684
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-24719",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "onboarding",
+          "settings"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "Onboarding UX bug fix, assuming f5 ships the welcome wizard import step.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The import step's selection is lifted into the wizard, so returning to Connect or Agents and then back no longer resets it to the defaults.",
+      "title": "Welcome wizard keeps project selections when going back a stage",
+      "upstreamPrs": [
+        24719
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-24772",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "pr-hub",
+          "forges"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a PR hub bug for Forgejo forges, which f5 supports.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Forgejo has no merged list state, so state=closed returned merged and unmerged rows alike. Rows are now filtered by their mapped state, and only matching rows count toward the limit, so the Merged and Closed tabs no longer stall or come up short.",
+      "title": "Forgejo merged and closed PR lists return only their own rows",
+      "upstreamPrs": [
+        24772
       ]
     },
     {
@@ -1307,6 +2011,54 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-25002",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "timeline"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a visible bug in the thread timeline. Port the web part into f5's layers in place of client-runtime.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The background-work Stop button stays disabled on 'Stopping...' until the stopped tasks are gone, with a retry timeout. Before, it re-enabled after about 25 ms, so users clicked again and sent repeated interrupts. The mobile parts don't apply.",
+      "title": "Background work Stop stays pending until the stopped tasks end",
+      "upstreamPrs": [
+        25002
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-25248",
+      "reason": "Affects only the devices and simulators subsystem.",
+      "reasonKey": "devices",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "devices"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "Affects only the devices and simulators subsystem.",
+        "reasonKey": "devices",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Device discovery warnings and device_list now add the head of the hub's error field to each message.",
+      "title": "Device list warnings keep the hub's error detail",
+      "upstreamPrs": [
+        25248
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "decidedAt": "2026-11-01T11:11:31.013Z",
       "decidedBy": "rule",
@@ -1319,6 +2071,53 @@
       "title": "fix(mobile): release inactive draft Git status demand (#25254)",
       "upstreamPrs": [
         25254
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-25258",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "checkpoints",
+          "timeline"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "A measurable performance gain on long threads with checkpoints. Reimplement it where f5 derives checkpoint summaries.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Checkpoint summary derivation runs one resumable reverse scan over messages instead of a full search per checkpoint. Upstream measured 1M reads down to linear on a 1,000-checkpoint thread.",
+      "title": "Checkpoint summaries find assistant answers in one bounded scan",
+      "upstreamPrs": [
+        25258
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-25275",
+      "relatedTopics": [
+        "pr-22835"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "preview-browser",
+          "desktop"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "A small capability fix in the desktop preview browser f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Adds pointerLock to the preview's allowed permissions, so browser games and 3D viewers with mouse-look work. Escape still releases the lock.",
+      "title": "Built-in browser allows pointer lock",
+      "upstreamPrs": [
+        25275
       ]
     },
     {
@@ -1366,6 +2165,77 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-25428",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "preview-browser",
+          "desktop",
+          "settings"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a desktop bug where an agent's use of the preview breaks app downloads. f5 has the desktop preview CDP relay.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The CDP relay maps Browser.setDownloadBehavior to page-scoped behavior instead of dropping browserContextId, which applied it to the app session. Theme exports in Settings again open the save dialog instead of writing silently into Playwright's temp folder.",
+      "title": "Preview download settings no longer redirect app exports",
+      "upstreamPrs": [
+        25428
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-25438",
+      "relatedTopics": [
+        "pr-23435"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "usage",
+          "threads"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a usage-limit banner symptom for Claude gateway users. Reimplement in f5's Claude adapter.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "When an API-key Claude session gets a direct 429 from a gateway such as CLIProxyAPI, the adapter reads '(reset after …)' from the error text. The usage-limit banner then shows the reset time instead of 'Reset time unavailable'.",
+      "title": "Claude keeps a gateway's reset time on a direct 429",
+      "upstreamPrs": [
+        25438
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-25496",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "panels",
+          "files"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "A UX improvement to file previews in f5's panels.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The built-in PDF viewer keeps a bounded cache of 50 document positions (page geometry, zoom, scroll), keyed by stable document identity and revision, so switching threads no longer resets the reading position.",
+      "title": "PDF previews keep their page and zoom across thread switches",
+      "upstreamPrs": [
+        25496
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-25511",
@@ -1385,6 +2255,31 @@
       "title": "Custom provider instances no longer inherit the default instance's draft model",
       "upstreamPrs": [
         25511
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-25561",
+      "relatedTopics": [
+        "pr-27925"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "pr-hub",
+          "mcp"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes MCP pull request tool behavior in the PR hub, which f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The MCP unlink tool ignores stack-dismissed records, as the list, link and watch tools already do. Agents get wasLinked false, and no unlink command is sent that could make stack sync re-add the PR.",
+      "title": "unlink_pull_request reports a dismissed stack PR as not linked",
+      "upstreamPrs": [
+        25561
       ]
     },
     {
@@ -1437,6 +2332,28 @@
       "title": "Android composer handles image drops",
       "upstreamPrs": [
         25573
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-25591",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "connections"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Client-runtime connection routing for paired remote environments, which f5 doesn't have.",
+        "reasonKey": "multi-environment",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "A route paired at a new address of the same kind is placed ahead of the saved one, so the client uses the new session's scopes.",
+      "title": "Re-pairing at a new address uses the new token",
+      "upstreamPrs": [
+        25591
       ]
     },
     {
@@ -1502,6 +2419,21 @@
       "title": "Rich-text composer emphasis ignores delimiters inside inline code",
       "upstreamPrs": [
         25659
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-25705",
+      "reason": "No user-visible behavior change",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "summary": "",
+      "title": "docs(orchestration-v2): Codex rollback uses thread/revert on paginated threads (#25705)",
+      "upstreamPrs": [
+        25705
       ]
     },
     {
@@ -1588,6 +2520,73 @@
       "title": "docs(readme): list fx as a supported provider (#25974)",
       "upstreamPrs": [
         25974
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-26027",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "preview-browser"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "A preview browser layout bug fix. It applies if f5 has the floating mini player.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "When the layout has shrunk the floating mini browser below its minimum, resizing uses the starting frame as the minimum and keeps an explicitly saved width. An inward drag no longer stores a larger width.",
+      "title": "Inward resizes of a shrunken mini browser no longer grow it",
+      "upstreamPrs": [
+        26027
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-26077",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "pr-hub"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "A PR hub UX fix that prevents accidental merge confirmations.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Merge and Merge stack stay mounted, disabled with a tooltip reason, while the stack lookup is pending or failed, so the header controls don't shift into a misclick. Linked threads now render before the stack picker.",
+      "title": "PR merge buttons stay in place while the stack loads",
+      "upstreamPrs": [
+        26077
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-26095",
+      "relatedTopics": [
+        "pr-24050"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline",
+          "markdown"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes RTL rendering in chat messages for Arabic users.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "textDirection takes a majority by sentence instead of counting words across the whole block, so Arabic prose with long English terms or sentences gets dir=rtl.",
+      "title": "Arabic paragraphs with many English terms read right to left",
+      "upstreamPrs": [
+        26095
       ]
     },
     {
@@ -1704,6 +2703,77 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-26398",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline",
+          "markdown"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a chat markdown rendering bug in f5's ChatMarkdown.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The markdown pipeline records light and dark <picture> sources, and ChatMarkdown resolves the theme's source the way it resolves img src. Theme-aware README images then load in dark mode.",
+      "title": "Dark-mode <picture> images load instead of 'Image unavailable'",
+      "upstreamPrs": [
+        26398
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-26459",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "claude",
+          "subagents"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a Claude subagent status bug. Reimplement it in f5's Claude adapter, since orchestration-v2 doesn't exist here.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The Claude adapter ignores the placeholder tool result that a foreground fork's stream opens with for its own launch call. Subagent rows no longer say 'Completed in 1.0s' while the fork is still working.",
+      "title": "Foreground Claude forks no longer show as finished as soon as they start",
+      "upstreamPrs": [
+        26459
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-26485",
+      "reason": "The symptom only occurs under Hermes, the mobile JavaScript engine. Web and desktop already work.",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "mobile"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "The symptom only occurs under Hermes, the mobile JavaScript engine. Web and desktop already work.",
+        "reasonKey": "mobile",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "threadLinkRefs uses RegExp exec instead of matchAll, because Hermes match objects have no groups property.",
+      "title": "Mobile thread links show their thread's title",
+      "upstreamPrs": [
+        26485
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-26651",
@@ -1726,6 +2796,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-26655",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "server",
+          "mcp"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "A performance improvement for MCP project listing.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "t3_project_list slices rows before hydration instead of hydrating every project for each page. This cuts metadata and favicon work for paged listings.",
+      "title": "Project list pages hydrate only the requested projects",
+      "upstreamPrs": [
+        26655
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "decidedAt": "2026-11-01T11:11:31.013Z",
       "decidedBy": "rule",
@@ -1738,6 +2830,50 @@
       "title": "fix(mobile): keep Android thread title spacing consistent (#26666)",
       "upstreamPrs": [
         26666
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-26686",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "acp"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "A measurable performance fix in effect-acp, which exists in f5.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The NDJSON framer scans only each incoming chunk for a newline instead of re-splitting the whole buffer. Large tool results from Cursor, Grok and other ACP agents are no longer framed in quadratic time.",
+      "title": "ACP stdout framer handles large lines in linear time",
+      "upstreamPrs": [
+        26686
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-26691",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "terminal",
+          "timeline"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "A measurable performance improvement in command output handling.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Settled terminal output is kept as a head and tail pair, so each streamed chunk no longer copies about 128K characters. This cuts CPU and garbage for chatty builds on the server and clients.",
+      "title": "Command output folds without copying scrollback on every chunk",
+      "upstreamPrs": [
+        26691
       ]
     },
     {
@@ -1759,6 +2895,99 @@
       "title": "Terminal snapshots reuse WASM memory views",
       "upstreamPrs": [
         26717
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-26720",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "Applies only to upstream's Tiptap rich-text composer.",
+        "reasonKey": "upstream-only:tiptap-composer",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "serializeEditorDoc caches its result per ProseMirror doc in a WeakMap, removing two or three redundant serializations per edit.",
+      "title": "Composer serializes each draft doc once per keystroke",
+      "upstreamPrs": [
+        26720
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-26877",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "pr-hub",
+          "forges"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "A PR hub capability for GitLab. Reimplement it in f5's forge layer.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The GitLab adapter reads approvals over GraphQL, in batches of 100, and sets reviewDecision, so approved MRs show the badge and match the Review filter. A failed read leaves the decision unknown.",
+      "title": "GitLab merge requests show their approval state",
+      "upstreamPrs": [
+        26877
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-26920",
+      "reason": "Dead-code cleanup with no change in behavior.",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "sidebar"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "Dead-code cleanup with no change in behavior.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Deletes three orphaned Sidebar.logic helpers and their tests.",
+      "title": "Remove unreachable sidebar helpers and their tests",
+      "upstreamPrs": [
+        26920
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-26936",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "sidebar",
+          "composer",
+          "search"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Measurable typing performance improvement in sidebar and composer thread search, which f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Thread search subjects are cached per thread shell, and the palette search ranking prepares its fields once. Sidebar search, @thread mentions and palette ranking no longer rebuild every thread's data on each keystroke.",
+      "title": "Thread search reuses per-thread fields across keystrokes",
+      "upstreamPrs": [
+        26936
       ]
     },
     {
@@ -1785,6 +3014,21 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-27026",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "perf(mobile): reuse chat lists across navigation renders (#27026)",
+      "upstreamPrs": [
+        27026
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-27032",
@@ -1806,6 +3050,73 @@
         27032,
         27803,
         27920
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27041",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "terminal",
+          "timeline"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "Small performance gain in command output rendering with no behavior change.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The terminal output renderer checks the style-transition cache before parsing SGR parameters, which avoids redundant parsing and allocation for colored command output.",
+      "title": "Terminal output skips parsing styles that are already cached",
+      "upstreamPrs": [
+        27041
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27073",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline",
+          "diffs"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Measurable allocation reduction in f5's existing turnDiffTree, as a one-file change.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "turnDiffTree compacts each directory once while it builds the tree, instead of copying compacted descendants again for every parent. This cuts allocations by 6–18%.",
+      "title": "Changed-file trees compact each directory only once",
+      "upstreamPrs": [
+        27073
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27131",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "panels",
+          "composer",
+          "timeline"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a citation bug that occurs in f5's file panel and composer.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Patches @pierre/diffs so that clearing editor selections no longer scrolls to the caret and steals focus. Selecting assistant text and clicking Cite then works while file search has matches.",
+      "title": "Chat text can be cited while the file panel's find bar is open",
+      "upstreamPrs": [
+        27131
       ]
     },
     {
@@ -1853,6 +3164,44 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-27155",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): Home list no longer opens scrolled down (#27155)",
+      "upstreamPrs": [
+        27155
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27175",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "worktrees",
+          "git",
+          "settings"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a storage cleanup bug that can occur in f5. Keep f5's storageCleanup.enabled default.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Without a remote, cleanup compares against the branch checked out in the project workspace instead of failing with 'No git remote is configured'. A detached HEAD or extra commits still keep the worktree.",
+      "title": "Unchanged-worktree cleanup works in repositories without a remote",
+      "upstreamPrs": [
+        27175
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "decidedAt": "2026-11-01T11:11:31.013Z",
       "decidedBy": "rule",
@@ -1887,6 +3236,52 @@
       "title": "Antigravity text generation accepts empty startup skill directories",
       "upstreamPrs": [
         27191
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27197",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings",
+          "desktop",
+          "providers",
+          "updates"
+        ],
+        "confidence": 0.4,
+        "model": "claude-opus-5-5",
+        "question": "Does f5 want an administrator-deployed managed policy (MDM, registry or JSON) that locks settings, providers and updates?",
+        "reason": "Large new enterprise capability that spans desktop, server and settings. Parts of it concern T3 Connect and mobile, which f5 doesn't have. Whether f5 wants admin-managed policy is a product decision.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Administrators can deploy a policy through MDM, the Windows registry or a JSON file. It can require approvals, disable T3 Connect and phones, pin providers to a gateway and control updates. Touches 193 files.",
+      "title": "Managed policy for organization-wide configuration",
+      "upstreamPrs": [
+        27197
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27231",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "sidebar"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a persistent crash loop in the sidebar Settled shelf. The web part applies to f5's sidebar.",
+        "status": "port",
+        "userImpact": "high"
+      },
+      "summary": "Older-settled shelf scopes are sorted before keying, so loading pages no longer reorders the key into an update loop (React #185). The loop crashed the app on every reload because the expanded state is saved.",
+      "title": "Settled shelf no longer crashes with several projects filtered",
+      "upstreamPrs": [
+        27231
       ]
     },
     {
@@ -1949,6 +3344,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27273",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "mcp",
+          "threads"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes corrupted MCP thread-read output for agents in f5's orchestrator MCP.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Item text paging moves a cut that would land inside a surrogate pair, so pages no longer end or start with a lone surrogate.",
+      "title": "t3_thread_read pages no longer split an emoji in half",
+      "upstreamPrs": [
+        27273
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-27274",
@@ -1971,6 +3388,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27286",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings",
+          "desktop"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Small settings UX fix for f5's desktop CLI install row.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "In Settings → About, Install is disabled when another t3 is first on PATH, matching the desktop service's refusal. Remove stays available for a shadowed own launcher.",
+      "title": "Install t3 CLI is disabled while another t3 blocks it",
+      "upstreamPrs": [
+        27286
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-27310",
@@ -1990,6 +3429,29 @@
       "title": "Queued messages can be edited during Compact and send",
       "upstreamPrs": [
         27310
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27320",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "threads",
+          "approvals"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes stuck approval cards for Claude threads. Reimplement in f5's Claude adapter.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "When the Claude SDK aborts a canUseTool wait (control_cancel_request), the adapter marks the request, node and turn item cancelled. 'Approval needed' no longer lingers after a hook already allowed the tool.",
+      "title": "Claude approval cards close when Claude withdraws the request",
+      "upstreamPrs": [
+        27320
       ]
     },
     {
@@ -2057,6 +3519,29 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27381",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "checkpoints",
+          "threads"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a checkpoint revert failure common on long Claude threads. Reimplement in f5's layers.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Claude rollback falls back to the latest earlier turn's resume cursor when the target turn, such as /compact, recorded none. Reverting no longer fails with 'could not roll back this conversation'.",
+      "title": "Claude threads can revert to the message after a /compact",
+      "upstreamPrs": [
+        27381
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-27384",
@@ -2094,6 +3579,72 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27399",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "timeline"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "User-visible clarity for Codex hook interruptions in f5's timeline.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Stop text from a stopped Codex hook/completed is kept on the active turn and shown in the interruption message instead of the generic 'Stopped by the provider'. An explicit Stop reason still takes precedence.",
+      "title": "Codex turns stopped by a hook show the hook's reason",
+      "upstreamPrs": [
+        27399
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27404",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "sidebar",
+          "performance"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "The web session selector and shell reducer changes reduce re-renders on reconnect in f5.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Session scope hooks select only the derived boolean, and the shell snapshot merge keeps unchanged project objects. A resume or reconnect no longer re-renders every row 5–6 times. Mostly mobile, with web session and server-update parts.",
+      "title": "Resume no longer re-renders every thread row several times",
+      "upstreamPrs": [
+        27404
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27405",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "performance"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "Measurable resume performance gain. Reimplement in f5's thread stream.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "threadReplayEncodedBytes stops serializing once the total passes the 1 MiB cap, cutting over-budget resume cost by about 60%. The replay-or-snapshot decision is unchanged.",
+      "title": "Thread resume stops measuring replay bytes once over budget",
+      "upstreamPrs": [
+        27405
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-27433",
@@ -2112,6 +3663,52 @@
       "title": "CLI commands reuse compiled modules through Node's compile cache",
       "upstreamPrs": [
         27433
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27434",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git",
+          "worktrees",
+          "composer"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "UX fix in f5's branch toolbar and worktree base pickers.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Bumps @base-ui/react to 1.9 and removes useDeferredValue from both branch pickers, so the first result is highlighted and Enter selects it instead of closing the picker unchanged.",
+      "title": "Enter selects the first branch search result",
+      "upstreamPrs": [
+        27434
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27440",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline",
+          "remote",
+          "reliability"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Reliability fix for remote environments. Reimplement outside client-runtime in f5's asset loading.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Signed asset URL requests are limited to 6 at a time per environment. Threads with hundreds of images no longer stall the remote socket and trigger slow-request and reconnect warnings.",
+      "title": "Image-heavy threads no longer flood a remote with URL requests",
+      "upstreamPrs": [
+        27440
       ]
     },
     {
@@ -2136,6 +3733,98 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27457",
+      "relatedTopics": [
+        "pr-23940"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Applies only to upstream's TipTap rich-text composer, which f5 does not have.",
+        "reasonKey": "upstream-only:tiptap-composer",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Records backtick pairs typed through composition and skips inline-code matches whose opener would close an earlier literal backtick.",
+      "title": "Rich-text composer formats inline code typed with a dead-key backtick",
+      "upstreamPrs": [
+        27457
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27466",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "settings"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a misleading provider update loop for mise users. Reimplement in f5's provider maintenance resolver.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Paths under /mise/command-wrappers/, or ending in the mise binary, count as mise-owned and get no update command. Update no longer runs claude update, which exits 0 without updating.",
+      "title": "Claude installed through a mise command wrapper isn't self-updated",
+      "upstreamPrs": [
+        27466
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27467",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "sidebar",
+          "performance"
+        ],
+        "confidence": 0.55,
+        "model": "claude-opus-5-5",
+        "reason": "Small measurable allocation gain in sidebar inbox tracking. Apply only if f5 has the equivalent tracker.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The inbox return tracker fills its snapshot Map directly, cutting about 30% of allocations per sidebar inbox observation.",
+      "title": "Inbox snapshots skip temporary arrays",
+      "upstreamPrs": [
+        27467
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27468",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "delegation",
+          "agents"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes parent threads stuck on finished delegated tasks. This depends on f5 having the awaited-background rule from #24610.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Delegated-task progress and late-settle detection use backgroundWorkHoldsCompletion, so background work marked not awaited no longer keeps the parent waiting forever.",
+      "title": "Delegated tasks finish when the child leaves an unawaited watcher running",
+      "upstreamPrs": [
+        27468
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-27472",
@@ -2155,6 +3844,32 @@
       "title": "Esc in the theme color picker restores the previous colors",
       "upstreamPrs": [
         27472
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27483",
+      "relatedTopics": [
+        "pr-27497"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "text generation"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes corrupted titles and labels in threads and work logs. These are surfaces f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "sanitizeThreadTitle steps back one code unit when the 117-unit cut would split a surrogate pair. The shared truncate helper now counts code points. Titles and work-log labels no longer end in a broken character.",
+      "title": "Generated thread titles and truncated labels keep emoji whole",
+      "upstreamPrs": [
+        27483,
+        27841
       ]
     },
     {
@@ -2197,6 +3912,28 @@
       "title": "Truncated CSV cells keep surrogate pairs intact",
       "upstreamPrs": [
         27497
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27503",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "logging",
+          "reliability"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a bug that deletes files. packages/shared/src/logging.ts exists in f5.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Rotating log sinks prune a file only when its suffix is an exact integer index. Names like debug.log.04 or debug.log.4e0 are no longer deleted at startup.",
+      "title": "Log rotation no longer deletes files that only look like backups",
+      "upstreamPrs": [
+        27503
       ]
     },
     {
@@ -2244,6 +3981,55 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27537",
+      "relatedTopics": [
+        "pr-27456"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "preview browser"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "This fixes upstream's server headless-Chrome preview. Policy says it does not apply because f5 keeps its desktop-hosted html_preview.",
+        "reasonKey": "declined-by-policy",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "ServerBrowser reportLoaded checks a navigation generation, so a navigation that fails during the title read no longer reports Success for the previous page.",
+      "title": "Server preview navigation that fails mid-load keeps LoadFailed",
+      "upstreamPrs": [
+        27537
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27540",
+      "relatedTopics": [
+        "pr-27376"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Small UX fix in settings search, which f5 has. Add terms only for rows that exist in f5.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Adds missing words to settings search terms, so exact row titles such as 'Delete settled worktrees', 'Custom search URL' and 'CODEX_HOME path' return results.",
+      "title": "Settings search finds rows by their visible titles",
+      "upstreamPrs": [
+        27540
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-27593",
@@ -2263,6 +4049,43 @@
       "title": "Fallback model row gets a reasoning effort picker",
       "upstreamPrs": [
         27593
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-27614",
+      "reason": "No user-visible behavior change",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "summary": "",
+      "title": "docs(opencode): say where compaction is configured (#27614)",
+      "upstreamPrs": [
+        27614
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27629",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "cli",
+          "persistence"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Bug fix in server persistence maintenance. The symptom can occur for Windows users who have the legacy database.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "On Windows, doctor closes its exclusive-lock SQLite connection before unlinking the pre-0.1.0 state.sqlite, so deletion no longer fails with EBUSY. Other platforms keep the lock through deletion.",
+      "title": "Deleting the legacy database in t3 doctor works on Windows",
+      "upstreamPrs": [
+        27629
       ]
     },
     {
@@ -2288,6 +4111,28 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27651",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "startup"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Measurable startup improvement in f5's Antigravity driver. AntigravityDriver.ts exists in f5.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Old Antigravity runtime temp directories are renamed aside and deleted in a background fiber, instead of being deleted recursively inside driver creation. Upstream saw 7 s cut from startup on Windows.",
+      "title": "Antigravity no longer delays server startup by deleting old runtimes",
+      "upstreamPrs": [
+        27651
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-27662",
@@ -2307,6 +4152,28 @@
       "title": "Mobile Resume continues a usage-limited thread before its queue",
       "upstreamPrs": [
         27662
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27695",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "sidebar",
+          "desktop"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a layout bug in the sidebar, if f5 shows the undo notice next to the update pill.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The undo notice item gets min-w-0 and a container-query icon fallback, so a narrow sidebar keeps the update pill and capsule controls inside its edge.",
+      "title": "Sidebar undo notice no longer pushes the update button out of view",
+      "upstreamPrs": [
+        27695
       ]
     },
     {
@@ -2404,6 +4271,94 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27759",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "settings"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Clarifies provider setup UX for Antigravity, a provider f5 supports.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Antigravity instances that use a Gemini API key or Agent Platform show credential-specific status and a Connect button instead of Google sign-in wording. The configured type is kept after auth is cleared. The mobile part doesn't apply.",
+      "title": "Antigravity API-key and Agent Platform setup says Connect",
+      "upstreamPrs": [
+        27759
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27771",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "acp"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes ACP session deletion in packages/effect-acp, which exists in f5.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The ACP client gates session/delete on the normalized sessionCapabilities.delete capability, instead of rejecting every v1-shaped agent.",
+      "title": "ACP session delete works for v1 agents that advertise it",
+      "upstreamPrs": [
+        27771
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27785",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer",
+          "desktop"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a composer folder-reference gate that wrongly refused servers running on this computer.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Folder drops and pastes are accepted on a saved direct loopback connection when the local environment is off. SSH, WSL, relay and non-loopback servers are still refused, and the error wording is clearer.",
+      "title": "Folder references work on saved local desktop servers",
+      "upstreamPrs": [
+        27785
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27794",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline",
+          "markdown"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes wrong links in chat markdown, which f5 renders.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "A remark transform after GFM puts trailing _ and ~ back into bare http(s) and www. autolinks, so links like https://x.com/name_ open the right address.",
+      "title": "Bare URL links keep trailing underscores and tildes",
+      "upstreamPrs": [
+        27794
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-27815",
@@ -2423,6 +4378,76 @@
       "title": "Generated branch rename works when a parent-named branch exists",
       "upstreamPrs": [
         27815
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27818",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings",
+          "performance"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "Small render-churn performance fix. Reimplement in f5's settings projection, since client-runtime doesn't exist here.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "reuseUnchanged compares Effect Equal values such as Durations structurally, so unchanged settings echoes no longer create new settings and config objects and trigger re-renders.",
+      "title": "Repeated server settings pushes keep the same settings object",
+      "upstreamPrs": [
+        27818
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27822",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "preview browser"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "This updates upstream's server headless-Chrome preview, which policy says does not apply to f5.",
+        "reasonKey": "declined-by-policy",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Updates the pinned chrome-headless-shell version and checksums for the server preview browser to pick up security fixes.",
+      "title": "Server preview browser moves to Chrome 156.0.8078.80",
+      "upstreamPrs": [
+        27822
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-27828",
+      "reason": "Affects upstream release CI only.",
+      "reasonKey": "release-ci",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "ci"
+        ],
+        "confidence": 0.95,
+        "model": "claude-opus-5-5",
+        "reason": "Affects upstream release CI only.",
+        "reasonKey": "release-ci",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Changes the upstream release workflow environment for preview builds.",
+      "title": "Upstream preview releases run from any branch",
+      "upstreamPrs": [
+        27828
       ]
     },
     {
@@ -2466,6 +4491,28 @@
       "title": "/Model with a query still opens the model picker",
       "upstreamPrs": [
         27837
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27843",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer",
+          "terminal"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes wrong context sent to agents from composer terminal references.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The terminal context payload clamps the line count to zero, so a range with lineEnd before lineStart no longer slices from the end of the buffer.",
+      "title": "Inverted terminal context ranges send no made-up lines",
+      "upstreamPrs": [
+        27843
       ]
     },
     {
@@ -2620,6 +4667,21 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-27943",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): markdown images no longer shake on Android (#27943)",
+      "upstreamPrs": [
+        27943
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-27980",
@@ -2687,6 +4749,52 @@
       "title": "Subagent threads no longer inherit a pending title job",
       "upstreamPrs": [
         27990
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-27992",
+      "relatedTopics": [
+        "pr-28132"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "settings"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a race in provider status updates.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "upsertProviders publishes the latest committed providers instead of a possibly stale array. Clients now see the final update state without a reload.",
+      "title": "Open clients no longer stay on 'Updating' after a provider update",
+      "upstreamPrs": [
+        27992
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28004",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "usage"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes Usage pricing that LiteLLM table changes broke in shipped builds.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "When provider-prefixed LiteLLM entries disagree on price, a bare model name takes the first-party maker's price instead of being dropped. Gemini, Grok and Muse models are no longer shown as Unpriced.",
+      "title": "Usage prices bare model names at the maker's rate",
+      "upstreamPrs": [
+        28004
       ]
     },
     {
@@ -2841,6 +4949,31 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28102",
+      "relatedTopics": [
+        "pr-27310"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "compaction"
+        ],
+        "confidence": 0.55,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes the idle compaction timer if f5 has idle compaction. The policy declines only compact-before-send and compaction before resume.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "When a late run.updated for an earlier run replaces the timer, the idle compaction fiber retargets the latest completed run instead of exiting, so the idle /compact still happens.",
+      "title": "Idle compaction survives a late update for an earlier run",
+      "upstreamPrs": [
+        28102
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-28104",
@@ -2990,6 +5123,31 @@
       "title": "Terminal URLs like redis:// no longer become broken file links",
       "upstreamPrs": [
         28189
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28201",
+      "relatedTopics": [
+        "pr-23532"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "server",
+          "updates"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "Makes remote server self-updates more reliable. It's a one-line change.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The staged runtime's service preflight timeout goes from 30 s to 3 minutes, so updates on loaded hosts no longer fail with 'Could not prepare'.",
+      "title": "Remote server updates allow 3 minutes for the staged preflight",
+      "upstreamPrs": [
+        28201
       ]
     },
     {
@@ -3286,6 +5444,27 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28275",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "A git correctness fix that prevents committing files the user excluded.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "A failed git reset before a selected-files commit now aborts the commit instead of committing excluded staged files. The reset also runs with --quiet.",
+      "title": "Selected-file commits stop when the index reset fails",
+      "upstreamPrs": [
+        28275
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "decidedAt": "2026-11-01T11:11:31.013Z",
       "decidedBy": "rule",
@@ -3301,6 +5480,246 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28278",
+      "relatedTopics": [
+        "pr-28132"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "opencode"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a provider update that hangs until the timeout.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "OpenCode updates now require a recognized install command path. Unidentified installs no longer run 'opencode upgrade', which waits on a prompt or fails.",
+      "title": "OpenCode installs of unknown origin no longer get an Update button that hangs",
+      "upstreamPrs": [
+        28278
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28282",
+      "relatedTopics": [
+        "pr-27032"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "mcp",
+          "orchestration"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "A measurable performance gain for long agent threads using MCP tools.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "loadCaller always loads the projection without user messages. Eight orchestrator MCP tools no longer read and decode the calling thread's whole prompt history.",
+      "title": "MCP calls skip loading the caller's message history",
+      "upstreamPrs": [
+        28282
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28285",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline",
+          "markdown"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a timeline rendering inconsistency while replies stream.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "splitMarkdownBlocks stops splitting when a line sits left of an indented fence, so streaming matches the final render and the message no longer jumps.",
+      "title": "Streamed replies render a code block inside a list as the finished reply does",
+      "upstreamPrs": [
+        28285
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-28286",
+      "reason": "Changes only upstream CI.",
+      "reasonKey": "release-ci",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "ci"
+        ],
+        "confidence": 0.95,
+        "model": "claude-opus-5-5",
+        "reason": "Changes only upstream CI.",
+        "reasonKey": "release-ci",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Adds providerEnv.ts to the CI classifier's run-all patterns.",
+      "title": "CI runs every package's tests when providerEnv.ts changes",
+      "upstreamPrs": [
+        28286
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28288",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "persistence",
+          "cli"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Reliability fix for SQLite access across the CLI and server processes.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The checkpoint worker sets busy_timeout before its first statement, so opening the database while the CLI or server holds it waits instead of failing with 'database is locked'.",
+      "title": "Opening the database waits for another process's lock",
+      "upstreamPrs": [
+        28288
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28294",
+      "relatedTopics": [
+        "pr-23598"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "opencode",
+          "git"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "A user-visible OpenCode provider cleanup fix.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "A finalizer deletes the temporary 'T3 Code <operation>' session after commit, PR, branch and title generation, so these sessions no longer pile up in OpenCode's history.",
+      "title": "OpenCode 1.x text generation deletes its scratch session",
+      "upstreamPrs": [
+        28294
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-28296",
+      "reason": "Changes only a contributor tooling script.",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "dev tooling"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "Changes only a contributor tooling script.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Contributor script runs node:test files separately so failures are detected.",
+      "title": "check:changed runs .github/scripts tests with node --test",
+      "upstreamPrs": [
+        28296
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28298",
+      "relatedTopics": [
+        "pr-23493"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes an IME bug in f5's settings search.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "handleSearchKeyDown returns early while an IME is composing, and the input changes from type=search to type=text. Confirming a CJK candidate no longer opens a result, and cancelling a composition no longer clears the query.",
+      "title": "Settings search ignores Enter and Escape during IME composition",
+      "upstreamPrs": [
+        28298
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28300",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "settings",
+          "diagnostics"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "A small display bug fix in the Settings Diagnostics page.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Settings › Diagnostics uses the shared formatBytes helper instead of a private copy that chose the unit before rounding.",
+      "title": "Diagnostics memory no longer reads \"1024.0 MB\"",
+      "upstreamPrs": [
+        28300
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28301",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "orchestration",
+          "threads"
+        ],
+        "confidence": 0.55,
+        "model": "claude-opus-5-5",
+        "reason": "A measurable send-path performance gain. Reimplement in f5's orchestration layer if it has the same rereads.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "dispatchMessage applies each emitted event to the in-memory projection instead of reloading it from SQLite. Upstream measured 71 to 26 SELECTs for a settled, snoozed thread that gets a title seed.",
+      "title": "Sending a message skips projection rereads after settle, snooze or title updates",
+      "upstreamPrs": [
+        28301
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "decidedAt": "2026-11-01T11:11:31.013Z",
       "decidedBy": "rule",
@@ -3313,6 +5732,99 @@
       "title": "docs(mobile): name the Android 16 Agent Live Updates switch in the notifications guide (#28310)",
       "upstreamPrs": [
         28310
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28314",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "persistence",
+          "startup"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a startup crash in persistence that f5 shares. The migration needs f5's next migration number.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "A migration rewrites boolean settledOverride values in thread projections, which the schema rejects. Startup recovery no longer aborts with 'could not start'.",
+      "title": "A stored boolean settledOverride no longer stops startup",
+      "upstreamPrs": [
+        28314
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-28323",
+      "reason": "Affects only the device and simulator panel.",
+      "reasonKey": "devices",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "devices"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "Affects only the device and simulator panel.",
+        "reasonKey": "devices",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "In the Device panel's Tools pane, input fields clear only after a successful action.",
+      "title": "Device tools keep the typed text when a command fails",
+      "upstreamPrs": [
+        28323
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28326",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "panels"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Small UX improvement to thread relationship rows, which f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Fork, parent, remote, delegated and side-chat rows in the thread relationships panel show the full title above the action hint in their tooltip.",
+      "title": "Lineage and side-chat row tooltips show the full title",
+      "upstreamPrs": [
+        28326
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28343",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "orchestration",
+          "persistence"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "The query and index belong to upstream's orchestration-v2 projection store, which f5 does not have.",
+        "reasonKey": "upstream-only:orchestration-v2",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "getTurnStartContext forces the run_ordinal index on orchestration_v2 turn items, instead of walking the thread's whole history. Upstream saw 2–3 s cut on a 19k-item thread.",
+      "title": "Turn start reads a run's items by run index",
+      "upstreamPrs": [
+        28343
       ]
     },
     {
@@ -3342,6 +5854,413 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28361",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git",
+          "checkpoints",
+          "diff"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "This is a checkpoint and turn-diff bug that can hit f5 users who set diff.relative and have a project in a repo subdirectory.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The checkpoint numstat and name-only reads run with -c diff.relative=false. In subdirectory projects, the agent's own edits then stay in turn diffs when a turn also includes Git imports.",
+      "title": "Turn diffs keep the agent's files when git's diff.relative is on",
+      "upstreamPrs": [
+        28361
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28364",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "web"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "The prompt asks users to star upstream's repo. GitHubStarPrompt.tsx does not exist in f5.",
+        "reasonKey": "marketing",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "A failed sourceControl.starred RPC counts as unknown and skips the star toast for the session, instead of counting as not starred.",
+      "title": "GitHub star prompt is skipped when the server check is unavailable",
+      "upstreamPrs": [
+        28364
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28365",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git",
+          "projects"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a bug in f5's ProjectCloneTracker, which exists in the fork. Respecting the chosen protocol is a reliability and credential issue.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The background clone tracker stores the requested protocol and passes it to cloneRepository. A clone started with protocol ssh no longer falls back to HTTPS on the first run or on Retry.",
+      "title": "Tracked clones keep an explicit SSH protocol on fallback and Retry",
+      "upstreamPrs": [
+        28365
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28367",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "claude",
+          "text-generation"
+        ],
+        "confidence": 0.9,
+        "model": "claude-opus-5-5",
+        "reason": "f5 runs Claude text generation, so users get the same polluted session history and import lists.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Background claude -p runs for titles, commits, PRs, branches and review guides pass --no-session-persistence. Claude versions older than 2.0.63 retry without the flag. Junk sessions no longer pile up in Claude's projects folder or show in the import scan.",
+      "title": "Claude text generation stops saving throwaway transcripts",
+      "upstreamPrs": [
+        28367
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28368",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "desktop"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "This is a desktop startup reliability fix for packaged Linux builds.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "xdg-mime default gets the same 5 s timeout and forced kill as its sibling helpers. A hung helper no longer blocks packaged desktop startup on Linux.",
+      "title": "Linux URL registration no longer hangs startup on xdg-mime",
+      "upstreamPrs": [
+        28368
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28374",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git",
+          "performance"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Measurable git status performance gain in large repositories.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "With branch-change totals on, the untracked paths from porcelain status are passed as literal pathspecs to ls-files --others. It falls back to a full scan above 128 paths or about 8,000 characters.",
+      "title": "Git status reuses untracked paths instead of scanning twice",
+      "upstreamPrs": [
+        28374
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28378",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "sidebar"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Forked threads landing in Pinned or never auto-settling are user-visible sidebar bugs. Reimplement in f5's fork service.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The fork plan resets pinnedAt, pinOrderKey, activeOrderKey, autoSettleDisabledAt and lastSnoozeWakeAt, and drops delegatedFrom. Forks then start like new threads.",
+      "title": "Forks no longer inherit the source's pin, order, auto-settle and delegation",
+      "upstreamPrs": [
+        28378
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28386",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "panels",
+          "threads"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "This is a small reliability and performance fix. Persisted panel maps that only grow get rewritten on every panel change.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "deleteThread calls removeThread on the right-panel, diff-panel and preview mini-player stores. The persisted localStorage maps no longer grow forever.",
+      "title": "Deleting a thread clears its saved panel and mini-player state",
+      "upstreamPrs": [
+        28386
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28387",
+      "relatedTopics": [
+        "pr-28491"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "environments"
+        ],
+        "confidence": 0.5,
+        "model": "claude-opus-5-5",
+        "question": "Does f5 have peer environment linking (t3_environment_link cards), so this fix applies?",
+        "reason": "This is peer environment linking, which is a multi-environment feature.",
+        "reasonKey": "multi-environment",
+        "status": "skip",
+        "userImpact": "low"
+      },
+      "summary": "Retrying t3_environment_link with a waiting card's clientRequestId, after that environment was linked, closes the card as linked. The thread no longer stays on Input.",
+      "title": "A linked t3_environment_link retry closes the waiting card it names",
+      "upstreamPrs": [
+        28387
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28389",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "orchestration",
+          "diagnostics"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "An observability improvement. Apply it where f5's orchestration drops the underlying projection error.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Seven OrchestratorProjectionError sites keep the store error as their cause. Clients and logs then show SQLite recovery hints instead of a generic 'Failed to load orchestration projection'.",
+      "title": "Command projection failures keep their cause",
+      "upstreamPrs": [
+        28389
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28400",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "f5 ships Grok and Pi, and a cold start that misses the probe shows them as Unavailable. The fx part doesn't apply.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The Grok, Pi and fx --version status probes get 10 s instead of 4 s. Healthy CLIs that start slowly no longer flap to Unavailable.",
+      "title": "Slow Grok and Pi starts no longer show as unavailable",
+      "upstreamPrs": [
+        28400
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-28403",
+      "reason": "Only changes eval tooling text. No user-visible product behavior changes.",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "evals"
+        ],
+        "confidence": 0.95,
+        "model": "claude-opus-5-5",
+        "reason": "Only changes eval tooling text. No user-visible product behavior changes.",
+        "reasonKey": "maintenance",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Changes the cost line in the mcp-tool-use eval summary.",
+      "title": "GPT eval summaries no longer call a proxied run free",
+      "upstreamPrs": [
+        28403
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28405",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "environments"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "A micro-optimization in upstream's linked-environment peer subsystem.",
+        "reasonKey": "multi-environment",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Linked-environment descriptor lookups and linking build a client for only the metadata and MCP OAuth endpoint groups, instead of the full environment API.",
+      "title": "Peer links build only the metadata and OAuth HTTP client",
+      "upstreamPrs": [
+        28405
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28410",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "claude"
+        ],
+        "confidence": 0.55,
+        "model": "claude-opus-5-5",
+        "question": "Should f5 set CLAUDE_CODE_ENTRYPOINT to its own identifier, such as f5, instead of upstream's t3-code?",
+        "reason": "Stops a wrong inherited entrypoint, such as claude-desktop, from leaking into Claude runs. The identifier value is a branding choice.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Claude turns, probes and text generation set CLAUDE_CODE_ENTRYPOINT, unless the instance environment or Claude settings.json env overrides it. Before, it fell back to sdk-ts or a value inherited from the host, such as claude-desktop.",
+      "title": "Claude processes identify with CLAUDE_CODE_ENTRYPOINT=t3-code",
+      "upstreamPrs": [
+        28410
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28418",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline",
+          "orchestration"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "Visible as duplicated truncation markers. Port if f5's wire projection truncates the same way.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The truncation marker counts toward the 32 KB cap. Re-projecting truncated text no longer stacks markers or adds bytes to long multibyte subagent prompts and diffs.",
+      "title": "Truncated tool text stays the same when projected again",
+      "upstreamPrs": [
+        28418
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28419",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "acp"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Makes provider failures easier to diagnose for ACP providers f5 supports.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The failure formatter maps AcpProcessExitedError to a message with the stage, signal or exit code and a hint to check server logs, instead of a generic error with an internal session id.",
+      "title": "ACP session startup crashes show the exit signal or code",
+      "upstreamPrs": [
+        28419
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28428",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "sidebar"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "A visible sidebar layout bug in a file f5 has. The fix is two class changes.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Thread rows size their contain-intrinsic-size placeholder in spacing units rather than fixed pixels. The placeholder then grows with the interface font size, so collapsing a folder no longer makes the rows above it jump.",
+      "title": "Sidebar folder rows no longer jump at larger interface font sizes",
+      "upstreamPrs": [
+        28428
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28439",
+      "relatedTopics": [
+        "pr-28600"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "git",
+          "thread details"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a misleading Changes count in GitActionsControl, which f5 has.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "resolveChangesTotals uses non-zero branch totals when they exist and otherwise falls back to the working tree. A zero branch total no longer hides a dirty working tree in the Changes badge.",
+      "title": "Changes row no longer shows +0 while Diff has edits",
+      "upstreamPrs": [
+        28439
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-28446",
@@ -3359,6 +6278,72 @@
       "title": "fix(web): background command details open above their button (#28446)",
       "upstreamPrs": [
         28446
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28460",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "projects",
+          "settings",
+          "command palette"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a real bug in the add-project and settings path inputs f5 has, which could create junk folders. Skip the mobile parts.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "resolvePastedPath unquotes shell-quoted or quoted paths pasted into folder inputs (Add Project, scheduled tasks, storage). This stops junk folders such as ~/' from being created.",
+      "title": "Pasting a path copied from Finder or Explorer adds that folder",
+      "upstreamPrs": [
+        28460
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28464",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "desktop",
+          "settings"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "This is a desktop bug: f5 relaunches from settings on Linux and Windows and handles links passed in argv.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "DesktopLifecycle.relaunch filters out arguments in the app's own URL scheme. On Linux and Windows, prompt, pairing or sign-in links are no longer acted on twice after a restart from settings.",
+      "title": "Settings relaunch no longer replays the link that launched the app",
+      "upstreamPrs": [
+        28464
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28470",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a composer shortcut bug. Upstream's client-runtime package doesn't exist in f5, so reimplement it in f5's paste handling.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "isPasteAsTextShortcut falls back to code KeyV when the layout types a non-Latin letter. The shortcut that the large-paste toast recommends then works on those layouts.",
+      "title": "Ctrl+Shift+V paste-as-text works on Cyrillic and Greek layouts",
+      "upstreamPrs": [
+        28470
       ]
     },
     {
@@ -3380,6 +6365,50 @@
       "title": "Interrupted scheduled task runs no longer stay marked busy",
       "upstreamPrs": [
         28474
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28482",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "worktrees",
+          "git"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Worktree creation with submodules exists in f5. A silently incomplete checkout is a reliability bug.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The submodule update during worktree creation has no total timeout, matching worktree add, and it stays cancellable. Large submodules no longer end up half-cloned.",
+      "title": "Slow worktree submodule checkouts are no longer cut off at 30 s",
+      "upstreamPrs": [
+        28482
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28491",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Environment link requests belong to upstream's multi-environment peer linking, which f5 doesn't have.",
+        "reasonKey": "multi-environment",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "A pending t3_environment_link card stops flagging the thread as Input once the user writes a newer message.",
+      "title": "Old environment link card no longer keeps a thread on Input",
+      "upstreamPrs": [
+        28491
       ]
     },
     {
@@ -3454,6 +6483,108 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28520",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "orchestration"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "The stuck-run symptom can occur in f5's run lifecycle. Reimplement the fix in f5's orchestrator.",
+        "status": "port",
+        "userImpact": "high"
+      },
+      "summary": "Stop and Force stop now end a run that is still marked running after its attempt completed. They no longer leave the thread busy and its queue stuck until a server restart.",
+      "title": "Stop ends a run whose provider turn already finished",
+      "upstreamPrs": [
+        28520
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28521",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "panels",
+          "files"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a keyboard focus bug in the Files panel. workspaceFocus.ts exists in f5.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "A panel focus request counts as already done when focus is inside the right pane surface, so focus isn't restored to a stale tree row.",
+      "title": "Clicking a file in the Files tree keeps focus on that row",
+      "upstreamPrs": [
+        28521
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-28532",
+      "reason": "No user-visible behavior change",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "summary": "",
+      "title": "docs(claude): explain idle compaction fallback (#28532)",
+      "upstreamPrs": [
+        28532
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28537",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline",
+          "plans"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "A small, measurable performance fix to plan display and search.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "stripDisplayedPlanMarkdown advances an index instead of calling Array.shift() repeatedly, so plans with long blank prefixes no longer take quadratic time. The output is unchanged.",
+      "title": "Plan prefix stripping runs in linear time",
+      "upstreamPrs": [
+        28537
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28539",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "terminal"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "A small terminal performance improvement on reconnect.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "terminalOutputResumeText counts up to 63 newlines with indexOf instead of splitting the whole text, removing O(n) allocations on viewer reconnect.",
+      "title": "Terminal resume counts lines without splitting the scrollback",
+      "upstreamPrs": [
+        28539
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-28549",
@@ -3503,6 +6634,54 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28563",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "sidebar",
+          "terminal",
+          "chat"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "A measurable render performance improvement, scaling with sidebar size, in surfaces f5 has.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "useKnownTerminalSessions reads a derived atom per environment and thread, so a terminal update in one thread doesn't re-render every SidebarThreadRow and ChatView.",
+      "title": "Terminal updates no longer re-render every sidebar row and chat",
+      "upstreamPrs": [
+        28563
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28564",
+      "relatedTopics": [
+        "pr-28264"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer",
+          "chat"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "A render performance improvement for the composer and side chat during active agent edits.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Gives three ChatView props stable identities (prompt history entries, banner items, side chat parent) so the memoized ChatComposer and ConversationTimeline skip re-renders on git status changes.",
+      "title": "ChatView redraws no longer re-render the composer or side chat timeline",
+      "upstreamPrs": [
+        28564
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-28572",
@@ -3547,6 +6726,79 @@
       "title": "Thread details PR metadata gets spacing above it",
       "upstreamPrs": [
         28573
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28582",
+      "relatedTopics": [
+        "pr-21337"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "worktrees",
+          "git"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "A measurable speedup of new worktree thread setup. Reimplement it in f5's worktree launch path, since upstream's orchestration-v2 doesn't exist here.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Thread launch resolves the base remote once and passes it to the fetch. createWorktree runs its config read and base-ref resolution concurrently, and the single-branch base fetch skips tags.",
+      "title": "Worktree creation spawns fewer git processes",
+      "upstreamPrs": [
+        28582
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28585",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "thread details",
+          "scheduled tasks"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "f5 has its own scheduler. If the thread details card shows bound tasks, the same overflow bug applies.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The Automations list scrolls within a 13.5rem cap, and the density measurement skips it. A long list no longer pushes the card into compact mode, which hid the section.",
+      "title": "Many automations no longer hide the thread details Automations section",
+      "upstreamPrs": [
+        28585
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28592",
+      "relatedTopics": [
+        "pr-28516"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "delegation"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Only affects tasks delegated to a linked environment, which is a multi-environment feature.",
+        "reasonKey": "multi-environment",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Open approval and Open question links pass the child thread's environment id, so children delegated to a linked environment open correctly instead of falling through to the new-thread page.",
+      "title": "Delegated child approvals open on the environment the child runs in",
+      "upstreamPrs": [
+        28592
       ]
     },
     {
@@ -3613,6 +6865,29 @@
       ]
     },
     {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28604",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "codex",
+          "delegation"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Closes a Codex capability gap, such as waking delegated children, if f5 already sets the thread id variable for Claude.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Per-thread shell_environment_policy.set config on thread start, resume and fork passes the T3 thread id to Codex shells. Tools started from a Codex agent can then find their thread for thread send and dev-server attribution.",
+      "title": "Codex sessions get T3CODE_THREAD_ID like Claude sessions",
+      "upstreamPrs": [
+        28604
+      ]
+    },
+    {
       "createdAt": "2026-11-01T11:11:31.013Z",
       "epoch": 1,
       "id": "pr-28605",
@@ -3631,6 +6906,581 @@
       "title": "Sidebar project filter no longer refocuses after a pick",
       "upstreamPrs": [
         28605
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28610",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "A small timeline UX fix in MessagesTimeline logic, which f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The latest finished assistant reply in a response that is still running shows its hover timestamp. Copy and fork stay hidden until the response ends.",
+      "title": "Finished replies keep their hover timestamp while commands run",
+      "upstreamPrs": [
+        28610
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28629",
+      "relatedTopics": [
+        "pr-27191"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "antigravity"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Improves a provider f5 supports. Skip the mobile parts.",
+        "status": "port",
+        "userImpact": "high"
+      },
+      "summary": "The managed Antigravity runtime moves to 1.4.5. run_workflow is disabled so no stray SKILL.md is written into the project. Quota errors become real turn failures, native child work is viewable, and native reads and diff edits are added.",
+      "title": "Antigravity runtime 1.4.5 with real turn failures and subagent work",
+      "upstreamPrs": [
+        28629
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-28660",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): sent messages rise into place instead of dropping in (#28660)",
+      "upstreamPrs": [
+        28660
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28665",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "pr-hub"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Small visual fix in the PR hub, a surface f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The viewed toggle label gets a fixed width, so the checkbox no longer shifts between rows marked Viewed and rows marked Changed.",
+      "title": "PR Code tab viewed checkboxes stay aligned",
+      "upstreamPrs": [
+        28665
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28666",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "codex",
+          "observability"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "Observability improvement for the Codex provider: startup latency can be traced to specific RPC methods. The pending-request cleanup also tightens reliability.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Codex app-server request spans now record rpc.system, rpc.method and the request id, with child spans for enqueueing and for awaiting the reply. Pending requests are cleaned up on failure or interrupt through acquireUseRelease.",
+      "title": "Codex app-server request spans name the RPC method and request id",
+      "upstreamPrs": [
+        28666
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "llm",
+      "epoch": 1,
+      "id": "pr-28698",
+      "reason": "Affects the mobile app only.",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "suggestion": {
+        "areas": [
+          "mobile"
+        ],
+        "confidence": 0.97,
+        "model": "claude-opus-5-5",
+        "reason": "Affects the mobile app only.",
+        "reasonKey": "mobile",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "The mobile Microphone settings page explains why voice input is unavailable on devices without on-device transcription.",
+      "title": "Mobile microphone settings explain why voice input is unavailable",
+      "upstreamPrs": [
+        28698
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28715",
+      "relatedTopics": [
+        "pr-28556"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "desktop",
+          "startup"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "A measurable desktop startup improvement in a surface f5 has. It needs reimplementing in f5's desktop window and backend manager.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The packaged desktop app creates and loads the main window alongside backend startup and shows the logo splash on first paint. The initial route waits for authenticated backend access, and readiness unblocks bearer auth without polling. Startup recovery still works.",
+      "title": "Desktop loads the renderer while the backend starts",
+      "upstreamPrs": [
+        28715
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28718",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "cursor",
+          "startup"
+        ],
+        "confidence": 0.65,
+        "model": "claude-opus-5-5",
+        "reason": "Measurable startup performance gain for a provider f5 supports. Needs reimplementing in f5's Cursor provider because upstream packages/provider-cursor doesn't exist here.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Startup no longer synchronously loads Cursor's agent SDK and SQLite store. Account and model discovery use the documented /v1/me and /v1/models endpoints instead, with response validation.",
+      "title": "Cursor agent SDK loads only at login or agent use",
+      "upstreamPrs": [
+        28718
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-28789",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): give drafts the current thread card layout (#28789)",
+      "upstreamPrs": [
+        28789
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-28819",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): restore the reserved compose space on Android (#28819)",
+      "upstreamPrs": [
+        28819
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-28834",
+      "reason": "No user-visible behavior change",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(web): ChatView browser test no longer times out on CI (#28834)",
+      "upstreamPrs": [
+        28834
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-28887",
+      "reason": "No user-visible behavior change",
+      "reasonKey": "maintenance",
+      "status": "skip",
+      "summary": "",
+      "title": "test(web): pass stale to the stack menu refusal test (#28887)",
+      "upstreamPrs": [
+        28887
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28952",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "usage",
+          "settings"
+        ],
+        "confidence": 0.6,
+        "model": "claude-opus-5-5",
+        "reason": "An opt-in usage capability with no change in default behavior. The mobile and client-runtime parts get reimplemented in f5's web usage state.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "getUsageSummary accepts an optional include or exclude modelFilter that matches raw provider and model IDs. The Usage tab reads usageModelFilter from settings.json, with no UI.",
+      "title": "Usage totals can be filtered by provider and model",
+      "upstreamPrs": [
+        28952
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28969",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "A small presentation improvement to the thread timeline banners, which f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Banners show the waiting or running status and the task description separated by a dot, instead of 'Waiting on'. Monospace is used only when the label is the recorded command.",
+      "title": "Background work banners separate status from the task label",
+      "upstreamPrs": [
+        28969
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T10:32:38.196Z",
+      "decidedBy": "rule",
+      "epoch": 1,
+      "id": "pr-28983",
+      "reason": "Mobile app only",
+      "reasonKey": "mobile",
+      "status": "skip",
+      "summary": "",
+      "title": "fix(mobile): files with brackets in their names attach on Android (#28983)",
+      "upstreamPrs": [
+        28983
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-28995",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline",
+          "threads"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "A timeline UX improvement. Reimplement it in f5's orchestration and timeline layers.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "A quiet divider above the affected user message shows what changed, such as 'Opus 5.5 → Sonnet 5.5' or 'Low → High'. Harness swaps keep the Context handoff row.",
+      "title": "Threads show a divider when the model or effort changes",
+      "upstreamPrs": [
+        28995
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-29001",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "analytics",
+          "providers"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Targets upstream's product analytics pipeline on orchestration-v2 adapters. Nothing changes in the f5 UI.",
+        "reasonKey": "upstream-only:analytics-feedback",
+        "status": "skip",
+        "userImpact": "none"
+      },
+      "summary": "Adds provider.request.completed analytics summaries, fixes subagent model labels and mixedModels, and keeps raw model names of custom providers out of analytics.",
+      "title": "Token telemetry counts each request once and only confirmed models",
+      "upstreamPrs": [
+        29001
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-29005",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "pr-hub"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "An obvious PR hub UI bug in a surface f5 has.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "usePullRequestActions tracks pending actions by environment and PR identity. Switching threads during a merge no longer shows another PR as pending.",
+      "title": "Pending PR actions stay scoped to their pull request",
+      "upstreamPrs": [
+        29005
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-29017",
+      "relatedTopics": [
+        "pr-28162"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "composer"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "A composer UX fix for short windows. The touched files exist in f5.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The docked model picker opens above the composer and shifts over it when space is short. The popover positioner caps its height at the available height, so effort and footer controls stay reachable.",
+      "title": "Model picker uses the full window height in short windows",
+      "upstreamPrs": [
+        29017
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-29026",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "codex",
+          "mcp"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Cuts token use for Codex orchestrator waits. Reimplement it in f5's Codex adapter, because the upstream code lives in orchestration-v2.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Each Codex thread registers T3's MCP server a second time as t3-code-direct, which holds only t3_thread_wait and sets omit_tools_from code_mode/deferred. The wait then becomes a direct tool call, so the model stops working around it and wasting tokens. The tool presentation resolver recognizes the…",
+      "title": "Codex calls t3_thread_wait directly instead of from Code Mode",
+      "upstreamPrs": [
+        29026,
+        29068
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-29053",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "threads",
+          "sidebar",
+          "settings"
+        ],
+        "confidence": 0.45,
+        "model": "claude-opus-5-5",
+        "question": "Does f5 want thread tags and config-based hiding of tagged threads before a tag UI exists?",
+        "reason": "A new backend capability with no UI yet. Its value to f5 depends on product interest.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "Adds a thread.tag.set command and tags on thread shells. Clients hide threads with configured tags, for example while recording. There is no tag UI yet.",
+      "title": "Threads can carry tags and hide tagged threads through config",
+      "upstreamPrs": [
+        29053
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-29079",
+      "relatedTopics": [
+        "pr-23621"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "desktop",
+          "media"
+        ],
+        "confidence": 0.8,
+        "model": "claude-opus-5-5",
+        "reason": "Fixes a user-visible desktop bug with Save image and Copy image.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "When the renderer's fetch fails because of CORS or CSP, the Electron main process reads the image bytes with the window session through a new readMedia bridge. Save image and Copy image then work for visible images.",
+      "title": "Desktop Save and Copy work for any image the app shows",
+      "upstreamPrs": [
+        29079
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-29127",
+      "relatedTopics": [
+        "pr-27433"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "cli"
+        ],
+        "confidence": 0.75,
+        "model": "claude-opus-5-5",
+        "reason": "A measurable CLI startup improvement.",
+        "status": "port",
+        "userImpact": "low"
+      },
+      "summary": "The server, offline project runtime and Claude history worker are imported dynamically, so t3 --version, --help, status and forwarded project calls start faster.",
+      "title": "Short CLI commands no longer load the whole server",
+      "upstreamPrs": [
+        29127
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-29146",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "notifications"
+        ],
+        "confidence": 0.7,
+        "model": "claude-opus-5-5",
+        "reason": "Notifications become more responsive. The grace is removed on purpose upstream, and final upstream behavior wins.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Completion alerts fire as soon as the thread shell reports completion instead of after a 2 s grace. Both sounds are preloaded when a user gesture unlocks audio. Deduplication and suppression are kept.",
+      "title": "Completion sounds play without delay",
+      "upstreamPrs": [
+        29146
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-29166",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "timeline",
+          "threads"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "This fixes a timeline scroll bug, and f5 has the same MessagesTimeline component.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "Opening the work-details accordion while scrolled to the bottom no longer pins the timeline to the bottom and pushes the clicked heading out of view. The heading now stays in place while the expanded content settles. Streaming auto-scroll is unchanged.",
+      "title": "Expanding 'Worked for' details keeps the heading in view",
+      "upstreamPrs": [
+        29166
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-29169",
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "providers",
+          "claude"
+        ],
+        "confidence": 0.88,
+        "model": "claude-opus-5-5",
+        "reason": "This fixes a Claude provider bug that can happen in f5 too. f5 has the ClaudeHome.ts environment merge helper.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "When T3 is started from inside a Claude Code session, the Claude processes it spawns no longer inherit that session's variables (CLAUDECODE, session id, messaging socket and token, CLAUDE_EFFORT and others). This covers turns, probes and text generation. Values set on the instance still win.",
+      "title": "Claude processes no longer inherit the session that launched T3",
+      "upstreamPrs": [
+        29169
+      ]
+    },
+    {
+      "createdAt": "2026-11-02T10:32:38.196Z",
+      "epoch": 1,
+      "id": "pr-7295",
+      "relatedTopics": [
+        "pr-21913"
+      ],
+      "status": "inbox",
+      "suggestion": {
+        "areas": [
+          "server",
+          "startup",
+          "shell"
+        ],
+        "confidence": 0.85,
+        "model": "claude-opus-5-5",
+        "reason": "Reliability fix in a shared shell helper that the fork has. It bounds startup time.",
+        "status": "port",
+        "userImpact": "medium"
+      },
+      "summary": "The synchronous login-shell environment probe uses SIGKILL when its 5 s timeout expires. Startup scripts that trap SIGTERM can no longer block server startup.",
+      "title": "Timed-out login shell probes are force-killed",
+      "upstreamPrs": [
+        7295
       ]
     }
   ]
