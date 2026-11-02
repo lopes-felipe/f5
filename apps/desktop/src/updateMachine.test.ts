@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  claimRecentInstall,
   createInitialDesktopUpdateState,
   reduceDesktopUpdateStateOnCheckFailure,
   reduceDesktopUpdateStateOnCheckStart,
@@ -126,7 +127,7 @@ describe("updateMachine", () => {
       "Two important fixes",
     );
     const downloading = reduceDesktopUpdateStateOnDownloadStart(available);
-    const progress = reduceDesktopUpdateStateOnDownloadProgress(downloading, 55.5);
+    const progress = reduceDesktopUpdateStateOnDownloadProgress(downloading, { percent: 55.5 });
 
     expect(available.status).toBe("available");
     expect(available.releaseNotes).toBe("Two important fixes");
@@ -141,10 +142,82 @@ describe("updateMachine", () => {
 
 it("keeps desktop download progress finite and within bounds", () => {
   const state = createInitialDesktopUpdateState("1.0.0", runtimeInfo);
-  expect(reduceDesktopUpdateStateOnDownloadProgress(state, 120).downloadPercent).toBe(100);
-  expect(reduceDesktopUpdateStateOnDownloadProgress(state, -20).downloadPercent).toBe(0);
+  expect(reduceDesktopUpdateStateOnDownloadProgress(state, { percent: 120 }).downloadPercent).toBe(
+    100,
+  );
+  expect(reduceDesktopUpdateStateOnDownloadProgress(state, { percent: -20 }).downloadPercent).toBe(
+    0,
+  );
   expect(
-    reduceDesktopUpdateStateOnDownloadProgress({ ...state, downloadPercent: 42 }, Number.NaN)
-      .downloadPercent,
+    reduceDesktopUpdateStateOnDownloadProgress(
+      { ...state, downloadPercent: 42 },
+      { percent: Number.NaN },
+    ).downloadPercent,
   ).toBe(42);
+});
+
+it("tracks download bytes and clears them across the download lifecycle", () => {
+  const available = {
+    ...createInitialDesktopUpdateState("1.0.0", runtimeInfo),
+    enabled: true,
+    status: "available" as const,
+    availableVersion: "1.1.0",
+  };
+  const progress = reduceDesktopUpdateStateOnDownloadProgress(
+    reduceDesktopUpdateStateOnDownloadStart(available),
+    { percent: 42, transferred: 38_000_000, total: 92_000_000, bytesPerSecond: 4_100_000 },
+  );
+  expect(progress.downloadTransferredBytes).toBe(38_000_000);
+  expect(progress.downloadTotalBytes).toBe(92_000_000);
+  expect(progress.downloadBytesPerSecond).toBe(4_100_000);
+
+  // Missing or invalid samples keep the last known values.
+  const sparse = reduceDesktopUpdateStateOnDownloadProgress(progress, {
+    percent: 43,
+    bytesPerSecond: Number.NaN,
+  });
+  expect(sparse.downloadTransferredBytes).toBe(38_000_000);
+  expect(sparse.downloadBytesPerSecond).toBe(4_100_000);
+
+  const complete = reduceDesktopUpdateStateOnDownloadComplete(progress, "1.1.0");
+  expect(complete.downloadTotalBytes).toBe(92_000_000);
+  expect(complete.downloadTransferredBytes).toBe(92_000_000);
+  expect(complete.downloadBytesPerSecond).toBeNull();
+
+  const failed = reduceDesktopUpdateStateOnDownloadFailure(progress, "network");
+  expect(failed.downloadTransferredBytes).toBeNull();
+  expect(failed.downloadTotalBytes).toBeNull();
+  expect(failed.downloadBytesPerSecond).toBeNull();
+
+  const restarted = reduceDesktopUpdateStateOnDownloadStart({ ...progress, status: "available" });
+  expect(restarted.downloadTransferredBytes).toBeNull();
+  expect(restarted.downloadTotalBytes).toBeNull();
+});
+
+it("hands the recent install to exactly one claimer", () => {
+  const recentlyInstalled = { fromVersion: "1.0.0", toVersion: "1.1.0", releaseNotes: null };
+  const state = {
+    ...createInitialDesktopUpdateState("1.1.0", runtimeInfo),
+    recentlyInstalled,
+  };
+  const first = claimRecentInstall(state);
+  expect(first.claimed).toEqual(recentlyInstalled);
+  expect(first.state.recentlyInstalled).toBeNull();
+  const second = claimRecentInstall(first.state);
+  expect(second.claimed).toBeNull();
+  expect(second.state).toBe(first.state);
+});
+
+it("clears the install phase when an install fails", () => {
+  const state = reduceDesktopUpdateStateOnInstallFailure(
+    {
+      ...createInitialDesktopUpdateState("1.0.0", runtimeInfo),
+      enabled: true,
+      status: "preparing",
+      downloadedVersion: "1.1.0",
+      installPhase: "stopping",
+    },
+    "F5 did not restart",
+  );
+  expect(state.installPhase).toBeNull();
 });

@@ -1459,12 +1459,14 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             updatedAt: event.payload.updatedAt,
           });
           if (event.payload.role === "user") {
-            const source = event.commandId
-              ? yield* readSubmissionSource(event.commandId, event.payload.threadId).pipe(
-                  Effect.provideService(SqlClient.SqlClient, sql),
-                  Effect.mapError(toPersistenceSqlError("ProjectionPipeline.authorship:read")),
-                )
-              : undefined;
+            const source =
+              event.payload.authorship ??
+              (event.commandId
+                ? yield* readSubmissionSource(event.commandId, event.payload.threadId).pipe(
+                    Effect.provideService(SqlClient.SqlClient, sql),
+                    Effect.mapError(toPersistenceSqlError("ProjectionPipeline.authorship:read")),
+                  )
+                : undefined);
             yield* sql`INSERT OR IGNORE INTO thread_message_authorship(message_id,thread_id,source) SELECT m.message_id,m.thread_id,${source ?? "human"} FROM projection_thread_messages m JOIN projection_threads t ON t.thread_id=m.thread_id WHERE m.message_id=${event.payload.messageId} AND m.thread_id=${event.payload.threadId}`.pipe(
               Effect.mapError(toPersistenceSqlError("ProjectionPipeline.authorship:write")),
             );

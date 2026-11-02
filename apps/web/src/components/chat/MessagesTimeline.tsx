@@ -333,7 +333,7 @@ interface MessagesTimelineProps {
   /** Context for the empty-thread state; omitted renders the plain hint. */
   emptyState?: MessagesTimelineEmptyState | undefined;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
-  revertTurnCountByUserMessageId: Map<MessageId, number>;
+  revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
   onRevertUserMessage: (
     messageId: MessageId,
     restoreFiles?: boolean,
@@ -1354,50 +1354,59 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workspaceRoot,
     ],
   );
-  const committedRowExternalsRef = useRef<ReadonlyMap<string, TimelineRowExternalsEntry>>(
-    new Map(),
-  );
-  const rowExternals = useMemo(
-    () =>
-      buildTimelineRowExternals(
-        rows,
-        {
-          threadId,
-          expandedWorkGroups,
-          workGroupCollapseOverrides,
-          turnDiffSummaryByTurnId,
-          chatDiffContext: rowChatDiffContext,
-          revertTurnCountByUserMessageId,
-          revertPopover,
-          revertImpact,
-          turnDiffSummaryByAssistantMessageId,
-          changedFilesPresentationOverrides,
-          newestTurnDiffId,
-          expandedCommandExecutions,
-          ribbonActive,
-        },
-        committedRowExternalsRef.current,
-      ),
-    [
-      changedFilesPresentationOverrides,
-      expandedCommandExecutions,
-      expandedWorkGroups,
-      newestTurnDiffId,
-      revertImpact,
-      revertPopover,
-      revertTurnCountByUserMessageId,
-      ribbonActive,
-      rowChatDiffContext,
+  const committedRowExternalsRef = useRef<{
+    readonly externals: ReadonlyMap<string, TimelineRowExternalsEntry>;
+    readonly basis?: TimelineRowExternalsBasis;
+  }>({ externals: new Map() });
+  const rowExternalsState = useMemo(() => {
+    const basis: TimelineRowExternalsBasis = {
       rows,
-      threadId,
-      turnDiffSummaryByAssistantMessageId,
-      turnDiffSummaryByTurnId,
-      workGroupCollapseOverrides,
-    ],
-  );
+      inputs: {
+        threadId,
+        expandedWorkGroups,
+        workGroupCollapseOverrides,
+        turnDiffSummaryByTurnId,
+        chatDiffContext: rowChatDiffContext,
+        revertTurnCountByUserMessageId,
+        revertPopover,
+        revertImpact,
+        turnDiffSummaryByAssistantMessageId,
+        changedFilesPresentationOverrides,
+        newestTurnDiffId,
+        expandedCommandExecutions,
+        ribbonActive,
+      },
+    };
+    const committed = committedRowExternalsRef.current;
+    return {
+      basis,
+      externals: buildTimelineRowExternals(
+        basis.rows,
+        basis.inputs,
+        committed.externals,
+        committed.basis,
+      ),
+    };
+  }, [
+    changedFilesPresentationOverrides,
+    expandedCommandExecutions,
+    expandedWorkGroups,
+    newestTurnDiffId,
+    revertImpact,
+    revertPopover,
+    revertTurnCountByUserMessageId,
+    ribbonActive,
+    rowChatDiffContext,
+    rows,
+    threadId,
+    turnDiffSummaryByAssistantMessageId,
+    turnDiffSummaryByTurnId,
+    workGroupCollapseOverrides,
+  ]);
+  const rowExternals = rowExternalsState.externals;
   useLayoutEffect(() => {
-    committedRowExternalsRef.current = rowExternals;
-  }, [rowExternals]);
+    committedRowExternalsRef.current = rowExternalsState;
+  }, [rowExternalsState]);
   // LegendList caches cell renders until `data` or `extraData` changes, so
   // every value `renderItem` reads must be here: the revert dimming and the
   // per-row externals map (a new map only when some row's inputs changed).
@@ -5371,7 +5380,7 @@ export interface TimelineRowExternalsInputs {
   workGroupCollapseOverrides: Readonly<Record<string, boolean>>;
   turnDiffSummaryByTurnId: Map<TurnId, TurnDiffSummary>;
   chatDiffContext: ChatDiffContext;
-  revertTurnCountByUserMessageId: Map<MessageId, number>;
+  revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
   revertPopover: { messageId: MessageId; presetRestoreFiles?: boolean } | null;
   revertImpact: TimelineRevertImpact | null;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
@@ -5504,12 +5513,65 @@ function describeTimelineRowExternals(
   }
 }
 
-/** Externals per row id, reusing the previous entry while its version holds. */
+/** The rows and inputs a previous externals map was built from. */
+export interface TimelineRowExternalsBasis {
+  readonly rows: ReadonlyArray<TimelineRow>;
+  readonly inputs: TimelineRowExternalsInputs;
+}
+
+function sameTimelineRowExternalsInputs(
+  left: TimelineRowExternalsInputs,
+  right: TimelineRowExternalsInputs,
+): boolean {
+  const keys = Object.keys(right) as Array<keyof TimelineRowExternalsInputs>;
+  return (
+    keys.length === Object.keys(left).length &&
+    keys.every((key) => Object.is(left[key], right[key]))
+  );
+}
+
+// Message externals read a row's id and role, never its text, so a row whose
+// message object a streaming delta replaced keeps every entry it had.
+function timelineRowsDifferOnlyInMessageContent(
+  previous: ReadonlyArray<TimelineRow>,
+  rows: ReadonlyArray<TimelineRow>,
+): boolean {
+  if (previous === rows) return true;
+  if (previous.length !== rows.length) return false;
+  for (const [index, row] of rows.entries()) {
+    const before = previous[index]!;
+    if (before === row) continue;
+    if (
+      before.kind !== "message" ||
+      row.kind !== "message" ||
+      before.id !== row.id ||
+      before.message.role !== row.message.role
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Externals per row id, reusing the previous entry while its version holds.
+ * With the `basis` the previous map was built from, a text-only streaming
+ * update returns that map without describing any row: the revert and
+ * checkpoint lookups only run when the timeline's structure or inputs change.
+ */
 export function buildTimelineRowExternals(
   rows: ReadonlyArray<TimelineRow>,
   inputs: TimelineRowExternalsInputs,
   previous: ReadonlyMap<string, TimelineRowExternalsEntry>,
+  basis?: TimelineRowExternalsBasis,
 ): ReadonlyMap<string, TimelineRowExternalsEntry> {
+  if (
+    basis &&
+    sameTimelineRowExternalsInputs(basis.inputs, inputs) &&
+    timelineRowsDifferOnlyInMessageContent(basis.rows, rows)
+  ) {
+    return previous;
+  }
   const next = new Map<string, TimelineRowExternalsEntry>();
   let changed = rows.length !== previous.size;
   // The latest turn starts after the last user message. Its code blocks stay

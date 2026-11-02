@@ -73,6 +73,13 @@ export const THREADS_SETTINGS_DESCRIPTORS = [
     targetSelector: '[aria-label="Thread title model"]',
   },
   {
+    ...SETTINGS_ITEM_ROUTES["threads.title-instructions"],
+    label: "Thread title instructions",
+    description: "Add your own instructions to the prompt that writes thread titles.",
+    keywords: ["title", "naming", "prompt", "style", "rename", "regenerate", "custom"],
+    targetSelector: '[data-settings-search-target="threads.title-instructions"]',
+  },
+  {
     ...SETTINGS_ITEM_ROUTES["threads.claude-subagents"],
     label: "Enable Claude sub-agents",
     description: "Allow Claude to spawn helper agents for exploration and verification.",

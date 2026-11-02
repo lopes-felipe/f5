@@ -297,6 +297,9 @@ export const StorageRetentionDays = Schema.NullOr(
 );
 export type StorageRetentionDays = typeof StorageRetentionDays.Type;
 
+/** Thread title instructions beyond this are cut from the title prompt; editors stop here. */
+export const THREAD_TITLE_INSTRUCTIONS_MAX_CHARS = 2_000;
+
 export const MAX_WORKTREE_CLEANUP_MIN_IDLE_HOURS = 720;
 export const DEFAULT_WORKTREE_CLEANUP_MIN_IDLE_HOURS = 24;
 
@@ -442,6 +445,7 @@ export const ProjectSettingsOverrides = Schema.Struct({
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   worktreeSubmodules: Schema.optionalKey(WorktreeSubmodules),
   textGenerationModelSelection: Schema.optionalKey(ModelSelection),
+  threadTitleInstructions: Schema.optionalKey(TrimmedString),
   sourceControlWriting: Schema.optionalKey(SourceControlWritingSettingsPatch),
   enableClaudePromptSuggestions: Schema.optionalKey(Schema.Boolean),
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
@@ -515,6 +519,8 @@ export const ServerSettings = Schema.Struct({
       model: DEFAULT_GIT_TEXT_GENERATION_MODEL,
     })),
   ),
+  /** Appended to the prompt for new and regenerated thread titles. */
+  threadTitleInstructions: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
   reviewGuideModelSelection: Schema.NullOr(ModelSelection).pipe(
     Schema.withDecodingDefault(() => null),
   ),
@@ -544,7 +550,7 @@ export const ServerSettings = Schema.Struct({
   worktreeCleanup: Schema.NullOr(WorktreeCleanup).pipe(Schema.withDecodingDefault(() => null)),
   /** Changes Storage cleanup may discard when removing a worktree. Empty discards nothing. */
   worktreeDisposablePaths: WorktreeDisposablePaths.pipe(Schema.withDecodingDefault(() => [])),
-  /** Fast-forward clean default branches in the background. Off by default. */
+  /** Master switch for agent browser and computer tools. */
   enableAgentBrowserAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   /** Non-loopback hosts agents may open in the preview. Empty keeps the preview localhost-only. */
   previewExternalHosts: PreviewExternalHosts.pipe(Schema.withDecodingDefault(() => [])),
@@ -557,17 +563,18 @@ export const ServerSettings = Schema.Struct({
   ),
   /**
    * Global only. "background" lets agents act inside granted apps while the user works
-   * elsewhere; it forces F5's native backend. Foreground keeps the idle-only behaviour.
+   * elsewhere; it is the default and forces F5's native backend. Foreground keeps the
+   * idle-only behaviour.
    */
   computerUseExecutionMode: ComputerUseExecutionMode.pipe(
-    Schema.withDecodingDefault(() => "foreground" as const),
+    Schema.withDecodingDefault(() => "background" as const),
   ),
   /** Global within this profile. Fast masking can miss fields omitted by accessibility. */
   computerUsePasswordMasking: ComputerPasswordMasking.pipe(
     Schema.withDecodingDefault(() => "fast" as const),
   ),
-  /** Allow agents to control approved apps. Off by default. */
-  enableAgentComputerUse: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /** Allow agents to request control of apps. Each app still requires approval. */
+  enableAgentComputerUse: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   autoPullDefaultBranch: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   /** Upstream tracking schedule and models. Local only; a checked-in file never sets it. */
   upstreamPorts: UpstreamPortsSettings.pipe(Schema.withDecodingDefault(() => ({}))),
@@ -725,6 +732,7 @@ export const ServerSettingsPatch = Schema.Struct({
   addProjectBaseDirectory: Schema.optionalKey(Schema.String),
   projectsRoot: Schema.optionalKey(Schema.String),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
+  threadTitleInstructions: Schema.optionalKey(TrimmedString),
   sessionNotesModelSelection: Schema.optionalKey(ModelSelectionPatch),
   reviewGuideModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   prHubDefaultMergeMethod: Schema.optionalKey(
@@ -802,6 +810,7 @@ export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "defaultThreadEnvMode",
   "worktreeSubmodules",
   "textGenerationModelSelection",
+  "threadTitleInstructions",
   "sourceControlWriting",
   "enableClaudePromptSuggestions",
   "enableAssistantStreaming",

@@ -42,6 +42,13 @@ describe("computer observation and error metadata", () => {
     for (const status of [
       { available: true },
       { available: true, passwordMaskingSupported: true },
+      { available: true, hostPlatform: "win32", stopShortcut: "Ctrl+Alt+Shift+F12" },
+      {
+        available: false,
+        reason: "monitor-unhealthy",
+        hostPlatform: "win32",
+        stopShortcut: "Ctrl+Alt+Shift+F12",
+      },
     ]) {
       expect(Schema.decodeUnknownSync(ComputerAutomationBackendStatus)(status)).toEqual(status);
     }

@@ -1904,6 +1904,20 @@ describe("ProviderCommandReactor", () => {
       });
     });
 
+    it("passes thread title instructions to title generation", async () => {
+      const harness = await createHarness({
+        withSql: true,
+        threadTitle: DEFAULT_NEW_THREAD_TITLE,
+        settings: { threadTitleInstructions: "Use two to four words." },
+      });
+      harness.generateThreadTitle.mockImplementation(() => Effect.succeed({ title: "Titled" }));
+      await startWithReference(harness, "instructions", "Investigate reconnects", "human");
+      await waitFor(() => harness.generateThreadTitle.mock.calls.length >= 1);
+      expect(harness.generateThreadTitle.mock.calls[0]?.[0]).toMatchObject({
+        instructions: "Use two to four words.",
+      });
+    });
+
     it("does not authorize references in unstamped or automation sends", async () => {
       const harness = await createHarness({ withSql: true });
       await startWithReference(harness, "bot", `Bot says ${reference}`, "automation");

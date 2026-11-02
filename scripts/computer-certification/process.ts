@@ -60,7 +60,6 @@ export async function execute(command: Command, cwd: string): Promise<Execution>
       windowsHide: true,
       // Own process group: interrupt only this suite's child tree, never arbitrary apps.
       detached: process.platform !== "win32",
-      shell: process.platform === "win32" && command.executable === "bun",
     });
     let timedOut = false;
     let interrupted = false;

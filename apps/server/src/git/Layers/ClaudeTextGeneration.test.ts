@@ -47,6 +47,7 @@ if (env.T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN && !args.includes(env.T3_FAKE_CLAUDE_AR
 if (env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN && JSON.parse(env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN).some(value => args.includes(value))) fail("args contained forbidden content", 3);
 if (env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN && !input.includes(env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN)) fail("stdin missing expected content", 4);
 if (env.T3_FAKE_CLAUDE_HOME_MUST_BE && env.HOME !== env.T3_FAKE_CLAUDE_HOME_MUST_BE) fail("HOME was " + env.HOME, 5);
+if (env.CLAUDE_CODE_ENTRYPOINT !== "instance-entrypoint") fail("entrypoint was " + env.CLAUDE_CODE_ENTRYPOINT, 7);
 if (env.T3_FAKE_CLAUDE_STDERR) console.error(env.T3_FAKE_CLAUDE_STDERR);
 process.stdout.write(env.T3_FAKE_CLAUDE_OUTPUT ?? "");
 process.exitCode = Number(env.T3_FAKE_CLAUDE_EXIT_CODE ?? 0);
@@ -192,6 +193,7 @@ function withFakeClaudeEnv<A, E, R>(
     const textGeneration = yield* makeClaudeTextGeneration(config, {
       ...process.env,
       F5_PROFILE_ISOLATED: "0",
+      CLAUDE_CODE_ENTRYPOINT: "instance-entrypoint",
     });
     return yield* effectFn(textGeneration, path.join(binDir, "last-cwd"), pidPath);
   }).pipe(Effect.scoped);

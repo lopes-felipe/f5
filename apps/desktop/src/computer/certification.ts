@@ -38,20 +38,24 @@ export async function verifyCodexChromeAdoption(
 
 /** Only signed, installed certification runs may open these gates. */
 export const COMPUTER_CONTROL_CERTIFIED = { darwin: false, win32: false } as const;
-/** Explicit opt-in preview availability is separate from signed-build certification. */
-export const COMPUTER_CONTROL_PREVIEW = { darwin: true, win32: false } as const;
+/** Preview availability is separate from signed-build certification and app approvals. */
+export const COMPUTER_CONTROL_PREVIEW = { darwin: true, win32: true } as const;
 /**
- * Background (accessibility-only) control alongside the user. Available in the macOS preview;
- * users still choose it in Settings, and the foreground stays the default execution mode.
+ * Background (accessibility-only) control alongside the user. Available in both desktop previews;
+ * background is the default execution mode, and users can select foreground in Settings.
  */
-export const COMPUTER_BACKGROUND_PREVIEW = { darwin: true, win32: false } as const;
+export const COMPUTER_BACKGROUND_PREVIEW = { darwin: true, win32: true } as const;
 export function computerBackgroundGate(
   platform: string,
   packaged: boolean,
   devOverride: string | undefined,
+  arch: string = process.arch,
 ): ComputerBackgroundStatus {
-  if (platform !== "darwin") return { available: false, reason: "unsupported-platform" };
-  if (!COMPUTER_BACKGROUND_PREVIEW.darwin && (packaged || devOverride !== "1"))
+  if (platform !== "darwin" && platform !== "win32")
+    return { available: false, reason: "unsupported-platform" };
+  if (platform === "win32" && arch !== "x64")
+    return { available: false, reason: "unsupported-platform" };
+  if (!COMPUTER_BACKGROUND_PREVIEW[platform] && (packaged || devOverride !== "1"))
     return { available: false, reason: "preview-off" };
   return { available: true };
 }
@@ -72,12 +76,19 @@ export function computerCertificationStatus(
   packaged: boolean,
   devOverride: string | undefined,
   osVersion = release(),
+  arch: string = process.arch,
 ): ComputerAutomationBackendStatus {
   if (platform !== "darwin" && platform !== "win32")
     return {
       available: false,
       reason: "unsupported-platform",
       detail: "Computer control requires macOS 14+ or Windows 10 2004+.",
+    };
+  if (platform === "win32" && arch !== "x64")
+    return {
+      available: false,
+      reason: "unsupported-platform",
+      detail: "Windows computer control preview requires the x64 desktop distribution.",
     };
   const version = osVersion.split(".").map(Number);
   if (
@@ -98,7 +109,10 @@ export function computerCertificationStatus(
     return {
       available: false,
       reason: "not-certified",
-      detail: "Computer control is awaiting signed-build safety certification.",
+      detail:
+        platform === "win32"
+          ? "Windows computer control is awaiting interactive Windows preview acceptance."
+          : "Computer control is awaiting signed-build safety certification.",
     };
   return { available: true };
 }

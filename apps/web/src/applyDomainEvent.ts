@@ -232,6 +232,7 @@ function upsertMessage(
 ): Thread["messages"] {
   const existingIndex = messages.findIndex((entry) => entry.id === payload.messageId);
   const existing = existingIndex >= 0 ? messages[existingIndex] : undefined;
+  const authorship = payload.authorship ?? existing?.authorship;
   const attachments = mapMessageAttachmentsFromReadModel(
     payload.attachments,
     existing?.attachments,
@@ -256,6 +257,7 @@ function upsertMessage(
     existing &&
     existing.role === payload.role &&
     existing.text === nextText &&
+    existing.authorship === authorship &&
     existing.reasoningText === nextReasoningText &&
     areUnknownEqual(existing.skillCall, payload.skillCall) &&
     (existing.turnId ?? null) === payload.turnId &&
@@ -271,6 +273,7 @@ function upsertMessage(
     id: payload.messageId,
     role: payload.role,
     text: nextText,
+    ...(authorship !== undefined ? { authorship } : {}),
     ...(nextReasoningText !== undefined ? { reasoningText: nextReasoningText } : {}),
     ...(existing?.reasoningTokens !== undefined
       ? { reasoningTokens: existing.reasoningTokens }

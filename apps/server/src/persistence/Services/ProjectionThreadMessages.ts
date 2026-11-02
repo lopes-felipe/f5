@@ -9,6 +9,7 @@
 import {
   ChatAttachment,
   OrchestrationMessageRole,
+  OrchestrationMessage,
   MessageId,
   NonNegativeInt,
   ThreadId,
@@ -27,6 +28,7 @@ export const ProjectionThreadMessage = Schema.Struct({
   turnId: Schema.NullOr(TurnId),
   role: OrchestrationMessageRole,
   text: Schema.String,
+  authorship: OrchestrationMessage.fields.authorship,
   reasoningText: Schema.optional(Schema.String),
   reasoningTokens: Schema.optional(NonNegativeInt),
   reasoningTokensEstimated: Schema.optional(Schema.Boolean),

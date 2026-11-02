@@ -301,6 +301,57 @@ const screenshot = {
   data: "PRIVATE_SENTINEL",
   hiddenContent: true,
 };
+it("requires correlated background delivery to the requested app and omits private identities", () => {
+  for (const [delivery, target, frontmost, delivered] of [
+    ["background", "PRIVATE_APP", "other", true],
+    ["foreground", "PRIVATE_APP", "other", false],
+    ["background", "wrong-app", "other", false],
+    ["background", "PRIVATE_APP", "PRIVATE_APP", true],
+  ] as const) {
+    const observer = new ElectronRehearsalObservation();
+    observer.receive({
+      type: "request",
+      request: {
+        ...request("type", "background"),
+        op: "elementAction",
+        appId: "PRIVATE_APP",
+        delivery: "background",
+        snapshotId: "snapshot",
+        elementRef: "element",
+        action: "setValue",
+        value: "PRIVATE_TEXT",
+      },
+    });
+    observer.receive({
+      type: "response",
+      requestId: "background",
+      result: {
+        displayId: "display",
+        geometryGeneration: "geometry",
+        cursor: null,
+        actionCompleted: true,
+        frontmostApp: {
+          appId: frontmost,
+          name: "PRIVATE_TITLE",
+          running: true,
+          frontmost: true,
+          tier: "full",
+        },
+        delivery,
+        target: { appId: target },
+      },
+    });
+    expect(observer.snapshot().operations).toEqual([
+      {
+        op: "elementAction",
+        action: "setValue",
+        outcome: "ok",
+        backgroundDelivery: delivered,
+      },
+    ]);
+    expect(JSON.stringify(observer.snapshot())).not.toContain("PRIVATE");
+  }
+});
 
 it("counts IPC activity and action captures without retaining thumbnails or screenshot errors", () => {
   const observer = new ElectronRehearsalObservation();

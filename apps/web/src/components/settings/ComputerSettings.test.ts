@@ -19,7 +19,7 @@ describe("password masking description", () => {
   it("identifies legacy helpers and platforms without selectable masking", () => {
     for (const status of [undefined, { available: true as const }]) {
       const description = computerPasswordMaskingDescription(status);
-      expect(description).toContain("requires an updated macOS helper");
+      expect(description).toContain("requires an updated computer helper");
       expect(description).toContain("Legacy / unknown");
     }
   });

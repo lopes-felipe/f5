@@ -93,10 +93,13 @@ runs:
         node -e 'const { verifyClaudeRuntime } = require("./scripts/verify-claude-runtime.cjs"); verifyClaudeRuntime({ appOutDir: process.argv[1], electronPlatformName: "darwin", packager: {appInfo:{productFilename:"F5"}} })' "$mount"
         codesign --verify --deep --strict "$mount/F5.app"
         # Validation fetches the ticket from Apple, so retry transient network failures.
-        for attempt in 1 2; do
+        for attempt in 1 2 3 4 5 6; do
           xcrun stapler validate "$mount/F5.app" && break
-          [[ "$attempt" -lt 2 ]] || exit 1
-          sleep 15
+          [[ "$attempt" -lt 6 ]] || exit 1
+          delay=$((attempt * 15))
+          [[ "$delay" -le 60 ]] || delay=60
+          echo "::warning::Stapler validation failed (attempt $attempt/6); retrying in ${delay}s"
+          sleep "$delay"
         done
         spctl -a -vvv -t execute "$mount/F5.app" 2>&1 | tee "$RUNNER_TEMP/spctl.txt"
         grep -q 'Notarized Developer ID' "$RUNNER_TEMP/spctl.txt"

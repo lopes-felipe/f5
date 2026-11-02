@@ -15,8 +15,7 @@ import { formatByteSize } from "@t3tools/shared/byteSize";
 import { describeDiskSpaceRoles } from "@t3tools/shared/diskSpace";
 import { Effect, Path as EffectPath, Schema } from "effect";
 
-import { makeClaudeEnvironment } from "../provider/Drivers/ClaudeHome.ts";
-import { resolveClaudeConfigDir } from "../provider/Layers/ClaudeAdapter.ts";
+import { makeClaudeEnvironment, resolveClaudeConfigDir } from "../provider/Drivers/ClaudeHome.ts";
 import { deriveProviderInstanceConfigMap } from "../provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { buildAccountExecutionEnvironment } from "../providerProcessEnv.ts";
 import { resolveCodexLaunchHomes } from "./codexMarketplaceStaging.ts";

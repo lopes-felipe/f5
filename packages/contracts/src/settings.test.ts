@@ -76,6 +76,34 @@ describe("ServerSettings project overrides across versions", () => {
   });
 });
 
+describe("ServerSettings computer defaults", () => {
+  it("enables background computer use for new and unset settings", () => {
+    for (const settings of [DEFAULT_SERVER_SETTINGS, decodeServerSettings({})]) {
+      expect(settings.enableAgentComputerUse).toBe(true);
+      expect(settings.computerUseExecutionMode).toBe("background");
+    }
+  });
+
+  it("preserves saved disablement, foreground selection and project overrides", () => {
+    const settings = decodeServerSettings({
+      enableAgentComputerUse: false,
+      computerUseExecutionMode: "foreground",
+      projectSettingsOverrides: { "project-a": { enableAgentComputerUse: false } },
+    });
+    expect(settings.enableAgentComputerUse).toBe(false);
+    expect(settings.computerUseExecutionMode).toBe("foreground");
+    expect(
+      settings.projectSettingsOverrides[ProjectId.make("project-a")]?.enableAgentComputerUse,
+    ).toBe(false);
+    expect(decodeServerSettingsPatch({ enableAgentComputerUse: false })).toEqual({
+      enableAgentComputerUse: false,
+    });
+    expect(decodeServerSettingsPatch({ computerUseExecutionMode: "foreground" })).toEqual({
+      computerUseExecutionMode: "foreground",
+    });
+  });
+});
+
 describe("ServerSettings.computerUsePasswordMasking", () => {
   it("defaults new and legacy settings to fast and preserves conservative settings", () => {
     expect(DEFAULT_SERVER_SETTINGS.computerUsePasswordMasking).toBe("fast");

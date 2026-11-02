@@ -57,7 +57,7 @@ import {
   reportDatabaseCorruption,
   resetDatabaseHealthForTest,
 } from "../persistence/databaseHealth.ts";
-import { withHomeSandbox } from "../testing/homeSandbox.ts";
+import { assertOutsideRealUserState, withHomeSandbox } from "../testing/homeSandbox.ts";
 import { workflowArchiveFixture } from "../orchestration/workflowArchive.testUtils.ts";
 import type { OrchestrationReadModel } from "@t3tools/contracts";
 import { ServerSettingsService } from "../serverSettings.ts";
@@ -317,6 +317,8 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 async function writeFile(path: string, contents: string) {
+  // Several fixtures write placeholder bytes over `~/.f5/userdata/state.sqlite`.
+  assertOutsideRealUserState(path);
   await NodeFS.mkdir(NodePath.dirname(path), { recursive: true });
   await NodeFS.writeFile(path, contents);
 }
@@ -325,6 +327,8 @@ async function writeGitWorktreeMetadata(input: {
   readonly worktreePath: string;
   readonly mainWorktreePath: string;
 }) {
+  assertOutsideRealUserState(input.worktreePath);
+  assertOutsideRealUserState(input.mainWorktreePath);
   metadataWorktrees.set(input.mainWorktreePath, [
     ...(metadataWorktrees.get(input.mainWorktreePath) ?? []),
     input.worktreePath,

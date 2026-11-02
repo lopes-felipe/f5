@@ -24,6 +24,7 @@ export interface StopLatencyEvidence {
   backendFrozenAtStop?: boolean;
   hostStall?: StopProcessFreeze;
   rendererFreeze?: StopProcessFreeze;
+  backendFreeze?: StopProcessFreeze;
 }
 const finite = (value: number | undefined): value is number =>
   value !== undefined && Number.isFinite(value) && value >= 0;
@@ -52,6 +53,7 @@ export function measureStopLatency(evidence: StopLatencyEvidence) {
     finite(lastDelivery) && finite(physicalAt) ? Math.max(0, lastDelivery - physicalAt) : undefined;
   const stall = evidence.hostStall;
   const renderer = evidence.rendererFreeze;
+  const backend = evidence.backendFreeze;
   const calibrated = (bounds: StopProcessFreeze) =>
     [bounds.startMs, bounds.endMs, bounds.offsetMinMs, bounds.offsetMaxMs].every(Number.isFinite) &&
     bounds.endMs > bounds.startMs &&
@@ -101,6 +103,12 @@ export function measureStopLatency(evidence: StopLatencyEvidence) {
       ? {
           rendererClockCalibrated: calibrated(renderer),
           physicalAndChordDuringRendererFreeze: duringFreeze(renderer),
+        }
+      : {}),
+    ...(backend
+      ? {
+          backendClockCalibrated: calibrated(backend),
+          physicalAndChordDuringBackendFreeze: duringFreeze(backend),
         }
       : {}),
     ...(stall

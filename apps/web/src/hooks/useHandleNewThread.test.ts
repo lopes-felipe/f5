@@ -208,8 +208,44 @@ describe("createProjectBackedDraftThread", () => {
     const two = createProjectBackedDraftThread(input);
     finish({ settings: DEFAULT_SERVER_SETTINGS });
     const [a, b] = await Promise.all([one, two]);
-    expect(a.threadId).toBe(b.threadId);
+    expect(a?.threadId).toBe(b?.threadId);
     expect(Object.keys(useComposerDraftStore.getState().draftThreadsByThreadId)).toHaveLength(1);
+  });
+  it("abandons the draft when the project is removed while settings load", async () => {
+    const project = {
+      id: PROJECT_ID,
+      name: "Project",
+      cwd: "/repo/project",
+      model: "gpt-5.4",
+      createdAt: NOW_ISO,
+      expanded: true,
+      scripts: [],
+      memories: [],
+      skills: [],
+    };
+    useStore.setState({ projects: [project], threads: [] });
+    let finish!: (value: unknown) => void;
+    settingsApi.getProjectSettings.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const navigateSpy = vi.fn(async () => undefined);
+    const pending = createProjectBackedDraftThread({
+      navigate: navigateSpy,
+      onboardingLiteStatus: "eligible",
+      projectId: PROJECT_ID,
+      routeThreadId: null,
+      updateSettings: vi.fn(),
+    });
+
+    useStore.setState({ projects: [] });
+    finish({ settings: DEFAULT_SERVER_SETTINGS });
+
+    await expect(pending).resolves.toBeNull();
+    expect(navigateSpy).not.toHaveBeenCalled();
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(PROJECT_ID)).toBeNull();
+    useStore.setState({ projects: [project] });
   });
   it("creates a draft with the last safe project mode when settings fail", async () => {
     rememberDraftSettings(
@@ -225,7 +261,7 @@ describe("createProjectBackedDraftThread", () => {
       routeThreadId: null,
       updateSettings: vi.fn(),
     });
-    expect(useComposerDraftStore.getState().getDraftThread(result.threadId)?.runtimeMode).toBe(
+    expect(useComposerDraftStore.getState().getDraftThread(result!.threadId)?.runtimeMode).toBe(
       "approval-required",
     );
   });

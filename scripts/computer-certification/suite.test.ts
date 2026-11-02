@@ -76,6 +76,45 @@ afterEach(async () => {
 });
 
 describe("certification inventory and coverage", () => {
+  it("routes attended Windows workflows and stop checks without accepting missing platform proofs", () => {
+    const target = { repo: "/repo", platform: "win32" as const, fixtureDirectory: "/prepared" };
+    const launches = { codex: { home: "/test-home", binary: "/codex.exe" } };
+    const rows = inventory("win32", ["codex"]);
+    for (const id of [
+      "windows-helper",
+      "discovery",
+      "fixture-workflow",
+      "chromium-workflow",
+      "main-stop",
+      "renderer-stop",
+      "backend-stop",
+      "capture",
+      "displays",
+      "windows-lifecycle",
+      "profile-isolation",
+      "profile-readiness",
+      "profile-inspection-diagnostic",
+      "windows-background",
+    ]) {
+      const row = rows.find((candidate) => candidate.id === id)!;
+      const commands = commandsFor(row, target, "/report.json", launches, "win32");
+      expect(Array.isArray(commands)).toBe(true);
+      if (typeof commands === "string") throw new Error(commands);
+      expect(commands[0]?.args).toContain("--fixture-bin-dir");
+      expect(commands[0]?.env).toMatchObject(
+        ["windows-helper", "capture", "displays", "windows-lifecycle"].includes(id)
+          ? { F5_COMPUTER_WINDOWS_REHEARSAL: "1" }
+          : { F5_COMPUTER_ELECTRON_REHEARSAL: "1" },
+      );
+    }
+    for (const id of ["capture-surfaces", "windows-recipients", "recipient-changes", "recovery"]) {
+      const row = rows.find((candidate) => candidate.id === id)!;
+      expect(commandsFor(row, target, "/report.json", launches, "win32")).toBe(
+        "windows-interactive-driver-required",
+      );
+    }
+    expect(inventory("darwin", ["codex"]).some((row) => row.id === "windows-helper")).toBe(false);
+  });
   it("uses real Codex profile phases only in development and retains unavailable platform/integration gates", () => {
     for (const key of ["profile-isolation", "profile-readiness", "profile-inspection-diagnostic"]) {
       const s = scenario(key);
@@ -95,7 +134,7 @@ describe("certification inventory and coverage", () => {
         commandsFor(s, { ...target, app: "/private/Installed.app" }, "/output", launch, "darwin"),
       ).toBe("installed-observation-driver-required");
       expect(commandsFor(s, { ...target, platform: "win32" }, "/output", launch, "win32")).toBe(
-        "windows-interactive-driver-required",
+        "fixture-prerequisites-unavailable",
       );
       expect(commandsFor(s, target, "/output", {}, "darwin")).toBe(
         "provider-launch-not-configured",

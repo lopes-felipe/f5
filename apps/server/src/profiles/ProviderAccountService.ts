@@ -19,7 +19,7 @@ import { deriveProviderInstanceConfigMap } from "../provider/Layers/ProviderInst
 import { buildAccountExecutionEnvironment } from "../providerProcessEnv";
 import { resolveClaudeCliInvocation } from "../provider/claudeSdkExecutable";
 import { resolveInvocation } from "../spawn/resolveCommand";
-import { makeClaudeEnvironment } from "../provider/Drivers/ClaudeHome";
+import { makeClaudeProcessEnvironment } from "../provider/Drivers/ClaudeHome";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { acquireInstanceLock } from "./InstanceLock";
 import { isProfilePortBindable } from "./ProfileRegistryStore";
@@ -82,7 +82,9 @@ export class ProviderAccountService {
     });
     if (instance.driver === "claudeAgent")
       environment = await Effect.runPromise(
-        makeClaudeEnvironment(config, environment).pipe(Effect.provide(NodeServices.layer)),
+        makeClaudeProcessEnvironment(config, environment, instance.environment).pipe(
+          Effect.provide(NodeServices.layer),
+        ),
       );
     else if (config.homePath) environment.CODEX_HOME = config.homePath;
     await validateProviderCompatibility(

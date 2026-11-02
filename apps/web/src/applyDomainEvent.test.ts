@@ -427,6 +427,30 @@ describe("applyDomainEvent", () => {
     expect(next.threads[0]?.session?.tokenUsageSource).toBe("estimated");
   });
 
+  it("preserves automated authorship when a live message is updated", () => {
+    const payload = {
+      threadId: ThreadId.makeUnsafe("thread-1"),
+      messageId: MessageId.makeUnsafe("automated-message"),
+      role: "user" as const,
+      text: "scheduled prompt",
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-04-01T09:04:01.000Z",
+      updatedAt: "2026-04-01T09:04:01.000Z",
+    };
+    const sent = applyDomainEvent(
+      makeState(),
+      makeEvent("thread.message-sent", { ...payload, authorship: "automation" }),
+    );
+    expect(sent.threads[0]?.messages[0]?.authorship).toBe("automation");
+    const updated = applyDomainEvent(
+      sent,
+      makeEvent("thread.message-sent", { ...payload, text: "updated prompt" }),
+    );
+    expect(updated.threads[0]?.messages[0]?.authorship).toBe("automation");
+    expect(updated.threads[0]?.messages[0]?.text).toBe("updated prompt");
+  });
+
   it("maps skill call metadata from live message events", () => {
     const threadId = ThreadId.makeUnsafe("thread-1");
     const messageId = MessageId.makeUnsafe("user-skill-1");

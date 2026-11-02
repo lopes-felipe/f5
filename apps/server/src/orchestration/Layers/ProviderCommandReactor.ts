@@ -1485,7 +1485,9 @@ const make = Effect.gen(function* () {
       const computerPolicy = yield* resolveAgentBrowserPolicy(threadId);
       const supportsComputer = preferredProvider === "claudeAgent" || preferredProvider === "codex";
       const computerSelection = (yield* resolveProviderComputerBackendSelection(preferredProvider, {
-        enabled: computerPolicy.computerUse,
+        // Adapters expose computer tools only in desktop sessions. Use the same gate
+        // here so enabled-by-default settings do not restart a web session mid-turn.
+        enabled: workspaceConfig.mode === "desktop" && computerPolicy.computerUse,
         fullAccess: thread.runtimeMode === "full-access",
         nativeStatus: Option.isSome(computerBroker)
           ? computerBroker.value.host.status()
@@ -2740,6 +2742,7 @@ const make = Effect.gen(function* () {
       titleSourceText,
       attachments,
       ...(linkedContext !== undefined ? { linkedContext } : {}),
+      instructions: settings.threadTitleInstructions,
       titleGenerationModel: requestedSelection.model,
       titleGenerationModelSelection: requestedSelection,
       ...(event.payload.origin === "explicit" ? { previousTitle: thread.title } : {}),

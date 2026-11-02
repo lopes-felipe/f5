@@ -9,6 +9,39 @@ const messages = [
   { id: "u2", role: "user", text: "second" },
 ];
 describe("thread prompt recall", () => {
+  it("skips automation, agent and server submissions in both directions", () => {
+    const authoredMessages = [
+      { id: "typed", role: "user", text: "typed", authorship: "human" },
+      { id: "scheduled", role: "user", text: "scheduled", authorship: "automation" },
+      { id: "agent", role: "user", text: "agent prompt", authorship: "automation" },
+      { id: "server", role: "user", text: "continue", authorship: "automation" },
+    ] as const;
+    const recalled = stepPromptHistory({
+      threadId: "a",
+      messages: authoredMessages,
+      position: null,
+      prompt: "",
+      direction: "up",
+    })!;
+    expect(recalled.prompt).toBe("typed");
+    expect(
+      stepPromptHistory({
+        threadId: "a",
+        messages: authoredMessages,
+        ...recalled,
+        direction: "down",
+      }),
+    ).toEqual({ prompt: "", position: null });
+    expect(
+      stepPromptHistory({
+        threadId: "a",
+        messages: authoredMessages.slice(1),
+        position: null,
+        prompt: "",
+        direction: "up",
+      }),
+    ).toBeNull();
+  });
   it("walks back, forward, and back to the empty draft", () => {
     const last = stepPromptHistory({
       threadId: "a",

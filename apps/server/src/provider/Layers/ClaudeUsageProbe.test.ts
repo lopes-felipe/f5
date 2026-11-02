@@ -96,6 +96,7 @@ describe("Claude account probe", () => {
       expect(input.options?.env?.CLAUDE_CODE_AUTO_CONNECT_IDE).toBe("0");
       expect(input.options?.env?.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL).toBe("1");
       expect(input.options?.env?.F5_USAGE_TEST).toBe("instance");
+      expect(input.options?.env?.CLAUDE_CODE_ENTRYPOINT).toBe("instance-entrypoint");
       input.options?.abortController?.signal.addEventListener("abort", abort);
       return query({
         ...input,
@@ -136,6 +137,7 @@ describe("Claude account probe", () => {
         {
           ...process.env,
           F5_USAGE_TEST: "instance",
+          CLAUDE_CODE_ENTRYPOINT: "instance-entrypoint",
           FORCE_CODE_TERMINAL: "vscode",
           CLAUDE_CODE_AUTO_CONNECT_IDE: "1",
         },

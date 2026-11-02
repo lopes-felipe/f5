@@ -397,6 +397,8 @@ export const OrchestrationMessage = Schema.Struct({
   id: MessageId,
   role: OrchestrationMessageRole,
   text: Schema.String,
+  /** Server-owned submission provenance; missing historical stamps remain possibly human. */
+  authorship: Schema.optional(Schema.Literals(["human", "automation"])),
   reasoningText: Schema.optional(Schema.String),
   /** Reasoning tokens attributed to this assistant message. */
   reasoningTokens: Schema.optional(NonNegativeInt),
@@ -2363,6 +2365,7 @@ export const ThreadMessageSentPayload = Schema.Struct({
   messageId: MessageId,
   role: OrchestrationMessageRole,
   text: Schema.String,
+  authorship: OrchestrationMessage.fields.authorship,
   reasoningText: Schema.optional(Schema.String),
   skillCall: Schema.optional(UserMessageSkillCall),
   attachments: Schema.optional(Schema.Array(ChatAttachment)),

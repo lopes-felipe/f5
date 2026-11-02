@@ -292,6 +292,7 @@ import { buildLocalDraftThread } from "../lib/draftThreads";
 import { ensureThreadHistoryState } from "../lib/threadHistory";
 import { finishThreadOpenTrace } from "../lib/threadOpenTrace";
 import { isTerminalFocused } from "../lib/terminalFocus";
+import { createTerminalCloseRepeatGuard } from "../lib/terminalCloseShortcut";
 import { isKeyboardEventComposing } from "../lib/keyboardComposition";
 import { recordModelSelection } from "../modelPreferencesStore";
 import { getCustomModelOptionsByInstance, type ModelCatalogSettings } from "../modelSelection";
@@ -460,7 +461,9 @@ import {
   buildFirstSendBootstrap,
   buildSlashComposerMenuItems,
   resolveComposerNativeSlashCommands,
-  applyUserMessageAttachmentPreviewHandoff,
+  createAttachmentPreviewHandoffProjector,
+  deriveTimelineMessages,
+  buildRevertIndexByUserMessageId,
   deriveProviderRuntimeInfoEntries,
   buildExpiredTerminalContextToastCopy,
   shouldRenderTimelineContent,
@@ -499,6 +502,7 @@ const ATTACHMENT_PREVIEW_HANDOFF_TTL_MS = 5000;
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_COMMAND_EXECUTIONS: OrchestrationCommandExecutionSummary[] = [];
 const EMPTY_TASKS: ThreadTaskItem[] = [];
+const EMPTY_TIMELINE_MESSAGES: ChatMessage[] = [];
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const EMPTY_AVAILABLE_EDITORS: EditorId[] = [];
@@ -2649,31 +2653,22 @@ export default memo(function ChatView({
     }, ATTACHMENT_PREVIEW_HANDOFF_TTL_MS);
   }, []);
   const serverMessages = activeThread?.messages;
-  const timelineMessages = useMemo(() => {
-    const messages = serverMessages ?? [];
-    const serverMessagesWithPreviewHandoff =
-      Object.keys(attachmentPreviewHandoffByMessageId).length === 0
-        ? messages
-        : // Spread only fires for the few messages that actually changed;
-          // unchanged ones early-return their original reference.
-          // In-place mutation would break React's immutable state contract.
-          messages.map((message) =>
-            applyUserMessageAttachmentPreviewHandoff(
-              message,
-              attachmentPreviewHandoffByMessageId[message.id] ?? [],
-            ),
-          );
-
-    if (optimisticUserMessages.length === 0) {
-      return serverMessagesWithPreviewHandoff;
-    }
-    const serverIds = new Set(serverMessagesWithPreviewHandoff.map((message) => message.id));
-    const pendingMessages = optimisticUserMessages.filter((message) => !serverIds.has(message.id));
-    if (pendingMessages.length === 0) {
-      return serverMessagesWithPreviewHandoff;
-    }
-    return [...serverMessagesWithPreviewHandoff, ...pendingMessages];
-  }, [serverMessages, attachmentPreviewHandoffByMessageId, optimisticUserMessages]);
+  const [projectAttachmentPreviewHandoff] = useState(createAttachmentPreviewHandoffProjector);
+  const timelineMessages = useMemo(
+    () =>
+      deriveTimelineMessages({
+        serverMessages: serverMessages ?? EMPTY_TIMELINE_MESSAGES,
+        attachmentPreviewHandoffByMessageId,
+        optimisticUserMessages,
+        projectAttachmentPreviewHandoff,
+      }),
+    [
+      serverMessages,
+      attachmentPreviewHandoffByMessageId,
+      optimisticUserMessages,
+      projectAttachmentPreviewHandoff,
+    ],
+  );
   const imageSources = messageAttachmentSources(timelineMessages);
   useEffect(() => {
     setExpandedImage((existing) =>
@@ -3097,7 +3092,7 @@ export default memo(function ChatView({
         });
         if (discardedText !== null && activeProject) {
           const draft = await createProjectDraftThread(activeProject.id);
-          useComposerDraftStore.getState().setPrompt(draft.threadId, discardedText);
+          if (draft) useComposerDraftStore.getState().setPrompt(draft.threadId, discardedText);
         }
       } catch (error) {
         toastManager.add({
@@ -4469,8 +4464,25 @@ export default memo(function ChatView({
     terminalOpenByThreadRef.current[activeThreadId] = current;
   }, [activeThreadId, focusComposer, terminalState.terminalOpen]);
 
+  const [terminalCloseRepeatGuard] = useState(createTerminalCloseRepeatGuard);
+  useEffect(() => {
+    const release = () => terminalCloseRepeatGuard.release();
+    window.addEventListener("keyup", release, true);
+    window.addEventListener("blur", release);
+    return () => {
+      window.removeEventListener("keyup", release, true);
+      window.removeEventListener("blur", release);
+    };
+  }, [terminalCloseRepeatGuard]);
+
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
+      // Capture phase, so a held close-terminal shortcut stops here before it
+      // reaches the next terminal, a right-panel tab or the browser tab.
+      if (terminalCloseRepeatGuard.preventRepeat(event, keybindings)) {
+        event.stopPropagation();
+        return;
+      }
       if (!activeThreadId || event.defaultPrevented || isKeyboardEventComposing(event)) return;
       const eventTarget = event.target instanceof Node ? event.target : null;
       const dialogFocus = isEventInDialogKeybindingContext(event);
@@ -4740,6 +4752,7 @@ export default memo(function ChatView({
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
   }, [
+    terminalCloseRepeatGuard,
     activeThreadId,
     selectedProviderModels,
     selectedModel,
@@ -4805,6 +4818,7 @@ export default memo(function ChatView({
         event.preventDefault();
         event.stopPropagation();
         if (!terminalState.terminalOpen) return;
+        terminalCloseRepeatGuard.arm(shortcutContext);
         closeTerminal(terminalState.activeTerminalId);
         return;
       }
@@ -4851,6 +4865,7 @@ export default memo(function ChatView({
     activeProject,
     terminalState.terminalOpen,
     terminalState.activeTerminalId,
+    terminalCloseRepeatGuard,
     activeThreadId,
     closeTerminal,
     createNewTerminal,
@@ -6124,6 +6139,7 @@ export default memo(function ChatView({
       }
       return;
     }
+    if (!activePendingProgress.canAdvance) return;
     setActivePendingUserInputQuestionIndex(activePendingProgress.questionIndex + 1);
   }, [
     activePendingIsResponding,
@@ -7456,15 +7472,17 @@ export default memo(function ChatView({
   );
   // Every user message gets a revert trigger once the provider is known; when it
   // can't roll back, the trigger stays visible and says why instead of vanishing.
-  const revertTurnCountByUserMessageId = useMemo(
-    () =>
-      new Map(
-        (activeProviderStatus && activeThread ? activeThread.messages : [])
-          .filter((message) => message.role === "user")
-          .map((message, index) => [message.id, index] as const),
-      ),
-    [activeProviderStatus, activeThread],
-  );
+  // Streaming text keeps the map's identity, so timeline rows skip rebuilding.
+  const revertIndexRef = useRef<ReadonlyMap<MessageId, number> | null>(null);
+  const activeThreadMessages = activeThread?.messages;
+  const revertTurnCountByUserMessageId = useMemo(() => {
+    const next = buildRevertIndexByUserMessageId(
+      activeProviderStatus && activeThreadMessages ? activeThreadMessages : [],
+      revertIndexRef.current,
+    );
+    revertIndexRef.current = next;
+    return next;
+  }, [activeProviderStatus, activeThreadMessages]);
   const rewindWorkspaceShared =
     Boolean(workspaceRoot) &&
     threadSummaries.some(

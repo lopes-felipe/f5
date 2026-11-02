@@ -7,18 +7,20 @@ inputs:
 runs:
   using: composite
   steps:
+    - if: cancelled()
+      shell: bash
+      run: echo "RELEASE_CANCELLED=true" >> "$GITHUB_ENV"
     - if: always()
       shell: bash
       env:
         COMPONENT: ${{ inputs.component }}
-        CANCELLED: ${{ cancelled() }}
       run: |
         node --input-type=module -e '
           import { writeFileSync } from "node:fs";
           import { join } from "node:path";
-          const { COMPONENT, CANCELLED, GITHUB_SHA, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT } = process.env;
+          const { COMPONENT, RELEASE_CANCELLED, GITHUB_SHA, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT } = process.env;
           writeFileSync(join(process.env.RUNNER_TEMP, "release-failure.json"), JSON.stringify({
-            component: COMPONENT, cancelled: CANCELLED === "true", sourceSha: GITHUB_SHA,
+            component: COMPONENT, cancelled: RELEASE_CANCELLED === "true", sourceSha: GITHUB_SHA,
             runId: GITHUB_RUN_ID, attempt: GITHUB_RUN_ATTEMPT
           }, null, 2) + "\n");
         '

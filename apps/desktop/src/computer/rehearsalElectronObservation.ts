@@ -18,6 +18,7 @@ export class ElectronRehearsalObservation {
   private readonly admitted = new Set<string>();
   private readonly pending = new Map<string, ComputerAutomationRequest["op"] | "leaseAcquire">();
   private readonly elementActions = new Map<string, string>();
+  private readonly backgroundTargets = new Map<string, string>();
   private readonly operations: Array<Record<string, string | number | boolean>> = [];
   private held = false;
   private leaseObserved = false;
@@ -190,12 +191,25 @@ export class ElectronRehearsalObservation {
       }
       if (raw.type === "request" && raw.request.op === "elementAction")
         this.elementActions.set(requestId, raw.request.action);
+      if (
+        raw.type === "request" &&
+        raw.request.delivery === "background" &&
+        "appId" in raw.request &&
+        raw.request.appId
+      )
+        this.backgroundTargets.set(requestId, raw.request.appId);
     } else if (raw.type === "response") {
       const op = this.pending.get(raw.requestId);
       if (!op) return;
       this.pending.delete(raw.requestId);
       this.responses.response(raw);
       const summary: Record<string, string | number | boolean> = { op, outcome: "ok" };
+      const backgroundApp = this.backgroundTargets.get(raw.requestId);
+      this.backgroundTargets.delete(raw.requestId);
+      if (backgroundApp && Schema.is(ComputerActionResult)(raw.result)) {
+        summary.backgroundDelivery =
+          raw.result.delivery === "background" && raw.result.target?.appId === backgroundApp;
+      }
       const action = this.elementActions.get(raw.requestId);
       if (action) {
         summary.action = action;

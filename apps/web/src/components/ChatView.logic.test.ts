@@ -16,6 +16,9 @@ import {
   providerKindForImportedThread,
   buildComposerSkillReplacement,
   applyUserMessageAttachmentPreviewHandoff,
+  buildRevertIndexByUserMessageId,
+  createAttachmentPreviewHandoffProjector,
+  deriveTimelineMessages,
   buildSlashComposerMenuItems,
   buildFirstSendBootstrap,
   buildExpiredTerminalContextToastCopy,
@@ -36,6 +39,12 @@ import {
   resolveSubmissionIntent,
   shouldRunNativeReviewShortcut,
 } from "./ChatView.logic";
+import {
+  messageAttachmentSources,
+  messageListStructure,
+  recordMessageListChange,
+} from "../lib/streamingTextRevision";
+import type { ChatMessage } from "../types";
 
 describe("shouldRunNativeReviewShortcut", () => {
   const base = {
@@ -699,6 +708,55 @@ describe("shouldRenderTimelineContent", () => {
   });
 });
 
+describe("buildRevertIndexByUserMessageId", () => {
+  const message = (id: string, role: "user" | "assistant") => ({
+    id: MessageId.makeUnsafe(id),
+    role,
+  });
+
+  it("indexes user messages in order", () => {
+    const map = buildRevertIndexByUserMessageId([
+      message("u1", "user"),
+      message("a1", "assistant"),
+      message("u2", "user"),
+    ]);
+
+    expect([...map]).toEqual([
+      [MessageId.makeUnsafe("u1"), 0],
+      [MessageId.makeUnsafe("u2"), 1],
+    ]);
+  });
+
+  it("keeps the previous map while only assistant text streams", () => {
+    const previous = buildRevertIndexByUserMessageId([
+      message("u1", "user"),
+      message("a1", "assistant"),
+    ]);
+
+    expect(
+      buildRevertIndexByUserMessageId(
+        [message("u1", "user"), message("a1", "assistant"), message("a2", "assistant")],
+        previous,
+      ),
+    ).toBe(previous);
+  });
+
+  it("returns a new map when the user messages change", () => {
+    const previous = buildRevertIndexByUserMessageId([message("u1", "user")]);
+
+    const added = buildRevertIndexByUserMessageId(
+      [message("u1", "user"), message("u2", "user")],
+      previous,
+    );
+    expect(added).not.toBe(previous);
+    expect(added.get(MessageId.makeUnsafe("u2"))).toBe(1);
+
+    const replaced = buildRevertIndexByUserMessageId([message("u3", "user")], previous);
+    expect(replaced).not.toBe(previous);
+    expect(replaced.has(MessageId.makeUnsafe("u1"))).toBe(false);
+  });
+});
+
 describe("applyUserMessageAttachmentPreviewHandoff", () => {
   it("keeps the durable attachment URL while showing the optimistic blob preview", () => {
     const message = {
@@ -729,6 +787,96 @@ describe("applyUserMessageAttachmentPreviewHandoff", () => {
         },
       ],
     });
+  });
+});
+
+describe("deriveTimelineMessages", () => {
+  const imageMessage: ChatMessage = {
+    id: MessageId.makeUnsafe("user-image"),
+    role: "user",
+    text: "Screenshot",
+    attachments: [
+      {
+        type: "image",
+        id: "attachment-1",
+        name: "screenshot.png",
+        mimeType: "image/png",
+        sizeBytes: 128,
+        previewUrl: "http://127.0.0.1:43123/attachments/attachment-1",
+      },
+    ],
+    createdAt: "2026-08-03T13:00:00.000Z",
+    streaming: false,
+  };
+  const assistant = (text: string): ChatMessage => ({
+    id: MessageId.makeUnsafe("assistant-1"),
+    role: "assistant",
+    text,
+    createdAt: "2026-08-03T13:00:01.000Z",
+    streaming: true,
+  });
+
+  it("keeps the handed-off preview and the list structure while assistant text streams", () => {
+    const project = createAttachmentPreviewHandoffProjector();
+    const handoffs = { [imageMessage.id]: ["blob:optimistic-preview"] };
+    const firstAssistant = assistant("Hel");
+    const before = [imageMessage, firstAssistant];
+    const derivedBefore = deriveTimelineMessages({
+      serverMessages: before,
+      attachmentPreviewHandoffByMessageId: handoffs,
+      optimisticUserMessages: [],
+      projectAttachmentPreviewHandoff: project,
+    });
+
+    const grownAssistant = assistant("Hello there");
+    const after = [imageMessage, grownAssistant];
+    recordMessageListChange(before, after, firstAssistant, grownAssistant);
+    const derivedAfter = deriveTimelineMessages({
+      serverMessages: after,
+      attachmentPreviewHandoffByMessageId: handoffs,
+      optimisticUserMessages: [],
+      projectAttachmentPreviewHandoff: project,
+    });
+
+    expect(derivedBefore[0]?.attachments?.[0]).toMatchObject({
+      previewUrl: "blob:optimistic-preview",
+    });
+    expect(derivedAfter[0]).toBe(derivedBefore[0]);
+    expect(derivedAfter[1]).toBe(grownAssistant);
+    expect(messageListStructure(derivedAfter)).toBe(messageListStructure(derivedBefore));
+    expect(messageAttachmentSources(derivedAfter)).toBe(messageAttachmentSources(derivedBefore));
+  });
+
+  it("starts a new structure when the handoff or optimistic sends change", () => {
+    const project = createAttachmentPreviewHandoffProjector();
+    const serverMessages = [imageMessage];
+    const handoffs = { [imageMessage.id]: ["blob:optimistic-preview"] };
+    const base = deriveTimelineMessages({
+      serverMessages,
+      attachmentPreviewHandoffByMessageId: handoffs,
+      optimisticUserMessages: [],
+      projectAttachmentPreviewHandoff: project,
+    });
+    const optimistic = { ...imageMessage, id: MessageId.makeUnsafe("pending"), attachments: [] };
+    const withPending = deriveTimelineMessages({
+      serverMessages,
+      attachmentPreviewHandoffByMessageId: handoffs,
+      optimisticUserMessages: [optimistic],
+      projectAttachmentPreviewHandoff: project,
+    });
+    const handoffExpired = deriveTimelineMessages({
+      serverMessages,
+      attachmentPreviewHandoffByMessageId: {},
+      optimisticUserMessages: [],
+      projectAttachmentPreviewHandoff: project,
+    });
+
+    expect(withPending.map((message) => message.id)).toEqual([imageMessage.id, optimistic.id]);
+    expect(messageListStructure(withPending)).not.toBe(messageListStructure(base));
+    expect(handoffExpired).toBe(serverMessages);
+    expect(handoffExpired[0]?.attachments?.[0]?.previewUrl).toBe(
+      "http://127.0.0.1:43123/attachments/attachment-1",
+    );
   });
 });
 

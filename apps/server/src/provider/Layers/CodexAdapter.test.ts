@@ -278,6 +278,35 @@ class FakeCodexManager extends CodexAppServerManager {
   }
 }
 
+it.effect(
+  "matches the reactor's disabled computer fingerprint in web mode despite enabled settings",
+  () => {
+    const manager = new FakeCodexManager();
+    const policy = vi
+      .spyOn(browserAccess, "resolveAgentBrowserPolicy")
+      .mockReturnValue(Effect.succeed({ computerUse: true, codexChrome: false } as never));
+    const layer = makeCodexAdapterLive({ manager }).pipe(
+      Layer.provideMerge(
+        ServerConfig.layerTest(process.cwd(), { prefix: "codex-web-computer-" }, { mode: "web" }),
+      ),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() => Effect.sync(() => policy.mockRestore()));
+      const adapter = yield* CodexAdapter;
+      const session = yield* adapter.startSession({
+        threadId: asThreadId("web-computer"),
+        runtimeMode: "full-access",
+      });
+      // Reconciliation compares this recorded launch fingerprint on every turn.
+      assert.equal(JSON.parse(session.computerConfigurationFingerprint!).enabled, false);
+      assert.equal(session.computerToolsInstalled, false);
+      assert.equal(session.computerBackendSelection, undefined);
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  },
+);
+
 const providerSessionDirectoryTestLayer = Layer.succeed(ProviderSessionDirectory, {
   upsert: () => Effect.void,
   getProvider: () =>

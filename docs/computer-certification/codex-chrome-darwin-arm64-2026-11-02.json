@@ -1,0 +1,235 @@
+{
+  "integration": "codex-chrome",
+  "evidenceId": "codex-chrome-darwin-arm64-2026-11-02",
+  "platform": "darwin",
+  "arch": "arm64",
+  "versions": {
+    "appMin": "26.1023.51421",
+    "pluginMin": "26.1023.51421",
+    "codexMin": "0.165.0"
+  },
+  "assertions": {
+    "open-tab-read-title": true,
+    "registrations-unchanged": true,
+    "interrupt-drains": true,
+    "background-work-stops-on-pause": true,
+    "tool-inventory": true,
+    "codex-parent-verified": true,
+    "policy-off-kills": true
+  },
+  "admission": "session",
+  "toolNames": ["js_reset", "turn_ended", "js"],
+  "toolInventorySha256": "56fe1d48965ab33271c101e040f28e87ceb7d19430573b6e288cffa95c1b81af",
+  "toolSchemas": [
+    {
+      "name": "js_reset",
+      "description": "Reset the JavaScript kernel and clear all bindings.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    },
+    {
+      "name": "turn_ended",
+      "description": "Notify trusted libraries that a Codex turn ended. Repeated notifications for the same session and turn are ignored.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "hook_event_name": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "session_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "turn_id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": ["hook_event_name", "session_id", "turn_id"],
+        "type": "object"
+      }
+    },
+    {
+      "name": "js",
+      "description": "Execute JavaScript in a persistent `node_repl` with top-level await. Top-level bindings persist until `js_reset` and can be redeclared. Use `const` for stable values and `let` for changing values. Use dynamic imports such as `await import(\"playwright\")`; top-level static imports and `node:process` are unavailable. Use `nodeRepl.write(value)` for output and `await nodeRepl.emitImage(image)` for images. Execution context is available through `nodeRepl.cwd`, `nodeRepl.homeDir`, `nodeRepl.tmpDir`, and `nodeRepl.requestMeta`. The default timeout is 30000 ms (30 seconds); increase `timeout_ms` for longer operations. Use `js_add_node_module_dir` when an additional package directory is required.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "description": "JavaScript code to execute with top-level await.",
+            "type": "string"
+          },
+          "timeout_ms": {
+            "description": "Optional execution timeout in milliseconds. Defaults to 30000 (30 seconds) when omitted.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "title": {
+            "description": "Short user-facing description of what the code does.",
+            "maxLength": 80,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": ["code"],
+        "type": "object"
+      }
+    }
+  ],
+  "sourceCommit": "18f03107cbfb126140888ad22b2f337afb21d371",
+  "dirty": false,
+  "observations": {
+    "inventoryChangedFromRecord": false,
+    "adoption": {
+      "candidates": 1,
+      "parentExecutable": "/usr/local/bin/codex",
+      "parentIdentifier": "codex",
+      "runtimeSigned": true,
+      "ownProcessGroup": true,
+      "verified": true
+    },
+    "titleTurn": {
+      "status": "completed",
+      "error": "null",
+      "pageLoads": 1,
+      "calls": [
+        {
+          "tool": "js",
+          "status": "completed",
+          "result": "{\"content\":[{\"type\":\"text\",\"text\":\"F5 marker cert-title-590322ac\"}],\"structuredContent\":null,\"_meta\":{\"browser_use\":{\"url\":\"http://127.0.0.1:53650/marker/cert-title-590322ac\"},\"codex/browserUse\":true,\"codex/nodeReplExecutionDurationMs\":1588,\"codex/toolSurface\":{\"backend\":\"chrome\",\"browserFamily\":\"chrome\",\"browserId\":\"2\",\"extensionInstanceId\":\"a012ba5f-9ca5-4804-8458-af7eb0e3c8e3\",\"kind\":\"browserUse\",\"openTabIds\":[],\"openTabs\":[]}}}"
+        }
+      ],
+      "items": [
+        {
+          "type": "userMessage",
+          "excerpt": "null"
+        },
+        {
+          "type": "reasoning",
+          "excerpt": "null"
+        },
+        {
+          "type": "mcpToolCall",
+          "server": "node_repl",
+          "tool": "js",
+          "status": "completed",
+          "excerpt": "{\"content\":[{\"type\":\"text\",\"text\":\"F5 marker cert-title-590322ac\"}],\"structuredContent\":null,\"_meta\":{\"browser_use\":{\"url\":\"http://127.0.0.1:53650/marker/cert-title-590322ac\"},\"codex/browserUse\":true,\"codex/nodeReplExecutionDurationMs\":1588,\"codex/toolSurface\":{\"backend\":\"chrome\",\"browserFamily\":\"chrome\",\"browserId\":\"2\",\"extensionInstanceId\":\"a012ba5f-9ca5-4804-8458-af7eb0e3c8e3\",\"kind\":\"browserUse\",\"openTabIds\":[],\"openTabs\":[]}}}"
+        },
+        {
+          "type": "agentMessage",
+          "excerpt": "\"DONE\""
+        }
+      ]
+    },
+    "interrupt": {
+      "callStarted": true,
+      "completedAfterMs": 23,
+      "status": "interrupted",
+      "loop": {
+        "hitsBefore": 3,
+        "hitsInQuietWindow": 0,
+        "hitsAfterInterruptByDrain": 0,
+        "lastHitAfterInterruptMs": -61,
+        "stopped": true
+      },
+      "path": "stopped",
+      "callRunning": true,
+      "stoppedRuntime": true,
+      "runtimeGone": true,
+      "afterRestart": "ready",
+      "drain": {
+        "skipped": "runtime stopped"
+      },
+      "items": [
+        {
+          "type": "userMessage",
+          "excerpt": "null"
+        }
+      ],
+      "afterPageLoads": 1,
+      "after": "{\"content\":[{\"type\":\"text\",\"text\":\"F5 marker cert-after-interrupt-590322ac\"}],\"isError\":false,\"_meta\":{\"browser_use\":{\"url\":\"http://127.0.0.1:53650/marker/cert-after-interrupt-590322ac\"},\"codex/browserUse\":true,\"codex/nodeReplExecutionDurationMs\":767,\"codex/toolSurface\":{\"backend\":\"chrome\",\"browserFamily\":\"chrome\",\"browserId\":\"2\",\"extensionInstanceId\":\"a012ba5f-9ca5-4804-8458-af7eb0e3c8e3\",\"kind\":\"browserUse\",\"openTabIds\":[\"2133298210\"],\"openTabs\":[{\"id\":2133298210,\"title\":\"F5 marker cert-interr"
+    },
+    "pause": {
+      "passed": true,
+      "gone": true,
+      "markers": {
+        "cert-bg-fetch-590322ac": {
+          "hitsBefore": 12,
+          "hitsAfter": 1,
+          "stopped": true
+        },
+        "cert-pause-590322ac": {
+          "hitsBefore": 3,
+          "hitsAfter": 0,
+          "stopped": true
+        }
+      },
+      "loopsEndedByChrome": [],
+      "inFlight": "error: tool call failed for `node_repl/js`: Transport closed"
+    },
+    "restart": {
+      "reloads": 2,
+      "state": "ready",
+      "newProcess": true
+    },
+    "policyOff": {
+      "passed": true,
+      "gone": true,
+      "markers": {
+        "cert-off-590322ac": {
+          "hitsBefore": 3,
+          "hitsAfter": 0,
+          "stopped": true
+        }
+      },
+      "loopsEndedByChrome": [],
+      "inFlight": "error: tool call failed for `node_repl/js`: Transport closed",
+      "restartedAfterOff": false
+    },
+    "states": [
+      ["pending", null],
+      ["connected", null],
+      [
+        "pending",
+        "Stopped with the interrupted turn. Chrome control restarts with your next message."
+      ],
+      ["pending", null],
+      ["connected", null],
+      ["pending", "Paused. Chrome control restarts with your next message after you resume."],
+      ["pending", null],
+      ["connected", null],
+      ["off", "Turned off for this thread."],
+      ["off", "Turned off for this thread."]
+    ],
+    "adoptions": [
+      {
+        "candidates": 1,
+        "parentExecutable": "/usr/local/bin/codex",
+        "parentIdentifier": "codex",
+        "runtimeSigned": true,
+        "ownProcessGroup": true,
+        "verified": true
+      },
+      {
+        "candidates": 1,
+        "parentExecutable": "/usr/local/bin/codex",
+        "parentIdentifier": "codex",
+        "runtimeSigned": true,
+        "ownProcessGroup": true,
+        "verified": true
+      },
+      {
+        "candidates": 1,
+        "parentExecutable": "/usr/local/bin/codex",
+        "parentIdentifier": "codex",
+        "runtimeSigned": true,
+        "ownProcessGroup": true,
+        "verified": true
+      }
+    ]
+  }
+}

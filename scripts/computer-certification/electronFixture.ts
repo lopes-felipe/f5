@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { execFile } from "node:child_process";
@@ -12,6 +12,40 @@ export const ELECTRON_FIXTURE_FILES = ["fixture.cjs", "preload.cjs", "fixture.ht
 /** Copies a development runtime into a separate synthetic app, never the F5 app.
  * No Electron process, window, accessibility request or input is started here. */
 export async function prepareElectronFixture(repo: string, directory: string) {
+  if (process.platform === "win32") {
+    const runtime: unknown = createRequire(join(repo, "apps/desktop/package.json"))("electron");
+    if (typeof runtime !== "string") return false;
+    const bundle = join(directory, "ChromiumFixture");
+    await cp(dirname(runtime), bundle, { recursive: true, errorOnExist: true, force: false });
+    await copyFile(runtime, join(bundle, "f5-chromium-fixture.exe"));
+    const app = join(bundle, "resources/app");
+    await mkdir(app, { recursive: true });
+    for (const name of ELECTRON_FIXTURE_FILES)
+      await cp(join(repo, "apps/desktop/native/electron", name), join(app, name), {
+        errorOnExist: true,
+        force: false,
+      });
+    await writeFile(
+      join(app, "package.json"),
+      JSON.stringify({
+        name: "computer-certification-fixture",
+        version: "1.0.0",
+        main: "fixture.cjs",
+      }),
+      { flag: "wx" },
+    );
+    await writeFile(
+      join(directory, "electron-fixture.json"),
+      JSON.stringify({
+        version: 1,
+        platform: "win32",
+        appId: "f5-chromium-fixture.exe",
+        bundle: "ChromiumFixture",
+      }),
+      { flag: "wx" },
+    );
+    return true;
+  }
   if (process.platform !== "darwin") return false;
   const runtime: unknown = createRequire(join(repo, "apps/desktop/package.json"))("electron");
   if (typeof runtime !== "string") return false;
