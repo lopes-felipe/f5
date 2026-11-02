@@ -3644,6 +3644,51 @@ describe("deriveTimelineEntries", () => {
     });
   });
 
+  it("drops the background status suffix from command row labels", () => {
+    const makeExecution = (id: string, command: string, title: string) => ({
+      id: OrchestrationCommandExecutionId.makeUnsafe(id),
+      threadId: ThreadId.makeUnsafe("thread-1"),
+      turnId: TurnId.makeUnsafe("turn-1"),
+      providerItemId: null,
+      command,
+      title,
+      status: "completed" as const,
+      detail: null,
+      exitCode: 0,
+      startedAt: "2026-03-20T10:00:00.000Z",
+      completedAt: "2026-03-20T10:00:01.000Z",
+      updatedAt: "2026-03-20T10:00:01.000Z",
+      startedSequence: 1,
+      lastUpdatedSequence: 2,
+    });
+    const entries = deriveTimelineEntries(
+      [],
+      [],
+      [],
+      [
+        makeExecution(
+          "cmdexec:thread-1:item-read-bg",
+          "/bin/zsh -lc 'sed -n \"12p\" apps/web/src/a.ts'",
+          "Read config — completed",
+        ),
+        makeExecution(
+          "cmdexec:thread-1:item-search-bg",
+          "rg -n needle apps",
+          "Searching apps for needle — completed",
+        ),
+        makeExecution(
+          "cmdexec:thread-1:item-search-generic-bg",
+          "rg -n other packages",
+          "Command run — completed",
+        ),
+      ],
+    );
+
+    expect(
+      entries.map((entry) => (entry.kind === "work" ? entry.entry.label : entry.kind)),
+    ).toEqual(["Read config", "Searching apps for needle", "Searching packages for other"]);
+  });
+
   it("maps multi-file sed reads to file-read work entries with changed file previews", () => {
     const entries = deriveTimelineEntries(
       [],

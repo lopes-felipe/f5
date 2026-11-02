@@ -78,6 +78,7 @@ import {
   deriveNarratedActivityDisplayHints,
   deriveSearchCommandSummary,
   isGenericCommandTitle,
+  parseCommandExecutionTitle,
 } from "@t3tools/shared/commandSummary";
 import {
   compactThreadActivityPayload,
@@ -666,7 +667,16 @@ function normalizeLifecycleCommandExecutionTitle(
   // Providers use generic titles like "Ran command" for shell fallbacks. When
   // that happens we replace the placeholder with a derived search summary, but
   // preserve any provider-authored specific title verbatim.
-  return isGenericCommandTitle(title) ? (deriveSearchCommandSummary(command) ?? title) : title;
+  if (!isGenericCommandTitle(title)) {
+    return title;
+  }
+  const searchSummary = deriveSearchCommandSummary(command);
+  if (!searchSummary) {
+    return title;
+  }
+  // The background suffix is the stored background marker; keep it on the summary.
+  const { backgroundStatus } = parseCommandExecutionTitle(title);
+  return backgroundStatus ? `${searchSummary} — ${backgroundStatus}` : searchSummary;
 }
 
 function extractCommandExecutionCommand(

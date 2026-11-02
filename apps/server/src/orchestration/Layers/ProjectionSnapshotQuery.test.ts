@@ -1240,6 +1240,52 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  it.effect("returns command execution descriptions in thread tail details", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model, branch, worktree_path, latest_turn_id,
+          created_at, last_interaction_at, updated_at, deleted_at
+        )
+        VALUES (
+          'thread-command-description', 'project-1', 'Command description', 'gpt-5-codex',
+          NULL, NULL, 'turn-command-description', '2026-02-24T00:00:00.000Z',
+          '2026-02-24T00:00:00.000Z', '2026-02-24T00:00:00.000Z', NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_command_executions (
+          command_execution_id, thread_id, turn_id, provider_item_id, command, cwd, description,
+          title, status, detail, output, output_truncated, exit_code, started_sequence,
+          last_updated_sequence, started_at, completed_at, updated_at
+        )
+        VALUES
+          (
+            'command-described', 'thread-command-description', 'turn-command-description', NULL,
+            'df -h', NULL, 'Check free disk space', 'Command run — completed', 'completed', NULL,
+            '', 0, 0, 1, 2, '2026-02-24T00:00:01.000Z', '2026-02-24T00:00:02.000Z',
+            '2026-02-24T00:00:02.000Z'
+          ),
+          (
+            'command-plain', 'thread-command-description', 'turn-command-description', NULL,
+            'pwd', NULL, NULL, NULL, 'completed', NULL, '', 0, 0, 3, 4,
+            '2026-02-24T00:00:03.000Z', '2026-02-24T00:00:04.000Z', '2026-02-24T00:00:04.000Z'
+          )
+      `;
+
+      const details = yield* snapshotQuery.getThreadTailDetails({
+        threadId: ThreadId.makeUnsafe("thread-command-description"),
+      });
+
+      const byId = new Map(details.commandExecutions.map((entry) => [entry.id, entry]));
+      assert.equal(byId.get("command-described" as never)?.description, "Check free disk space");
+      assert.isFalse("description" in (byId.get("command-plain" as never) ?? {}));
+    }),
+  );
+
   it.effect("reads mid-turn checkpoints of a still-running turn", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;

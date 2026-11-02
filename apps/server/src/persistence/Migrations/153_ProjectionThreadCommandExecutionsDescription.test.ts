@@ -49,4 +49,23 @@ layer("153_ProjectionThreadCommandExecutionsDescription", (it) => {
       assert.deepEqual(rows, [{ name: "description", type: "TEXT" }]);
     }),
   );
+
+  it.effect("creates a missing table with the description column", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DROP TABLE IF EXISTS projection_thread_command_executions`;
+
+      yield* Migration0153;
+
+      const rows = yield* sql<{ readonly name: string }>`
+        SELECT name
+        FROM pragma_table_info('projection_thread_command_executions')
+        WHERE name IN ('cwd', 'description')
+        ORDER BY name
+      `;
+
+      assert.deepEqual(rows, [{ name: "cwd" }, { name: "description" }]);
+    }),
+  );
 });

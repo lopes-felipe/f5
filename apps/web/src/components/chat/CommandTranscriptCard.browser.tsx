@@ -310,6 +310,46 @@ describe("CommandTranscriptCard", () => {
     }
   });
 
+  it("keeps the final failure line visible and clicks on the tail do not toggle", async () => {
+    const onToggle = vi.fn();
+    const host = document.createElement("div");
+    host.style.width = "420px";
+    document.body.append(host);
+    const longDiagnostic = `src/very/long/path/${"segment/".repeat(30)}file.ts: error TS2322`;
+    const screen = await renderWithQueryClient(
+      <CommandTranscriptCard
+        execution={makeExecution({
+          status: "failed",
+          exitCode: 1,
+          output: [longDiagnostic, longDiagnostic, longDiagnostic, "FINAL-ERROR-LINE"].join("\n"),
+        })}
+        expanded={false}
+        timestampFormat="locale"
+        onToggle={onToggle}
+      />,
+      host,
+    );
+
+    try {
+      const tail = host.querySelector<HTMLElement>('[data-testid="command-failed-output-tail"]');
+      const clip = tail?.parentElement;
+      expect(tail?.textContent).toContain("FINAL-ERROR-LINE");
+      // Wrapped lines overflow the capped box at the top, not the bottom.
+      expect(tail!.getBoundingClientRect().height).toBeGreaterThan(
+        clip!.getBoundingClientRect().height,
+      );
+      const clipBottom = clip!.getBoundingClientRect().bottom;
+      const paddingBottom = Number.parseFloat(getComputedStyle(clip!).paddingBottom);
+      expect(Math.abs(tail!.getBoundingClientRect().bottom - (clipBottom - paddingBottom))).toBe(0);
+
+      tail!.click();
+      expect(onToggle).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("copies the full output from the expanded card", async () => {
     const toastSpy = vi.spyOn(toastManager, "add");
     const host = document.createElement("div");

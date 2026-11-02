@@ -3,11 +3,15 @@ import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import * as Effect from "effect/Effect";
 import { Schema } from "effect";
 
+import RepairProjectionThreadCommandExecutionsSchema from "./044_ProjectionThreadCommandExecutionsSchemaRepair.ts";
+
 const TableInfoRow = Schema.Struct({
   name: Schema.String,
 });
 
 export default Effect.gen(function* () {
+  // Recreates the table if an earlier run lost it, so the column is never skipped.
+  yield* RepairProjectionThreadCommandExecutionsSchema;
   const sql = yield* SqlClient.SqlClient;
   const readColumns = SqlSchema.findAll({
     Request: Schema.Void,
@@ -16,9 +20,7 @@ export default Effect.gen(function* () {
   });
   const columns = new Set((yield* readColumns(undefined)).map((column) => column.name));
 
-  // No columns means no table: the projection schema repairs create it with the
-  // pre-description shape, so only an existing table needs the column added here.
-  if (columns.size > 0 && !columns.has("description")) {
+  if (!columns.has("description")) {
     yield* sql`
       ALTER TABLE projection_thread_command_executions
       ADD COLUMN description TEXT

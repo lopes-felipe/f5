@@ -90,6 +90,7 @@ import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeInge
 import { ThreadCommandExecutionQuery } from "../Services/ThreadCommandExecutionQuery.ts";
 import { ThreadFileChangeQuery } from "../Services/ThreadFileChangeQuery.ts";
 import { ServerConfig } from "../../config.ts";
+import { commandExecutionBackgroundStatus } from "@t3tools/shared/commandSummary";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ProjectionThreadCommandExecutionRepositoryLive } from "../../persistence/Layers/ProjectionThreadCommandExecutions.ts";
 import { ProjectionThreadFileChangeRepositoryLive } from "../../persistence/Layers/ProjectionThreadFileChanges.ts";
@@ -7472,6 +7473,84 @@ describe("ProviderRuntimeIngestion", () => {
     expect(result.executions[0]?.description).toBe("Check free disk space");
     expect(result.executions[0]?.status).toBe("completed");
     expect(result.executions[0]?.title).toBe("Command run — completed");
+
+    // After a restart the ingestion has no in-memory state, so a later record
+    // arrives without the description; the projection must keep the stored one.
+    const recorded = result.executions[0]!;
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.command-execution.record",
+        commandId: CommandId.makeUnsafe("cmd-command-description-after-restart"),
+        threadId: asThreadId("thread-1"),
+        commandExecution: {
+          id: recorded.id,
+          turnId: recorded.turnId,
+          providerItemId: recorded.providerItemId,
+          command: recorded.command,
+          title: recorded.title,
+          status: "completed",
+          detail: recorded.detail,
+          exitCode: 0,
+          startedAt: recorded.startedAt,
+          completedAt: recorded.completedAt,
+          updatedAt: new Date(Date.parse(recorded.updatedAt) + 1_000).toISOString(),
+        },
+        createdAt: new Date().toISOString(),
+      }),
+    );
+    await harness.drain();
+
+    const afterRestart = await Effect.runPromise(
+      harness.threadCommandExecutionQuery.getThreadCommandExecutions({
+        threadId: asThreadId("thread-1"),
+      }),
+    );
+    expect(afterRestart.executions[0]?.description).toBe("Check free disk space");
+    expect(afterRestart.executions[0]?.exitCode).toBe(0);
+  });
+
+  it("keeps the background marker when a backgrounded search gets a derived title", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const command = "rg -n needle apps packages";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-command-bg-search-turn-started"),
+      provider: "claudeAgent",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-command-bg-search"),
+      payload: {},
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-command-bg-search-completed"),
+      provider: "claudeAgent",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-command-bg-search"),
+      itemId: asItemId("item-command-bg-search"),
+      payload: {
+        itemType: "command_execution",
+        status: "completed",
+        title: "Command run — completed",
+        detail: `Bash: ${command}`,
+        data: { toolName: "Bash", input: { command, run_in_background: true } },
+      },
+    });
+
+    await harness.drain();
+
+    const result = await Effect.runPromise(
+      harness.threadCommandExecutionQuery.getThreadCommandExecutions({
+        threadId: asThreadId("thread-1"),
+      }),
+    );
+
+    expect(result.executions).toHaveLength(1);
+    expect(result.executions[0]?.title).toBe("Searching apps, packages for needle — completed");
+    expect(commandExecutionBackgroundStatus(result.executions[0]!)).toBe("completed");
   });
 
   it("captures command output deltas that arrive before the lifecycle record", async () => {

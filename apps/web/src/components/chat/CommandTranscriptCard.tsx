@@ -117,6 +117,8 @@ const INLINE_OUTPUT_PREVIEW_CHAR_LIMIT = 16_000;
 const INLINE_OUTPUT_PREVIEW_HEAD_CHARS = 8_000;
 const INLINE_OUTPUT_PREVIEW_MARKER = "\n\n[... output preview shortened ...]\n\n";
 const FAILED_OUTPUT_TAIL_LINES = 4;
+const FAILED_OUTPUT_TAIL_CHAR_LIMIT = 600;
+const FAILED_OUTPUT_TAIL_SCAN_CHARS = 8_000;
 
 const HighlightedCommandText = memo(function HighlightedCommandText(props: { command: string }) {
   const tokens = tokenizeDisplayCommand(props.command);
@@ -169,16 +171,24 @@ function buildInlineOutputPreview(output: string): { text: string; shortened: bo
   };
 }
 
+/**
+ * Last few non-empty lines of a failed command's output, kept to a character
+ * budget from the end so minified or single-line output stays cheap to render.
+ */
 function buildOutputTail(output: string): string {
-  return output
+  const tail = output
+    .slice(-FAILED_OUTPUT_TAIL_SCAN_CHARS)
     .split("\n")
     .filter((line) => line.trim().length > 0)
     .slice(-FAILED_OUTPUT_TAIL_LINES)
     .join("\n");
+  return tail.length > FAILED_OUTPUT_TAIL_CHAR_LIMIT
+    ? `…${tail.slice(-(FAILED_OUTPUT_TAIL_CHAR_LIMIT - 1))}`
+    : tail;
 }
 
-function trimTrailingSeparators(path: string): string {
-  return path.replaceAll("\\", "/").replace(/\/+$/, "");
+function comparablePath(path: string): string {
+  return path.replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase();
 }
 
 function resolveCwdLabel(
@@ -186,7 +196,8 @@ function resolveCwdLabel(
   workspaceRoot: string | undefined,
 ): string | null {
   if (!cwd) return null;
-  if (workspaceRoot && trimTrailingSeparators(cwd) === trimTrailingSeparators(workspaceRoot)) {
+  // Same case-insensitive comparison the workspace-relative formatter uses.
+  if (workspaceRoot && comparablePath(cwd) === comparablePath(workspaceRoot)) {
     return null;
   }
   return formatWorkspaceRelativePath(cwd, workspaceRoot);
@@ -358,11 +369,15 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
   const description = detailSource.description ?? execution.description;
   const backgroundStatus = commandExecutionBackgroundStatus(detailSource);
   const cwdLabel = resolveCwdLabel(detailSource.cwd ?? execution.cwd, workspaceRoot);
-  const failedOutputTail =
-    !expanded && detailSource.status === "failed" ? buildOutputTail(outputText) : "";
+  const showFailedOutputTail = !expanded && detailSource.status === "failed";
+  const failedOutputTail = useMemo(
+    () => (showFailedOutputTail ? buildOutputTail(outputText) : ""),
+    [outputText, showFailedOutputTail],
+  );
 
   useEffect(() => {
-    if (!detailEnabled || !threadId || detailExecution !== null || detailQuery.data === undefined) {
+    // Collapsed failed cards only want a best-effort tail; don't poll for them.
+    if (!expanded || !threadId || detailExecution !== null || detailQuery.data === undefined) {
       return;
     }
     const controller = new AbortController();
@@ -386,7 +401,7 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
     return () => {
       controller.abort();
     };
-  }, [detailEnabled, detailExecution, detailQuery.data, execution.id, queryClient, threadId]);
+  }, [detailExecution, detailQuery.data, execution.id, expanded, queryClient, threadId]);
 
   useEffect(() => {
     if (!onExpandedBodyResize) return;
@@ -473,11 +488,6 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
                 summaryText
               )}
             </code>
-            {failedOutputTail.length > 0 && (
-              <pre className="mt-1.5 max-h-20 overflow-hidden whitespace-pre-wrap break-all rounded-md bg-destructive/6 px-2 py-1 font-mono text-xs text-muted-foreground">
-                {failedOutputTail}
-              </pre>
-            )}
           </div>
         </button>
         <div className="shrink-0 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
@@ -500,6 +510,19 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
           </Button>
         </div>
       </div>
+
+      {failedOutputTail.length > 0 && (
+        // Outside the toggle so the error text stays selectable; bottom-anchored
+        // so wrapped earlier lines clip at the top and the last line stays visible.
+        <div className="-mt-1 flex max-h-20 flex-col justify-end overflow-hidden pr-3 pb-2.5 pl-[2.375rem]">
+          <pre
+            data-testid="command-failed-output-tail"
+            className="whitespace-pre-wrap break-all rounded-md bg-destructive/6 px-2 py-1 font-mono text-xs text-muted-foreground"
+          >
+            {failedOutputTail}
+          </pre>
+        </div>
+      )}
 
       {expanded && (
         <div ref={expandedBodyRef} className="border-t border-border/60 px-3 py-3">

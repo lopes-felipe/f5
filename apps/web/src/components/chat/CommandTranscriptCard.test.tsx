@@ -157,6 +157,30 @@ describe("CommandTranscriptCard", () => {
 
     expect(markup).toContain("line-2\nline-3\nline-4\nerror: boom</pre>");
     expect(markup).not.toContain("line-1");
+    // The tail sits outside the toggle button so its text stays selectable.
+    const buttonMarkup = markup.slice(0, markup.indexOf("</button>"));
+    expect(buttonMarkup).not.toContain("command-failed-output-tail");
+  });
+
+  it("keeps the end of an oversized single-line failure within the tail budget", () => {
+    const markup = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({
+          status: "failed",
+          exitCode: 1,
+          output: `${"x".repeat(250_000)}FINAL-ERROR`,
+        })}
+        expanded={false}
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+
+    const tail = /data-testid="command-failed-output-tail"[^>]*>([^<]*)<\/pre>/.exec(markup)?.[1];
+    expect(tail?.endsWith("FINAL-ERROR")).toBe(true);
+    expect(tail?.startsWith("…")).toBe(true);
+    expect(tail?.length).toBeLessThanOrEqual(600);
   });
 
   it("does not show an output tail for collapsed successful commands", () => {
@@ -187,6 +211,7 @@ describe("CommandTranscriptCard", () => {
       );
 
     expect(renderWithCwd("/Users/me/project")).not.toContain("in project");
+    expect(renderWithCwd("/users/ME/Project")).not.toContain(">in ");
     expect(renderWithCwd("/Users/me/project/apps/web")).toContain("in project/apps/web");
     expect(renderWithCwd("/tmp/scratch")).toContain("in /tmp/scratch");
   });
