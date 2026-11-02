@@ -3981,6 +3981,8 @@ it.layer(
           assert.include(localBranches(repo.root), "external-e");
         }),
       ),
+    // Several real worktrees, two scans and a cleanup: well over 15 s on CI runners.
+    60_000,
   );
 
   it.effect("refuses external cleanup when local changes differ from the reviewed ones", () =>
