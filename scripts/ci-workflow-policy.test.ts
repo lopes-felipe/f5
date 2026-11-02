@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { globSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { inventories } from "./ci-test-summary.ts";
@@ -37,6 +37,63 @@ export function assertWorkflowPolicy(jobs: Record<string, Job>) {
 }
 
 describe("CI workflow policy", () => {
+  it("keeps push runs per SHA and delegates queue cleanup to an isolated workflow", () => {
+    const ci = parse(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
+    expect(ci.concurrency).toEqual({
+      group:
+        "ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}",
+      "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+    });
+    const cleanup = readWorkflow("ci-supersede.yml");
+    expect(cleanup.on).toEqual({
+      workflow_run: { workflows: ["CI"], types: ["requested"], branches: ["main"] },
+      workflow_dispatch: null,
+    });
+    expect(cleanup.permissions).toEqual({ contents: "read" });
+    expect(cleanup.concurrency).toEqual({
+      group: "ci-queue-cleanup",
+      "cancel-in-progress": false,
+    });
+    const job = cleanup.jobs.supersede!;
+    expect(job.permissions).toEqual({ contents: "read", actions: "write" });
+    expect(job["timeout-minutes"]).toBeGreaterThan(0);
+    expect(job.if).toContain("github.ref == 'refs/heads/main'");
+    expect(job.if).toContain("workflow_run.event == 'push'");
+    expect(job.if).toContain("workflow_run.path == '.github/workflows/ci.yml'");
+    expect(job.if).toContain("workflow_run.head_repository.full_name == github.repository");
+    const checkout = job.steps!.find((step) => step.uses?.startsWith("actions/checkout@")) as {
+      with: Record<string, unknown>;
+    };
+    expect(checkout.with).toMatchObject({ ref: "main", "persist-credentials": false });
+    expect(job.steps!.some((step) => step.run === "node scripts/supersede-queued-ci.ts")).toBe(
+      true,
+    );
+    const commands = job.steps!.map((step) => step.run ?? "").join("\n");
+    expect(commands).not.toContain("${{");
+    expect(commands).not.toMatch(/\bbun (install|run)\b|npm |npx /);
+  });
+  it("uses status functions only in composite action conditions", () => {
+    const visit = (value: unknown, path: string): void => {
+      if (Array.isArray(value)) {
+        value.forEach((item, index) => visit(item, `${path}[${index}]`));
+      } else if (value !== null && typeof value === "object") {
+        for (const [key, item] of Object.entries(value))
+          if (key !== "if") visit(item, path + "." + key);
+      } else if (typeof value === "string") {
+        expect(value, path).not.toMatch(/\b(?:cancelled|success|failure|always)\s*\(/);
+      }
+    };
+    const files = globSync("**/action.yml", {
+      cwd: new URL("../.github/actions/", import.meta.url),
+    });
+    expect(files.length).toBeGreaterThan(0);
+    for (const file of files) {
+      const action = parse(
+        readFileSync(new URL("../.github/actions/" + file, import.meta.url), "utf8"),
+      );
+      if (action.runs?.using === "composite") visit(action, file);
+    }
+  });
   it("isolates release App credentials in a main-only environment for both privileged jobs", () => {
     for (const [file, id] of [
       ["release-publish.yml", "reconcile"],

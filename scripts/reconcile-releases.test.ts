@@ -244,14 +244,75 @@ it("checks only the pinned stable source and holds it in beta mode", async () =>
   expect(state.assemble).not.toHaveBeenCalled();
   expect(state.publish).not.toHaveBeenCalled();
 });
-it("fails visibly when the selected candidate build has failed instead of falling back", async () => {
+it.each([
+  { mode: "all", conclusion: "failure", attempt: 1 },
+  { mode: "beta", conclusion: "timed_out", attempt: 2 },
+])(
+  "reruns a $conclusion candidate at attempt $attempt in $mode mode",
+  async ({ mode, conclusion, attempt }) => {
+    vi.stubEnv("RELEASE_AUTOMATION_MODE", mode);
+    Object.assign(state.builds[0]!, { conclusion, run_attempt: attempt });
+    await expect(reconcileReleases()).resolves.toBeUndefined();
+    expect(state.gh).toHaveBeenCalledExactlyOnceWith([
+      "api",
+      "-X",
+      "POST",
+      "repos/lopes-felipe/f5/actions/runs/100/rerun-failed-jobs",
+    ]);
+    expect(state.load).not.toHaveBeenCalled();
+    expect(state.assemble).not.toHaveBeenCalled();
+    expect(state.publish).not.toHaveBeenCalled();
+    expect(JSON.parse(state.writes.get("release-summary.json")!)).toMatchObject({
+      status: "retrying-build",
+      reason: `Re-running failed candidate jobs (attempt ${attempt + 1} of 3)`,
+      sourceSha: state.b,
+      candidateRun: 100,
+      attempt: attempt + 1,
+    });
+  },
+);
+it.each([
+  { mode: "all", conclusion: "failure", attempt: 3 },
+  { mode: "all", conclusion: "failure", attempt: 4 },
+  { mode: "all", conclusion: "cancelled", attempt: 1 },
+  { mode: "shadow", conclusion: "failure", attempt: 1 },
+])(
+  "blocks a $conclusion candidate at attempt $attempt in $mode mode",
+  async ({ mode, conclusion, attempt }) => {
+    vi.stubEnv("RELEASE_AUTOMATION_MODE", mode);
+    Object.assign(state.builds[0]!, { conclusion, run_attempt: attempt });
+    await expect(reconcileReleases()).rejects.toThrow(
+      /Candidate build is blocked.*gh run rerun 100 --failed/,
+    );
+    expect(state.gh).not.toHaveBeenCalled();
+    expect(state.load).not.toHaveBeenCalled();
+    expect(state.assemble).not.toHaveBeenCalled();
+    expect(state.publish).not.toHaveBeenCalled();
+    expect(JSON.parse(state.writes.get("release-summary.json")!)).toMatchObject({
+      status: "blocked-build",
+      sourceSha: state.b,
+      candidateRun: 100,
+      attempt,
+    });
+  },
+);
+it("reports a failed automatic rerun as a blocked build", async () => {
+  vi.stubEnv("RELEASE_AUTOMATION_MODE", "all");
   state.builds[0]!.conclusion = "failure";
-  await expect(reconcileReleases()).rejects.toThrow("Candidate build is blocked");
+  state.gh.mockImplementationOnce(() => {
+    throw new Error("rerun API unavailable");
+  });
+  await expect(reconcileReleases()).rejects.toThrow(
+    /Candidate build is blocked.*rerun API unavailable/,
+  );
+  expect(state.gh).toHaveBeenCalledOnce();
   expect(state.load).not.toHaveBeenCalled();
+  expect(state.assemble).not.toHaveBeenCalled();
+  expect(state.publish).not.toHaveBeenCalled();
   expect(JSON.parse(state.writes.get("release-summary.json")!)).toMatchObject({
     status: "blocked-build",
-    sourceSha: state.b,
-    candidateRun: 100,
+    reason: expect.stringContaining("rerun API unavailable"),
+    attempt: 1,
   });
 });
 it.each(["ci", "build", "stable", "upgrade", "artifact"])(
@@ -358,7 +419,7 @@ it("retains the last-moment publication gate after reconciliation", async () => 
   await expect(reconcileReleases()).rejects.toThrow("newer passing source");
   expect(state.gate).toHaveBeenCalledWith(state.candidate, "100-1-baselines");
 });
-it.each(["ci", "build", "published", "mode"])(
+it.each(["ci", "build", "published", "mode", "retry"])(
   "records an explicit no-candidate selection for %s without allowing publication",
   async (kind) => {
     vi.stubEnv("GITHUB_OUTPUT", "/fixture/output");
@@ -374,6 +435,10 @@ it.each(["ci", "build", "published", "mode"])(
     if (kind === "mode") {
       vi.stubEnv("RELEASE_AUTOMATION_MODE", "beta");
       state.candidate = { ...state.candidate, kind: "stable" };
+    }
+    if (kind === "retry") {
+      vi.stubEnv("RELEASE_AUTOMATION_MODE", "all");
+      state.builds[0]!.conclusion = "failure";
     }
     await reconcileReleases({ leaseOnly: true });
     expect(JSON.parse(state.writes.get("release-publication-lease.json")!)).toEqual({

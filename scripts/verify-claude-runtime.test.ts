@@ -11,7 +11,7 @@ type Run = (
   command: string,
   args: string[],
   options: { env: NodeJS.ProcessEnv; timeout: number; killSignal: string },
-) => { status: number | null };
+) => { status: number | null; signal?: string | null; error?: string };
 const require = createRequire(import.meta.url);
 const { verifyClaudeRuntime } = require("./verify-claude-runtime.cjs") as {
   verifyClaudeRuntime(context: Context, dependencies: { run: Run }): void;
@@ -45,7 +45,7 @@ describe("verifyClaudeRuntime", () => {
       [join(root, resources!, "app.asar", "apps", "server", "dist", "claude-runtime-smoke.mjs")],
       {
         env: expect.objectContaining({ ELECTRON_RUN_AS_NODE: "1" }),
-        timeout: 45_000,
+        timeout: 120_000,
         killSignal: "SIGKILL",
       },
     );
@@ -66,5 +66,20 @@ describe("verifyClaudeRuntime", () => {
         { run: () => ({ status }) },
       ),
     ).toThrow("Bundled Claude runtime smoke failed");
+  });
+
+  it("includes process diagnostics when the runtime smoke times out", () => {
+    expect(() =>
+      verifyClaudeRuntime(
+        {
+          appOutDir: "/out",
+          electronPlatformName: "win32",
+          packager: { appInfo: { productFilename: "F5" } },
+        },
+        { run: () => ({ status: null, signal: "SIGKILL", error: "ETIMEDOUT" }) },
+      ),
+    ).toThrow(
+      "Bundled Claude runtime smoke failed for /out (status=null, signal=SIGKILL, error=ETIMEDOUT)",
+    );
   });
 });

@@ -35,6 +35,8 @@ import { sameBaselines, upgradePlan } from "./release/release-upgrade-proof.ts";
 import { publicationGate } from "./release/release-publication-gate.ts";
 import { parsePublicationLease, type PublicationLease } from "./release/release-lease.ts";
 
+const MAX_CANDIDATE_ATTEMPTS = 3;
+
 interface ReconcileOptions {
   leaseOnly?: boolean;
   lease?: PublicationLease;
@@ -146,6 +148,37 @@ async function reconcile(options: ReconcileOptions): Promise<PublicationLease | 
     return;
   }
   if (build?.status === "completed" && build.conclusion !== "success") {
+    let rerunFailure = "";
+    if (
+      (build.conclusion === "failure" || build.conclusion === "timed_out") &&
+      mode !== "shadow" &&
+      build.run_attempt < MAX_CANDIDATE_ATTEMPTS
+    ) {
+      try {
+        gh([
+          "api",
+          "-X",
+          "POST",
+          "repos/" + repository + "/actions/runs/" + build.id + "/rerun-failed-jobs",
+        ]);
+        const reason =
+          "Re-running failed candidate jobs (attempt " +
+          (build.run_attempt + 1) +
+          " of " +
+          MAX_CANDIDATE_ATTEMPTS +
+          ")";
+        releaseFields({
+          status: "retrying-build",
+          reason,
+          candidateRun: build.id,
+          attempt: build.run_attempt + 1,
+        });
+        console.log(reason, "https://github.com/" + repository + "/actions/runs/" + build.id);
+        return;
+      } catch (error) {
+        rerunFailure = "; automatic rerun failed: " + String(error);
+      }
+    }
     releaseFields({ status: "blocked-build" });
     throw new Error(
       "Candidate build is blocked (" +
@@ -153,7 +186,11 @@ async function reconcile(options: ReconcileOptions): Promise<PublicationLease | 
         "): https://github.com/" +
         repository +
         "/actions/runs/" +
-        build.id,
+        build.id +
+        ". Rerun failed jobs with: gh run rerun " +
+        build.id +
+        " --failed" +
+        rerunFailure,
     );
   }
   if (!build || build.status !== "completed" || build.conclusion !== "success") {
