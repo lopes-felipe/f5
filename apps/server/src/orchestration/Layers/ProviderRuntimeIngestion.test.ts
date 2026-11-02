@@ -8400,10 +8400,13 @@ describe("ProviderRuntimeIngestion", () => {
     expect(checkpoint?.checkpointRef).toBe("provider-diff:evt-turn-diff-updated");
   });
 
-  it("skips a tool update only when it matches the last update for that item", async () => {
-    const harness = await createHarness();
+  const emitRepeatToolEvents = async (
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    options: { readonly drainEach: boolean },
+  ) => {
     const now = new Date().toISOString();
-    const update = (eventId: string, detail: string, itemId = "item-repeat-tool") =>
+    const settle = () => (options.drainEach ? harness.drain() : Promise.resolve());
+    const update = (eventId: string, detail: string, itemId = "item-repeat-tool") => {
       harness.emit({
         type: "item.updated",
         eventId: asEventId(eventId),
@@ -8414,6 +8417,8 @@ describe("ProviderRuntimeIngestion", () => {
         itemId: asItemId(itemId),
         payload: { itemType: "command_execution", status: "in_progress", title: "Run", detail },
       });
+      return settle();
+    };
 
     harness.emit({
       type: "turn.started",
@@ -8424,11 +8429,12 @@ describe("ProviderRuntimeIngestion", () => {
       createdAt: now,
       payload: {},
     });
-    update("repeat-1", "bun test");
-    update("repeat-2", "bun test");
-    update("repeat-3", "bun test --watch");
-    update("repeat-4", "bun test");
-    update("repeat-other", "bun test", "item-other-tool");
+    await settle();
+    await update("repeat-1", "bun test");
+    await update("repeat-2", "bun test");
+    await update("repeat-3", "bun test --watch");
+    await update("repeat-4", "bun test");
+    await update("repeat-other", "bun test", "item-other-tool");
     harness.emit({
       type: "item.completed",
       eventId: asEventId("repeat-done"),
@@ -8439,17 +8445,35 @@ describe("ProviderRuntimeIngestion", () => {
       itemId: asItemId("item-repeat-tool"),
       payload: { itemType: "command_execution", status: "completed", title: "Run" },
     });
-    update("repeat-5", "bun test");
+    await settle();
+    await update("repeat-5", "bun test");
 
-    const thread = await waitForThread(harness.engine, (entry) =>
+    return waitForThread(harness.engine, (entry) =>
       entry.activities.some((activity: ProviderRuntimeTestActivity) => activity.id === "repeat-5"),
     );
+  };
+
+  it("skips a tool update only when it matches the last update for that item", async () => {
+    const harness = await createHarness();
+    const thread = await emitRepeatToolEvents(harness, { drainEach: true });
     expect(
       thread.activities
         .filter((activity: ProviderRuntimeTestActivity) => activity.kind === "tool.updated")
         .map((activity: ProviderRuntimeTestActivity) => activity.id)
         .toSorted(),
     ).toEqual(["repeat-1", "repeat-3", "repeat-4", "repeat-5", "repeat-other"]);
+  });
+
+  it("appends only the newest tool update per item within the coalescing window", async () => {
+    const harness = await createHarness();
+    const thread = await emitRepeatToolEvents(harness, { drainEach: false });
+    // The completion flushes the pending updates, and the update after it starts a new window.
+    expect(
+      thread.activities
+        .filter((activity: ProviderRuntimeTestActivity) => activity.kind === "tool.updated")
+        .map((activity: ProviderRuntimeTestActivity) => activity.id)
+        .toSorted(),
+    ).toEqual(["repeat-4", "repeat-5", "repeat-other"]);
   });
 
   it("reuses the same checkpoint turn count for repeated turn.diff.updated events in one turn", async () => {

@@ -11,6 +11,7 @@ import {
   gitRunStackedActionMutationOptions,
   gitStatusQueryOptions,
   invalidateGitQueries,
+  refreshCheckedOutGitBranch,
 } from "./gitReactQuery";
 import { rpcQueryContext } from "./rpcQueryContext";
 
@@ -228,5 +229,73 @@ describe("worktreesListQueryOptions", () => {
     expect(a.staleTime).toBe(30_000);
     expect(a.refetchOnWindowFocus).toBe(true);
     expect(a.refetchInterval).toBe(false);
+  });
+});
+
+describe("refreshCheckedOutGitBranch", () => {
+  const status = {
+    branch: "main",
+    hasWorkingTreeChanges: true,
+    workingTree: { files: [], insertions: 2, deletions: 1 },
+    hasUpstream: true,
+    aheadCount: 1,
+    behindCount: 3,
+    pr: {
+      number: 7,
+      title: "Main PR",
+      url: "https://example.test/pr/7",
+      baseBranch: "main",
+      headBranch: "main",
+      state: "open" as const,
+    },
+    changeRequest: null,
+  };
+  const refs = (current: string) => ({
+    isRepo: true,
+    hasOriginRemote: true,
+    branches: [
+      {
+        name: "origin/feature",
+        isRemote: true,
+        current: false,
+        isDefault: false,
+        worktreePath: null,
+      },
+      { name: "main", current: current === "main", isDefault: true, worktreePath: null },
+      { name: "feature", current: current === "feature", isDefault: false, worktreePath: null },
+    ],
+  });
+
+  it("moves cached statuses to the checked-out branch and clears its remote state", async () => {
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(gitQueryKeys.branches("/repo/a"), refs("feature"));
+    queryClient.setQueryData(gitQueryKeys.status("/repo/a"), status);
+    queryClient.setQueryData([...gitQueryKeys.status("/repo/a"), "local"], status);
+
+    await refreshCheckedOutGitBranch(queryClient, "/repo/a");
+
+    const expected = {
+      ...status,
+      branch: "feature",
+      hasUpstream: false,
+      aheadCount: 0,
+      behindCount: 0,
+      pr: null,
+      changeRequest: null,
+    };
+    expect(queryClient.getQueryData(gitQueryKeys.status("/repo/a"))).toEqual(expected);
+    expect(queryClient.getQueryData([...gitQueryKeys.status("/repo/a"), "local"])).toEqual(
+      expected,
+    );
+  });
+
+  it("keeps the cached status when the branch did not change", async () => {
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(gitQueryKeys.branches("/repo/a"), refs("main"));
+    queryClient.setQueryData(gitQueryKeys.status("/repo/a"), status);
+
+    await refreshCheckedOutGitBranch(queryClient, "/repo/a");
+
+    expect(queryClient.getQueryData(gitQueryKeys.status("/repo/a"))).toBe(status);
   });
 });

@@ -1,5 +1,5 @@
 import type { ProjectId, ThreadId } from "@t3tools/contracts";
-import type { GitStackedAction } from "@t3tools/contracts";
+import type { GitListBranchesResult, GitStackedAction, GitStatusResult } from "@t3tools/contracts";
 import { mutationOptions, queryOptions, type QueryClient } from "@tanstack/react-query";
 import { ensureNativeApi } from "../nativeApi";
 import { rpcQueryContext, rpcQueryMeta, type RpcQueryPriority } from "./rpcQueryContext";
@@ -139,6 +139,34 @@ export function gitBranchesQueryOptions({
     refetchOnReconnect: autoRefresh ? "always" : false,
     refetchInterval: false,
   });
+}
+
+/**
+ * Re-reads local refs (no fetch, no PR lookup). When another branch is checked out than the
+ * cached status shows, the status moves to it with remote counts and the PR cleared, so the
+ * previous branch and its PR are not shown. The next status refresh fills remote state in.
+ */
+export async function refreshCheckedOutGitBranch(queryClient: QueryClient, cwd: string | null) {
+  if (cwd === null) return;
+  await queryClient.invalidateQueries({ queryKey: gitQueryKeys.branches(cwd) });
+  const refs = queryClient.getQueryData<GitListBranchesResult>(gitQueryKeys.branches(cwd));
+  const branch = refs?.branches.find((ref) => ref.current && !ref.isRemote)?.name;
+  if (!branch) return;
+  for (const queryKey of [gitQueryKeys.status(cwd), [...gitQueryKeys.status(cwd), "local"]]) {
+    queryClient.setQueryData<GitStatusResult>(queryKey, (status) =>
+      !status || status.worktreeMissing === true || status.branch === branch
+        ? status
+        : {
+            ...status,
+            branch,
+            hasUpstream: false,
+            aheadCount: 0,
+            behindCount: 0,
+            pr: null,
+            changeRequest: null,
+          },
+    );
+  }
 }
 
 export function gitResolvePullRequestQueryOptions(input: {

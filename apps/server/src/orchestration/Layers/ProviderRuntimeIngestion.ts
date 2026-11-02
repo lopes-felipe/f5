@@ -120,6 +120,7 @@ import {
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { reconcileCodexThreadSnapshots } from "../codexSnapshotReconciliation.ts";
+import { makeToolUpdateCoalescer } from "../toolUpdateCoalescing.ts";
 import { truncateMiddleByBytes } from "../outputTruncation.ts";
 import {
   extractToolResultImages,
@@ -330,7 +331,9 @@ type RuntimeIngestionInput =
     }
   | {
       source: "command-output-flush-all";
-    };
+    }
+  | { source: "tool-update-flush"; threadId: ThreadId }
+  | { source: "tool-update-flush-all" };
 
 interface OpenCommandExecutionState {
   readonly id: OrchestrationCommandExecutionId;
@@ -2443,6 +2446,56 @@ const make = Effect.gen(function* () {
   // Last tool.updated activity appended per open tool item. Providers such as OpenCode resend
   // the whole tool state on every part update, so a repeat that matches it is not stored again.
   const lastToolUpdates = new Map<string, string>();
+  const recordToolUpdate = (trackingKey: string, signature: string) => {
+    lastToolUpdates.delete(trackingKey);
+    lastToolUpdates.set(trackingKey, signature);
+    if (lastToolUpdates.size > MAX_TRACKED_TOOL_UPDATES)
+      lastToolUpdates.delete(lastToolUpdates.keys().next().value!);
+  };
+  // Tool updates wait briefly so a chatty call appends only its newest state. Every other
+  // event for the thread flushes them first, so the completion still follows the last update.
+  let enqueueToolUpdateFlush: ((threadId: ThreadId) => void) | null = null;
+  const pendingToolUpdates = makeToolUpdateCoalescer<{
+    readonly event: ProviderRuntimeEvent;
+    readonly activity: OrchestrationThreadActivity;
+    readonly trackingKey: string;
+    readonly signature: string;
+  }>({ onWindowClosed: (threadId) => enqueueToolUpdateFlush?.(threadId) });
+  const flushToolUpdates = (threadId: ThreadId) =>
+    Effect.forEach(
+      pendingToolUpdates.take(threadId),
+      (update) =>
+        orchestrationEngine
+          .dispatch({
+            type: "thread.activity.append",
+            commandId: providerCommandId(
+              update.event,
+              `thread-activity-append:${update.activity.id}`,
+            ),
+            threadId,
+            activity: update.activity,
+            createdAt: update.activity.createdAt,
+          })
+          .pipe(
+            // Recorded only after the append succeeds, so a retried event is not skipped.
+            Effect.tap(() =>
+              Effect.sync(() => recordToolUpdate(update.trackingKey, update.signature)),
+            ),
+            Effect.catchCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.failCause(cause)
+                : Effect.logWarning("failed to append coalesced tool update", {
+                    threadId,
+                    activityId: update.activity.id,
+                    cause: Cause.pretty(cause),
+                  }),
+            ),
+          ),
+      { discard: true },
+    );
+  const flushAllToolUpdates = Effect.suspend(() =>
+    Effect.forEach(pendingToolUpdates.threadIds(), flushToolUpdates, { discard: true }),
+  );
   // Runtime error and terminal reports share one refresh, without blocking the serial worker.
   const refreshedUsageFailures = new Map<ThreadId, string>();
   let enqueueResolvedUsageLimit: (input: RuntimeIngestionInput) => Effect.Effect<void> = () =>
@@ -4344,6 +4397,8 @@ const make = Effect.gen(function* () {
                 }),
           ),
         );
+      // An item update decides per activity below; anything else closes the update window.
+      if (incomingEvent.type !== "item.updated") yield* flushToolUpdates(incomingEvent.threadId);
       let event = incomingEvent;
       const lookupStarted = probe ? performance.now() : 0;
       const readModel = yield* orchestrationEngine.getReadModel();
@@ -6164,12 +6219,32 @@ const make = Effect.gen(function* () {
       );
       const toolUpdateKey = event.itemId ? `${thread.id}\u0000${event.itemId}` : undefined;
       if (toolUpdateKey && event.type === "item.completed") lastToolUpdates.delete(toolUpdateKey);
+      // Updates that own extracted images or computer evidence are never superseded.
+      const canCoalesceToolUpdate =
+        event.type === "item.updated" &&
+        !lifecycle.images?.mcpImages?.length &&
+        !isPreparedComputerEvent(event);
       yield* Effect.forEach(activities, (activity) =>
         Effect.gen(function* () {
           const signature =
             toolUpdateKey && activity.kind === "tool.updated"
               ? JSON.stringify([activity.tone, activity.summary, activity.turnId, activity.payload])
               : undefined;
+          if (signature && canCoalesceToolUpdate) {
+            const coalescingKey = `${activity.turnId ?? ""}\u0000${toolUpdateKey!}`;
+            // A newer state replaces the pending one, even when it repeats the last append.
+            pendingToolUpdates.discard(thread.id, coalescingKey);
+            if (lastToolUpdates.get(toolUpdateKey!) === signature) return;
+            const full = pendingToolUpdates.offer(thread.id, coalescingKey, {
+              event,
+              activity,
+              trackingKey: toolUpdateKey!,
+              signature,
+            });
+            if (full) yield* flushToolUpdates(thread.id);
+            return;
+          }
+          yield* flushToolUpdates(thread.id);
           if (signature && lastToolUpdates.get(toolUpdateKey!) === signature) return;
           yield* orchestrationEngine.dispatch({
             type: "thread.activity.append",
@@ -6179,11 +6254,7 @@ const make = Effect.gen(function* () {
             createdAt: activity.createdAt,
           });
           // Recorded only after the append succeeds, so a retried event is not skipped.
-          if (!signature) return;
-          lastToolUpdates.delete(toolUpdateKey!);
-          lastToolUpdates.set(toolUpdateKey!, signature);
-          if (lastToolUpdates.size > MAX_TRACKED_TOOL_UPDATES)
-            lastToolUpdates.delete(lastToolUpdates.keys().next().value!);
+          if (signature) recordToolUpdate(toolUpdateKey!, signature);
         }),
       ).pipe(Effect.asVoid);
 
@@ -6338,10 +6409,16 @@ const make = Effect.gen(function* () {
             : input.source === "runtime"
               ? processRuntimeEvent(input.event)
               : input.source === "domain"
-                ? processDomainEvent(input.event)
+                ? flushToolUpdates(input.event.payload.threadId).pipe(
+                    Effect.andThen(processDomainEvent(input.event)),
+                  )
                 : input.source === "command-output-flush"
                   ? flushCommandExecutionOutput(input.commandExecutionId).pipe(Effect.asVoid)
-                  : flushAllCommandExecutionOutput();
+                  : input.source === "command-output-flush-all"
+                    ? flushAllCommandExecutionOutput()
+                    : input.source === "tool-update-flush"
+                      ? flushToolUpdates(input.threadId)
+                      : flushAllToolUpdates;
 
   const pendingTerminalEventIds = new Set<string>();
   const processInputSafely = (
@@ -6470,12 +6547,17 @@ const make = Effect.gen(function* () {
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
       streamingDeltas.cancelTimers();
+      pendingToolUpdates.cancelTimers();
+      yield* worker.enqueue({ source: "tool-update-flush-all" });
       yield* worker.enqueue({ source: "assistant-delta-flush-all" });
       yield* worker.drain.pipe(Effect.orDie);
     }),
   );
   enqueueCommandOutputFlush = (commandExecutionId) => {
     enqueueBackgroundWork(worker.enqueue({ source: "command-output-flush", commandExecutionId }));
+  };
+  enqueueToolUpdateFlush = (threadId) => {
+    enqueueBackgroundWork(worker.enqueue({ source: "tool-update-flush", threadId }));
   };
 
   const surfaceExhaustedTerminalReceipts = (threadIds?: ReadonlySet<ThreadId>) =>
@@ -6757,6 +6839,7 @@ const make = Effect.gen(function* () {
       yield* worker.drain;
       yield* Effect.yieldNow;
     }
+    yield* worker.enqueue({ source: "tool-update-flush-all" });
     yield* worker.enqueue({ source: "command-output-flush-all" });
     yield* worker.enqueue({ source: "assistant-delta-flush-all" });
     yield* worker.drain;
@@ -6767,6 +6850,7 @@ const make = Effect.gen(function* () {
     () =>
       Effect.sync(() => {
         streamingDeltas.cancelTimers();
+        pendingToolUpdates.cancelTimers();
         clearAllCommandExecutionFlushTimers();
       }).pipe(Effect.andThen(drain)),
     ["provider-event-delivery"],
