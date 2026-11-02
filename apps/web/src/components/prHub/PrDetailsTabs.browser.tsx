@@ -247,6 +247,12 @@ async function renderTabs() {
     prHub: {
       getDetail: vi.fn().mockResolvedValue(detail),
       getTimeline: vi.fn().mockResolvedValue(timeline),
+      getReviewThreads: vi.fn().mockResolvedValue({
+        threads: [],
+        pageInfo: { hasNextPage: false, endCursor: null, truncated: false },
+        comparisonVersion: "comparison",
+        refreshedAt: "2026-01-02T00:00:00.000Z",
+      }),
       getFiles: vi.fn().mockResolvedValue(filesPage()),
       getReviewOperation: vi.fn().mockImplementation(() => Promise.resolve(savedOperation)),
       prepareReview: nativeApiRef.prepareReview,
@@ -494,6 +500,83 @@ describe("PrDetailsTabs", () => {
     await expect
       .element(page.getByRole("button", { name: "Reopen conversation" }))
       .toBeInTheDocument();
+  });
+
+  it("keeps review thread replies with their finding and folds resolved threads", async () => {
+    await renderTabs();
+    const reviewComment = (id: string, body: string, createdAt: string) => ({
+      type: "comment" as const,
+      id,
+      databaseId: null,
+      kind: "review-comment" as const,
+      author: { login: id, name: null, avatarUrl: null },
+      body,
+      createdAt,
+      updatedAt: null,
+      url: `https://github.com/octo/repo/pull/1#${id}`,
+      path: "src/detail.ts",
+      line: 2,
+      reviewState: "COMMENTED",
+      viewerCanUpdate: false,
+      reactions: [],
+    });
+    const threadComment = (id: string) => ({
+      id,
+      author: id,
+      bodyText: id,
+      url: `https://github.com/octo/repo/pull/1#${id}`,
+      createdAt: null,
+      updatedAt: null,
+      outdated: false,
+      diffHunk: null,
+    });
+    const api = nativeApiRef.current!.prHub;
+    api.getTimeline = vi.fn().mockResolvedValue({
+      ...timelinePage("Unrelated comment"),
+      entries: [
+        reviewComment("reply", "Fixed in the next commit", "2026-01-04T00:00:00.000Z"),
+        ...timelinePage("Unrelated comment").entries,
+        reviewComment("finding", "Explain this", "2026-01-01T00:00:00.000Z"),
+        reviewComment("settled", "Old nit", "2026-01-01T00:00:00.000Z"),
+      ],
+    });
+    api.getReviewThreads = vi.fn().mockResolvedValue({
+      threads: [
+        {
+          id: "thread-1",
+          path: "src/detail.ts",
+          line: 2,
+          originalLine: 2,
+          isResolved: false,
+          comments: ["finding", "reply", "missing"].map(threadComment),
+        },
+        {
+          id: "thread-2",
+          path: "src/other.ts",
+          line: 9,
+          originalLine: 9,
+          isResolved: true,
+          comments: [threadComment("settled")],
+        },
+      ],
+      pageInfo: { hasNextPage: false, endCursor: null, truncated: false },
+      comparisonVersion: "comparison",
+      refreshedAt: "2026-01-04T00:00:00.000Z",
+    });
+
+    await page.getByRole("tab", { name: "Timeline" }).click();
+    const thread = page.getByRole("region", { name: "Review thread on src/detail.ts" });
+    await expect.element(thread.getByText("Fixed in the next commit")).toBeInTheDocument();
+    await expect.element(thread.getByText("Explain this")).toBeInTheDocument();
+    await expect.element(thread.getByText("1 more reply")).toBeInTheDocument();
+    const text = (await thread.element().textContent) ?? "";
+    expect(text.indexOf("Explain this")).toBeLessThan(text.indexOf("Fixed in the next commit"));
+
+    const resolved = page.getByRole("region", { name: "Review thread on src/other.ts" });
+    await expect.element(resolved.getByText("Resolved")).toBeInTheDocument();
+    await expect.element(resolved.getByText("Old nit")).not.toBeInTheDocument();
+    await resolved.getByRole("button", { name: /src\/other\.ts:9/ }).click();
+    await expect.element(resolved.getByText("Old nit")).toBeInTheDocument();
   });
 
   it("retains an edited comment draft when the remote mutation fails", async () => {

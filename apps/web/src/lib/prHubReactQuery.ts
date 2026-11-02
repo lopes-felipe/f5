@@ -59,6 +59,23 @@ export function prHubTimelineQueryOptions(key: PullRequestKey) {
   });
 }
 
+/** Shared by the review threads tab and the timeline, which groups replies by thread. */
+export function prHubReviewThreadsQueryOptions(key: PullRequestKey) {
+  const accountGeneration = getPrHubAccountGeneration();
+  return infiniteQueryOptions({
+    queryKey: ["prHub", "reviewThreads", accountGeneration, key] as const,
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) =>
+      ensureNativeApi().prHub.getReviewThreads({
+        key,
+        accountGeneration,
+        ...(pageParam ? { cursor: pageParam } : {}),
+      }),
+    getNextPageParam: (page) =>
+      page.pageInfo.hasNextPage ? (page.pageInfo.endCursor ?? undefined) : undefined,
+  });
+}
+
 export function prHubFilesQueryOptions(
   key: PullRequestKey,
   comparisonMode: "current_pr" | "changes_since_review" = "current_pr",
