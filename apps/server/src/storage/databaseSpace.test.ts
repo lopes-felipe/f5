@@ -13,6 +13,7 @@ import {
   incrementalVacuum,
   readDatabasePages,
   vacuumFreeSpaceShortfall,
+  vacuumSpaceRequirement,
   vacuumToIncremental,
 } from "./databaseSpace.ts";
 
@@ -119,5 +120,18 @@ describe("vacuumFreeSpaceShortfall", () => {
       }))!,
       /temp directory/,
     );
+  });
+
+  it("reports the space a VACUUM needs next to what is free", async () => {
+    const tempDirectory = NodeOS.tmpdir();
+    const requirement = await vacuumSpaceRequirement({
+      dbPath,
+      liveBytes: 10 * GB,
+      statfs: statfsWith({ [tempDirectory]: 8 * GB }),
+      tempDirectory,
+    });
+    assert.equal(requirement.requiredFreeDiskBytes, Math.ceil(10 * GB * 2.2));
+    assert.equal(requirement.availableDiskBytes, 8 * GB);
+    assert.match(requirement.shortfall!, /below 2\.2x/);
   });
 });

@@ -337,6 +337,8 @@ import type {
   StorageGetDiskSpaceRequest,
   StorageGetUsageRequest,
   StorageInvalidatedPayload,
+  StorageScheduleCompactionRequest,
+  StorageScheduleCompactionResult,
   DiskSpaceStatus,
 } from "./storage";
 import type {
@@ -1150,6 +1152,10 @@ export interface NativeApi {
     getUsage: (input?: StorageGetUsageRequest) => Promise<StorageGetUsageResult>;
     cleanup: (input: StorageCleanupRequest) => Promise<StorageCleanupStatus>;
     cancelCleanup: (input: StorageCancelCleanupRequest) => Promise<void>;
+    /** Runs the pending one-time database compaction on the next server start, or cancels it. */
+    scheduleCompaction: (
+      input: StorageScheduleCompactionRequest,
+    ) => Promise<StorageScheduleCompactionResult>;
     /** What automatic cleanup and auto-pull would do now, with exact skip reasons. */
     automationDryRun: () => Promise<StorageAutomationDryRunResult>;
     automationAudit: (

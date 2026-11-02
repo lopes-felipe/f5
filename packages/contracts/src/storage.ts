@@ -110,6 +110,15 @@ export const StorageCleanupCategoryId = Schema.Literals([
   "uvDiscardedCaches",
   "chromeCaches",
   "bambuStudioLogs",
+  "dependencyFolders",
+  "gitTemporaryPacks",
+  "claudePluginTrash",
+  "devboxWarmupCache",
+  "playwrightBrowsers",
+  "electronDownloadCache",
+  "nodeGypCache",
+  "f5UpdaterCache",
+  "dockerUnusedImages",
 ]);
 export type StorageCleanupCategoryId = typeof StorageCleanupCategoryId.Type;
 
@@ -176,9 +185,38 @@ export const StorageCleanupCategoryUsage = Schema.Struct({
 });
 export type StorageCleanupCategoryUsage = typeof StorageCleanupCategoryUsage.Type;
 
+/**
+ * A one-time full VACUUM the automatic job keeps skipping because F5 is never
+ * quiet. Present only after it has waited for several days.
+ */
+export const PendingDatabaseCompaction = Schema.Struct({
+  /** Free database pages the compaction returns to the file system. */
+  freeBytes: NonNegativeInt,
+  liveBytes: NonNegativeInt,
+  requiredFreeDiskBytes: NonNegativeInt,
+  availableDiskBytes: NonNegativeInt,
+  waitingSince: IsoDateTime,
+  lastSkipReason: Schema.NullOr(Schema.String),
+  scheduledForRestart: Schema.Boolean,
+});
+export type PendingDatabaseCompaction = typeof PendingDatabaseCompaction.Type;
+
+export const StorageScheduleCompactionRequest = Schema.Struct({
+  when: Schema.Literals(["restart", "cancel"]),
+});
+export type StorageScheduleCompactionRequest = typeof StorageScheduleCompactionRequest.Type;
+
+export const StorageScheduleCompactionResult = Schema.Struct({
+  scheduledForRestart: Schema.Boolean,
+});
+export type StorageScheduleCompactionResult = typeof StorageScheduleCompactionResult.Type;
+
 export const StorageUsageReport = Schema.Struct({
   serverName: Schema.optional(Schema.String),
   discoveryRoots: Schema.optional(Schema.Array(Schema.String)),
+  /** Registered project folders that are not repositories, searched for repositories. */
+  implicitDiscoveryRoots: Schema.optional(Schema.Array(Schema.String)),
+  pendingCompaction: Schema.optional(PendingDatabaseCompaction),
   machineCleanupScanned: Schema.optional(Schema.Boolean),
   scanId: TrimmedNonEmptyString,
   scannedAt: IsoDateTime,
@@ -297,6 +335,7 @@ export const DiskSpaceStatus = Schema.Struct({
   volumes: Schema.Array(DiskSpaceVolume),
   /** Largest reclaimable storage categories, biggest first. Empty while space is ok. */
   reclaimable: Schema.Array(DiskSpaceReclaimableItem),
+  pendingCompaction: Schema.optional(PendingDatabaseCompaction),
 });
 export type DiskSpaceStatus = typeof DiskSpaceStatus.Type;
 

@@ -2825,6 +2825,67 @@ it.effect("successful compaction without file-size reduction stays succeeded", (
   ).pipe(Effect.provide(makeStorageTestLayer())),
 );
 
+it.effect("schedules a compaction for the next start and runs it once the server is ready", () => {
+  let locks = 0;
+  const base = makeOrchestrationEngineStub();
+  const engine = {
+    ...base,
+    acquireMaintenanceLock: () => {
+      locks += 1;
+      return base.acquireMaintenanceLock();
+    },
+  } as OrchestrationEngineShape;
+  return withHomeSandbox(
+    Effect.gen(function* () {
+      const storage = yield* StorageMaintenance,
+        config = yield* ServerConfig,
+        sql = yield* SqlClient.SqlClient;
+      const marker = NodePath.join(config.stateDir, "storage", "compact-on-restart");
+      assert.deepStrictEqual(yield* storage.scheduleCompaction("restart"), {
+        scheduledForRestart: true,
+      });
+      assert.isTrue(yield* Effect.promise(() => pathExists(marker)));
+      assert.deepStrictEqual(yield* storage.scheduleCompaction("cancel"), {
+        scheduledForRestart: false,
+      });
+      assert.isFalse(yield* Effect.promise(() => pathExists(marker)));
+
+      // Nothing scheduled: startup takes no lock.
+      yield* Effect.scoped(storage.startScheduledCompaction(Effect.void));
+      assert.equal(locks, 0);
+
+      yield* storage.scheduleCompaction("restart");
+      const ready = yield* Deferred.make<void>();
+      const audits = () => sql<{ readonly result: string; readonly reason: string }>`
+        SELECT result, reason FROM storage_automation_audit
+        WHERE job = 'database-vacuum' AND operation_id LIKE 'scheduled-compaction-%'
+      `;
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* storage.startScheduledCompaction(Deferred.await(ready));
+          // The request is gone before compaction starts. No lock is taken until
+          // the server is ready, so startup repairs can still dispatch commands.
+          assert.isFalse(yield* Effect.promise(() => pathExists(marker)));
+          assert.equal(locks, 0);
+          assert.lengthOf(yield* audits(), 0);
+          yield* Deferred.succeed(ready, undefined);
+          for (let attempt = 0; attempt < 1000 && (yield* audits()).length === 0; attempt++)
+            yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 2)));
+        }),
+      );
+      // The in-memory test database is already incremental.
+      assert.deepStrictEqual(
+        (yield* audits()).map((row) => row.result),
+        ["skipped"],
+      );
+      assert.match((yield* audits())[0]!.reason, /already returns free space in steps/);
+      assert.equal(locks, 0);
+      // A compaction that is not stuck is not offered.
+      assert.isNull(yield* storage.getPendingCompaction);
+    }),
+  ).pipe(Effect.provide(makeStorageTestLayer({ orchestrationEngine: engine })));
+});
+
 it.layer(makeStorageTestLayer())("StorageMaintenance scan and operation safety", (it) => {
   for (const afterMark of [false, true]) {
     it.effect(
@@ -3483,7 +3544,11 @@ it.layer(
         runGit(repo.root, "worktree", "add", "-q", "-b", "unregistered-worktree", target, "main");
         const previous = (yield* settings.getSettings).storageDiscovery;
         yield* settings.updateSettings({
-          storageDiscovery: { machineCleanupEnabled: false, repositoryRoots: [repo.root, target] },
+          storageDiscovery: {
+            machineCleanupEnabled: false,
+            repositoryRoots: [repo.root, target],
+            searchProjectFolders: true,
+          },
         });
         yield* Effect.addFinalizer(() =>
           settings.updateSettings({ storageDiscovery: previous }).pipe(Effect.orDie),
@@ -3508,6 +3573,147 @@ it.layer(
         const projects =
           yield* sql`SELECT project_id FROM projection_projects WHERE workspace_root = ${repo.root}`;
         assert.lengthOf(projects, 0);
+      }),
+    ),
+  );
+  it.effect(
+    "searches a registered folder of repositories and cleans its dependency folders and leftover packs",
+    () =>
+      withHomeSandbox(
+        Effect.gen(function* () {
+          const storage = yield* StorageMaintenance,
+            sql = yield* SqlClient.SqlClient;
+          const repo = yield* Effect.promise(() => makeClonedRepo("f5-folder-of-repos-"));
+          yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+          const worktree = NodePath.join(repo.dir, "topic-worktree");
+          runGit(repo.root, "worktree", "add", "-q", "-b", "topic-worktree", worktree, "main");
+          const rootModules = NodePath.join(repo.root, "node_modules");
+          const worktreeModules = NodePath.join(worktree, "node_modules");
+          const pack = NodePath.join(repo.root, ".git", "objects", "pack", "tmp_pack_interrupted");
+          yield* Effect.promise(async () => {
+            await writeFile(NodePath.join(rootModules, "pkg", "index.js"), "x".repeat(8192));
+            await writeFile(NodePath.join(worktreeModules, "pkg", "index.js"), "x");
+            await writeFile(pack, "x".repeat(4096));
+            const old = new Date(Date.now() - 2 * 86400_000);
+            await NodeFS.utimes(pack, old, old);
+          });
+          // The project is the folder holding the repositories, not a repository itself.
+          yield* seedProject({ sql, projectId: "folder-of-repos", workspaceRoot: repo.dir });
+          const report = yield* storage.inspect({ force: true });
+          assert.include(report.implicitDiscoveryRoots ?? [], repo.dir);
+          assert.include(
+            report.categories
+              .find((c) => c.id === "externalWorktrees")
+              ?.targets.map((t) => t.path) ?? [],
+            worktree,
+          );
+          const folders = report.categories.find((c) => c.id === "dependencyFolders")!;
+          assert.includeMembers(
+            folders.targets.map((t) => t.path),
+            [rootModules, worktreeModules],
+          );
+          const rootTarget = folders.targets.find((t) => t.path === rootModules)!;
+          assert.isTrue(rootTarget.safeToDelete, rootTarget.disabledReason);
+          assert.match(rootTarget.detail ?? "", /reinstalling dependencies/);
+          const packs = report.categories.find((c) => c.id === "gitTemporaryPacks")!;
+          assert.deepStrictEqual(
+            packs.targets.map((t) => t.path),
+            [pack],
+          );
+          assert.isTrue(packs.defaultSelected);
+          const result = yield* storage.cleanup({
+            operationId: "folder-of-repos-cleanup",
+            scanId: report.scanId,
+            nonce: report.confirmationNonce,
+            categoryIds: ["dependencyFolders", "gitTemporaryPacks"],
+            targetSelections: [{ categoryId: "dependencyFolders", targetIds: [rootTarget.id] }],
+            options: { vacuumAfterDeletes: false },
+          });
+          assert.deepStrictEqual(
+            result.results.map((r) => [r.categoryId, r.status]),
+            [
+              ["dependencyFolders", "Cleaned"],
+              ["gitTemporaryPacks", "Cleaned"],
+            ],
+            JSON.stringify(result.warnings),
+          );
+          assert.isFalse(yield* Effect.promise(() => pathExists(rootModules)));
+          assert.isTrue(yield* Effect.promise(() => pathExists(worktreeModules)));
+          assert.isFalse(yield* Effect.promise(() => pathExists(pack)));
+          assert.deepStrictEqual(
+            (yield* Effect.promise(() => NodeFS.readdir(repo.root))).filter((name) =>
+              name.startsWith(".f5-deps-trash-"),
+            ),
+            [],
+          );
+
+          // Turned off, the folder is no longer searched.
+          const settings = yield* ServerSettingsService;
+          const previous = (yield* settings.getSettings).storageDiscovery;
+          yield* settings.updateSettings({
+            storageDiscovery: { ...previous, searchProjectFolders: false },
+          });
+          yield* Effect.addFinalizer(() =>
+            settings.updateSettings({ storageDiscovery: previous }).pipe(Effect.orDie),
+          );
+          const off = yield* storage.inspect({ force: true });
+          assert.deepStrictEqual(off.implicitDiscoveryRoots, []);
+          assert.notInclude(
+            off.categories.find((c) => c.id === "dependencyFolders")?.targets.map((t) => t.path) ??
+              [],
+            worktreeModules,
+          );
+        }),
+      ),
+  );
+  it.effect("keeps dependency folders of a checkout a thread used recently", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance,
+          sql = yield* SqlClient.SqlClient;
+        const repo = yield* Effect.promise(() => makeClonedRepo("f5-recent-checkout-"));
+        yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+        const modules = NodePath.join(repo.root, "node_modules");
+        yield* Effect.promise(() => writeFile(NodePath.join(modules, "pkg", "index.js"), "x"));
+        yield* seedProject({ sql, projectId: "recent-checkout", workspaceRoot: repo.root });
+        yield* seedThread({
+          sql,
+          threadId: ThreadId.makeUnsafe("thread-recent-checkout"),
+          worktreePath: repo.root,
+          deletedAt: null,
+        });
+        const report = yield* storage.inspect({ force: true });
+        const target = report.categories
+          .find((c) => c.id === "dependencyFolders")
+          ?.targets.find((t) => t.path === modules);
+        assert.isFalse(target?.safeToDelete);
+        assert.equal(target?.disabledReason, "A thread used this checkout in the last 24 hours.");
+      }),
+    ),
+  );
+  it.effect("keeps dependency folders of checkouts inside a folder a thread used recently", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance,
+          sql = yield* SqlClient.SqlClient;
+        const repo = yield* Effect.promise(() => makeClonedRepo("f5-parent-folder-checkout-"));
+        yield* Effect.addFinalizer(() => Effect.promise(repo.cleanup));
+        const modules = NodePath.join(repo.root, "node_modules");
+        yield* Effect.promise(() => writeFile(NodePath.join(modules, "pkg", "index.js"), "x"));
+        yield* seedProject({ sql, projectId: "parent-folder-checkout", workspaceRoot: repo.root });
+        // The thread works in the folder holding the checkout, as in a folder-of-repositories project.
+        yield* seedThread({
+          sql,
+          threadId: ThreadId.makeUnsafe("thread-parent-folder"),
+          worktreePath: NodePath.dirname(repo.root),
+          deletedAt: null,
+        });
+        const report = yield* storage.inspect({ force: true });
+        const target = report.categories
+          .find((c) => c.id === "dependencyFolders")
+          ?.targets.find((t) => t.path === modules);
+        assert.isFalse(target?.safeToDelete);
+        assert.equal(target?.disabledReason, "A thread used this checkout in the last 24 hours.");
       }),
     ),
   );
@@ -3775,6 +3981,8 @@ it.layer(
           assert.include(localBranches(repo.root), "external-e");
         }),
       ),
+    // Several real worktrees, two scans and a cleanup: well over 15 s on CI runners.
+    60_000,
   );
 
   it.effect("refuses external cleanup when local changes differ from the reviewed ones", () =>

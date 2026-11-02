@@ -7,15 +7,22 @@ import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import { toastManager } from "../ui/toast";
 
-export function StorageDiscoverySettings() {
+export function StorageDiscoverySettings({
+  implicitRoots = [],
+}: {
+  /** Project folders that are not repositories, searched for repositories automatically. */
+  readonly implicitRoots?: ReadonlyArray<string>;
+}) {
   const settings = useSettings((s) => s.storageDiscovery);
   const client = useQueryClient();
   const [roots, setRoots] = useState(settings.repositoryRoots.join("\n"));
   const [enabled, setEnabled] = useState(settings.machineCleanupEnabled);
+  const [searchProjectFolders, setSearchProjectFolders] = useState(settings.searchProjectFolders);
   const [pending, setPending] = useState(false);
   useEffect(() => {
     setRoots(settings.repositoryRoots.join("\n"));
     setEnabled(settings.machineCleanupEnabled);
+    setSearchProjectFolders(settings.searchProjectFolders);
   }, [settings]);
   const save = async () => {
     setPending(true);
@@ -29,7 +36,7 @@ export function StorageDiscoverySettings() {
         ),
       ];
       await ensureNativeApi().server.updateSettings({
-        storageDiscovery: { machineCleanupEnabled: enabled, repositoryRoots },
+        storageDiscovery: { machineCleanupEnabled: enabled, repositoryRoots, searchProjectFolders },
       });
       await client.invalidateQueries({ queryKey: serverQueryKeys.config() });
       await ensureNativeApi().storage.getUsage({ force: true });
@@ -52,7 +59,8 @@ export function StorageDiscoverySettings() {
         manual selection.
       </p>
       <label className="flex items-center justify-between gap-3 text-sm">
-        Scan developer caches, Chrome caches, and BambuStudio logs
+        Scan developer caches, browser downloads, unused Docker images, Chrome caches, and
+        BambuStudio logs
         <Switch
           aria-label="Scan machine cleanup candidates"
           checked={enabled}
@@ -70,6 +78,33 @@ export function StorageDiscoverySettings() {
           disabled={pending}
         />
       </label>
+      <label className="flex items-center justify-between gap-3 text-sm">
+        Search project folders that are not repositories, such as a folder of clones
+        <Switch
+          aria-label="Search project folders for repositories"
+          checked={searchProjectFolders}
+          disabled={pending}
+          onCheckedChange={setSearchProjectFolders}
+        />
+      </label>
+      {searchProjectFolders && implicitRoots.length > 0 ? (
+        <div className="space-y-1 text-xs">
+          <span>From projects</span>
+          <ul
+            aria-label="Repository search folders from projects"
+            className="space-y-1 rounded border border-border bg-background p-2 font-mono text-muted-foreground"
+          >
+            {implicitRoots.map((root) => (
+              <li key={root}>{root}</li>
+            ))}
+          </ul>
+          <p className="text-muted-foreground">
+            Their repositories' worktrees, dependency folders and interrupted Git downloads are
+            offered for cleanup. Your home folder and the folders above it are never searched this
+            way.
+          </p>
+        </div>
+      ) : null}
       <p className="text-xs text-muted-foreground">
         Repositories are discovered without adding projects. Scans skip dependencies, build output,
         symlinks, and other mounted volumes. Prefer specific source-code folders: selecting an
