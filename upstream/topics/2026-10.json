@@ -30964,11 +30964,21 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T23:34:59.068Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/GrokAdapter.ts:742",
+          "apps/server/src/provider/acp/XAiAcpExtension.ts:56"
+        ],
+        "f5Refs": [
+          "b3fcbb2dd6374f7716046f15e96320371be8f839"
+        ]
+      },
       "id": "pr-20881",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers"
