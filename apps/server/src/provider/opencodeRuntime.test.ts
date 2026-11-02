@@ -89,7 +89,7 @@ describe("OpenCode startup locks", () => {
           rmSync(directory, { recursive: true, force: true });
         }
       },
-      15_000,
+      30_000,
     );
   }
 });

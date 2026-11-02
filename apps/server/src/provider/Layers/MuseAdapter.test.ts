@@ -119,10 +119,76 @@ it.layer(HarnessLayer)("MuseAdapter", (it) => {
       assert.equal(terminal?.payload.usageLimit?.resetsAt, new Date(resetsAtMs).toISOString());
       const error = events.find((event) => event.type === "runtime.error");
       assert.deepEqual(error?.payload.usageLimit, terminal?.payload.usageLimit);
+      assert.isFalse(events.some((event) => event.type === "account.rate-limits.updated"));
       assert.isTrue(yield* harness.adapter.hasSession(threadId));
       yield* stop;
     }),
   );
+
+  for (const mode of ["typed", "reconciled", "throttled"] as const) {
+    it.effect("classifies " + mode + " failures through the adapter lifecycle", () =>
+      Effect.gen(function* () {
+        const harness = yield* MuseHarness;
+        harness.configure = () => undefined;
+        const { events, stop } = yield* collect(harness.adapter);
+        const threadId = ThreadId.make("muse-limit-" + mode);
+        yield* start(harness, threadId);
+        const host = harness.hosts.at(-1)!;
+        yield* harness.adapter.sendTurn({ threadId, input: "go" });
+        host.notify("turn/started", { turnId: "turn-1" });
+        yield* tick();
+        const resetsAtMs = Date.now() + 60_000;
+        const params = {
+          turnId: "turn-1",
+          terminal: "failed",
+          error: {
+            kind: "modelError",
+            message:
+              mode === "throttled"
+                ? "API error 429: Rate limit exceeded."
+                : "Model request refused.",
+            retryable: false,
+            ...(mode === "throttled" ? {} : { quota: { limitKind: "tierLimit", resetsAtMs } }),
+          },
+        };
+        if (mode === "reconciled") {
+          const after = "cursor-" + host.cursorCounter;
+          host.handlers.set("view/page", () => ({
+            events: [
+              {
+                method: "turn/completed",
+                params: { sessionId: host.sessionId, viewCursor: "quota-gap", ...params },
+              },
+            ],
+            nextCursor: "quota-gap",
+          }));
+          host.notify("view/gap", { after, next: "quota-gap" });
+        } else {
+          host.notify("turn/completed", params);
+        }
+        for (
+          let attempt = 0;
+          attempt < 100 && !events.some((event) => event.type === "turn.completed");
+          attempt++
+        ) {
+          yield* tick(10);
+        }
+        const terminal = events.find((event) => event.type === "turn.completed");
+        assert.equal(terminal?.payload.state, "failed");
+        const error = events.find((event) => event.type === "runtime.error");
+        if (mode === "throttled") {
+          assert.isUndefined(terminal?.payload.usageLimit);
+          assert.isUndefined(error);
+        } else {
+          assert.equal(terminal?.payload.usageLimit?.resetsAt, new Date(resetsAtMs).toISOString());
+          assert.deepEqual(error?.payload.usageLimit, terminal?.payload.usageLimit);
+        }
+        if (mode === "reconciled") assert.isAtLeast(host.requestsFor("view/page").length, 1);
+        assert.isTrue(yield* harness.adapter.hasSession(threadId));
+        yield* stop;
+      }),
+    );
+  }
 
   it.effect("drains final MSP output before its single terminal lifecycle event", () =>
     Effect.scoped(

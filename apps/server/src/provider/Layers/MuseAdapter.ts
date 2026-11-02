@@ -893,11 +893,6 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
         if (notification.method === "usage/changed") {
           const usage = decodeMuseSubscriptionUsage(params);
           if (usage) ctx.latestSubscriptionUsage = usage;
-          yield* offer({
-            type: "account.rate-limits.updated",
-            ...(yield* stamp(ctx)),
-            payload: { rateLimits: params },
-          });
           return;
         }
         if (params.sessionId !== ctx.mspSessionId || ctx.stopped) return;
