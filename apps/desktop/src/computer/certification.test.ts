@@ -12,6 +12,7 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("Codex Chrome adoption", () => {
   it("verifies nothing and adopts nothing while Codex Chrome is uncertified", async () => {
+    vi.spyOn(certification, "certifiedIntegrationRecord").mockReturnValue(undefined);
     let verified = 0;
     const verify = async () => {
       verified += 1;
