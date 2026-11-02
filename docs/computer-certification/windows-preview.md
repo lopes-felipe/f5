@@ -3,9 +3,10 @@
 The Windows helper implements scoped foreground/background execution, UI Automation
 inspection and semantic actions, per-window capture, password masking and emergency
 stop. The target is Windows x64, build 19041 or newer. Packaged foreground and
-background previews are enabled as an explicit opt-in after the native workflow,
+background previews are available after the native workflow,
 lifecycle and capture privacy checks passed on an interactive Windows 11 machine.
-Computer use stays off by default, with foreground as the default execution mode.
+Computer use defaults to enabled with background execution. Saved preferences are
+preserved, and each app still requires approval.
 Signed installed certification remains false; additional acceptance is pending.
 Cross-compilation and unit tests cannot substitute for that evidence.
 
@@ -205,7 +206,8 @@ capture pixel privacy checks, rather than signed installed certification.
 
 The subsequent provider run authenticated Claude but stopped at read-only
 discovery with `usage-limit`. It did not reach Codex or prove provider workflows.
-The release owner chose to ship the opt-in preview with these limits documented.
+The release owner chose to ship the preview enabled by default with background
+execution and these limits documented. Saved preferences remain in effect.
 Preview availability does not mark pending acceptance scenarios as passed.
 
 Retain Windows 10 and Windows 11 evidence for the remaining acceptance cases:

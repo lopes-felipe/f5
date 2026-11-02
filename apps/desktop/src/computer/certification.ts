@@ -38,11 +38,11 @@ export async function verifyCodexChromeAdoption(
 
 /** Only signed, installed certification runs may open these gates. */
 export const COMPUTER_CONTROL_CERTIFIED = { darwin: false, win32: false } as const;
-/** Explicit opt-in preview availability is separate from signed-build certification. */
+/** Preview availability is separate from signed-build certification and app approvals. */
 export const COMPUTER_CONTROL_PREVIEW = { darwin: true, win32: true } as const;
 /**
  * Background (accessibility-only) control alongside the user. Available in both desktop previews;
- * users still choose it in Settings, and the foreground stays the default execution mode.
+ * background is the default execution mode, and users can select foreground in Settings.
  */
 export const COMPUTER_BACKGROUND_PREVIEW = { darwin: true, win32: true } as const;
 export function computerBackgroundGate(

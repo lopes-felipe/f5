@@ -51,7 +51,7 @@ describe("Codex Chrome adoption", () => {
   });
 });
 describe("preview availability is not certification", () => {
-  it("permits macOS 14+ packaged opt-in preview without a development bypass", () => {
+  it("permits macOS 14+ packaged preview without a development bypass", () => {
     expect(COMPUTER_CONTROL_CERTIFIED).toEqual({ darwin: false, win32: false });
     expect(computerCertificationStatus("darwin", true, undefined, "23.0.0")).toEqual({
       available: true,
@@ -60,7 +60,7 @@ describe("preview availability is not certification", () => {
       reason: "os-too-old",
     });
   });
-  it("permits Windows 19041+ packaged opt-in preview without a development bypass", () => {
+  it("permits Windows 19041+ packaged preview without a development bypass", () => {
     expect(computerCertificationStatus("win32", true, undefined, "10.0.19041")).toEqual({
       available: true,
     });

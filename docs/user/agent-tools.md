@@ -53,7 +53,8 @@ with a cursor for older ones. It can read a thread only when you sent the refere
 or when you put it in the request of a planning or document workflow. Read-only workflow
 stages on Claude and Codex get a catalog that contains only `thread_read`.
 
-Computer control is opt-in on macOS and Windows x64. See **Settings → Browser & Computer → Agent support**
+Computer control defaults to enabled with background execution on macOS and Windows x64.
+Each app still requires approval. Saved settings are preserved. See **Settings → Browser & Computer → Agent support**
 for each enabled provider and a readable readiness reason.
 
 | Agent                     | F5 preview                                                            | F5 computer control                                                           |

@@ -1,8 +1,9 @@
 # Agent browser and computer use
 
-Let Claude and Codex open, read and click through pages in F5's preview browser. On macOS and Windows they
-can optionally control other apps too. Both are off until you turn them on, and you can take
-control back at any time.
+Let Claude and Codex open, read and click through pages in F5's preview browser.
+On macOS and Windows they can also request control of apps you approve.
+Browser access and computer use are enabled by default, with background computer
+execution. You can change these settings or take control back at any time.
 
 ![Settings → Browser & Computer with agent browser access and computer use toggles](../images/settings-browser.webp)
 
@@ -45,17 +46,18 @@ with you.
 On macOS 14 or later and Windows x64 build 19041 or newer, the agent can also see
 and control apps you approve:
 
-1. In **Settings → Browser & Computer**, turn on **Agent browser access** and **Computer use (preview)**.
+1. In **Settings → Browser & Computer**, check **Agent browser access** and **Computer use (preview)**.
+   Both default to on; saved choices are preserved.
 2. On macOS, grant **Screen Recording** and **Accessibility** to F5 in System Settings.
    On Windows, run F5 unelevated in an unlocked interactive session.
 3. Start a new turn. When the agent asks for an app, approve it in F5's dialog.
 
-Computer use is off by default, and foreground is the default execution mode.
+Computer use is enabled by default, and background is the default execution mode.
 Your input pauses foreground control. Press **⌃⌘Esc** on macOS or
 **Ctrl+Alt+Shift+F12** on Windows to stop every scope. While paused, the agent can't
 take screenshots or inspect apps either.
 
-Windows is an opt-in, uncertified preview. Native workflow, lifecycle and capture
+Windows is an uncertified preview. Native workflow, lifecycle and capture
 privacy checks passed on Windows 11. Full provider workflows, physical emergency
 stop, display transitions, Windows 10 and installer checks remain pending; see the
 [acceptance record](../computer-certification/windows-preview.md#rollout-record).
@@ -107,7 +109,7 @@ instead.
 ## Good to know
 
 > [!WARNING]
-> Computer use is an uncertified, opt-in preview. Claude's own built-in computer
+> Computer use is an uncertified preview. Claude's own built-in computer
 > control is not available.
 
 - Turning off **Agent browser access** stops automation on the next tool call, even for agents
