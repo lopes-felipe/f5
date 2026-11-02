@@ -793,10 +793,14 @@ access, so F5 controls the session's runtime, not single calls (`identity.admiss
   never restarts a session for Chrome;
 - when Codex reports `node_repl` ready (`mcpServer/startupStatus/updated`), the server
   asks main to adopt it (`chromeProcessAdopt`), naming the launch token first so a stop
-  reaches a runtime main adopts after the request timed out. Main takes one `ps` snapshot
+  reaches a runtime main adopts after the request timed out. Main takes a `ps` snapshot
   and requires exactly one live child of the session's Codex process running the
   verified `node_repl`, leading its own process group, under a parent that descends from
-  the backend. `codesign` then checks both running processes by PID (`ps` reports
+  the backend. While it sees more than one, it re-reads every 250 ms for up to 5 s before
+  refusing: Codex 0.165.0's `config/mcpServer/reload` starts its own short-lived set of
+  servers, cancelled about a second later, while the thread refreshes and starts its own
+  `node_repl` (seen in the beta.19 acceptance run, where an immediate refusal killed
+  both and left Chrome unavailable after every restart). `codesign` then checks both running processes by PID (`ps` reports
   `argv[0]`, a bare `codex` when it was found on PATH): `node_repl` and a parent signed
   by team `2DC432GLL2` as `codex` or `com.openai.codex.*`. Then main registers the group
   as it would a spawned child. The listing comes first, so every refusal (recovery
