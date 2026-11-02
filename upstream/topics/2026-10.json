@@ -21413,11 +21413,22 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T11:33:35.613Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/components/ChatView.tsx:7704",
+          "apps/web/src/components/ChatView.tsx:8033",
+          "apps/web/src/components/chat/ThreadNoticeStack.tsx:25"
+        ],
+        "f5Refs": [
+          "ab4cad2b4b3a4a69ea17e8fe9a2999fd0cba0e40"
+        ]
+      },
       "id": "pr-18919",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "composer",
