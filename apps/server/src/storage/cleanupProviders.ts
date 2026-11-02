@@ -27,6 +27,8 @@ export const MACHINE_CATEGORY_IDS: ReadonlySet<StorageCleanupCategoryId> = new S
   "electronDownloadCache",
   "nodeGypCache",
 ]);
+/** Directories written by storage/databaseSnapshots.ts. */
+const DATABASE_SNAPSHOT_DIR = /^snapshot-\d{13}$/;
 const DAY_MS = 86400_000;
 export interface CleanupFileReview {
   providerId: StorageCleanupCategoryId;
@@ -51,6 +53,8 @@ interface Provider {
   children?: RegExp;
   /** Matching children must be older than this; seven days unless set. */
   childMinAgeMs?: (name: string) => number;
+  /** Never offer the newest matching child (by name) for deletion. */
+  keepNewestChild?: boolean;
 }
 /**
  * Whether a reviewed path may be removed without machine cleanup enabled:
@@ -117,8 +121,10 @@ export function cleanupProviders(input: {
       files: (name) =>
         /^(?:state-before-[\w.-]+\.sqlite|daily-\d{13}-[a-f0-9-]{36}\.f5backup)$/.test(name),
       // Automatic database snapshots; storage/databaseSnapshots.ts prunes them itself.
-      children: /^snapshot-\d{13}$/,
+      // The newest one is the copy most likely to be needed, so it is never offered.
+      children: DATABASE_SNAPSHOT_DIR,
       childMinAgeMs: () => 0,
+      keepNewestChild: true,
     },
     {
       id: "f5ApplicationLogs",
@@ -320,6 +326,7 @@ export async function discoverProviderCandidates(id: StorageCleanupCategoryId, r
   if (!stat.isDirectory() || stat.isSymbolicLink())
     throw new Error("Cleanup root is not a real directory.");
   const candidates: string[] = [];
+  const children: string[] = [];
   if (provider.files || provider.children) {
     for (const entry of await FS.readdir(root, { withFileTypes: true })) {
       const path = Path.join(root, entry.name);
@@ -337,14 +344,21 @@ export async function discoverProviderCandidates(id: StorageCleanupCategoryId, r
             if (cache?.isDirectory() && !cache.isSymbolicLink())
               candidates.push(Path.join(path, name));
           }
-        } else if (
-          (await FS.lstat(path)).mtimeMs <
-          Date.now() - (provider.childMinAgeMs?.(entry.name) ?? 7 * DAY_MS)
-        )
-          candidates.push(path);
+        } else {
+          children.push(path);
+          if (
+            (await FS.lstat(path)).mtimeMs <
+            Date.now() - (provider.childMinAgeMs?.(entry.name) ?? 7 * DAY_MS)
+          )
+            candidates.push(path);
+        }
       }
     }
   } else candidates.push(root);
+  if (provider.keepNewestChild && children.length > 0) {
+    const newest = children.toSorted().at(-1);
+    return candidates.filter((path) => path !== newest);
+  }
   return candidates;
 }
 
@@ -437,9 +451,13 @@ export async function scanCleanupProviders(input: {
               : {}),
             detail:
               provider.id === "f5Backups"
-                ? (candidates.length === 1
-                    ? "Last recovery copy in this folder · "
-                    : "Recovery copy · ") +
+                ? (DATABASE_SNAPSHOT_DIR.test(Path.basename(path))
+                    ? "Automatic database snapshot. It shares unchanged data with the live database, so deleting it may free less than shown · "
+                    : candidates.filter(
+                          (other) => !DATABASE_SNAPSHOT_DIR.test(Path.basename(other)),
+                        ).length === 1
+                      ? "Last recovery copy in this folder · "
+                      : "Recovery copy · ") +
                   Math.max(
                     0,
                     Math.floor(

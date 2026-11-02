@@ -3261,7 +3261,10 @@ const makeStorageMaintenance = Effect.gen(function* () {
       message: event.message.replace(/\s+/g, " ").slice(0, 300),
     });
 
-  const checkCancelled = (operationId: string) => cancelledOperations.has(operationId);
+  // Damage detected mid-cleanup stops every later destructive step, the same
+  // way a user cancel does: recovery may need the files that remain.
+  const checkCancelled = (operationId: string) =>
+    cancelledOperations.has(operationId) || getDatabaseDamage() !== null;
 
   const deleteProviderLogFiles = (
     request: CleanupOperation,

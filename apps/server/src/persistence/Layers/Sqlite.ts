@@ -4,6 +4,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { runMigrations } from "../Migrations.ts";
 import { assertDatabaseFileUsable } from "../databaseFiles.ts";
+import { loadPersistedDatabaseDamage } from "../databaseHealth.ts";
 import { ServerConfig } from "../../config.ts";
 import { ReadSqlClient } from "../ReadSqlClient.ts";
 
@@ -42,7 +43,8 @@ export const makeRuntimeSqliteLayer = (
         // This pragma is connection-local: Bun readers need it too, before any
         // snapshot or crash-recovery read can contend with the writer.
         yield* client`PRAGMA busy_timeout = 5000`.pipe(Effect.orDie);
-        return yield* makeLeasedSqlClient(client, config.readonly === true);
+        // Reporting here covers the Bun driver too, not just NodeSqliteClient.
+        return yield* makeLeasedSqlClient(client, config.readonly === true, config.filename);
       }),
     ).pipe(Layer.provide(native));
   }).pipe(Layer.unwrap);
@@ -70,6 +72,14 @@ export const makeSqlitePersistenceLive = (dbPath: string) =>
     yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
     // A damaged file is unrecoverable at this layer; the defect stops startup.
     yield* Effect.sync(() => assertDatabaseFileUsable(dbPath));
+    // Keep maintenance paused across restarts until the damaged file is replaced.
+    const persistedDamage = yield* Effect.sync(() => loadPersistedDatabaseDamage(dbPath));
+    if (persistedDamage === "loaded")
+      yield* Effect.logError("F5 database damage recorded by an earlier run is still in effect", {
+        marker: `${dbPath}.damaged`,
+      });
+    else if (persistedDamage === "cleared")
+      yield* Effect.logInfo("F5 database was replaced; cleared the damage marker");
 
     const writer = Layer.provideMerge(setup, makeRuntimeSqliteLayer({ filename: dbPath }));
     const readers = Layer.effect(

@@ -138,8 +138,17 @@ export const DatabaseDamage = Schema.Struct({
   databasePath: FilesystemPath,
   /** In-memory read model written for recovery, once the write finishes. */
   recoveryFile: Schema.NullOr(FilesystemPath),
+  /** Why the recovery copy could not be written, after every retry failed. */
+  recoveryError: Schema.NullOr(Schema.String),
   /** Newest automatic database snapshot, if any. */
   latestSnapshot: Schema.NullOr(FilesystemPath),
+  /**
+   * Damage recorded by an earlier backend run. The in-memory state was then
+   * loaded from the damaged file, so it is not a better copy than the file.
+   */
+  fromPreviousRun: Schema.Boolean,
+  /** Marker file that keeps maintenance paused across restarts until removed. */
+  markerPath: FilesystemPath,
 });
 export type DatabaseDamage = typeof DatabaseDamage.Type;
 

@@ -19,7 +19,7 @@
  */
 import { execFile } from "node:child_process";
 import { constants, existsSync } from "node:fs";
-import { copyFile, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
@@ -44,7 +44,6 @@ const MIN_INTERVAL_MS = 55 * 60 * 1000;
 const HOURLY_RETAINED = 24;
 const DAILY_RETAINED = 7;
 const PARTIAL_SUFFIX = ".partial";
-const STATUS_FILE = "snapshot-status.json";
 const UNSUPPORTED_CODES = new Set(["ENOTSUP", "EXDEV", "ENOSYS", "EOPNOTSUPP", "EINVAL"]);
 
 const gate = Semaphore.makeUnsafe(1);
@@ -66,39 +65,48 @@ export type CloneFile = (source: string, destination: string) => Promise<void>;
 
 const execFileAsync = promisify(execFile);
 
-function errnoError(code: string, message: string): NodeJS.ErrnoException {
-  return Object.assign(new Error(message), { code });
-}
-
-/** The mount point and filesystem type holding `path` (macOS). */
-async function darwinMount(path: string): Promise<{ mountPoint: string; fsType: string } | null> {
+/** Filesystem type of the volume holding `path` (macOS), from df and mount. */
+async function darwinFsType(path: string): Promise<string | null> {
   const { stdout: df } = await execFileAsync("/bin/df", ["-P", path]);
   const mountPoint = df.trim().split("\n").at(-1)?.split(/\s+/).slice(5).join(" ");
   if (!mountPoint) return null;
   const { stdout: mounts } = await execFileAsync("/sbin/mount");
+  return mountFsType(mounts, mountPoint);
+}
+
+/** Finds `mountPoint` in `mount` output and returns its filesystem type. */
+export function mountFsType(mounts: string, mountPoint: string): string | null {
   for (const line of mounts.split("\n")) {
-    const match = / on (.+) \(([^,)]+)/.exec(line);
-    if (match?.[1] === mountPoint) return { mountPoint, fsType: match[2]! };
+    // "<device> on <mount point> (<type>, <options>)"; the mount point may itself contain " (".
+    const match = /^.+? on (.+) \(([^,()]+)(?:,[^()]*)?\)$/.exec(line);
+    if (match?.[1] === mountPoint) return match[2]!;
   }
   return null;
 }
 
-// libuv has no COPYFILE_FICLONE_FORCE on macOS (ENOSYS), and COPYFILE_FICLONE
-// silently falls back to a full copy. Only clone where clonefile(2) will work.
-const cloneFile: CloneFile = async (source, destination) => {
+/**
+ * Returns a cloning function for copying `source` into `directory`, or the
+ * errno code that makes cloning impossible there. Runs before the write lock
+ * is taken, so the checks never stall database writes.
+ *
+ * libuv cannot clone on macOS: COPYFILE_FICLONE_FORCE fails with ENOSYS and
+ * COPYFILE_FICLONE silently makes a full copy. `cp -c` calls clonefile(2),
+ * which succeeds on APFS within one volume; it also falls back to a full copy
+ * otherwise, so both conditions are checked first. Elsewhere libuv's
+ * COPYFILE_FICLONE_FORCE uses the FICLONE ioctl and fails instead of copying.
+ */
+export async function prepareClone(source: string, directory: string): Promise<CloneFile | string> {
   if (process.platform !== "darwin") {
-    await copyFile(source, destination, constants.COPYFILE_FICLONE_FORCE | constants.COPYFILE_EXCL);
-    return;
+    return (from, to) =>
+      copyFile(from, to, constants.COPYFILE_FICLONE_FORCE | constants.COPYFILE_EXCL);
   }
-  const [from, to] = await Promise.all([
-    darwinMount(dirname(source)),
-    darwinMount(dirname(destination)),
-  ]);
-  if (from?.fsType !== "apfs") throw errnoError("ENOTSUP", `${source} is not on an APFS volume`);
-  if (to?.mountPoint !== from.mountPoint)
-    throw errnoError("EXDEV", `${destination} is on a different volume than ${source}`);
-  await copyFile(source, destination, constants.COPYFILE_FICLONE | constants.COPYFILE_EXCL);
-};
+  const [sourceStat, directoryStat] = await Promise.all([stat(dirname(source)), stat(directory)]);
+  if (sourceStat.dev !== directoryStat.dev) return "EXDEV";
+  if ((await darwinFsType(dirname(source))) !== "apfs") return "ENOTSUP";
+  return async (from, to) => {
+    await execFileAsync("/bin/cp", ["-c", from, to]);
+  };
+}
 
 export interface RunDatabaseSnapshotInput {
   readonly dbPath: string;
@@ -148,25 +156,11 @@ async function prune(directory: string, now: number): Promise<number> {
   return pruned;
 }
 
-async function writeStatus(directory: string, result: DatabaseSnapshotResult, at: number) {
-  const temporary = join(directory, `${STATUS_FILE}.${randomUUID()}.tmp`);
-  try {
-    await writeFile(temporary, JSON.stringify({ at: new Date(at).toISOString(), ...result }), {
-      flag: "wx",
-      mode: 0o600,
-    });
-    await rename(temporary, join(directory, STATUS_FILE));
-  } finally {
-    await rm(temporary, { force: true });
-  }
-}
-
 /** Takes one snapshot unless one was published within the last hour. */
 export const runDatabaseSnapshot = (input: RunDatabaseSnapshotInput) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const now = input.now ?? Date.now();
-    const clone = input.clone ?? cloneFile;
     const { dbPath, directory } = input;
 
     if (getDatabaseDamage() !== null) return { status: "skipped", reason: "damaged" } as const;
@@ -183,6 +177,9 @@ export const runDatabaseSnapshot = (input: RunDatabaseSnapshotInput) =>
     const latest = listDatabaseSnapshots(directory)[0];
     if (latest && now - latest.createdAt < MIN_INTERVAL_MS && latest.createdAt <= now)
       return { status: "skipped", reason: "recent" } as const;
+
+    const clone = input.clone ?? (yield* Effect.promise(() => prepareClone(dbPath, directory)));
+    if (typeof clone === "string") return { status: "unsupported", code: clone } as const;
 
     const name = databaseSnapshotName(now);
     const partial = join(directory, `${name}${PARTIAL_SUFFIX}-${randomUUID()}`);
@@ -222,14 +219,7 @@ export const runDatabaseSnapshot = (input: RunDatabaseSnapshotInput) =>
     yield* Effect.promise(() => rename(partial, published));
     const pruned = yield* Effect.promise(() => prune(directory, now));
     return { status: "published", path: published, pruned } as const;
-  }).pipe(
-    Effect.tap((result: DatabaseSnapshotResult) =>
-      Effect.promise(() => writeStatus(input.directory, result, input.now ?? Date.now())).pipe(
-        Effect.catchCause(() => Effect.void),
-      ),
-    ),
-    gate.withPermit,
-  );
+  }).pipe(gate.withPermit);
 
 export const startDatabaseSnapshots = Effect.gen(function* () {
   const config = yield* ServerConfig;

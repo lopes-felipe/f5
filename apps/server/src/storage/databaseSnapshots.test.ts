@@ -14,6 +14,8 @@ import {
 } from "../persistence/databaseHealth.ts";
 import { makeRuntimeSqliteLayer } from "../persistence/Layers/Sqlite.ts";
 import {
+  mountFsType,
+  prepareClone,
   runDatabaseSnapshot,
   selectRetainedSnapshots,
   type CloneFile,
@@ -103,6 +105,31 @@ describe("runDatabaseSnapshot", () => {
     }
     expect(result.status).toBe("published");
     await expectSnapshotRows(Path.join(db.directory, `snapshot-${NOW}`));
+  });
+
+  it.runIf(process.platform === "darwin")(
+    "clones on macOS through clonefile(2), not libuv's silent full copy",
+    async () => {
+      const db = await makeDatabase();
+      FS.mkdirSync(db.directory, { recursive: true });
+      const clone = await prepareClone(db.dbPath, db.directory);
+      // The temporary directory sits on the APFS data volume on every supported macOS.
+      expect(typeof clone).toBe("function");
+      const target = Path.join(db.directory, "clone.sqlite");
+      await (clone as CloneFile)(db.dbPath, target);
+      expect(FS.readFileSync(target)).toEqual(FS.readFileSync(db.dbPath));
+    },
+  );
+
+  it("reads the filesystem type for mount points that contain parentheses", () => {
+    const mounts = [
+      "/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)",
+      "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled, nobrowse)",
+      "/dev/disk5s1 on /Volumes/Backup (old) (hfs, local, nodev, nosuid, journaled)",
+    ].join("\n");
+    expect(mountFsType(mounts, "/System/Volumes/Data")).toBe("apfs");
+    expect(mountFsType(mounts, "/Volumes/Backup (old)")).toBe("hfs");
+    expect(mountFsType(mounts, "/Volumes/Missing")).toBeNull();
   });
 
   it("skips a live file that is not a SQLite database", async () => {
