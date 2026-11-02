@@ -60,15 +60,16 @@ import { type TurnDiffSummary } from "../../types";
 import { changedLineCount, summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import ChatMarkdown from "../ChatMarkdown";
 import {
+  BanIcon,
   BotIcon,
   BrainIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   CircleAlertIcon,
-  CircleXIcon,
   ClockIcon,
   EyeIcon,
+  FigmaIcon,
   GlobeIcon,
   HammerIcon,
   ImageIcon,
@@ -77,11 +78,20 @@ import {
   type LucideIcon,
   MessageSquarePlusIcon,
   SearchIcon,
+  SlackIcon,
   SquarePenIcon,
   TerminalIcon,
+  XIcon,
   ZapIcon,
 } from "lucide-react";
-import { McpIcon, type Icon } from "../Icons";
+import { ClaudeAI, GitHubIcon, LinearIcon, McpIcon, NotionIcon, type Icon } from "../Icons";
+import {
+  mcpAggregateStatus,
+  mcpServerIconKind,
+  mcpServerTint,
+  summarizeMcpResult,
+  type McpCallDisplayStatus,
+} from "../../lib/mcpServerDisplay";
 import { SectionLabel } from "../ui/section-label";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import { FileChip } from "./FileChip";
@@ -1409,6 +1419,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [rowExternals, rows],
   );
 
+  const compactBottomRowIds = useMemo(() => timelineCompactBottomRowIds(rows), [rows]);
   const renderItem = useCallback(
     ({ item, index }: { item: TimelineRow; index: number }) => {
       // Rows from the revert target onward: previewed while the popover is open,
@@ -1440,13 +1451,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 row={item}
                 externals={externalsEntry.externals}
                 rowVersion={externalsEntry.version}
+                compactBottom={compactBottomRowIds.has(item.id)}
               />
             ) : null}
           </div>
         </div>
       );
     },
-    [pendingRevert, revertDimFromRowIndex, rowExternals],
+    [compactBottomRowIds, pendingRevert, revertDimFromRowIndex, rowExternals],
   );
 
   // Portalled into the header: turn data never passes through header props.
@@ -1751,10 +1763,13 @@ function RevertStatusPill({ label }: { label: string }) {
 // internally, so the ResizeObserver shim is no longer needed.
 const TimelineRowWrapper = memo(function TimelineRowWrapper({
   row,
+  compactBottom,
   testRenderCountProps,
   children,
 }: {
   row: TimelineRow;
+  /** A tool row followed by another tool row. */
+  compactBottom: boolean;
   testRenderCountProps?: { "data-render-count": number } | undefined;
   children: ReactNode;
 }) {
@@ -1804,7 +1819,7 @@ const TimelineRowWrapper = memo(function TimelineRowWrapper({
       ref={element}
       data-thread-find-active={active ? "true" : undefined}
       data-row-entering={entering ? "" : undefined}
-      className={entering ? "pb-4 motion-safe:animate-rise" : "pb-4"}
+      className={cn(compactBottom ? "pb-1.5" : "pb-4", entering && "motion-safe:animate-rise")}
       {...testRenderCountProps}
       data-timeline-row-id={row.id}
       data-timeline-row-kind={row.kind}
@@ -1853,6 +1868,20 @@ function shouldRenderWorkEntryAsStandaloneRow(
   );
 }
 
+/** An MCP call drawn as a card (the "expand MCP tool calls" setting), not a log row. */
+function isMcpCardWorkEntry(
+  entry: TimelineWorkEntry,
+  options: { settingsExpandMcpToolCalls: boolean },
+): boolean {
+  return (
+    options.settingsExpandMcpToolCalls &&
+    entry.itemType === "mcp_tool_call" &&
+    !entry.diagnostic &&
+    !entry.mcpApp &&
+    !entry.htmlRender
+  );
+}
+
 function resolveStandaloneExpandedMcpWorkEntry(
   groupedEntries: TimelineWorkEntry[],
   options: { settingsExpandMcpToolCalls: boolean },
@@ -1876,6 +1905,8 @@ type TimelineRow =
       automationSurface?: AutomationSurface;
       /** The run belongs to the turn that is still working, so its calls may be live. */
       automationActive?: boolean;
+      /** Back-to-back MCP calls of one turn, rendered as one MCP card. */
+      mcpGroup?: boolean;
       workSummary: string;
     }
   | {
@@ -1908,6 +1939,20 @@ type TimelineRow =
       /** The latest thought while a later tool runs. */
       thought: string | null;
     };
+
+function isToolTimelineRow(row: TimelineRow | undefined): boolean {
+  return row?.kind === "work" || row?.kind === "command";
+}
+
+/** Tool rows followed by another tool row sit closer, so a turn's calls read as one block. */
+export function timelineCompactBottomRowIds(rows: ReadonlyArray<TimelineRow>): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (let index = 0; index < rows.length - 1; index += 1) {
+    const row = rows[index];
+    if (row && isToolTimelineRow(row) && isToolTimelineRow(rows[index + 1])) ids.add(row.id);
+  }
+  return ids;
+}
 
 /** Label for the working row: what the running turn is doing right now. */
 function workingActivityLabel(
@@ -3290,24 +3335,167 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   );
 });
 
-function McpServerMonogram(props: { name: string }) {
+// The theme's one six-hue palette; status colors would read as call outcomes.
+const MCP_SERVER_TINT_CLASS_NAMES: Record<number, string> = {
+  1: "border-effort-low/45 bg-effort-low/20",
+  2: "border-effort-medium/45 bg-effort-medium/20",
+  3: "border-effort-high/45 bg-effort-high/20",
+  4: "border-effort-xhigh/45 bg-effort-xhigh/20",
+  5: "border-effort-max/45 bg-effort-max/20",
+  6: "border-effort-deepest/45 bg-effort-deepest/20",
+};
+
+function McpServerIcon(props: { serverName: string; label: string }) {
+  const kind = mcpServerIconKind(props.serverName, props.label);
+  const tileClassName =
+    "flex size-5.5 shrink-0 items-center justify-center rounded-md border text-foreground";
+  if (kind === "monogram") {
+    return (
+      <span
+        aria-hidden="true"
+        data-mcp-server-icon="monogram"
+        className={cn(
+          tileClassName,
+          "text-2xs font-semibold",
+          MCP_SERVER_TINT_CLASS_NAMES[mcpServerTint(props.serverName)],
+        )}
+      >
+        {mcpServerMonogram(props.label)}
+      </span>
+    );
+  }
+  const glyphClassName = "size-3.5";
   return (
     <span
       aria-hidden="true"
-      className="flex size-5.5 shrink-0 items-center justify-center rounded-md border border-border bg-secondary text-2xs font-semibold text-secondary-foreground"
+      data-mcp-server-icon={kind}
+      className={cn(tileClassName, "border-border/70 bg-background/60")}
     >
-      {mcpServerMonogram(props.name)}
+      {kind === "github" ? (
+        <GitHubIcon className={glyphClassName} />
+      ) : kind === "linear" ? (
+        <LinearIcon className={glyphClassName} />
+      ) : kind === "notion" ? (
+        <NotionIcon className={glyphClassName} />
+      ) : kind === "slack" ? (
+        <SlackIcon className={glyphClassName} />
+      ) : kind === "figma" ? (
+        <FigmaIcon className={glyphClassName} />
+      ) : kind === "claude" ? (
+        <ClaudeAI className={glyphClassName} />
+      ) : (
+        <img src="/favicon-32x32.png" alt="" className={cn(glyphClassName, "rounded-xs")} />
+      )}
     </span>
   );
 }
 
+const MCP_CALL_STATUS_PRESENTATION: Record<
+  McpCallDisplayStatus,
+  { label: string; Icon: LucideIcon; iconClassName: string; accentClassName: string }
+> = {
+  running: {
+    label: "Running",
+    Icon: LoaderCircleIcon,
+    iconClassName: "animate-spin text-info motion-reduce:animate-none",
+    accentClassName: "border-l-info/70",
+  },
+  completed: {
+    label: "Completed",
+    Icon: CheckIcon,
+    iconClassName: "text-success",
+    accentClassName: "border-l-success/70",
+  },
+  failed: {
+    label: "Failed",
+    Icon: XIcon,
+    iconClassName: "text-destructive",
+    accentClassName: "border-l-destructive/80",
+  },
+  declined: {
+    label: "Declined",
+    Icon: BanIcon,
+    iconClassName: "text-muted-foreground",
+    accentClassName: "border-l-border",
+  },
+};
+
+function mcpCallDisplayStatus(entry: TimelineWorkEntry): McpCallDisplayStatus {
+  // Matches automation step drawers: a declined call isn't a failure.
+  if (isAutomationEntryFailed(entry)) return "failed";
+  if (entry.status === "declined") return "declined";
+  if (entry.status === "inProgress") return "running";
+  return "completed";
+}
+
+/** From the first call's start to the last call's finish. */
+function mcpCallGroupSpan(entries: ReadonlyArray<TimelineWorkEntry>): string | null {
+  const starts = entries.map((entry) => Date.parse(entry.startedAt ?? entry.createdAt));
+  const ends = entries.map((entry) => Date.parse(entry.createdAt));
+  const spanMs = Math.max(...ends) - Math.min(...starts);
+  return Number.isFinite(spanMs) && spanMs > 0 ? formatDuration(spanMs) : null;
+}
+
+/**
+ * Back-to-back MCP calls of a turn share one card: an "MCP" header, then a row per call
+ * that expands on its own. The accent follows the most telling status in the card.
+ */
+const McpToolCallGroupCard = memo(function McpToolCallGroupCard(props: {
+  entries: ReadonlyArray<TimelineWorkEntry>;
+  expandByDefault: boolean;
+  markdownCwd: string | undefined;
+  timestampFormat: TimestampFormat;
+  onImageExpand: (preview: ExpandedImagePreview) => void;
+}) {
+  const { isWorking } = useTimelineRowContext();
+  const aggregate = mcpAggregateStatus(props.entries.map(mcpCallDisplayStatus));
+  const callCount = props.entries.length;
+  const span = callCount > 1 && aggregate !== "running" ? mcpCallGroupSpan(props.entries) : null;
+  return (
+    <div
+      className={cn(
+        "group rounded-xl border border-l-2 border-border/60 bg-card/35",
+        MCP_CALL_STATUS_PRESENTATION[aggregate].accentClassName,
+      )}
+      data-slot="mcp-tool-card"
+      data-mcp-call-count={callCount}
+    >
+      <div
+        className="flex min-h-6 items-center gap-1.5 border-b border-border/60 px-3 py-1 text-2xs text-muted-foreground"
+        data-testid="mcp-card-header"
+      >
+        <McpIcon aria-hidden="true" className="size-3" />
+        <span className="font-semibold tracking-wide">MCP</span>
+        {callCount > 1 ? (
+          <span className="ml-auto tabular-nums" data-testid="mcp-card-call-count">
+            {callCount} calls{span ? ` · ${span}` : ""}
+          </span>
+        ) : null}
+      </div>
+      <div className="divide-y divide-border/60">
+        {props.entries.map((entry) => (
+          <McpToolCallRow
+            key={entry.id}
+            workEntry={entry}
+            expandByDefault={props.expandByDefault}
+            markdownCwd={props.markdownCwd}
+            timestampFormat={props.timestampFormat}
+            threadWorking={isWorking}
+            onImageExpand={props.onImageExpand}
+          />
+        ))}
+      </div>
+    </div>
+  );
+});
+
 const McpToolCallRow = memo(function McpToolCallRow(props: {
   workEntry: TimelineWorkEntry;
   expandByDefault: boolean;
-  turnDiffSummaryByTurnId: Map<TurnId, TurnDiffSummary>;
-  workspaceRoot: string | undefined;
   markdownCwd: string | undefined;
-  timestamp: ReactNode;
+  timestampFormat: TimestampFormat;
+  /** A running call on an idle thread (a lost completion) stops counting. */
+  threadWorking: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
 }) {
   const { workEntry, markdownCwd, expandByDefault, onImageExpand } = props;
@@ -3326,18 +3514,36 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
   // The tooltip keeps the fuller "MCP Call - <server>: <tool>" phrasing.
   const hoverTitle = toolWorkEntryHeading(workEntry);
   const serverName = workEntry.mcpServerName;
+  const serverLabel = workEntry.mcpServerLabel ?? serverName;
   const toolName = workEntry.mcpToolName ?? formatMcpToolHeading(workEntry);
-  // Matches automation step drawers: a declined call isn't a failure.
-  const failed = isAutomationEntryFailed(workEntry);
-  const running = !failed && workEntry.status === "inProgress";
-  const durationMs =
-    workEntry.startedAt && !running
-      ? Date.parse(workEntry.createdAt) - Date.parse(workEntry.startedAt)
-      : Number.NaN;
+  const status = mcpCallDisplayStatus(workEntry);
+  const failed = status === "failed";
+  const running = status === "running";
+  const statusPresentation = MCP_CALL_STATUS_PRESENTATION[status];
+  // Only a running call on a working thread subscribes to the shared clock.
+  const nowIso = useNowIso(running && props.threadWorking);
+  const startedAt = workEntry.startedAt ?? workEntry.createdAt;
+  const finishedMs = workEntry.startedAt
+    ? Date.parse(workEntry.createdAt) - Date.parse(workEntry.startedAt)
+    : Number.NaN;
+  const duration = running
+    ? formatElapsed(startedAt, nowIso)
+    : finishedMs > 0
+      ? formatDuration(finishedMs)
+      : null;
   const inputSummary = useMemo(() => {
     const input = parseJsonObject(workEntry.mcpInput);
     return input ? summarizeToolInputPairs(input, { quoteStrings: true }) : null;
   }, [workEntry.mcpInput]);
+  const resultPreview = useMemo(
+    () =>
+      running
+        ? null
+        : summarizeMcpResult(workEntry.mcpResult, parseJsonObject, (input) =>
+            summarizeToolInputPairs(input, { quoteStrings: true }),
+          ),
+    [running, workEntry.mcpResult],
+  );
 
   const handleOpenChange = useCallback((nextOpen: boolean) => {
     setUserOverrodeOpen(true);
@@ -3346,51 +3552,39 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
 
   return (
     <Collapsible
-      className="group rounded-xl border border-border bg-card"
       open={open}
       onOpenChange={handleOpenChange}
-      data-slot="mcp-tool-card"
+      data-slot="mcp-tool-call"
+      data-status={status}
     >
       <CollapsibleTrigger
         className={cn(
-          "flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          "flex w-full items-center gap-2.5 px-3 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
           !hasNestedContent && "cursor-default",
         )}
         disabled={!hasNestedContent}
         title={hoverTitle}
       >
-        <McpServerMonogram name={serverName ?? toolName} />
+        <statusPresentation.Icon
+          role="img"
+          aria-label={statusPresentation.label}
+          className={cn("size-3.5 shrink-0", statusPresentation.iconClassName)}
+        />
+        <McpServerIcon serverName={serverName ?? toolName} label={serverLabel ?? toolName} />
         <span className="flex min-w-0 flex-1 items-center gap-1.5 text-ui">
-          {serverName ? (
-            <span className="shrink-0 text-muted-foreground">{serverName} ›</span>
+          {serverLabel ? (
+            <span className="shrink-0 text-muted-foreground">{serverLabel} ›</span>
           ) : null}
           <span className="min-w-0 truncate font-medium text-foreground">{toolName}</span>
-          <span
-            className="inline-flex h-4.5 shrink-0 items-center gap-1 rounded-full border border-border px-1.5 text-2xs font-medium text-muted-foreground"
-            data-testid="mcp-badge"
-          >
-            <McpIcon aria-hidden="true" className="size-3" />
-            MCP
-          </span>
         </span>
         <span className="flex shrink-0 items-center gap-2 text-2xs text-muted-foreground tabular-nums">
-          {running ? (
-            <LoaderCircleIcon
-              role="img"
-              aria-label="Running"
-              className="size-3.5 animate-spin text-info"
-            />
-          ) : failed ? (
-            <CircleXIcon role="img" aria-label="Failed" className="size-3.5 text-destructive" />
-          ) : workEntry.status === "completed" ? (
-            <CheckIcon role="img" aria-label="Completed" className="size-3.5 text-success" />
-          ) : null}
-          {durationMs > 0 ? (
-            <span title="Since the call started, including input streaming and any approval wait">
-              {formatDuration(durationMs)}
+          {duration ? (
+            <span
+              title={`Started ${formatTimestamp(startedAt, props.timestampFormat)} · since the call started, including input streaming and any approval wait`}
+            >
+              {duration}
             </span>
           ) : null}
-          {props.timestamp}
           {hasNestedContent ? (
             <ChevronDownIcon
               aria-hidden="true"
@@ -3404,14 +3598,25 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
       </CollapsibleTrigger>
       {!open && inputSummary ? (
         <p
-          className="-mt-1 truncate px-3 pb-2 pl-11.5 text-xs text-muted-foreground"
+          className="-mt-1 truncate px-3 pb-2 pl-17 text-xs text-muted-foreground"
           data-testid="mcp-input-summary"
         >
           {inputSummary}
         </p>
       ) : null}
+      {!open && resultPreview ? (
+        <p
+          className={cn(
+            "-mt-1 truncate px-3 pb-2 pl-17 font-mono text-xs",
+            failed ? "text-destructive-foreground" : "text-muted-foreground",
+          )}
+          data-testid="mcp-result-preview"
+        >
+          {failed ? resultPreview : `→ ${resultPreview}`}
+        </p>
+      ) : null}
       {workEntry.mcpImages && workEntry.mcpImages.length > 0 ? (
-        <div className="flex flex-wrap gap-2 px-3 pb-2.5 pl-11.5" data-testid="mcp-tool-images">
+        <div className="flex flex-wrap gap-2 px-3 pb-2.5 pl-17" data-testid="mcp-tool-images">
           {workEntry.mcpImages.map((image) => {
             const url = attachmentPreviewUrlForId(image.attachmentId);
             return (
@@ -3453,7 +3658,7 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
       ) : null}
       {hasNestedContent && (
         <CollapsiblePanel>
-          <div className="border-t border-border px-3 py-3 pl-11.5">
+          <div className="border-t border-border/60 px-3 py-3 pl-17">
             <McpToolCallDetails
               mcpInput={workEntry.mcpInput}
               mcpResult={workEntry.mcpResult}
@@ -3853,8 +4058,8 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
       {formatTimestamp(workEntry.createdAt, props.timestampFormat)}
     </time>
   );
-  // A bordered MCP card spans the full row and shows its time in its own header; a time
-  // in the shared right gutter overlapped the card's corner whenever it was wider.
+  // A bordered MCP card spans the full row and keeps its time in the duration tooltip; a
+  // time in the shared right gutter overlapped the card's corner whenever it was wider.
   const mcpCard =
     !workEntry.diagnostic && workEntry.itemType === "mcp_tool_call" && props.expandMcpToolCalls;
   const ownsTimestamp = mcpCard || Boolean(workEntry.userInput);
@@ -3874,13 +4079,11 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
       markdownCwd={props.markdownCwd}
     />
   ) : mcpCard ? (
-    <McpToolCallRow
-      workEntry={workEntry}
+    <McpToolCallGroupCard
+      entries={[workEntry]}
       expandByDefault={props.expandMcpByDefault}
-      turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
-      workspaceRoot={props.workspaceRoot}
       markdownCwd={props.markdownCwd}
-      timestamp={timestamp("shrink-0")}
+      timestampFormat={props.timestampFormat}
       onImageExpand={props.onImageExpand}
     />
   ) : (
@@ -4054,11 +4257,16 @@ const TimelineRowView = memo(function TimelineRowView(props: {
   row: TimelineRow;
   externals: TimelineRowExternals;
   rowVersion: string;
+  compactBottom?: boolean;
 }) {
   "use memo";
   const testRenderCountProps = useTestRenderCountProps();
   return (
-    <TimelineRowWrapper row={props.row} testRenderCountProps={testRenderCountProps}>
+    <TimelineRowWrapper
+      row={props.row}
+      compactBottom={props.compactBottom ?? false}
+      testRenderCountProps={testRenderCountProps}
+    >
       <SurfaceErrorBoundary
         name="timeline-row"
         resetKeys={[props.row, props.rowVersion]}
@@ -4153,6 +4361,20 @@ function WorkGroupRowContent(props: {
           renderDiagnostics={renderAutomationDiagnostics}
           timestampFormat={timestampFormat}
           markdownCwd={markdownCwd}
+          onImageExpand={actions.onImageExpand}
+        />
+      </div>
+    );
+  }
+  // MCP cards stay visible across turns like automation cards; only their rows expand.
+  if (row.mcpGroup && !appEntries.length) {
+    return (
+      <div className="min-w-0 px-1 py-0.5">
+        <McpToolCallGroupCard
+          entries={logEntries}
+          expandByDefault={expandMcpToolCallCardsByDefault}
+          markdownCwd={markdownCwd}
+          timestampFormat={timestampFormat}
           onImageExpand={actions.onImageExpand}
         />
       </div>
@@ -4952,8 +5174,25 @@ export function buildTimelineRows(input: {
       const shouldIsolateEntry =
         !automationSurface &&
         shouldRenderWorkEntryAsStandaloneRow(timelineEntry.entry, isolationOptions);
+      const mcpGroup =
+        !automationSurface && isMcpCardWorkEntry(timelineEntry.entry, isolationOptions);
       let cursor = index + 1;
-      if (automationSurface) {
+      if (mcpGroup) {
+        // Back-to-back MCP calls of the same turn share one card.
+        while (cursor < timelineEntries.length) {
+          const nextEntry = timelineEntries[cursor];
+          if (
+            nextEntry?.kind !== "work" ||
+            classifyAutomationEntry(nextEntry.entry) ||
+            !isMcpCardWorkEntry(nextEntry.entry, isolationOptions) ||
+            nextEntry.entry.turnId !== timelineEntry.entry.turnId
+          ) {
+            break;
+          }
+          groupedEntries.push(nextEntry.entry);
+          cursor += 1;
+        }
+      } else if (automationSurface) {
         const end = automationRunEnd(timelineEntries, index, (candidate) =>
           candidate.kind === "work" ? candidate.entry : undefined,
         );
@@ -4986,7 +5225,7 @@ export function buildTimelineRows(input: {
       nextRows.push(
         reuse(
           timelineEntry.id,
-          ["work", isPriorTurn, automationSurface, automationActive, ...groupedEntries],
+          ["work", isPriorTurn, automationSurface, automationActive, mcpGroup, ...groupedEntries],
           () => ({
             kind: "work",
             id: timelineEntry.id,
@@ -4994,6 +5233,7 @@ export function buildTimelineRows(input: {
             groupedEntries,
             isPriorTurn,
             ...(automationSurface ? { automationSurface, automationActive } : {}),
+            ...(mcpGroup ? { mcpGroup } : {}),
             workSummary: automationSurface
               ? summarizeAutomationRun(automationSurface, groupedEntries, automationActive)
               : summarizeWorkGroup(groupedEntries),

@@ -54,6 +54,7 @@ import {
   resolveCommandExecutionSummaryText,
 } from "@t3tools/shared/commandSummary";
 import { compareCommandExecutions } from "./lib/commandExecutions";
+import { mcpToolNameServerKey, resolveMcpServerLabel } from "./lib/mcpServerDisplay";
 import { formatUsageLimitActivityLabel, readUsageLimitActivityDisplay } from "./lib/usageLimits";
 import type { RuntimeWarningVisibility, WorkLogFilter, WorkLogMode } from "./appSettings";
 
@@ -125,6 +126,8 @@ export interface WorkLogEntry {
   subagentResult?: string;
   subagentModel?: string;
   mcpServerName?: string;
+  /** The server's display name ("Claude Docs"); the raw name stays in `mcpServerName`. */
+  mcpServerLabel?: string;
   mcpToolName?: string;
   computerTool?: boolean;
   computerStep?: ComputerStepSummary;
@@ -788,6 +791,13 @@ function shouldKeepHistoricalWorkEntry(
   const inferredStatus = inferWorkLogStatus(activity, toolPayload?.status);
   const isHistoricalFileChange =
     toolPayload?.itemType === "file_change" || requestKind === "file-change";
+  // MCP cards are part of the conversation like automation cards; only finished calls
+  // stay, so an earlier turn never shows a stale spinner.
+  const isHistoricalMcpCall =
+    toolPayload?.itemType === "mcp_tool_call" &&
+    (inferredStatus === "completed" ||
+      inferredStatus === "failed" ||
+      inferredStatus === "declined");
 
   const isTerminalCodexCollaboration =
     Boolean(toolPayload?.codexCollaborationTool) &&
@@ -801,6 +811,7 @@ function shouldKeepHistoricalWorkEntry(
 
   return (
     isHistoricalAutomation ||
+    isHistoricalMcpCall ||
     (isHistoricalFileChange && inferredStatus === "completed") ||
     isTerminalCodexCollaboration ||
     isLifecycleOfTerminalCodexCollaboration
@@ -836,6 +847,7 @@ function workEntryVisibleSignature(entry: WorkLogEntry): string {
     codexCollaborationTool: entry.codexCollaborationTool,
     subagentStatesTruncated: entry.subagentStatesTruncated,
     mcpServerName: entry.mcpServerName,
+    mcpServerLabel: entry.mcpServerLabel,
     mcpToolName: entry.mcpToolName,
     computerTool: entry.computerTool,
     computerStep: entry.computerStep,
@@ -915,6 +927,32 @@ function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>):
   }
 
   return deduped.filter((entry): entry is WorkLogEntry => entry !== null);
+}
+
+/**
+ * An MCP call reports a running snapshot (no result yet) and then its completion. Both
+ * differ, so the dedupe keeps both and the stale snapshot spins forever beside the finished
+ * card; once a call has a terminal entry, drop its earlier snapshots.
+ */
+function dropSupersededMcpSnapshots(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
+  const finishedCallKeys = new Set<string>();
+  for (const entry of entries) {
+    if (
+      entry.itemType === "mcp_tool_call" &&
+      entry.providerItemId &&
+      workEntryLifecyclePrecedence(entry) === TERMINAL_LIFECYCLE_PRECEDENCE
+    ) {
+      finishedCallKeys.add(providerCallKey(entry.turnId, entry.providerItemId));
+    }
+  }
+  if (finishedCallKeys.size === 0) return [...entries];
+  return entries.filter(
+    (entry) =>
+      entry.itemType !== "mcp_tool_call" ||
+      !entry.providerItemId ||
+      workEntryLifecyclePrecedence(entry) === TERMINAL_LIFECYCLE_PRECEDENCE ||
+      !finishedCallKeys.has(providerCallKey(entry.turnId, entry.providerItemId)),
+  );
 }
 
 const TERMINAL_LIFECYCLE_PRECEDENCE = 2;
@@ -1010,6 +1048,19 @@ function userInputQuestionsByRequestId(
     if (parsed) questions.set(payload.requestId, parsed);
   }
   return questions;
+}
+
+/** Real MCP server names from status events, keyed by their flattened tool-name form. */
+function mcpStatusServerNamesByKey(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlyMap<string, string> {
+  const names = new Map<string, string>();
+  for (const activity of activities) {
+    if (activity.kind !== "mcp.status.updated") continue;
+    const name = asTrimmedString(workLogPayload(activity)?.name);
+    if (name) names.set(mcpToolNameServerKey(name), name);
+  }
+  return names;
 }
 
 /** The question text, joined with " · " when the request asked several. */
@@ -1676,6 +1727,7 @@ export function deriveWorkLogEntries(
     }
   }
   const userInputQuestions = userInputQuestionsByRequestId(ordered);
+  const mcpStatusNamesByKey = mcpStatusServerNamesByKey(ordered);
   const resolvedUserInputRequestIds = new Set<string>();
   // Muse and Pi resolve with a value-free receipt; only these resolutions carry answers.
   const answeredUserInputRequestIds = new Set<string>();
@@ -1845,10 +1897,19 @@ export function deriveWorkLogEntries(
       const startedAt =
         toolStartedAt && toolStartedAt < activity.createdAt ? toolStartedAt : undefined;
       // Only these inputs depend on more than the activity itself.
+      const activityMcpServerName = readToolActivityPayload(activity.payload)?.mcpServerName;
+      const mcpServerLabel = activityMcpServerName
+        ? resolveMcpServerLabel(activityMcpServerName, mcpStatusNamesByKey)
+        : null;
       const cacheKey =
         activity.kind === "runtime.warning"
           ? runtimeWarningVisibility
-          : JSON.stringify([userInput ?? null, answeredQuestion, startedAt ?? null]);
+          : JSON.stringify([
+              userInput ?? null,
+              answeredQuestion,
+              startedAt ?? null,
+              mcpServerLabel,
+            ]);
       const cached = workLogEntryByActivity.get(activity);
       if (cached?.cacheKey === cacheKey) {
         return cached.entry;
@@ -2004,6 +2065,7 @@ export function deriveWorkLogEntries(
       }
       if (toolPayload?.mcpServerName) {
         entry.mcpServerName = toolPayload.mcpServerName;
+        if (mcpServerLabel) entry.mcpServerLabel = mcpServerLabel;
       }
       if (toolPayload?.computerTool === true) entry.computerTool = true;
       if (toolPayload?.computerTool === true && toolPayload.computerStep) {
@@ -2066,7 +2128,7 @@ export function deriveWorkLogEntries(
     });
 
   const deduped = dedupeProviderItemWorkLogEntries(
-    coalesceProviderItemSnapshots(correlateSubagentActivities(entries)),
+    dropSupersededMcpSnapshots(coalesceProviderItemSnapshots(correlateSubagentActivities(entries))),
   );
   const paired = pairDiagnosticLifecycles(deduped);
   const modeFiltered = paired.filter((entry) => {
