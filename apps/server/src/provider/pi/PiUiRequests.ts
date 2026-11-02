@@ -50,8 +50,11 @@ export class PiUiRequests {
     )
       return { type: "protocol-error" };
     const title = piRecordString(event, "title") || method;
+    // Extensions may send a blank message or placeholder; use the first one with text.
     const message =
-      piRecordString(event, "message") ?? piRecordString(event, "placeholder") ?? title;
+      [piRecordString(event, "message"), piRecordString(event, "placeholder")].find(
+        (text) => text !== undefined && text.trim().length > 0,
+      ) ?? title;
     const prefill = method === "editor" ? (piRecordString(event, "prefill") ?? "") : undefined;
     const timeout = piRecordNumber(event, "timeout");
     const options = event.options;

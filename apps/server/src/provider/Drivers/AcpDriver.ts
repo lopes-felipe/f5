@@ -79,7 +79,12 @@ export const AcpDriver: ProviderDriver<AcpSettings, AcpDriverEnv> = {
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         onRuntimeReady: (runtime) =>
           Effect.gen(function* () {
-            const discovered = customAcpModels(yield* runtime.getConfigOptions);
+            // The runtime has started, so this reads its cached setup result.
+            const started = yield* runtime.start().pipe(Effect.option);
+            const discovered = customAcpModels(
+              yield* runtime.getConfigOptions,
+              Option.getOrUndefined(started)?.sessionSetupResult.models,
+            );
             if (discovered.length) {
               models = discovered;
               yield* refreshSnapshot;

@@ -7221,6 +7221,113 @@ describe("ClaudeAdapterLive", () => {
     );
   }
 
+  for (const overage of [false, true]) {
+    it.effect(
+      `reads the reset time from a blocked assistant when Claude suppresses rate_limit_event (overage: ${overage})`,
+      () => {
+        const harness = makeHarness();
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+          });
+          yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+          harness.query.emit({
+            type: "assistant",
+            error: "rate_limit",
+            uuid: "quick-retry-assistant",
+            session_id: "quick-retry-session",
+            parent_tool_use_id: null,
+            api_error_params: {
+              rate_limit_info: {
+                status: "rejected",
+                rateLimitType: "five_hour",
+                resetsAt: 1790607600,
+                ...(overage ? { overageStatus: "allowed" } : {}),
+              },
+            },
+            message: { id: "quick-retry-assistant", role: "assistant", content: [], usage: {} },
+          } as unknown as SDKMessage);
+          harness.query.emit({
+            type: "result",
+            subtype: "success",
+            is_error: true,
+            api_error_status: 429,
+            result: "Claude AI usage limit reached",
+            session_id: "quick-retry-session",
+            uuid: "quick-retry-result",
+            usage: {},
+            modelUsage: {},
+          } as unknown as SDKMessage);
+          const completed = yield* adapter.streamEvents.pipe(
+            Stream.filter((event) => event.type === "turn.completed"),
+            Stream.runHead,
+          );
+          assert.equal(completed._tag, "Some");
+          if (completed._tag !== "Some" || completed.value.type !== "turn.completed") return;
+          assert.equal(completed.value.payload.state, "failed");
+          const usageLimit = completed.value.payload.usageLimit;
+          assert.equal(usageLimit?.evidence, "typed");
+          if (overage) {
+            assert.deepEqual(usageLimit?.windows, []);
+            assert.equal(usageLimit?.resetsAt, null);
+          } else {
+            assert.deepEqual(
+              usageLimit?.windows.map((window) => window.id),
+              ["five_hour"],
+            );
+            assert.equal(usageLimit?.resetsAt, new Date(1790607600 * 1000).toISOString());
+          }
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+        );
+      },
+    );
+  }
+
+  it.effect("shows the final result's API error text when Claude gives up on API errors", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        terminal_reason: "api_error",
+        api_error_status: 500,
+        result: `  API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"}} Bearer sk-ant-abcdefghijklmnopqrstuvwxyz ${"x".repeat(600)}`,
+        session_id: "api-error-session",
+        uuid: "api-error-result",
+        usage: {},
+        modelUsage: {},
+      } as unknown as SDKMessage);
+      const completed = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "turn.completed"),
+        Stream.runHead,
+      );
+      assert.equal(completed._tag, "Some");
+      if (completed._tag !== "Some" || completed.value.type !== "turn.completed") return;
+      assert.equal(completed.value.payload.state, "failed");
+      const errorMessage = completed.value.payload.errorMessage ?? "";
+      assert.match(errorMessage, /^API Error: 500 .*Internal server error/);
+      assert.include(errorMessage, "Bearer [REDACTED]");
+      assert.notInclude(errorMessage, "sk-ant-");
+      assert.equal(errorMessage.length, 500);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   for (const originalError of [undefined, "usage limit reached"] as const) {
     it.effect(
       `requires positive usage evidence outside a turn (${originalError ?? "no error text"})`,

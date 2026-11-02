@@ -83,12 +83,14 @@ import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapa
 import type { ProviderSessionStartInput } from "@t3tools/contracts";
 import type { RuntimeUsageLimit } from "@t3tools/contracts";
 import {
+  claudeBlockedAssistantLimit,
   claudeGatewayUsageLimit,
   claudeLimitState,
   usageLimitFromWindows,
   usageLimitMessage,
 } from "../usageLimitMessages.ts";
 import { isProviderResumeFailureText } from "../resumeFailure.ts";
+import { claudeApiErrorText } from "../claudeApiErrorText.ts";
 import { appendClaudeStderrTail, parseClaudeProcessExit } from "../claudeProcessExit.ts";
 import { makeClaudeProcessGroupSpawner } from "../claudeProcessGroup.ts";
 import { resolveClaudeToolSearchOverride } from "../claudeToolSearch.ts";
@@ -5215,7 +5217,13 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             context.turnState.authenticationFailureMessage =
               "Claude login expired or is invalid. Run /login in this provider account, then retry.";
           }
-          if (message.error === "rate_limit") context.turnState.rateLimitFailure = true;
+          if (message.error === "rate_limit") {
+            context.turnState.rateLimitFailure = true;
+            // A fresh rate_limit_event stays authoritative for its window.
+            const limit = parentToolUseId ? undefined : claudeBlockedAssistantLimit(message);
+            if (limit && !context.rejectedUsageLimits?.has(limit.window))
+              (context.rejectedUsageLimits ??= new Map()).set(limit.window, limit);
+          }
           context.turnState.items.push(message.message);
           yield* backfillAssistantTextBlocksFromSnapshot(context, message);
         }
@@ -5355,7 +5363,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           resultUserFacingError(message) ??
           (gatewayUsageLimit && message.subtype === "success" ? message.result : undefined);
         const errorMessage =
-          message.terminal_reason === "prompt_too_long" || (blockingLimit && !hint)
+          (message.terminal_reason === "prompt_too_long" || (blockingLimit && !hint)
             ? CLAUDE_CONTEXT_WINDOW_FULL_ERROR
             : blockingLimit && hint
               ? hint
@@ -5364,7 +5372,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   (!originalError ||
                     /usage.?limit|rate.?limit|authentication|unauthorized/i.test(originalError))
                 ? [originalError, hint].filter(Boolean).join(" ")
-                : originalError;
+                : originalError) ?? claudeApiErrorText(message);
         const rejectedWindows = [...(context.rejectedUsageLimits?.values() ?? [])]
           .filter((limit) => limit.resettable)
           .map((limit) => limit.structuredWindow);

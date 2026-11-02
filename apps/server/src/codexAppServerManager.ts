@@ -357,6 +357,10 @@ export interface CodexThreadSnapshot {
 }
 
 const CODEX_JSON_RPC_TIMEOUT_MS = 20_000;
+/** How long a closed stdout waits for the process exit status before ending the session. */
+export const CODEX_EXIT_STATUS_GRACE_MS = 250;
+export const CODEX_STDOUT_ENDED_MESSAGE =
+  "codex app-server closed its output stream; the session was ended.";
 export const CODEX_THREAD_OPEN_TIMEOUT_MS = 60_000;
 /** Internal event methods for private MCP form/URL requests (value-free payloads). */
 export const CODEX_ELICITATION_OPENED_METHOD = "f5/elicitation/opened";
@@ -3227,6 +3231,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     let finishing = false;
     let terminal: { method: string; message: string } | undefined;
     let deadline: ReturnType<typeof setTimeout> | undefined;
+    let exitStatusGrace: ReturnType<typeof setTimeout> | undefined;
     const isCurrent = () => this.sessions.get(context.session.threadId) === context;
     const acceptsOutput = () => context.phase !== "closed";
     const emitStderr = (line: string) => {
@@ -3244,6 +3249,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (!terminal || context.phase === "closed" || finishing) return;
       finishing = true;
       if (deadline) clearTimeout(deadline);
+      if (exitStatusGrace) clearTimeout(exitStatusGrace);
       // A descendant can hold stdout open after the provider exits. Finish
       // bytes already received while the context still accepts notifications.
       context.output.finish();
@@ -3277,6 +3283,17 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     };
     const onStdoutClose = () => {
       stdoutClosed = true;
+      if (!terminal && context.phase !== "closed" && !exitStatusGrace) {
+        // Node ends stdout before it reports the exit of a crashed process, so
+        // wait briefly for the exit status. stdout can also close while the
+        // process keeps running; no response can arrive then, so end the session.
+        exitStatusGrace = setTimeout(() => {
+          if (terminal || context.phase === "closed") return;
+          onError(new Error(CODEX_STDOUT_ENDED_MESSAGE));
+          if (!context.child.killed) killChildTree(context.child);
+        }, CODEX_EXIT_STATUS_GRACE_MS);
+        exitStatusGrace.unref?.();
+      }
       maybeFinish();
     };
     const onStderrClose = () => {
@@ -3286,6 +3303,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const beginDrain = (error: Error, method: string, message: string) => {
       // Written RPCs reject immediately on exit, even if a response remains in
       // the pipe. Notifications keep draining until EOF or the shared budget.
+      if (exitStatusGrace) clearTimeout(exitStatusGrace);
       this.failPendingRequests(context, error);
       this.abortElicitations(context);
       context.writer.close(error);

@@ -29,7 +29,9 @@ import {
   codexOneOffPoolKey,
   codexRequestTimeoutMs,
   CodexAppServerManager,
+  CODEX_EXIT_STATUS_GRACE_MS,
   CODEX_MAX_INCOMING_MESSAGE_BYTES,
+  CODEX_STDOUT_ENDED_MESSAGE,
   CodexJsonRpcError,
   classifyCodexStderrLine,
   isRecoverableThreadResumeError,
@@ -4767,6 +4769,52 @@ describe("Codex process settlement and source draining", () => {
     expect(f.child.eventNames()).toEqual([]);
     expect(f.output.listenerCount("line")).toBe(0);
     expect(f.child.stderr.listenerCount("data")).toBe(0);
+  });
+  it("fails pending requests promptly when stdout closes while the process keeps running", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      const kill = vi.fn(() => true);
+      Object.assign(f.child, { killed: false, exitCode: null, signalCode: null, kill });
+      f.output.emit("close");
+      await vi.advanceTimersByTimeAsync(CODEX_EXIT_STATUS_GRACE_MS - 1);
+      expect(f.reject).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(f.reject).toHaveBeenCalledTimes(1);
+      expect(f.reject.mock.calls[0]?.[0]).toMatchObject({ message: CODEX_STDOUT_ENDED_MESSAGE });
+      expect(f.context.pending.size).toBe(0);
+      expect(f.errors).toHaveBeenCalledWith(f.context, "process/error", CODEX_STDOUT_ENDED_MESSAGE);
+      f.child.stderr.emit("close");
+      expect(f.lifecycle).toHaveBeenCalledWith(
+        f.context,
+        "session/exited",
+        CODEX_STDOUT_ENDED_MESSAGE,
+        TurnId.makeUnsafe("draining-turn"),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("reports the exit status when it follows stdout closure within the grace period", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      f.output.emit("close");
+      await vi.advanceTimersByTimeAsync(100);
+      f.child.emit("exit", 1, null);
+      expect(f.reject).toHaveBeenCalledTimes(1);
+      expect(f.reject.mock.calls[0]?.[0]).toMatchObject({
+        message: "codex app-server exited (code=1, signal=null).",
+      });
+      await vi.advanceTimersByTimeAsync(CODEX_EXIT_STATUS_GRACE_MS);
+      expect(f.errors).not.toHaveBeenCalledWith(
+        f.context,
+        "process/error",
+        CODEX_STDOUT_ENDED_MESSAGE,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it("closes hanging pipes at the drain deadline without leaking listeners", async () => {
     vi.useFakeTimers();

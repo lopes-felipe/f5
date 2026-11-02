@@ -92,15 +92,33 @@ type AcpToolCallUpdate = Extract<
   { readonly sessionUpdate: "tool_call" | "tool_call_update" }
 >;
 
+type AcpSelectConfigOption = Extract<
+  EffectAcpSchema.SessionConfigOption,
+  { readonly type: "select" }
+>;
+
+/**
+ * The one config option that lists and selects models. Discovery, current
+ * selection and startup writes must all use it, or a model offered in the
+ * picker can be written to a different option and fail validation. ACP
+ * resolves options in the same category by array order; an uncategorized
+ * `model` select is the fallback for agents that omit the category.
+ */
+export function findModelConfigOption(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+): AcpSelectConfigOption | undefined {
+  const selects = (configOptions ?? []).filter(
+    (option): option is AcpSelectConfigOption =>
+      option.type === "select" && option.id.trim().length > 0,
+  );
+  return (
+    selects.find((option) => option.category === "model") ??
+    selects.find((option) => option.id.trim() === "model")
+  );
+}
+
 export function extractModelConfigId(sessionResponse: AcpSessionSetupResponse): string | undefined {
-  const configOptions = sessionResponse.configOptions;
-  if (!configOptions) return undefined;
-  for (const opt of configOptions) {
-    if (opt.category === "model" && opt.id.trim().length > 0) {
-      return opt.id.trim();
-    }
-  }
-  return undefined;
+  return findModelConfigOption(sessionResponse.configOptions)?.id.trim();
 }
 
 export function findSessionConfigOption(

@@ -5,6 +5,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import type * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
+import { findModelConfigOption } from "./AcpRuntimeModel.ts";
 import {
   AcpSessionRuntime,
   type AcpSessionRuntimeOptions,
@@ -102,12 +103,7 @@ export function currentGrokModelIdFromSessionSetup(
 ): string | undefined {
   const reported = sessionSetupResult.models?.currentModelId?.trim();
   if (reported) return reported;
-  const model = sessionSetupResult.configOptions?.find(
-    (option) => option.id === "model" || option.category === "model",
-  );
-  return model?.type === "select" && typeof model.currentValue === "string"
-    ? model.currentValue.trim() || undefined
-    : undefined;
+  return findModelConfigOption(sessionSetupResult.configOptions)?.currentValue.trim() || undefined;
 }
 
 export function applyGrokAcpModelSelection<E>(input: {

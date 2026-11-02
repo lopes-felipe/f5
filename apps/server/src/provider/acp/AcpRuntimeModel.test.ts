@@ -5,6 +5,7 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 import {
   type AcpToolCallState,
   extractModelConfigId,
+  findModelConfigOption,
   decideToolCallUpdateEmission,
   mergeToolCallState,
   parsePermissionRequest,
@@ -93,6 +94,30 @@ describe("AcpRuntimeModel", () => {
     } satisfies EffectAcpSchema.NewSessionResponse);
 
     expect(modelConfigId).toBe("model");
+  });
+
+  it("discovers and selects models from the same config option", () => {
+    const select = (id: string, category?: string) =>
+      ({
+        id,
+        name: id,
+        ...(category ? { category } : {}),
+        type: "select",
+        currentValue: `${id}-current`,
+        options: [{ value: `${id}-current`, name: id }],
+      }) satisfies EffectAcpSchema.SessionConfigOption;
+    const configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> = [
+      { id: "model_fast", name: "Fast", category: "model", type: "boolean", currentValue: false },
+      select("model"),
+      select("llm", "model"),
+      select("subagent_llm", "model"),
+    ];
+
+    expect(findModelConfigOption(configOptions)?.id).toBe("llm");
+    expect(extractModelConfigId({ sessionId: "session-1", configOptions })).toBe("llm");
+    expect(findModelConfigOption([select("mode", "mode"), select("model")])?.id).toBe("model");
+    expect(findModelConfigOption([select("mode", "mode")])).toBeUndefined();
+    expect(findModelConfigOption(undefined)).toBeUndefined();
   });
 
   it("projects typed ACP tool call updates into runtime events", () => {
