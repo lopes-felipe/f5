@@ -31,6 +31,7 @@ import { createUpdateInstaller } from "./updateInstall";
 import { assertUpdateCaller } from "./updateIpc";
 import { createUpdateController } from "./updateController";
 import { initializeUpdatePreferences, writeUpdatePreferences } from "./updateChannel";
+import { consumeUpdateInstallMarker, writeUpdateInstallMarker } from "./updateInstallMarker";
 import { migrateUserData } from "./userDataMigration";
 import { isolatedBackendCommand } from "./backendComputerIsolation";
 import {
@@ -191,6 +192,7 @@ import {
   reduceDesktopUpdateStateOnDownloadComplete,
   reduceDesktopUpdateStateOnDownloadProgress,
   reduceDesktopUpdateStateOnInstallFailure,
+  claimRecentInstall,
 } from "./updateMachine";
 import { normalizeDesktopUpdateReleaseNotes } from "./updateReleaseNotes";
 import { isArm64HostRunningIntelBuild, resolveDesktopRuntimeInfo } from "./runtimeArch";
@@ -232,6 +234,7 @@ const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
 const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
 const UPDATE_CHECK_CHANNEL = "desktop:update-check";
 const UPDATE_SET_CHANNEL_CHANNEL = "desktop:update-set-channel";
+const UPDATE_CLAIM_RECENT_INSTALL_CHANNEL = "desktop:update-claim-recent-install";
 const PREVIEW_RECORDING_FRAME_CHANNEL = "desktop-preview:recording-frame";
 const PREVIEW_STATE_CHANNEL = "desktop-preview:state";
 const lastPreviewStateEmissionByTabId = new Map<
@@ -2440,7 +2443,18 @@ function handleCheckForUpdatesMenuClick(): void {
 async function checkForUpdatesFromMenu(): Promise<void> {
   await checkForUpdates("menu");
 
-  if (updateState.status === "up-to-date") {
+  if (updateState.status === "available" && updateState.availableVersion) {
+    const choice = await dialog.showMessageBox({
+      type: "info",
+      title: "Update available",
+      message: `F5 ${updateState.availableVersion} is available.`,
+      detail: `You have ${updateState.currentVersion}. The download runs in the background and you can keep working.`,
+      buttons: ["Download", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (choice.response === 0) void downloadAvailableUpdate();
+  } else if (updateState.status === "up-to-date") {
     void dialog.showMessageBox({
       type: "info",
       title: "You're up to date!",
@@ -2697,9 +2711,9 @@ const updateInstaller = createUpdateInstaller({
   stage: () => updaterInstallerAdapter.stage(),
   onStageStart: () => {
     writeDesktopLogHeader("update install confirmed");
-    setUpdateState({ status: "preparing", message: null });
+    setUpdateState({ status: "preparing", installPhase: "staging", message: null });
   },
-  onCancel: () => setUpdateState({ status: "downloaded" }),
+  onCancel: () => setUpdateState({ status: "downloaded", installPhase: null }),
   resetAttempt: () => updaterInstallerAdapter.resetAttempt(),
   watchdogEnabled: updaterInstallerAdapter.watchdogEnabled,
   canInstall: () => !isQuitting && updaterConfigured && updateState.status === "downloaded",
@@ -2737,6 +2751,7 @@ const updateInstaller = createUpdateInstaller({
           bounds: window.getBounds(),
         };
       });
+    setUpdateState({ installPhase: "stopping" });
     // The installer owns this quit: repeats must not cut its cleanup short.
     isQuitting = true;
     updateInstallOwnsQuit = true;
@@ -2752,6 +2767,21 @@ const updateInstaller = createUpdateInstaller({
     shutdownComplete = true;
     restoreStdIoCapture?.();
     return true;
+  },
+  // A marker left by a failed install is dropped at startup because the
+  // running version will not match, so recovery does not need to clear it.
+  onPrepared: () => {
+    const toVersion = updateState.downloadedVersion;
+    if (!toVersion) return;
+    try {
+      writeUpdateInstallMarker(updateInstallMarkerPath(), {
+        fromVersion: updateState.currentVersion,
+        toVersion,
+        releaseNotes: updateState.releaseNotes ?? null,
+      });
+    } catch (error) {
+      console.warn("[desktop-updater] Could not record the pending update", error);
+    }
   },
   install: async () => {
     writeDesktopLogHeader("update install: launching installer");
@@ -2792,9 +2822,14 @@ async function installDownloadedUpdate() {
   return updateInstaller.request();
 }
 
+function updateInstallMarkerPath(): string {
+  return Path.join(app.getPath("userData"), "update-pending.json");
+}
+
 function configureAutoUpdater(): void {
   const preferencesPath = Path.join(app.getPath("userData"), "update-preferences.json");
   const channel = initializeUpdatePreferences(preferencesPath, app.getVersion());
+  const recentlyInstalled = consumeUpdateInstallMarker(updateInstallMarkerPath(), app.getVersion());
   const disabledReason = getAutoUpdateDisabledReason({
     isDevelopment,
     isPackaged: app.isPackaged,
@@ -2813,6 +2848,7 @@ function configureAutoUpdater(): void {
     status: enabled ? "idle" : "disabled",
     channel,
     message: disabledReason,
+    recentlyInstalled,
   });
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
@@ -2881,7 +2917,7 @@ function configureAutoUpdater(): void {
       shouldBroadcastDownloadProgress(updateState, progress.percent) ||
       updateState.message !== null
     ) {
-      setUpdateState(reduceDesktopUpdateStateOnDownloadProgress(updateState, progress.percent));
+      setUpdateState(reduceDesktopUpdateStateOnDownloadProgress(updateState, progress));
     }
     const milestone = percent - (percent % 10);
     if (milestone > lastLoggedDownloadMilestone) {
@@ -3781,6 +3817,13 @@ function registerIpcHandlers(): void {
         state: updateState,
       }
     );
+  });
+  ipcMain.removeHandler(UPDATE_CLAIM_RECENT_INSTALL_CHANNEL);
+  ipcMain.handle(UPDATE_CLAIM_RECENT_INSTALL_CHANNEL, async (event) => {
+    assertUpdateSender(event);
+    const { claimed, state } = claimRecentInstall(updateState);
+    if (claimed) setUpdateState(state);
+    return claimed;
   });
   ipcMain.removeHandler(UPDATE_DOWNLOAD_CHANNEL);
   ipcMain.handle(UPDATE_DOWNLOAD_CHANNEL, async (event) => {

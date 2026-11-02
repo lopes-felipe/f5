@@ -635,10 +635,25 @@ export interface DesktopUpdateState {
   /** Sanitized plain-text notes supplied by the update provider. */
   releaseNotes?: string | null;
   downloadPercent: number | null;
+  downloadTransferredBytes?: number | null;
+  downloadTotalBytes?: number | null;
+  downloadBytesPerSecond?: number | null;
+  /** What install preparation is doing while status is "preparing". */
+  installPhase?: DesktopUpdateInstallPhase | null;
+  /** Set on the first launch after an update was installed. */
+  recentlyInstalled?: DesktopUpdateRecentInstall | null;
   checkedAt: string | null;
   message: string | null;
   errorContext: "check" | "download" | "install" | null;
   canRetry: boolean;
+}
+
+export type DesktopUpdateInstallPhase = "staging" | "stopping";
+
+export interface DesktopUpdateRecentInstall {
+  fromVersion: string;
+  toVersion: string;
+  releaseNotes: string | null;
 }
 
 export interface DesktopUpdateActionResult {
@@ -745,6 +760,8 @@ export interface DesktopBridge {
   onTrackpadScroll?: (listener: (event: DesktopTrackpadScrollEvent) => void) => () => void;
   checkForUpdates?: () => Promise<DesktopUpdateActionResult>;
   setUpdateChannel?: (channel: DesktopUpdateChannel) => Promise<DesktopUpdateActionResult>;
+  /** Returns the recent install once across all windows and profiles, then null. */
+  claimRecentUpdateInstall?: () => Promise<DesktopUpdateRecentInstall | null>;
   getUpdateState: () => Promise<DesktopUpdateState>;
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
   installUpdate: () => Promise<DesktopUpdateActionResult>;

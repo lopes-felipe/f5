@@ -115,4 +115,31 @@ it("shows preparation progress and disables install and channel actions", async 
   f.emit({ ...initial, status: "preparing", downloadedVersion: "0.2.0" });
   await expect.element(screen.getByRole("button", { name: "Preparing update…" })).toBeDisabled();
   await expect.element(screen.getByRole("switch", { name: "Beta updates" })).toBeDisabled();
+  await expect
+    .element(screen.getByText("Verifying and unpacking the update. This can take a minute."))
+    .toBeVisible();
+  f.emit({
+    ...initial,
+    status: "preparing",
+    downloadedVersion: "0.2.0",
+    installPhase: "stopping",
+  });
+  await expect.element(screen.getByText("Closing windows and stopping agents…")).toBeVisible();
+});
+it("renders a download progress bar with bytes and speed", async () => {
+  const f = bridge();
+  const screen = await render(<AboutSettings />);
+  const MB = 1024 * 1024;
+  f.emit({
+    ...initial,
+    status: "downloading",
+    availableVersion: "0.2.0",
+    downloadPercent: 42,
+    downloadTransferredBytes: 38 * MB,
+    downloadTotalBytes: 92 * MB,
+    downloadBytesPerSecond: 4 * MB,
+  });
+  const bar = screen.getByRole("progressbar", { name: "Downloading 0.2.0" });
+  await expect.element(bar).toHaveAttribute("aria-valuenow", "42");
+  await expect.element(screen.getByText(/38 MB of 92 MB · 4 MB\/s/)).toBeVisible();
 });
