@@ -6149,9 +6149,11 @@
     },
     {
       "createdAt": "2026-11-02T10:32:38.196Z",
+      "decidedAt": "2026-11-02T11:49:25.410Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-28410",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
