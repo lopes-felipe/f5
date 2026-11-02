@@ -49,8 +49,11 @@ export function computerBackgroundGate(
   platform: string,
   packaged: boolean,
   devOverride: string | undefined,
+  arch: string = process.arch,
 ): ComputerBackgroundStatus {
   if (platform !== "darwin" && platform !== "win32")
+    return { available: false, reason: "unsupported-platform" };
+  if (platform === "win32" && arch !== "x64")
     return { available: false, reason: "unsupported-platform" };
   if (!COMPUTER_BACKGROUND_PREVIEW[platform] && (packaged || devOverride !== "1"))
     return { available: false, reason: "preview-off" };
@@ -73,12 +76,19 @@ export function computerCertificationStatus(
   packaged: boolean,
   devOverride: string | undefined,
   osVersion = release(),
+  arch: string = process.arch,
 ): ComputerAutomationBackendStatus {
   if (platform !== "darwin" && platform !== "win32")
     return {
       available: false,
       reason: "unsupported-platform",
       detail: "Computer control requires macOS 14+ or Windows 10 2004+.",
+    };
+  if (platform === "win32" && arch !== "x64")
+    return {
+      available: false,
+      reason: "unsupported-platform",
+      detail: "Windows computer control preview requires the x64 desktop distribution.",
     };
   const version = osVersion.split(".").map(Number);
   if (

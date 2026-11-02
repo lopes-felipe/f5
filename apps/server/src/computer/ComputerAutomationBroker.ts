@@ -219,6 +219,8 @@ export class ComputerAutomationBrokerRuntime {
   private nativeOtherProfile = false;
   private chromeOtherProfile = false;
   private chromeRecovery = false;
+  private hostPlatform: "darwin" | "win32" | undefined;
+  private stopShortcut: string | undefined;
   private readonly offHost: () => void;
   private readonly offPause: () => void;
   constructor(
@@ -322,7 +324,15 @@ export class ComputerAutomationBrokerRuntime {
         this.chromeRecovery = message.recoveryRequired ?? false;
         this.publishUse();
       }
-      if (message.type === "status") this.publishUse();
+      if (
+        message.type === "status" &&
+        (this.hostPlatform !== message.status.hostPlatform ||
+          this.stopShortcut !== message.status.stopShortcut)
+      ) {
+        this.hostPlatform = message.status.hostPlatform;
+        this.stopShortcut = message.status.stopShortcut;
+        this.publishUse();
+      }
       if (
         message.type === "status" &&
         !message.status.available &&

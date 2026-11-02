@@ -589,6 +589,28 @@ describe("background delivery", () => {
         hostPlatform: "win32",
         stopShortcut: "Ctrl+Alt+Shift+F12",
       });
+      const events: unknown[] = [];
+      const off = h.broker.subscribe((event) => events.push(event));
+      h.ipc.emit("message", {
+        type: "status",
+        status: {
+          available: false,
+          reason: "monitor-unhealthy",
+          hostPlatform: "win32",
+          stopShortcut: "Ctrl+Alt+Shift+F12",
+        },
+      });
+      expect(
+        events.filter((event) => (event as { channel: string }).channel === "computer.use.changed"),
+      ).toHaveLength(0);
+      h.ipc.emit("message", {
+        type: "status",
+        status: { available: true, hostPlatform: "win32", stopShortcut: "Updated shortcut" },
+      });
+      expect(
+        events.filter((event) => (event as { channel: string }).channel === "computer.use.changed"),
+      ).toHaveLength(1);
+      off();
     } finally {
       h.broker.close();
     }

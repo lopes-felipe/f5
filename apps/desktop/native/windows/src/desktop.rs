@@ -806,6 +806,17 @@ pub fn run() {
             // Probe while idle, before accepting the first action, as well as
             // during execution. Mouse monitoring uses a registered raw-input
             // receiver and a thread challenge, without synthetic mouse input.
+            if !state.keyboard_hook_installed.load(Ordering::SeqCst)
+                && last_probe.is_none_or(|at| at.elapsed() >= Duration::from_secs(2))
+            {
+                last_probe = Some(Instant::now());
+                state.healthy.store(false, Ordering::SeqCst);
+                suspend(None);
+                let thread_id = state.hook_thread.load(Ordering::SeqCst) as u32;
+                unsafe {
+                    let _ = PostThreadMessageW(thread_id, WM_APP + 5, WPARAM(0), LPARAM(0));
+                }
+            }
             if pending_probe.is_none()
                 && state.keyboard_hook_installed.load(Ordering::SeqCst)
                 && last_probe.is_none_or(|at| at.elapsed() >= Duration::from_secs(2))

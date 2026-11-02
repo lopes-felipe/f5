@@ -1,13 +1,28 @@
 use super::*;
 
 pub(super) unsafe fn automation() -> Result<IUIAutomation, Value> {
-    thread_local! { static CLIENT: Result<IUIAutomation, Value> = unsafe { create_automation() }; }
-    CLIENT.with(Clone::clone)
-}
-unsafe fn create_automation() -> Result<IUIAutomation, Value> {
-    if CoInitializeEx(None, COINIT_MULTITHREADED).is_err() {
+    thread_local! {
+        static CLIENT: std::cell::RefCell<Option<IUIAutomation>> = const { std::cell::RefCell::new(None) };
+        static COM_READY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    if !COM_READY.with(|ready| {
+        if !ready.get() {
+            ready.set(unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).is_ok() });
+        }
+        ready.get()
+    }) {
         return Err(blocked("focus-unknown"));
     }
+    CLIENT.with(|cell| {
+        if let Some(client) = cell.borrow().as_ref() {
+            return Ok(client.clone());
+        }
+        let client = unsafe { create_automation() }?;
+        *cell.borrow_mut() = Some(client.clone());
+        Ok(client)
+    })
+}
+unsafe fn create_automation() -> Result<IUIAutomation, Value> {
     let uia: IUIAutomation2 = CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER)
         .map_err(|_| blocked("focus-unknown"))?;
     uia.SetAutoSetFocus(false)
@@ -104,10 +119,10 @@ pub(super) unsafe fn inspect(request: &Value, host: &Value) -> Result<Value, Val
     if !s(request, "elementRef").is_empty() && prior.is_none() {
         return Err(fail("StaleElement"));
     }
-    let hwnd = prior
-        .as_ref()
-        .map(|prior| HWND(prior.hwnd as *mut _))
-        .unwrap_or(app_window(app)?);
+    let hwnd = match prior.as_ref() {
+        Some(prior) => HWND(prior.hwnd as *mut _),
+        None => app_window(app)?,
+    };
     authorize(hwnd, request, host, "view")?;
     let snapshot_id = uuid::Uuid::new_v4().to_string();
     let Ok(uia) = automation() else {

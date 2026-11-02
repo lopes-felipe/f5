@@ -356,5 +356,16 @@ pub(super) unsafe fn authorize(
     if !crate::safety::grant_allows(tier, grant["allowTyping"] == true, needed) {
         return Err(json!({"_tag":"NotGranted","needed":needed}));
     }
+    if STATE
+        .get()
+        .unwrap()
+        .permit
+        .lock()
+        .unwrap()
+        .scope(generation(request))
+        .is_some_and(|scope| !scope.allows_recipient(&id, needed))
+    {
+        return Err(blocked("other-app"));
+    }
     Ok(id)
 }

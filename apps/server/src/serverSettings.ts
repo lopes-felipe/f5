@@ -63,6 +63,24 @@ import { ServerSecretStore } from "./auth/Services/ServerSecretStore.ts";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+const COMPUTER_DEFAULTS_MIGRATION = "computerUseDefaultsV2";
+/** Old sparse files omitted off/foreground. Restore those values before
+ * decoding; only new profiles and marked documents inherit the new defaults. */
+function migrateComputerDefaults(document: Record<string, unknown>): Record<string, unknown> {
+  const migrations = document.clientSettingMigrations;
+  if (
+    migrations !== undefined &&
+    (!migrations || typeof migrations !== "object" || Array.isArray(migrations))
+  )
+    return document;
+  const markers = (migrations ?? {}) as Record<string, unknown>;
+  if (markers[COMPUTER_DEFAULTS_MIGRATION]) return document;
+  return {
+    enableAgentComputerUse: false,
+    computerUseExecutionMode: "foreground",
+    ...document,
+  };
+}
 function providerEnvironmentSecretName(input: {
   readonly instanceId: string;
   readonly name: string;
@@ -378,7 +396,17 @@ const makeServerSettings = Effect.gen(function* () {
     }
 
     const raw = contents.value;
-    const decoded = Schema.decodeUnknownExit(ServerSettingsJson)(raw);
+    const parsed = Schema.decodeUnknownExit(fromLenientJson(Schema.Unknown))(raw);
+    const document =
+      Exit.isSuccess(parsed) &&
+      parsed.value &&
+      typeof parsed.value === "object" &&
+      !Array.isArray(parsed.value)
+        ? migrateComputerDefaults(parsed.value as Record<string, unknown>)
+        : undefined;
+    const decoded = document
+      ? Schema.decodeUnknownExit(ServerSettings)(document)
+      : Schema.decodeUnknownExit(ServerSettingsJson)(raw);
     if (decoded._tag === "Failure") {
       const failure = Cause.findErrorOption(decoded.cause);
       const issues = summarizeSettingsIssue(
@@ -391,14 +419,7 @@ const makeServerSettings = Effect.gen(function* () {
       });
       // Keep writes blocked and the original file intact, but do not discard
       // valid global settings because one project was written by a newer version.
-      const parsed = Schema.decodeUnknownExit(fromLenientJson(Schema.Unknown))(raw);
-      if (
-        Exit.isSuccess(parsed) &&
-        parsed.value &&
-        typeof parsed.value === "object" &&
-        !Array.isArray(parsed.value)
-      ) {
-        const document = parsed.value as Record<string, unknown>;
+      if (document) {
         const overrides = document.projectSettingsOverrides;
         if (overrides && typeof overrides === "object" && !Array.isArray(overrides)) {
           const safe = Object.fromEntries(
@@ -592,7 +613,19 @@ const makeServerSettings = Effect.gen(function* () {
         });
       }
       const unknownFields = yield* Ref.get(unknownFieldsRef);
-      const sparseSettings = stripDefaultServerSettings(settings, DEFAULT_SERVER_SETTINGS) ?? {};
+      const sparseSettings =
+        stripDefaultServerSettings(
+          {
+            ...settings,
+            clientSettingMigrations: {
+              ...settings.clientSettingMigrations,
+              [COMPUTER_DEFAULTS_MIGRATION]:
+                settings.clientSettingMigrations[COMPUTER_DEFAULTS_MIGRATION] ??
+                new Date().toISOString(),
+            },
+          },
+          DEFAULT_SERVER_SETTINGS,
+        ) ?? {};
 
       return yield* writeFileStringAtomically({
         filePath: settingsPath,

@@ -148,7 +148,14 @@ pub(super) unsafe fn apps() -> Vec<Value> {
                 .unwrap_or_else(|_| "blocked".into());
             let tier = crate::safety::restrict_tier(&identity_tier, &executable_tier);
             let name = id.rsplit(['\\', '/']).next().unwrap_or(&id).to_string();
-            unique.entry(id.clone()).or_insert(json!({"appId":id,"name":name,"running":true,"frontmost":hwnd==GetForegroundWindow(),"tier":tier,"warning":if browser(&id) || executable.as_ref().map(|exe|browser(exe)).unwrap_or(false){json!("browser")}else{Value::Null}}));
+            let frontmost = hwnd == GetForegroundWindow();
+            unique.entry(id.clone())
+                .and_modify(|app: &mut Value| {
+                    if frontmost {
+                        app["frontmost"] = json!(true);
+                    }
+                })
+                .or_insert(json!({"appId":id,"name":name,"running":true,"frontmost":frontmost,"tier":tier,"warning":if browser(&id) || executable.as_ref().map(|exe|browser(exe)).unwrap_or(false){json!("browser")}else{Value::Null}}));
         }
     }
     unique

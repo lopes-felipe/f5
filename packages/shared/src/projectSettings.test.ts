@@ -136,6 +136,20 @@ describe("project settings", () => {
     expect(result.settings.enableAgentComputerUse).toBe(false);
     expect(result.sources.previewExternalHosts).toBe("global");
   });
+  it("ignores checked-in computer disablement and execution mode under the new defaults", () => {
+    const result = resolveProjectSettings({
+      projectId: id,
+      global: DEFAULT_SERVER_SETTINGS,
+      checkedIn: Schema.decodeUnknownSync(ProjectSettingsOverrides)({
+        enableAgentComputerUse: false,
+        computerUseExecutionMode: "foreground",
+      }),
+      sourceFile: "f5.json",
+    });
+    expect(result.settings.enableAgentComputerUse).toBe(true);
+    expect(result.settings.computerUseExecutionMode).toBe("background");
+    expect(result.sources.enableAgentComputerUse).toBe("global");
+  });
   it("resolves override, legacy, file, global and built-in defaults in order", () => {
     const global = { ...DEFAULT_SERVER_SETTINGS, defaultThreadEnvMode: "worktree" as const };
     expect(resolveProjectSettings({ projectId: id }).sources.defaultThreadEnvMode).toBe("default");

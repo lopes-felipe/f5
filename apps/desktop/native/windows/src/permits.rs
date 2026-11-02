@@ -30,6 +30,11 @@ impl Scope {
     pub fn background(&self) -> bool {
         matches!(self, Self::App(_))
     }
+    /// Coordinate/key requests omit app ids, but their resolved recipients
+    /// must still belong to the app covered by takeover consent.
+    pub fn allows_recipient(&self, app: &str, needed: &str) -> bool {
+        needed == "view" || self.app().is_none_or(|id| id == app)
+    }
     pub fn conflicts(&self, other: &Self) -> bool {
         matches!(self, Self::Foreground)
             || matches!(other, Self::Foreground)
@@ -252,5 +257,18 @@ mod tests {
         assert!(!scope.allows("background", "type", "b", ""));
         assert!(!scope.allows("foreground", "type", "a", ""));
         assert!(Scope::decode(&serde_json::json!({"kind":"unknown"})).is_none());
+    }
+    #[test]
+    fn takeover_rejects_other_granted_recipients_for_click_and_type() {
+        let granted = ["a", "b"];
+        let scope = Scope::Takeover("a".into());
+        for (op, needed) in [("click", "click"), ("type", "type")] {
+            assert!(scope.allows("foreground", op, "", ""));
+            for app in granted {
+                assert_eq!(scope.allows_recipient(app, needed), app == "a");
+            }
+        }
+        assert!(scope.allows_recipient("b", "view"));
+        assert!(Scope::Foreground.allows_recipient("b", "type"));
     }
 }

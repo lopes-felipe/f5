@@ -62,13 +62,15 @@ describe("preview availability is not certification", () => {
     });
   });
   it("permits Windows 19041+ packaged preview without a development bypass", () => {
-    expect(computerCertificationStatus("win32", true, undefined, "10.0.19041")).toEqual({
+    expect(computerCertificationStatus("win32", true, undefined, "10.0.19041", "x64")).toEqual({
       available: true,
     });
-    expect(computerCertificationStatus("win32", true, undefined, "10.0.26340")).toEqual({
+    expect(computerCertificationStatus("win32", true, undefined, "10.0.26340", "x64")).toEqual({
       available: true,
     });
-    expect(computerCertificationStatus("win32", true, undefined, "10.0.18363")).toMatchObject({
+    expect(
+      computerCertificationStatus("win32", true, undefined, "10.0.18363", "x64"),
+    ).toMatchObject({
       reason: "os-too-old",
     });
   });
@@ -78,9 +80,22 @@ describe("preview availability is not certification", () => {
     });
   });
   it.each(["darwin", "win32"])("offers background preview on %s in packaged builds", (platform) => {
-    expect(computerBackgroundGate(platform, true, undefined)).toEqual({ available: true });
-    expect(computerBackgroundGate(platform, false, undefined)).toEqual({ available: true });
+    expect(computerBackgroundGate(platform, true, undefined, "x64")).toEqual({ available: true });
+    expect(computerBackgroundGate(platform, false, undefined, "x64")).toEqual({ available: true });
   });
+  it.each(["arm64", "ia32"])(
+    "keeps Windows %s preview unavailable even with a dev override",
+    (arch) => {
+      expect(computerCertificationStatus("win32", false, "1", "10.0.26340", arch)).toMatchObject({
+        available: false,
+        reason: "unsupported-platform",
+      });
+      expect(computerBackgroundGate("win32", false, "1", arch)).toEqual({
+        available: false,
+        reason: "unsupported-platform",
+      });
+    },
+  );
   it("keeps background control unavailable on unsupported platforms", () => {
     expect(computerBackgroundGate("linux", false, "1")).toEqual({
       available: false,

@@ -7,12 +7,17 @@ const PING: u32 = WM_APP + 6;
 /// Raw input registration survives idle periods; verify the registration and
 /// challenge its dedicated receiver thread without injecting mouse events.
 pub(super) fn start() {
-    std::thread::spawn(|| unsafe {
-        let _ = run();
-        let state = STATE.get().unwrap();
-        state.raw_mouse_window.store(0, Ordering::SeqCst);
-        state.healthy.store(false, Ordering::SeqCst);
-        suspend(None);
+    std::thread::spawn(|| loop {
+        unsafe {
+            let _ = run();
+            let state = STATE.get().unwrap();
+            state.raw_mouse_window.store(0, Ordering::SeqCst);
+            state.healthy.store(false, Ordering::SeqCst);
+            suspend(None);
+        }
+        // Receiver recovery never resumes permits; the independent probe must
+        // confirm monitor health before accepting any new work.
+        std::thread::sleep(Duration::from_secs(2));
     });
 }
 
@@ -26,7 +31,10 @@ unsafe fn run() -> windows::core::Result<()> {
         ..Default::default()
     };
     if RegisterClassW(&definition) == 0 {
-        return Err(windows::core::Error::from_thread());
+        let error = windows::core::Error::from_thread();
+        if error.code() != windows::Win32::Foundation::ERROR_CLASS_ALREADY_EXISTS.to_hresult() {
+            return Err(error);
+        }
     }
     let hwnd = CreateWindowExW(
         WINDOW_EX_STYLE(0),
@@ -112,7 +120,11 @@ pub(super) unsafe fn probe(token: u64) -> bool {
 
 unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     if message == WM_DESTROY {
-        fail_receiver();
+        // Normal cleanup clears the published handle first. Do not leave a
+        // second WM_QUIT queued for the next receiver on this same thread.
+        if STATE.get().unwrap().raw_mouse_window.load(Ordering::SeqCst) == hwnd.0 as u64 {
+            fail_receiver();
+        }
         return LRESULT(0);
     }
     if message == PING {

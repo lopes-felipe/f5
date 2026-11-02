@@ -1,10 +1,48 @@
-import { expect, it } from "vitest";
+import { expect, it, vi, afterEach } from "vitest";
 import {
   decodeWindowsFreezeObservation,
   windowsFreezeConfirmed,
   windowsFreezeSupervisorSource,
   type WindowsFreezeObservation,
+  WindowsFreezeChannel,
 } from "./rehearsalWindowsFreeze";
+afterEach(() => vi.useRealTimers());
+
+it("serializes STATUS and timer-triggered RESUME replies", async () => {
+  const write = vi.fn();
+  const channel = new WindowsFreezeChannel(write, vi.fn());
+  const ready = channel.ready();
+  channel.receive("READY");
+  await ready;
+  const status = channel.command("STATUS");
+  const resume = channel.command("RESUME");
+  await Promise.resolve();
+  expect(write.mock.calls).toEqual([["STATUS\n"]]);
+  channel.receive(JSON.stringify(proof));
+  expect(await status).toBe(JSON.stringify(proof));
+  await Promise.resolve();
+  expect(write.mock.calls).toEqual([["STATUS\n"], ["RESUME\n"]]);
+  channel.receive("RESUMED");
+  expect(await resume).toBe("RESUMED");
+});
+
+it("breaks the channel on timeout and rejects queued work and stale replies", async () => {
+  vi.useFakeTimers();
+  const write = vi.fn(),
+    disconnect = vi.fn();
+  const channel = new WindowsFreezeChannel(write, disconnect);
+  const first = channel.command("STATUS");
+  const next = channel.command("RESUME");
+  const failed = expect(first).rejects.toThrow("timed out");
+  const queuedFailed = expect(next).rejects.toThrow("timed out");
+  await vi.advanceTimersByTimeAsync(2000);
+  await failed;
+  await queuedFailed;
+  channel.receive(JSON.stringify(proof));
+  await expect(channel.command("STATUS")).rejects.toThrow("timed out");
+  expect(write.mock.calls).toEqual([["STATUS\n"]]);
+  expect(disconnect).toHaveBeenCalledTimes(1);
+});
 
 const proof: WindowsFreezeObservation = {
   suspended: true,

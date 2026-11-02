@@ -5,7 +5,8 @@ inspection and semantic actions, per-window capture, password masking and emerge
 stop. The target is Windows x64, build 19041 or newer. Packaged foreground and
 background previews are available after the native workflow,
 lifecycle and capture privacy checks passed on an interactive Windows 11 machine.
-Computer use defaults to enabled with background execution. Saved preferences are
+New profiles default to enabled computer use with background execution. Existing sparse
+settings retain off/foreground defaults on upgrade, and saved preferences are
 preserved, and each app still requires approval.
 Signed installed certification remains false; additional acceptance is pending.
 Cross-compilation and unit tests cannot substitute for that evidence.
@@ -81,11 +82,19 @@ Run profiles with Codex and physical-stop for each provider. Stop phases suspend
 actual owned Electron main, renderer and broker backend processes. Keep the
 session attended and follow the red fixture cue. The quality phase runs the
 repository checks and native tests on Windows. Every phase uses a new suite.
-Share only manifest.json, _.result.json and _.raw.json; launch.json and provider
+Share only `manifest.json`, `*.result.json` and `*.raw.json`; `launch.json` and provider
 homes remain private.
 
 The manually dispatched **Windows computer acceptance** workflow uses an attended
 runner labeled `f5-computer-interactive` and `windows-10` or `windows-11`.
+Dispatch from main only. Before registering this runner, restrict its runner group
+to this workflow on protected main and configure required reviewers and main-only
+deployment rules on the `windows-computer-acceptance` environment. A job-level
+guard or environment name alone cannot prevent a branch from rewriting a workflow;
+the runner group's workflow restriction is required. Environment approval must come
+from the operator attending the desktop. These protections require repository
+administration and are not created by the workflow. Checkout credentials are not
+persisted while dependency scripts run.
 Select the runner OS when dispatching and repeat acceptance on both. Configure the repository variables
 `F5_WINDOWS_CLAUDE_HOME`, `F5_WINDOWS_CLAUDE_BINARY`, `F5_WINDOWS_CODEX_HOME` and
 `F5_WINDOWS_CODEX_BINARY` to paths on that runner. Credentials remain in its test

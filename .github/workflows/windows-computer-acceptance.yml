@@ -29,7 +29,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   acceptance:
-    if: inputs.operator_ready
+    if: inputs.operator_ready && github.ref == 'refs/heads/main'
+    environment: windows-computer-acceptance
     runs-on:
       - self-hosted
       - Windows
@@ -54,6 +55,8 @@ jobs:
           $suitePath = Join-Path $env:RUNNER_TEMP "f5-computer-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           "SUITE=$suitePath" >> $env:GITHUB_ENV
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24.13.1

@@ -190,6 +190,72 @@ public static class F5ProcessFreeze {
 
 /** Supervises an owned rehearsal process. Its independent timer resumes F5 even
  * if the renderer, main process or Node runner stops responding. */
+export class WindowsFreezeChannel {
+  private pending: { done: (line: string) => void; fail: (error: Error) => void } | undefined;
+  private broken: Error | undefined;
+  private queue: Promise<unknown> = Promise.resolve();
+  constructor(
+    private readonly write: (text: string) => void,
+    private readonly disconnect: () => void,
+  ) {}
+  fail(error: Error) {
+    if (this.broken) return;
+    this.broken = error;
+    this.pending?.fail(error);
+    // EOF lets the supervisor resume in finally, and preserves its independent
+    // watchdog. TerminateProcess would skip finally and kill that watchdog.
+    this.disconnect();
+  }
+  receive(line: string) {
+    if (this.broken) return;
+    if (!this.pending) {
+      this.fail(new Error("Unexpected freeze supervisor reply"));
+      return;
+    }
+    this.pending.done(line);
+  }
+  ready() {
+    return this.reply(15000);
+  }
+  command(text: string) {
+    const result = this.queue.then(() => {
+      if (this.broken) throw this.broken;
+      const reply = this.reply(2000);
+      try {
+        this.write(text + "\n");
+      } catch {
+        this.fail(new Error("Freeze supervisor disconnected"));
+      }
+      return reply;
+    });
+    this.queue = result.catch(() => undefined);
+    return result;
+  }
+  private reply(timeoutMs: number) {
+    if (this.broken) return Promise.reject<string>(this.broken);
+    return new Promise<string>((done, fail) => {
+      const finish = () => {
+        clearTimeout(timer);
+        if (this.pending === pending) this.pending = undefined;
+      };
+      const pending = {
+        done: (line: string) => {
+          finish();
+          done(line);
+        },
+        fail: (error: Error) => {
+          finish();
+          fail(error);
+        },
+      };
+      const timer = setTimeout(() => {
+        if (this.pending === pending) this.fail(new Error("Freeze supervisor timed out"));
+      }, timeoutMs);
+      this.pending = pending;
+    });
+  }
+}
+
 export async function createWindowsProcessFreeze(pid: number) {
   if (process.platform !== "win32" || !Number.isSafeInteger(pid) || pid <= 0)
     throw new Error("Windows freeze requires an owned process id.");
@@ -206,44 +272,28 @@ export async function createWindowsProcessFreeze(pid: number) {
   );
   const lines = createInterface({ input: child.stdout });
   let observation: WindowsFreezeObservation | undefined;
-  let pending: { done: (line: string) => void; fail: (error: Error) => void } | undefined;
+  const channel = new WindowsFreezeChannel(
+    (text) => {
+      child.stdin.write(text);
+    },
+    () => {
+      child.stdin.end();
+    },
+  );
   let exited = false;
   const closed = new Promise<void>((done) =>
     child.once("close", () => {
       exited = true;
-      pending?.fail(new Error("Freeze supervisor exited"));
+      channel.fail(new Error("Freeze supervisor exited"));
       done();
     }),
   );
-  const reply = (timeoutMs = 2000) =>
-    new Promise<string>((done, fail) => {
-      const timer = setTimeout(() => {
-        pending = undefined;
-        fail(new Error("Freeze supervisor timed out"));
-      }, timeoutMs);
-      pending = {
-        done: (line) => {
-          clearTimeout(timer);
-          pending = undefined;
-          done(line);
-        },
-        fail: (error) => {
-          clearTimeout(timer);
-          pending = undefined;
-          fail(error);
-        },
-      };
-    });
-  lines.on("line", (line) => pending?.done(line));
-  child.once("error", () => pending?.fail(new Error("Freeze supervisor failed")));
-  child.stdin.on("error", () => pending?.fail(new Error("Freeze supervisor disconnected")));
-  const command = (text: string) => {
-    const result = reply();
-    child.stdin.write(text + "\n");
-    return result;
-  };
+  lines.on("line", (line) => channel.receive(line));
+  child.once("error", () => channel.fail(new Error("Freeze supervisor failed")));
+  child.stdin.on("error", () => channel.fail(new Error("Freeze supervisor disconnected")));
+  const command = (text: string) => channel.command(text);
   try {
-    if ((await reply(15000)) !== "READY") throw new Error("Freeze supervisor not ready");
+    if ((await channel.ready()) !== "READY") throw new Error("Freeze supervisor not ready");
   } catch (error) {
     child.stdin.end();
     throw error;

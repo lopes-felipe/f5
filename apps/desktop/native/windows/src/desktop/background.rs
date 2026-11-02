@@ -128,20 +128,16 @@ pub(super) unsafe fn background_execute(request: &Value, host: &Value) -> Result
                     }
                 }
             }
-            let index = if values.len() == 1 {
-                0
-            } else {
-                let focused: Vec<_> = values
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, (focused, _, _))| *focused)
-                    .map(|(i, _)| i)
-                    .collect();
-                if focused.len() != 1 {
-                    return Err(foreground_required("typing-unsupported"));
-                }
-                focused[0]
-            };
+            let focused: Vec<_> = values
+                .iter()
+                .enumerate()
+                .filter(|(_, (focused, _, _))| *focused)
+                .map(|(i, _)| i)
+                .collect();
+            if focused.len() != 1 {
+                return Err(foreground_required("typing-unsupported"));
+            }
+            let index = focused[0];
             let (_, element, pattern) = &values[index];
             target(request, host, "type")?;
             if element
@@ -171,6 +167,13 @@ pub(super) unsafe fn background_execute(request: &Value, host: &Value) -> Result
                 return Err(foreground_required("typing-unsupported"));
             }
             check(request)?;
+            if !element
+                .CurrentHasKeyboardFocus()
+                .map(|value| value.as_bool())
+                .unwrap_or(false)
+            {
+                return Err(foreground_required("typing-unsupported"));
+            }
             pattern
                 .SetValue(&BSTR::from(text.as_str()))
                 .map_err(|_| fail("OutcomeUnknown"))?;

@@ -1124,7 +1124,10 @@ require(${JSON.stringify(join(desktopDir, "dist-electron/main.js"))});
         additionalClients.push(value);
         return value;
       },
-      helper: join(desktopDir, `dist-native/mac-${process.arch}/f5-computer-helper`),
+      helper: join(
+        desktopDir,
+        `dist-native/${process.platform === "win32" ? "win" : "mac"}-${process.arch}/${process.platform === "win32" ? "f5-computer-helper.exe" : "f5-computer-helper"}`,
+      ),
       fixtureBinDirectory,
     });
     stage = "finished";
