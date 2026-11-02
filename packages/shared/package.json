@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./turnAssistantMessage": {
+      "types": "./src/turnAssistantMessage.ts",
+      "import": "./src/turnAssistantMessage.ts"
+    },
     "./upstreamPortsOutcomes": {
       "types": "./src/upstreamPortsOutcomes.ts",
       "import": "./src/upstreamPortsOutcomes.ts"

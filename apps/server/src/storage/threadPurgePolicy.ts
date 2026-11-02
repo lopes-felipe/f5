@@ -110,6 +110,10 @@ export const threadPurgePolicy: Readonly<
     kind: "retain",
     reason: "Outcome checks fence preexisting ports and prevent replay after thread purge.",
   },
+  upstream_port_topic_outcomes: {
+    kind: "retain",
+    reason: "Topic outcome receipts preserve decisions and provenance after thread purge.",
+  },
   upstream_port_links: { kind: "explicit" },
   upstream_port_reviews: { kind: "explicit" },
   attachment_uploads: {

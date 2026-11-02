@@ -397,6 +397,7 @@ it("queues selected IDs beyond loaded pages and removes queued topics", async ()
     truncated: false,
   });
   await setup({ project: projectId, list: "ready" }, "Topic A", true);
+  await expect.element(page.getByRole("button", { name: /Queue · 0\/5 running · 1 topic in 1 queued job$/ })).toBeVisible();
   await expect.element(page.getByText("Queued", { exact: true })).toBeVisible();
   await selectAllMatching(250);
   await bulkButton("Queue selected…").click();
@@ -411,7 +412,7 @@ it("queues selected IDs beyond loaded pages and removes queued topics", async ()
 it("shows the queue panel and controls pause, resume and clear", async () => {
   let value = {
     ...overview,
-    portQueue: { ...overview.portQueue, queuedTopics: 2, queuedThreads: 2 },
+    portQueue: { ...overview.portQueue, queuedTopics: 10, queuedThreads: 2, waitingOnFiles: 2 },
   };
   api.getOverview.mockResolvedValue(value);
   api.controlPortQueue.mockImplementation(async ({ action }: { action: string }) => {
@@ -420,8 +421,9 @@ it("shows the queue panel and controls pause, resume and clear", async () => {
     return { revision: "r1" };
   });
   await setup();
-  await page.getByRole("button", { name: /Queue · 0\/5 running · 2 queued/ }).click();
+  await page.getByRole("button", { name: /Queue · 0\/5 running · 10 topics in 2 queued jobs/ }).click();
   await expect.element(page.getByRole("heading", { name: "Port queue" })).toBeVisible();
+  await expect.element(page.getByText(/2 of 2 queued jobs are waiting on earlier ports/)).toBeVisible();
   await page.getByRole("button", { name: "Pause", exact: true }).click();
   await page.getByRole("button", { name: "Resume", exact: true }).click();
   await page.getByRole("button", { name: "Clear queue", exact: true }).click();
@@ -434,10 +436,10 @@ it("reopens queue history after execution has finished and the page reloads", as
     ...overview, portQueue: { ...overview.portQueue, hasHistory: true },
   });
   await setup();
-  await page.getByRole("button", { name: /Queue · 0\/5 running · 0 queued/ }).click();
+  await page.getByRole("button", { name: /Queue · 0\/5 running · 0 topics in 0 queued jobs/ }).click();
   await expect.element(page.getByRole("heading", { name: "Port queue" })).toBeVisible();
   await userEvent.keyboard("{Escape}");
-  await page.getByRole("button", { name: /Queue · 0\/5 running · 0 queued/ }).click();
+  await page.getByRole("button", { name: /Queue · 0\/5 running · 0 topics in 0 queued jobs/ }).click();
   await expect.element(page.getByRole("heading", { name: "Port queue" })).toBeVisible();
 });
 const bulkButton = (name: string) =>

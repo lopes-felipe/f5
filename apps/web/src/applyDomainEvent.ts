@@ -1,4 +1,5 @@
 import { projectLatestTurnSession } from "@t3tools/shared/turnStateTransitions";
+import { resolveTurnAssistantMessage } from "@t3tools/shared/turnAssistantMessage";
 import { recordMessageAppend, recordMessageListChange } from "./lib/streamingTextRevision";
 import { detailEntityKey, detailEventIsCovered } from "./orchestration/detailCoverage";
 import {
@@ -1653,8 +1654,17 @@ function reduceDomainEvent(
     case "thread.turn-diff-completed": {
       const detailGate = gateThreadDetailMutations(state, event.payload.threadId, event);
       const threads = updateThread(detailGate.state.threads, event.payload.threadId, (thread) => {
+        const assistantMessageId =
+          resolveTurnAssistantMessage(thread.messages, event.payload.turnId)?.id ??
+          (thread.latestTurn?.turnId === event.payload.turnId
+            ? thread.latestTurn.assistantMessageId
+            : null) ??
+          event.payload.assistantMessageId;
         const turnDiffSummaries = detailGate.applyDetailMutations
-          ? upsertTurnDiffSummary(thread.turnDiffSummaries, event.payload)
+          ? upsertTurnDiffSummary(thread.turnDiffSummaries, {
+              ...event.payload,
+              assistantMessageId,
+            })
           : thread.turnDiffSummaries;
         if (turnDiffSummaries === null) {
           return thread;
@@ -1666,8 +1676,7 @@ function reduceDomainEvent(
         const latestTurn = preserveTurn
           ? {
               ...previousTurn,
-              assistantMessageId:
-                event.payload.assistantMessageId ?? previousTurn.assistantMessageId,
+              assistantMessageId: assistantMessageId ?? previousTurn.assistantMessageId,
             }
           : ({
               turnId: event.payload.turnId,
@@ -1681,7 +1690,7 @@ function reduceDomainEvent(
                   ? (previousTurn.startedAt ?? event.payload.completedAt)
                   : event.payload.completedAt,
               completedAt: event.payload.completedAt,
-              assistantMessageId: event.payload.assistantMessageId,
+              assistantMessageId,
             } satisfies NonNullable<Thread["latestTurn"]>);
         if (
           turnDiffSummaries === thread.turnDiffSummaries &&
