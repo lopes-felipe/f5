@@ -31,11 +31,7 @@ import { createUpdateInstaller } from "./updateInstall";
 import { assertUpdateCaller } from "./updateIpc";
 import { createUpdateController } from "./updateController";
 import { initializeUpdatePreferences, writeUpdatePreferences } from "./updateChannel";
-import {
-  clearUpdateInstallMarker,
-  consumeUpdateInstallMarker,
-  writeUpdateInstallMarker,
-} from "./updateInstallMarker";
+import { consumeUpdateInstallMarker, writeUpdateInstallMarker } from "./updateInstallMarker";
 import { migrateUserData } from "./userDataMigration";
 import { isolatedBackendCommand } from "./backendComputerIsolation";
 import {
@@ -196,6 +192,7 @@ import {
   reduceDesktopUpdateStateOnDownloadComplete,
   reduceDesktopUpdateStateOnDownloadProgress,
   reduceDesktopUpdateStateOnInstallFailure,
+  claimRecentInstall,
 } from "./updateMachine";
 import { normalizeDesktopUpdateReleaseNotes } from "./updateReleaseNotes";
 import { isArm64HostRunningIntelBuild, resolveDesktopRuntimeInfo } from "./runtimeArch";
@@ -237,6 +234,7 @@ const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
 const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
 const UPDATE_CHECK_CHANNEL = "desktop:update-check";
 const UPDATE_SET_CHANNEL_CHANNEL = "desktop:update-set-channel";
+const UPDATE_CLAIM_RECENT_INSTALL_CHANNEL = "desktop:update-claim-recent-install";
 const PREVIEW_RECORDING_FRAME_CHANNEL = "desktop-preview:recording-frame";
 const PREVIEW_STATE_CHANNEL = "desktop-preview:state";
 const lastPreviewStateEmissionByTabId = new Map<
@@ -2766,21 +2764,24 @@ const updateInstaller = createUpdateInstaller({
     installCleanupStarted = true;
     await cleanupBeforeExit();
     writeDesktopLogHeader("update install: cleanup complete");
-    const toVersion = updateState.downloadedVersion;
-    if (toVersion) {
-      try {
-        writeUpdateInstallMarker(updateInstallMarkerPath(), {
-          fromVersion: updateState.currentVersion,
-          toVersion,
-          releaseNotes: updateState.releaseNotes ?? null,
-        });
-      } catch (error) {
-        console.warn("[desktop-updater] Could not record the pending update", error);
-      }
-    }
     shutdownComplete = true;
     restoreStdIoCapture?.();
     return true;
+  },
+  // A marker left by a failed install is dropped at startup because the
+  // running version will not match, so recovery does not need to clear it.
+  onPrepared: () => {
+    const toVersion = updateState.downloadedVersion;
+    if (!toVersion) return;
+    try {
+      writeUpdateInstallMarker(updateInstallMarkerPath(), {
+        fromVersion: updateState.currentVersion,
+        toVersion,
+        releaseNotes: updateState.releaseNotes ?? null,
+      });
+    } catch (error) {
+      console.warn("[desktop-updater] Could not record the pending update", error);
+    }
   },
   install: async () => {
     writeDesktopLogHeader("update install: launching installer");
@@ -2790,11 +2791,6 @@ const updateInstaller = createUpdateInstaller({
   recover: async (message) => {
     writeDesktopLogHeader(`update install recovery: ${message}`);
     cancelQuit();
-    try {
-      clearUpdateInstallMarker(updateInstallMarkerPath());
-    } catch (error) {
-      console.warn("[desktop-updater] Could not clear the pending update", error);
-    }
     try {
       const errors = await recoverUpdateSession<BackendRuntime>({
         cleanupStarted: installCleanupStarted,
@@ -3821,6 +3817,13 @@ function registerIpcHandlers(): void {
         state: updateState,
       }
     );
+  });
+  ipcMain.removeHandler(UPDATE_CLAIM_RECENT_INSTALL_CHANNEL);
+  ipcMain.handle(UPDATE_CLAIM_RECENT_INSTALL_CHANNEL, async (event) => {
+    assertUpdateSender(event);
+    const { claimed, state } = claimRecentInstall(updateState);
+    if (claimed) setUpdateState(state);
+    return claimed;
   });
   ipcMain.removeHandler(UPDATE_DOWNLOAD_CHANNEL);
   ipcMain.handle(UPDATE_DOWNLOAD_CHANNEL, async (event) => {

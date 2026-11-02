@@ -1,4 +1,8 @@
-import type { DesktopRuntimeInfo, DesktopUpdateState } from "@t3tools/contracts";
+import type {
+  DesktopRuntimeInfo,
+  DesktopUpdateRecentInstall,
+  DesktopUpdateState,
+} from "@t3tools/contracts";
 
 import { getCanRetryAfterDownloadFailure, nextStatusAfterDownloadFailure } from "./updateState";
 
@@ -185,6 +189,15 @@ export function reduceDesktopUpdateStateOnDownloadComplete(
     errorContext: null,
     canRetry: true,
   };
+}
+
+/** Hands the recent install to exactly one caller and clears it for everyone else. */
+export function claimRecentInstall(state: DesktopUpdateState): {
+  claimed: DesktopUpdateRecentInstall | null;
+  state: DesktopUpdateState;
+} {
+  const claimed = state.recentlyInstalled ?? null;
+  return { claimed, state: claimed ? { ...state, recentlyInstalled: null } : state };
 }
 
 export function reduceDesktopUpdateStateOnInstallFailure(

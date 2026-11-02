@@ -11,7 +11,7 @@ import {
   getDesktopUpdateReleaseNotes,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
-  shouldHighlightDesktopUpdateError,
+  getDesktopUpdatePhaseAnnouncement,
   shouldShowArm64IntelBuildWarning,
   shouldShowDesktopUpdateButton,
   shouldToastDesktopUpdateActionResult,
@@ -179,23 +179,32 @@ describe("desktop update UI helpers", () => {
     ).toBe(false);
   });
 
-  it("highlights only actionable updater errors", () => {
+  it("describes download and install failures even when status kept its prior value", () => {
     expect(
-      shouldHighlightDesktopUpdateError({
+      getDesktopUpdateButtonTooltip({
         ...baseState,
-        status: "error",
+        status: "downloaded",
+        downloadedVersion: "1.1.0",
+        errorContext: "install",
+        canRetry: true,
+      }),
+    ).toBe("Install failed for 1.1.0. Click to retry.");
+    expect(
+      getDesktopUpdateButtonTooltip({
+        ...baseState,
+        status: "available",
+        availableVersion: "1.1.0",
         errorContext: "download",
         canRetry: true,
       }),
-    ).toBe(true);
+    ).toBe("Download failed for 1.1.0. Click to retry.");
     expect(
-      shouldHighlightDesktopUpdateError({
+      getDesktopUpdateButtonTooltip({
         ...baseState,
-        status: "error",
-        errorContext: "check",
-        canRetry: true,
+        status: "downloaded",
+        downloadedVersion: "1.1.0",
       }),
-    ).toBe(false);
+    ).toBe("Update 1.1.0 downloaded. Restart to install.");
   });
 
   it("shows an Apple Silicon warning for Intel builds under Rosetta", () => {
@@ -403,7 +412,6 @@ describe("desktop update install steps", () => {
       expect(statuses({ ...baseState, status: "preparing", installPhase })).toEqual([
         "Download:done",
         "Prepare:active",
-        "Stop agents:pending",
         "Restart:pending",
       ]);
     }
@@ -412,15 +420,42 @@ describe("desktop update install steps", () => {
     );
   });
 
-  it("marks stop agents active while stopping", () => {
+  it("marks restart active while windows close and agents stop", () => {
     expect(statuses({ ...baseState, status: "preparing", installPhase: "stopping" })).toEqual([
       "Download:done",
       "Prepare:done",
-      "Stop agents:active",
-      "Restart:pending",
+      "Restart:active",
     ]);
     expect(
       getDesktopUpdateInstallPhaseDescription({ ...baseState, installPhase: "stopping" }),
     ).toBe("Closing windows and stopping agents…");
+  });
+});
+
+describe("desktop update phase announcement", () => {
+  it("names the phase without the changing percent", () => {
+    const downloading = { ...baseState, status: "downloading" as const, availableVersion: "1.1.0" };
+    expect(getDesktopUpdatePhaseAnnouncement({ ...downloading, downloadPercent: 10 })).toBe(
+      getDesktopUpdatePhaseAnnouncement({ ...downloading, downloadPercent: 90 }),
+    );
+    expect(getDesktopUpdatePhaseAnnouncement(downloading)).toBe("Downloading F5 1.1.0");
+  });
+
+  it("reports failures ahead of the status they kept", () => {
+    expect(
+      getDesktopUpdatePhaseAnnouncement({
+        ...baseState,
+        status: "downloaded",
+        downloadedVersion: "1.1.0",
+        errorContext: "install",
+      }),
+    ).toBe("Installing F5 1.1.0 failed");
+    expect(
+      getDesktopUpdatePhaseAnnouncement({
+        ...baseState,
+        status: "downloaded",
+        downloadedVersion: "1.1.0",
+      }),
+    ).toBe("F5 1.1.0 is ready to install");
   });
 });

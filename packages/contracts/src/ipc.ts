@@ -760,6 +760,8 @@ export interface DesktopBridge {
   onTrackpadScroll?: (listener: (event: DesktopTrackpadScrollEvent) => void) => () => void;
   checkForUpdates?: () => Promise<DesktopUpdateActionResult>;
   setUpdateChannel?: (channel: DesktopUpdateChannel) => Promise<DesktopUpdateActionResult>;
+  /** Returns the recent install once across all windows and profiles, then null. */
+  claimRecentUpdateInstall?: () => Promise<DesktopUpdateRecentInstall | null>;
   getUpdateState: () => Promise<DesktopUpdateState>;
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
   installUpdate: () => Promise<DesktopUpdateActionResult>;

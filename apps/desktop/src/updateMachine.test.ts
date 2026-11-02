@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  claimRecentInstall,
   createInitialDesktopUpdateState,
   reduceDesktopUpdateStateOnCheckFailure,
   reduceDesktopUpdateStateOnCheckStart,
@@ -191,6 +192,20 @@ it("tracks download bytes and clears them across the download lifecycle", () => 
   const restarted = reduceDesktopUpdateStateOnDownloadStart({ ...progress, status: "available" });
   expect(restarted.downloadTransferredBytes).toBeNull();
   expect(restarted.downloadTotalBytes).toBeNull();
+});
+
+it("hands the recent install to exactly one claimer", () => {
+  const recentlyInstalled = { fromVersion: "1.0.0", toVersion: "1.1.0", releaseNotes: null };
+  const state = {
+    ...createInitialDesktopUpdateState("1.1.0", runtimeInfo),
+    recentlyInstalled,
+  };
+  const first = claimRecentInstall(state);
+  expect(first.claimed).toEqual(recentlyInstalled);
+  expect(first.state.recentlyInstalled).toBeNull();
+  const second = claimRecentInstall(first.state);
+  expect(second.claimed).toBeNull();
+  expect(second.state).toBe(first.state);
 });
 
 it("clears the install phase when an install fails", () => {

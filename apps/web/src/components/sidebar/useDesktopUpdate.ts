@@ -20,28 +20,20 @@ import {
 } from "../desktopUpdate.logic";
 import { toastManager } from "../ui/toast";
 
-const INSTALLED_TOAST_KEY_PREFIX = "f5.updateInstalledToast.";
-
-/** Claims the post-install toast for this version once across windows. */
-function claimInstalledToast(toVersion: string): boolean {
-  const key = `${INSTALLED_TOAST_KEY_PREFIX}${toVersion}`;
-  try {
-    if (window.localStorage.getItem(key) !== null) return false;
-    window.localStorage.setItem(key, new Date().toISOString());
-  } catch {
-    // Without storage the toast may repeat per window, which is acceptable.
-  }
-  return true;
-}
-
 /**
  * Desktop auto-update state and the sidebar's update pill behaviour.
- * Only one mounted instance should pass `announceInstall`.
+ * Only one mounted instance per window should pass `announce`; it raises the
+ * download-complete and post-install toasts.
  */
-export function useDesktopUpdate(options: { announceInstall?: boolean } = {}) {
-  const { announceInstall = false } = options;
+export function useDesktopUpdate(options: { announce?: boolean } = {}) {
+  const { announce = false } = options;
   const [desktopUpdateState, setDesktopUpdateState] = useState<DesktopUpdateState | null>(null);
   const [installedNotes, setInstalledNotes] = useState<DesktopUpdateRecentInstall | null>(null);
+  // Set per downloading → downloaded transition. Detected in the subscription
+  // rather than across renders, which can batch both broadcasts into one.
+  const [completedDownload, setCompletedDownload] = useState<{
+    version: string | null;
+  } | null>(null);
 
   useEffect(() => {
     if (!isElectron) return;
@@ -56,9 +48,14 @@ export function useDesktopUpdate(options: { announceInstall?: boolean } = {}) {
 
     let disposed = false;
     let receivedSubscriptionUpdate = false;
+    let lastStatus: DesktopUpdateState["status"] | null = null;
     const unsubscribe = bridge.onUpdateState((nextState) => {
       if (disposed) return;
       receivedSubscriptionUpdate = true;
+      if (lastStatus === "downloading" && nextState.status === "downloaded") {
+        setCompletedDownload({ version: nextState.downloadedVersion });
+      }
+      lastStatus = nextState.status;
       setDesktopUpdateState(nextState);
     });
 
@@ -66,6 +63,7 @@ export function useDesktopUpdate(options: { announceInstall?: boolean } = {}) {
       .getUpdateState()
       .then((nextState) => {
         if (disposed || receivedSubscriptionUpdate) return;
+        lastStatus = nextState.status;
         setDesktopUpdateState(nextState);
       })
       .catch((error) => {
@@ -78,25 +76,35 @@ export function useDesktopUpdate(options: { announceInstall?: boolean } = {}) {
     };
   }, []);
 
-  const recentlyInstalled = desktopUpdateState?.recentlyInstalled ?? null;
+  // The main process hands the recent install to one caller across every
+  // window and profile. Key on the version: each IPC state is a fresh clone.
+  const recentInstallVersion = desktopUpdateState?.recentlyInstalled?.toVersion ?? null;
   useEffect(() => {
-    if (!announceInstall || !recentlyInstalled) return;
-    if (!claimInstalledToast(recentlyInstalled.toVersion)) return;
-    const notes = recentlyInstalled.releaseNotes?.trim();
-    toastManager.add({
-      type: "success",
-      title: `Updated to F5 ${recentlyInstalled.toVersion}`,
-      description: `You were on ${recentlyInstalled.fromVersion}.`,
-      ...(notes
-        ? {
-            actionProps: {
-              children: "What's new",
-              onClick: () => setInstalledNotes(recentlyInstalled),
-            },
-          }
-        : {}),
-    });
-  }, [announceInstall, recentlyInstalled]);
+    if (!announce || !recentInstallVersion) return;
+    const claim = window.desktopBridge?.claimRecentUpdateInstall;
+    if (typeof claim !== "function") return;
+    void claim()
+      .then((installed) => {
+        if (!installed) return;
+        const notes = installed.releaseNotes?.trim();
+        toastManager.add({
+          type: "success",
+          title: `Updated to F5 ${installed.toVersion}`,
+          description: `You were on ${installed.fromVersion}.`,
+          ...(notes
+            ? {
+                actionProps: {
+                  children: "What's new",
+                  onClick: () => setInstalledNotes(installed),
+                },
+              }
+            : {}),
+        });
+      })
+      .catch((error) => {
+        console.warn("Failed to claim the recent update install", error);
+      });
+  }, [announce, recentInstallVersion]);
 
   const pill = isElectron ? resolveDesktopUpdatePill(desktopUpdateState) : null;
   const showButton = pill !== null;
@@ -128,16 +136,6 @@ export function useDesktopUpdate(options: { announceInstall?: boolean } = {}) {
               ? await bridge.downloadUpdate()
               : await bridge.installUpdate();
         if (!result) return;
-        if (action === "download" && result.completed)
-          toastManager.add({
-            type: "success",
-            title: "Update downloaded",
-            description: `F5 ${result.state.downloadedVersion ?? "update"} is ready. Restart to install it.`,
-            actionProps: {
-              children: "Restart to update",
-              onClick: () => void runAction("install"),
-            },
-          });
         const actionError = getDesktopUpdateActionError(result);
         if (shouldToastDesktopUpdateActionResult(result) && actionError)
           toastManager.add({
@@ -158,6 +156,21 @@ export function useDesktopUpdate(options: { announceInstall?: boolean } = {}) {
   const handleButtonClick = useCallback(() => {
     if (!buttonDisabled) void runAction(buttonAction);
   }, [buttonDisabled, buttonAction, runAction]);
+  // Toast on the state transition so downloads started from the app menu get
+  // the same Restart action as ones started from the pill.
+  useEffect(() => {
+    if (!announce || !completedDownload) return;
+    toastManager.add({
+      type: "success",
+      title: "Update downloaded",
+      description: `F5 ${completedDownload.version ?? "update"} is ready. Restart to install it.`,
+      actionProps: {
+        children: "Restart to update",
+        onClick: () => void runAction("install"),
+      },
+    });
+  }, [announce, completedDownload, runAction]);
+
   const closeInstalledNotes = useCallback(() => setInstalledNotes(null), []);
   const handleAboutAction = useCallback(() => {
     if (desktopUpdateState) void runAction(resolveAboutUpdateAction(desktopUpdateState));

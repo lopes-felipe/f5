@@ -13,10 +13,6 @@ export function writeUpdateInstallMarker(path: string, marker: DesktopUpdateRece
   }
 }
 
-export function clearUpdateInstallMarker(path: string): void {
-  rmSync(path, { force: true });
-}
-
 /**
  * Reads and deletes the marker. Returns it only when the running version is the
  * one that was being installed; a failed install leaves the old version running.
@@ -32,7 +28,7 @@ export function consumeUpdateInstallMarker(
     value = null;
   }
   try {
-    clearUpdateInstallMarker(path);
+    rmSync(path, { force: true });
   } catch (error) {
     console.warn("[desktop-updater] Could not remove the update install marker", error);
   }

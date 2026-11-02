@@ -9,7 +9,10 @@ import {
 import { useState } from "react";
 
 import { cn } from "../../lib/utils";
-import type { DesktopUpdatePill as DesktopUpdatePillView } from "../desktopUpdate.logic";
+import {
+  getDesktopUpdatePhaseAnnouncement,
+  type DesktopUpdatePill as DesktopUpdatePillView,
+} from "../desktopUpdate.logic";
 import {
   DesktopUpdateDownloadProgress,
   DesktopUpdateInstallProgress,
@@ -203,7 +206,10 @@ export function DesktopUpdatePill({ update }: { update: DesktopUpdateController 
         }
       />
       <PopoverPopup align="end" className="w-80 max-w-[calc(100vw-2rem)]">
-        <div role="status" aria-live="polite" className="space-y-2.5">
+        <div className="space-y-2.5">
+          <span role="status" className="sr-only">
+            {getDesktopUpdatePhaseAnnouncement(state)}
+          </span>
           <PopoverBody state={state} update={update} />
         </div>
       </PopoverPopup>
