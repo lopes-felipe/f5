@@ -1,3 +1,4 @@
+import { formatByteSize } from "@t3tools/shared/byteSize";
 import { formatRelativeTimeLabel } from "../lib/relativeTime";
 import type { DesktopUpdateActionResult, DesktopUpdateState } from "@t3tools/contracts";
 
@@ -141,4 +142,86 @@ export function resolveAboutUpdateAction(
 export function isAboutUpdateActionDisabled(state: DesktopUpdateState): boolean {
   const action = resolveAboutUpdateAction(state);
   return action === "busy" || action === "none";
+}
+
+export type DesktopUpdatePillTone = "warning" | "info" | "success" | "destructive";
+export type DesktopUpdatePillIcon = "available" | "progress" | "restart" | "installing" | "error";
+export interface DesktopUpdatePill {
+  tone: DesktopUpdatePillTone;
+  icon: DesktopUpdatePillIcon;
+  label: string;
+  /** Download percent for the progress ring, 0–100. */
+  percent: number | null;
+}
+
+/** The sidebar status pill for the current update phase, or null when hidden. */
+export function resolveDesktopUpdatePill(
+  state: DesktopUpdateState | null,
+): DesktopUpdatePill | null {
+  if (!state || !state.enabled) return null;
+  if (state.status === "downloading") {
+    const percent = Math.max(0, Math.min(100, Math.floor(state.downloadPercent ?? 0)));
+    return { tone: "info", icon: "progress", label: `${percent}%`, percent };
+  }
+  if (state.status === "preparing") {
+    return { tone: "info", icon: "installing", label: "Installing", percent: null };
+  }
+  const action = resolveDesktopUpdateButtonAction(state);
+  if (action === "none") return null;
+  if (state.status === "error" || state.errorContext !== null) {
+    return { tone: "destructive", icon: "error", label: "Retry", percent: null };
+  }
+  if (action === "install") {
+    return { tone: "success", icon: "restart", label: "Restart", percent: null };
+  }
+  return {
+    tone: "warning",
+    icon: "available",
+    label: state.availableVersion ?? "Update",
+    percent: null,
+  };
+}
+
+/** "38 MB of 92 MB · 4.1 MB/s · about 1 min left", omitting unknown parts. */
+export function formatDesktopUpdateProgressDetail(state: DesktopUpdateState): string | null {
+  const transferred = state.downloadTransferredBytes ?? null;
+  const total = state.downloadTotalBytes ?? null;
+  const speed = state.downloadBytesPerSecond ?? null;
+  const parts: string[] = [];
+  if (transferred !== null && total !== null && total > 0) {
+    parts.push(`${formatByteSize(Math.min(transferred, total))} of ${formatByteSize(total)}`);
+  }
+  if (speed !== null && speed > 0) {
+    parts.push(`${formatByteSize(speed)}/s`);
+    if (transferred !== null && total !== null && total > transferred) {
+      const seconds = (total - transferred) / speed;
+      parts.push(
+        seconds < 60 ? "less than a minute left" : `about ${Math.round(seconds / 60)} min left`,
+      );
+    }
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+export type DesktopUpdateInstallStepStatus = "done" | "active" | "pending";
+export interface DesktopUpdateInstallStep {
+  label: string;
+  status: DesktopUpdateInstallStepStatus;
+}
+
+/** Download → Prepare → Stop agents → Restart, positioned by the install phase. */
+export function getDesktopUpdateInstallSteps(
+  state: DesktopUpdateState,
+): DesktopUpdateInstallStep[] {
+  const active = state.status !== "preparing" ? 0 : state.installPhase === "stopping" ? 2 : 1;
+  return ["Download", "Prepare", "Stop agents", "Restart"].map((label, index) => ({
+    label,
+    status: index < active ? "done" : index === active ? "active" : "pending",
+  }));
+}
+
+export function getDesktopUpdateInstallPhaseDescription(state: DesktopUpdateState): string {
+  return state.installPhase === "stopping"
+    ? "Closing windows and stopping agents…"
+    : "Verifying and unpacking the update. This can take a minute.";
 }

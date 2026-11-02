@@ -1,4 +1,8 @@
-import type { DesktopUpdateChannel, DesktopUpdateState } from "@t3tools/contracts";
+import type {
+  DesktopUpdateChannel,
+  DesktopUpdateRecentInstall,
+  DesktopUpdateState,
+} from "@t3tools/contracts";
 import { useCallback, useEffect, useState } from "react";
 
 import { isElectron } from "../../env";
@@ -10,16 +14,34 @@ import {
   getDesktopUpdateReleaseNotes,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
-  shouldHighlightDesktopUpdateError,
+  resolveDesktopUpdatePill,
   shouldShowArm64IntelBuildWarning,
-  shouldShowDesktopUpdateButton,
   shouldToastDesktopUpdateActionResult,
 } from "../desktopUpdate.logic";
 import { toastManager } from "../ui/toast";
 
-/** Desktop auto-update state and the sidebar's update button behaviour. */
-export function useDesktopUpdate() {
+const INSTALLED_TOAST_KEY_PREFIX = "f5.updateInstalledToast.";
+
+/** Claims the post-install toast for this version once across windows. */
+function claimInstalledToast(toVersion: string): boolean {
+  const key = `${INSTALLED_TOAST_KEY_PREFIX}${toVersion}`;
+  try {
+    if (window.localStorage.getItem(key) !== null) return false;
+    window.localStorage.setItem(key, new Date().toISOString());
+  } catch {
+    // Without storage the toast may repeat per window, which is acceptable.
+  }
+  return true;
+}
+
+/**
+ * Desktop auto-update state and the sidebar's update pill behaviour.
+ * Only one mounted instance should pass `announceInstall`.
+ */
+export function useDesktopUpdate(options: { announceInstall?: boolean } = {}) {
+  const { announceInstall = false } = options;
   const [desktopUpdateState, setDesktopUpdateState] = useState<DesktopUpdateState | null>(null);
+  const [installedNotes, setInstalledNotes] = useState<DesktopUpdateRecentInstall | null>(null);
 
   useEffect(() => {
     if (!isElectron) return;
@@ -56,7 +78,28 @@ export function useDesktopUpdate() {
     };
   }, []);
 
-  const showButton = isElectron && shouldShowDesktopUpdateButton(desktopUpdateState);
+  const recentlyInstalled = desktopUpdateState?.recentlyInstalled ?? null;
+  useEffect(() => {
+    if (!announceInstall || !recentlyInstalled) return;
+    if (!claimInstalledToast(recentlyInstalled.toVersion)) return;
+    const notes = recentlyInstalled.releaseNotes?.trim();
+    toastManager.add({
+      type: "success",
+      title: `Updated to F5 ${recentlyInstalled.toVersion}`,
+      description: `You were on ${recentlyInstalled.fromVersion}.`,
+      ...(notes
+        ? {
+            actionProps: {
+              children: "What's new",
+              onClick: () => setInstalledNotes(recentlyInstalled),
+            },
+          }
+        : {}),
+    });
+  }, [announceInstall, recentlyInstalled]);
+
+  const pill = isElectron ? resolveDesktopUpdatePill(desktopUpdateState) : null;
+  const showButton = pill !== null;
   const tooltip = desktopUpdateState
     ? getDesktopUpdateButtonTooltip(desktopUpdateState)
     : "Update available";
@@ -71,21 +114,10 @@ export function useDesktopUpdate() {
     desktopUpdateState && showArm64IntelBuildWarning
       ? getArm64IntelBuildWarningDescription(desktopUpdateState)
       : null;
-  const buttonInteractivityClasses = buttonDisabled
-    ? "cursor-not-allowed opacity-60"
-    : "hover:bg-accent hover:text-foreground";
-  const buttonToneClasses =
-    desktopUpdateState?.status === "downloaded"
-      ? "text-success-foreground"
-      : desktopUpdateState?.status === "downloading"
-        ? "text-info-foreground"
-        : shouldHighlightDesktopUpdateError(desktopUpdateState)
-          ? "text-destructive-foreground motion-safe:animate-pulse"
-          : "text-warning-foreground motion-safe:animate-pulse";
 
   const [channelPending, setChannelPending] = useState(false);
   const runAction = useCallback(
-    async (action: "check" | "download" | "install" | "none" | "busy") => {
+    async (action: "check" | "download" | "install" | "none" | "busy"): Promise<void> => {
       const bridge = window.desktopBridge;
       if (!bridge || action === "none" || action === "busy") return;
       try {
@@ -100,7 +132,11 @@ export function useDesktopUpdate() {
           toastManager.add({
             type: "success",
             title: "Update downloaded",
-            description: "Restart the app from the update button to install it.",
+            description: `F5 ${result.state.downloadedVersion ?? "update"} is ready. Restart to install it.`,
+            actionProps: {
+              children: "Restart to update",
+              onClick: () => void runAction("install"),
+            },
           });
         const actionError = getDesktopUpdateActionError(result);
         if (shouldToastDesktopUpdateActionResult(result) && actionError)
@@ -122,6 +158,7 @@ export function useDesktopUpdate() {
   const handleButtonClick = useCallback(() => {
     if (!buttonDisabled) void runAction(buttonAction);
   }, [buttonDisabled, buttonAction, runAction]);
+  const closeInstalledNotes = useCallback(() => setInstalledNotes(null), []);
   const handleAboutAction = useCallback(() => {
     if (desktopUpdateState) void runAction(resolveAboutUpdateAction(desktopUpdateState));
   }, [desktopUpdateState, runAction]);
@@ -153,6 +190,7 @@ export function useDesktopUpdate() {
     channelPending,
     setChannel,
     handleAboutAction,
+    pill,
     showButton,
     tooltip,
     releaseNotes,
@@ -160,9 +198,9 @@ export function useDesktopUpdate() {
     buttonAction,
     showArm64IntelBuildWarning,
     arm64IntelBuildWarningDescription,
-    buttonInteractivityClasses,
-    buttonToneClasses,
     handleButtonClick,
+    installedNotes,
+    closeInstalledNotes,
   };
 }
 

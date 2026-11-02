@@ -18,11 +18,36 @@ export function createInitialDesktopUpdateState(
     downloadedVersion: null,
     releaseNotes: null,
     downloadPercent: null,
+    downloadTransferredBytes: null,
+    downloadTotalBytes: null,
+    downloadBytesPerSecond: null,
+    installPhase: null,
+    recentlyInstalled: null,
     checkedAt: null,
     message: null,
     errorContext: null,
     canRetry: false,
   };
+}
+
+const CLEARED_DOWNLOAD_BYTES = {
+  downloadTransferredBytes: null,
+  downloadTotalBytes: null,
+  downloadBytesPerSecond: null,
+} as const;
+
+/** The subset of electron-updater's ProgressInfo the UI shows. */
+export interface DesktopUpdateDownloadProgress {
+  percent: number;
+  transferred?: number;
+  total?: number;
+  bytesPerSecond?: number;
+}
+
+function finiteBytes(value: number | undefined, fallback: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : (fallback ?? null);
 }
 
 export function reduceDesktopUpdateStateOnCheckStart(
@@ -100,6 +125,7 @@ export function reduceDesktopUpdateStateOnDownloadStart(
     ...state,
     status: "downloading",
     downloadPercent: 0,
+    ...CLEARED_DOWNLOAD_BYTES,
     message: null,
     errorContext: null,
     canRetry: false,
@@ -115,6 +141,7 @@ export function reduceDesktopUpdateStateOnDownloadFailure(
     status: nextStatusAfterDownloadFailure(state),
     message,
     downloadPercent: null,
+    ...CLEARED_DOWNLOAD_BYTES,
     errorContext: "download",
     canRetry: getCanRetryAfterDownloadFailure(state),
   };
@@ -122,14 +149,18 @@ export function reduceDesktopUpdateStateOnDownloadFailure(
 
 export function reduceDesktopUpdateStateOnDownloadProgress(
   state: DesktopUpdateState,
-  percent: number,
+  progress: DesktopUpdateDownloadProgress,
 ): DesktopUpdateState {
+  const { percent } = progress;
   return {
     ...state,
     status: "downloading",
     downloadPercent: Number.isFinite(percent)
       ? Math.max(0, Math.min(100, percent))
       : (state.downloadPercent ?? 0),
+    downloadTransferredBytes: finiteBytes(progress.transferred, state.downloadTransferredBytes),
+    downloadTotalBytes: finiteBytes(progress.total, state.downloadTotalBytes),
+    downloadBytesPerSecond: finiteBytes(progress.bytesPerSecond, state.downloadBytesPerSecond),
     message: null,
     errorContext: null,
     canRetry: false,
@@ -148,6 +179,8 @@ export function reduceDesktopUpdateStateOnDownloadComplete(
     downloadedVersion: version,
     releaseNotes,
     downloadPercent: 100,
+    downloadTransferredBytes: state.downloadTotalBytes ?? state.downloadTransferredBytes ?? null,
+    downloadBytesPerSecond: null,
     message: null,
     errorContext: null,
     canRetry: true,
@@ -161,6 +194,7 @@ export function reduceDesktopUpdateStateOnInstallFailure(
   return {
     ...state,
     status: "downloaded",
+    installPhase: null,
     message,
     errorContext: "install",
     canRetry: true,

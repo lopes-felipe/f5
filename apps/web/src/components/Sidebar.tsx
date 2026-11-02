@@ -253,7 +253,7 @@ export default function Sidebar() {
     confirmThreadDelete: appSettings.confirmThreadDelete,
   });
   const { handleNewThread, deleteThreads } = threadActions;
-  const desktopUpdate = useDesktopUpdate();
+  const desktopUpdate = useDesktopUpdate({ announceInstall: true });
 
   const persistedThreadIds = useMemo(() => new Set(threads.map((thread) => thread.id)), [threads]);
   const projectById = useMemo(
