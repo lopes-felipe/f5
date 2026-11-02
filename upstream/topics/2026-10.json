@@ -25071,11 +25071,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T10:23:30.901Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-19701",
-      "status": "port",
+      "reason": "f5's PR Files tab has no Add to agent line-selection action, so line selection never depended on comment permission.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "pr-hub",
