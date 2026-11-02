@@ -6,6 +6,8 @@ export function createUpdateInstaller(options: {
   onStageStart?(): void;
   onCancel?(): void;
   prepare(): Promise<boolean>;
+  /** Runs once cleanup succeeded, right before the native installer handoff. */
+  onPrepared?(): void;
   install(): void | Promise<void>;
   resetAttempt?(): void;
   recover(message: string): Promise<void>;
@@ -60,6 +62,7 @@ export function createUpdateInstaller(options: {
           return { accepted: false, completed: false };
         }
         phase = "installing";
+        options.onPrepared?.();
         if (options.watchdogEnabled !== false) {
           timer = setTimeout(() => {
             void recover("F5 did not restart. Try installing the update again.");

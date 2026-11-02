@@ -11,6 +11,8 @@ permissions:
 env:
   VITEST_MAX_WORKERS: "2"
 concurrency:
+  # Keep exact-SHA runs isolated. ci-supersede.yml drops older queued pushes
+  # after checking intent changes through the API; push payloads omit file lists.
   group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:

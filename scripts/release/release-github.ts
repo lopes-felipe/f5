@@ -19,6 +19,7 @@ import { pipeline } from "node:stream/promises";
 import { parse } from "yaml";
 import { releaseRetry } from "./release-observability.ts";
 import { parseReleaseProfile } from "../lib/release-profile.ts";
+import { acceptanceOnlyFiles } from "../lib/release-source.ts";
 import { artifactEntries } from "./release-publication.ts";
 import { SHA_PATTERN, type StableRequest } from "./release-candidate.ts";
 import { resolveStableHistory, type ReleaseIntent } from "./release-intent.ts";
@@ -149,10 +150,7 @@ export function acceptanceOnlyCommit(sha: string): boolean {
   ])
     .split("\n")
     .filter(Boolean);
-  return (
-    names.length > 0 &&
-    names.every((name) => /^docs\/computer-certification\/acceptance-[^/]+\.json$/.test(name))
-  );
+  return acceptanceOnlyFiles(names);
 }
 /** Hash the publisher and its runtime inputs, not unrelated changes at main's tip. */
 export function publisherIdentity(): string {

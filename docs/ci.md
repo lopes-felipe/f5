@@ -51,8 +51,25 @@ which can queue for macOS/Windows capacity and delay other PRs. Docs-only end-to
 latency has not been measured; compare queue and execution time against the prior
 topology before claiming a scheduling gain. The docs exclusions are unchanged.
 
-Only superseded PR runs are cancelled. Main commits use separate concurrency groups
-by SHA, so a later merge cannot cancel an earlier commit's release-eligibility run.
+Superseded PR runs are cancelled through concurrency groups. Main runs retain
+per-SHA groups. The `ci-supersede.yml` queue-cleanup workflow checks changed files
+through GitHub's API and cancels older queued main push runs after a newer
+beta-eligible descendant's CI run exists. It skips acceptance-report-only commits
+when choosing that replacement, matching beta source selection. A replacement run
+does not need to have passed: if it later fails, unpublished betas may wait until a
+newer eligible source passes rather than falling back to an intermediate commit.
+Cleanup leaves older runs alone when the newest eligible run has already completed
+without success.
+It preserves commits touching `release-intent.json`
+(including additions, removals and renames), so stable requests retain their exact-SHA
+qualification. True merge commits and truncated file lists are preserved because
+they cannot prove first-parent intent safety through the commits API.
+It checks queued job status and runner assignment, then rechecks run status immediately before
+cancellation; running main runs are left to finish. Only the newest eligible SHA
+must qualify for betas. Schedule and dispatch runs are unaffected.
+GitHub has no atomic queued-only cancellation API, so a run can still start in the
+short interval between the final status check and the cancellation request.
+The API check is necessary because Actions push payloads omit changed-file lists.
 Windows release checks also cancel superseded runs by PR number; release callers
 and manual rehearsals have independent concurrency groups and are never cancelled.
 Release publication joins the exact SHA's successful main push run and candidate

@@ -113,6 +113,58 @@ describe("CommandTranscriptCard", () => {
     expect(markup).not.toContain(">background</span>");
   });
 
+  it("derives a header label when the provider sends no description", () => {
+    const markup = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({
+          command: "/bin/zsh -lc 'bun typecheck > /tmp/typecheck.log 2>&1'",
+          title: "Ran command",
+        })}
+        expanded={false}
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+
+    expect(markup).toContain(
+      '<span class="min-w-0 truncate text-xs text-muted-foreground">Typecheck</span>',
+    );
+  });
+
+  it("keeps the provider description over a derived label", () => {
+    const markup = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({
+          command: "/bin/zsh -lc 'bun typecheck'",
+          description: "Verify types after the refactor",
+        })}
+        expanded={false}
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("Verify types after the refactor");
+    expect(markup).not.toContain(">Typecheck</span>");
+  });
+
+  it("does not repeat a search summary already shown in the body as the header", () => {
+    const markup = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({ command: "rg -n 'foo' apps packages", title: "Ran command" })}
+        expanded={false}
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+
+    expect(markup.match(/Searching apps, packages for foo/g)).toHaveLength(1);
+    expect(markup).not.toContain("min-w-0 truncate text-xs text-muted-foreground");
+  });
+
   it("only shows non-zero exit codes and keeps the start time in a tooltip", () => {
     const success = renderCard(
       <CommandTranscriptCard
