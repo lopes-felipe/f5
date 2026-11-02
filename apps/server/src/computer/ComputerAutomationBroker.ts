@@ -79,6 +79,8 @@ interface ComputerBinding {
 }
 /** Bounded summary of the merged lease state for the WebSocket banner. */
 export interface ComputerUseSnapshot {
+  readonly hostPlatform?: "darwin" | "win32";
+  readonly stopShortcut?: string;
   readonly holders: ReadonlyArray<{
     threadId: string;
     leaseHeld?: boolean;
@@ -102,6 +104,8 @@ export function agentComputerUsePush(
   snapshot: ComputerUseSnapshot,
 ): typeof AgentComputerUseChanged.Type {
   return {
+    ...(snapshot.hostPlatform ? { hostPlatform: snapshot.hostPlatform } : {}),
+    ...(snapshot.stopShortcut ? { stopShortcut: snapshot.stopShortcut } : {}),
     holders: snapshot.holders.map((holder) => ({
       ...holder,
       threadId: ThreadId.makeUnsafe(holder.threadId),
@@ -215,6 +219,8 @@ export class ComputerAutomationBrokerRuntime {
   private nativeOtherProfile = false;
   private chromeOtherProfile = false;
   private chromeRecovery = false;
+  private hostPlatform: "darwin" | "win32" | undefined;
+  private stopShortcut: string | undefined;
   private readonly offHost: () => void;
   private readonly offPause: () => void;
   constructor(
@@ -316,6 +322,15 @@ export class ComputerAutomationBrokerRuntime {
         this.chromeHolder = message.holder;
         this.chromeOtherProfile = message.otherProfile ?? false;
         this.chromeRecovery = message.recoveryRequired ?? false;
+        this.publishUse();
+      }
+      if (
+        message.type === "status" &&
+        (this.hostPlatform !== message.status.hostPlatform ||
+          this.stopShortcut !== message.status.stopShortcut)
+      ) {
+        this.hostPlatform = message.status.hostPlatform;
+        this.stopShortcut = message.status.stopShortcut;
         this.publishUse();
       }
       if (
@@ -426,6 +441,7 @@ export class ComputerAutomationBrokerRuntime {
   }
   /** Merged native and Chrome holders; other profiles stay anonymous. */
   computerUse(): ComputerUseSnapshot {
+    const hostStatus = this.host.status();
     const own = this.mainHolders.filter((holder) => holder.profileId === this.host.profileId);
     const holders: Array<ComputerUseSnapshot["holders"][number]> = own.map((holder) => {
       const execution = this.executionStates.get(holder.threadId);
@@ -472,6 +488,8 @@ export class ComputerAutomationBrokerRuntime {
     const pending = this.pendingTakeover;
     const pendingState = pending ? this.executionStates.get(pending.threadId)?.state : undefined;
     return {
+      ...(hostStatus.hostPlatform ? { hostPlatform: hostStatus.hostPlatform } : {}),
+      ...(hostStatus.stopShortcut ? { stopShortcut: hostStatus.stopShortcut } : {}),
       holders,
       ...(pending
         ? {
@@ -498,8 +516,6 @@ export class ComputerAutomationBrokerRuntime {
   /** Background delivery is available end to end for this backend. */
   backgroundStatus(): { available: boolean; reason?: string | undefined } {
     const status = this.host.status();
-    if (this.options.platform !== "darwin")
-      return { available: false, reason: "unsupported-platform" };
     if (!this.host.backgroundCapable()) return { available: false, reason: "peer-capability" };
     if (!status.available) return { available: false, reason: "permissions" };
     return status.background ?? { available: false, reason: "peer-capability" };

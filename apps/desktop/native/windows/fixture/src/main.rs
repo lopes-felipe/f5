@@ -1,6 +1,8 @@
 use f5_computer_fixture::{command, Command};
 
 #[cfg(windows)]
+mod stop;
+#[cfg(windows)]
 mod window;
 
 fn main() {
@@ -18,6 +20,12 @@ fn main() {
                 })
             );
         }
+        Ok(Command::VerifyCapture) => {
+            if f5_computer_fixture::capture::run().is_err() {
+                eprintln!("Synthetic capture verification failed");
+                std::process::exit(1);
+            }
+        }
         Ok(Command::Run(mode)) => {
             #[cfg(windows)]
             if window::run(mode).is_err() {
@@ -30,6 +38,14 @@ fn main() {
                 eprintln!("Synthetic Windows fixture requires Windows");
                 std::process::exit(1);
             }
+        }
+        Ok(Command::Stop) => {
+            #[cfg(windows)]
+            if stop::run().is_err() {
+                std::process::exit(1);
+            }
+            #[cfg(not(windows))]
+            std::process::exit(1);
         }
         Err(message) => {
             eprintln!("{message}");

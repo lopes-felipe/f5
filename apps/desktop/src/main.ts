@@ -34,6 +34,7 @@ import { initializeUpdatePreferences, writeUpdatePreferences } from "./updateCha
 import { consumeUpdateInstallMarker, writeUpdateInstallMarker } from "./updateInstallMarker";
 import { migrateUserData } from "./userDataMigration";
 import { isolatedBackendCommand } from "./backendComputerIsolation";
+import { computerHostMetadata } from "@t3tools/shared/computerExecution";
 import {
   assertFileActionCaller,
   finderRevealArgs,
@@ -431,7 +432,7 @@ function initializeComputerSystem(): void {
   );
   const lease = new ComputerLeaseAuthority();
   const overlay = new ComputerOverlay();
-  const status = () => {
+  const nativeStatus = () => {
     const gate = computerCertificationStatus(
       process.platform,
       app.isPackaged,
@@ -456,6 +457,7 @@ function initializeComputerSystem(): void {
     }
     return native;
   };
+  const status = () => ({ ...nativeStatus(), ...computerHostMetadata(process.platform) });
   // Desktop + helper half of background availability; each backend adds its own capability.
   const backgroundStatus = (): ComputerBackgroundStatus => {
     const gate = computerBackgroundGate(

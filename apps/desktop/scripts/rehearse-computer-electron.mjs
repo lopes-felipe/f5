@@ -42,6 +42,8 @@ import {
 import { RehearsalStopObservation } from "../src/computer/rehearsalStopObservation.ts";
 import { RehearsalChordObservation } from "../src/computer/rehearsalChordObservation.ts";
 import { measureStopLatency } from "../src/computer/stopLatencyMeasurement.ts";
+import { createWindowsProcessFreeze } from "../src/computer/rehearsalWindowsFreeze.ts";
+import { WindowsFixtureObserver } from "../src/computer/rehearsalWindowsAcceptance.ts";
 import {
   rehearsalProviderErrorCodes,
   rehearsalProviderActivityCounts,
@@ -74,8 +76,10 @@ const controlsOnly = args.includes("--controls-only");
 const actionsOnly = args.includes("--actions-only");
 const stopMain = args.includes("--stop-main");
 const stopRenderer = args.includes("--stop-renderer");
-const stopOnly = stopMain || stopRenderer;
-const diagnoseChord = args.includes("--diagnose-chord");
+const stopBackend = args.includes("--stop-backend");
+const backgroundFixture = args.includes("--background-fixture");
+const stopOnly = stopMain || stopRenderer || stopBackend;
+const diagnoseChord = args.includes("--diagnose-chord") && process.platform !== "win32";
 const realApps = args.includes("--real-apps");
 const clusterWorkflows = args.includes("--cluster-workflows");
 const chromiumFixture = args.includes("--chromium-fixture");
@@ -91,7 +95,9 @@ const observeMcpTransport =
 const runtimeMode = sessionActions || approvalDiagnostic ? "approval-required" : "full-access";
 const includesRealApps = realApps || clusterWorkflows;
 if (
-  process.platform !== "darwin" ||
+  !["darwin", "win32"].includes(process.platform) ||
+  (backgroundFixture && process.platform !== "win32") ||
+  (process.platform === "win32" && (includesRealApps || windowless || !fixtureBinDirectory)) ||
   process.env.F5_COMPUTER_ELECTRON_REHEARSAL !== "1" ||
   !["claude", "codex"].includes(provider) ||
   !output ||
@@ -115,6 +121,8 @@ if (
     actionsOnly,
     stopMain,
     stopRenderer,
+    stopBackend,
+    backgroundFixture,
     realApps,
     clusterWorkflows,
     windowless,
@@ -182,8 +190,12 @@ const projectId = randomUUID();
 const appId = realApps
   ? REAL_APP_REHEARSAL_IDS[0]
   : chromiumFixture
-    ? (await readChromiumFixture(fixtureBinDirectory)).appId
-    : `org.example.computer-rehearsal.${randomUUID()}`;
+    ? process.platform === "win32"
+      ? join(root, "ChromiumFixture", "f5-chromium-fixture.exe").toLowerCase()
+      : (await readChromiumFixture(fixtureBinDirectory)).appId
+    : process.platform === "win32"
+      ? join(root, "native-fixture", "ComputerControlFixture.exe").toLowerCase()
+      : `org.example.computer-rehearsal.${randomUUID()}`;
 const consentApps = clusterWorkflows
   ? [appId, ...REAL_APP_REHEARSAL_IDS]
   : realApps
@@ -192,6 +204,7 @@ const consentApps = clusterWorkflows
 let application;
 let page;
 let fixture;
+let windowsFixtureObserver;
 let externalClient;
 let externalPaused = false;
 let appWindowsClosed = false;
@@ -264,24 +277,27 @@ const stopTrace = new RehearsalStopObservation();
 const chordTrace = diagnoseChord ? new RehearsalChordObservation(true) : undefined;
 let stopMeasurement;
 let frozenPid;
+let windowsFreeze;
 let restoreTimer;
-const restoreProcess = () => {
+const restoreProcess = async () => {
   if (restoreTimer) clearTimeout(restoreTimer);
   restoreTimer = undefined;
   if (frozenPid) {
+    const pid = frozenPid;
+    frozenPid = undefined;
     try {
-      process.kill(frozenPid, "SIGCONT");
+      if (windowsFreeze) await windowsFreeze.resume();
+      else process.kill(pid, "SIGCONT");
     } catch {
       /* Process may have exited. */
     }
-    frozenPid = undefined;
   }
 };
 const checks = {};
 const phaseEvidence = {};
 const halt = () => {
   interrupted = true;
-  restoreProcess();
+  void restoreProcess();
   if (page)
     void page
       .evaluate((id) => window.desktopBridge.computerAutomation.setPaused(id, true), threadId)
@@ -464,7 +480,14 @@ try {
     (await exec("git", ["status", "--porcelain"], { cwd: repo })).stdout.trim(),
   );
   helperSha256 = createHash("sha256")
-    .update(await readFile(join(desktopDir, `dist-native/mac-${process.arch}/f5-computer-helper`)))
+    .update(
+      await readFile(
+        join(
+          desktopDir,
+          `dist-native/${process.platform === "win32" ? "win" : "mac"}-${process.arch}/${process.platform === "win32" ? "f5-computer-helper.exe" : "f5-computer-helper"}`,
+        ),
+      ),
+    )
     .digest("hex");
   buildHashes = Object.fromEntries(
     await Promise.all(
@@ -498,7 +521,15 @@ try {
         ],
         ["stopObserverSource", join(desktopDir, "src/computer/rehearsalStopObservation.ts")],
         ["stopMeasurementSource", join(desktopDir, "src/computer/stopLatencyMeasurement.ts")],
-        ["stopFixtureSource", join(desktopDir, "native/macos/Fixtures/StopLatencyFixture.swift")],
+        [
+          "stopFixtureSource",
+          join(
+            desktopDir,
+            process.platform === "win32"
+              ? "native/windows/fixture/src/stop.rs"
+              : "native/macos/Fixtures/StopLatencyFixture.swift",
+          ),
+        ],
         ...(diagnoseChord
           ? [
               [
@@ -596,6 +627,7 @@ try {
       },
       enableAgentComputerUse: true,
       computerUseBackend: "f5",
+      computerUseExecutionMode: backgroundFixture ? "background" : "foreground",
       enableProviderUpdateChecks: false,
       prHub: { pollIntervalSeconds: 0, discoverNotifications: false },
     }),
@@ -751,6 +783,7 @@ globalThis.__computerRehearsalIsolationBackendPids={};`
     : ""
 }
 globalThis.__computerRehearsalChildPids=new Set();
+globalThis.__computerRehearsalBackendPids={};
 const {RehearsalStopObservation}=require(${JSON.stringify(compiledStopObserver)});
 const stopEvidence=globalThis.__computerRehearsalStop=new RehearsalStopObservation();
 ${
@@ -791,6 +824,7 @@ const child=spawn.apply(this,args);
 if(child.pid){globalThis.__computerRehearsalChildPids.add(child.pid);
 child.once('exit',()=>globalThis.__computerRehearsalChildPids.delete(child.pid));}
 if(args[2]?.env?.F5_DESKTOP_COMPUTER_HOST==='ipc'){
+child.on('message',m=>{if(m.type==='hello')globalThis.__computerRehearsalBackendPids[m.profileId]=child.pid;});
 let isolatedProfile;
 child.on('message',m=>{${
       profileIsolation
@@ -801,7 +835,7 @@ if(isolatedProfile)globalThis.__computerRehearsalIsolation.receive(isolatedProfi
 const send=child.send.bind(child);child.send=function(m,...args){observe(m);
 ${profileIsolation ? `if(isolatedProfile)globalThis.__computerRehearsalIsolation.receive(isolatedProfile,m,'main');` : ""}
 return send(m,...args);};}
-if(args[0]===${JSON.stringify(join(desktopDir, `dist-native/mac-${process.arch}/f5-computer-helper`))}){
+if(args[0]===${JSON.stringify(join(desktopDir, `dist-native/${process.platform === "win32" ? "win" : "mac"}-${process.arch}/${process.platform === "win32" ? "f5-computer-helper.exe" : "f5-computer-helper"}`))}){
 let buffer='';child.stdout.on('data',chunk=>{buffer+=chunk;let end;while((end=buffer.indexOf('\\n'))>=0){
 const line=buffer.slice(0,end);buffer=buffer.slice(end+1);try{stopEvidence.helper(JSON.parse(line));}catch{}}
 if(buffer.length>12*1024*1024)buffer='';});}return child;};
@@ -814,11 +848,30 @@ require(${JSON.stringify(join(desktopDir, "dist-electron/main.js"))});
     args: [wrapper],
     cwd: root,
     env: {
+      ...(process.platform === "win32"
+        ? Object.fromEntries(
+            [
+              "SystemRoot",
+              "WINDIR",
+              "COMSPEC",
+              "TEMP",
+              "TMP",
+              "USERPROFILE",
+              "LOCALAPPDATA",
+              "APPDATA",
+              "PATHEXT",
+              "ProgramFiles",
+              "ProgramFiles(x86)",
+              "ProgramData",
+            ].flatMap((key) => (process.env[key] === undefined ? [] : [[key, process.env[key]]])),
+          )
+        : {}),
       HOME: process.env.HOME,
       USER: process.env.USER,
       PATH: process.env.PATH,
       F5_HOME: join(root, "app"),
       F5_COMPUTER_CONTROL_DEV: "1",
+      ...(backgroundFixture ? { F5_COMPUTER_BACKGROUND_DEV: "1" } : {}),
     },
     timeout: 60000,
   });
@@ -1071,7 +1124,10 @@ require(${JSON.stringify(join(desktopDir, "dist-electron/main.js"))});
         additionalClients.push(value);
         return value;
       },
-      helper: join(desktopDir, `dist-native/mac-${process.arch}/f5-computer-helper`),
+      helper: join(
+        desktopDir,
+        `dist-native/${process.platform === "win32" ? "win" : "mac"}-${process.arch}/${process.platform === "win32" ? "f5-computer-helper.exe" : "f5-computer-helper"}`,
+      ),
       fixtureBinDirectory,
     });
     stage = "finished";
@@ -1517,6 +1573,55 @@ require(${JSON.stringify(join(desktopDir, "dist-electron/main.js"))});
         process.stdout.write(
           "Test closed. Windowless check finished; you can use your computer again.\n",
         );
+      } else if (backgroundFixture) {
+        stage = "background-fixture-actions";
+        windowsFixtureObserver = new WindowsFixtureObserver(fixture);
+        const before = await windowsFixtureObserver.command();
+        if (before.foregroundWindowId === before.windowId)
+          throw new Error("Background fixture must not be frontmost.");
+        const sessionReview = await reviewedTurn({
+          kind: "session-actions",
+          allow: true,
+          instructionsText:
+            "Click Review access when asked and approve background control for this synthetic session. Then keep input idle.",
+          prompt: `Use only F5 computer tools for exact approved app ${appId}. This session uses background execution. Inspect that exact app without activation or focus changes. Use computer_element_action setValue on its ordinary Rehearsal input to set exactly F5_ELECTRON_REHEARSAL Ω🙂, then computer_element_action press on Rehearsal press exactly once. Take one app-scoped computer_screenshot for this exact app. Do not focus, activate, open apps, click coordinates, send keys, use computer_type, or request foreground. Do not touch Finish check or any password field. No shell/files/network or other apps. Stop on any failure, ambiguity or ForegroundRequired and never retry. Finish READY.`,
+        });
+        const after = await windowsFixtureObserver.command();
+        const native = await observer();
+        const mutations = native.operations.filter(
+          (op) =>
+            ![
+              "status",
+              "listApps",
+              "inspect",
+              "screenshot",
+              "zoom",
+              "resolveApps",
+              "leaseAcquire",
+            ].includes(op.op),
+        );
+        checks.backgroundSemanticInputReceived =
+          fixture.typed() && fixture.presses() === 1 && after.receipt.secureEvents === 0;
+        checks.backgroundTrustedSessionConsent =
+          sessionReview.trustedReview &&
+          sessionReview.visible &&
+          sessionReview.settled &&
+          sessionReview.allowed;
+        checks.backgroundNativeDelivery =
+          mutations.length === 2 &&
+          mutations.every(
+            (op) =>
+              op.op === "elementAction" && op.outcome === "ok" && op.backgroundDelivery === true,
+          );
+        checks.backgroundFocusPreserved =
+          before.foregroundWindowId === after.foregroundWindowId &&
+          after.foregroundWindowId !== after.windowId;
+        checks.backgroundCaptureReceived = native.captureResponses >= 1;
+        checks.backgroundTurnLeaseReleased = native.leaseObserved && !native.held;
+        if (!Object.values(checks).every(Boolean))
+          throw new Error("Background workflow evidence incomplete.");
+        stage = "finished";
+        await instructions("Test closed. Background workflow finished. You can use your computer.");
       } else if (realApps) {
         await runRealAppPhase();
       } else if (stopOnly) {
@@ -1539,17 +1644,27 @@ require(${JSON.stringify(join(desktopDir, "dist-electron/main.js"))});
           throw new Error("Stop clock calibration uncertain.");
         // Resolve the real renderer PID before it is frozen. Main and helper stay
         // independent; no renderer RPC is needed on the stop path.
-        const targetPid = stopMain
-          ? application.process().pid
-          : await application.evaluate(({ BrowserWindow }) =>
-              BrowserWindow.getAllWindows()
-                .find((w) => w.webContents.getURL().startsWith("t3:"))
-                ?.webContents.getOSProcessId(),
-            );
+        const activeProfileId = await page.evaluate(() => window.desktopBridge.getProfileId());
+        const targetPid = stopBackend
+          ? await application.evaluate(
+              (_electron, profileId) => globalThis.__computerRehearsalBackendPids[profileId],
+              activeProfileId,
+            )
+          : stopMain
+            ? application.process().pid
+            : await application.evaluate(({ BrowserWindow }) =>
+                BrowserWindow.getAllWindows()
+                  .find((w) => w.webContents.getURL().startsWith("t3:"))
+                  ?.webContents.getOSProcessId(),
+              );
         if (!Number.isInteger(targetPid) || targetPid <= 0)
           throw new Error("Missing isolated process.");
+        if (process.platform === "win32")
+          windowsFreeze = await createWindowsProcessFreeze(targetPid);
         await instructions(
-          "Wait for the separate fixture to turn RED, then press Control + Command + Escape once. Keep input idle until RED.",
+          process.platform === "win32"
+            ? "Wait for the separate fixture to turn RED, then press Ctrl + Alt + Shift + F12 once. Keep input idle until RED."
+            : "Wait for the separate fixture to turn RED, then press Control + Command + Escape once. Keep input idle until RED.",
         );
         fixture.child.stdin.write("COUNTDOWN_WAIT\n");
         await delay(3100);
@@ -1579,15 +1694,22 @@ require(${JSON.stringify(join(desktopDir, "dist-electron/main.js"))});
             )) > heartbeat,
           1000,
         );
-        stage = stopMain ? "main-frozen-physical-stop" : "renderer-frozen-physical-stop";
+        stage = stopBackend
+          ? "backend-frozen-physical-stop"
+          : stopMain
+            ? "main-frozen-physical-stop"
+            : "renderer-frozen-physical-stop";
         frozenPid = targetPid;
         // External supervisor, independent of the frozen app, always restores it.
         restoreTimer = setTimeout(restoreProcess, stopMain ? 850 : 10000);
-        process.kill(frozenPid, "SIGSTOP");
-        const state = (
-          await exec("ps", ["-o", "state=", "-p", String(frozenPid)], { timeout: 2000 })
-        ).stdout;
-        if (!state.includes("T")) throw new Error("Process did not stop.");
+        if (windowsFreeze) await windowsFreeze.freeze(stopMain ? 850 : 10000);
+        else process.kill(frozenPid, "SIGSTOP");
+        const stopped = windowsFreeze
+          ? await windowsFreeze.stopped()
+          : (
+              await exec("ps", ["-o", "state=", "-p", String(frozenPid)], { timeout: 2000 })
+            ).stdout.includes("T");
+        if (!stopped) throw new Error("Process did not stop.");
         const startMs = performance.now();
         fixture.child.stdin.write("GO\n");
         if (stopMain) await delay(700);
@@ -1596,16 +1718,21 @@ require(${JSON.stringify(join(desktopDir, "dist-electron/main.js"))});
             () => stopTrace.evidence.samples.some((sample) => sample.kind === "chord"),
             8000,
           );
-        const stillStopped = (
-          await exec("ps", ["-o", "state=", "-p", String(targetPid)], { timeout: 2000 })
-        ).stdout.includes("T");
+        const stillStopped = windowsFreeze
+          ? await windowsFreeze.stopped()
+          : (
+              await exec("ps", ["-o", "state=", "-p", String(targetPid)], { timeout: 2000 })
+            ).stdout.includes("T");
         const endMs = performance.now();
         if (!frozenPid || !stillStopped)
           throw new Error("Process freeze ended before measurement.");
         const bounds = { startMs, endMs, ...clock };
-        if (stopMain) stopTrace.evidence.hostStall = bounds;
+        if (stopBackend) {
+          stopTrace.evidence.backendFreeze = bounds;
+          stopTrace.evidence.backendFrozenAtStop = true;
+        } else if (stopMain) stopTrace.evidence.hostStall = bounds;
         else stopTrace.evidence.rendererFreeze = bounds;
-        restoreProcess();
+        await restoreProcess();
         checks.actualElectronProcessFrozen = true;
         await waitFor(async () => {
           const trace = await application.evaluate(() =>
@@ -1830,7 +1957,9 @@ require(${JSON.stringify(join(desktopDir, "dist-electron/main.js"))});
   }
   process.exitCode = 1;
 } finally {
-  restoreProcess();
+  windowsFixtureObserver?.close();
+  await restoreProcess();
+  await windowsFreeze?.close();
   // Preserve a native focus receipt even when waiting for the chord failed.
   // This observation cannot turn a failed stage into a successful run.
   if (
@@ -2148,15 +2277,17 @@ require(${JSON.stringify(join(desktopDir, "dist-electron/main.js"))});
                       ? "unsigned-real-electron-clustered-workflows"
                       : realApps
                         ? `unsigned-real-electron-${provider}-textedit-and-calculator`
-                        : stopOnly
-                          ? `unsigned-real-electron-${provider}-${stopMain ? "main" : "renderer"}-frozen-physical-stop`
-                          : statusOnly
-                            ? `unsigned-real-electron-${provider}-${approvalDiagnostic ? "approval-mode-" : ""}read-only-discovery-diagnostic`
-                            : controlsOnly
-                              ? `unsigned-real-electron-${provider}-human-consent-and-controls`
-                              : actionsOnly
-                                ? `unsigned-real-electron-${provider}-human-consent-and-actions`
-                                : `unsigned-real-electron-${provider}-human-consent-synthetic-app`,
+                        : backgroundFixture
+                          ? `unsigned-real-electron-${provider}-background-fixture`
+                          : stopOnly
+                            ? `unsigned-real-electron-${provider}-${stopBackend ? "backend" : stopMain ? "main" : "renderer"}-frozen-physical-stop`
+                            : statusOnly
+                              ? `unsigned-real-electron-${provider}-${approvalDiagnostic ? "approval-mode-" : ""}read-only-discovery-diagnostic`
+                              : controlsOnly
+                                ? `unsigned-real-electron-${provider}-human-consent-and-controls`
+                                : actionsOnly
+                                  ? `unsigned-real-electron-${provider}-human-consent-and-actions`
+                                  : `unsigned-real-electron-${provider}-human-consent-synthetic-app`,
         platform: process.platform,
         arch: process.arch,
         osVersion: release(),
@@ -2259,7 +2390,7 @@ require(${JSON.stringify(join(desktopDir, "dist-electron/main.js"))});
                 ]),
           "No installed-build TCC attribution, signed packaging, multi-profile/display or complete real-app certification",
           stopOnly
-            ? "SIGSTOP of one isolated Electron process; does not prove arbitrary deadlocks, signed packaging or Windows stop behavior"
+            ? "Suspension of one isolated Electron process; does not prove arbitrary deadlocks, signed packaging or other operating-system versions"
             : "Overlay capture exclusion, hung-renderer/host stop latency, Stop interruption and Windows runtime remain pending",
           "Provider built-in and Chrome gates remain closed; no image bytes, typed values, accessibility content or raw errors retained",
         ],

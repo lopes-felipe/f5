@@ -50,6 +50,39 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe("computer helper supervision", () => {
+  it("preserves a startup refusal across an immediate pipe failure and exit without restarting", async () => {
+    const h = make();
+    vi.spyOn(h.process.stdin, "write").mockImplementationOnce(() => {
+      throw new Error("EPIPE");
+    });
+    h.emit({
+      type: "hello",
+      protocolVersion: 1,
+      startupFailure: {
+        available: false,
+        reason: "missing-permissions",
+        detail: "Helper must run unelevated.",
+      },
+    });
+    h.process.emit("exit", 0);
+    expect(h.client.status()).toEqual({
+      available: false,
+      reason: "missing-permissions",
+      detail: "Helper must run unelevated.",
+    });
+    expect(h.client.capabilities()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    await expect(h.client.request(request("refused-startup"), extra)).rejects.toMatchObject({
+      error: { _tag: "Unavailable", reason: "missing-permissions" },
+    });
+  });
+  it("does not accept an available status as a startup refusal", () => {
+    const h = make();
+    h.emit({ type: "hello", protocolVersion: 1, startupFailure: { available: true } });
+    expect(h.client.status()).toMatchObject({ available: false, reason: "helper-crashed" });
+    expect(h.process.kill).toHaveBeenCalledWith("SIGKILL");
+  });
   it("uses the same exponential backoff for pipe failures as ordinary crashes", async () => {
     const h = make();
     ready(h);

@@ -16,6 +16,7 @@ import {
   ComputerExecutionState,
   ComputerGrant,
   ComputerPauseCause,
+  ComputerHostMetadata,
 } from "./computerAutomation";
 import {
   ProfileListResult,
@@ -283,6 +284,7 @@ export type AgentComputerUseHolder = typeof AgentComputerUseHolder.Type;
  * screen, mouse and keyboard; background holders act inside one app each.
  */
 export const AgentComputerUseChanged = Schema.Struct({
+  ...ComputerHostMetadata.fields,
   holders: Schema.Array(AgentComputerUseHolder),
   pendingTakeover: Schema.optional(
     Schema.Struct({

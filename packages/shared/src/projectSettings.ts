@@ -158,7 +158,8 @@ export function agentBrowserPolicyFromSettings(
     codexChrome: overrides?.enableCodexChrome ?? settings.enableCodexChrome,
     computerUse: overrides?.enableAgentComputerUse ?? settings.enableAgentComputerUse,
     // No project override: the execution mode is a machine-wide choice.
-    computerUseExecutionMode: settings.computerUseExecutionMode ?? "foreground",
+    computerUseExecutionMode:
+      settings.computerUseExecutionMode ?? DEFAULT_SERVER_SETTINGS.computerUseExecutionMode,
     computerUsePasswordMasking: settings.computerUsePasswordMasking ?? "fast",
   };
 }

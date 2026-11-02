@@ -3,8 +3,19 @@ import { useAgentBrowserActivityStore } from "../agentBrowserActivityStore";
 import type { ThreadId } from "@t3tools/contracts";
 import { readNativeApi } from "../nativeApi";
 import { newCommandId } from "../lib/utils";
-// macOS only while Windows preview is gated; remote clients also control a Mac host.
-export const COMPUTER_STOP_SHORTCUT_LABEL = "⌃⌘Esc";
+export function computerStopShortcutLabel(host?: {
+  hostPlatform?: "darwin" | "win32" | undefined;
+  stopShortcut?: string | undefined;
+}): string {
+  return (
+    host?.stopShortcut ??
+    (host?.hostPlatform === "win32"
+      ? "Ctrl+Alt+Shift+F12"
+      : host?.hostPlatform === "darwin"
+        ? "⌃⌘Esc"
+        : "Stop in F5")
+  );
+}
 export async function stopComputerTurn(threadId: ThreadId): Promise<void> {
   useAgentComputerActivityStore.getState().markStopUnconfirmed(threadId);
   const outcomes = await Promise.allSettled([

@@ -1,7 +1,7 @@
 import { execFile, spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
 import { copyFile, mkdir, writeFile } from "node:fs/promises";
-import { join, resolve, basename } from "node:path";
+import { join, resolve, basename, dirname, relative, isAbsolute } from "node:path";
 import { promisify } from "node:util";
 
 export async function prepareRehearsalExecutable(
@@ -32,6 +32,28 @@ export async function createRehearsalFixture(options: {
   passiveChord?: boolean;
   preparedDirectory?: string;
 }) {
+  if (process.platform === "win32") {
+    if (!options.preparedDirectory || options.passiveChord || options.displayId)
+      throw new Error(
+        "Windows fixture requires prepared binaries; chord/display drivers are separate.",
+      );
+    const executable = resolve(options.appId);
+    const within = relative(resolve(options.root), executable);
+    if (isAbsolute(within) || within.startsWith("..") || !within || !executable.endsWith(".exe"))
+      throw new Error("Windows fixture must be inside its isolated rehearsal directory.");
+    await mkdir(dirname(executable), { recursive: true });
+    await copyFile(join(options.preparedDirectory, "ComputerControlFixture.exe"), executable);
+    return observeRehearsalFixture(
+      spawn(
+        executable,
+        options.observeChord
+          ? ["--run-stop"]
+          : ["--run", ...(options.ungranted ? ["--ungranted"] : [])],
+        { stdio: ["pipe", "pipe", "ignore"] },
+      ),
+      executable,
+    );
+  }
   if (options.displayId !== undefined && !/^\d{1,10}$/.test(options.displayId))
     throw new Error("Invalid fixture display id.");
   const contents = join(options.root, options.appId, "Fixture.app", "Contents");

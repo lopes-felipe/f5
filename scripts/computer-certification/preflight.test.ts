@@ -9,6 +9,7 @@ import type { spawn } from "node:child_process";
 
 const roots: string[] = [];
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 async function home() {
@@ -125,4 +126,51 @@ it("accepts a valid status after the probe's own normal suspension-only exit", a
   message({ type: "response", requestId: "suite-preflight", result: { available: true } });
   child.emit("close", null, "SIGTERM");
   expect(await pending).toEqual({ available: true });
+});
+
+it("waits for monitor startup and accepts a healthy push without sending authority", async () => {
+  const { child, pending, message } = probeChild();
+  message({ type: "hello", protocolVersion: 1, helperVersion: "2.1.0" });
+  message({
+    type: "response",
+    requestId: "suite-preflight",
+    result: { available: false, reason: "monitor-unhealthy" },
+  });
+  message({ type: "status", status: { available: false, reason: "monitor-unhealthy" } });
+  expect(child.kill).not.toHaveBeenCalled();
+  expect(child.stdin.read()?.toString()).toBe(
+    JSON.stringify({
+      type: "request",
+      request: { op: "status", requestId: "suite-preflight" },
+    }) + "\n",
+  );
+  message({ type: "status", status: { available: true } });
+  expect(child.kill).toHaveBeenCalledOnce();
+  child.emit("close", null, "SIGTERM");
+  expect(await pending).toEqual({ available: true });
+  expect(child.stdin.read()).toBeNull();
+});
+
+it("bounds monitor startup and preserves the unhealthy status at the deadline", async () => {
+  vi.useFakeTimers();
+  const { child, pending, message } = probeChild();
+  message({ type: "hello", protocolVersion: 1, helperVersion: "2.1.0" });
+  message({ type: "status", status: { available: false, reason: "monitor-unhealthy" } });
+  await vi.advanceTimersByTimeAsync(4999);
+  expect(child.kill).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(child.kill).toHaveBeenCalledOnce();
+  message({ type: "status", status: { available: true } });
+  child.emit("close", null, "SIGTERM");
+  expect(await pending).toEqual({ available: false, reason: "monitor-unhealthy" });
+});
+
+it("stops immediately on terminal unavailability during monitor startup", async () => {
+  const { child, pending, message } = probeChild();
+  message({ type: "hello", protocolVersion: 1, helperVersion: "2.1.0" });
+  message({ type: "status", status: { available: false, reason: "monitor-unhealthy" } });
+  message({ type: "status", status: { available: false, reason: "missing-permissions" } });
+  expect(child.kill).toHaveBeenCalledOnce();
+  child.emit("close", null, "SIGTERM");
+  expect(await pending).toEqual({ available: false, reason: "missing-permissions" });
 });

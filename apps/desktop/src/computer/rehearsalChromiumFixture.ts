@@ -4,7 +4,24 @@ import { join, relative, isAbsolute, sep } from "node:path";
 import { observeRehearsalFixture } from "./rehearsalFixture";
 
 export const CHROMIUM_FIXTURE_BUNDLE = "ChromiumFixture.app";
-export function decodeChromiumFixture(value: unknown): { appId: string } {
+export function decodeChromiumFixture(value: unknown): { appId: string; platform?: "win32" } {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "platform" in value &&
+    value.platform === "win32"
+  ) {
+    if (
+      !("version" in value) ||
+      value.version !== 1 ||
+      !("bundle" in value) ||
+      value.bundle !== "ChromiumFixture" ||
+      !("appId" in value) ||
+      value.appId !== "f5-chromium-fixture.exe"
+    )
+      throw new Error("Invalid Chromium fixture metadata.");
+    return { appId: value.appId, platform: "win32" };
+  }
   if (
     typeof value !== "object" ||
     value === null ||
@@ -24,7 +41,9 @@ export async function readChromiumFixture(directory: string) {
     JSON.parse(await readFile(join(directory, "electron-fixture.json"), "utf8")),
   );
   const root = await realpath(directory);
-  const bundle = await realpath(join(root, CHROMIUM_FIXTURE_BUNDLE));
+  const bundle = await realpath(
+    join(root, metadata.platform === "win32" ? "ChromiumFixture" : CHROMIUM_FIXTURE_BUNDLE),
+  );
   const rel = relative(root, bundle);
   if (!rel || rel === ".." || rel.startsWith(".." + sep) || isAbsolute(rel))
     throw new Error("Chromium fixture escaped preparation directory.");
@@ -38,19 +57,44 @@ export async function createRehearsalChromiumFixture(options: {
   preparedDirectory: string;
   appId: string;
 }) {
-  if (process.platform !== "darwin") throw new Error("Chromium fixture platform unavailable.");
+  if (process.platform !== "darwin" && process.platform !== "win32")
+    throw new Error("Chromium fixture platform unavailable.");
   const prepared = await readChromiumFixture(options.preparedDirectory);
-  if (prepared.appId !== options.appId) throw new Error("Chromium fixture identity changed.");
-  const bundle = join(options.root, CHROMIUM_FIXTURE_BUNDLE);
+  const windows = process.platform === "win32";
+  const bundle = join(options.root, windows ? "ChromiumFixture" : CHROMIUM_FIXTURE_BUNDLE);
+  const executable = windows
+    ? join(bundle, "f5-chromium-fixture.exe")
+    : join(bundle, "Contents/MacOS/Electron");
+  if (
+    windows
+      ? prepared.platform !== "win32" || options.appId !== executable.toLowerCase()
+      : prepared.appId !== options.appId
+  )
+    throw new Error("Chromium fixture identity changed.");
   await cp(prepared.bundle, bundle, {
     recursive: true,
     errorOnExist: true,
     force: false,
     verbatimSymlinks: true,
   });
-  const executable = join(bundle, "Contents/MacOS/Electron");
   const env: NodeJS.ProcessEnv = {};
-  for (const key of ["PATH", "HOME", "USER", "TMPDIR", "LANG", "LC_ALL"])
+  for (const key of [
+    "PATH",
+    "HOME",
+    "USER",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "SystemRoot",
+    "WINDIR",
+    "COMSPEC",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "PATHEXT",
+  ])
     if (process.env[key] !== undefined) env[key] = process.env[key];
   const child = spawn(executable, [], { env, stdio: ["pipe", "pipe", "pipe"] });
   // Runtime diagnostics never become receipts or persisted app content.

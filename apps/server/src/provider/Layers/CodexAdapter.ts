@@ -2719,7 +2719,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         const computerPolicy = yield* resolveAgentBrowserPolicy(input.threadId);
         const computerDecision = yield* resolveComputerBackendSelection({
           provider: "codex",
-          enabled: computerPolicy.computerUse,
+          enabled: serverConfig.mode === "desktop" && computerPolicy.computerUse,
           fullAccess: input.runtimeMode === "full-access",
           nativeStatus: options?.computerAutomationBroker?.host.status() ?? {
             available: false,

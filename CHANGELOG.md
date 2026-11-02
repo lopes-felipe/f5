@@ -4,6 +4,17 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Computer use
+
+- Add a Windows x64 computer-use preview with app approvals, foreground and
+  background accessibility actions, scoped screenshots and password masking,
+  pause/resume, and Ctrl+Alt+Shift+F12 emergency stop. Computer use defaults to enabled
+  with background execution on supported desktops; saved preferences and app
+  approvals remain in effect. Native workflow, lifecycle and
+  capture privacy checks passed on Windows 11; full provider, physical-stop,
+  display, Windows 10 and installed-build acceptance remain pending. Signed
+  certification remains false.
+
 ## [0.1.2] - 2026-11-01
 
 ### Added

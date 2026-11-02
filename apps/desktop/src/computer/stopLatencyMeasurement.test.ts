@@ -108,6 +108,23 @@ it("requires the backend to remain stopped when that mode is selected", () => {
   expect(measureStopLatency({ ...evidence, backendFrozenAtStop: true }).state).toBe("passed");
   expect(measureStopLatency({ ...evidence, backendFrozenAtStop: false }).state).toBe("failed");
 });
+it("requires the whole chord inside independently calibrated backend freeze bounds", () => {
+  const backendFreeze = { startMs: 100, endMs: 800, offsetMinMs: 1000, offsetMaxMs: 1002 };
+  expect(
+    measureStopLatency({ ...evidence, backendFrozenAtStop: true, backendFreeze }),
+  ).toMatchObject({
+    state: "passed",
+    checks: { backendClockCalibrated: true, physicalAndChordDuringBackendFreeze: true },
+  });
+  for (const changed of [
+    { ...backendFreeze, startMs: 199 },
+    { ...backendFreeze, endMs: 239 },
+    { ...backendFreeze, offsetMaxMs: 1030 },
+  ])
+    expect(
+      measureStopLatency({ ...evidence, backendFrozenAtStop: true, backendFreeze: changed }).state,
+    ).toBe("failed");
+});
 it("requires physical input and the whole chord inside a separately calibrated renderer freeze", () => {
   const rendererFreeze = { startMs: 100, endMs: 800, offsetMinMs: 1000, offsetMaxMs: 1002 };
   const result = measureStopLatency({ ...evidence, rendererFreeze });

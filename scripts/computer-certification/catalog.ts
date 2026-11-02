@@ -24,6 +24,64 @@ export interface Scenario {
 // platform drivers stay in the inventory so a green subset cannot hide gaps.
 export const SCENARIOS: readonly Scenario[] = [
   {
+    id: "windows-background",
+    group: "workflows",
+    title: "Windows provider background semantic input, scoped capture and focus preservation",
+    provider: true,
+    operator: true,
+    runner: "electron-background",
+    requirements: [],
+    expectedChecks: [
+      "humanTrustedConsent",
+      "consentTurnEmittedNoInput",
+      "backgroundTrustedSessionConsent",
+      "backgroundSemanticInputReceived",
+      "backgroundNativeDelivery",
+      "backgroundFocusPreserved",
+      "backgroundCaptureReceived",
+      "backgroundTurnLeaseReleased",
+    ],
+  },
+  {
+    id: "windows-lifecycle",
+    group: "recovery",
+    title:
+      "Windows native expiry, retirement, revocation, stale references, queue bounds and helper restart",
+    provider: false,
+    operator: true,
+    runner: "windows-lifecycle",
+    requirements: [],
+    expectedChecks: [
+      "expiryLatches",
+      "retiredGenerationRefused",
+      "revocationAndGrantVersion",
+      "replacedElementRefused",
+      "saturationAndDrain",
+      "restartDropsGrants",
+      "restartDropsPermitsAndReferences",
+    ],
+  },
+  {
+    id: "windows-helper",
+    group: "workflows",
+    title: "Windows native inspection, Unicode, masking metadata and scoped background actions",
+    provider: false,
+    operator: true,
+    runner: "windows-helper",
+    requirements: [],
+    expectedChecks: [
+      "nativeInspection",
+      "targetedInspection",
+      "grantAndSnapshotIsolation",
+      "nativeUnicodeAndPress",
+      "captureMaskingMetadata",
+      "backgroundSemanticAction",
+      "backgroundRefusesGlobalInput",
+      "selectivePause",
+      "helperExitConfirmed",
+    ],
+  },
+  {
     id: "quality",
     group: "automated",
     title: "Formatting, lint, typecheck and exhaustive tests",
@@ -31,7 +89,7 @@ export const SCENARIOS: readonly Scenario[] = [
     operator: false,
     runner: "quality",
     requirements: ["repository"],
-    expectedChecks: ["format", "lint", "typecheck", "full-tests"],
+    expectedChecks: ["format", "lint", "typecheck", "full-tests", "upstream-ports"],
   },
   {
     id: "browser-smoke",
@@ -553,9 +611,19 @@ export const NATIVE_REQUIREMENTS = [
 
 export function inventory(platform: Platform, providers: readonly Provider[]) {
   return SCENARIOS.filter((scenario) =>
-    platform === "darwin" ? scenario.id !== "windows-recipients" : scenario.id !== "windows-closed",
+    platform === "darwin"
+      ? ![
+          "windows-recipients",
+          "windows-helper",
+          "windows-lifecycle",
+          "windows-background",
+        ].includes(scenario.id)
+      : scenario.id !== "windows-closed",
   ).flatMap((scenario) =>
-    (scenario.provider ? providers : [undefined]).map((provider) => ({
+    (scenario.provider || (platform === "win32" && scenario.id === "backend-stop")
+      ? providers
+      : [undefined]
+    ).map((provider) => ({
       ...scenario,
       ...(platform === "win32" && scenario.id === "native-tests"
         ? {
@@ -563,6 +631,34 @@ export function inventory(platform: Platform, providers: readonly Provider[]) {
               ...scenario.expectedChecks,
               "native-fixture-tests",
               "native-fixture-protocol",
+            ],
+          }
+        : {}),
+      ...(platform === "win32" && scenario.id === "capture"
+        ? {
+            expectedChecks: [
+              "positiveMarkers",
+              "fastPixelPrivacy",
+              "conservativePixelPrivacy",
+              "secureInspection",
+              "zoomPixelPrivacy",
+              "scopedCapture",
+              "hostExcluded",
+              "overlayExcluded",
+              "revokedObservations",
+              "retiredCaptureRefused",
+            ],
+          }
+        : {}),
+      ...(platform === "win32" && scenario.id === "backend-stop"
+        ? {
+            runner: "electron-backend-stop",
+            provider: true,
+            expectedChecks: [
+              "actualElectronProcessFrozen",
+              "helperRecognizedChordAndMirroredPause",
+              "noSyntheticInputAfterStop",
+              "nativeStopMeasurementPassed",
             ],
           }
         : {}),

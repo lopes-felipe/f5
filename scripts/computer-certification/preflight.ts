@@ -45,6 +45,7 @@ export async function suspendedProbe(path: string, spawnProbe: typeof spawn = sp
     let replied = false;
     let helloReceived = false;
     let requestedStop = false;
+    let startingStatus: ComputerAutomationBackendStatus | undefined;
     const stop = (value: ComputerAutomationBackendStatus) => {
       // An exiting helper can close stdin immediately after sending other-instance.
       // A late EPIPE must not replace that already validated terminal status.
@@ -53,7 +54,19 @@ export async function suspendedProbe(path: string, spawnProbe: typeof spawn = sp
       replied = true;
       requestedStop = child.kill();
     };
-    const timeout = setTimeout(() => stop({ available: false, reason: "helper-crashed" }), 5000);
+    const observeStatus = (status: ComputerAutomationBackendStatus) => {
+      // Monitors start fail-closed and publish readiness after their first live
+      // challenge. Wait within the existing deadline, without granting authority.
+      if (!status.available && status.reason === "monitor-unhealthy") {
+        startingStatus = status;
+        return;
+      }
+      stop(status);
+    };
+    const timeout = setTimeout(
+      () => stop(startingStatus ?? { available: false, reason: "helper-crashed" }),
+      5000,
+    );
     const force = setTimeout(() => child.kill("SIGKILL"), 6000);
     child.stderr.resume();
     child.stdin.on("error", () => stop({ available: false, reason: "helper-crashed" }));
@@ -89,12 +102,14 @@ export async function suspendedProbe(path: string, spawnProbe: typeof spawn = sp
             );
           } else if (!helloReceived) throw new Error("Missing helper handshake");
           else if (message.type === "response" && message.requestId === "suite-preflight") {
-            stop(Schema.decodeUnknownSync(ComputerAutomationBackendStatus)(message.result));
+            observeStatus(
+              Schema.decodeUnknownSync(ComputerAutomationBackendStatus)(message.result),
+            );
           } else if (message.type === "status") {
             const status = Schema.decodeUnknownSync(ComputerAutomationBackendStatus)(
               message.status,
             );
-            if (!status.available) stop(status);
+            observeStatus(status);
           }
         } catch {
           stop({ available: false, reason: "helper-crashed" });
@@ -161,6 +176,7 @@ export async function preflight(target: Target, launches: Launches) {
   }
   return {
     checks,
+    helperStatus: status,
     providerVersions: versions,
     displays: status.available ? (status.displays ?? []) : [],
   };

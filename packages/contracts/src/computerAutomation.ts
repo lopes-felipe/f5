@@ -63,8 +63,14 @@ export const ComputerBackgroundStatus = Schema.Struct({
 export type ComputerBackgroundStatus = typeof ComputerBackgroundStatus.Type;
 export const ComputerPasswordMasking = Schema.Literals(["fast", "conservative"]);
 export type ComputerPasswordMasking = typeof ComputerPasswordMasking.Type;
+/** Host metadata remains optional for older desktop and server peers. */
+export const ComputerHostMetadata = Schema.Struct({
+  hostPlatform: Schema.optional(Schema.Literals(["darwin", "win32"])),
+  stopShortcut: Schema.optional(Schema.String.check(Schema.isMaxLength(80))),
+});
 export const ComputerAutomationBackendStatus = Schema.Union([
   Schema.Struct({
+    ...ComputerHostMetadata.fields,
     available: Schema.Literal(true),
     displays: Schema.optional(Schema.Array(ComputerDisplay)),
     background: Schema.optional(ComputerBackgroundStatus),
@@ -72,6 +78,7 @@ export const ComputerAutomationBackendStatus = Schema.Union([
     passwordMaskingSupported: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
+    ...ComputerHostMetadata.fields,
     available: Schema.Literal(false),
     reason: ComputerAutomationUnavailableReason,
     detail: Schema.optional(Schema.String),
