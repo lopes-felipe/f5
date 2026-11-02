@@ -24,6 +24,7 @@ export default mergeConfig(
         ? { reporters: [new CiDurationReporter()] }
         : {}),
       sequence: { sequencer: DurationSequencer },
+      globalSetup: [join(import.meta.dirname, "scripts", "realStateGuard.globalSetup.ts")],
       // Tests opt into host settings explicitly. Default production behavior must
       // not make fixtures depend on Windows autocrlf or a developer's gh login.
       env: {

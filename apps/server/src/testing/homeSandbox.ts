@@ -12,6 +12,12 @@
  * processes such as Git for Windows. This module owns the full override set and
  * refuses to hand out a sandbox whose redirection did not take effect.
  *
+ * The environment is process-global, so sandboxes can overlap: a test that
+ * timed out keeps running while Vitest starts the next one. Release therefore
+ * restores only while its own home is still active, and never restores the
+ * real user home (the run-wide fake home from `isolateTestHome` is used
+ * instead). An out-of-order restore once destroyed a live profile database.
+ *
  * @module homeSandbox
  */
 import * as FS from "node:fs";
@@ -32,6 +38,9 @@ const SANDBOXED_ENV_NAMES = [
 ] as const;
 
 type SandboxedEnvName = (typeof SANDBOXED_ENV_NAMES)[number];
+
+/** The variable `os.homedir()` consults on this platform. */
+const HOME_ENV_NAME = process.platform === "win32" ? "USERPROFILE" : "HOME";
 type EnvSnapshot = Record<SandboxedEnvName, string | undefined>;
 
 /**
@@ -47,6 +56,41 @@ export interface HomeSandbox {
 interface HomeSandboxOptions {
   readonly home?: string;
   readonly resolveHome?: () => string;
+  /** Real user homes to protect; defaults to {@link realUserHomes}. */
+  readonly realHomes?: ReadonlyArray<string>;
+}
+
+/**
+ * Homes that tests must never write into: the account home from the user
+ * database (unaffected by `HOME`) and the one recorded by `isolateTestHome`.
+ */
+export function realUserHomes(): ReadonlyArray<string> {
+  const homes = new Set<string>();
+  try {
+    homes.add(Path.resolve(OS.userInfo().homedir));
+  } catch {
+    // Some containers have no passwd entry; F5_TEST_REAL_HOME still applies.
+  }
+  if (process.env.F5_TEST_REAL_HOME) homes.add(Path.resolve(process.env.F5_TEST_REAL_HOME));
+  return [...homes];
+}
+
+/**
+ * Throws when `path` resolves inside a real user's `~/.f5` or `~/.t3`.
+ */
+export function assertOutsideRealUserState(
+  path: string,
+  realHomes: ReadonlyArray<string> = realUserHomes(),
+): void {
+  for (const home of realHomes) {
+    for (const stateRoot of [".f5", ".t3"]) {
+      if (isSameOrInside(path, Path.join(home, stateRoot))) {
+        throw new Error(
+          `Refusing to touch ${path}: it is inside the real user state directory ${Path.join(home, stateRoot)}.`,
+        );
+      }
+    }
+  }
 }
 
 function captureEnv(): EnvSnapshot {
@@ -80,12 +124,25 @@ function applyEnv(home: string): void {
   }
 }
 
+// macOS and Windows volumes are case-insensitive by default.
+function normalizePath(path: string): string {
+  const resolved = Path.resolve(path);
+  return process.platform === "win32" || process.platform === "darwin"
+    ? resolved.toLowerCase()
+    : resolved;
+}
+
 function isSamePath(left: string, right: string): boolean {
-  const normalizedLeft = Path.resolve(left);
-  const normalizedRight = Path.resolve(right);
-  return process.platform === "win32"
-    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
-    : normalizedLeft === normalizedRight;
+  return normalizePath(left) === normalizePath(right);
+}
+
+function isSameOrInside(path: string, root: string): boolean {
+  const relative = Path.relative(normalizePath(root), normalizePath(path));
+  return relative === "" || (!relative.startsWith("..") && !Path.isAbsolute(relative));
+}
+
+function isRealHome(value: string | undefined, realHomes: ReadonlyArray<string>): boolean {
+  return value !== undefined && realHomes.some((home) => isSamePath(value, home));
 }
 
 /**
@@ -97,7 +154,22 @@ function isSamePath(left: string, right: string): boolean {
  * state.
  */
 export function createHomeSandbox(input: HomeSandboxOptions = {}): HomeSandbox {
+  const realHomes = input.realHomes ?? realUserHomes();
+  if (isRealHome(process.env[HOME_ENV_NAME], realHomes) && !process.env.F5_TEST_REAL_HOME) {
+    throw new Error(
+      `${HOME_ENV_NAME} is the real user home (${process.env[HOME_ENV_NAME]}) and the run is not isolated. ` +
+        "Run tests through a Vitest config that calls isolateTestHome().",
+    );
+  }
   const snapshot = captureEnv();
+  if (isRealHome(snapshot.HOME, realHomes) || isRealHome(snapshot.USERPROFILE, realHomes)) {
+    // Something already restored the real home; never put it back again.
+    const fallback = process.env.F5_TEST_HOME;
+    snapshot.HOME = fallback;
+    snapshot.USERPROFILE = fallback;
+    snapshot.HOMEDRIVE = undefined;
+    snapshot.HOMEPATH = undefined;
+  }
   const ownsHome = input.home === undefined;
   const home = input.home ?? FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-home-sandbox-"));
   let released = false;
@@ -106,7 +178,18 @@ export function createHomeSandbox(input: HomeSandboxOptions = {}): HomeSandbox {
       return;
     }
     released = true;
-    restoreEnv(snapshot);
+    // A newer sandbox owns the environment; restoring would yank its home.
+    // Leaving our (soon deleted) home in place for it is the safe failure.
+    const active = process.env[HOME_ENV_NAME];
+    if (active !== undefined && isSamePath(active, home)) {
+      if (snapshot[HOME_ENV_NAME] === undefined) {
+        // No safe home to return to: keep the sandbox path rather than unset
+        // HOME, which would make os.homedir() fall back to the real home.
+        restoreEnv({ ...snapshot, HOME: home, USERPROFILE: home });
+      } else {
+        restoreEnv(snapshot);
+      }
+    }
     if (ownsHome) {
       try {
         FS.rmSync(home, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
