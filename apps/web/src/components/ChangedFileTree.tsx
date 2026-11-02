@@ -126,6 +126,7 @@ export function ChangedFileTree({
               type="button"
               className="flex min-w-0 flex-1 items-center gap-1 rounded px-1 py-1 text-left hover:bg-accent"
               title={row.file?.previousPath ? `${row.file.previousPath} → ${row.path}` : row.path}
+              aria-label={`${row.file ? "File" : "Folder"} ${row.path}`}
               aria-expanded={row.file ? undefined : !collapsed.has(row.path)}
               onContextMenu={
                 row.file && onContextMenu ? (event) => onContextMenu(event, row.path) : undefined

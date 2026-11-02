@@ -20,7 +20,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-it("keeps a colliding file selectable and its folder collapsible with real paths and icons", async () => {
+it("keeps a colliding file selectable and its folder collapsible with real paths", async () => {
   const onSelect = vi.fn();
   const onContextMenu = vi.fn();
   const files = [{ path: "office/config.ts" }, { path: "office", previousPath: "old-office" }];
@@ -34,45 +34,42 @@ it("keeps a colliding file selectable and its folder collapsible with real paths
   );
   try {
     await screen.getByText("Changed files (2)", { exact: true }).click();
-    const folder = screen.container.querySelector<HTMLButtonElement>("button[aria-expanded]")!;
-    const file = screen.container.querySelector<HTMLButtonElement>(
-      'button[title="old-office → office"]',
-    )!;
-    expect(folder.querySelector(".lucide-folder")).not.toBeNull();
-    expect(file.querySelector(".lucide-file")).not.toBeNull();
-    expect(file.hasAttribute("aria-expanded")).toBe(false);
+    const folder = screen.getByRole("button", { name: "Folder office", exact: true });
+    const file = screen.getByRole("button", { name: "File office", exact: true });
+    await expect.element(file).toHaveAttribute("title", "old-office → office");
+    await expect.element(file).not.toHaveAttribute("aria-expanded");
 
-    await screen.getByRole("button", { name: "config.ts", exact: true }).click();
-    await screen.getByRole("button", { name: "office", exact: true }).all()[1]!.click();
+    await screen.getByRole("button", { name: "File office/config.ts", exact: true }).click();
+    await file.click();
     expect(onSelect.mock.calls).toEqual([["office/config.ts"], ["office"]]);
-    file.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    file.element().dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
     expect(onContextMenu).toHaveBeenCalledWith(expect.anything(), "office");
     await screen.getByRole("button", { name: "Copy path office", exact: true }).click();
     expect(copyToClipboard).toHaveBeenCalledWith("office", undefined);
 
-    await screen.getByRole("button", { name: "office", exact: true }).all()[0]!.click();
+    await folder.click();
     await expect.element(folder).toHaveAttribute("aria-expanded", "false");
     await expect
-      .element(screen.getByRole("button", { name: "config.ts", exact: true }))
+      .element(screen.getByRole("button", { name: "File office/config.ts", exact: true }))
       .not.toBeInTheDocument();
     expect(onSelect).toHaveBeenCalledTimes(2);
-    await screen.getByRole("button", { name: "office", exact: true }).all()[1]!.click();
+    await file.click();
     expect(onSelect.mock.calls.at(-1)).toEqual(["office"]);
     await screen.getByRole("button", { name: "Expand folders", exact: true }).click();
     await expect
-      .element(screen.getByRole("button", { name: "config.ts", exact: true }))
+      .element(screen.getByRole("button", { name: "File office/config.ts", exact: true }))
       .toBeVisible();
     await screen.getByRole("button", { name: "Collapse folders", exact: true }).click();
     await expect.element(folder).toHaveAttribute("aria-expanded", "false");
     await screen.getByRole("button", { name: "Sort by full path", exact: true }).click();
-    await screen.getByRole("button", { name: "office/config.ts", exact: true }).click();
+    await screen.getByRole("button", { name: "File office/config.ts", exact: true }).click();
     expect(onSelect.mock.calls.at(-1)).toEqual(["office/config.ts"]);
   } finally {
     await screen.unmount();
   }
 });
 
-it("preserves file focus and collapsed folders as colliding paths arrive and refresh", async () => {
+it("preserves file focus, icons and collapsed folders as colliding paths arrive and refresh", async () => {
   const onSelect = vi.fn();
   const view = (files: ChangedFileTreeEntry[]) => (
     <ChangedFileTree files={files} scope="paging" onSelect={onSelect} />
@@ -81,25 +78,27 @@ it("preserves file focus and collapsed folders as colliding paths arrive and ref
   const screen = await render(view(files));
   try {
     await screen.getByText("Changed files (2)", { exact: true }).click();
-    await screen.getByRole("button", { name: "src", exact: true }).click();
-    await screen.getByRole("button", { name: "office", exact: true }).click();
+    await screen.getByRole("button", { name: "Folder src", exact: true }).click();
+    const officeFile = screen.getByRole("button", { name: "File office", exact: true });
+    await officeFile.click();
+    const fileIcon = officeFile.element().querySelector("svg")!.outerHTML;
     const file = document.activeElement;
     const appended = [...files, { path: "office/config.ts" }];
     await screen.rerender(view(appended));
     expect(document.activeElement).toBe(file);
+    expect(officeFile.element().querySelector("svg")!.outerHTML).toBe(fileIcon);
     expect(onSelect.mock.calls).toEqual([["office"]]);
     await expect
-      .element(screen.getByRole("button", { name: "src", exact: true }))
+      .element(screen.getByRole("button", { name: "Folder src", exact: true }))
       .toHaveAttribute("aria-expanded", "false");
-    await screen.getByRole("button", { name: "office", exact: true }).all()[0]!.click();
+    const officeFolder = screen.getByRole("button", { name: "Folder office", exact: true });
+    await officeFolder.click();
     await screen.rerender(view(appended.map((entry) => ({ ...entry }))));
+    await expect.element(officeFolder).toHaveAttribute("aria-expanded", "false");
     await expect
-      .element(screen.getByRole("button", { name: "office", exact: true }).all()[0]!)
+      .element(screen.getByRole("button", { name: "Folder src", exact: true }))
       .toHaveAttribute("aria-expanded", "false");
-    await expect
-      .element(screen.getByRole("button", { name: "src", exact: true }))
-      .toHaveAttribute("aria-expanded", "false");
-    await screen.getByRole("button", { name: "office", exact: true }).all()[1]!.click();
+    await officeFile.click();
     expect(onSelect.mock.calls).toEqual([["office"], ["office"]]);
   } finally {
     await screen.unmount();
