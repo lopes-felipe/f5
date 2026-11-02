@@ -47789,11 +47789,22 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T10:56:55.717Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/storage/diskUsage.ts:198",
+          "apps/server/src/storage/diskUsage.ts:215",
+          "apps/server/src/storage/storagePathSafety.ts:107"
+        ],
+        "f5Refs": [
+          "f72e2590bef5ac90f2fd517a1578854d0f73fb0a"
+        ]
+      },
       "id": "pr-24097",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "settings",
@@ -59672,11 +59683,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
-      "decidedAt": "2026-10-30T00:20:18.818Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T10:56:55.717Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-26038",
-      "status": "port",
+      "reason": "F5’s storage worker never triggers full cleanup sweeps on provider-session stops (apps/server/src/storage/StorageCleanupWorker.ts:1146).",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "worktrees",
