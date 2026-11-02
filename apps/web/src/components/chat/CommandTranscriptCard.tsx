@@ -5,6 +5,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   commandExecutionBackgroundStatus,
+  deriveCommandExecutionLabel,
   normalizeCommandExecutionDetail,
   resolveCommandExecutionDisplayCommand,
   resolveCommandExecutionSummaryText,
@@ -366,7 +367,13 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
         : "Failed to load output."
       : null;
   const waitingForDetail = threadId !== null && detailExecution === null && outputError === null;
-  const description = detailSource.description ?? execution.description;
+  // Codex and most other providers send no description, so fall back to a
+  // label derived from the command, unless the body already shows it.
+  const derivedLabel = useMemo(() => deriveCommandExecutionLabel(displayCommand), [displayCommand]);
+  const description =
+    detailSource.description ??
+    execution.description ??
+    (derivedLabel !== summaryText ? derivedLabel : null);
   const backgroundStatus = commandExecutionBackgroundStatus(detailSource);
   const cwdLabel = resolveCwdLabel(detailSource.cwd ?? execution.cwd, workspaceRoot);
   const showFailedOutputTail = !expanded && detailSource.status === "failed";
