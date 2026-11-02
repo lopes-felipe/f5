@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   switchWorkspace: vi.fn(),
   newThread: vi.fn(),
   toast: vi.fn(),
+  store: { projects: [{ id: "project", name: "Repository" }] },
 }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate }));
 vi.mock("../../nativeApi", () => ({
@@ -30,8 +31,10 @@ vi.mock("../../lib/workspaceTransitions", () => ({
   switchConversationWorkspace: mocks.switchWorkspace,
 }));
 vi.mock("../../store", () => ({
-  useStore: (select: (s: { projects: { id: string; name: string }[] }) => unknown) =>
-    select({ projects: [{ id: "project", name: "Repository" }] }),
+  useStore: Object.assign(
+    (select: (s: { projects: { id: string; name: string }[] }) => unknown) => select(mocks.store),
+    { getState: () => mocks.store },
+  ),
 }));
 vi.mock("../../threadSelectors", () => ({
   useThreadSummaries: () => [
@@ -79,6 +82,7 @@ let screen: Awaited<ReturnType<typeof render>> | undefined;
 let client: QueryClient;
 beforeEach(() => {
   vi.resetAllMocks();
+  mocks.store.projects = [{ id: "project", name: "Repository" }];
   useComposerDraftStore.setState({
     draftThreadsByThreadId: {},
     projectDraftThreadIdByProjectId: {},
@@ -288,6 +292,20 @@ it("attaches a new draft to the selected worktree after confirming sharing", asy
     envMode: "worktree",
     forceNonDefaultEnvMode: true,
   });
+});
+it("opens no draft when the project is removed while the sharing dialog is open", async () => {
+  mocks.confirm.mockImplementation(async () => {
+    mocks.store.projects = [];
+    return true;
+  });
+  await mount();
+  await page
+    .getByRole("article", { name: "topic /managed/shared" })
+    .getByRole("button", { name: "New conversation here" })
+    .click();
+  await expect.poll(() => mocks.confirm.mock.calls.length).toBe(1);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(mocks.newThread).not.toHaveBeenCalled();
 });
 it("follows the conversation URL and clears the visible selection for another project", async () => {
   const draftId = ThreadId.makeUnsafe("draft-url");
