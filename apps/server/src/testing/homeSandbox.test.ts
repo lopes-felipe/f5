@@ -198,13 +198,72 @@ describe.sequential("homeSandbox", () => {
     }
   });
 
-  it("protects the account home recorded for the run", () => {
-    expect(realUserHomes()).toContain(Path.resolve(OS.userInfo().homedir));
+  it.skipIf(process.platform === "win32")(
+    "rejects paths that reach real state via a symlink",
+    () => {
+      const realHome = FS.realpathSync(FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-linked-real-")));
+      const linkParent = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-link-parent-"));
+      try {
+        FS.mkdirSync(Path.join(realHome, ".f5", "userdata"), { recursive: true });
+        FS.symlinkSync(Path.join(realHome, ".f5"), Path.join(linkParent, "state-link"));
+        FS.symlinkSync(realHome, Path.join(linkParent, "home-link"));
+        expect(() =>
+          assertOutsideRealUserState(
+            Path.join(linkParent, "state-link", "userdata", "state.sqlite"),
+            [realHome],
+          ),
+        ).toThrow(/real user state/u);
+        // A protected home recorded through a symlink still guards the target.
+        expect(() =>
+          assertOutsideRealUserState(Path.join(realHome, ".f5", "userdata", "new.sqlite"), [
+            Path.join(linkParent, "home-link"),
+          ]),
+        ).toThrow(/real user state/u);
+      } finally {
+        removeTreeBestEffort(linkParent);
+        removeTreeBestEffort(realHome);
+      }
+    },
+  );
+
+  it("protects the account home and the incoming home recorded for the run", () => {
+    const realHome = process.env.F5_TEST_REAL_HOME!;
+    expect(realUserHomes()).toContain(Path.resolve(realHome));
     expect(() =>
-      assertOutsideRealUserState(
-        Path.join(OS.userInfo().homedir, ".f5", "userdata", "state.sqlite"),
-      ),
+      assertOutsideRealUserState(Path.join(realHome, ".f5", "userdata", "state.sqlite")),
     ).toThrow(/real user state/u);
+
+    const incomingHome = Path.resolve(OS.tmpdir(), "f5-incoming-home");
+    const previous = process.env.F5_TEST_PROTECTED_HOMES;
+    try {
+      process.env.F5_TEST_PROTECTED_HOMES = [previous, incomingHome]
+        .filter(Boolean)
+        .join(Path.delimiter);
+      expect(realUserHomes()).toContain(incomingHome);
+      expect(() =>
+        assertOutsideRealUserState(Path.join(incomingHome, ".f5", "userdata", "state.sqlite")),
+      ).toThrow(/real user state/u);
+    } finally {
+      restoreOptionalEnv("F5_TEST_PROTECTED_HOMES", previous);
+    }
+  });
+
+  it("restores the real home in live runs that have no fake home", () => {
+    const before = captureEnv();
+    const realHome = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-live-real-home-"));
+    const previousTestHome = process.env.F5_TEST_HOME;
+    try {
+      delete process.env.F5_TEST_HOME;
+      process.env.HOME = realHome;
+      process.env.USERPROFILE = realHome;
+      const sandbox = createHomeSandbox({ realHomes: [realHome] });
+      sandbox.release();
+      expect(Path.resolve(OS.homedir())).toBe(Path.resolve(realHome));
+    } finally {
+      restoreEnv(before);
+      restoreOptionalEnv("F5_TEST_HOME", previousTestHome);
+      removeTreeBestEffort(realHome);
+    }
   });
 
   it("releases an acquired sandbox when the scoped effect fails", async () => {

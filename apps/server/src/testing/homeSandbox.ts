@@ -72,6 +72,10 @@ export function realUserHomes(): ReadonlyArray<string> {
     // Some containers have no passwd entry; F5_TEST_REAL_HOME still applies.
   }
   if (process.env.F5_TEST_REAL_HOME) homes.add(Path.resolve(process.env.F5_TEST_REAL_HOME));
+  // isolateTestHome also records the incoming HOME, which can differ from the account home.
+  for (const home of process.env.F5_TEST_PROTECTED_HOMES?.split(Path.delimiter) ?? []) {
+    if (home) homes.add(Path.resolve(home));
+  }
   return [...homes];
 }
 
@@ -82,14 +86,37 @@ export function assertOutsideRealUserState(
   path: string,
   realHomes: ReadonlyArray<string> = realUserHomes(),
 ): void {
+  const candidates = [path, canonicalPath(path)];
   for (const home of realHomes) {
     for (const stateRoot of [".f5", ".t3"]) {
-      if (isSameOrInside(path, Path.join(home, stateRoot))) {
+      const root = Path.join(home, stateRoot);
+      const roots = [root, canonicalPath(root)];
+      if (candidates.some((candidate) => roots.some((r) => isSameOrInside(candidate, r)))) {
         throw new Error(
           `Refusing to touch ${path}: it is inside the real user state directory ${Path.join(home, stateRoot)}.`,
         );
       }
     }
+  }
+}
+
+/**
+ * Resolves symlinks in the longest existing prefix of `path`, so a link into
+ * `~/.f5` (or a symlinked home) cannot slip past the containment check.
+ */
+function canonicalPath(path: string): string {
+  let existing = Path.resolve(path);
+  const rest: string[] = [];
+  while (!FS.existsSync(existing)) {
+    const parent = Path.dirname(existing);
+    if (parent === existing) return Path.resolve(path);
+    rest.unshift(Path.basename(existing));
+    existing = parent;
+  }
+  try {
+    return Path.join(FS.realpathSync.native(existing), ...rest);
+  } catch {
+    return Path.resolve(path);
   }
 }
 
@@ -180,8 +207,12 @@ export function createHomeSandbox(input: HomeSandboxOptions = {}): HomeSandbox {
     );
   }
   const snapshot = captureEnv();
-  if (isRealHome(snapshot.HOME, realHomes) || isRealHome(snapshot.USERPROFILE, realHomes)) {
+  if (
+    process.env.F5_TEST_HOME &&
+    (isRealHome(snapshot.HOME, realHomes) || isRealHome(snapshot.USERPROFILE, realHomes))
+  ) {
     // Something already restored the real home; never put it back again.
+    // (Live runs have no fake home and deliberately run against the real one.)
     useRunHome(snapshot);
   }
   const ownsHome = input.home === undefined;
