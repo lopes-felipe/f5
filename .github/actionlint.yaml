@@ -1,3 +1,8 @@
+self-hosted-runner:
+  labels:
+    - f5-computer-interactive
+    - windows-10
+    - windows-11
 paths:
   .github/workflows/ci-main-status.yml:
     ignore:

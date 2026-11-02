@@ -41,7 +41,6 @@ jobs:
       run:
         shell: pwsh
     env:
-      SUITE: ${{ runner.temp }}/f5-computer-${{ github.run_id }}-${{ github.run_attempt }}
       PHASE: ${{ inputs.phase }}
       PROVIDER: ${{ inputs.provider }}
       WINDOWS_VERSION: ${{ inputs.windows_version }}
@@ -50,6 +49,10 @@ jobs:
       CODEX_HOME: ${{ vars.F5_WINDOWS_CODEX_HOME }}
       CODEX_BINARY: ${{ vars.F5_WINDOWS_CODEX_BINARY }}
     steps:
+      - name: Select evidence directory
+        run: |
+          $suitePath = Join-Path $env:RUNNER_TEMP "f5-computer-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          "SUITE=$suitePath" >> $env:GITHUB_ENV
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
