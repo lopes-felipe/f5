@@ -21,6 +21,7 @@ import {
 } from "../OrchestrationEngineHarness.integration.ts";
 import { makeClientTransport } from "./transport.ts";
 import { connectStoreClient } from "./client.ts";
+import { chaosTimeout } from "./timeouts.ts";
 
 for (const completedItem of [false, true])
   it.live(
@@ -188,5 +189,5 @@ for (const completedItem of [false, true])
           ),
         ),
       ),
-    30_000,
+    chaosTimeout(30_000),
   );

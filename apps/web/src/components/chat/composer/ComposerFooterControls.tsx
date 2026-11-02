@@ -150,7 +150,11 @@ export function ComposerFooterControls(props: {
           compact={compact}
           instanceId={model.selectedProviderInstanceId}
           model={model.selectedModelForPickerWithCustomFallback}
-          lockedInstanceId={model.hasThreadStarted ? model.selectedProviderInstanceId : null}
+          lockedInstanceId={
+            (model.providerLocked ?? model.hasThreadStarted)
+              ? model.selectedProviderInstanceId
+              : null
+          }
           modelOptionsByInstance={model.modelOptionsByInstance}
           ultrathinkActive={model.isClaudeUltrathink}
           providers={model.providerStatuses}

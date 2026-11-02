@@ -11,6 +11,7 @@ import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import type { PrHubReviewThread, TrackedPullRequest } from "@t3tools/contracts";
 import { ensureNativeApi } from "../../nativeApi";
 import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
+import { prHubReviewThreadsQueryOptions } from "../../lib/prHubReactQuery";
 import { Button } from "../ui/button";
 
 export function PrReviewThreadsTab({ pr }: { pr: TrackedPullRequest }) {
@@ -20,18 +21,7 @@ export function PrReviewThreadsTab({ pr }: { pr: TrackedPullRequest }) {
     resolved: settings.prHubShowResolvedComments,
   };
   const accountGeneration = getPrHubAccountGeneration();
-  const query = useInfiniteQuery({
-    queryKey: ["prHub", "reviewThreads", accountGeneration, pr.key],
-    initialPageParam: undefined as string | undefined,
-    queryFn: ({ pageParam }) =>
-      ensureNativeApi().prHub.getReviewThreads({
-        key: pr.key,
-        accountGeneration,
-        ...(pageParam ? { cursor: pageParam } : {}),
-      }),
-    getNextPageParam: (page) =>
-      page.pageInfo.hasNextPage ? (page.pageInfo.endCursor ?? undefined) : undefined,
-  });
+  const query = useInfiniteQuery(prHubReviewThreadsQueryOptions(pr.key));
   return (
     <div role="tabpanel" aria-label="Review threads" className="space-y-3">
       <Menu>

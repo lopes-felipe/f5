@@ -1040,6 +1040,36 @@ describe("orchestration projector", () => {
       assistantMessageId: "assistant-final",
       processingQuiescedAt: null,
     });
+    const lateCheckpoint = makeEvent({
+      sequence: 5,
+      type: "thread.turn-diff-completed",
+      aggregateKind: "thread",
+      aggregateId: "thread-1",
+      occurredAt: messageAt,
+      commandId: "late-checkpoint",
+      payload: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        checkpointTurnCount: 1,
+        checkpointRef: "refs/t3/checkpoints/late",
+        status: "ready",
+        files: [],
+        assistantMessageId: "assistant:toolu_placeholder",
+        completedAt: messageAt,
+      },
+    });
+    const afterLateCheckpoint = await Effect.runPromise(
+      projectEvent(afterAssistantMessage, lateCheckpoint),
+    );
+    expect(afterLateCheckpoint.threads[0]?.latestTurn?.assistantMessageId).toBe("assistant-final");
+    expect(afterLateCheckpoint.threads[0]?.checkpoints[0]?.assistantMessageId).toBe(
+      "assistant-final",
+    );
+    // Historical checkpoint events carry the bad id too; replay must be equally safe.
+    const replay = await Effect.runPromise(
+      projectEvent(afterLateCheckpoint, { ...lateCheckpoint, sequence: 6 }),
+    );
+    expect(replay.threads[0]?.latestTurn?.assistantMessageId).toBe("assistant-final");
   });
 
   it("projects session token usage snapshots onto the thread and preserves them across later session updates", async () => {

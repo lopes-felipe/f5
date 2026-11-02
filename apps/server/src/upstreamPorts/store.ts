@@ -413,7 +413,10 @@ export interface UpstreamStore {
   readonly getPortRequest: (
     projectId: string,
     clientRequestId: string,
-  ) => Effect.Effect<{ readonly argsHash: string } | null, UpstreamStoreError>;
+  ) => Effect.Effect<
+    { readonly argsHash: string; readonly createdAt: string } | null,
+    UpstreamStoreError
+  >;
   readonly insertPortRequest: (
     request: NewPortRequest,
   ) => Effect.Effect<boolean, UpstreamStoreError>;
@@ -706,9 +709,14 @@ export function makeUpstreamStore(sql: SqlClient.SqlClient): UpstreamStore {
     );
 
   const getPortRequest: UpstreamStore["getPortRequest"] = (projectId, clientRequestId) =>
-    sql<{ readonly args_hash: string }>`SELECT args_hash FROM upstream_port_requests
+    sql<{
+      readonly args_hash: string;
+      readonly created_at: string;
+    }>`SELECT args_hash,created_at FROM upstream_port_requests
       WHERE project_id = ${projectId} AND client_request_id = ${clientRequestId}`.pipe(
-      Effect.map((rows) => (rows[0] ? { argsHash: rows[0].args_hash } : null)),
+      Effect.map((rows) =>
+        rows[0] ? { argsHash: rows[0].args_hash, createdAt: rows[0].created_at } : null,
+      ),
       Effect.mapError(fail("getPortRequest")),
     );
 

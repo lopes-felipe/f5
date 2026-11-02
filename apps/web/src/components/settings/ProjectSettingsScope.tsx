@@ -12,6 +12,7 @@ import { WorktreeDisposablePathsEditor } from "./WorktreeDisposablePathsEditor";
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   isKnownProviderKind,
+  THREAD_TITLE_INSTRUCTIONS_MAX_CHARS,
   type ProjectSettingsResult,
   type ProviderKind,
 } from "@t3tools/contracts";
@@ -47,7 +48,12 @@ import { useStore } from "../../store";
 import { PreviewExternalHostsEditor } from "./PreviewExternalHostsEditor";
 import { McpServersSettings } from "./McpServersSettings";
 import { useSettingsRouteContext } from "./SettingsRouteContext";
-import { ClaudeSubagentControls } from "./categories/ThreadsSettings";
+import {
+  ClaudeSubagentControls,
+  THREAD_TITLE_INSTRUCTIONS_HINT,
+  THREAD_TITLE_INSTRUCTIONS_PLACEHOLDER,
+} from "./categories/ThreadsSettings";
+import { useCommitOnBlur } from "../../hooks/useCommitOnBlur";
 
 export function SettingsScopePicker({
   projectId,
@@ -513,6 +519,19 @@ export function ProjectThreadsOverrides() {
           }
         />
       </SettingsCard>
+      <SettingsCard title="Thread titles">
+        <ProjectSettingRow
+          title="Thread title instructions"
+          searchTarget="threads.title-instructions"
+          source={badge("threadTitleInstructions")}
+          description={`Added to the prompt for this project's new and regenerated thread titles. ${THREAD_TITLE_INSTRUCTIONS_HINT}`}
+        >
+          <ProjectThreadTitleInstructionsField
+            saved={settings.threadTitleInstructions}
+            onSave={(value) => set("threadTitleInstructions", value)}
+          />
+        </ProjectSettingRow>
+      </SettingsCard>
       <SettingsCard
         title="Claude sub-agents"
         actions={
@@ -532,6 +551,27 @@ export function ProjectThreadsOverrides() {
         />
       </SettingsCard>
     </fieldset>
+  );
+}
+
+/** Save failures surface through the project scope's own error alert. */
+function ProjectThreadTitleInstructionsField({
+  saved,
+  onSave,
+}: {
+  readonly saved: string;
+  readonly onSave: (value: string) => void;
+}) {
+  const draft = useCommitOnBlur(saved, onSave, { multiline: true, trim: true });
+  return (
+    <textarea
+      aria-label="Thread title instructions"
+      className={cn(NATIVE_CONTROL_CLASS, "block h-auto min-h-20 w-full py-2")}
+      rows={3}
+      maxLength={THREAD_TITLE_INSTRUCTIONS_MAX_CHARS}
+      placeholder={THREAD_TITLE_INSTRUCTIONS_PLACEHOLDER}
+      {...draft}
+    />
   );
 }
 

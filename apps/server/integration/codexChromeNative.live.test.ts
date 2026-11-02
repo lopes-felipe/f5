@@ -36,7 +36,7 @@ import {
   inspectCodexBinary,
 } from "../src/provider/codexChromeIntegration";
 import { CodexChromeSession, type CodexChromeBroker } from "../src/provider/codexChromeSession";
-import { observeCodexChrome } from "../src/provider/Layers/CodexAdapter";
+import { observeCodexChrome, trackCodexChromeCall } from "../src/provider/Layers/CodexAdapter";
 import { buildCodexAppServerCommand } from "../src/provider/codexLaunchArgs";
 import { buildProviderChildProcessEnv } from "../src/providerProcessEnv";
 import {
@@ -138,6 +138,7 @@ describe.skipIf(!optedIn)("Codex Chrome live certification", () => {
     const markers = {
       title: `cert-title-${run}`,
       after: `cert-after-interrupt-${run}`,
+      interrupt: `cert-interrupt-${run}`,
       fetch: `cert-bg-fetch-${run}`,
       pause: `cert-pause-${run}`,
       off: `cert-off-${run}`,
@@ -278,7 +279,7 @@ nodeRepl.write("finished");`;
     const server = new AppServer(child, answer);
     const appServerPid = child.pid!;
     const states: Array<[AgentCapabilityState, string | undefined]> = [];
-    const drains: Array<{ turnId: unknown; ok: boolean; result: string }> = [];
+    const drains: Array<{ turnId: unknown; ok: boolean; ms: number; result: string }> = [];
     let reloads = 0;
     const policy = { enabled: true };
     let session: CodexChromeSession | undefined;
@@ -386,6 +387,31 @@ nodeRepl.write("finished");`;
         markers: perMarker,
       };
     };
+    /**
+     * Starts a tab loop in a call and waits until it observably drives Chrome. Chrome can
+     * end a loop on its own first ("Debugger unattached" right after a restart), which a
+     * stop would then count as stopped: that loop is recorded and started once more under
+     * its own marker.
+     */
+    const runningLoop = async (marker: string, turnId: string) => {
+      const ended: string[] = [];
+      for (let attempt = 1; ; attempt += 1) {
+        const current = attempt === 1 ? marker : `${marker}-${attempt}`;
+        let settled = false;
+        const call = callJs(tabLoop(current), turnId, 120_000).finally(() => {
+          settled = true;
+        });
+        await waitFor(
+          () =>
+            settled || fixture.hits(current).length >= DEFAULT_QUIET_WINDOW.minHitsBefore
+              ? true
+              : undefined,
+          20_000,
+        );
+        if (!settled || attempt === 2) return { marker: current, call, ended };
+        ended.push((await call).slice(0, 300));
+      }
+    };
 
     let failure: unknown;
     let tools: ReturnType<typeof statusTools> = [];
@@ -446,20 +472,20 @@ nodeRepl.write("finished");`;
             let result: Record<string, unknown> | undefined;
             try {
               result = asRecord(
-                await server.request("mcpServer/tool/call", {
-                  threadId,
-                  server: SERVER,
-                  tool,
-                  arguments: args,
-                  _meta: meta,
-                }),
+                await server.request(
+                  "mcpServer/tool/call",
+                  { threadId, server: SERVER, tool, arguments: args, _meta: meta },
+                  // A drain can wait on the interrupted call; see how long, up to its deadline.
+                  tool === CODEX_CHROME_DRAIN_TOOL ? 150_000 : 30_000,
+                ),
               );
             } catch (error) {
               if (tool === CODEX_CHROME_DRAIN_TOOL)
                 drains.push({
                   turnId: args.turn_id,
                   ok: false,
-                  result: `error after ${Date.now() - startedAt} ms: ${errorText(error)}`,
+                  ms: Date.now() - startedAt,
+                  result: errorText(error),
                 });
               throw error;
             }
@@ -467,6 +493,7 @@ nodeRepl.write("finished");`;
               drains.push({
                 turnId: args.turn_id,
                 ok: result !== undefined && result.isError !== true,
+                ms: Date.now() - startedAt,
                 result: JSON.stringify(result ?? null).slice(0, 500),
               });
             return result;
@@ -483,6 +510,7 @@ nodeRepl.write("finished");`;
       const phase = (): string => live.state;
       server.listeners.add((method, params) => {
         const turnId = asRecord(asRecord(params)?.turn)?.id ?? asRecord(params)?.turnId;
+        trackCodexChromeCall(live, { method, payload: params } as never);
         observeCodexChrome(live, {
           method,
           payload: params,
@@ -532,11 +560,12 @@ nodeRepl.write("finished");`;
         items: turnItems(titleTurn.since),
       };
 
-      // Interrupt a real turn mid-call: F5 interrupts the turn, then drains it through
-      // node_repl's own hook; a fresh tab claim afterwards proves nothing stayed stuck.
-      const hungTurn = await startTurn(
-        "await new Promise((resolve) => setTimeout(resolve, 120000));\nnodeRepl.write('woke');",
-      );
+      // Interrupt a real turn while its call drives Chrome, as CodexAdapter.interruptTurn
+      // does: a call still running stops the runtime, otherwise node_repl's own hook drains
+      // the turn. The call's tab loop must stop (it would otherwise keep driving Chrome
+      // after the user stopped the turn), and a fresh tab claim afterwards (on the next
+      // turn's runtime) proves nothing stayed stuck.
+      const hungTurn = await startTurn(tabLoop(markers.interrupt));
       const hungStarted = await waitFor(
         () =>
           server.notifications.find((entry) => {
@@ -550,28 +579,77 @@ nodeRepl.write("finished");`;
           }),
         TURN_TIMEOUT_MS,
       );
+      // Interrupt only once the loop observably drives Chrome.
+      await waitFor(
+        () =>
+          fixture.hits(markers.interrupt).length >= DEFAULT_QUIET_WINDOW.minHitsBefore
+            ? true
+            : undefined,
+        30_000,
+      );
       const interruptedAt = Date.now();
+      const callRunning = live.callRunning;
+      const runtime = lastAdopted;
+      if (callRunning) live.turnInterrupted(hungTurn.turnId, true);
       await server.request("turn/interrupt", { threadId, turnId: hungTurn.turnId });
-      // As CodexAdapter.interruptTurn does.
-      live.turnEnded(hungTurn.turnId);
+      if (!callRunning) live.turnInterrupted(hungTurn.turnId, false);
+      const stoppedRuntime = phase() === "stopped";
       const hungDone = await waitFor(
         () => server.turnCompleted(hungTurn.turnId, hungTurn.since),
         15_000,
       );
-      await waitFor(() => drains.find((drain) => drain.turnId === hungTurn.turnId), 10_000);
+      await delay(
+        Math.max(
+          0,
+          interruptedAt +
+            DEFAULT_QUIET_WINDOW.settleMs +
+            DEFAULT_QUIET_WINDOW.quietMs +
+            250 -
+            Date.now(),
+        ),
+      );
+      const loopHits = fixture.hits(markers.interrupt);
+      const loopStopped = stoppedAfter(loopHits, interruptedAt, Date.now());
+      const runtimeGone = runtime !== undefined && !alive(runtime.pid);
+      if (!stoppedRuntime)
+        await waitFor(() => drains.find((drain) => drain.turnId === hungTurn.turnId), 150_000);
       const drained = drains.find((drain) => drain.turnId === hungTurn.turnId);
+      // Counted again once the drain settled: a loop that outlives the quiet window shows here.
+      const finalLoopHits = fixture.hits(markers.interrupt);
+      // The next turn restarts a stopped runtime.
+      await live.beforeTurn();
+      const afterRestart = phase();
       const after = await callJs(readTitle(markers.after), `f5-cert-after-${run}`);
       assertions["interrupt-drains"] =
         hungStarted !== undefined &&
         hungDone !== undefined &&
         asRecord(asRecord(hungDone.params)?.turn)?.status === "interrupted" &&
-        drained?.ok === true &&
+        loopStopped &&
+        (stoppedRuntime ? runtimeGone : drained?.ok === true) &&
         after.includes(markerTitle(markers.after));
+      const lastLoopHit = finalLoopHits.at(-1);
       observations.interrupt = {
         callStarted: hungStarted !== undefined,
         completedAfterMs: hungDone ? hungDone.at - interruptedAt : undefined,
         status: asRecord(asRecord(hungDone?.params)?.turn)?.status,
-        drain: drained ?? { missing: true, drains },
+        // Whether the interrupted call kept driving Chrome, and for how long.
+        loop: {
+          hitsBefore: loopHits.filter((time) => time <= interruptedAt).length,
+          hitsInQuietWindow: loopHits.filter((time) => time > interruptedAt).length,
+          hitsAfterInterruptByDrain: finalLoopHits.filter((time) => time > interruptedAt).length,
+          lastHitAfterInterruptMs:
+            lastLoopHit !== undefined ? lastLoopHit - interruptedAt : undefined,
+          stopped: loopStopped,
+        },
+        // Whether the session saw the call running and stopped the runtime for it.
+        path: stoppedRuntime ? "stopped" : "drained",
+        callRunning,
+        stoppedRuntime,
+        runtimeGone,
+        afterRestart,
+        // `ms` is how long `turn_ended` took after it was sent, right after the interrupt.
+        drain:
+          drained ?? (stoppedRuntime ? { skipped: "runtime stopped" } : { missing: true, drains }),
         items: turnItems(hungTurn.since),
         afterPageLoads: fixture.hits(markers.after).length,
         after: after.slice(0, 500),
@@ -580,10 +658,16 @@ nodeRepl.write("finished");`;
       // Pause (and ⌃⌘Esc, which pauses) stops the runtime through main.
       const workTurn = `f5-cert-work-${run}`;
       await callJs(fetchTimer, workTurn);
-      const pausedLoop = callJs(tabLoop(markers.pause), workTurn, 120_000);
-      const paused = await stopsWork([markers.fetch, markers.pause], () => pause.set(THREAD, true));
+      const pausedLoop = await runningLoop(markers.pause, workTurn);
+      const paused = await stopsWork([markers.fetch, pausedLoop.marker], () =>
+        pause.set(THREAD, true),
+      );
       assertions["background-work-stops-on-pause"] = paused.passed && phase() === "stopped";
-      observations.pause = { ...paused, inFlight: (await pausedLoop).slice(0, 500) };
+      observations.pause = {
+        ...paused,
+        loopsEndedByChrome: pausedLoop.ended,
+        inFlight: (await pausedLoop.call).slice(0, 500),
+      };
 
       // The next turn after resuming reloads Codex's MCP config and adopts the new runtime.
       pause.set(THREAD, false);
@@ -597,8 +681,8 @@ nodeRepl.write("finished");`;
       if (phase() !== "ready") throw new Error(`Restart failed: ${JSON.stringify(states)}`);
 
       // Turning the integration off kills the runtime; the next turn doesn't restart it.
-      const offLoop = callJs(tabLoop(markers.off), `f5-cert-off-${run}`, 120_000);
-      const off = await stopsWork([markers.off], () => {
+      const offLoop = await runningLoop(markers.off, `f5-cert-off-${run}`);
+      const off = await stopsWork([offLoop.marker], () => {
         policy.enabled = false;
         for (const listener of disabled) listener(THREAD, GENERATION);
       });
@@ -612,7 +696,8 @@ nodeRepl.write("finished");`;
         nodeReplCandidates(processRows(), appServerPid, installed.nodeRepl).length === 0;
       observations.policyOff = {
         ...off,
-        inFlight: (await offLoop).slice(0, 500),
+        loopsEndedByChrome: offLoop.ended,
+        inFlight: (await offLoop.call).slice(0, 500),
         restartedAfterOff: reloads !== reloadsBefore,
       };
 

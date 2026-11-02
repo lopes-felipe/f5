@@ -42,6 +42,7 @@ export const threadPurgePolicy: Readonly<
   thread_pull_request_watches: { kind: "cascade" },
   thread_pull_request_watch_stops: { kind: "cascade" },
   thread_message_authorship: { kind: "cascade" },
+  thread_reference_grants: { kind: "cascade" },
   thread_settlement_requests: { kind: "cascade" },
   thread_settlement_hooks: { kind: "cascade" },
   mcp_app_instances: { kind: "cascade" },
@@ -60,6 +61,7 @@ export const threadPurgePolicy: Readonly<
   projection_threads: { kind: "root" },
   checkpoint_diff_blobs: { kind: "explicit" },
   provider_session_runtime: { kind: "explicit" },
+  provider_handoff_state: { kind: "explicit" },
   orchestration_event_compaction: { kind: "explicit" },
   provider_submission_provenance: { kind: "explicit" },
   provider_terminal_events: { kind: "explicit" },
@@ -108,6 +110,10 @@ export const threadPurgePolicy: Readonly<
     kind: "retain",
     reason: "Outcome checks fence preexisting ports and prevent replay after thread purge.",
   },
+  upstream_port_topic_outcomes: {
+    kind: "retain",
+    reason: "Topic outcome receipts preserve decisions and provenance after thread purge.",
+  },
   upstream_port_links: { kind: "explicit" },
   upstream_port_reviews: { kind: "explicit" },
   attachment_uploads: {
@@ -123,6 +129,9 @@ export const threadPurgePolicy: Readonly<
 
 /** Static SQL handlers; schema introspection must never determine what gets deleted. */
 export const threadPurgeHandlers = {
+  // Grants held by the purged thread cascade; grants other threads hold on it go here.
+  thread_reference_grants: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
+    sql`DELETE FROM thread_reference_grants WHERE rowid IN (SELECT rowid FROM thread_reference_grants WHERE target_thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
   upstream_port_reviews: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
     sql`DELETE FROM upstream_port_reviews WHERE port_thread_id = ${threadId} RETURNING rowid`,
   native_history_retired_turns: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
@@ -149,6 +158,8 @@ export const threadPurgeHandlers = {
     sql`DELETE FROM projection_turn_usage_facts WHERE rowid IN (SELECT rowid FROM projection_turn_usage_facts WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
   provider_session_runtime: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
     sql`DELETE FROM provider_session_runtime WHERE rowid IN (SELECT rowid FROM provider_session_runtime WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
+  provider_handoff_state: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
+    sql`DELETE FROM provider_handoff_state WHERE thread_id = ${threadId} RETURNING rowid`,
   orchestration_event_compaction: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
     sql`DELETE FROM orchestration_event_compaction WHERE rowid IN (SELECT rowid FROM orchestration_event_compaction WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
   search_documents: (sql: SqlClient.SqlClient, threadId: ThreadId) =>

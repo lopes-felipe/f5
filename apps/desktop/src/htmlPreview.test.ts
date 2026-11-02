@@ -6,6 +6,7 @@ import {
   registerHtmlPreviewIpc,
   HTML_PREVIEW_CHANNEL,
 } from "./htmlPreview";
+import { HTML_RENDER_MEASURE_SOURCE } from "@t3tools/shared/htmlRender";
 
 const state = vi.hoisted(() => ({
   windows: [] as Array<{
@@ -14,6 +15,12 @@ const state = vi.hoisted(() => ({
     destroy: ReturnType<typeof vi.fn>;
     webContents: {
       on: ReturnType<typeof vi.fn>;
+      debugger: {
+        attach: ReturnType<typeof vi.fn>;
+        sendCommand: ReturnType<typeof vi.fn>;
+        detach: ReturnType<typeof vi.fn>;
+      };
+      executeJavaScript: ReturnType<typeof vi.fn>;
       setWindowOpenHandler: ReturnType<typeof vi.fn>;
       session: {
         clearStorageData: ReturnType<typeof vi.fn>;
@@ -24,16 +31,35 @@ const state = vi.hoisted(() => ({
     url: string;
   }>,
   hang: false,
+  order: [] as string[],
+  attachFails: false,
+  emulationFails: false,
+  detachFails: false,
 }));
 vi.mock("electron", () => ({
   BrowserWindow: class {
     destroyed = false;
     url = "";
     destroy = vi.fn(() => {
+      state.order.push("destroy");
       this.destroyed = true;
     });
     webContents = {
       on: vi.fn(),
+      debugger: {
+        attach: vi.fn(() => {
+          state.order.push("attach");
+          if (state.attachFails) throw new Error("attach");
+        }),
+        sendCommand: vi.fn(async () => {
+          state.order.push("emulate");
+          if (state.emulationFails) throw new Error("emulate");
+        }),
+        detach: vi.fn(() => {
+          state.order.push("detach");
+          if (state.detachFails) throw new Error("detach");
+        }),
+      },
       setWindowOpenHandler: vi.fn(),
       session: {
         clearStorageData: vi.fn(async () => undefined),
@@ -50,6 +76,7 @@ vi.mock("electron", () => ({
       return this.destroyed;
     }
     loadURL(url: string) {
+      state.order.push("load");
       this.url = url;
       return state.hang ? new Promise<void>(() => undefined) : Promise.resolve();
     }
@@ -66,6 +93,10 @@ const input = {
 beforeEach(() => {
   state.windows.length = 0;
   state.hang = false;
+  state.order.length = 0;
+  state.attachFails = false;
+  state.emulationFails = false;
+  state.detachFails = false;
 });
 afterEach(() => vi.useRealTimers());
 it("renders in an offscreen isolated sandbox, blocks navigation and destroys the window", async () => {
@@ -128,4 +159,47 @@ it("requires owning-main-frame authorization before parsing or allocating a rend
     "Untrusted frame",
   );
   expect(state.windows).toHaveLength(0);
+});
+
+it("emulates the requested color scheme before loading and measures with the shared expression", async () => {
+  const theme = { appearance: "light" as const, variables: { "--background": "#fafafa" } };
+  const result = await createHtmlPreviewRenderer()({ ...input, appearance: "light", theme });
+  expect(result).toMatchObject({ _tag: "Ready" });
+  const window = state.windows[0]!;
+  expect(state.order).toEqual(["attach", "emulate", "load", "detach", "destroy"]);
+  expect(window.webContents.debugger.sendCommand).toHaveBeenCalledWith(
+    "Emulation.setEmulatedMedia",
+    { features: [{ name: "prefers-color-scheme", value: "light" }] },
+  );
+  expect(window.webContents.executeJavaScript.mock.calls[0]![0]).toContain(
+    HTML_RENDER_MEASURE_SOURCE,
+  );
+  const page = decodeURIComponent(window.url);
+  expect(page).toContain("--background:#fafafa");
+  expect(page).toContain("color-scheme:light");
+});
+
+it("keeps the legacy colors for a request without a theme", async () => {
+  await createHtmlPreviewRenderer()(input);
+  expect(decodeURIComponent(state.windows[0]!.url)).toContain(
+    "--background:#18181b;--foreground:#fafafa",
+  );
+});
+
+it.each(["attachFails", "emulationFails"] as const)(
+  "still renders when the debugger is unavailable (%s)",
+  async (failure) => {
+    state[failure] = true;
+    expect(await createHtmlPreviewRenderer()(input)).toMatchObject({ _tag: "Ready" });
+    expect(state.order).toContain("load");
+    expect(state.windows[0]!.destroyed).toBe(true);
+  },
+);
+
+it("destroys the window and frees its slot when detaching fails", async () => {
+  state.detachFails = true;
+  const render = createHtmlPreviewRenderer();
+  for (let attempt = 0; attempt < 3; attempt++)
+    expect(await render(input)).toMatchObject({ _tag: "Ready" });
+  expect(state.windows.every((window) => window.destroyed)).toBe(true);
 });

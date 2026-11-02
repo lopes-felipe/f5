@@ -32,6 +32,7 @@ import {
 } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { buildProviderAttachmentRuntimeContext } from "../attachmentRuntimeContext.ts";
+import { leadingSlashCommandName } from "../nativeCommandInput.ts";
 import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
@@ -1235,6 +1236,11 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
     const adapter: ProviderAdapterShape<ProviderAdapterError> = {
       provider: "pi",
       capabilities: { sessionModelSwitch: "in-session" },
+      // Mirrors sendTurn: compaction and leading `/name` commands run as commands.
+      classifyTurnInput: (_threadId, text) =>
+        parsePiCompactCommand(text) !== null || leadingSlashCommandName(text) !== undefined
+          ? "native-command"
+          : "prompt",
       startSession,
       sendTurn,
       interruptTurn: (threadId) =>

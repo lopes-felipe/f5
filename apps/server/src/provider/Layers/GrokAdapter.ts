@@ -23,6 +23,7 @@ import {
   antigravityQuestionResponse,
 } from "../acp/AntigravityQuestions.ts";
 import { normalizeSupportedSlashCommands } from "../supportedSlashCommands.ts";
+import { leadingSlashCommandName } from "../nativeCommandInput.ts";
 import * as nodePath from "node:path";
 
 import {
@@ -56,6 +57,7 @@ import {
   SynchronizedRef,
 } from "effect";
 import { assertNever } from "@t3tools/shared/exhaustive";
+import { customModelSlug } from "@t3tools/shared/customModels";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
@@ -69,7 +71,10 @@ import {
   ProviderAdapterValidationError,
 } from "../Errors.ts";
 import { mapAcpToAdapterError } from "../acp/AcpAdapterSupport.ts";
-import { type AcpSessionRuntimeShape } from "../acp/AcpSessionRuntime.ts";
+import {
+  type AcpSessionRuntimeShape,
+  type AcpSessionRuntimeStartResult,
+} from "../acp/AcpSessionRuntime.ts";
 import {
   makeAcpAssistantItemEvent,
   makeAcpContentDeltaEvent,
@@ -84,6 +89,7 @@ import { makeAcpNativeLoggers, redactAcpLogPayload } from "../acp/AcpNativeLoggi
 import {
   applyGrokAcpModelSelection,
   currentGrokModelIdFromSessionSetup,
+  offeredAcpModelIds,
   makeGrokAcpRuntime,
   resolveGrokAcpBaseModelId,
 } from "../acp/GrokAcpSupport.ts";
@@ -119,7 +125,10 @@ export interface GrokAdapterLiveOptions {
   readonly discoverSkillCommands?: (
     cwd: string,
   ) => Effect.Effect<ReadonlyArray<{ name: string; description: string }>>;
-  readonly onRuntimeReady?: (runtime: AcpSessionRuntimeShape) => Effect.Effect<void>;
+  readonly onRuntimeReady?: (
+    runtime: AcpSessionRuntimeShape,
+    started: AcpSessionRuntimeStartResult,
+  ) => Effect.Effect<void>;
   readonly makeRuntime?: typeof makeGrokAcpRuntime;
   readonly normalizeModel?: (model: string | null | undefined) => string;
   readonly configureRuntime?: (
@@ -1008,14 +1017,27 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   ),
                 ),
               );
-          if (options?.onRuntimeReady) yield* options.onRuntimeReady(acp);
+          if (options?.onRuntimeReady) yield* options.onRuntimeReady(acp, started);
           const requestedStartModelId = grokModelSelection?.model
             ? normalizeModel(grokModelSelection.model)
             : undefined;
+          // Custom ACP and Antigravity write the model config option; Grok uses session/set_model.
+          const writesConfigOption = PROVIDER !== "grok";
           const boundModelId = yield* applyGrokAcpModelSelection({
             runtime: acp,
             defaultModelId: PROVIDER === "acp" ? "acp-default" : "grok-build",
-            currentModelId: currentGrokModelIdFromSessionSetup(started.sessionSetupResult),
+            currentModelId: currentGrokModelIdFromSessionSetup(
+              started.sessionSetupResult,
+              writesConfigOption ? "config-option" : "model-state",
+            ),
+            ...(writesConfigOption
+              ? {
+                  availableModels: {
+                    offered: offeredAcpModelIds(started.sessionSetupResult),
+                    custom: grokSettings.customModels.map(customModelSlug),
+                  },
+                }
+              : {}),
             requestedModelId:
               (PROVIDER === "antigravity" && requestedStartModelId === "antigravity-default") ||
               (PROVIDER === "acp" && requestedStartModelId === "acp-default")
@@ -1706,6 +1728,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         sessionModelSwitch: "in-session",
         runtimeCapabilities: providerRuntimeCapabilities(PROVIDER),
       },
+      // ACP agents read a slash command only as the leading prompt text, and learn
+      // their commands after the session starts, so any leading `/name` may be one.
+      classifyTurnInput: (_threadId, text) =>
+        leadingSlashCommandName(text) !== undefined ? "native-command" : "prompt",
       startSession,
       sendTurn,
       steerTurn: sendTurn,

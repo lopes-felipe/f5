@@ -1,5 +1,5 @@
 import { deriveDisplayedUserMessageState } from "~/lib/terminalContext";
-import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "~/lib/composerSendText";
+import type { ChatMessage } from "~/types";
 import {
   normalizeComposerMentions,
   replaceComposerMentionRange,
@@ -10,6 +10,7 @@ export interface PromptHistoryMessage {
   id: string;
   role: string;
   text: string;
+  authorship?: ChatMessage["authorship"];
 }
 export interface PromptHistoryPosition {
   threadId: string;
@@ -46,7 +47,6 @@ export function recallablePromptWithMentions(
       prompt = prompt.slice(0, removed.index) + prompt.slice(removed.index + removed[0].length);
     }
   }
-  if (prompt === IMAGE_ONLY_BOOTSTRAP_PROMPT) return { prompt: "", mentions: [] };
   return { prompt, mentions: recalledMentions };
 }
 
@@ -58,7 +58,7 @@ export function stepPromptHistory(input: {
   direction: "up" | "down";
 }): { prompt: string; position: PromptHistoryPosition | null } | null {
   const entries = input.messages
-    .filter((message) => message.role === "user")
+    .filter((message) => message.role === "user" && message.authorship !== "automation")
     .map((message) => ({ id: message.id, text: recallablePrompt(message.text) }))
     .filter((message) => message.text.trim().length > 0);
   const position = input.position;

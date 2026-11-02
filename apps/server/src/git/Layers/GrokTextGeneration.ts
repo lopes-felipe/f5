@@ -140,7 +140,11 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
         yield* applyGrokAcpModelSelection({
           runtime,
           ...(options ? { defaultModelId: options.defaultModelSelection.model } : {}),
-          currentModelId: currentGrokModelIdFromSessionSetup(started.sessionSetupResult),
+          // Custom runtimes (custom ACP, Antigravity) write the model config option.
+          currentModelId: currentGrokModelIdFromSessionSetup(
+            started.sessionSetupResult,
+            options ? "config-option" : "model-state",
+          ),
           requestedModelId:
             options?.useAccountDefaultModel && resolvedModel === options.defaultModelSelection.model
               ? undefined

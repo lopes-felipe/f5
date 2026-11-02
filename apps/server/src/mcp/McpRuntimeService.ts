@@ -8,7 +8,7 @@ import {
 } from "@t3tools/shared/mcpDiagnostics";
 import { makeMcpAccountExecutionResolver } from "./accountExecution.ts";
 import { mcpServerNameKey } from "@t3tools/shared/mcpValidation";
-import { makeClaudeEnvironment } from "../provider/Drivers/ClaudeHome";
+import { makeClaudeProcessEnvironment } from "../provider/Drivers/ClaudeHome";
 import { assertOAuthPortAvailable } from "../profiles/ProviderAccountService";
 import { ProviderInstanceId } from "@t3tools/contracts";
 import { ServerConfig } from "../config";
@@ -253,11 +253,6 @@ export class McpRuntimeService extends ServiceMap.Service<
 const makeMcpRuntimeService = Effect.gen(function* () {
   const accountConfig = yield* Effect.serviceOption(ServerConfig);
   const resolveExecution = yield* makeMcpAccountExecutionResolver;
-  const environmentFor = (input: McpGetProviderStatusRequest) =>
-    resolveExecution({ ...input, providerOptions: readProviderOptions(input) }).pipe(
-      Effect.map((execution) => execution.environment),
-      Effect.mapError((cause) => new McpRuntimeServiceError({ message: cause.message })),
-    );
   const projectMcpConfigService = yield* ProjectMcpConfigService;
   const codexMcpSyncService = yield* CodexMcpSyncService;
   const codexControlClientRegistry = yield* CodexControlClientRegistry;
@@ -291,7 +286,11 @@ const makeMcpRuntimeService = Effect.gen(function* () {
 
   const readProviderPreflight = (input: McpGetProviderStatusRequest) =>
     Effect.gen(function* () {
-      const accountEnvironment = yield* environmentFor(input);
+      const execution = yield* resolveExecution({
+        ...input,
+        providerOptions: readProviderOptions(input),
+      }).pipe(Effect.mapError((cause) => new McpRuntimeServiceError({ message: cause.message })));
+      const accountEnvironment = execution.environment;
       const providerOptions = readProviderOptions(input);
       if (input.provider === "codex") {
         return yield* checkCodexProviderPreflight({
@@ -306,10 +305,14 @@ const makeMcpRuntimeService = Effect.gen(function* () {
 
       return yield* checkClaudeProviderPreflight({
         ...(providerOptions ? { providerOptions } : {}),
-        processEnvironment: yield* makeClaudeEnvironment(
+        processEnvironment: yield* makeClaudeProcessEnvironment(
           { homePath: input.homePath ?? "" },
           accountEnvironment,
-        ).pipe(Effect.provideService(Path.Path, path)),
+          execution.instanceEnvironment,
+        ).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        ),
       }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner));
     });
 

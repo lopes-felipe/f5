@@ -4,6 +4,7 @@ import {
   ProviderRequestKind,
 } from "@t3tools/contracts";
 import { Schema } from "effect";
+import { sanitizeComputerStep } from "./computerAction";
 
 const APPROVAL_LABELS: Record<typeof ProviderApprovalDecision.Type, string> = {
   accept: "Approve once",
@@ -320,7 +321,10 @@ export class AutomationEventSanitizer {
       for (const [key, entry] of Object.entries(record)) {
         if (!provenance) result[key] = visit(entry, depth + 1);
         else if (key === "computerTool" && entry === true) result[key] = true;
-        else if (
+        else if (key === "computerStep") {
+          const step = sanitizeComputerStep(entry);
+          if (step) result[key] = step;
+        } else if (
           (envelopeStrings.has(key) || SAFE_STRING_FIELDS.has(key)) &&
           typeof entry === "string"
         )

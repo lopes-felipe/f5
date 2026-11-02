@@ -1,11 +1,12 @@
 import { suffixSince, type TextRevision } from "../lib/streamingTextRevision";
 import { useOpenLink } from "../hooks/useOpenLink";
+import { useExternalLinkContextMenu } from "../hooks/useExternalLinkContextMenu";
 import { PrLinkPreview } from "./prHub/PrLinkPreview";
 import { ChatAssetImage } from "./ChatAssetImage";
 import { createContext, useContext } from "react";
 import { RepositoryLinks } from "../repositoryLinkContext";
 import { remarkIssueReferences } from "../lib/remarkIssueReferences";
-import { remarkKeepWindowsPathDestinations } from "../lib/remarkWindowsPathDestinations";
+import { remarkKeepWindowsPaths } from "../lib/remarkWindowsPaths";
 import { remarkGfmAlerts } from "../lib/remarkGfmAlerts";
 import { isGfmAlertType, type GfmAlertType } from "@t3tools/shared/markdownAlerts";
 import { GitHubIcon } from "./Icons";
@@ -40,6 +41,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useDiffWordWrap } from "../appSettings";
 import { openFileInEditor } from "../lib/openFileInEditor";
+import { findWorkspaceBasenameFile } from "../lib/workspaceBasename";
+import { readNativeApi } from "../nativeApi";
 import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
 import { fnv1a32 } from "../lib/diffRendering";
 import { LRUCache } from "../lib/lruCache";
@@ -49,6 +52,7 @@ import type { MarkdownHighlighter } from "../lib/markdownHighlighter";
 import {
   EMPTY_STREAMING_MARKDOWN_STATE,
   advanceStreamingMarkdown,
+  startsWithClosedFence,
   type StreamingMarkdownBlockKind,
   type StreamingMarkdownState,
 } from "../lib/streamingMarkdown";
@@ -58,11 +62,14 @@ import {
   collectMarkdownLinkHrefs,
   chatMarkdownUrlTransform,
   isMarkdownFileLinkLabel,
+  resolveMarkdownFileEditorTarget,
   resolveMarkdownFileLinkMeta,
   type MarkdownFileLinkMeta,
 } from "../markdown-links";
 import { inferEntryKindFromPath } from "../vscode-icons";
 import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
+import { ThreadReferenceChip } from "./chat/ThreadReferenceChip";
+import { threadIdOfThreadReferenceUrl } from "@t3tools/shared/threadReferences";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { SurfaceErrorBoundary } from "./ui/SurfaceErrorBoundary";
 import { MermaidDiagram } from "./chat/MermaidDiagram";
@@ -216,6 +223,7 @@ function MarkdownFileChip({
   meta,
   disambiguator,
   theme,
+  cwd,
   anchorProps,
 }: {
   /** Omitted when there is no safe URL; the chip stays keyboard-reachable. */
@@ -223,6 +231,7 @@ function MarkdownFileChip({
   meta: MarkdownFileLinkMeta;
   disambiguator: string | null;
   theme: "light" | "dark";
+  cwd: string | undefined;
   anchorProps?: React.AnchorHTMLAttributes<HTMLAnchorElement>;
 }) {
   const handleFileNavigation = useFileNavigation();
@@ -233,7 +242,13 @@ function MarkdownFileChip({
     if (handleFileNavigation(meta.targetPath)) {
       return;
     }
-    void openFileInEditor(meta.targetPath);
+    const api = readNativeApi();
+    // The lookup runs after the editor grant is captured, so a slow search keeps the click valid.
+    void openFileInEditor(meta.targetPath, undefined, () =>
+      resolveMarkdownFileEditorTarget(meta, cwd, (name) =>
+        api && cwd ? findWorkspaceBasenameFile(api, cwd, name) : Promise.resolve(null),
+      ),
+    );
   };
 
   return (
@@ -361,7 +376,7 @@ function MarkdownCodeBlock({
   const runCommand = useTerminalCommand();
   const [running, setRunning] = useState(false);
   const runningRef = useRef(false);
-  const [runError, setRunError] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const wordWrap = useDiffWordWrap();
@@ -415,6 +430,7 @@ function MarkdownCodeBlock({
               meta={fileMeta}
               disambiguator={null}
               theme={resolvedTheme === "dark" ? "dark" : "light"}
+              cwd={cwd}
             />
           ) : filePath ? (
             <span className="chat-markdown-codeblock-path">{filePath}</span>
@@ -429,9 +445,13 @@ function MarkdownCodeBlock({
               if (runningRef.current) return;
               runningRef.current = true;
               setRunning(true);
-              setRunError(false);
+              setRunError(null);
               void runCommand(command)
-                .catch(() => setRunError(true))
+                .catch((error: unknown) =>
+                  setRunError(
+                    error instanceof Error ? error.message : "Could not run command. Try again.",
+                  ),
+                )
                 .finally(() => {
                   runningRef.current = false;
                   setRunning(false);
@@ -443,7 +463,7 @@ function MarkdownCodeBlock({
         ) : null}
         {runCommand && command && runError ? (
           <span role="status" data-thread-find-ignore>
-            Could not run command. Try again.
+            {runError}
           </span>
         ) : null}
         <div className="ms-auto flex shrink-0 items-center gap-2">
@@ -752,8 +772,13 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
   foldCodeBlocks?: boolean;
 }) {
   const openLink = useOpenLink();
+  const openLinkContextMenu = useExternalLinkContextMenu();
   const repositoryLinks = useContext(RepositoryLinks);
   const { text, cwd, mode, foldCodeBlocks = false } = props;
+  // Renderers read the source through a ref: a new component map on every streamed token
+  // would remount every element of the active block, including rendered diagrams.
+  const textRef = useRef(text);
+  textRef.current = text;
   const wordWrap = useDiffWordWrap();
   const { resolvedTheme } = useTheme();
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
@@ -775,6 +800,16 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         ) : null;
       },
       a({ node: _node, href, children, ...props }) {
+        // A thread reference only navigates; it never grants the agent access to the thread.
+        const referencedThreadId = href ? threadIdOfThreadReferenceUrl(href) : null;
+        if (referencedThreadId)
+          return (
+            <ThreadReferenceChip
+              threadId={referencedThreadId}
+              label={nodeToPlainText(children).trim() || "Thread"}
+              link
+            />
+          );
         // Resolve meta directly from the href so reference-style links and
         // balanced-paren hrefs (which the regex pre-scan misses) still
         // render as file chips — the pre-scan is only used for collision
@@ -813,6 +848,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
                   () => undefined,
                 );
               }}
+              onContextMenu={(event) => openLinkContextMenu(event, href)}
             >
               {isGitHub ? (
                 <GitHubIcon aria-hidden="true" className="mr-1 inline size-3 align-baseline" />
@@ -828,6 +864,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
             meta={meta}
             disambiguator={disambiguatorMap.get(href) ?? null}
             theme={resolvedTheme === "dark" ? "dark" : "light"}
+            cwd={cwd}
             anchorProps={props}
           />
         );
@@ -847,7 +884,15 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         }
 
         const language = extractFenceLanguage(codeBlock.className);
-        if (mode === "streaming-lite") {
+        const isClosedFence = () =>
+          hasClosedCodeFence(
+            textRef.current,
+            node?.position?.start.offset,
+            node?.position?.end.offset,
+            codeBlock.code,
+          );
+        // A completed diagram renders as soon as its fence closes; unfinished ones stay source.
+        if (mode === "streaming-lite" && !(language === "mermaid" && isClosedFence())) {
           return (
             <MarkdownCodeBlock code={codeBlock.code} language={language}>
               <pre {...props}>{children}</pre>
@@ -868,6 +913,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         }
 
         const fenceInfo = hastCodeFenceInfo(node);
+        const command = runnableShellCode(language, codeBlock.code);
         return (
           <MarkdownCodeBlock
             code={codeBlock.code}
@@ -875,11 +921,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
             filePath={codeBlockFilePath(fenceInfo.lang, fenceInfo.meta)}
             cwd={cwd}
             lineCount={codeLineCount(codeBlock.code)}
-            command={
-              hasClosedCodeFence(text, node?.position?.start.offset, node?.position?.end.offset)
-                ? runnableShellCode(language, codeBlock.code)
-                : null
-            }
+            command={command !== null && isClosedFence() ? command : null}
           >
             {/* Not keyed on the code: a failed highlighter load would retry on every streaming delta. */}
             <SurfaceErrorBoundary
@@ -938,7 +980,16 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         );
       },
     }),
-    [cwd, diffThemeName, disambiguatorMap, mode, resolvedTheme, wordWrap, openLink, text],
+    [
+      cwd,
+      diffThemeName,
+      disambiguatorMap,
+      mode,
+      resolvedTheme,
+      wordWrap,
+      openLink,
+      openLinkContextMenu,
+    ],
   );
 
   return (
@@ -947,7 +998,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         remarkPlugins={[
           remarkGfm,
           remarkGfmAlerts,
-          remarkKeepWindowsPathDestinations,
+          remarkKeepWindowsPaths,
           [remarkIssueReferences, repositoryLinks],
         ]}
         urlTransform={chatMarkdownUrlTransform}
@@ -1021,7 +1072,9 @@ function shouldRenderActiveBlockAsRawPreview(
   text: string,
 ): boolean {
   return (
-    kind === "fenced-code" ||
+    // A closed fence renders like a sealed one even before the parser commits it, so a
+    // diagram neither waits for the response to finish nor flashes back to source.
+    (kind === "fenced-code" && !startsWithClosedFence(text)) ||
     text.length > MAX_STREAMING_ACTIVE_BLOCK_CHARS ||
     countLines(text) > MAX_STREAMING_ACTIVE_BLOCK_LINES
   );

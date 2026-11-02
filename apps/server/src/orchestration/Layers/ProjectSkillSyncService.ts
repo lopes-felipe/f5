@@ -1,5 +1,6 @@
 import { registerShutdown } from "../../shutdown.ts";
 import { CommandId, type ProjectId } from "@t3tools/contracts";
+import { isScratchProject } from "@t3tools/shared/scratchProject";
 import {
   makeBackgroundWorker,
   type BackgroundWorker as DrainableWorker,
@@ -115,7 +116,9 @@ const make = Effect.gen(function* () {
     const ids = new Set(dirty);
     dirty.clear();
     const active = new Set(
-      model.projects.filter((project) => project.deletedAt === null).map((project) => project.id),
+      model.projects
+        .filter((project) => project.deletedAt === null && !isScratchProject(project))
+        .map((project) => project.id),
     );
     for (const id of pathsByProject.keys()) {
       if (!active.has(id)) {

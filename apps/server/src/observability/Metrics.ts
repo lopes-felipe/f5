@@ -52,6 +52,10 @@ export const providerSessionContextResetsTotal = Metric.counter(
   },
 );
 
+export const providerContextHandoffsTotal = Metric.counter("t3_provider_context_handoffs_total", {
+  description: "Total conversation handoffs delivered to a provider after a provider switch.",
+});
+
 export const providerTurnsTotal = Metric.counter("t3_provider_turns_total", {
   description: "Total provider turn lifecycle operations.",
 });
@@ -534,6 +538,9 @@ export const makeMetricSnapshotWriter = Effect.fn("makeMetricSnapshotWriter")(fu
 
 export const rpcBusyTotal = Metric.counter("f5_rpc_busy_total", {
   description: "RPCs rejected before execution because their lane or byte budget is full.",
+});
+export const rpcServerStartingTotal = Metric.counter("f5_rpc_server_starting_total", {
+  description: "Runtime-dependent RPCs rejected before admission while the runtime starts.",
 });
 export const terminalSnapshotsTotal = Metric.counter("f5_terminal_snapshots_total", {
   description: "Read-only terminal recovery snapshots.",

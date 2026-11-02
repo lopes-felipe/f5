@@ -70,16 +70,23 @@ export function resolveSidebarNewThreadIntent(input: {
  * else the first project.
  */
 export function resolvePrimaryNewThreadProjectId(input: {
+  readonly projects?: ReadonlyArray<{ readonly id: ProjectId }>;
   readonly activeThreadProjectId: ProjectId | null | undefined;
   readonly activeDraftProjectId: ProjectId | null | undefined;
   readonly mostRecentProjectId: ProjectId | null;
   readonly firstProjectId: ProjectId | null;
 }): ProjectId | null {
   return (
-    input.activeThreadProjectId ??
-    input.activeDraftProjectId ??
-    input.mostRecentProjectId ??
-    input.firstProjectId
+    [
+      input.activeThreadProjectId,
+      input.activeDraftProjectId,
+      input.mostRecentProjectId,
+      input.firstProjectId,
+    ].find(
+      (id): id is ProjectId =>
+        id != null &&
+        (input.projects === undefined || input.projects.some((project) => project.id === id)),
+    ) ?? null
   );
 }
 
@@ -263,6 +270,33 @@ export function buildRenderedProjectThreadIds(input: {
       input.previewLimit,
     ),
   ];
+}
+
+export interface SidebarGitTarget {
+  readonly threadId: ThreadId;
+  readonly branch: string | null;
+  readonly archived: boolean;
+  readonly cwd: string | null;
+}
+
+/**
+ * Workspaces whose sidebar git status polls: those of live branch threads and
+ * of the open thread. Archived rows keep a disabled observer, so they show a
+ * cached status without fetching one.
+ */
+export function polledSidebarGitStatusCwds(
+  targets: ReadonlyArray<SidebarGitTarget>,
+  routeThreadId: ThreadId | null | undefined,
+): ReadonlySet<string> {
+  const cwds = new Set<string>();
+  for (const target of targets)
+    if (
+      target.branch !== null &&
+      target.cwd !== null &&
+      (!target.archived || target.threadId === routeThreadId)
+    )
+      cwds.add(target.cwd);
+  return cwds;
 }
 
 export { hasUnseenCompletion, resolveThreadStatusPill, type ThreadStatusPill };

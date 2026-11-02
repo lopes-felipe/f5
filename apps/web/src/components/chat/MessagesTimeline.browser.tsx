@@ -12,10 +12,12 @@ import "../../index.css";
 
 import { QueryClient } from "@tanstack/react-query";
 import type { OrchestrationCommandExecution } from "@t3tools/contracts";
+import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerSendText";
 import {
   EventId,
   MessageId,
   type NativeApi,
+  type OrchestrationThreadActivity,
   type OrchestrationFileChangeSummary,
   ThreadId,
   TurnId,
@@ -29,12 +31,13 @@ import { render } from "vitest-browser-react";
 
 import {
   deriveWorkLogEntries,
-  type deriveTimelineEntries,
+  deriveTimelineEntries,
   type LiveWorkActivity,
 } from "../../session-logic";
 import { parsePersistedAppSettings } from "../../appSettings";
 import type { TurnDiffSummary } from "../../types";
 import { readTimelineScrollAnchor } from "./timelineScrollAnchors";
+import { replayWheelOnTimeline } from "./timelineMinimapWheel";
 import {
   buildTimelineRowExternals,
   buildTimelineRows,
@@ -634,6 +637,247 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
+  it.each([
+    { surface: "computer", collapse: true },
+    { surface: "computer", collapse: false },
+    { surface: "preview", collapse: true },
+    { surface: "preview", collapse: false },
+  ] as const)(
+    "keeps $surface cards across turns and remounts with work-log collapse=$collapse",
+    async ({ surface, collapse }) => {
+      persistAppSettings({ collapseCompletedWorkLogs: collapse });
+      let host = document.createElement("div");
+      document.body.append(host);
+      let api: TimelineHarnessApi | null = null;
+      const toolPayload =
+        surface === "computer"
+          ? {
+              computerTool: true,
+              mcpServerName: "__f5_computer",
+              mcpToolName: "computer_click",
+              // Deliberately omit computerStep to cover older saved calls.
+            }
+          : { mcpServerName: "__f5_preview", mcpToolName: "preview_click" };
+      const call = (
+        id: string,
+        second: number,
+        kind: string,
+        payload: Record<string, unknown>,
+        turnId = "turn-1",
+      ): OrchestrationThreadActivity => ({
+        id: EventId.makeUnsafe(id),
+        turnId: TurnId.makeUnsafe(turnId),
+        createdAt: new Date(Date.UTC(2026, 2, 4, 12, 0, second)).toISOString(),
+        kind,
+        tone: "tool",
+        summary: "Computer",
+        payload: { itemType: "mcp_tool_call", ...toolPayload, ...payload },
+      });
+      const activities = [
+        call("run-start", 1, "tool.started", {
+          providerItemId: "first-call",
+          status: "inProgress",
+        }),
+        call("run-complete", 2, "tool.completed", { providerItemId: "first-call" }),
+        call("run-failed", 3, "tool.completed", {
+          providerItemId: "failed-call",
+          status: "failed",
+        }),
+        call("run-incomplete", 4, "tool.started", {
+          providerItemId: "incomplete-call",
+          status: "inProgress",
+        }),
+      ];
+      const messages = [
+        makeUserEntry("automation-user-1", "Use the computer", 0),
+        makeAssistantEntry("automation-answer-1", "Finished.", 5),
+      ].flatMap((entry) => (entry.kind === "message" ? [entry.message] : []));
+      const entries = (latestTurn: string) =>
+        deriveTimelineEntries(
+          messages,
+          [],
+          deriveWorkLogEntries(activities, TurnId.makeUnsafe(latestTurn)),
+        );
+      const renderTimeline = (initialEntries: TimelineEntry[]) =>
+        render(
+          <TimelineHarness
+            initialEntries={initialEntries}
+            initialHeight={900}
+            onIsAtEndChangeSpy={() => {}}
+            setApi={(nextApi) => {
+              api = nextApi;
+            }}
+          />,
+          { container: host },
+        );
+      const cards = () =>
+        host.querySelectorAll<HTMLElement>('[data-testid="automation-session-card"]');
+      const firstCard = () => cards()[0]!;
+      const button = (card: HTMLElement, text: string) =>
+        page.elementLocator(card).getByRole("button", { name: text, exact: true });
+      const title = surface === "computer" ? "Used the computer" : "Used browser preview";
+      let screen = await renderTimeline(entries("turn-1"));
+      try {
+        await vi.waitFor(() => {
+          expect(cards()).toHaveLength(1);
+          expect(firstCard().textContent).toContain(title);
+        });
+        await expect.element(button(firstCard(), "Show 3 steps")).toBeVisible();
+        messages.push(
+          ...[makeUserEntry("automation-user-2", "Another turn", 10)].flatMap((entry) =>
+            entry.kind === "message" ? [entry.message] : [],
+          ),
+        );
+        api!.setTimelineState({ entries: entries("turn-2"), isWorking: true });
+        await vi.waitFor(() => {
+          expect(cards()).toHaveLength(1);
+          expect(firstCard().getAttribute("data-status")).toBe("done");
+          expect(firstCard().querySelector('[aria-label="Collapse"]')).toBeNull();
+        });
+        await expect.element(button(firstCard(), "Show 3 steps")).toBeVisible();
+        await button(firstCard(), "Show 3 steps").click();
+        await vi.waitFor(() => {
+          expect(firstCard().textContent).toContain("Clicking interrupted");
+          expect(firstCard().textContent).toContain("Clicking failed");
+        });
+
+        activities.push(
+          call("second-run", 12, "tool.completed", { status: "completed" }, "turn-2"),
+          {
+            id: EventId.makeUnsafe("provider-handoff"),
+            turnId: null,
+            createdAt: "2026-03-04T12:00:14.000Z",
+            kind: "provider.context-handoff",
+            tone: "info",
+            summary: "Context handed off from Codex to Claude",
+            payload: {},
+          },
+        );
+        messages.push(
+          ...[
+            makeAssistantEntry("automation-answer-2", "Finished again.", 13),
+            makeUserEntry("automation-user-3", "Continue with Claude", 15),
+          ].flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
+        );
+        api!.setTimelineState({ entries: entries("turn-3"), isWorking: true });
+        await vi.waitFor(() => {
+          expect(cards()).toHaveLength(2);
+        });
+        await expect.element(button(firstCard(), "Hide steps")).toBeVisible();
+        await expect.element(button(cards()[1]!, "Show 1 step")).toBeVisible();
+
+        await screen.unmount();
+        host.remove();
+        host = document.createElement("div");
+        document.body.append(host);
+        const restored: { activities: OrchestrationThreadActivity[]; messages: typeof messages } =
+          JSON.parse(JSON.stringify({ activities, messages }));
+        screen = await renderTimeline(
+          deriveTimelineEntries(
+            restored.messages,
+            [],
+            deriveWorkLogEntries(restored.activities, TurnId.makeUnsafe("turn-3")),
+          ),
+        );
+        await vi.waitFor(() => {
+          expect(cards()).toHaveLength(2);
+          expect(firstCard().textContent).toContain(title);
+        });
+        await expect.element(button(firstCard(), "Show 3 steps")).toBeVisible();
+        await expect.element(button(cards()[1]!, "Show 1 step")).toBeVisible();
+        await button(firstCard(), "Show 3 steps").click();
+        await vi.waitFor(() => {
+          expect(firstCard().textContent).toContain("Clicking interrupted");
+        });
+      } finally {
+        await screen.unmount();
+        host.remove();
+      }
+    },
+  );
+
+  it.each(["computer", "preview"] as const)(
+    "keeps separate %s cards and their expansion when intervening work becomes historical",
+    async (surface) => {
+      const payload =
+        surface === "computer"
+          ? { computerTool: true, mcpToolName: "computer_click" }
+          : { mcpServerName: "__f5_preview", mcpToolName: "preview_click" };
+      const activities: OrchestrationThreadActivity[] = [
+        { itemType: "mcp_tool_call", providerItemId: "first", ...payload },
+        { itemType: "dynamic_tool_call", command: "echo between runs" },
+        { itemType: "mcp_tool_call", providerItemId: "second", ...payload },
+      ].map((callPayload, index) => ({
+        id: EventId.makeUnsafe("separate-call-" + index),
+        turnId: TurnId.makeUnsafe("turn-1"),
+        createdAt: new Date(Date.UTC(2026, 2, 4, 12, 0, index + 1)).toISOString(),
+        kind: "tool.completed",
+        tone: "tool",
+        summary: "Tool",
+        payload: callPayload,
+      }));
+      const messages = [
+        makeUserEntry("separate-user-1", "Use two runs", 0),
+        makeAssistantEntry("separate-answer", "Done.", 4),
+      ].flatMap((entry) => (entry.kind === "message" ? [entry.message] : []));
+      const entries = (turn: string) =>
+        deriveTimelineEntries(
+          messages,
+          [],
+          deriveWorkLogEntries(activities, TurnId.makeUnsafe(turn)),
+        );
+      let api: TimelineHarnessApi | null = null;
+      const host = document.createElement("div");
+      document.body.append(host);
+      const screen = await render(
+        <TimelineHarness
+          initialEntries={entries("turn-1")}
+          initialHeight={900}
+          onIsAtEndChangeSpy={() => {}}
+          setApi={(nextApi) => {
+            api = nextApi;
+          }}
+        />,
+        { container: host },
+      );
+      const cards = () =>
+        host.querySelectorAll<HTMLElement>('[data-testid="automation-session-card"]');
+      try {
+        await vi.waitFor(() => expect(cards()).toHaveLength(2));
+        const first = cards()[0]!;
+        const second = cards()[1]!;
+        await page
+          .elementLocator(second)
+          .getByRole("button", { name: "Show 1 step", exact: true })
+          .click();
+        await expect
+          .element(page.elementLocator(second).getByRole("button", { name: "Hide steps" }))
+          .toBeVisible();
+        messages.push(
+          ...[makeUserEntry("separate-user-2", "Continue", 6)].flatMap((entry) =>
+            entry.kind === "message" ? [entry.message] : [],
+          ),
+        );
+        api!.setTimelineState({ entries: entries("turn-2"), isWorking: true });
+        await vi.waitFor(() => {
+          expect(cards()).toHaveLength(2);
+          expect(cards()[0]).toBe(first);
+          expect(cards()[1]).toBe(second);
+          expect(host.textContent).not.toContain("echo between runs");
+        });
+        await expect
+          .element(page.elementLocator(first).getByRole("button", { name: "Show 1 step" }))
+          .toBeVisible();
+        await expect
+          .element(page.elementLocator(second).getByRole("button", { name: "Hide steps" }))
+          .toBeVisible();
+      } finally {
+        await screen.unmount();
+        host.remove();
+      }
+    },
+  );
+
   it("routes sent-image right-clicks to the F5 image action menu", async () => {
     const onImageActionMenu = vi.fn();
     const entry = makeUserEntry("message-with-image", "See screenshot", 0, {
@@ -681,6 +925,49 @@ describe("MessagesTimeline (LegendList)", () => {
         },
         { x: 21, y: 34 },
       );
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("shows image-only messages as media instead of the hidden prompt", async () => {
+    const image = (id: string) => ({
+      type: "image" as const,
+      id,
+      name: `${id}.png`,
+      mimeType: "image/png",
+      sizeBytes: 128,
+      previewUrl: `/attachments/${id}`,
+    });
+    const lone = makeUserEntry("lone-image", IMAGE_ONLY_BOOTSTRAP_PROMPT, 0, {
+      attachments: [image("lone")],
+    });
+    const pair = makeUserEntry("image-pair", IMAGE_ONLY_BOOTSTRAP_PROMPT, 1, {
+      attachments: [image("left"), image("right")],
+    });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness initialEntries={[lone, pair]} onIsAtEndChangeSpy={() => {}} />,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(host.querySelector('img[alt="right.png"]')).not.toBeNull();
+      });
+      expect(host.textContent).not.toContain(IMAGE_ONLY_BOOTSTRAP_PROMPT);
+      const bubbles = host.querySelectorAll('[data-slot="user-message-bubble"]');
+      expect([...bubbles].map((bubble) => bubble.hasAttribute("data-media-only"))).toEqual([
+        true,
+        true,
+      ]);
+      expect(host.querySelector('img[alt="lone.png"]')!.getBoundingClientRect().height).toBe(192);
+      const collage = host.querySelector('img[alt="left.png"]')!.closest(".grid")!;
+      expect(collage.getBoundingClientRect().width).toBe(320);
+      expect(host.querySelector('img[alt="left.png"]')!.getBoundingClientRect().height).toBe(192);
+      expect(host.querySelector('button[aria-label="Copy message"]')).toBeNull();
     } finally {
       await screen.unmount();
       host.remove();
@@ -3576,6 +3863,41 @@ describe("MessagesTimeline row stability", () => {
     expect(buildRows([user, work, grown], cache)).toBe(after);
   });
 
+  it("skips revert and checkpoint lookups while only message text streams", () => {
+    const cache = createTimelineRowCache();
+    const user = makeUserEntry("row-user", "hello", 0);
+    const assistant = makeAssistantEntry("row-assistant", "Hel", 1);
+    let revertLookups = 0;
+    class CountingMap<K, V> extends Map<K, V> {
+      override has(key: K): boolean {
+        revertLookups += 1;
+        return super.has(key);
+      }
+    }
+    const inputs = externalsInputs({
+      revertTurnCountByUserMessageId: new CountingMap([[user.id as MessageId, 0]]),
+    });
+    const before = buildRows([user, assistant], cache);
+    const externalsBefore = buildTimelineRowExternals(before, inputs, new Map());
+    expect(revertLookups).toBe(1);
+
+    const after = buildRows([user, makeAssistantEntry("row-assistant", "Hello there", 1)], cache);
+    const externalsAfter = buildTimelineRowExternals(after, inputs, externalsBefore, {
+      rows: before,
+      inputs,
+    });
+    expect(externalsAfter).toBe(externalsBefore);
+    expect(revertLookups).toBe(1);
+
+    // A new user message is structural, so rows are described again.
+    const next = buildRows(
+      [user, makeAssistantEntry("row-assistant", "Hello there", 1), makeUserEntry("u2", "more", 2)],
+      cache,
+    );
+    buildTimelineRowExternals(next, inputs, externalsAfter, { rows: after, inputs });
+    expect(revertLookups).toBe(3);
+  });
+
   it("changes only the rows of the turn whose diff summary changed", () => {
     const cache = createTimelineRowCache();
     const turnA = TurnId.makeUnsafe("turn-a");
@@ -3726,6 +4048,256 @@ describe("MessagesTimeline row stability", () => {
       });
     } finally {
       consoleError.mockRestore();
+      await screen.unmount();
+      host.remove();
+    }
+  });
+});
+
+describe("MessagesTimeline HTML renders", () => {
+  const originalFetch = globalThis.fetch;
+  let pages: Record<string, string> = {};
+  beforeEach(() => {
+    localStorage.clear();
+    persistAppSettings();
+    pages = {};
+    (window as typeof window & { nativeApi?: NativeApi }).nativeApi = nativeApiMock;
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const id = /\/attachments\/(html-[^/?]+)/.exec(String(input))?.[1];
+      return id && pages[id] !== undefined
+        ? Promise.resolve(new Response(pages[id], { headers: { "content-type": "text/html" } }))
+        : originalFetch(input, init);
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    document.body.innerHTML = "";
+  });
+
+  const makeHtmlRenderEntry = (id: string, page: string, offsetSeconds: number): TimelineEntry => {
+    pages[id] = page;
+    const createdAt = new Date(
+      Date.parse("2026-03-04T12:00:00.000Z") + offsetSeconds * 1000,
+    ).toISOString();
+    return {
+      id,
+      kind: "work",
+      createdAt,
+      entry: {
+        id,
+        createdAt,
+        label: "Chart",
+        tone: "tool",
+        htmlRender: { attachmentId: id, title: id, height: 120 },
+      },
+    } as unknown as TimelineEntry;
+  };
+  const frameFor = (host: HTMLElement, id: string) =>
+    host.querySelector<HTMLIFrameElement>(`iframe[title="${id}"]`);
+
+  it("stops following the tail when the wheel turns up over a page while a reply streams", async () => {
+    const initialEntries = [
+      ...makeOverflowEntries(16),
+      makeHtmlRenderEntry("html-follow", '<div style="height:300px">Chart</div>', 120),
+      makeAssistantEntry("follow-tail", "Reply", 121),
+    ];
+    let api: TimelineHarnessApi | null = null;
+    const isAtEndCalls: boolean[] = [];
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={initialEntries}
+        initialHeight={800}
+        initialIsWorking
+        onIsAtEndChangeSpy={(value) => isAtEndCalls.push(value)}
+        setApi={(nextApi) => {
+          api = nextApi;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const node = await waitForScrollContainer(host);
+      const distanceFromEnd = () => node.scrollHeight - node.clientHeight - node.scrollTop;
+      await vi.waitFor(() => {
+        expect(frameFor(host, "html-follow")?.getBoundingClientRect().height).toBe(316);
+        expect(distanceFromEnd()).toBeLessThan(8);
+      });
+      await userEvent.wheel(page.getByTitle("html-follow", { exact: true }), {
+        delta: { y: -200 },
+      });
+      await vi.waitFor(() => expect(distanceFromEnd()).toBeGreaterThan(150));
+      api!.setEntries([
+        ...initialEntries.slice(0, -1),
+        makeAssistantEntry(
+          "follow-tail",
+          Array.from({ length: 12 }, (_, index) => "Streamed paragraph " + index).join("\n\n"),
+          121,
+        ),
+      ]);
+      await waitForTimelineLayout(() => node);
+      await waitForTimelineLayout(() => node);
+      expect(distanceFromEnd()).toBeGreaterThan(150);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("stops following the tail when the wheel turns up over a paused page", async () => {
+    const initialEntries = [
+      ...makeOverflowEntries(16),
+      makeHtmlRenderEntry(
+        "html-paused",
+        "<style>body{min-height:100vh;margin:0}</style><p>Grows with its frame</p>",
+        120,
+      ),
+      makeAssistantEntry("paused-tail", "Reply", 121),
+    ];
+    let api: TimelineHarnessApi | null = null;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={initialEntries}
+        initialHeight={800}
+        initialIsWorking
+        onIsAtEndChangeSpy={() => {}}
+        setApi={(nextApi) => {
+          api = nextApi;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const node = await waitForScrollContainer(host);
+      const distanceFromEnd = () => node.scrollHeight - node.clientHeight - node.scrollTop;
+      await expect.element(page.getByRole("button", { name: "Retry sizing" })).toBeVisible();
+      // The notice grows the row after the thread settled, which LegendList does not follow.
+      node.scrollTop = node.scrollHeight;
+      await vi.waitFor(() => expect(distanceFromEnd()).toBeLessThan(8));
+      await userEvent.wheel(page.getByTitle("html-paused", { exact: true }), {
+        delta: { y: -200 },
+      });
+      await vi.waitFor(() => expect(distanceFromEnd()).toBeGreaterThan(150));
+      api!.setEntries([
+        ...initialEntries.slice(0, -1),
+        makeAssistantEntry(
+          "paused-tail",
+          Array.from({ length: 12 }, (_, index) => "Streamed paragraph " + index).join("\n\n"),
+          121,
+        ),
+      ]);
+      await waitForTimelineLayout(() => node);
+      await waitForTimelineLayout(() => node);
+      expect(distanceFromEnd()).toBeGreaterThan(150);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("drops a pending disclosure pin when a page's wheel leaves the end", async () => {
+    const commandId = "command-under-render";
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[
+          ...makeOverflowEntries(16),
+          makeHtmlRenderEntry("html-disclosure", '<div style="height:200px">Chart</div>', 120),
+          makeCommandEntry(commandId, {
+            output: Array.from({ length: 40 }, (_, line) => `line ${line}`).join("\n"),
+          }),
+        ]}
+        initialHeight={400}
+        initialIsWorking
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+    const toggle = () =>
+      host.querySelector<HTMLButtonElement>(
+        `[data-timeline-row-id="${commandId}"] button[aria-expanded]`,
+      );
+    try {
+      const node = await waitForScrollContainer(host);
+      const distanceFromEnd = () => node.scrollHeight - node.clientHeight - node.scrollTop;
+      await vi.waitFor(() => {
+        expect(toggle()).not.toBeNull();
+        expect(distanceFromEnd()).toBeLessThan(8);
+      });
+      toggle()!.click();
+      // What the frame does with a forwarded wheel, while the disclosure still pins the end.
+      replayWheelOnTimeline({ x: 0, y: -300, mode: 0 }, node);
+      await waitForTimelineLayout(() => node);
+      await waitForTimelineLayout(() => node);
+      await waitForTimelineLayout(() => node);
+      expect(toggle()?.getAttribute("aria-expanded")).toBe("true");
+      expect(distanceFromEnd()).toBeGreaterThan(150);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("keeps the reader's place when a page above the viewport grows past 3000px", async () => {
+    await page.viewport(1000, 800);
+    const host = document.createElement("div");
+    document.body.append(host);
+    let currentRef: LegendListRef | null = null;
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[
+          makeUserEntry("anchor-user", "Show the chart", 0),
+          makeHtmlRenderEntry(
+            "html-grows",
+            "<div id=g style=\"height:200px\">Chart</div><script>setTimeout(()=>{document.getElementById('g').style.height='3200px'},1500)</script>",
+            1,
+          ),
+          // More than the growth below the viewport: LegendList applies its anchor
+          // adjustment before the list grows, so the browser clamps it to the old end.
+          ...makeOverflowEntries(48),
+        ]}
+        initialHeight={500}
+        onIsAtEndChangeSpy={() => {}}
+        onListRefChange={(ref) => {
+          currentRef = ref;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const node = await waitForScrollContainer(host);
+      await scrollTimelineToOffset(currentRef, node, 0);
+      await vi.waitFor(() =>
+        expect(frameFor(host, "html-grows")?.getBoundingClientRect().height).toBe(216),
+      );
+      const frame = frameFor(host, "html-grows")!;
+      const frameBottom =
+        frame.getBoundingClientRect().bottom - node.getBoundingClientRect().top + node.scrollTop;
+      await scrollTimelineToOffset(currentRef, node, frameBottom + 40);
+      await waitForTimelineLayout(() => node);
+      const anchor = host.querySelector<HTMLElement>('[data-message-id="overflow-user-2"]')!;
+      expect(anchor).not.toBeNull();
+      const before = anchor.getBoundingClientRect().top;
+      const anchorTop = () =>
+        host
+          .querySelector<HTMLElement>('[data-message-id="overflow-user-2"]')!
+          .getBoundingClientRect().top;
+      // The page grows 1.5s after loading, while it sits above the viewport. Scrolling
+      // may recycle its row and reload the frame; it reconnects and still reports.
+      await vi.waitFor(
+        () =>
+          expect(frameFor(host, "html-grows")?.getBoundingClientRect().height).toBeGreaterThan(
+            3000,
+          ),
+        { timeout: 5000 },
+      );
+      await vi.waitFor(() => expect(Math.abs(anchorTop() - before)).toBeLessThan(4));
+      expect(node.scrollTop).toBeGreaterThan(3000);
+    } finally {
       await screen.unmount();
       host.remove();
     }

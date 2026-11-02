@@ -427,6 +427,30 @@ describe("applyDomainEvent", () => {
     expect(next.threads[0]?.session?.tokenUsageSource).toBe("estimated");
   });
 
+  it("preserves automated authorship when a live message is updated", () => {
+    const payload = {
+      threadId: ThreadId.makeUnsafe("thread-1"),
+      messageId: MessageId.makeUnsafe("automated-message"),
+      role: "user" as const,
+      text: "scheduled prompt",
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-04-01T09:04:01.000Z",
+      updatedAt: "2026-04-01T09:04:01.000Z",
+    };
+    const sent = applyDomainEvent(
+      makeState(),
+      makeEvent("thread.message-sent", { ...payload, authorship: "automation" }),
+    );
+    expect(sent.threads[0]?.messages[0]?.authorship).toBe("automation");
+    const updated = applyDomainEvent(
+      sent,
+      makeEvent("thread.message-sent", { ...payload, text: "updated prompt" }),
+    );
+    expect(updated.threads[0]?.messages[0]?.authorship).toBe("automation");
+    expect(updated.threads[0]?.messages[0]?.text).toBe("updated prompt");
+  });
+
   it("maps skill call metadata from live message events", () => {
     const threadId = ThreadId.makeUnsafe("thread-1");
     const messageId = MessageId.makeUnsafe("user-skill-1");
@@ -1511,6 +1535,49 @@ describe("applyDomainEvent", () => {
     expect(next).toBe(initialState);
   });
 
+  it("keeps a command description when a later record omits it", () => {
+    const commandExecutionId = "command-1" as Thread["commandExecutions"][number]["id"];
+    const recordCommand = (input: {
+      readonly sequence: number;
+      readonly description?: string;
+      readonly status: "running" | "completed";
+    }) =>
+      makeEvent(
+        "thread.command-execution-recorded",
+        {
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          commandExecution: {
+            id: commandExecutionId,
+            turnId: TurnId.makeUnsafe("turn-1"),
+            providerItemId: null,
+            command: "df -h",
+            ...(input.description ? { description: input.description } : {}),
+            title: "Command run",
+            status: input.status,
+            detail: null,
+            exitCode: null,
+            startedAt: "2026-04-01T09:01:00.000Z",
+            completedAt: input.status === "completed" ? "2026-04-01T09:01:05.000Z" : null,
+            updatedAt: "2026-04-01T09:01:05.000Z",
+          },
+        },
+        { sequence: input.sequence },
+      );
+
+    const started = applyDomainEvent(
+      makeState({ threads: [makeThread({ commandExecutions: [] })] }),
+      recordCommand({ sequence: 1, description: "Check free disk space", status: "running" }),
+    );
+    const completed = applyDomainEvent(
+      started,
+      recordCommand({ sequence: 2, status: "completed" }),
+    );
+
+    expect(started.threads[0]?.commandExecutions[0]?.description).toBe("Check free disk space");
+    expect(completed.threads[0]?.commandExecutions[0]?.description).toBe("Check free disk space");
+    expect(completed.threads[0]?.commandExecutions[0]?.status).toBe("completed");
+  });
+
   it("buffers thread.message-sent while details are loading and the buffer is retained", () => {
     const threadId = ThreadId.makeUnsafe("thread-1");
     const turnId = TurnId.makeUnsafe("turn-1");
@@ -1648,6 +1715,46 @@ describe("applyDomainEvent", () => {
     expect(next.threads[0]?.lastInteractionAt).toBe("2026-04-01T09:07:00.000Z");
     expect(next.detailEventBufferByThreadId.size).toBe(0);
   });
+});
+
+it("keeps the actual same-turn reply when a synthetic checkpoint arrives", () => {
+  const turnId = TurnId.makeUnsafe("turn-final");
+  const replyId = MessageId.makeUnsafe("actual-final");
+  const thread = makeThread({
+    messages: [
+      {
+        id: replyId,
+        turnId,
+        role: "assistant",
+        text: "Final reply",
+        streaming: false,
+        createdAt: "2026-04-01T09:00:00.000Z",
+      },
+    ],
+    latestTurn: {
+      turnId,
+      state: "completed",
+      requestedAt: "2026-04-01T09:00:00.000Z",
+      startedAt: "2026-04-01T09:00:00.000Z",
+      completedAt: "2026-04-01T09:01:00.000Z",
+      assistantMessageId: replyId,
+    },
+  });
+  const next = applyDomainEvent(
+    makeState({ threads: [thread] }),
+    makeEvent("thread.turn-diff-completed", {
+      threadId: thread.id,
+      turnId,
+      checkpointTurnCount: 1,
+      checkpointRef: CheckpointRef.makeUnsafe("refs/f5/checkpoint/1"),
+      status: "ready",
+      files: [],
+      assistantMessageId: MessageId.makeUnsafe("assistant:toolu_missing"),
+      completedAt: "2026-04-01T09:02:00.000Z",
+    }),
+  );
+  expect(next.threads[0]?.latestTurn?.assistantMessageId).toBe(replyId);
+  expect(next.threads[0]?.turnDiffSummaries[0]?.assistantMessageId).toBe(replyId);
 });
 
 it.each(["running", "interrupted"] as const)(

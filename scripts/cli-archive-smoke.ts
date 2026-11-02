@@ -8,6 +8,8 @@ import * as net from "node:net";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { cliTarget, parseRelease, sha256File, tarExecutable } from "@t3tools/shared/cliRelease";
+import { installedCliSmoke } from "./cli-installed-upgrade-smoke.ts";
+import { waitForCliBootstrap } from "./cli-smoke-readiness.ts";
 const exec = promisify(execFile);
 const [archive, manifestFile] = process.argv.slice(2);
 if (!archive || !manifestFile) throw new Error("Usage: cli-archive-smoke.ts ARCHIVE MANIFEST");
@@ -80,34 +82,12 @@ try {
     console.error(error.message);
   });
   await log.close();
-  let ready = false;
-  for (let attempt = 0; attempt < 120; attempt++) {
-    if (child.exitCode !== null || child.signalCode !== null)
-      throw new Error(
-        "Standalone server exited: " +
-          (await fs.readFile(path.join(directory, "server.log"), "utf8")),
-      );
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/bootstrap`, {
-        signal: AbortSignal.timeout(1000),
-      });
-      if (response.ok) {
-        const body: unknown = await response.json();
-        if (body && typeof body === "object" && "protocolVersion" in body) {
-          ready = true;
-          break;
-        }
-      }
-    } catch {
-      /* Wait for migrations/acquisitions. */
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  if (!ready)
-    throw new Error(
-      "Standalone server did not become ready: " +
-        (await fs.readFile(path.join(directory, "server.log"), "utf8")),
-    );
+  const owned = child;
+  await waitForCliBootstrap(
+    `http://127.0.0.1:${port}`,
+    () => owned.exitCode !== null || owned.signalCode !== null,
+    () => fs.readFile(path.join(directory, "server.log"), "utf8"),
+  );
   const web = await fetch(`http://127.0.0.1:${port}/`);
   if (!web.ok || !(await web.text()).includes("<html"))
     throw new Error("Standalone web assets are unavailable.");
@@ -124,6 +104,8 @@ try {
   )
     throw new Error("Standalone backup download is incomplete.");
   await fs.writeFile(path.join(directory, "standalone.f5backup"), backupBytes);
+  if (process.env.GITHUB_ACTIONS === "true")
+    await installedCliSmoke(executable, archive, release, path.join(directory, "installed"));
   console.log(
     `Standalone clean-PATH smoke passed for ${artifact.target}: server, migrations, web assets, native PTY, native search and backup maintenance. Artifacts: ${directory}`,
   );

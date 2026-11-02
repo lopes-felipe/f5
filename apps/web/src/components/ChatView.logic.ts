@@ -23,6 +23,7 @@ import { normalizeModelSlug, resolveSelectableModel } from "@t3tools/shared/mode
 import { describeFastModeDisabledReason, refusedFastModeReason } from "@t3tools/shared/runtimeInfo";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
 import { type ChatMessage } from "../types";
+import { linkDerivedMessageList } from "../lib/streamingTextRevision";
 import { CLAUDE_SUBAGENT_MODEL_INHERIT, getAppModelOptions } from "../appSettings";
 import { type ComposerImageAttachment } from "../composerDraftStore";
 import { Schema } from "effect";
@@ -55,6 +56,51 @@ export {
   buildComposerSkillReplacement,
   rewriteComposerRuntimeSkillInvocationForSend,
 } from "@t3tools/shared/slashCommands";
+/**
+ * The queue intent for a send. A send that switches provider instances never
+ * steers into the running turn of the old session: it is queued instead, so the
+ * switch runs after that turn settles and re-checks the server's guards.
+ */
+export function resolveSubmissionIntent(input: {
+  readonly bootstrap: boolean;
+  readonly intent: "auto" | "queue-tail" | "queue-head" | "send-now" | "steer" | undefined;
+  readonly running: boolean;
+  readonly followUpBehavior: string;
+  readonly switchesProvider: boolean;
+}): "auto" | "queue-tail" | "queue-head" | "steer" {
+  if (input.bootstrap) return "auto";
+  if (input.intent === "send-now") return "queue-head";
+  if (input.intent === "steer") return input.switchesProvider ? "queue-head" : "steer";
+  if (
+    (input.intent === undefined || input.intent === "auto") &&
+    input.running &&
+    input.followUpBehavior === "steer" &&
+    !input.switchesProvider
+  )
+    return "steer";
+  return input.intent ?? "auto";
+}
+
+/**
+ * Whether `/review` runs as Codex's native review on the live session. Not when
+ * another provider instance is selected: that send switches providers, and the
+ * review must not run on the session being left.
+ */
+export function shouldRunNativeReviewShortcut(input: {
+  readonly prompt: string;
+  readonly sessionProvider: string;
+  readonly sessionInstanceId: string | null;
+  readonly selectedInstanceId: string;
+  readonly nativeReviewSupported: boolean;
+}): boolean {
+  return (
+    /^\/review(?:\s|$)/.test(input.prompt.trim()) &&
+    input.sessionProvider === "codex" &&
+    input.sessionInstanceId === input.selectedInstanceId &&
+    input.nativeReviewSupported
+  );
+}
+
 export function shouldRenderTimelineContent(input: {
   detailsLoaded: boolean;
   hasRenderableMessage: boolean;
@@ -100,6 +146,87 @@ export function collectUserMessageBlobPreviewUrls(message: ChatMessage): string[
     previewUrls.push(attachment.previewUrl);
   }
   return previewUrls;
+}
+
+/**
+ * Indexes each user message for the timeline's revert triggers. Returns
+ * `previous` when nothing changed: streaming deltas replace the message list
+ * per token, and a new map would rebuild every timeline row's externals.
+ */
+export function buildRevertIndexByUserMessageId(
+  messages: ReadonlyArray<Pick<ChatMessage, "id" | "role">>,
+  previous: ReadonlyMap<ChatMessage["id"], number> | null = null,
+): ReadonlyMap<ChatMessage["id"], number> {
+  const next = new Map<ChatMessage["id"], number>();
+  for (const message of messages) {
+    if (message.role === "user") next.set(message.id, next.size);
+  }
+  if (previous === null || previous.size !== next.size) return next;
+  for (const [id, index] of next) {
+    if (previous.get(id) !== index) return next;
+  }
+  return previous;
+}
+
+const NO_PREVIEW_URLS: ReadonlyArray<string> = [];
+
+/**
+ * Server messages with blob preview handoffs applied and optimistic sends
+ * appended. While the server list only streams text and the overlays are
+ * unchanged, the result keeps the server list's structural identity and each
+ * unchanged message object, so the timeline keeps reusing entries and rows.
+ */
+export function deriveTimelineMessages(input: {
+  readonly serverMessages: ChatMessage[];
+  readonly attachmentPreviewHandoffByMessageId: Readonly<Record<string, ReadonlyArray<string>>>;
+  readonly optimisticUserMessages: ReadonlyArray<ChatMessage>;
+  readonly projectAttachmentPreviewHandoff: (
+    message: ChatMessage,
+    previewUrls: ReadonlyArray<string>,
+  ) => ChatMessage;
+}): ChatMessage[] {
+  const { serverMessages, attachmentPreviewHandoffByMessageId: handoffs } = input;
+  const withHandoff =
+    Object.keys(handoffs).length === 0
+      ? serverMessages
+      : serverMessages.map((message) =>
+          input.projectAttachmentPreviewHandoff(message, handoffs[message.id] ?? NO_PREVIEW_URLS),
+        );
+  let pendingMessages: ReadonlyArray<ChatMessage> = [];
+  if (input.optimisticUserMessages.length > 0) {
+    const serverIds = new Set(serverMessages.map((message) => message.id));
+    pendingMessages = input.optimisticUserMessages.filter((message) => !serverIds.has(message.id));
+  }
+  const next = pendingMessages.length === 0 ? withHandoff : [...withHandoff, ...pendingMessages];
+  return linkDerivedMessageList(serverMessages, next, [handoffs, ...pendingMessages]);
+}
+
+/**
+ * `applyUserMessageAttachmentPreviewHandoff`, but a source message projected
+ * with the same preview URLs returns the same object. Streaming re-runs the
+ * projection per token, and a fresh copy would rebuild that message's row.
+ */
+export function createAttachmentPreviewHandoffProjector(): (
+  message: ChatMessage,
+  previewUrls: ReadonlyArray<string>,
+) => ChatMessage {
+  const projected = new WeakMap<
+    ChatMessage,
+    { readonly previewUrls: ReadonlyArray<string>; readonly message: ChatMessage }
+  >();
+  return (message, previewUrls) => {
+    const cached = projected.get(message);
+    if (
+      cached &&
+      cached.previewUrls.length === previewUrls.length &&
+      cached.previewUrls.every((url, index) => url === previewUrls[index])
+    ) {
+      return cached.message;
+    }
+    const next = applyUserMessageAttachmentPreviewHandoff(message, previewUrls);
+    projected.set(message, { previewUrls, message: next });
+    return next;
+  };
 }
 
 export function applyUserMessageAttachmentPreviewHandoff(

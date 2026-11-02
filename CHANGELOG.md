@@ -14,6 +14,43 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
   display, Windows 10 and installed-build acceptance remain pending. Signed
   certification remains false.
 
+## [0.1.2] - 2026-11-01
+
+### Added
+
+- Switch providers or provider instances within a thread, carrying a bounded text transcript to the new session and resuming previous sessions when possible.
+- Drag threads from the sidebar into the composer to give the agent conversation references it can read on demand.
+- Start threads without a project from Home, the sidebar or the command palette, with separate scratch folders for their files, attachments and terminals.
+- Show computer and browser-preview runs as session cards with grouped actions, status and screenshots.
+- Navigate desktop history with back/forward buttons and macOS trackpad swipes.
+
+### Changed
+
+- Inline HTML replies follow the app theme, support full-screen viewing and zoom, and offer desktop previews and clickable images. Tall replies fit their content up to 20,000 pixels, with clearer feedback when a page cannot be sized safely.
+
+### Performance
+
+- Keep interactive requests responsive by scheduling RPCs by priority, waiting for runtime readiness where required, and reducing startup snapshots.
+- Render large changed-files trees with only the rows near the viewport mounted.
+
+### Fixed
+
+- Keep scratch threads' provider sessions, file references, skills, attachments and HTML images in the correct workspace.
+- Recover interrupted scratch-folder cleanup and retry failed deletion without removing another thread's files.
+- Show image-only messages as images, and keep the internal placeholder prompt out of queues, search results and generated thread titles.
+- Keep retained runtime-error details visible in the work log.
+- Render Windows file paths correctly in Markdown and preserve line and column when opening filename-only file links in the editor.
+- Shut down the desktop backend cleanly when its launcher disappears or its output pipes close.
+
+### Releases
+
+- Build desktop and CLI release candidates once alongside CI, then publish the exact qualified artifacts automatically. Stable preparation PRs record explicit release intent and preserve publication ordering.
+- Resume publication without replacing completed assets, transfer components concurrently, retry recognized transient macOS timestamp failures once, and stop obsolete beta builds after newer main commits pass required CI.
+- Verify native CLI installation and updates, Windows upgrade preferences and failure recovery, and public release assets and feeds. Release summaries record queue time, retries and artifact reuse.
+- macOS desktop packages remain signed and notarized. Windows installers remain unsigned, and existing provider browser/computer certification requirements remain in force.
+
+## [0.1.1] - 2026-10-30
+
 ### Installation
 
 - First desktop release for macOS, Windows and Linux, with in-app updates from the GitHub release feed:
@@ -80,6 +117,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Added
 
+- Agent and terminal requests to open a browser now appear in a non-modal card in the requesting profile's window, with a native dialog fallback if the card cannot be shown.
 - Optional automated code review for Upstream port PRs, with two selectable reviewers, a selectable consolidation model, one queued revision, and review progress and retry actions on each port thread.
 - Claude in Chrome lifecycle behind a single certification record (`claude-chrome`, macOS arm64 first, gate closed until a live run is recorded): per-instance readiness with specific reasons, consent for foreign setup, `external-cli-conflict` when a terminal `claude --chrome` takes the connection back, desktop-owned stop that ends the CLI's process group even when the server is frozen, and setup history that can restore the original browser files after restarts and SDK upgrades. `bun run sdk:audit` fails when an advertised record no longer matches the pinned SDK.
 - Codex Chrome control (`enableCodexChrome`, off by default, never settable from `f5.json`): ChatGPT for Chrome runs through an F5 MCP proxy that checks every call itself, takes the browser only for the duration of a call, and needs Full access and an isolated Codex home. The proxy forwards only Codex's per-call turn metadata, which ChatGPT's browser runtime requires, and supplies F5's thread identity when Codex sends none. The gate stays closed until the `codex-chrome` record is certified.

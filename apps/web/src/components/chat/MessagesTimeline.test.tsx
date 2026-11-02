@@ -161,6 +161,59 @@ function extractMessageRowMarkup(markup: string, messageId: string): string {
   return nextIndex < 0 ? markup.slice(startIndex) : markup.slice(startIndex, nextIndex);
 }
 
+async function renderMcpTimelineMarkup(timelineEntries: TimelineEntry[]): Promise<string> {
+  const { MessagesTimeline } = await import("./MessagesTimeline");
+  return renderToStaticMarkup(
+    <MessagesTimeline
+      hasMessages
+      isWorking={false}
+      activeTurnStartedAt={null}
+      listRef={{ current: null }}
+      onIsAtEndChange={() => {}}
+      timelineEntries={timelineEntries}
+      completionDividerBeforeEntryId={null}
+      completionSummary={null}
+      turnDiffSummaryByAssistantMessageId={new Map()}
+      turnDiffSummaryByTurnId={new Map()}
+      expandedWorkGroups={{}}
+      onToggleWorkGroup={() => {}}
+      onOpenTurnDiff={() => {}}
+      revertTurnCountByUserMessageId={new Map()}
+      onRevertUserMessage={() => {}}
+      isRevertingCheckpoint={false}
+      onImageExpand={() => {}}
+      markdownCwd={undefined}
+      resolvedTheme="light"
+      timestampFormat="locale"
+      workspaceRoot={undefined}
+      expandedCommandExecutions={{}}
+      onToggleCommandExecution={() => {}}
+      allDirectoriesExpanded={true}
+      onToggleAllDirectories={() => {}}
+    />,
+  );
+}
+
+function mcpWorkEntry(
+  id: string,
+  entry: Partial<Extract<TimelineEntry, { kind: "work" }>["entry"]>,
+): TimelineEntry {
+  const createdAt = entry.createdAt ?? "2026-03-17T19:12:28.000Z";
+  return {
+    id,
+    kind: "work",
+    createdAt,
+    entry: {
+      id: `work-${id}`,
+      createdAt,
+      label: "MCP tool call",
+      itemType: "mcp_tool_call",
+      tone: "tool",
+      ...entry,
+    },
+  };
+}
+
 const DEFAULT_CHAT_DIFF_CONTEXT = {
   threadId: ThreadId.makeUnsafe("thread-inline-diff-test"),
   isGitRepo: true,
@@ -230,6 +283,111 @@ function preloadThreadFileChange(input: {
 }
 
 describe("MessagesTimeline", () => {
+  it("groups computer and preview runs into session rows even when MCP calls expand", async () => {
+    const { buildTimelineRows, createTimelineRowCache } = await import("./MessagesTimeline");
+    const createdAt = "2026-03-17T19:12:28.000Z";
+    const work = (id: string, entry: Partial<Extract<TimelineEntry, { kind: "work" }>["entry"]>) =>
+      ({
+        id,
+        kind: "work",
+        createdAt,
+        entry: { id, createdAt, tone: "tool", label: id, ...entry },
+      }) satisfies TimelineEntry;
+    const computerCall = (id: string) =>
+      work(id, {
+        itemType: "mcp_tool_call",
+        mcpServerName: "f5_computer",
+        mcpToolName: "computer_click",
+        computerTool: true,
+      });
+    const previewCall = (id: string) =>
+      work(id, {
+        itemType: "mcp_tool_call",
+        mcpServerName: "f5_preview",
+        mcpToolName: "preview_click",
+      });
+    const thought = (id: string) => work(id, { tone: "thinking" });
+    const timelineEntries: TimelineEntry[] = [
+      work("before", { tone: "info" }),
+      computerCall("c1"),
+      thought("t1"),
+      computerCall("c2"),
+      thought("t2"),
+      previewCall("p1"),
+      previewCall("p2"),
+      work("other", { itemType: "mcp_tool_call", mcpServerName: "docs", mcpToolName: "read" }),
+      computerCall("c3"),
+    ];
+    const rows = buildTimelineRows({
+      timelineEntries,
+      completionDividerBeforeEntryId: null,
+      completionSummary: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      liveActivity: null,
+      expandMcpToolCalls: true,
+      cache: createTimelineRowCache(),
+    });
+    expect(
+      rows.flatMap((row) =>
+        row.kind === "work"
+          ? [[row.automationSurface ?? null, row.groupedEntries.map((entry) => entry.id)]]
+          : [],
+      ),
+    ).toEqual([
+      [null, ["before"]],
+      ["computer", ["c1", "t1", "c2"]],
+      [null, ["t2"]],
+      ["preview", ["p1", "p2"]],
+      [null, ["other"]],
+      ["computer", ["c3"]],
+    ]);
+    const computerRow = rows.find((row) => row.kind === "work" && row.automationSurface);
+    expect(computerRow?.kind === "work" && computerRow.workSummary).toBe(
+      "Used the computer · 2 actions",
+    );
+
+    // A prior turn's lost completion is not a running action, even while a new turn works.
+    const orphan = work("orphan", {
+      itemType: "mcp_tool_call",
+      mcpServerName: "f5_computer",
+      mcpToolName: "computer_click",
+      computerTool: true,
+      status: "inProgress",
+    });
+    const live = { ...orphan, id: "live", entry: { ...orphan.entry, id: "live" } };
+    const userMessage: TimelineEntry = {
+      id: "next",
+      kind: "message",
+      createdAt,
+      message: {
+        id: MessageId.makeUnsafe("next"),
+        role: "user",
+        text: "Next",
+        createdAt,
+        streaming: false,
+      },
+    };
+    const workingRows = buildTimelineRows({
+      timelineEntries: [orphan, userMessage, live],
+      completionDividerBeforeEntryId: null,
+      completionSummary: null,
+      isWorking: true,
+      activeTurnStartedAt: createdAt,
+      liveActivity: null,
+      expandMcpToolCalls: false,
+      cache: createTimelineRowCache(),
+    });
+    expect(
+      workingRows.flatMap((row) =>
+        row.kind === "work" ? [[row.automationActive, row.workSummary]] : [],
+      ),
+    ).toEqual([
+      [false, "Used the computer · 1 action"],
+      [true, "Clicking… · 1 action"],
+    ]);
+  });
+
   it("keeps answered questions visible outside collapsed work from previous turns", async () => {
     const { MessagesTimeline, buildTimelineRows, createTimelineRowCache } =
       await import("./MessagesTimeline");
@@ -310,6 +468,115 @@ describe("MessagesTimeline", () => {
     );
     expect(markup).toContain("Which repository?");
     expect(markup).toContain("The private one");
+  });
+  it("renders answered questions as a standalone Q&A card in a collapsed prior turn", async () => {
+    const { MessagesTimeline, buildTimelineRows, createTimelineRowCache } =
+      await import("./MessagesTimeline");
+    const createdAt = "2026-03-17T19:12:28.000Z";
+    const timelineEntries: TimelineEntry[] = [
+      {
+        id: "before",
+        kind: "work",
+        createdAt,
+        entry: { id: "before", createdAt, tone: "tool", label: "Command run" },
+      },
+      {
+        id: "qa",
+        kind: "work",
+        createdAt,
+        entry: {
+          id: "qa",
+          createdAt,
+          tone: "info",
+          label: "How should focus motion feel? · Which states?",
+          activityKind: "user-input.resolved",
+          userInput: {
+            state: "answered",
+            questions: [
+              {
+                id: "motion",
+                header: "Focus motion",
+                question: "How should focus motion feel? It stays at 1.1× today.",
+                answers: [{ text: "Spring", custom: false }],
+              },
+              {
+                id: "states",
+                header: "Question 2",
+                question: "Which states?",
+                answers: [
+                  { text: "Pinned", custom: false },
+                  { text: "Only when idle", custom: true },
+                ],
+              },
+            ],
+          },
+        },
+      },
+      {
+        id: "new-turn",
+        kind: "message",
+        createdAt,
+        message: {
+          id: MessageId.makeUnsafe("new-turn"),
+          role: "user",
+          text: "Continue",
+          createdAt,
+          streaming: false,
+        },
+      },
+    ];
+    const rows = buildTimelineRows({
+      timelineEntries,
+      completionDividerBeforeEntryId: null,
+      completionSummary: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      liveActivity: null,
+      expandMcpToolCalls: false,
+      cache: createTimelineRowCache(),
+    });
+    expect(
+      rows
+        .filter((row) => row.kind === "work")
+        .map((row) => row.groupedEntries.map((entry) => entry.id)),
+    ).toEqual([["before"], ["qa"]]);
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        hasMessages
+        isWorking={false}
+        activeTurnStartedAt={null}
+        listRef={{ current: null }}
+        onIsAtEndChange={() => {}}
+        timelineEntries={timelineEntries}
+        completionDividerBeforeEntryId={null}
+        completionSummary={null}
+        turnDiffSummaryByAssistantMessageId={new Map()}
+        turnDiffSummaryByTurnId={new Map()}
+        expandedWorkGroups={{}}
+        onToggleWorkGroup={() => {}}
+        onOpenTurnDiff={() => {}}
+        revertTurnCountByUserMessageId={new Map()}
+        onRevertUserMessage={() => {}}
+        isRevertingCheckpoint={false}
+        onImageExpand={() => {}}
+        markdownCwd={undefined}
+        resolvedTheme="light"
+        timestampFormat="locale"
+        workspaceRoot={undefined}
+        expandedCommandExecutions={{}}
+        onToggleCommandExecution={() => {}}
+        allDirectoriesExpanded
+        onToggleAllDirectories={() => {}}
+      />,
+    );
+    expect(markup).toContain('data-slot="user-input-card"');
+    expect(markup).toContain(">Asked 2 questions</span>");
+    expect(markup).toContain(">Focus motion</p>");
+    // The adapter's generic "Question N" header adds nothing, so it gets no chip.
+    expect(markup).not.toContain(">Question 2</p>");
+    expect(markup).toContain("How should focus motion feel? It stays at 1.1× today.");
+    expect(markup).toContain("Spring</li>");
+    expect(markup).toContain("“Only when idle”</li>");
   });
   it("labels the working row with the live activity, not the last finished tool", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
@@ -1069,186 +1336,310 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain('data-timeline-row-id="entry-mcp-2"');
   });
 
-  it("renders consecutive MCP work entries as separate work rows when MCP expansion is on", async () => {
+  it("groups back-to-back MCP calls of a turn into one card", async () => {
     setPersistedAppSettings({ expandMcpToolCalls: true });
 
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        hasMessages
-        isWorking={false}
-        activeTurnStartedAt={null}
-        listRef={{ current: null }}
-        onIsAtEndChange={() => {}}
-        timelineEntries={[
-          {
-            id: "entry-mcp-1",
-            kind: "work",
-            createdAt: "2026-03-17T19:12:28.000Z",
-            entry: {
-              id: "work-mcp-1",
-              createdAt: "2026-03-17T19:12:28.000Z",
-              label: "MCP tool call",
-              itemType: "mcp_tool_call",
-              tone: "tool",
-              mcpServerName: "filesystem",
-              mcpToolName: "list_allowed_directories",
-            },
-          },
-          {
-            id: "entry-mcp-2",
-            kind: "work",
-            createdAt: "2026-03-17T19:12:29.000Z",
-            entry: {
-              id: "work-mcp-2",
-              createdAt: "2026-03-17T19:12:29.000Z",
-              label: "MCP tool call",
-              itemType: "mcp_tool_call",
-              tone: "tool",
-              mcpServerName: "github",
-              mcpToolName: "fetch_pull_request",
-            },
-          },
-        ]}
-        completionDividerBeforeEntryId={null}
-        completionSummary={null}
-        turnDiffSummaryByAssistantMessageId={new Map()}
-        turnDiffSummaryByTurnId={new Map()}
-        expandedWorkGroups={{}}
-        onToggleWorkGroup={() => {}}
-        onOpenTurnDiff={() => {}}
-        revertTurnCountByUserMessageId={new Map()}
-        onRevertUserMessage={() => {}}
-        isRevertingCheckpoint={false}
-        onImageExpand={() => {}}
-        markdownCwd={undefined}
-        resolvedTheme="light"
-        timestampFormat="locale"
-        workspaceRoot={undefined}
-        expandedCommandExecutions={{}}
-        onToggleCommandExecution={() => {}}
-        allDirectoriesExpanded={true}
-        onToggleAllDirectories={() => {}}
-      />,
-    );
+    const markup = await renderMcpTimelineMarkup([
+      mcpWorkEntry("entry-mcp-1", {
+        startedAt: "2026-03-17T19:12:27.000Z",
+        mcpServerName: "filesystem",
+        mcpToolName: "list_allowed_directories",
+      }),
+      mcpWorkEntry("entry-mcp-2", {
+        createdAt: "2026-03-17T19:12:31.000Z",
+        mcpServerName: "github",
+        mcpToolName: "fetch_pull_request",
+      }),
+    ]);
 
     expect(markup).toContain('data-timeline-row-id="entry-mcp-1"');
-    expect(markup).toContain('data-timeline-row-id="entry-mcp-2"');
+    expect(markup).not.toContain('data-timeline-row-id="entry-mcp-2"');
+    expect(markup).toContain('data-mcp-call-count="2"');
+    expect(markup.match(/data-slot="mcp-tool-call"/g)).toHaveLength(2);
+    expect(markup).toContain('data-testid="mcp-card-call-count">2 calls · 4.0s</span>');
+    expect(markup).toContain('data-mcp-server-icon="github"');
+    expect(markup).toContain('data-mcp-server-icon="monogram"');
   });
 
-  it("renders collapsed MCP cards when default card expansion is disabled", async () => {
+  it("splits MCP card groups at other tool rows and turn changes", async () => {
+    const { buildTimelineRows, createTimelineRowCache, MCP_CARD_MAX_CALLS } =
+      await import("./MessagesTimeline");
+    const turnA = TurnId.makeUnsafe("turn-a");
+    const turnB = TurnId.makeUnsafe("turn-b");
+    const call = (id: string, turnId: TurnId) =>
+      mcpWorkEntry(id, { turnId, mcpServerName: "docs", mcpToolName: "read" });
+    const userMessage: TimelineEntry = {
+      id: "user-next",
+      kind: "message",
+      createdAt: "2026-03-17T19:12:28.000Z",
+      message: {
+        id: MessageId.makeUnsafe("user-next"),
+        role: "user",
+        text: "Next",
+        createdAt: "2026-03-17T19:12:28.000Z",
+        streaming: false,
+      },
+    };
+    const thought: TimelineEntry = {
+      id: "thought",
+      kind: "work",
+      createdAt: "2026-03-17T19:12:28.000Z",
+      entry: {
+        id: "work-thought",
+        createdAt: "2026-03-17T19:12:28.000Z",
+        label: "Thinking",
+        tone: "thinking",
+      },
+    };
+    const build = (expandMcpToolCalls: boolean) =>
+      buildTimelineRows({
+        timelineEntries: [
+          call("m1", turnA),
+          call("m2", turnA),
+          thought,
+          call("m3", turnA),
+          call("m4", turnB),
+          call("m5", turnB),
+          userMessage,
+        ],
+        completionDividerBeforeEntryId: null,
+        completionSummary: null,
+        isWorking: false,
+        activeTurnStartedAt: null,
+        liveActivity: null,
+        expandMcpToolCalls,
+        cache: createTimelineRowCache(),
+      });
+
+    const rows = build(true);
+    expect(
+      rows.flatMap((row) =>
+        row.kind === "work"
+          ? [[row.mcpGroup ?? false, row.groupedEntries.map((entry) => entry.id)]]
+          : [],
+      ),
+    ).toEqual([
+      [true, ["work-m1", "work-m2"]],
+      [false, ["work-thought"]],
+      [true, ["work-m3"]],
+      [true, ["work-m4", "work-m5"]],
+    ]);
+    // Tool rows tighten up against the next tool row, but keep their gap before a message.
+    const compactIds = (built: ReturnType<typeof buildTimelineRows>) =>
+      built.flatMap((row) =>
+        (row.kind === "work" || row.kind === "command") && row.compactBottom ? [row.id] : [],
+      );
+    expect(compactIds(rows)).toEqual(["m1", "thought", "m3"]);
+
+    // With the setting off, MCP calls stay in the plain work log.
+    expect(build(false).some((row) => row.kind === "work" && row.mcpGroup)).toBe(false);
+
+    // A long run splits into capped cards.
+    const longRun = Array.from({ length: MCP_CARD_MAX_CALLS + 3 }, (_, index) =>
+      call(`long-${index}`, turnA),
+    );
+    const longRows = buildTimelineRows({
+      timelineEntries: longRun,
+      completionDividerBeforeEntryId: null,
+      completionSummary: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      liveActivity: null,
+      expandMcpToolCalls: true,
+      cache: createTimelineRowCache(),
+    });
+    expect(longRows.map((row) => (row.kind === "work" ? row.groupedEntries.length : 0))).toEqual([
+      MCP_CARD_MAX_CALLS,
+      3,
+    ]);
+  });
+
+  it("tightens a tool row when another lands below it, keeping unchanged rows", async () => {
+    const { buildTimelineRows, createTimelineRowCache } = await import("./MessagesTimeline");
+    const cache = createTimelineRowCache();
+    const first = mcpWorkEntry("first", { mcpServerName: "docs", mcpToolName: "read" });
+    const thought: TimelineEntry = {
+      id: "thought",
+      kind: "work",
+      createdAt: "2026-03-17T19:12:29.000Z",
+      entry: {
+        id: "work-thought",
+        createdAt: "2026-03-17T19:12:29.000Z",
+        label: "Thinking",
+        tone: "thinking",
+      },
+    };
+    const build = (timelineEntries: TimelineEntry[]) =>
+      buildTimelineRows({
+        timelineEntries,
+        completionDividerBeforeEntryId: null,
+        completionSummary: null,
+        isWorking: false,
+        activeTurnStartedAt: null,
+        liveActivity: null,
+        expandMcpToolCalls: true,
+        cache,
+      });
+
+    const [alone] = build([first]);
+    expect(alone?.kind === "work" && alone.compactBottom).toBeFalsy();
+    const [tightened, after] = build([first, thought]);
+    // A new row object, so the list re-renders the earlier row with its tighter gap.
+    expect(tightened).not.toBe(alone);
+    expect(tightened?.kind === "work" && tightened.compactBottom).toBe(true);
+    const third = mcpWorkEntry("third", {
+      createdAt: "2026-03-17T19:12:30.000Z",
+      mcpServerName: "docs",
+      mcpToolName: "read",
+    });
+    const next = build([first, thought, third]);
+    expect(next[0]).toBe(tightened);
+    expect(next[1]).not.toBe(after);
+    expect(next[1]?.kind === "work" && next[1].compactBottom).toBe(true);
+  });
+
+  it("renders collapsed MCP cards with input and result previews", async () => {
     setPersistedAppSettings({
       expandMcpToolCalls: true,
       expandMcpToolCallCardsByDefault: false,
     });
 
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        hasMessages
-        isWorking={false}
-        activeTurnStartedAt={null}
-        listRef={{ current: null }}
-        onIsAtEndChange={() => {}}
-        timelineEntries={[
+    const markup = await renderMcpTimelineMarkup([
+      mcpWorkEntry("entry-mcp-card-collapsed", {
+        status: "completed",
+        mcpServerName: "filesystem",
+        mcpServerLabel: "Filesystem",
+        mcpToolName: "read_text_file",
+        mcpInput: '{\n  "path": "README.md"\n}',
+        mcpResult: "\nread successfully\nsecond line",
+      }),
+    ]);
+
+    expect(markup).not.toContain('data-testid="mcp-badge"');
+    expect(markup).toContain('data-testid="mcp-card-header"');
+    expect(markup).toContain('<span class="font-semibold tracking-wide">MCP</span>');
+    // A single call has no call count in the header.
+    expect(markup).not.toContain('data-testid="mcp-card-call-count"');
+    expect(markup).toContain(">Filesystem ›</span>");
+    expect(markup).toContain('data-testid="mcp-input-summary">path: &quot;README.md&quot;</p>');
+    expect(markup).toContain('data-testid="mcp-result-preview">→ read successfully</p>');
+    expect(markup).not.toContain("second line");
+    expect(markup).not.toContain("border-t border-border/60 px-3 py-3");
+  });
+
+  it("shows a failed MCP call's error line and accent while collapsed", async () => {
+    setPersistedAppSettings({
+      expandMcpToolCalls: true,
+      expandMcpToolCallCardsByDefault: false,
+    });
+
+    const markup = await renderMcpTimelineMarkup([
+      mcpWorkEntry("entry-mcp-ok", {
+        status: "completed",
+        mcpServerName: "docs",
+        mcpToolName: "read",
+        mcpResult: "ok",
+      }),
+      mcpWorkEntry("entry-mcp-failed", {
+        status: "failed",
+        tone: "error",
+        mcpServerName: "docs",
+        mcpToolName: "write",
+        mcpResult: "Permission denied: docs are read-only",
+      }),
+    ]);
+
+    expect(markup).toContain("border-l-destructive/80");
+    expect(markup).toContain('data-status="failed"');
+    expect(markup).toMatch(
+      /text-destructive-foreground" data-testid="mcp-result-preview">Permission denied: docs are read-only<\/p>/,
+    );
+  });
+
+  it("lists a grouped MCP call's hook diagnostics, and its time when it has no duration", async () => {
+    setPersistedAppSettings({
+      expandMcpToolCalls: true,
+      expandMcpToolCallCardsByDefault: false,
+    });
+
+    const markup = await renderMcpTimelineMarkup([
+      mcpWorkEntry("entry-mcp-first", {
+        status: "completed",
+        mcpServerName: "docs",
+        mcpToolName: "read",
+      }),
+      mcpWorkEntry("entry-mcp-hooked", {
+        status: "completed",
+        mcpServerName: "docs",
+        mcpToolName: "write",
+        nestedDiagnostics: [
           {
-            id: "entry-mcp-card-collapsed",
-            kind: "work",
-            createdAt: "2026-03-17T19:12:28.000Z",
-            entry: {
-              id: "work-mcp-card-collapsed",
-              createdAt: "2026-03-17T19:12:28.000Z",
-              label: "MCP tool call",
-              itemType: "mcp_tool_call",
-              tone: "tool",
-              mcpServerName: "filesystem",
-              mcpToolName: "read_text_file",
-              mcpInput: '{\n  "path": "README.md"\n}',
-              mcpResult: "read successfully",
+            id: "hook-work",
+            createdAt: "2026-03-17T19:12:28.100Z",
+            label: "preToolUse hook blocked the call",
+            tone: "error",
+            activityKind: "hook.completed",
+            category: "hook",
+            isIssue: true,
+            diagnostic: {
+              type: "hook",
+              id: "hook-1",
+              hookEvent: "preToolUse",
+              source: "plugin",
+              sourcePath: "/Users/example/.claude/hooks.json",
+              handlerType: "command",
+              displayOrder: 1,
+              status: "failed",
+              durationMs: 9,
+              entries: [],
             },
           },
-        ]}
-        completionDividerBeforeEntryId={null}
-        completionSummary={null}
-        turnDiffSummaryByAssistantMessageId={new Map()}
-        turnDiffSummaryByTurnId={new Map()}
-        expandedWorkGroups={{}}
-        onToggleWorkGroup={() => {}}
-        onOpenTurnDiff={() => {}}
-        revertTurnCountByUserMessageId={new Map()}
-        onRevertUserMessage={() => {}}
-        isRevertingCheckpoint={false}
-        onImageExpand={() => {}}
-        markdownCwd={undefined}
-        resolvedTheme="light"
-        timestampFormat="locale"
-        workspaceRoot={undefined}
-        expandedCommandExecutions={{}}
-        onToggleCommandExecution={() => {}}
-        allDirectoriesExpanded={true}
-        onToggleAllDirectories={() => {}}
-      />,
-    );
+        ],
+      }),
+    ]);
 
-    expect(markup).toContain("MCP tool call");
-    expect(markup).not.toContain("border-t border-border/60 px-3 py-3");
-    expect(markup).not.toContain("read successfully");
+    expect(markup).toContain('data-mcp-call-count="2"');
+    expect(markup).toContain("preToolUse hook blocked the call");
+    expect(markup.match(/preToolUse hook blocked the call/g)).toHaveLength(1);
+    // Neither call has a start time, so each shows when it happened instead.
+    expect(markup.match(/data-testid="mcp-call-time"/g)).toHaveLength(2);
   });
 
   it("renders expanded MCP rows with transcript-style card chrome", async () => {
     setPersistedAppSettings({ expandMcpToolCalls: true });
 
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        hasMessages
-        isWorking={false}
-        activeTurnStartedAt={null}
-        listRef={{ current: null }}
-        onIsAtEndChange={() => {}}
-        timelineEntries={[
-          {
-            id: "entry-mcp-card",
-            kind: "work",
-            createdAt: "2026-03-17T19:12:28.000Z",
-            entry: {
-              id: "work-mcp-card",
-              createdAt: "2026-03-17T19:12:28.000Z",
-              label: "MCP tool call",
-              itemType: "mcp_tool_call",
-              tone: "tool",
-              mcpServerName: "filesystem",
-              mcpToolName: "read_text_file",
-              mcpInput: '{\n  "path": "README.md"\n}',
-              mcpResult: "read successfully",
-            },
-          },
-        ]}
-        completionDividerBeforeEntryId={null}
-        completionSummary={null}
-        turnDiffSummaryByAssistantMessageId={new Map()}
-        turnDiffSummaryByTurnId={new Map()}
-        expandedWorkGroups={{}}
-        onToggleWorkGroup={() => {}}
-        onOpenTurnDiff={() => {}}
-        revertTurnCountByUserMessageId={new Map()}
-        onRevertUserMessage={() => {}}
-        isRevertingCheckpoint={false}
-        onImageExpand={() => {}}
-        markdownCwd={undefined}
-        resolvedTheme="light"
-        timestampFormat="locale"
-        workspaceRoot={undefined}
-        expandedCommandExecutions={{}}
-        onToggleCommandExecution={() => {}}
-        allDirectoriesExpanded={true}
-        onToggleAllDirectories={() => {}}
-      />,
-    );
+    const markup = await renderMcpTimelineMarkup([
+      mcpWorkEntry("entry-mcp-card", {
+        startedAt: "2026-03-17T19:12:27.160Z",
+        status: "completed",
+        mcpServerName: "filesystem",
+        mcpToolName: "read_text_file",
+        mcpInput: '{\n  "path": "README.md"\n}',
+        mcpResult: "read successfully",
+      }),
+    ]);
 
-    expect(markup).toContain("group rounded-xl border border-border bg-card");
-    expect(markup).toContain("border-t border-border px-3 py-3");
+    expect(markup).toContain("group rounded-xl border border-l-2 border-border/60 bg-card/35");
+    expect(markup).toContain("border-l-success/70");
+    expect(markup).toContain('data-slot="mcp-tool-card"');
+    expect(markup).toContain("border-t border-border/60 px-3 py-3 pl-17");
     expect(markup).toContain('viewBox="0 0 180 180"');
+    expect(markup).toContain(">filesystem ›</span>");
+    expect(markup).toContain(">read_text_file</span>");
+    expect(markup).not.toContain('data-testid="mcp-badge"');
+    expect(markup).toContain('approval wait">840ms</span>');
+    // The status icon leads the row, ahead of the server name.
+    const statusIndex = markup.indexOf('role="img" aria-label="Completed"');
+    expect(statusIndex).toBeGreaterThan(-1);
+    expect(statusIndex).toBeLessThan(markup.indexOf(">filesystem ›</span>"));
+    expect(markup).toContain('data-testid="mcp-input-grid"');
+    expect(markup).toContain(">path</dt>");
+    expect(markup).toContain(">README.md</dd>");
+    expect(markup).toContain('aria-label="Copy input"');
+    expect(markup).toContain('aria-label="Copy result"');
+    // Open cards show the full input below instead of the one-line summary.
+    expect(markup).not.toContain('data-testid="mcp-input-summary"');
+    expect(markup).not.toContain('data-testid="mcp-result-preview"');
     expect(markup).not.toContain("rounded-xl border border-border/45 bg-card/25 px-2 py-1.5");
     expect(markup).not.toContain(
       '<span class="text-[10px] text-muted-foreground">Filesystem</span>',

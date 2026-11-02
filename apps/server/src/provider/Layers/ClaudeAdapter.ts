@@ -5,7 +5,7 @@ import {
   type ClaudeSubagentLaunch,
 } from "../claudeSubagentSelection.ts";
 import type { ThreadMcpBroker } from "../../mcp/threadMcpTools.ts";
-import { makeClaudeThreadMcpServer } from "./claudeThreadTools.ts";
+import { isF5ThreadReadTool, makeClaudeThreadMcpServer } from "./claudeThreadTools.ts";
 import {
   makeClaudeAssistantText,
   extractAssistantTextBlocks,
@@ -14,6 +14,7 @@ import {
 import type { ProviderAdapterSessionStartInput } from "../Services/ProviderAdapter.ts";
 import { createClaudeQueryWithPrivateMcp } from "../claudeMcpStartup.ts";
 import { classifyMcpOwnership } from "../mcpObservation.ts";
+import { leadingSlashCommandName } from "../nativeCommandInput.ts";
 import { mcpProviderReads, mcpContextKey } from "../../mcp/McpReadCoordinator.ts";
 import {
   assertMcpRuntimeConfig,
@@ -76,17 +77,20 @@ import {
   claudeMandatoryPolicyOptions,
   evaluateClaudeMandatoryPolicy,
   isClaudePlanModeWorkspaceEdit,
+  type McpToolProvenance,
 } from "../claudeMandatoryPolicy.ts";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import type { ProviderSessionStartInput } from "@t3tools/contracts";
 import type { RuntimeUsageLimit } from "@t3tools/contracts";
 import {
+  claudeBlockedAssistantLimit,
   claudeGatewayUsageLimit,
   claudeLimitState,
   usageLimitFromWindows,
   usageLimitMessage,
 } from "../usageLimitMessages.ts";
 import { isProviderResumeFailureText } from "../resumeFailure.ts";
+import { claudeApiErrorText } from "../claudeApiErrorText.ts";
 import { appendClaudeStderrTail, parseClaudeProcessExit } from "../claudeProcessExit.ts";
 import { makeClaudeProcessGroupSpawner } from "../claudeProcessGroup.ts";
 import { resolveClaudeToolSearchOverride } from "../claudeToolSearch.ts";
@@ -121,6 +125,7 @@ import * as NodeFs from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as EffectNodePath from "@effect/platform-node/NodePath";
+import { resolveClaudeConfigDir } from "../Drivers/ClaudeHome.ts";
 
 import {
   type CanUseTool,
@@ -380,6 +385,11 @@ interface ClaudeTurnState {
   thinkingTokens?: ClaudeThinkingTokenAccount;
   authenticationFailureMessage?: string;
   rateLimitFailure?: true;
+  /**
+   * The limit repeated on the latest blocked root assistant response. The CLI
+   * suppresses an unchanged rate_limit_event, so this can be the only reset time.
+   */
+  assistantUsageLimit?: ReturnType<typeof claudeLimitState>;
   rejectedUsageLimits?: Map<string, ReturnType<typeof claudeLimitState>>;
   announcedUsageLimits?: Set<string>;
   interruptRequested: boolean;
@@ -721,32 +731,6 @@ export interface ClaudeSessionProbeInput {
    * settings point the CLI at a different directory.
    */
   readonly claudeConfigDir: string;
-}
-
-/**
- * Mirrors the Claude CLI's config dir resolution:
- * `(CLAUDE_CONFIG_DIR ?? join(os.homedir(), ".claude")).normalize("NFC")`,
- * evaluated as the CLI child would see it.
- *
- * `os.homedir()` in the child reads `USERPROFILE` on Windows and `HOME`
- * elsewhere, so the matching variable is read from the child env for
- * `platform`. Relative values are resolved against `cwd`, the child's working
- * directory. When `cwd` is undefined the child inherits the server's cwd, so
- * `process.cwd()` is the right base.
- */
-export function resolveClaudeConfigDir(
-  env: NodeJS.ProcessEnv,
-  cwd?: string,
-  platform: NodeJS.Platform = process.platform,
-): string {
-  const configDir =
-    env.CLAUDE_CONFIG_DIR ?? NodePath.join(resolveChildHomeDir(env, platform), ".claude");
-  return NodePath.resolve(cwd ?? process.cwd(), configDir.normalize("NFC"));
-}
-
-function resolveChildHomeDir(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
-  const home = platform === "win32" ? env.USERPROFILE : env.HOME;
-  return home ? home : NodeOS.homedir();
 }
 
 const CLAUDE_TRANSCRIPT_REJOIN_BUDGET_MS = 30_000;
@@ -2033,7 +2017,13 @@ ${promptText}`
 
 function turnStatusFromResult(result: SDKResultMessage): ProviderRuntimeTurnStatus {
   if (isInterruptedResult(result)) return "interrupted";
-  if (result.terminal_reason === "blocking_limit" || result.terminal_reason === "prompt_too_long")
+  // api_error means Claude gave up after repeated API errors, even when the
+  // result is not flagged is_error.
+  if (
+    result.terminal_reason === "blocking_limit" ||
+    result.terminal_reason === "prompt_too_long" ||
+    result.terminal_reason === "api_error"
+  )
     return "failed";
   if (result.subtype === "success") {
     return result.is_error ? "failed" : "completed";
@@ -5213,7 +5203,19 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             context.turnState.authenticationFailureMessage =
               "Claude login expired or is invalid. Run /login in this provider account, then retry.";
           }
-          if (message.error === "rate_limit") context.turnState.rateLimitFailure = true;
+          if (!parentToolUseId) {
+            // Only the latest root response's rate limit counts; a recovered
+            // response clears the evidence of an earlier blocked one.
+            if (message.error === "rate_limit") {
+              context.turnState.rateLimitFailure = true;
+              const limit = claudeBlockedAssistantLimit(message);
+              if (limit) context.turnState.assistantUsageLimit = limit;
+              else delete context.turnState.assistantUsageLimit;
+            } else {
+              delete context.turnState.rateLimitFailure;
+              delete context.turnState.assistantUsageLimit;
+            }
+          } else if (message.error === "rate_limit") context.turnState.rateLimitFailure = true;
           context.turnState.items.push(message.message);
           yield* backfillAssistantTextBlocksFromSnapshot(context, message);
         }
@@ -5332,6 +5334,14 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // blocking_limit also means a full context window. A rejected window,
         // an assistant rate_limit error or HTTP 429 supplies usage evidence.
         const blockingLimit = message.terminal_reason === "blocking_limit";
+        // A rate_limit_event stays authoritative for its window.
+        const assistantLimit = context.turnState.assistantUsageLimit;
+        const rejectedLimits = [
+          ...(context.rejectedUsageLimits?.values() ?? []),
+          ...(assistantLimit && !context.rejectedUsageLimits?.has(assistantLimit.window)
+            ? [assistantLimit]
+            : []),
+        ];
         const typedRateLimit =
           context.turnState.rateLimitFailure ||
           (message.subtype === "success" && message.api_error_status === 429);
@@ -5345,7 +5355,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const hint = permissionDenied
           ? message.result.trim() || undefined
           : (context.turnState?.authenticationFailureMessage ??
-            [...(context.rejectedUsageLimits?.values() ?? [])][0]?.message ??
+            rejectedLimits[0]?.message ??
             (typedRateLimit && !gatewayUsageLimit
               ? usageLimitMessage("Claude", undefined, undefined)
               : undefined));
@@ -5353,7 +5363,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           resultUserFacingError(message) ??
           (gatewayUsageLimit && message.subtype === "success" ? message.result : undefined);
         const errorMessage =
-          message.terminal_reason === "prompt_too_long" || (blockingLimit && !hint)
+          (message.terminal_reason === "prompt_too_long" || (blockingLimit && !hint)
             ? CLAUDE_CONTEXT_WINDOW_FULL_ERROR
             : blockingLimit && hint
               ? hint
@@ -5362,8 +5372,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   (!originalError ||
                     /usage.?limit|rate.?limit|authentication|unauthorized/i.test(originalError))
                 ? [originalError, hint].filter(Boolean).join(" ")
-                : originalError;
-        const rejectedWindows = [...(context.rejectedUsageLimits?.values() ?? [])]
+                : originalError) ??
+          claudeApiErrorText(message) ??
+          (status === "failed" && message.terminal_reason === "api_error"
+            ? "Claude gave up after repeated API errors."
+            : undefined);
+        const rejectedWindows = rejectedLimits
           .filter((limit) => limit.resettable)
           .map((limit) => limit.structuredWindow);
         const usageLimit =
@@ -7540,6 +7554,19 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             }),
           );
 
+        // Set once the thread server is built below; only permission callbacks read it.
+        let threadServerName: string | undefined;
+        // Host MCP tools a read-only workflow stage may call: F5 preview observation and F5's
+        // own thread_read, each identified by exact server provenance.
+        const allowReadOnlyMcpTool = (
+          toolName: string,
+          mcpServer?: McpToolProvenance,
+          toolInput?: unknown,
+        ) =>
+          (classifyF5PreviewTool(toolName, agentBrowserState, mcpServer) === "observe" &&
+            !writesPreviewArtifact(toolName, toolInput)) ||
+          (threadServerName !== undefined &&
+            isF5ThreadReadTool(toolName, mcpServer, threadServerName));
         const canUseTool: CanUseTool = (toolName, toolInput, callbackOptions) =>
           Effect.runPromise(
             Effect.gen(function* () {
@@ -7725,8 +7752,13 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               if (input.workflowExecutionProfile) {
                 if (
                   !evaluateClaudeMandatoryPolicy(
-                    { workflowExecutionProfile: input.workflowExecutionProfile },
+                    {
+                      workflowExecutionProfile: input.workflowExecutionProfile,
+                      allowReadOnlyMcpTool,
+                    },
                     toolName,
+                    callbackOptions.mcpServer,
+                    toolInput,
                   )
                 ) {
                   return { behavior: "allow", updatedInput: toolInput } satisfies PermissionResult;
@@ -8278,9 +8310,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             {
               workflowExecutionProfile: input.workflowExecutionProfile,
               subagentsEnabled: providerOptions?.subagentsEnabled,
-              allowReadOnlyMcpTool: (toolName, mcpServer, toolInput) =>
-                classifyF5PreviewTool(toolName, agentBrowserState, mcpServer) === "observe" &&
-                !writesPreviewArtifact(toolName, toolInput),
+              allowReadOnlyMcpTool,
               evaluateDynamic: async (toolName, mcpServer, call) => {
                 const context = sessions.get(threadId);
                 const denial = evaluateMcpToolFilter(
@@ -8331,18 +8361,19 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             ...claudeDisallowedMcpToolNames(mcpToolFilters),
           ]),
         ];
-        const threadServer =
-          options?.threadMcpBroker && !input.workflowExecutionProfile
-            ? makeClaudeThreadMcpServer({
-                broker: options.threadMcpBroker,
-                threadId,
-                existingServerNames: new Set([
-                  ...Object.keys(translatedMcpServers ?? {}),
-                  ...(previewServer ? [previewServer.serverName] : []),
-                  ...(computerServer ? [computerServer.serverName] : []),
-                ]),
-              })
-            : undefined;
+        const threadServer = options?.threadMcpBroker
+          ? makeClaudeThreadMcpServer({
+              broker: options.threadMcpBroker,
+              threadId,
+              access: input.workflowExecutionProfile ? "read-only" : "full",
+              existingServerNames: new Set([
+                ...Object.keys(translatedMcpServers ?? {}),
+                ...(previewServer ? [previewServer.serverName] : []),
+                ...(computerServer ? [computerServer.serverName] : []),
+              ]),
+            })
+          : undefined;
+        threadServerName = threadServer?.serverName;
         const internalMcpServers: NonNullable<ClaudeQueryOptions["mcpServers"]> = {
           ...(threadServer ? { [threadServer.serverName]: threadServer.config } : {}),
           ...(previewServer ? { [previewServer.serverName]: previewServer.config } : {}),
@@ -10005,6 +10036,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       previewClaudeFileRewind: (threadId, userMessageId) =>
         fileRewind(threadId, userMessageId, true),
       revertClaudeFiles: (threadId, userMessageId) => fileRewind(threadId, userMessageId, false),
+      // Claude Code recognizes slash commands only as the leading prompt text.
+      classifyTurnInput: (_threadId, text) =>
+        leadingSlashCommandName(text) !== undefined ? "native-command" : "prompt",
       startSession,
       sendTurn,
       steerTurn,

@@ -200,6 +200,13 @@ function mergeableOf(value: unknown): PrHubDetail["mergeable"] {
   }
 }
 
+/** Failed and cancelled checks first; the host's order is kept within each group. */
+export function sortChecks(checks: ReadonlyArray<PrHubCheck>): ReadonlyArray<PrHubCheck> {
+  const needsAttention = (check: PrHubCheck) =>
+    check.status === "failure" || check.status === "cancelled";
+  return checks.toSorted((a, b) => Number(needsAttention(b)) - Number(needsAttention(a)));
+}
+
 function checkOf(value: UnknownRecord): PrHubCheck | null {
   if (value.__typename === "CheckRun") {
     const conclusion = stringOf(value.conclusion).toUpperCase();
@@ -330,9 +337,11 @@ export function decodeGitHubPrDetail(
   const commit = recordOrNull(latestCommit?.commit);
   const statusRollup = recordOrNull(commit?.statusCheckRollup);
   const contexts = recordOrNull(statusRollup?.contexts);
-  const checks = nodesOf(contexts)
-    .map(checkOf)
-    .filter((check) => check !== null);
+  const checks = sortChecks(
+    nodesOf(contexts)
+      .map(checkOf)
+      .filter((check) => check !== null),
+  );
   const truncatedSections: Array<"labels" | "reviewers" | "checks"> = [];
   if (connectionIsTruncated(pr.labels)) truncatedSections.push("labels");
   if (connectionIsTruncated(pr.reviewRequests) || connectionIsTruncated(pr.latestReviews)) {

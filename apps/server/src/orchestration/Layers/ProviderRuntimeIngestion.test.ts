@@ -90,6 +90,7 @@ import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeInge
 import { ThreadCommandExecutionQuery } from "../Services/ThreadCommandExecutionQuery.ts";
 import { ThreadFileChangeQuery } from "../Services/ThreadFileChangeQuery.ts";
 import { ServerConfig } from "../../config.ts";
+import { commandExecutionBackgroundStatus } from "@t3tools/shared/commandSummary";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ProjectionThreadCommandExecutionRepositoryLive } from "../../persistence/Layers/ProjectionThreadCommandExecutions.ts";
 import { ProjectionThreadFileChangeRepositoryLive } from "../../persistence/Layers/ProjectionThreadFileChanges.ts";
@@ -7410,6 +7411,148 @@ describe("ProviderRuntimeIngestion", () => {
     expect(detail.commandExecution?.output).toContain("Darwin kernel-version");
   });
 
+  it("stores the Claude Bash description and keeps it across later updates", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const toolInput = {
+      command: "df -h /System/Volumes/Data",
+      description: "Check free disk space",
+      run_in_background: true,
+    };
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-command-description-turn-started"),
+      provider: "claudeAgent",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-command-description"),
+      payload: {},
+    });
+    harness.emit({
+      type: "item.started",
+      eventId: asEventId("evt-command-description-started"),
+      provider: "claudeAgent",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-command-description"),
+      itemId: asItemId("item-command-description"),
+      payload: {
+        itemType: "command_execution",
+        status: "inProgress",
+        title: "Command run",
+        detail: `Bash: ${toolInput.command}`,
+        data: { toolName: "Bash", input: toolInput },
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-command-description-completed"),
+      provider: "claudeAgent",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-command-description"),
+      itemId: asItemId("item-command-description"),
+      payload: {
+        itemType: "command_execution",
+        status: "completed",
+        title: "Command run — completed",
+        detail: `Bash: ${toolInput.command}`,
+      },
+    });
+
+    await harness.drain();
+
+    const result = await Effect.runPromise(
+      harness.threadCommandExecutionQuery.getThreadCommandExecutions({
+        threadId: asThreadId("thread-1"),
+      }),
+    );
+
+    expect(result.executions).toHaveLength(1);
+    expect(result.executions[0]?.description).toBe("Check free disk space");
+    expect(result.executions[0]?.status).toBe("completed");
+    expect(result.executions[0]?.title).toBe("Command run — completed");
+
+    // After a restart the ingestion has no in-memory state, so a later record
+    // arrives without the description; the projection must keep the stored one.
+    const recorded = result.executions[0]!;
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.command-execution.record",
+        commandId: CommandId.makeUnsafe("cmd-command-description-after-restart"),
+        threadId: asThreadId("thread-1"),
+        commandExecution: {
+          id: recorded.id,
+          turnId: recorded.turnId,
+          providerItemId: recorded.providerItemId,
+          command: recorded.command,
+          title: recorded.title,
+          status: "completed",
+          detail: recorded.detail,
+          exitCode: 0,
+          startedAt: recorded.startedAt,
+          completedAt: recorded.completedAt,
+          updatedAt: new Date(Date.parse(recorded.updatedAt) + 1_000).toISOString(),
+        },
+        createdAt: new Date().toISOString(),
+      }),
+    );
+    await harness.drain();
+
+    const afterRestart = await Effect.runPromise(
+      harness.threadCommandExecutionQuery.getThreadCommandExecutions({
+        threadId: asThreadId("thread-1"),
+      }),
+    );
+    expect(afterRestart.executions[0]?.description).toBe("Check free disk space");
+    expect(afterRestart.executions[0]?.exitCode).toBe(0);
+  });
+
+  it("keeps the background marker when a backgrounded search gets a derived title", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const command = "rg -n needle apps packages";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-command-bg-search-turn-started"),
+      provider: "claudeAgent",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-command-bg-search"),
+      payload: {},
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-command-bg-search-completed"),
+      provider: "claudeAgent",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-command-bg-search"),
+      itemId: asItemId("item-command-bg-search"),
+      payload: {
+        itemType: "command_execution",
+        status: "completed",
+        title: "Command run — completed",
+        detail: `Bash: ${command}`,
+        data: { toolName: "Bash", input: { command, run_in_background: true } },
+      },
+    });
+
+    await harness.drain();
+
+    const result = await Effect.runPromise(
+      harness.threadCommandExecutionQuery.getThreadCommandExecutions({
+        threadId: asThreadId("thread-1"),
+      }),
+    );
+
+    expect(result.executions).toHaveLength(1);
+    expect(result.executions[0]?.title).toBe("Searching apps, packages for needle — completed");
+    expect(commandExecutionBackgroundStatus(result.executions[0]!)).toBe("completed");
+  });
+
   it("captures command output deltas that arrive before the lifecycle record", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
@@ -8257,10 +8400,13 @@ describe("ProviderRuntimeIngestion", () => {
     expect(checkpoint?.checkpointRef).toBe("provider-diff:evt-turn-diff-updated");
   });
 
-  it("skips a tool update only when it matches the last update for that item", async () => {
-    const harness = await createHarness();
+  const emitRepeatToolEvents = async (
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    options: { readonly drainEach: boolean },
+  ) => {
     const now = new Date().toISOString();
-    const update = (eventId: string, detail: string, itemId = "item-repeat-tool") =>
+    const settle = () => (options.drainEach ? harness.drain() : Promise.resolve());
+    const update = (eventId: string, detail: string, itemId = "item-repeat-tool") => {
       harness.emit({
         type: "item.updated",
         eventId: asEventId(eventId),
@@ -8271,6 +8417,8 @@ describe("ProviderRuntimeIngestion", () => {
         itemId: asItemId(itemId),
         payload: { itemType: "command_execution", status: "in_progress", title: "Run", detail },
       });
+      return settle();
+    };
 
     harness.emit({
       type: "turn.started",
@@ -8281,11 +8429,12 @@ describe("ProviderRuntimeIngestion", () => {
       createdAt: now,
       payload: {},
     });
-    update("repeat-1", "bun test");
-    update("repeat-2", "bun test");
-    update("repeat-3", "bun test --watch");
-    update("repeat-4", "bun test");
-    update("repeat-other", "bun test", "item-other-tool");
+    await settle();
+    await update("repeat-1", "bun test");
+    await update("repeat-2", "bun test");
+    await update("repeat-3", "bun test --watch");
+    await update("repeat-4", "bun test");
+    await update("repeat-other", "bun test", "item-other-tool");
     harness.emit({
       type: "item.completed",
       eventId: asEventId("repeat-done"),
@@ -8296,17 +8445,73 @@ describe("ProviderRuntimeIngestion", () => {
       itemId: asItemId("item-repeat-tool"),
       payload: { itemType: "command_execution", status: "completed", title: "Run" },
     });
-    update("repeat-5", "bun test");
+    await settle();
+    await update("repeat-5", "bun test");
 
-    const thread = await waitForThread(harness.engine, (entry) =>
+    return waitForThread(harness.engine, (entry) =>
       entry.activities.some((activity: ProviderRuntimeTestActivity) => activity.id === "repeat-5"),
     );
+  };
+
+  it("skips a tool update only when it matches the last update for that item", async () => {
+    const harness = await createHarness();
+    const thread = await emitRepeatToolEvents(harness, { drainEach: true });
     expect(
       thread.activities
         .filter((activity: ProviderRuntimeTestActivity) => activity.kind === "tool.updated")
         .map((activity: ProviderRuntimeTestActivity) => activity.id)
         .toSorted(),
     ).toEqual(["repeat-1", "repeat-3", "repeat-4", "repeat-5", "repeat-other"]);
+  });
+
+  it("appends only the newest tool update per item within the coalescing window", async () => {
+    const harness = await createHarness();
+    const thread = await emitRepeatToolEvents(harness, { drainEach: false });
+    // The completion flushes the pending updates, and the update after it starts a new window.
+    expect(
+      thread.activities
+        .filter((activity: ProviderRuntimeTestActivity) => activity.kind === "tool.updated")
+        .map((activity: ProviderRuntimeTestActivity) => activity.id)
+        .toSorted(),
+    ).toEqual(["repeat-4", "repeat-5", "repeat-other"]);
+  });
+
+  it("keeps appending a tool's progress while its updates arrive faster than the window", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const appended = async () => {
+      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      return (
+        readModel.threads
+          .find((entry) => entry.id === "thread-1")
+          ?.activities.filter(
+            (activity: ProviderRuntimeTestActivity) => activity.kind === "tool.updated",
+          ).length ?? 0
+      );
+    };
+
+    // A replacement must keep the open window's deadline instead of restarting it.
+    let count = 0;
+    for (let index = 0; index < 100 && count === 0; index += 1) {
+      harness.emit({
+        type: "item.updated",
+        eventId: asEventId(`chatty-${index}`),
+        provider: "opencode",
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-chatty"),
+        itemId: asItemId("item-chatty-tool"),
+        payload: {
+          itemType: "command_execution",
+          status: "in_progress",
+          title: "Run",
+          detail: `step ${index}`,
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      count = await appended();
+    }
+    expect(count).toBeGreaterThan(0);
   });
 
   it("reuses the same checkpoint turn count for repeated turn.diff.updated events in one turn", async () => {

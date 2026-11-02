@@ -499,6 +499,67 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
     }),
   );
 
+  it.effect(
+    "leaves archived plans out of the startup snapshot and returns them with tail details",
+    () =>
+      Effect.gen(function* () {
+        const snapshotQuery = yield* ProjectionSnapshotQuery;
+        const sql = yield* SqlClient.SqlClient;
+        yield* seedProjectionFixture(sql);
+        yield* sql`UPDATE projection_threads SET archived_at = '2026-04-02T00:00:00.000Z' WHERE thread_id = 'thread-1'`;
+
+        const startup = yield* snapshotQuery.getStartupSnapshot();
+        const archived = startup.snapshot.threads.find((thread) => thread.id === "thread-1")!;
+        assert.deepEqual(archived.proposedPlans, []);
+        assert.strictEqual(archived.proposedPlansOmitted, true);
+        for (const thread of startup.snapshot.threads.filter(
+          (thread) => thread.archivedAt === null,
+        ))
+          assert.strictEqual(thread.proposedPlansOmitted, undefined);
+
+        const bundled = yield* snapshotQuery.getStartupSnapshot({
+          detailThreadId: asThreadId("thread-1"),
+        });
+        assert.deepEqual(
+          bundled.threadTailDetails?.proposedPlans.map((plan) => plan.id),
+          ["plan-1"],
+        );
+        const tail = yield* snapshotQuery.getThreadTailDetails({
+          threadId: asThreadId("thread-1"),
+        });
+        assert.deepEqual(
+          tail.proposedPlans.map((plan) => plan.planMarkdown),
+          ["# Lazy details"],
+        );
+        // Other snapshots still carry archived plans.
+        const bootstrap = yield* snapshotQuery.getBootstrapSnapshot();
+        const hydrated = bootstrap.threads.find((thread) => thread.id === "thread-1")!;
+        assert.strictEqual(hydrated.proposedPlans.length, 1);
+        assert.strictEqual(hydrated.proposedPlansOmitted, undefined);
+      }),
+  );
+
+  it.effect("returns every plan with tail details, beyond the live retention cap", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      yield* seedProjectionFixture(sql);
+      for (let index = 0; index < 201; index++) {
+        const createdAt = new Date(Date.UTC(2025, 0, 1, 0, 0, index)).toISOString();
+        yield* sql`INSERT INTO projection_thread_proposed_plans(plan_id,thread_id,turn_id,plan_markdown,created_at,updated_at) VALUES(${`extra-plan-${index}`},'thread-1',NULL,'# Extra',${createdAt},${createdAt})`;
+      }
+      const expected = 202;
+      const tail = yield* snapshotQuery.getThreadTailDetails({ threadId: asThreadId("thread-1") });
+      assert.strictEqual(tail.proposedPlans.length, expected);
+      // The oldest plan, which an older approval may reference, is still there.
+      assert.strictEqual(tail.proposedPlans[0]?.id, "extra-plan-0");
+      const bundled = yield* snapshotQuery.getStartupSnapshot({
+        detailThreadId: asThreadId("thread-1"),
+      });
+      assert.strictEqual(bundled.threadTailDetails?.proposedPlans.length, expected);
+    }),
+  );
+
   it.effect("preserves scheduled origin in startup summaries before thread details load", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -594,6 +655,17 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
           },
         ],
         commandExecutions: [],
+        proposedPlans: [
+          {
+            id: "plan-1",
+            turnId: asTurnId("turn-1"),
+            planMarkdown: "# Lazy details",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: "2026-04-01T09:00:05.000Z",
+            updatedAt: "2026-04-01T09:00:05.500Z",
+          },
+        ],
         tasks: [
           {
             id: "task-1",
