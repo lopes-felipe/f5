@@ -2178,14 +2178,25 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T00:20:18.818Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T23:20:18.529Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/hooks/useOpenLink.ts:63",
+          "packages/shared/src/sourceControl.ts:291",
+          "apps/web/src/components/prHub/PrLinkedPanel.tsx:47"
+        ],
+        "f5Refs": [
+          "b3fcbb2dd6374f7716046f15e96320371be8f839"
+        ]
+      },
       "id": "pr-10987",
+      "reason": "Already present in f5",
       "relatedTopics": [
         "pr-20977"
       ],
-      "status": "port",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "pr-hub",
@@ -4195,11 +4206,22 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T00:20:18.818Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T23:20:18.529Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "packages/shared/src/prReview.ts:110",
+          "apps/web/src/components/prHub/PrFileDiff.tsx:76",
+          "apps/server/src/prHub/Layers/PrHubReviewOperations.ts:158"
+        ],
+        "f5Refs": [
+          "b3fcbb2dd6374f7716046f15e96320371be8f839"
+        ]
+      },
       "id": "pr-12583",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "pr hub",
@@ -18957,11 +18979,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T23:20:18.529Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-18432",
-      "status": "port",
+      "reason": "F5’s Forgejo watch path reads PR details and comments without fetching commit listings or individual commit payloads.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "pr hub",
