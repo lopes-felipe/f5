@@ -32,13 +32,14 @@ function keyboardEvent(
 }
 
 const LINUX = "Linux x86_64";
+const TERMINAL_FOCUSED = { terminalFocus: true, terminalOpen: true, dialogFocus: false };
 
 describe("createTerminalCloseRepeatGuard", () => {
   it("keeps a held close from reaching the next Ctrl+W owner once its terminal is gone", () => {
     const guard = createTerminalCloseRepeatGuard();
     const firstPress = keyboardEvent();
     expect(guard.preventRepeat(firstPress, DEFAULT_RESOLVED_KEYBINDINGS, LINUX)).toBe(false);
-    guard.arm(); // The close-terminal handler closed a terminal.
+    guard.arm(TERMINAL_FOCUSED); // The close-terminal handler closed a terminal.
 
     let leakedRepeats = 0;
     for (let index = 0; index < 3; index += 1) {
@@ -52,11 +53,36 @@ describe("createTerminalCloseRepeatGuard", () => {
 
   it("matches the macOS Cmd+W binding", () => {
     const guard = createTerminalCloseRepeatGuard();
-    guard.arm();
+    guard.arm(TERMINAL_FOCUSED);
     const event = keyboardEvent({ ctrlKey: false, metaKey: true, repeat: true });
 
     expect(guard.preventRepeat(event, DEFAULT_RESOLVED_KEYBINDINGS, "MacIntel")).toBe(true);
     expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("matches repeats in the context the close was resolved in", () => {
+    // A custom binding that closes an open but unfocused terminal.
+    const keybindings = DEFAULT_RESOLVED_KEYBINDINGS.map((binding) =>
+      binding.command === "terminal.close"
+        ? {
+            ...binding,
+            whenAst: {
+              type: "and" as const,
+              left: {
+                type: "not" as const,
+                node: { type: "identifier" as const, name: "terminalFocus" },
+              },
+              right: { type: "identifier" as const, name: "terminalOpen" },
+            },
+          }
+        : binding,
+    );
+    const guard = createTerminalCloseRepeatGuard();
+    guard.arm({ terminalFocus: false, terminalOpen: true, dialogFocus: false });
+    const repeat = keyboardEvent({ repeat: true });
+
+    expect(guard.preventRepeat(repeat, keybindings, LINUX)).toBe(true);
+    expect(repeat.defaultPrevented).toBe(true);
   });
 
   it("leaves holds that never closed a terminal alone, such as closing right-panel tabs", () => {
@@ -69,13 +95,13 @@ describe("createTerminalCloseRepeatGuard", () => {
 
   it("disarms on release or a fresh press", () => {
     const guard = createTerminalCloseRepeatGuard();
-    guard.arm();
+    guard.arm(TERMINAL_FOCUSED);
     guard.release();
     expect(
       guard.preventRepeat(keyboardEvent({ repeat: true }), DEFAULT_RESOLVED_KEYBINDINGS, LINUX),
     ).toBe(false);
 
-    guard.arm();
+    guard.arm(TERMINAL_FOCUSED);
     guard.preventRepeat(keyboardEvent({ key: "a" }), DEFAULT_RESOLVED_KEYBINDINGS, LINUX);
     expect(
       guard.preventRepeat(keyboardEvent({ repeat: true }), DEFAULT_RESOLVED_KEYBINDINGS, LINUX),
@@ -84,7 +110,7 @@ describe("createTerminalCloseRepeatGuard", () => {
 
   it("leaves deliberate presses, unrelated repeats and rebound shortcuts alone", () => {
     const guard = createTerminalCloseRepeatGuard();
-    guard.arm();
+    guard.arm(TERMINAL_FOCUSED);
     for (const event of [
       keyboardEvent({ key: "q", repeat: true }),
       keyboardEvent({ shiftKey: true, repeat: true }),

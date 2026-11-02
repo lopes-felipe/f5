@@ -7,7 +7,11 @@
  * @module textGenerationPrompts
  */
 import { Schema } from "effect";
-import type { ChatAttachment, SourceControlWritingSettings } from "@t3tools/contracts";
+import {
+  THREAD_TITLE_INSTRUCTIONS_MAX_CHARS,
+  type ChatAttachment,
+  type SourceControlWritingSettings,
+} from "@t3tools/contracts";
 import { formatAttachmentMetadata } from "@t3tools/shared/attachmentMetadata";
 
 import { limitSection } from "./Utils.ts";
@@ -292,7 +296,9 @@ export interface ThreadTitlePromptInput {
 /** The user's thread title instructions as a prompt rule, or nothing when unset. */
 export function threadTitleInstructionRules(instructions?: string): ReadonlyArray<string> {
   const text = instructions?.trim();
-  return text ? [`Additional instructions:\n${limitSection(text, 2_000)}`] : [];
+  return text
+    ? [`Additional instructions:\n${limitSection(text, THREAD_TITLE_INSTRUCTIONS_MAX_CHARS)}`]
+    : [];
 }
 
 /** Quote and bound reference data separately from title instructions. */

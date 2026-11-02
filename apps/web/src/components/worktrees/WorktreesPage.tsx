@@ -377,6 +377,11 @@ export function WorktreesPage({
                 onUse={() => useWorkspace(project.projectId, row)}
                 onNew={async () => {
                   const sharedFilesystemConfirmed = await confirmSharing(row);
+                  // The project may have been removed while the dialog was open.
+                  const stillPresent = useStore
+                    .getState()
+                    .projects.some((entry) => entry.id === project.projectId);
+                  if (!stillPresent) return;
                   const draft = await handleNewThread(project.projectId, {
                     branch: row.branch,
                     worktreePath: row.classification === "projectCheckout" ? null : row.path,

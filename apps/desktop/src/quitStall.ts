@@ -36,7 +36,10 @@ export type QuitRequestDecision =
   | { readonly kind: "begin" }
   /** Shutdown finished; this is its own final quit, so let it through. */
   | { readonly kind: "complete" }
-  /** The update installer owns this quit; its cleanup must not be cut short. */
+  /**
+   * The update installer owns this quit; its cleanup must not be cut short.
+   * Callers must not cancel it either: the installer's own quit arrives this way.
+   */
   | { readonly kind: "deferred" }
   /** A repeat while shutdown is within its budget: swallow it. */
   | { readonly kind: "pending"; readonly pendingMs: number }
@@ -54,8 +57,9 @@ export function classifyQuitRequest(input: {
   readonly updateInstallOwnsQuit: boolean;
   readonly thresholdMs?: number;
 }): QuitRequestDecision {
-  if (input.shutdownComplete) return { kind: "complete" };
+  // The installer sets shutdownComplete before it hands off, so ownership wins.
   if (input.updateInstallOwnsQuit) return { kind: "deferred" };
+  if (input.shutdownComplete) return { kind: "complete" };
   const pendingMs = input.tracker.pendingMs();
   if (pendingMs === null) return { kind: "begin" };
   return pendingMs >= (input.thresholdMs ?? QUIT_STALL_THRESHOLD_MS)

@@ -71,7 +71,7 @@ remove those entries after confirming that a drive is connected.
 | Default workspace for new threads   | Local                                                      |
 | Worktree submodules                 | Recursive                                                  |
 | Text generation model/account       | The global text generation selection                       |
-| Thread title instructions           | None                                                       |
+| Thread title instructions           | None (up to 2,000 characters reach the title prompt)       |
 | Source control writing              | The global writing defaults                                |
 | Assistant streaming                 | The server streaming preference                            |
 | PR merge method                     | Last used, then squash, subject to repository capabilities |

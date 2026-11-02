@@ -55,6 +55,19 @@ describe("resolveLinuxDisableFeaturesSwitch", () => {
     );
   });
 
+  it.each([null, "auto"])(
+    "treats an ozone platform of %s as native Wayland when a Wayland display exists",
+    (ozonePlatform) => {
+      expect(
+        resolveLinuxDisableFeaturesSwitch({
+          ...brokenHyprland,
+          ozonePlatform,
+          env: { ...hyprland, WAYLAND_DISPLAY: "wayland-1" },
+        }),
+      ).toBe("WaylandWpColorManagerV1");
+    },
+  );
+
   it("reads hyprctl output with trailing commas", () => {
     expect(
       resolveLinuxDisableFeaturesSwitch({
@@ -125,7 +138,8 @@ describe("resolveLinuxDisableFeaturesSwitch", () => {
       ozonePlatform: "x11",
       env: { ...hyprland, WAYLAND_DISPLAY: "wayland-1" },
     },
-    { label: "a missing platform", ozonePlatform: null },
+    { label: "a missing platform without a Wayland display", ozonePlatform: null },
+    { label: "auto without a Wayland display", ozonePlatform: "auto" },
     { label: "already disabled features", disableFeatures: "Vulkan, WaylandWpColorManagerV1" },
     { label: "an explicitly enabled feature", enableFeatures: "Vulkan,WaylandWpColorManagerV1" },
     {

@@ -10,6 +10,23 @@ function BufferedInput({ commit }: { commit: (value: string) => void }) {
   return <input aria-label="Setting" {...useCommitOnBlur("", commit)} />;
 }
 
+function BufferedTextarea(props: {
+  value: string;
+  commit: (value: string) => Promise<unknown>;
+  onError: (error: unknown) => void;
+}) {
+  return (
+    <textarea
+      aria-label="Instructions"
+      {...useCommitOnBlur(props.value, props.commit, {
+        multiline: true,
+        trim: true,
+        onError: props.onError,
+      })}
+    />
+  );
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
@@ -66,6 +83,42 @@ describe("input safety", () => {
     expect(document.activeElement).toBe(input);
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     await expect.poll(() => commit.mock.calls).toEqual([["日本語"]]);
+  });
+});
+
+describe("multiline commit on blur", () => {
+  it("keeps typing through a save that lands mid-edit and commits trimmed text", async () => {
+    const commit = vi.fn(async () => undefined);
+    const onError = vi.fn();
+    const screen = await render(<BufferedTextarea value="" commit={commit} onError={onError} />);
+    const textarea = screen.getByRole("textbox").element() as HTMLTextAreaElement;
+    await screen.getByRole("textbox").fill("first  ");
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(document.activeElement).toBe(textarea);
+    textarea.blur();
+    expect(commit).toHaveBeenCalledWith("first");
+
+    await screen.getByRole("textbox").fill("second draft");
+    await screen.rerender(<BufferedTextarea value="first" commit={commit} onError={onError} />);
+    expect(textarea.value).toBe("second draft");
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed save and restores the saved value", async () => {
+    const failure = new Error("Server unavailable");
+    const commit = vi.fn(async () => {
+      throw failure;
+    });
+    const onError = vi.fn();
+    const screen = await render(
+      <BufferedTextarea value="saved" commit={commit} onError={onError} />,
+    );
+    const textarea = screen.getByRole("textbox").element() as HTMLTextAreaElement;
+    await screen.getByRole("textbox").fill("edited");
+    textarea.blur();
+
+    await expect.poll(() => onError.mock.calls).toEqual([[failure]]);
+    await expect.poll(() => textarea.value).toBe("saved");
   });
 });
 

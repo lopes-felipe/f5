@@ -62,6 +62,10 @@ describe("classifyQuitRequest", () => {
     tracker.begin();
     advance(QUIT_STALL_THRESHOLD_MS * 2);
     expect(classify()).toEqual({ kind: "deferred" });
+
+    // Install cleanup marks shutdown complete before the installer launches.
+    state.shutdownComplete = true;
+    expect(classify()).toEqual({ kind: "deferred" });
   });
 
   it("starts over after a vetoed quit is reset", () => {

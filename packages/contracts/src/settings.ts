@@ -297,6 +297,9 @@ export const StorageRetentionDays = Schema.NullOr(
 );
 export type StorageRetentionDays = typeof StorageRetentionDays.Type;
 
+/** Thread title instructions beyond this are cut from the title prompt; editors stop here. */
+export const THREAD_TITLE_INSTRUCTIONS_MAX_CHARS = 2_000;
+
 export const MAX_WORKTREE_CLEANUP_MIN_IDLE_HOURS = 720;
 export const DEFAULT_WORKTREE_CLEANUP_MIN_IDLE_HOURS = 24;
 

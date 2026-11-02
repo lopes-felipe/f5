@@ -1,4 +1,7 @@
-import { DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER } from "@t3tools/contracts";
+import {
+  DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
+  THREAD_TITLE_INSTRUCTIONS_MAX_CHARS,
+} from "@t3tools/contracts";
 import { useQuery } from "@tanstack/react-query";
 
 import {
@@ -19,6 +22,8 @@ import { Input } from "../../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
 import { Switch } from "../../ui/switch";
 import { Textarea } from "../../ui/textarea";
+import { toastManager } from "../../ui/toast";
+import { useCommitOnBlur } from "../../../hooks/useCommitOnBlur";
 
 export { THREADS_SETTINGS_DESCRIPTORS } from "./ThreadsSettings.descriptors";
 
@@ -266,9 +271,25 @@ function HelperSettings() {
 export const THREAD_TITLE_INSTRUCTIONS_PLACEHOLDER =
   "Keep titles to a few words. Lead with the main subject.";
 
+export const THREAD_TITLE_INSTRUCTIONS_HINT = `Up to ${THREAD_TITLE_INSTRUCTIONS_MAX_CHARS.toLocaleString("en-US")} characters.`;
+
+function reportThreadTitleInstructionsError(error: unknown) {
+  toastManager.add({
+    type: "error",
+    title: "Could not save thread title instructions",
+    description: error instanceof Error ? error.message : String(error),
+  });
+}
+
 function ThreadTitleInstructionsField() {
   const threadTitleInstructions = useSettings((settings) => settings.threadTitleInstructions);
   const { updateSettings: updateServerSettings } = useUpdateSettings();
+  const save = (value: string) => updateServerSettings({ threadTitleInstructions: value });
+  const draft = useCommitOnBlur(threadTitleInstructions, save, {
+    multiline: true,
+    trim: true,
+    onError: reportThreadTitleInstructionsError,
+  });
   return (
     <div className="mt-4 space-y-1" data-settings-search-target="threads.title-instructions">
       <div className="flex items-center justify-between gap-2">
@@ -277,27 +298,22 @@ function ThreadTitleInstructionsField() {
           <Button
             size="xs"
             variant="ghost"
-            onClick={() => void updateServerSettings({ threadTitleInstructions: "" })}
+            onClick={() => void save("").catch(reportThreadTitleInstructionsError)}
           >
             Clear
           </Button>
         ) : null}
       </div>
       <Textarea
-        key={threadTitleInstructions}
         aria-label="Thread title instructions"
         rows={3}
-        defaultValue={threadTitleInstructions}
+        maxLength={THREAD_TITLE_INSTRUCTIONS_MAX_CHARS}
         placeholder={THREAD_TITLE_INSTRUCTIONS_PLACEHOLDER}
-        onBlur={(event) => {
-          const value = event.target.value.trim();
-          if (value !== threadTitleInstructions)
-            void updateServerSettings({ threadTitleInstructions: value });
-        }}
+        {...draft}
       />
       <span className="block text-xs text-muted-foreground">
         Added to the prompt for new and regenerated thread titles, such as a length limit or an
-        identifier to put first. Projects can set their own.
+        identifier to put first. Projects can set their own. {THREAD_TITLE_INSTRUCTIONS_HINT}
       </span>
     </div>
   );

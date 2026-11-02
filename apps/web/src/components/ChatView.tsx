@@ -4818,7 +4818,7 @@ export default memo(function ChatView({
         event.preventDefault();
         event.stopPropagation();
         if (!terminalState.terminalOpen) return;
-        terminalCloseRepeatGuard.arm();
+        terminalCloseRepeatGuard.arm(shortcutContext);
         closeTerminal(terminalState.activeTerminalId);
         return;
       }

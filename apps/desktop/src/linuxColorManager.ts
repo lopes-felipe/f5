@@ -56,10 +56,17 @@ const hasBrokenColorManager = (readHyprctlVersionJson: () => string): boolean =>
   }
 };
 
+// With no `--ozone-platform` switch, or `auto`, Electron runs on native Wayland
+// whenever a Wayland display is available; an explicit `x11` stays on XWayland.
+const usesNativeWayland = (ozonePlatform: string | null, env: NodeJS.ProcessEnv): boolean =>
+  ozonePlatform === "wayland" ||
+  ((ozonePlatform === null || ozonePlatform === "auto") &&
+    trimNonEmpty(env.WAYLAND_DISPLAY) !== undefined);
+
 /**
  * Returns the merged `--disable-features` value to apply before Electron is ready,
- * or null to leave the command line alone. `ozonePlatform` is the resolved
- * `--ozone-platform` value; Electron fills it in before app code runs.
+ * or null to leave the command line alone. `ozonePlatform` is the
+ * `--ozone-platform` switch value, or null when it is absent.
  *
  * Color management stays on unless `hyprctl version -j` identifies a stock Hyprland
  * release known to kill the native Wayland connection right after the first window
@@ -72,7 +79,9 @@ export function resolveLinuxDisableFeaturesSwitch(input: {
   readonly disableFeatures: string | null;
   readonly readHyprctlVersionJson: () => string;
 }): string | null {
-  if (input.ozonePlatform !== "wayland" || !isHyprlandSession(input.env)) return null;
+  if (!usesNativeWayland(input.ozonePlatform, input.env) || !isHyprlandSession(input.env)) {
+    return null;
+  }
   if (featureListNames(input.enableFeatures).includes(WAYLAND_COLOR_MANAGER_FEATURE)) return null;
   if (featureListNames(input.disableFeatures).includes(WAYLAND_COLOR_MANAGER_FEATURE)) return null;
   if (!hasBrokenColorManager(input.readHyprctlVersionJson)) return null;
