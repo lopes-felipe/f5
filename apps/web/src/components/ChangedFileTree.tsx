@@ -25,10 +25,12 @@ export function changedFileTreeRows(
     const parts = flat ? [file.path] : file.path.split("/");
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i]!;
-      let child = node.children.get(part);
+      // A diff can contain both a file and a directory at the same real path.
+      const key = i === parts.length - 1 ? part : `${part}/`;
+      let child = node.children.get(key);
       if (!child) {
         child = { path: flat ? part : parts.slice(0, i + 1).join("/"), children: new Map() };
-        node.children.set(part, child);
+        node.children.set(key, child);
       }
       node = child;
     }
@@ -116,7 +118,7 @@ export function ChangedFileTree({
       <div className="max-h-64 overflow-auto px-2 pb-2" aria-label="Changed file navigation">
         {rows.slice(0, visibleCount).map((row) => (
           <div
-            key={row.path}
+            key={`${row.file ? "file" : "directory"}:${row.path}`}
             className="group flex min-w-0 items-center gap-1"
             style={{ paddingLeft: row.depth * 12 }}
           >
