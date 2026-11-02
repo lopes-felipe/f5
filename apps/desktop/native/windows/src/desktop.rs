@@ -635,13 +635,17 @@ pub fn run() {
         let mutex_name = wide("Local\\F5ComputerControlV2");
         let mutex = CreateMutexW(None, true, PCWSTR(mutex_name.as_ptr()));
         if mutex.is_err() || GetLastError() == ERROR_ALREADY_EXISTS {
-            emit(json!({"type":"hello","protocolVersion":1,"helperVersion":"2.0.0"}));
+            emit(
+                json!({"type":"hello","protocolVersion":1,"helperVersion":"2.0.0","startupFailure":{"available":false,"reason":"other-instance"}}),
+            );
             emit(json!({"type":"status","status":{"available":false,"reason":"other-instance"}}));
             return;
         }
         let _device_lock = mutex.unwrap();
         if integrity(std::process::id()).unwrap_or(u32::MAX) > 0x2000 {
-            emit(json!({"type":"hello","protocolVersion":1,"helperVersion":"2.0.0"}));
+            emit(
+                json!({"type":"hello","protocolVersion":1,"helperVersion":"2.0.0","startupFailure":{"available":false,"reason":"missing-permissions","detail":"Helper must run unelevated."}}),
+            );
             emit(
                 json!({"type":"status","status":{"available":false,"reason":"missing-permissions","detail":"Helper must run unelevated."}}),
             );
