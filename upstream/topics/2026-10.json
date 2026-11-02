@@ -8493,11 +8493,22 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T00:20:18.818Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T11:32:32.096Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/usage/Layers/AccountUsageService.ts:178",
+          "apps/server/src/usage/claudeAccountUsage.ts:55",
+          "apps/server/src/provider/Drivers/ClaudeDriver.ts:260"
+        ],
+        "f5Refs": [
+          "ab4cad2b4b3a4a69ea17e8fe9a2999fd0cba0e40"
+        ]
+      },
       "id": "pr-15116",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "usage",
@@ -28299,11 +28310,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T11:32:32.096Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-20349",
-      "status": "port",
+      "reason": "F5 has no pooled quota UI or pooled refill estimates.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "usage"
@@ -45692,11 +45705,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T11:32:32.096Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-23767",
-      "status": "port",
+      "reason": "F5 has no URL-derived hub registry or add-hub dialog.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "usage",
@@ -47975,11 +47990,13 @@
     },
     {
       "createdAt": "2026-10-30T11:04:20.788Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T11:32:32.096Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-24139",
-      "status": "port",
+      "reason": "F5 has no transcript usage scanner or scan cache.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "usage",
