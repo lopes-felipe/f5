@@ -24,6 +24,8 @@ export const CODEX_CHROME_STOPPED_IDLE =
 export const CODEX_CHROME_STOPPED_PAUSED =
   "Paused. Chrome control restarts with your next message after you resume.";
 export const CODEX_CHROME_STOPPED_OFF = "Turned off for this thread.";
+export const CODEX_CHROME_STOPPED_INTERRUPTED =
+  "Stopped with the interrupted turn. Chrome control restarts with your next message.";
 export const CODEX_CHROME_START_TIMED_OUT =
   "Chrome control didn't start in time, so it's off for this message. It restarts with your next message.";
 export const CODEX_CHROME_INVENTORY_CHANGED =
@@ -126,6 +128,8 @@ export class CodexChromeSession {
   /** Resolves `beforeTurn`'s wait once the pending start settles. */
   private settleStart: (() => void) | undefined;
   private drained = new Set<string>();
+  /** The model's `node_repl` calls Codex reported started and not yet completed. */
+  private readonly calls = new Set<string>();
   private readonly unsubscribe: Array<() => void> = [];
 
   constructor(private readonly deps: CodexChromeSessionDeps) {
@@ -176,8 +180,15 @@ export class CodexChromeSession {
   }
 
   /** A model call to `node_repl` started or finished: the runtime isn't idle. */
-  toolActivity(): void {
+  toolCall(itemId: string, running: boolean): void {
     this.clearIdle();
+    if (running) this.calls.add(itemId);
+    else this.calls.delete(itemId);
+  }
+
+  /** Whether a model call to `node_repl` is running; read before interrupting its turn. */
+  get callRunning(): boolean {
+    return this.calls.size > 0;
   }
 
   /**
@@ -228,6 +239,7 @@ export class CodexChromeSession {
    */
   turnEnded(turnId: string): void {
     this.turnActive = false;
+    this.calls.clear();
     if (this.phase === "ready" && !this.drained.has(turnId)) {
       this.drained.add(turnId);
       if (this.drained.size > 64) this.drained = new Set([turnId]);
@@ -242,6 +254,22 @@ export class CodexChromeSession {
           .catch(() => undefined);
     }
     this.armIdle();
+  }
+
+  /**
+   * The user interrupted a turn. Codex ends the turn at once, but `node_repl` keeps
+   * running a call in flight, still driving Chrome, until `turn_ended` returns (about
+   * 30 s in certification). So a turn interrupted during a call (`callRunning`, read
+   * before the interrupt) stops the runtime instead; the next turn starts it again.
+   */
+  turnInterrupted(turnId: string | undefined, callRunning: boolean): void {
+    if (callRunning && this.phase === "ready") {
+      this.turnActive = false;
+      if (turnId) this.drained.add(turnId);
+      this.stop("pending", CODEX_CHROME_STOPPED_INTERRUPTED);
+      return;
+    }
+    if (turnId) this.turnEnded(turnId);
   }
 
   dispose(): void {
@@ -423,6 +451,7 @@ export class CodexChromeSession {
     if (this.phase === "disposed" || this.phase === "unavailable") return;
     this.epoch += 1;
     this.clearIdle();
+    this.calls.clear();
     this.release(reason);
     this.phase = "stopped";
     this.deps.stateChanged(state, detail);

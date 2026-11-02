@@ -7,6 +7,7 @@ import {
   CODEX_CHROME_INVENTORY_CHANGED,
   CODEX_CHROME_START_TIMED_OUT,
   CODEX_CHROME_STOPPED_IDLE,
+  CODEX_CHROME_STOPPED_INTERRUPTED,
   CODEX_CHROME_STOPPED_OFF,
   CODEX_CHROME_STOPPED_PAUSED,
   CodexChromeSession,
@@ -250,7 +251,7 @@ describe("CodexChromeSession", () => {
     await turn;
     expect(h.session.state).toBe("ready");
     expect(h.idleArmed()).toBe(false);
-    h.session.toolActivity();
+    h.session.toolCall("call-1", true);
     expect(h.idleArmed()).toBe(false);
     h.session.turnEnded("turn-1");
     expect(h.idleArmed()).toBe(true);
@@ -399,7 +400,7 @@ describe("CodexChromeSession", () => {
   it("drains each ended turn once through turn_ended and then arms the idle stop", async () => {
     const h = harness();
     await ready(h);
-    h.session.toolActivity();
+    h.session.toolCall("call-1", true);
     expect(h.idleArmed()).toBe(false);
     h.session.turnEnded("turn-1");
     h.session.turnEnded("turn-1");
@@ -410,6 +411,62 @@ describe("CodexChromeSession", () => {
       {},
     );
     expect(h.idleArmed()).toBe(true);
+  });
+
+  it("tracks the model's running calls until they complete or their turn ends", async () => {
+    const h = harness();
+    await ready(h);
+    expect(h.session.callRunning).toBe(false);
+    h.session.toolCall("call-1", true);
+    h.session.toolCall("call-2", true);
+    h.session.toolCall("call-1", false);
+    expect(h.session.callRunning).toBe(true);
+    h.session.toolCall("call-2", false);
+    expect(h.session.callRunning).toBe(false);
+    h.session.toolCall("call-3", true);
+    h.session.turnEnded("turn-1");
+    expect(h.session.callRunning).toBe(false);
+  });
+
+  it("drains a turn interrupted between calls and keeps the runtime", async () => {
+    const h = harness();
+    await ready(h);
+    await h.session.beforeTurn();
+    h.session.turnInterrupted("turn-1", false);
+    expect(h.codex.callTool).toHaveBeenCalledWith(
+      "turn_ended",
+      { hook_event_name: "Stop", session_id: "codex-thread", turn_id: "turn-1" },
+      {},
+    );
+    expect(h.stopped()).toEqual([]);
+    expect(h.session.state).toBe("ready");
+    expect(h.idleArmed()).toBe(true);
+  });
+
+  it("stops the runtime when a turn is interrupted during a call, and restarts it next turn", async () => {
+    const h = harness();
+    await ready(h);
+    await h.session.beforeTurn();
+    const token = h.lastToken();
+    h.session.toolCall("call-1", true);
+    h.session.turnInterrupted("turn-1", h.session.callRunning);
+    expect(h.stopped()).toEqual([token]);
+    // Killed at once, not after the graceful release's grace.
+    expect(h.broker.stopIntegrationProcess.mock.calls.at(-1)?.[1]).toBeUndefined();
+    expect(h.session.state).toBe("stopped");
+    expect(h.states.at(-1)).toEqual(["pending", CODEX_CHROME_STOPPED_INTERRUPTED]);
+    expect(h.session.callRunning).toBe(false);
+    // Codex then reports the interrupted turn completed: nothing to drain.
+    h.session.turnEnded("turn-1");
+    expect(h.codex.callTool).not.toHaveBeenCalled();
+    expect(h.idleArmed()).toBe(false);
+    const turn = h.session.beforeTurn();
+    await flush();
+    expect(h.codex.reload).toHaveBeenCalledTimes(1);
+    await ready(h);
+    await turn;
+    expect(h.session.state).toBe("ready");
+    expect(h.lastToken()).not.toBe(token);
   });
 
   it("releases everything once on dispose", async () => {

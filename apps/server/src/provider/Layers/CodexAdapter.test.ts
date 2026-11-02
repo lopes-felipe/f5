@@ -3166,7 +3166,7 @@ afterAll(() => {
 });
 
 it("feeds Codex's node_repl startup, tool calls and turn ends to the Chrome session", () => {
-  const session = { startupStatus: vi.fn(), toolActivity: vi.fn(), turnEnded: vi.fn() };
+  const session = { startupStatus: vi.fn(), toolCall: vi.fn(), turnEnded: vi.fn() };
   const observe = (method: string, payload: unknown, turnId?: string) =>
     observeCodexChrome(session, {
       method,
@@ -3180,7 +3180,8 @@ it("feeds Codex's node_repl startup, tool calls and turn ends to the Chrome sess
     status: "failed",
     error: "boom",
   });
-  observe("item/started", { item: { type: "mcpToolCall", server: "node_repl" } });
+  observe("item/started", { item: { type: "mcpToolCall", server: "node_repl", id: "call-1" } });
+  observe("item/completed", { item: { type: "mcpToolCall", server: "node_repl", id: "call-1" } });
   observe("item/completed", { item: { type: "mcpToolCall", server: "other" } });
   observe("item/completed", { item: { type: "commandExecution" } });
   observe("turn/completed", {}, "turn-1");
@@ -3189,7 +3190,10 @@ it("feeds Codex's node_repl startup, tool calls and turn ends to the Chrome sess
     ["ready", undefined],
     ["failed", "boom"],
   ]);
-  assert.equal(session.toolActivity.mock.calls.length, 1);
+  assert.deepEqual(session.toolCall.mock.calls, [
+    ["call-1", true],
+    ["call-1", false],
+  ]);
   assert.deepEqual(session.turnEnded.mock.calls, [["turn-1"]]);
 });
 

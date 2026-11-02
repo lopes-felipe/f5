@@ -1220,7 +1220,7 @@ function describePatchApproval(payload: Record<string, unknown> | undefined): st
  * (adoption), its calls (not idle) and turn completion (drain, then the idle stop).
  */
 export function observeCodexChrome(
-  session: Pick<CodexChromeSession, "startupStatus" | "toolActivity" | "turnEnded">,
+  session: Pick<CodexChromeSession, "startupStatus" | "toolCall" | "turnEnded">,
   event: Pick<ProviderEvent, "method" | "payload" | "turnId">,
 ): void {
   const payload = asObject(event.payload);
@@ -1235,7 +1235,7 @@ export function observeCodexChrome(
   if (event.method === "item/started" || event.method === "item/completed") {
     const item = asObject(payload?.item);
     if (item?.type === "mcpToolCall" && item.server === CODEX_CHROME_SERVER_NAME)
-      session.toolActivity();
+      session.toolCall(asString(item.id) ?? "", event.method === "item/started");
     return;
   }
   if (event.method === "turn/completed" && event.turnId) session.turnEnded(event.turnId);
@@ -3123,10 +3123,12 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     const interruptTurn: CodexAdapterShape["interruptTurn"] = (threadId, turnId) =>
       Effect.tryPromise({
         try: async () => {
+          // Read before Codex reports the interrupted call completed.
+          const callRunning = chromeSessions.get(threadId)?.session?.callRunning ?? false;
           const result = await manager.interruptTurn(threadId, turnId);
-          // Codex interrupts the call; Chrome's runtime releases the turn's browser
-          // session through its own hook.
-          if (turnId) chromeSessions.get(threadId)?.session?.turnEnded(turnId);
+          // Chrome's runtime releases the turn's browser session through its own hook, or
+          // is stopped when a call was still driving Chrome.
+          chromeSessions.get(threadId)?.session?.turnInterrupted(turnId, callRunning);
           return result;
         },
         catch: (cause) => toRequestError(threadId, "turn/interrupt", cause),
