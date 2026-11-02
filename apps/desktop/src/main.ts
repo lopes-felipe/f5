@@ -67,7 +67,7 @@ import { installPreviewPermissionPolicy } from "./preview/previewPermissions";
 import { captureMacWindow } from "./snapShot/MacSnapShot";
 import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { closeWindowsForQuit } from "./quitPreflight";
-import { makeQuitStallTracker } from "./quitStall";
+import { classifyQuitRequest, makeQuitStallTracker, type QuitRequestDecision } from "./quitStall";
 import { resolveLinuxDisableFeaturesSwitch } from "./linuxColorManager";
 import { installDesktopAttention } from "./desktopAttention";
 import {
@@ -757,6 +757,8 @@ function initializeComputerSystem(): void {
 }
 let isQuitting = false;
 const quitStall = makeQuitStallTracker();
+/** Set while the update installer closes windows and cleans up for its own quit. */
+let updateInstallOwnsQuit = false;
 function beginQuitting(): void {
   isQuitting = true;
   quitStall.begin();
@@ -2316,7 +2318,7 @@ function handleFatalStartupError(stage: string, error: unknown): void {
   writeDesktopLogHeader(`fatal startup error stage=${stage} message=${message}`);
   console.error(`[desktop] fatal startup error (${stage})`, error);
   if (!isQuitting) {
-    // The stall clock starts at app.quit() below, not while this dialog blocks.
+    // The stall clock starts at before-quit, not while this dialog blocks.
     isQuitting = true;
     dialog.showErrorBox("F5 failed to start", `Stage: ${stage}\n${message}${detail}`);
   }
@@ -2735,7 +2737,9 @@ const updateInstaller = createUpdateInstaller({
           bounds: window.getBounds(),
         };
       });
-    beginQuitting();
+    // The installer owns this quit: repeats must not cut its cleanup short.
+    isQuitting = true;
+    updateInstallOwnsQuit = true;
     if (!(await closeWindowsForQuit(BrowserWindow.getAllWindows()))) {
       cancelQuit();
       restoreInstallWindows();
@@ -4429,27 +4433,30 @@ function cancelQuit(): void {
   shutdownPending = false;
   shutdownComplete = false;
   isQuitting = false;
+  updateInstallOwnsQuit = false;
   quitStall.reset();
   for (const window of BrowserWindow.getAllWindows()) window.show();
 }
 
-/**
- * While shutdown is pending, a repeated Quit or signal is swallowed. If that
- * shutdown has stalled, the repeat is the user's only way out short of SIGKILL.
- */
-function exitIfQuitStalled(source: string): void {
-  const decision = quitStall.check();
-  if (decision.kind === "pending") {
+function classifyCurrentQuitRequest(): QuitRequestDecision {
+  return classifyQuitRequest({ tracker: quitStall, shutdownComplete, updateInstallOwnsQuit });
+}
+
+/** Handles a Quit or signal that arrived while a quit is already in progress. */
+function handleRepeatedQuitRequest(source: string, decision: QuitRequestDecision): void {
+  if (decision.kind === "stalled") {
     writeDesktopLogHeader(
-      `quit already in progress source=${source} pendingMs=${decision.pendingMs}`,
+      `desktop shutdown stalled; exiting without it source=${source} pendingMs=${decision.pendingMs}`,
     );
+    restoreStdIoCapture?.();
+    app.exit(0);
     return;
   }
   writeDesktopLogHeader(
-    `desktop shutdown stalled; exiting without it source=${source} pendingMs=${decision.pendingMs}`,
+    decision.kind === "pending"
+      ? `quit already in progress source=${source} pendingMs=${decision.pendingMs}`
+      : `quit already in progress source=${source} state=${decision.kind}`,
   );
-  restoreStdIoCapture?.();
-  app.exit(0);
 }
 
 async function cleanupBeforeExit(): Promise<void> {
@@ -4489,9 +4496,10 @@ app.on("web-contents-created", (_event, contents) => {
   });
 });
 app.on("before-quit", () => {
-  // Shutdown's own final app.quit() arrives with shutdownComplete set.
-  if (isQuitting && !shutdownComplete) {
-    exitIfQuitStalled("before-quit");
+  const decision = classifyCurrentQuitRequest();
+  // Shutdown's own final app.quit() arrives as "complete".
+  if (decision.kind !== "begin" && decision.kind !== "complete") {
+    handleRepeatedQuitRequest("before-quit", decision);
     return;
   }
   writeDesktopLogHeader("before-quit received");
@@ -4561,8 +4569,9 @@ app.on("window-all-closed", () => {
 
 if (process.platform !== "win32") {
   process.on("SIGINT", () => {
-    if (isQuitting) {
-      exitIfQuitStalled("SIGINT");
+    const decision = classifyCurrentQuitRequest();
+    if (decision.kind !== "begin") {
+      handleRepeatedQuitRequest("SIGINT", decision);
       return;
     }
     beginQuitting();
@@ -4572,8 +4581,9 @@ if (process.platform !== "win32") {
   });
 
   process.on("SIGTERM", () => {
-    if (isQuitting) {
-      exitIfQuitStalled("SIGTERM");
+    const decision = classifyCurrentQuitRequest();
+    if (decision.kind !== "begin") {
+      handleRepeatedQuitRequest("SIGTERM", decision);
       return;
     }
     beginQuitting();

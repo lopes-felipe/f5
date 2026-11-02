@@ -383,6 +383,7 @@ export function WorktreesPage({
                     envMode: row.classification === "projectCheckout" ? "local" : "worktree",
                     forceNonDefaultEnvMode: true,
                   });
+                  if (!draft) return;
                   useComposerDraftStore
                     .getState()
                     .setDraftThreadContext(draft.threadId, { sharedFilesystemConfirmed });

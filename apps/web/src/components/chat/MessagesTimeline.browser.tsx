@@ -3863,6 +3863,41 @@ describe("MessagesTimeline row stability", () => {
     expect(buildRows([user, work, grown], cache)).toBe(after);
   });
 
+  it("skips revert and checkpoint lookups while only message text streams", () => {
+    const cache = createTimelineRowCache();
+    const user = makeUserEntry("row-user", "hello", 0);
+    const assistant = makeAssistantEntry("row-assistant", "Hel", 1);
+    let revertLookups = 0;
+    class CountingMap<K, V> extends Map<K, V> {
+      override has(key: K): boolean {
+        revertLookups += 1;
+        return super.has(key);
+      }
+    }
+    const inputs = externalsInputs({
+      revertTurnCountByUserMessageId: new CountingMap([[user.id as MessageId, 0]]),
+    });
+    const before = buildRows([user, assistant], cache);
+    const externalsBefore = buildTimelineRowExternals(before, inputs, new Map());
+    expect(revertLookups).toBe(1);
+
+    const after = buildRows([user, makeAssistantEntry("row-assistant", "Hello there", 1)], cache);
+    const externalsAfter = buildTimelineRowExternals(after, inputs, externalsBefore, {
+      rows: before,
+      inputs,
+    });
+    expect(externalsAfter).toBe(externalsBefore);
+    expect(revertLookups).toBe(1);
+
+    // A new user message is structural, so rows are described again.
+    const next = buildRows(
+      [user, makeAssistantEntry("row-assistant", "Hello there", 1), makeUserEntry("u2", "more", 2)],
+      cache,
+    );
+    buildTimelineRowExternals(next, inputs, externalsAfter, { rows: after, inputs });
+    expect(revertLookups).toBe(3);
+  });
+
   it("changes only the rows of the turn whose diff summary changed", () => {
     const cache = createTimelineRowCache();
     const turnA = TurnId.makeUnsafe("turn-a");

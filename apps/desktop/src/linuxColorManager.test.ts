@@ -55,6 +55,16 @@ describe("resolveLinuxDisableFeaturesSwitch", () => {
     );
   });
 
+  it("reads hyprctl output with trailing commas", () => {
+    expect(
+      resolveLinuxDisableFeaturesSwitch({
+        ...brokenHyprland,
+        readHyprctlVersionJson: () =>
+          `{"version": "0.48.1", "tag": "v0.48.1", "commit": "${releaseCommits["0.48.1"]}", "dirty": false, "flags": [],}`,
+      }),
+    ).toBe("WaylandWpColorManagerV1");
+  });
+
   it("keeps existing disabled features", () => {
     expect(
       resolveLinuxDisableFeaturesSwitch({

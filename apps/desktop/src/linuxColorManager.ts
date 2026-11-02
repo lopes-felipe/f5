@@ -1,3 +1,6 @@
+import { fromLenientJson } from "@t3tools/shared/schemaJson";
+import { Schema } from "effect";
+
 const WAYLAND_COLOR_MANAGER_FEATURE = "WaylandWpColorManagerV1";
 
 // Chromium feature entries look like `*Name<Trial.Group:param/value`.
@@ -30,16 +33,23 @@ const AFFECTED_HYPRLAND_RELEASE_COMMITS: ReadonlyMap<string, string> = new Map([
   ["0.50.1", "4e242d086e20b32951fdc0ebcbfb4d41b5be8dcc"],
 ]);
 
+// Lenient so stray comments or trailing commas in hyprctl output cannot skip the workaround.
+const decodeHyprctlVersionJson = Schema.decodeSync(
+  fromLenientJson(
+    Schema.Struct({
+      version: Schema.String,
+      tag: Schema.String,
+      commit: Schema.String,
+      dirty: Schema.Boolean,
+    }),
+  ),
+);
+
 const hasBrokenColorManager = (readHyprctlVersionJson: () => string): boolean => {
   try {
-    const parsed: unknown = JSON.parse(readHyprctlVersionJson());
-    if (typeof parsed !== "object" || parsed === null) return false;
-    const { version, tag, commit, dirty } = parsed as Record<string, unknown>;
+    const { version, tag, commit, dirty } = decodeHyprctlVersionJson(readHyprctlVersionJson());
     return (
-      typeof version === "string" &&
-      AFFECTED_HYPRLAND_RELEASE_COMMITS.get(version) === commit &&
-      tag === `v${version}` &&
-      dirty === false
+      AFFECTED_HYPRLAND_RELEASE_COMMITS.get(version) === commit && tag === `v${version}` && !dirty
     );
   } catch {
     return false;

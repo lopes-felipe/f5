@@ -2,7 +2,7 @@ import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { describe, expect, it } from "vitest";
 
 import {
-  preventRepeatedTerminalCloseShortcut,
+  createTerminalCloseRepeatGuard,
   type TerminalCloseShortcutEvent,
 } from "./terminalCloseShortcut";
 
@@ -31,12 +31,19 @@ function keyboardEvent(
   };
 }
 
-describe("preventRepeatedTerminalCloseShortcut", () => {
-  it("keeps held close repeats from reaching the next Ctrl+W owner once terminals are gone", () => {
+const LINUX = "Linux x86_64";
+
+describe("createTerminalCloseRepeatGuard", () => {
+  it("keeps a held close from reaching the next Ctrl+W owner once its terminal is gone", () => {
+    const guard = createTerminalCloseRepeatGuard();
+    const firstPress = keyboardEvent();
+    expect(guard.preventRepeat(firstPress, DEFAULT_RESOLVED_KEYBINDINGS, LINUX)).toBe(false);
+    guard.arm(); // The close-terminal handler closed a terminal.
+
     let leakedRepeats = 0;
     for (let index = 0; index < 3; index += 1) {
       const event = keyboardEvent({ repeat: true });
-      preventRepeatedTerminalCloseShortcut(event, DEFAULT_RESOLVED_KEYBINDINGS, "Linux x86_64");
+      guard.preventRepeat(event, DEFAULT_RESOLVED_KEYBINDINGS, LINUX);
       if (!event.defaultPrevented) leakedRepeats += 1;
     }
 
@@ -44,38 +51,50 @@ describe("preventRepeatedTerminalCloseShortcut", () => {
   });
 
   it("matches the macOS Cmd+W binding", () => {
+    const guard = createTerminalCloseRepeatGuard();
+    guard.arm();
     const event = keyboardEvent({ ctrlKey: false, metaKey: true, repeat: true });
 
-    expect(
-      preventRepeatedTerminalCloseShortcut(event, DEFAULT_RESOLVED_KEYBINDINGS, "MacIntel"),
-    ).toBe(true);
+    expect(guard.preventRepeat(event, DEFAULT_RESOLVED_KEYBINDINGS, "MacIntel")).toBe(true);
     expect(event.defaultPrevented).toBe(true);
   });
 
-  it("leaves a deliberate press and unrelated repeats alone", () => {
-    const deliberate = keyboardEvent({ repeat: false });
-    const unrelated = keyboardEvent({ key: "q", repeat: true });
-    const shifted = keyboardEvent({ shiftKey: true, repeat: true });
+  it("leaves holds that never closed a terminal alone, such as closing right-panel tabs", () => {
+    const guard = createTerminalCloseRepeatGuard();
+    const repeat = keyboardEvent({ repeat: true });
 
-    for (const event of [deliberate, unrelated, shifted]) {
-      expect(
-        preventRepeatedTerminalCloseShortcut(event, DEFAULT_RESOLVED_KEYBINDINGS, "Linux x86_64"),
-      ).toBe(false);
-      expect(event.defaultPrevented).toBe(false);
-    }
+    expect(guard.preventRepeat(repeat, DEFAULT_RESOLVED_KEYBINDINGS, LINUX)).toBe(false);
+    expect(repeat.defaultPrevented).toBe(false);
   });
 
-  it("follows a rebound close-terminal shortcut", () => {
-    const keybindings = DEFAULT_RESOLVED_KEYBINDINGS.filter(
+  it("disarms on release or a fresh press", () => {
+    const guard = createTerminalCloseRepeatGuard();
+    guard.arm();
+    guard.release();
+    expect(
+      guard.preventRepeat(keyboardEvent({ repeat: true }), DEFAULT_RESOLVED_KEYBINDINGS, LINUX),
+    ).toBe(false);
+
+    guard.arm();
+    guard.preventRepeat(keyboardEvent({ key: "a" }), DEFAULT_RESOLVED_KEYBINDINGS, LINUX);
+    expect(
+      guard.preventRepeat(keyboardEvent({ repeat: true }), DEFAULT_RESOLVED_KEYBINDINGS, LINUX),
+    ).toBe(false);
+  });
+
+  it("leaves deliberate presses, unrelated repeats and rebound shortcuts alone", () => {
+    const guard = createTerminalCloseRepeatGuard();
+    guard.arm();
+    for (const event of [
+      keyboardEvent({ key: "q", repeat: true }),
+      keyboardEvent({ shiftKey: true, repeat: true }),
+    ]) {
+      expect(guard.preventRepeat(event, DEFAULT_RESOLVED_KEYBINDINGS, LINUX)).toBe(false);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    const rebound = DEFAULT_RESOLVED_KEYBINDINGS.filter(
       (binding) => binding.command !== "terminal.close",
     );
-
-    expect(
-      preventRepeatedTerminalCloseShortcut(
-        keyboardEvent({ repeat: true }),
-        keybindings,
-        "Linux x86_64",
-      ),
-    ).toBe(false);
+    expect(guard.preventRepeat(keyboardEvent({ repeat: true }), rebound, LINUX)).toBe(false);
   });
 });

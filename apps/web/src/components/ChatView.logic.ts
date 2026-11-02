@@ -23,6 +23,7 @@ import { normalizeModelSlug, resolveSelectableModel } from "@t3tools/shared/mode
 import { describeFastModeDisabledReason, refusedFastModeReason } from "@t3tools/shared/runtimeInfo";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
 import { type ChatMessage } from "../types";
+import { linkDerivedMessageList } from "../lib/streamingTextRevision";
 import { CLAUDE_SUBAGENT_MODEL_INHERIT, getAppModelOptions } from "../appSettings";
 import { type ComposerImageAttachment } from "../composerDraftStore";
 import { Schema } from "effect";
@@ -165,6 +166,67 @@ export function buildRevertIndexByUserMessageId(
     if (previous.get(id) !== index) return next;
   }
   return previous;
+}
+
+const NO_PREVIEW_URLS: ReadonlyArray<string> = [];
+
+/**
+ * Server messages with blob preview handoffs applied and optimistic sends
+ * appended. While the server list only streams text and the overlays are
+ * unchanged, the result keeps the server list's structural identity and each
+ * unchanged message object, so the timeline keeps reusing entries and rows.
+ */
+export function deriveTimelineMessages(input: {
+  readonly serverMessages: ChatMessage[];
+  readonly attachmentPreviewHandoffByMessageId: Readonly<Record<string, ReadonlyArray<string>>>;
+  readonly optimisticUserMessages: ReadonlyArray<ChatMessage>;
+  readonly projectAttachmentPreviewHandoff: (
+    message: ChatMessage,
+    previewUrls: ReadonlyArray<string>,
+  ) => ChatMessage;
+}): ChatMessage[] {
+  const { serverMessages, attachmentPreviewHandoffByMessageId: handoffs } = input;
+  const withHandoff =
+    Object.keys(handoffs).length === 0
+      ? serverMessages
+      : serverMessages.map((message) =>
+          input.projectAttachmentPreviewHandoff(message, handoffs[message.id] ?? NO_PREVIEW_URLS),
+        );
+  let pendingMessages: ReadonlyArray<ChatMessage> = [];
+  if (input.optimisticUserMessages.length > 0) {
+    const serverIds = new Set(serverMessages.map((message) => message.id));
+    pendingMessages = input.optimisticUserMessages.filter((message) => !serverIds.has(message.id));
+  }
+  const next = pendingMessages.length === 0 ? withHandoff : [...withHandoff, ...pendingMessages];
+  return linkDerivedMessageList(serverMessages, next, [handoffs, ...pendingMessages]);
+}
+
+/**
+ * `applyUserMessageAttachmentPreviewHandoff`, but a source message projected
+ * with the same preview URLs returns the same object. Streaming re-runs the
+ * projection per token, and a fresh copy would rebuild that message's row.
+ */
+export function createAttachmentPreviewHandoffProjector(): (
+  message: ChatMessage,
+  previewUrls: ReadonlyArray<string>,
+) => ChatMessage {
+  const projected = new WeakMap<
+    ChatMessage,
+    { readonly previewUrls: ReadonlyArray<string>; readonly message: ChatMessage }
+  >();
+  return (message, previewUrls) => {
+    const cached = projected.get(message);
+    if (
+      cached &&
+      cached.previewUrls.length === previewUrls.length &&
+      cached.previewUrls.every((url, index) => url === previewUrls[index])
+    ) {
+      return cached.message;
+    }
+    const next = applyUserMessageAttachmentPreviewHandoff(message, previewUrls);
+    projected.set(message, { previewUrls, message: next });
+    return next;
+  };
 }
 
 export function applyUserMessageAttachmentPreviewHandoff(
