@@ -913,14 +913,6 @@ try {
     // Playwright exposes its cmd.exe launcher on Windows. Include Electron's
     // own PID so a launcher that has already exited cannot strand the main process.
     if (process.platform === "win32" && electronProcess.pid) {
-      // Orphaned Windows children can retain inherited output handles after the
-      // launcher exits. Playwright emits close only after those pipes close.
-      const releaseOutput = () => {
-        electronProcess.stdout?.destroy();
-        electronProcess.stderr?.destroy();
-      };
-      if (electronProcess.exitCode !== null || electronProcess.signalCode !== null) releaseOutput();
-      else electronProcess.once("exit", releaseOutput);
       const killed = spawnSync(
         "taskkill",
         ["/pid", String(mainProcessId), "/pid", String(electronProcess.pid), "/T", "/F"],
@@ -937,6 +929,12 @@ try {
         stdout: killed.stdout,
         stderr: killed.stderr,
       });
+      // Windows children can retain inherited output handles even after
+      // taskkill terminates the launcher. Release our pipe ends now; waiting
+      // for an exit notification first can itself stall behind those handles.
+      // The close event below still requires the launcher process to exit.
+      electronProcess.stdout?.destroy();
+      electronProcess.stderr?.destroy();
     } else electronProcess.kill();
     await Promise.race([
       closed,
