@@ -7328,6 +7328,110 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  for (const scenario of [
+    { name: "an unflagged result with surrounding whitespace", isError: false, prefixed: true },
+    { name: "a result without API error text", isError: true, prefixed: false },
+  ] as const) {
+    it.effect(`fails an api_error turn from ${scenario.name}`, () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: scenario.isError,
+          terminal_reason: "api_error",
+          api_error_status: 400,
+          result: scenario.prefixed ? "\n  API Error: 400 invalid_request_error  \n" : "",
+          session_id: "api-error-session",
+          uuid: "api-error-result",
+          usage: {},
+          modelUsage: {},
+        } as unknown as SDKMessage);
+        const completed = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "turn.completed"),
+          Stream.runHead,
+        );
+        assert.equal(completed._tag, "Some");
+        if (completed._tag !== "Some" || completed.value.type !== "turn.completed") return;
+        assert.equal(completed.value.payload.state, "failed");
+        assert.equal(
+          completed.value.payload.errorMessage,
+          scenario.prefixed
+            ? "API Error: 400 invalid_request_error"
+            : "Claude gave up after repeated API errors.",
+        );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+  }
+
+  it.effect("drops a blocked response's reset time once a later root response recovers", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+      harness.query.emit({
+        type: "assistant",
+        error: "rate_limit",
+        uuid: "blocked-assistant",
+        session_id: "recovered-session",
+        parent_tool_use_id: null,
+        api_error_params: {
+          rate_limit_info: { status: "rejected", rateLimitType: "five_hour", resetsAt: 1790607600 },
+        },
+        message: { id: "blocked-assistant", role: "assistant", content: [], usage: {} },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "assistant",
+        uuid: "recovered-assistant",
+        session_id: "recovered-session",
+        parent_tool_use_id: null,
+        message: {
+          id: "recovered-assistant",
+          role: "assistant",
+          content: [{ type: "text", text: "Working on it." }],
+          usage: {},
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["Internal server error"],
+        session_id: "recovered-session",
+        uuid: "recovered-result",
+        usage: {},
+        modelUsage: {},
+      } as unknown as SDKMessage);
+      const completed = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "turn.completed"),
+        Stream.runHead,
+      );
+      assert.equal(completed._tag, "Some");
+      if (completed._tag !== "Some" || completed.value.type !== "turn.completed") return;
+      assert.equal(completed.value.payload.state, "failed");
+      assert.equal(completed.value.payload.usageLimit, undefined);
+      assert.equal(completed.value.payload.errorMessage, "Internal server error");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   for (const originalError of [undefined, "usage limit reached"] as const) {
     it.effect(
       `requires positive usage evidence outside a turn (${originalError ?? "no error text"})`,

@@ -95,15 +95,46 @@ export function resolveGrokAcpBaseModelId(model: string | null | undefined): str
   return normalizeModelSlug(base, GROK_DRIVER_KIND) ?? "grok-build";
 }
 
+type AcpSessionSetupResult =
+  | EffectAcpSchema.LoadSessionResponse
+  | EffectAcpSchema.NewSessionResponse
+  | EffectAcpSchema.ResumeSessionResponse;
+
+/**
+ * Where the runtime's `setSessionModel` writes the model. Grok uses
+ * `session/set_model` (the session model state); custom ACP and Antigravity
+ * write the model config option when the agent has one.
+ */
+export type AcpModelWriteTarget = "model-state" | "config-option";
+
+/** The current model, read from the same place the runtime writes it. */
 export function currentGrokModelIdFromSessionSetup(
-  sessionSetupResult:
-    | EffectAcpSchema.LoadSessionResponse
-    | EffectAcpSchema.NewSessionResponse
-    | EffectAcpSchema.ResumeSessionResponse,
+  sessionSetupResult: AcpSessionSetupResult,
+  writeTarget: AcpModelWriteTarget = "model-state",
 ): string | undefined {
+  const modelOption = findModelConfigOption(sessionSetupResult.configOptions);
+  if (writeTarget === "config-option" && modelOption)
+    return modelOption.currentValue.trim() || undefined;
   const reported = sessionSetupResult.models?.currentModelId?.trim();
   if (reported) return reported;
-  return findModelConfigOption(sessionSetupResult.configOptions)?.currentValue.trim() || undefined;
+  return modelOption?.currentValue.trim() || undefined;
+}
+
+/**
+ * Models the agent offers through the selector the runtime writes, or
+ * undefined when it lists none. Stored catalog choices can expire, so a
+ * startup selection outside this list (and not a configured custom model) is
+ * skipped instead of failing the session.
+ */
+export function offeredAcpModelIds(
+  sessionSetupResult: AcpSessionSetupResult,
+): ReadonlyArray<string> | undefined {
+  const modelOption = findModelConfigOption(sessionSetupResult.configOptions);
+  if (modelOption)
+    return modelOption.options.flatMap((entry) =>
+      "value" in entry ? [entry.value] : entry.options.map((choice) => choice.value),
+    );
+  return sessionSetupResult.models?.availableModels.map((model) => model.modelId);
 }
 
 export function applyGrokAcpModelSelection<E>(input: {
@@ -111,12 +142,21 @@ export function applyGrokAcpModelSelection<E>(input: {
   readonly currentModelId: string | undefined;
   readonly requestedModelId: string | undefined;
   readonly defaultModelId?: string;
+  /** When set, a requested model must be offered or a configured custom model. */
+  readonly availableModels?: {
+    readonly offered: ReadonlyArray<string> | undefined;
+    readonly custom: ReadonlyArray<string>;
+  };
   readonly mapError: (cause: EffectAcpErrors.AcpError) => E;
 }): Effect.Effect<string | undefined, E> {
+  const available = input.availableModels;
   if (
     !input.requestedModelId ||
     input.requestedModelId === (input.defaultModelId ?? "grok-build") ||
-    input.requestedModelId === input.currentModelId
+    input.requestedModelId === input.currentModelId ||
+    (available?.offered !== undefined &&
+      !available.offered.includes(input.requestedModelId) &&
+      !available.custom.includes(input.requestedModelId))
   ) {
     return Effect.succeed(input.currentModelId);
   }

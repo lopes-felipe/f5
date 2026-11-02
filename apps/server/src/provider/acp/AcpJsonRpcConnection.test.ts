@@ -768,6 +768,52 @@ describe("AcpSessionRuntime", () => {
     );
   });
 
+  it.effect("accepts a custom model only on the option that selects models", () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "acp-runtime-"));
+    const requestLogPath = path.join(tempDir, "requests.ndjson");
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime;
+      yield* runtime.start();
+      const rejected = yield* runtime
+        .setConfigOption("subagent_model", "my-custom-model")
+        .pipe(Effect.flip);
+      expect(rejected).toMatchObject({ code: -32602 });
+      yield* runtime.setModel("my-custom-model");
+
+      const values = readFileSync(requestLogPath, "utf8")
+        .trim()
+        .split("\n")
+        .filter((line) => line.length > 0)
+        .map(
+          (line) =>
+            JSON.parse(line) as {
+              method?: string;
+              params?: { configId?: string; value?: unknown };
+            },
+        )
+        .filter((message) => message.method === "session/set_config_option")
+        .map((message) => [message.params?.configId, message.params?.value]);
+      expect(values).toEqual([["model", "my-custom-model"]]);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          authMethodId: "test",
+          spawn: {
+            command: bunExe,
+            args: [mockAgentPath],
+            env: { T3_ACP_REQUEST_LOG_PATH: requestLogPath, T3_ACP_SECOND_MODEL_OPTION: "1" },
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          customModels: ["my-custom-model"],
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+      Effect.ensuring(Effect.sync(() => rmSync(tempDir, { recursive: true, force: true }))),
+    );
+  });
+
   it.effect("sends a configured custom model the agent does not advertise", () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "acp-runtime-"));
     const requestLogPath = path.join(tempDir, "requests.ndjson");

@@ -4783,14 +4783,45 @@ describe("Codex process settlement and source draining", () => {
       expect(f.reject).toHaveBeenCalledTimes(1);
       expect(f.reject.mock.calls[0]?.[0]).toMatchObject({ message: CODEX_STDOUT_ENDED_MESSAGE });
       expect(f.context.pending.size).toBe(0);
-      expect(f.errors).toHaveBeenCalledWith(f.context, "process/error", CODEX_STDOUT_ENDED_MESSAGE);
+      expect(kill).toHaveBeenCalled();
+      expect(f.errors).not.toHaveBeenCalled();
+      // The exit that follows the kill is a signal, not a status to report.
+      f.child.emit("exit", null, "SIGTERM");
       f.child.stderr.emit("close");
+      expect(f.lifecycle).toHaveBeenCalledTimes(1);
       expect(f.lifecycle).toHaveBeenCalledWith(
         f.context,
         "session/exited",
         CODEX_STDOUT_ENDED_MESSAGE,
         TurnId.makeUnsafe("draining-turn"),
       );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it.each([
+    [0, undefined],
+    [3, "codex app-server exited (code=3, signal=null)."],
+  ])("reports an exit code %s that arrives after the grace period", async (code, lastError) => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      const kill = vi.fn(() => true);
+      Object.assign(f.child, { killed: false, exitCode: null, signalCode: null, kill });
+      f.output.emit("close");
+      await vi.advanceTimersByTimeAsync(CODEX_EXIT_STATUS_GRACE_MS);
+      expect(f.reject).toHaveBeenCalledTimes(1);
+      f.child.emit("exit", code, null);
+      f.child.stderr.emit("close");
+      const message = `codex app-server exited (code=${code}, signal=null).`;
+      expect(f.lifecycle).toHaveBeenCalledWith(
+        f.context,
+        "session/exited",
+        message,
+        TurnId.makeUnsafe("draining-turn"),
+      );
+      expect((f.context.session as { lastError?: string }).lastError).toBe(lastError);
+      expect(f.errors).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

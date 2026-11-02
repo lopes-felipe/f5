@@ -3232,6 +3232,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     let terminal: { method: string; message: string } | undefined;
     let deadline: ReturnType<typeof setTimeout> | undefined;
     let exitStatusGrace: ReturnType<typeof setTimeout> | undefined;
+    let endedByStdoutClose = false;
     const isCurrent = () => this.sessions.get(context.session.threadId) === context;
     const acceptsOutput = () => context.phase !== "closed";
     const emitStderr = (line: string) => {
@@ -3289,7 +3290,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         // process keeps running; no response can arrive then, so end the session.
         exitStatusGrace = setTimeout(() => {
           if (terminal || context.phase === "closed") return;
-          onError(new Error(CODEX_STDOUT_ENDED_MESSAGE));
+          endedByStdoutClose = true;
+          beginDrain(
+            new Error(CODEX_STDOUT_ENDED_MESSAGE),
+            "session/exited",
+            CODEX_STDOUT_ENDED_MESSAGE,
+          );
           if (!context.child.killed) killChildTree(context.child);
         }, CODEX_EXIT_STATUS_GRACE_MS);
         exitStatusGrace.unref?.();
@@ -3326,6 +3332,13 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     };
     const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
       const message = `codex app-server exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`;
+      // An exit code that arrives after the stdout grace period still describes
+      // how the process ended. A signal is usually the kill that followed.
+      if (endedByStdoutClose && !finishing && signal === null) {
+        endedByStdoutClose = false;
+        terminal = { method: "session/exited", message };
+        if (code !== 0 && isCurrent()) this.updateSession(context, { lastError: message });
+      }
       if (!terminal && code !== 0 && isCurrent())
         this.updateSession(context, { lastError: message });
       beginDrain(new Error(message), "session/exited", message);
