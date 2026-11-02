@@ -4628,11 +4628,22 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T10:32:41.348Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/lib/gitReactQuery.ts:115",
+          "apps/web/src/components/BranchToolbarBranchSelector.tsx:149",
+          "apps/server/src/project/Layers/WorkspaceTransition.ts:632"
+        ],
+        "f5Refs": [
+          "f72e2590bef5ac90f2fd517a1578854d0f73fb0a"
+        ]
+      },
       "id": "pr-13253",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "git",
@@ -10597,11 +10608,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T10:32:49.594Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-15864",
-      "status": "port",
+      "reason": "f5's home route never opens a draft for the latest project and project removal doesn't navigate, so a removed project can't land on a new-thread page.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "threads",
@@ -18844,11 +18857,22 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T10:32:41.348Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/wsServer/pushBus.ts:39",
+          "apps/server/src/wsServer/pushBus.ts:185",
+          "apps/web/src/components/ThreadTerminalDrawer.tsx:680"
+        ],
+        "f5Refs": [
+          "f72e2590bef5ac90f2fd517a1578854d0f73fb0a"
+        ]
+      },
       "id": "pr-18429",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "terminal",
@@ -20095,11 +20119,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T10:32:49.594Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-18672",
-      "status": "port",
+      "reason": "f5's index route shows a static home panel and never auto-opens a draft, so there is no bounce to override.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "threads",
@@ -41209,11 +41235,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T10:32:49.594Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-22783",
-      "status": "port",
+      "reason": "f5 has no collapsible \"Worked for\" turn fold for steers to split, only a completion divider.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline"
@@ -75198,11 +75226,21 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T10:32:49.594Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/session-logic.ts:2274",
+          "apps/web/src/components/chat/MessagesTimeline.tsx:4861"
+        ],
+        "f5Refs": [
+          "f72e2590bef5ac90f2fd517a1578854d0f73fb0a"
+        ]
+      },
       "id": "pr-9725",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "timeline",
@@ -75388,11 +75426,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T10:32:49.594Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-9760",
-      "status": "port",
+      "reason": "f5 builds attachment preview URLs locally from attachment ids, so there are no per-image signed URL requests to defer.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline",
