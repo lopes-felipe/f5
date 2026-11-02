@@ -8552,11 +8552,20 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T00:20:18.819Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T23:35:18.563Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/components/AgentsPanel.tsx:733"
+        ],
+        "f5Refs": [
+          "b3fcbb2dd6374f7716046f15e96320371be8f839"
+        ]
+      },
       "id": "pr-15163",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "sidebar",
@@ -8625,11 +8634,21 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T00:20:18.819Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T23:35:18.563Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:1865",
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:2011"
+        ],
+        "f5Refs": [
+          "b3fcbb2dd6374f7716046f15e96320371be8f839"
+        ]
+      },
       "id": "pr-15253",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -10433,11 +10452,21 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T00:20:18.819Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T23:35:18.563Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/claudeTurnLifecycle.ts:96",
+          "apps/server/src/provider/Layers/claudeTurnLifecycle.ts:114"
+        ],
+        "f5Refs": [
+          "b3fcbb2dd6374f7716046f15e96320371be8f839"
+        ]
+      },
       "id": "pr-15816",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -15524,11 +15553,21 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-28T20:58:23.435Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T23:35:18.563Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/desktop/src/preview/snapshotFrameSecrets.ts:105",
+          "apps/desktop/src/main.ts:1738"
+        ],
+        "f5Refs": [
+          "b3fcbb2dd6374f7716046f15e96320371be8f839"
+        ]
+      },
       "id": "pr-17525",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "preview browser",
@@ -16681,11 +16720,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T23:35:18.563Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-17821",
-      "status": "port",
+      "reason": "F5 has no inline attachment-chip clipboard format; draft images are separate attachment tiles.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer",
@@ -18577,11 +18618,21 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T23:35:18.563Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/composerDraftStore.ts:2750",
+          "apps/web/src/composerDraftStore.test.ts:256"
+        ],
+        "f5Refs": [
+          "b3fcbb2dd6374f7716046f15e96320371be8f839"
+        ]
+      },
       "id": "pr-18393",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "composer"
@@ -23578,11 +23629,21 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T23:35:18.563Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:1345",
+          "apps/server/src/provider/Layers/ClaudeAdapter.test.ts:9145"
+        ],
+        "f5Refs": [
+          "b3fcbb2dd6374f7716046f15e96320371be8f839"
+        ]
+      },
       "id": "pr-19416",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
