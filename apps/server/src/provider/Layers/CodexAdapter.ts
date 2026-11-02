@@ -1216,11 +1216,11 @@ function describePatchApproval(payload: Record<string, unknown> | undefined): st
  * provenance holds by construction: there is no SDK check to wait for.
  */
 /**
- * Feeds Codex Chrome's supervision from the session's own events: `node_repl`'s startup
- * (adoption), its calls (not idle) and turn completion (drain, then the idle stop).
+ * Feeds Codex Chrome's supervision from the session's own events, in order: `node_repl`'s
+ * startup (adoption) and turn completion (drain, then the idle stop).
  */
 export function observeCodexChrome(
-  session: Pick<CodexChromeSession, "startupStatus" | "toolActivity" | "turnEnded">,
+  session: Pick<CodexChromeSession, "startupStatus" | "turnEnded">,
   event: Pick<ProviderEvent, "method" | "payload" | "turnId">,
 ): void {
   const payload = asObject(event.payload);
@@ -1232,13 +1232,23 @@ export function observeCodexChrome(
     if (status) session.startupStatus(status, error);
     return;
   }
-  if (event.method === "item/started" || event.method === "item/completed") {
-    const item = asObject(payload?.item);
-    if (item?.type === "mcpToolCall" && item.server === CODEX_CHROME_SERVER_NAME)
-      session.toolActivity();
-    return;
-  }
   if (event.method === "turn/completed" && event.turnId) session.turnEnded(event.turnId);
+}
+
+/**
+ * Tracks the model's `node_repl` calls (running, not idle) as Codex reports them, ahead
+ * of the session's ordered output preparation: an interrupt reads them while earlier
+ * output (an MCP app capture) can still hold that queue. Calls without an id are ignored.
+ */
+export function trackCodexChromeCall(
+  session: Pick<CodexChromeSession, "toolCall">,
+  event: Pick<ProviderEvent, "method" | "payload">,
+): void {
+  if (event.method !== "item/started" && event.method !== "item/completed") return;
+  const item = asObject(asObject(event.payload)?.item);
+  const id = asString(item?.id);
+  if (item?.type === "mcpToolCall" && item.server === CODEX_CHROME_SERVER_NAME && id)
+    session.toolCall(id, event.method === "item/started");
 }
 
 export function withAgentBrowserPreview(
@@ -3124,10 +3134,15 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     const interruptTurn: CodexAdapterShape["interruptTurn"] = (threadId, turnId) =>
       Effect.tryPromise({
         try: async () => {
+          const chrome = chromeSessions.get(threadId)?.session;
+          // Read before Codex reports the interrupted call completed.
+          const callRunning = chrome?.callRunning ?? false;
+          // A call still driving Chrome stops with its runtime now, whether or not the
+          // interrupt then succeeds; otherwise the interrupted turn drains through the
+          // runtime's own hook.
+          if (callRunning) chrome?.turnInterrupted(turnId, true);
           const result = await manager.interruptTurn(threadId, turnId);
-          // Codex interrupts the call; Chrome's runtime releases the turn's browser
-          // session through its own hook.
-          if (turnId) chromeSessions.get(threadId)?.session?.turnEnded(turnId);
+          if (!callRunning) chromeSessions.get(threadId)?.session?.turnInterrupted(turnId, false);
           return result;
         },
         catch: (cause) => toRequestError(threadId, "turn/interrupt", cause),
@@ -3554,6 +3569,10 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             .catch(() => {});
         };
         const listener = (event: ProviderEvent) => {
+          if (automationGenerations.get(event.threadId) === event.sessionGeneration) {
+            const chromeSession = chromeSessions.get(event.threadId)?.session;
+            if (chromeSession) trackCodexChromeCall(chromeSession, event);
+          }
           const control =
             event.kind === "session" ||
             event.kind === "error" ||
