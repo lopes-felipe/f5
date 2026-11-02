@@ -321,15 +321,15 @@ it("reports a failed automatic rerun as a blocked build", async () => {
 it("cannot rerun twice by using the no-candidate retry marker as a publication lease", async () => {
   vi.stubEnv("RELEASE_AUTOMATION_MODE", "all");
   vi.stubEnv("GITHUB_OUTPUT", "/fixture/output");
+  vi.stubEnv("GITHUB_STEP_SUMMARY", "/fixture/summary");
   vi.mocked(appendFileSync).mockClear();
   state.builds[0]!.conclusion = "failure";
   await reconcileReleases({ leaseOnly: true });
   const selection = JSON.parse(state.writes.get("release-publication-lease.json")!);
   expect(selection).toEqual({ candidateRun: null });
-  expect(appendFileSync).toHaveBeenCalledExactlyOnceWith(
-    "/fixture/output",
-    "selection_ready=true\nlease_key=none\n",
-  );
+  expect(
+    vi.mocked(appendFileSync).mock.calls.filter(([path]) => path === "/fixture/output"),
+  ).toEqual([["/fixture/output", "selection_ready=true\nlease_key=none\n"]]);
   // The full --lease CLI path parses the saved marker before reconciliation.
   await expect(async () =>
     reconcileReleases({ lease: parsePublicationLease(selection) }),
