@@ -258,9 +258,10 @@ export class CodexChromeSession {
 
   /**
    * The user interrupted a turn. Codex ends the turn at once, but `node_repl` keeps
-   * running a call in flight, still driving Chrome, until `turn_ended` returns (about
-   * 30 s in certification). So a turn interrupted during a call (`callRunning`, read
-   * before the interrupt) stops the runtime instead; the next turn starts it again.
+   * running a call in flight, still driving Chrome, until `turn_ended` returns (29 s in
+   * certification). So a turn interrupted during a call (`callRunning`, read before the
+   * interrupt) stops the runtime instead, dropping the REPL's state; the next turn
+   * starts it again. A completion not yet reported only costs an unneeded restart.
    */
   turnInterrupted(turnId: string | undefined, callRunning: boolean): void {
     if (callRunning && this.phase === "ready") {

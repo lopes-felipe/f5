@@ -36,7 +36,7 @@ import {
   inspectCodexBinary,
 } from "../src/provider/codexChromeIntegration";
 import { CodexChromeSession, type CodexChromeBroker } from "../src/provider/codexChromeSession";
-import { observeCodexChrome } from "../src/provider/Layers/CodexAdapter";
+import { observeCodexChrome, trackCodexChromeCall } from "../src/provider/Layers/CodexAdapter";
 import { buildCodexAppServerCommand } from "../src/provider/codexLaunchArgs";
 import { buildProviderChildProcessEnv } from "../src/providerProcessEnv";
 import {
@@ -510,6 +510,7 @@ nodeRepl.write("finished");`;
       const phase = (): string => live.state;
       server.listeners.add((method, params) => {
         const turnId = asRecord(asRecord(params)?.turn)?.id ?? asRecord(params)?.turnId;
+        trackCodexChromeCall(live, { method, payload: params } as never);
         observeCodexChrome(live, {
           method,
           payload: params,
@@ -589,8 +590,9 @@ nodeRepl.write("finished");`;
       const interruptedAt = Date.now();
       const callRunning = live.callRunning;
       const runtime = lastAdopted;
+      if (callRunning) live.turnInterrupted(hungTurn.turnId, true);
       await server.request("turn/interrupt", { threadId, turnId: hungTurn.turnId });
-      live.turnInterrupted(hungTurn.turnId, callRunning);
+      if (!callRunning) live.turnInterrupted(hungTurn.turnId, false);
       const stoppedRuntime = phase() === "stopped";
       const hungDone = await waitFor(
         () => server.turnCompleted(hungTurn.turnId, hungTurn.since),
@@ -640,6 +642,7 @@ nodeRepl.write("finished");`;
           stopped: loopStopped,
         },
         // Whether the session saw the call running and stopped the runtime for it.
+        path: stoppedRuntime ? "stopped" : "drained",
         callRunning,
         stoppedRuntime,
         runtimeGone,
