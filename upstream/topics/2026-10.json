@@ -46508,11 +46508,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-10-28T22:28:29.041Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T21:17:42.454Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-23895",
-      "status": "port",
+      "reason": "F5 records through its desktop preview and has neither the Browser recording frame rate setting nor the server browser-profile reporting path this fix requires.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview browser",
