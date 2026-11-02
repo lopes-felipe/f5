@@ -67,6 +67,8 @@ import { installPreviewPermissionPolicy } from "./preview/previewPermissions";
 import { captureMacWindow } from "./snapShot/MacSnapShot";
 import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { closeWindowsForQuit } from "./quitPreflight";
+import { makeQuitStallTracker } from "./quitStall";
+import { resolveLinuxDisableFeaturesSwitch } from "./linuxColorManager";
 import { installDesktopAttention } from "./desktopAttention";
 import {
   computerBackgroundGate,
@@ -754,6 +756,11 @@ function initializeComputerSystem(): void {
     helper.start();
 }
 let isQuitting = false;
+const quitStall = makeQuitStallTracker();
+function beginQuitting(): void {
+  isQuitting = true;
+  quitStall.begin();
+}
 
 let aboutCommitHashCache: string | null | undefined;
 let desktopLogSink: RotatingFileSink | null = null;
@@ -2309,6 +2316,7 @@ function handleFatalStartupError(stage: string, error: unknown): void {
   writeDesktopLogHeader(`fatal startup error stage=${stage} message=${message}`);
   console.error(`[desktop] fatal startup error (${stage})`, error);
   if (!isQuitting) {
+    // The stall clock starts at app.quit() below, not while this dialog blocks.
     isQuitting = true;
     dialog.showErrorBox("F5 failed to start", `Stage: ${stage}\n${message}${detail}`);
   }
@@ -2727,7 +2735,7 @@ const updateInstaller = createUpdateInstaller({
           bounds: window.getBounds(),
         };
       });
-    isQuitting = true;
+    beginQuitting();
     if (!(await closeWindowsForQuit(BrowserWindow.getAllWindows()))) {
       cancelQuit();
       restoreInstallWindows();
@@ -4317,6 +4325,27 @@ function createWindow(
 // Must be called synchronously at the top level — before `app.whenReady()`.
 app.setPath("userData", resolveUserDataPath());
 
+if (process.platform === "linux") {
+  const switchValue = (name: string) =>
+    app.commandLine.hasSwitch(name) ? app.commandLine.getSwitchValue(name) : null;
+  // Chromium keeps only the last --disable-features value, so pass the merged list.
+  const disableFeatures = resolveLinuxDisableFeaturesSwitch({
+    env: process.env,
+    ozonePlatform: switchValue("ozone-platform"),
+    enableFeatures: switchValue("enable-features"),
+    disableFeatures: switchValue("disable-features"),
+    // Runs only on Hyprland Wayland sessions without an explicit feature override.
+    readHyprctlVersionJson: () =>
+      ChildProcess.execFileSync("hyprctl", ["version", "-j"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 1000,
+        maxBuffer: 64 * 1024,
+      }),
+  });
+  if (disableFeatures !== null) app.commandLine.appendSwitch("disable-features", disableFeatures);
+}
+
 if (!app.requestSingleInstanceLock()) app.exit(0);
 app.on("second-instance", (_event, argv) => {
   const link = promptLinkInArgv(argv, PROMPT_LINK_SCHEME_FOR_BUILD);
@@ -4400,7 +4429,27 @@ function cancelQuit(): void {
   shutdownPending = false;
   shutdownComplete = false;
   isQuitting = false;
+  quitStall.reset();
   for (const window of BrowserWindow.getAllWindows()) window.show();
+}
+
+/**
+ * While shutdown is pending, a repeated Quit or signal is swallowed. If that
+ * shutdown has stalled, the repeat is the user's only way out short of SIGKILL.
+ */
+function exitIfQuitStalled(source: string): void {
+  const decision = quitStall.check();
+  if (decision.kind === "pending") {
+    writeDesktopLogHeader(
+      `quit already in progress source=${source} pendingMs=${decision.pendingMs}`,
+    );
+    return;
+  }
+  writeDesktopLogHeader(
+    `desktop shutdown stalled; exiting without it source=${source} pendingMs=${decision.pendingMs}`,
+  );
+  restoreStdIoCapture?.();
+  app.exit(0);
 }
 
 async function cleanupBeforeExit(): Promise<void> {
@@ -4440,15 +4489,20 @@ app.on("web-contents-created", (_event, contents) => {
   });
 });
 app.on("before-quit", () => {
+  // Shutdown's own final app.quit() arrives with shutdownComplete set.
+  if (isQuitting && !shutdownComplete) {
+    exitIfQuitStalled("before-quit");
+    return;
+  }
   writeDesktopLogHeader("before-quit received");
-  isQuitting = true;
+  beginQuitting();
 });
 app.on("will-quit", (event) => {
   if (shutdownComplete) return;
   event.preventDefault();
   if (shutdownPending) return;
   shutdownPending = true;
-  isQuitting = true;
+  beginQuitting();
   // will-quit is emitted only after all renderer unload checks have succeeded.
   void cleanupBeforeExit().finally(() => {
     shutdownComplete = true;
@@ -4507,16 +4561,22 @@ app.on("window-all-closed", () => {
 
 if (process.platform !== "win32") {
   process.on("SIGINT", () => {
-    if (isQuitting) return;
-    isQuitting = true;
+    if (isQuitting) {
+      exitIfQuitStalled("SIGINT");
+      return;
+    }
+    beginQuitting();
     writeDesktopLogHeader("SIGINT received");
     clearUpdatePollTimer();
     app.quit();
   });
 
   process.on("SIGTERM", () => {
-    if (isQuitting) return;
-    isQuitting = true;
+    if (isQuitting) {
+      exitIfQuitStalled("SIGTERM");
+      return;
+    }
+    beginQuitting();
     writeDesktopLogHeader("SIGTERM received");
     clearUpdatePollTimer();
     app.quit();

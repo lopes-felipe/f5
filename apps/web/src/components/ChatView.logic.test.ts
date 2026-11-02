@@ -16,6 +16,7 @@ import {
   providerKindForImportedThread,
   buildComposerSkillReplacement,
   applyUserMessageAttachmentPreviewHandoff,
+  buildRevertIndexByUserMessageId,
   buildSlashComposerMenuItems,
   buildFirstSendBootstrap,
   buildExpiredTerminalContextToastCopy,
@@ -696,6 +697,55 @@ describe("shouldRenderTimelineContent", () => {
         hasRenderableMessage: false,
       }),
     ).toBe(false);
+  });
+});
+
+describe("buildRevertIndexByUserMessageId", () => {
+  const message = (id: string, role: "user" | "assistant") => ({
+    id: MessageId.makeUnsafe(id),
+    role,
+  });
+
+  it("indexes user messages in order", () => {
+    const map = buildRevertIndexByUserMessageId([
+      message("u1", "user"),
+      message("a1", "assistant"),
+      message("u2", "user"),
+    ]);
+
+    expect([...map]).toEqual([
+      [MessageId.makeUnsafe("u1"), 0],
+      [MessageId.makeUnsafe("u2"), 1],
+    ]);
+  });
+
+  it("keeps the previous map while only assistant text streams", () => {
+    const previous = buildRevertIndexByUserMessageId([
+      message("u1", "user"),
+      message("a1", "assistant"),
+    ]);
+
+    expect(
+      buildRevertIndexByUserMessageId(
+        [message("u1", "user"), message("a1", "assistant"), message("a2", "assistant")],
+        previous,
+      ),
+    ).toBe(previous);
+  });
+
+  it("returns a new map when the user messages change", () => {
+    const previous = buildRevertIndexByUserMessageId([message("u1", "user")]);
+
+    const added = buildRevertIndexByUserMessageId(
+      [message("u1", "user"), message("u2", "user")],
+      previous,
+    );
+    expect(added).not.toBe(previous);
+    expect(added.get(MessageId.makeUnsafe("u2"))).toBe(1);
+
+    const replaced = buildRevertIndexByUserMessageId([message("u3", "user")], previous);
+    expect(replaced).not.toBe(previous);
+    expect(replaced.has(MessageId.makeUnsafe("u1"))).toBe(false);
   });
 });
 

@@ -286,6 +286,13 @@ export interface ThreadTitlePromptInput {
   previousTitle?: string | undefined;
   linkedContext?: string | undefined;
   attachments?: ReadonlyArray<ChatAttachment> | undefined;
+  instructions?: string | undefined;
+}
+
+/** The user's thread title instructions as a prompt rule, or nothing when unset. */
+export function threadTitleInstructionRules(instructions?: string): ReadonlyArray<string> {
+  const text = instructions?.trim();
+  return text ? [`Additional instructions:\n${limitSection(text, 2_000)}`] : [];
 }
 
 /** Quote and bound reference data separately from title instructions. */
@@ -320,6 +327,7 @@ export function buildThreadTitlePrompt(input: ThreadTitlePromptInput) {
       "Keep it short and specific (3-8 words).",
       "Avoid quotes, filler, prefixes, and trailing punctuation.",
       "If images are attached, use them as primary context for visual/UI issues.",
+      ...threadTitleInstructionRules(input.instructions),
     ],
     message: input.message,
     attachments: input.attachments,

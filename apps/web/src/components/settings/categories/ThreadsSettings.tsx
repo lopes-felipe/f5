@@ -18,6 +18,7 @@ import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
 import { Switch } from "../../ui/switch";
+import { Textarea } from "../../ui/textarea";
 
 export { THREADS_SETTINGS_DESCRIPTORS } from "./ThreadsSettings.descriptors";
 
@@ -230,7 +231,7 @@ function HelperSettings() {
       <SessionNotesSettings providers={liveProviders} />
       <SettingsCard
         title="Thread titles"
-        description="The Codex model that names a thread after its first message."
+        description="How a thread is named after its first message."
       >
         <label className="block space-y-1">
           <span className="text-xs font-medium text-foreground">Thread title model</span>
@@ -255,9 +256,50 @@ function HelperSettings() {
             <code>{effectiveThreadTitleModel}</code>
           </span>
         </label>
+        <ThreadTitleInstructionsField />
       </SettingsCard>
       <ClaudeSubagentSettings />
     </>
+  );
+}
+
+export const THREAD_TITLE_INSTRUCTIONS_PLACEHOLDER =
+  "Keep titles to a few words. Lead with the main subject.";
+
+function ThreadTitleInstructionsField() {
+  const threadTitleInstructions = useSettings((settings) => settings.threadTitleInstructions);
+  const { updateSettings: updateServerSettings } = useUpdateSettings();
+  return (
+    <div className="mt-4 space-y-1" data-settings-search-target="threads.title-instructions">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-foreground">Thread title instructions</span>
+        {threadTitleInstructions !== "" ? (
+          <Button
+            size="xs"
+            variant="ghost"
+            onClick={() => void updateServerSettings({ threadTitleInstructions: "" })}
+          >
+            Clear
+          </Button>
+        ) : null}
+      </div>
+      <Textarea
+        key={threadTitleInstructions}
+        aria-label="Thread title instructions"
+        rows={3}
+        defaultValue={threadTitleInstructions}
+        placeholder={THREAD_TITLE_INSTRUCTIONS_PLACEHOLDER}
+        onBlur={(event) => {
+          const value = event.target.value.trim();
+          if (value !== threadTitleInstructions)
+            void updateServerSettings({ threadTitleInstructions: value });
+        }}
+      />
+      <span className="block text-xs text-muted-foreground">
+        Added to the prompt for new and regenerated thread titles, such as a length limit or an
+        identifier to put first. Projects can set their own.
+      </span>
+    </div>
   );
 }
 

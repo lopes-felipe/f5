@@ -47,7 +47,10 @@ import { useStore } from "../../store";
 import { PreviewExternalHostsEditor } from "./PreviewExternalHostsEditor";
 import { McpServersSettings } from "./McpServersSettings";
 import { useSettingsRouteContext } from "./SettingsRouteContext";
-import { ClaudeSubagentControls } from "./categories/ThreadsSettings";
+import {
+  ClaudeSubagentControls,
+  THREAD_TITLE_INSTRUCTIONS_PLACEHOLDER,
+} from "./categories/ThreadsSettings";
 
 export function SettingsScopePicker({
   projectId,
@@ -512,6 +515,27 @@ export function ProjectThreadsOverrides() {
             />
           }
         />
+      </SettingsCard>
+      <SettingsCard title="Thread titles">
+        <ProjectSettingRow
+          title="Thread title instructions"
+          searchTarget="threads.title-instructions"
+          source={badge("threadTitleInstructions")}
+          description="Added to the prompt for this project's new and regenerated thread titles."
+        >
+          <textarea
+            aria-label="Thread title instructions"
+            className={cn(NATIVE_CONTROL_CLASS, "block h-auto min-h-20 w-full py-2")}
+            rows={3}
+            key={settings.threadTitleInstructions}
+            defaultValue={settings.threadTitleInstructions}
+            placeholder={THREAD_TITLE_INSTRUCTIONS_PLACEHOLDER}
+            onBlur={(e) => {
+              const value = e.target.value.trim();
+              if (value !== settings.threadTitleInstructions) set("threadTitleInstructions", value);
+            }}
+          />
+        </ProjectSettingRow>
       </SettingsCard>
       <SettingsCard
         title="Claude sub-agents"

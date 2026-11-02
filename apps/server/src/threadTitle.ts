@@ -167,6 +167,7 @@ export const resolveBestEffortGeneratedTitleResult = (input: {
   readonly titleGenerationModelSelection?: ModelSelection | undefined;
   readonly previousTitle?: string | undefined;
   readonly linkedContext?: string | undefined;
+  readonly instructions?: string | undefined;
   readonly defaultTitle: string;
   readonly textGeneration: TextGenerationShape;
   readonly logPrefix: string;
@@ -201,6 +202,7 @@ export const resolveBestEffortGeneratedTitleResult = (input: {
           message: input.titleSourceText,
           ...(input.previousTitle !== undefined ? { previousTitle: input.previousTitle } : {}),
           ...(input.linkedContext !== undefined ? { linkedContext: input.linkedContext } : {}),
+          ...(input.instructions ? { instructions: input.instructions } : {}),
           ...(input.attachments.length > 0 ? { attachments: input.attachments } : {}),
           model,
           ...(requestedModelSelection

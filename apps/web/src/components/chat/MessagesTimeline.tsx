@@ -322,7 +322,7 @@ interface MessagesTimelineProps {
   /** Context for the empty-thread state; omitted renders the plain hint. */
   emptyState?: MessagesTimelineEmptyState | undefined;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
-  revertTurnCountByUserMessageId: Map<MessageId, number>;
+  revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
   onRevertUserMessage: (
     messageId: MessageId,
     restoreFiles?: boolean,
@@ -5089,7 +5089,7 @@ export interface TimelineRowExternalsInputs {
   workGroupCollapseOverrides: Readonly<Record<string, boolean>>;
   turnDiffSummaryByTurnId: Map<TurnId, TurnDiffSummary>;
   chatDiffContext: ChatDiffContext;
-  revertTurnCountByUserMessageId: Map<MessageId, number>;
+  revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
   revertPopover: { messageId: MessageId; presetRestoreFiles?: boolean } | null;
   revertImpact: TimelineRevertImpact | null;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;

@@ -292,6 +292,7 @@ import { buildLocalDraftThread } from "../lib/draftThreads";
 import { ensureThreadHistoryState } from "../lib/threadHistory";
 import { finishThreadOpenTrace } from "../lib/threadOpenTrace";
 import { isTerminalFocused } from "../lib/terminalFocus";
+import { preventRepeatedTerminalCloseShortcut } from "../lib/terminalCloseShortcut";
 import { isKeyboardEventComposing } from "../lib/keyboardComposition";
 import { recordModelSelection } from "../modelPreferencesStore";
 import { getCustomModelOptionsByInstance, type ModelCatalogSettings } from "../modelSelection";
@@ -461,6 +462,7 @@ import {
   buildSlashComposerMenuItems,
   resolveComposerNativeSlashCommands,
   applyUserMessageAttachmentPreviewHandoff,
+  buildRevertIndexByUserMessageId,
   deriveProviderRuntimeInfoEntries,
   buildExpiredTerminalContextToastCopy,
   shouldRenderTimelineContent,
@@ -4471,6 +4473,12 @@ export default memo(function ChatView({
 
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
+      // Capture phase, so a held close-terminal shortcut stops here before it
+      // reaches the next terminal, a right-panel tab or the browser tab.
+      if (preventRepeatedTerminalCloseShortcut(event, keybindings)) {
+        event.stopPropagation();
+        return;
+      }
       if (!activeThreadId || event.defaultPrevented || isKeyboardEventComposing(event)) return;
       const eventTarget = event.target instanceof Node ? event.target : null;
       const dialogFocus = isEventInDialogKeybindingContext(event);
@@ -7455,15 +7463,17 @@ export default memo(function ChatView({
   );
   // Every user message gets a revert trigger once the provider is known; when it
   // can't roll back, the trigger stays visible and says why instead of vanishing.
-  const revertTurnCountByUserMessageId = useMemo(
-    () =>
-      new Map(
-        (activeProviderStatus && activeThread ? activeThread.messages : [])
-          .filter((message) => message.role === "user")
-          .map((message, index) => [message.id, index] as const),
-      ),
-    [activeProviderStatus, activeThread],
-  );
+  // Streaming text keeps the map's identity, so timeline rows skip rebuilding.
+  const revertIndexRef = useRef<ReadonlyMap<MessageId, number> | null>(null);
+  const activeThreadMessages = activeThread?.messages;
+  const revertTurnCountByUserMessageId = useMemo(() => {
+    const next = buildRevertIndexByUserMessageId(
+      activeProviderStatus && activeThreadMessages ? activeThreadMessages : [],
+      revertIndexRef.current,
+    );
+    revertIndexRef.current = next;
+    return next;
+  }, [activeProviderStatus, activeThreadMessages]);
   const rewindWorkspaceShared =
     Boolean(workspaceRoot) &&
     threadSummaries.some(

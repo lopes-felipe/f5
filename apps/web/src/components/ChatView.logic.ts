@@ -147,6 +147,26 @@ export function collectUserMessageBlobPreviewUrls(message: ChatMessage): string[
   return previewUrls;
 }
 
+/**
+ * Indexes each user message for the timeline's revert triggers. Returns
+ * `previous` when nothing changed: streaming deltas replace the message list
+ * per token, and a new map would rebuild every timeline row's externals.
+ */
+export function buildRevertIndexByUserMessageId(
+  messages: ReadonlyArray<Pick<ChatMessage, "id" | "role">>,
+  previous: ReadonlyMap<ChatMessage["id"], number> | null = null,
+): ReadonlyMap<ChatMessage["id"], number> {
+  const next = new Map<ChatMessage["id"], number>();
+  for (const message of messages) {
+    if (message.role === "user") next.set(message.id, next.size);
+  }
+  if (previous === null || previous.size !== next.size) return next;
+  for (const [id, index] of next) {
+    if (previous.get(id) !== index) return next;
+  }
+  return previous;
+}
+
 export function applyUserMessageAttachmentPreviewHandoff(
   message: ChatMessage,
   previewUrls: ReadonlyArray<string>,

@@ -76,6 +76,8 @@ export interface ThreadTitleGenerationInput {
   previousTitle?: string | undefined;
   linkedContext?: string | undefined;
   attachments?: ReadonlyArray<ChatAttachment> | undefined;
+  /** The user's thread title instructions; empty or absent adds nothing. */
+  instructions?: string | undefined;
   model?: string;
   modelSelection?: ModelSelection;
 }

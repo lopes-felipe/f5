@@ -26,8 +26,8 @@ F5 uses the first value it finds:
 4. The global setting.
 5. The built-in default.
 
-A checked-in `f5.json` can change permissions, the text-generation account and writing
-instructions, so review it in repositories you don't trust. To keep your own choice, set a project
+A checked-in `f5.json` can change permissions, the text-generation account, and writing and thread
+title instructions, so review it in repositories you don't trust. To keep your own choice, set a project
 override, which wins over the file. See [Project configuration](../project-configuration.md).
 
 ## When changes apply
@@ -71,6 +71,7 @@ remove those entries after confirming that a drive is connected.
 | Default workspace for new threads   | Local                                                      |
 | Worktree submodules                 | Recursive                                                  |
 | Text generation model/account       | The global text generation selection                       |
+| Thread title instructions           | None                                                       |
 | Source control writing              | The global writing defaults                                |
 | Assistant streaming                 | The server streaming preference                            |
 | PR merge method                     | Last used, then squash, subject to repository capabilities |

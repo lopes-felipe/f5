@@ -36,6 +36,27 @@ describe("thread title linked context", () => {
   });
 });
 
+describe("thread title instructions", () => {
+  it("adds the user's instructions to new and regenerated title prompts", () => {
+    for (const previousTitle of [undefined, "Old title"]) {
+      const { prompt } = buildThreadTitlePrompt({
+        message: "Investigate reconnect failures",
+        previousTitle,
+        instructions: "  Use two to four words.  ",
+      });
+      expect(prompt).toContain("- Additional instructions:\nUse two to four words.\n");
+    }
+  });
+
+  it("adds nothing when the instructions are empty", () => {
+    for (const instructions of [undefined, "", "   "]) {
+      expect(
+        buildThreadTitlePrompt({ message: "Investigate reconnect failures", instructions }).prompt,
+      ).not.toContain("Additional instructions");
+    }
+  });
+});
+
 describe("source-control writing prompts", () => {
   it("applies style, body, and custom instructions to commit prompts", () => {
     const { prompt } = buildCommitMessagePrompt({
