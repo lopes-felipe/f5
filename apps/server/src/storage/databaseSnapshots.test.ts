@@ -58,26 +58,51 @@ const unsupportedClone: CloneFile = async () => {
   throw Object.assign(new Error("clone unsupported"), { code: "ENOTSUP" });
 };
 
+// CI volumes (ext4, NTFS) cannot clone; a plain copy exercises the same
+// transaction, publish and retention logic.
+const copyClone: CloneFile = (source, destination) =>
+  FS.promises.copyFile(source, destination, FS.constants.COPYFILE_EXCL);
+
+async function expectSnapshotRows(snapshot: string) {
+  const reopened = new DatabaseSync(Path.join(snapshot, "state.sqlite"));
+  try {
+    expect(reopened.prepare("SELECT body FROM notes").all()).toEqual([{ body: "kept in the WAL" }]);
+    expect(
+      (reopened.prepare("PRAGMA integrity_check").get() as { integrity_check: string })
+        .integrity_check,
+    ).toBe("ok");
+  } finally {
+    reopened.close();
+  }
+}
+
 describe("runDatabaseSnapshot", () => {
-  it("publishes a clone that opens with the committed rows", async () => {
+  it("publishes a snapshot that opens with the committed rows", async () => {
+    const db = await makeDatabase();
+    const result = await db.runtime.runPromise(
+      runDatabaseSnapshot({
+        dbPath: db.dbPath,
+        directory: db.directory,
+        now: NOW,
+        clone: copyClone,
+      }),
+    );
+    expect(result.status).toBe("published");
+    await expectSnapshotRows(Path.join(db.directory, `snapshot-${NOW}`));
+  });
+
+  it("clones with the real copy-on-write primitive, or reports the volume unsupported", async () => {
     const db = await makeDatabase();
     const result = await db.runtime.runPromise(
       runDatabaseSnapshot({ dbPath: db.dbPath, directory: db.directory, now: NOW }),
     );
-    expect(result.status).toBe("published");
-    const snapshot = Path.join(db.directory, `snapshot-${NOW}`);
-    const reopened = new DatabaseSync(Path.join(snapshot, "state.sqlite"));
-    try {
-      expect(reopened.prepare("SELECT body FROM notes").all()).toEqual([
-        { body: "kept in the WAL" },
-      ]);
-      expect(
-        (reopened.prepare("PRAGMA integrity_check").get() as { integrity_check: string })
-          .integrity_check,
-      ).toBe("ok");
-    } finally {
-      reopened.close();
+    if (result.status === "unsupported") {
+      // Expected off APFS; never a silent full copy.
+      expect(listDatabaseSnapshots(db.directory)).toEqual([]);
+      return;
     }
+    expect(result.status).toBe("published");
+    await expectSnapshotRows(Path.join(db.directory, `snapshot-${NOW}`));
   });
 
   it("skips a live file that is not a SQLite database", async () => {
@@ -114,7 +139,12 @@ describe("runDatabaseSnapshot", () => {
     const daily = Array.from({ length: 10 }, (_, index) => NOW - (index + 3) * 24 * HOUR_MS);
     seedSnapshots(db.directory, [...hourly, ...daily]);
     const result = await db.runtime.runPromise(
-      runDatabaseSnapshot({ dbPath: db.dbPath, directory: db.directory, now: NOW }),
+      runDatabaseSnapshot({
+        dbPath: db.dbPath,
+        directory: db.directory,
+        now: NOW,
+        clone: copyClone,
+      }),
     );
     expect(result.status).toBe("published");
     const remaining = listDatabaseSnapshots(db.directory).map((entry) => entry.createdAt);
