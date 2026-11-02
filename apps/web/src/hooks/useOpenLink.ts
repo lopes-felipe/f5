@@ -21,6 +21,15 @@ function selectOpenLinkSettings(settings: AppSettings) {
   };
 }
 
+/** Whether `useOpenLink(...)(url, { preview: true })` can open the integrated browser here. */
+export function useCanOpenLinkInPreview(threadId?: ThreadId): boolean {
+  const currentThread = useContext(OpenLinkThread);
+  return (
+    typeof window !== "undefined" &&
+    Boolean(window.desktopBridge?.preview && (threadId ?? currentThread))
+  );
+}
+
 export function useOpenLink(threadId?: ThreadId) {
   // Every rendered markdown fragment calls this, so it must ignore unrelated setting writes.
   const settings = useAppSettingsSelector(selectOpenLinkSettings);
@@ -28,7 +37,11 @@ export function useOpenLink(threadId?: ThreadId) {
   const router = useRouter({ warn: false });
   threadId ??= currentThread;
   return useCallback(
-    async (url: string, options?: { external?: boolean }) => {
+    async (
+      url: string,
+      // `preview` opens http(s) links in the integrated browser regardless of the link settings.
+      options?: { external?: boolean; preview?: boolean },
+    ) => {
       // A thread reference always opens in the app, even when an external open is requested;
       // the OS opener would hand it back to F5 or to nothing.
       const referencedThreadId = threadIdOfThreadReferenceUrl(url);
@@ -48,7 +61,7 @@ export function useOpenLink(threadId?: ThreadId) {
       if (!["http:", "https:", "mailto:"].includes(target.protocol)) return;
       const owner = threadId;
       const pr = parsePullRequestReference(target.href);
-      if (!options?.external && settings.pullRequestLinksOpenInApp && pr) {
+      if (!options?.external && !options?.preview && settings.pullRequestLinksOpenInApp && pr) {
         if (owner) {
           useRightPanelStore.getState().openPullRequest(owner, {
             key: formatSourceControlPullRequestKey(pr),
@@ -63,9 +76,10 @@ export function useOpenLink(threadId?: ThreadId) {
       }
       if (
         !options?.external &&
-        !(pr && !settings.pullRequestLinksOpenInApp) &&
+        (options?.preview ||
+          (!(pr && !settings.pullRequestLinksOpenInApp) &&
+            settings.linkOpenTarget === "preview")) &&
         window.desktopBridge?.preview &&
-        settings.linkOpenTarget === "preview" &&
         owner &&
         ["http:", "https:"].includes(target.protocol)
       ) {

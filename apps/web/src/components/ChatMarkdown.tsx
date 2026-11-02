@@ -1,5 +1,5 @@
 import { suffixSince, type TextRevision } from "../lib/streamingTextRevision";
-import { useOpenLink } from "../hooks/useOpenLink";
+import { useCanOpenLinkInPreview, useOpenLink } from "../hooks/useOpenLink";
 import { PrLinkPreview } from "./prHub/PrLinkPreview";
 import { ChatAssetImage } from "./ChatAssetImage";
 import { createContext, useContext } from "react";
@@ -71,6 +71,7 @@ import { threadIdOfThreadReferenceUrl } from "@t3tools/shared/threadReferences";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { SurfaceErrorBoundary } from "./ui/SurfaceErrorBoundary";
 import { MermaidDiagram } from "./chat/MermaidDiagram";
+import { isExternalWebLink, showExternalLinkContextMenu } from "./chat/externalLinkContextMenu";
 import { useTerminalCommand } from "../terminalCommandContext";
 import { hasClosedCodeFence, runnableShellCode } from "../lib/shellCodeBlock";
 import {
@@ -770,6 +771,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
   foldCodeBlocks?: boolean;
 }) {
   const openLink = useOpenLink();
+  const canOpenLinkInPreview = useCanOpenLinkInPreview();
   const repositoryLinks = useContext(RepositoryLinks);
   const { text, cwd, mode, foldCodeBlocks = false } = props;
   const wordWrap = useDiffWordWrap();
@@ -841,6 +843,31 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
                   () => undefined,
                 );
               }}
+              onContextMenu={(event) => {
+                // The browser's own link menu already offers these; the desktop shell's does not.
+                const api = window.desktopBridge ? readNativeApi() : undefined;
+                if (!api || !isExternalWebLink(href)) return;
+                event.preventDefault();
+                event.stopPropagation();
+                void showExternalLinkContextMenu({
+                  href,
+                  position: { x: event.clientX, y: event.clientY },
+                  canOpenInPreview: canOpenLinkInPreview,
+                  showContextMenu: (items, position) => api.contextMenu.show(items, position),
+                  openInPreview: (target) => openLink(target, { preview: true }),
+                  openExternal: (target) => openLink(target, { external: true }),
+                  copyLink: writeTextToClipboard,
+                  onCopyFailure: (error) =>
+                    toastManager.add({
+                      type: "error",
+                      title: "Could not copy link",
+                      description:
+                        error instanceof Error
+                          ? error.message
+                          : "An unexpected clipboard error occurred.",
+                    }),
+                });
+              }}
             >
               {isGitHub ? (
                 <GitHubIcon aria-hidden="true" className="mr-1 inline size-3 align-baseline" />
@@ -876,7 +903,14 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         }
 
         const language = extractFenceLanguage(codeBlock.className);
-        if (mode === "streaming-lite") {
+        const isClosedFence = hasClosedCodeFence(
+          text,
+          node?.position?.start.offset,
+          node?.position?.end.offset,
+          codeBlock.code,
+        );
+        // A completed diagram renders as soon as its fence closes; unfinished ones stay source.
+        if (mode === "streaming-lite" && !(language === "mermaid" && isClosedFence)) {
           return (
             <MarkdownCodeBlock code={codeBlock.code} language={language}>
               <pre {...props}>{children}</pre>
@@ -904,11 +938,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
             filePath={codeBlockFilePath(fenceInfo.lang, fenceInfo.meta)}
             cwd={cwd}
             lineCount={codeLineCount(codeBlock.code)}
-            command={
-              hasClosedCodeFence(text, node?.position?.start.offset, node?.position?.end.offset)
-                ? runnableShellCode(language, codeBlock.code)
-                : null
-            }
+            command={isClosedFence ? runnableShellCode(language, codeBlock.code) : null}
           >
             {/* Not keyed on the code: a failed highlighter load would retry on every streaming delta. */}
             <SurfaceErrorBoundary
@@ -967,7 +997,17 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         );
       },
     }),
-    [cwd, diffThemeName, disambiguatorMap, mode, resolvedTheme, wordWrap, openLink, text],
+    [
+      cwd,
+      diffThemeName,
+      disambiguatorMap,
+      mode,
+      resolvedTheme,
+      wordWrap,
+      openLink,
+      canOpenLinkInPreview,
+      text,
+    ],
   );
 
   return (

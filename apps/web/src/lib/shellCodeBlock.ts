@@ -10,15 +10,31 @@ export function runnableShellCode(language: string, source: string): string | nu
   return command;
 }
 
-/** Never offer to execute a truncated or unterminated fence. */
+/**
+ * Whether the fence spanning `text[start, end)` has a real closer. `code` is the parsed
+ * code text. Never offer to execute or render a truncated or unterminated fence.
+ */
 export function hasClosedCodeFence(
   text: string,
   start: number | undefined,
   end: number | undefined,
+  code: string,
 ): boolean {
   if (start === undefined || end === undefined) return false;
   const source = text.slice(start, end);
   const opening = /^(?:`{3,}|~{3,})/.exec(source)?.[0];
   const closing = /(?:^|\n)[ \t>]*(`{3,}|~{3,})[ \t\r]*$/.exec(source)?.[1];
-  return !!opening && !!closing && opening[0] === closing[0] && closing.length >= opening.length;
+  return (
+    !!opening &&
+    !!closing &&
+    opening[0] === closing[0] &&
+    closing.length >= opening.length &&
+    // Only a real closer is left out of the parsed code. An overindented marker stays in it,
+    // and a CRLF stream cut after CR must not count as an extra source line.
+    lineCount(source.replace(/\r$/, "")) > lineCount(code)
+  );
+}
+
+function lineCount(value: string): number {
+  return value.split(/\r\n|\r|\n/).length;
 }

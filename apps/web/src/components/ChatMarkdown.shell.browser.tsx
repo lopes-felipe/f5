@@ -9,17 +9,42 @@ afterEach(() => {
 });
 
 describe("executable shell fences", () => {
-  it("renders Mermaid only after streaming settles", async () => {
+  it("renders a completed Mermaid fence while the response is still streaming", async () => {
     const host = document.body.appendChild(document.createElement("div"));
-    const text = "```mermaid\nflowchart LR\n First --> Second\n```";
-    const view = await render(<ChatMarkdown text={text} cwd={undefined} isStreaming />, {
+    const open = "```mermaid\nflowchart LR\n First --> Second";
+    const closed = `${open}\n\`\`\`\n`;
+    const view = await render(<ChatMarkdown text={open} cwd={undefined} isStreaming />, {
       container: host,
     });
     expect(host.querySelector("img")).toBeNull();
-    await view.rerender(<ChatMarkdown text={text} cwd={undefined} />);
+    expect(host.textContent).toContain("First --> Second");
+    await view.rerender(<ChatMarkdown text={closed} cwd={undefined} isStreaming />);
+    await expect.element(view.getByRole("img", { name: "Mermaid diagram" })).toBeVisible();
+    const diagram = host.querySelector('img[alt="Mermaid diagram"]');
+    await view.rerender(
+      <ChatMarkdown text={`${closed}\nThe remaining explanation.`} cwd={undefined} isStreaming />,
+    );
+    expect(host.querySelector('img[alt="Mermaid diagram"]')).toBe(diagram);
+    expect(host.textContent).toContain("The remaining explanation.");
+    await view.rerender(
+      <ChatMarkdown text={`${closed}\nThe remaining explanation.`} cwd={undefined} />,
+    );
     await expect.element(view.getByRole("img", { name: "Mermaid diagram" })).toBeVisible();
     await view.getByRole("button", { name: "Show code" }).click();
     expect(host.querySelector("pre")?.textContent).toContain("First --> Second");
+  });
+
+  it.each([
+    [
+      "an overindented list marker",
+      "- Diagram\n\n  ```mermaid\n  flowchart LR\n  A --> B\n      ```\n",
+    ],
+    ["a shorter closing marker", "````mermaid\nflowchart LR\nA --> B\n```\n\nMore"],
+  ])("keeps a Mermaid fence with %s as source while streaming", async (_, text) => {
+    const host = document.body.appendChild(document.createElement("div"));
+    await render(<ChatMarkdown text={text} cwd={undefined} isStreaming />, { container: host });
+    expect(host.querySelector("[data-mermaid-diagram]")).toBeNull();
+    expect(host.textContent).toContain("A --> B");
   });
   it("runs only on an explicit click, blocks duplicate submissions, and retries failures", async () => {
     let finish!: () => void;
