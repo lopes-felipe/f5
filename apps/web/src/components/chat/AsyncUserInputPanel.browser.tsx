@@ -68,7 +68,6 @@ describe("async questions", () => {
   it("keeps a typed answer and the question position after a remount", async () => {
     const first = await render(<AsyncUserInputPanel threadId={threadId} input={twoQuestions} />);
     await page.getByRole("button", { name: "Ready", exact: true }).click();
-    await page.getByRole("button", { name: "Next", exact: true }).click();
     await expect.element(page.getByText("Did a dialog open?")).toBeVisible();
     await page.getByRole("button", { name: "Other…" }).click();
     await page.getByRole("textbox", { name: "Other answer: Did a dialog open?" }).fill("Typed");

@@ -9518,6 +9518,8 @@ describe("ChatView timeline (full app)", () => {
             id: "choice",
             header: "Choice",
             question: "Which choice?",
+            // Keep the selection pending until Submit, rather than auto-submitting a single pick.
+            multiSelect: true,
             options: [{ label: "Original answer", description: "Keep it" }],
           },
         ],
@@ -9532,8 +9534,10 @@ describe("ChatView timeline (full app)", () => {
     });
     try {
       await page.getByText("Original answer", { exact: true }).click();
+      await waitForTimelineScrollToSettle();
       const paragraph = document.querySelector('[data-message-role="assistant"] p')!;
       paragraph.scrollIntoView({ block: "center" });
+      await waitForTimelineScrollToSettle();
       const range = document.createRange();
       range.selectNodeContents(paragraph);
       window.getSelection()!.removeAllRanges();
