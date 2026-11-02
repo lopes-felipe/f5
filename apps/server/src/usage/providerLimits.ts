@@ -13,9 +13,87 @@ import { makeAccountUsageCapability, emptyAccountSection } from "./Layers/Accoun
 import { accountUsageIdentity } from "./accountUsage.ts";
 import { asRecord, asNonNegativeNumber, asTrimmedString, resetDate } from "./accountUsageJson.ts";
 
+function mergeProviderWindows(
+  responses: ReadonlyArray<ReadonlyArray<ProviderUsageWindow>>,
+): ReadonlyArray<ProviderUsageWindow> {
+  const windows = new Map<string, ProviderUsageWindow>();
+  for (const window of responses.flat()) {
+    const previous = windows.get(window.id);
+    if (!previous || window.usedPercent > previous.usedPercent) windows.set(window.id, window);
+  }
+  return [...windows.values()];
+}
+
+function antigravitySummaryWindows(
+  body: Record<string, unknown>,
+  requestedAt: number,
+): ReadonlyArray<ProviderUsageWindow> {
+  const groups = Array.isArray(body.groups) ? body.groups.map(asRecord) : [];
+  const buckets = groups.some((group) => Array.isArray(group?.buckets) && group.buckets.length)
+    ? groups.flatMap((group) =>
+        (Array.isArray(group?.buckets) ? group.buckets : []).map((bucket) => ({
+          bucket: asRecord(bucket),
+          groupName: asTrimmedString(group?.displayName),
+        })),
+      )
+    : (Array.isArray(body.buckets) ? body.buckets : []).map((bucket) => ({
+        bucket: asRecord(bucket),
+        groupName: null,
+      }));
+  return mergeProviderWindows([
+    buckets.flatMap(({ bucket, groupName }) => {
+      const id = asTrimmedString(bucket?.bucketId);
+      const remaining = bucket?.remainingFraction;
+      if (
+        !id ||
+        typeof remaining !== "number" ||
+        !Number.isFinite(remaining) ||
+        bucket?.disabled === true
+      )
+        return [];
+      const family = id.startsWith("gemini-argon-")
+        ? (groupName ?? "Gemini Argon")
+        : id.startsWith("gemini-")
+          ? "Gemini"
+          : id.startsWith("3p-")
+            ? "Claude & GPT (shared)"
+            : (groupName ?? id);
+      const durationMs =
+        bucket?.window === "weekly"
+          ? 7 * 24 * 60 * 60_000
+          : bucket?.window === "5h"
+            ? 5 * 60 * 60_000
+            : null;
+      const reset = resetDate(bucket?.resetTime);
+      // Untouched buckets can report a reset that merely rolls forward with the request.
+      const untouched =
+        remaining === 1 &&
+        bucket?.description === undefined &&
+        durationMs !== null &&
+        reset !== null &&
+        Math.abs(Date.parse(reset) - requestedAt - durationMs) <= 60_000;
+      const label =
+        bucket?.window === "weekly"
+          ? "Weekly"
+          : bucket?.window === "5h"
+            ? "5-hour"
+            : (asTrimmedString(bucket?.displayName) ?? "Quota");
+      return [
+        {
+          id,
+          label: `${family} · ${label}`,
+          usedPercent: Math.max(0, Math.min(100, (1 - remaining) * 100)),
+          resetsAt: untouched ? null : reset,
+        },
+      ];
+    }),
+  ]);
+}
+
 export function normalizeProviderLimits(
   provider: ProviderKind,
   value: unknown,
+  requestedAt = Date.now(),
 ): ReadonlyArray<ProviderUsageWindow> {
   const body = asRecord(value);
   if (!body) return [];
@@ -78,6 +156,9 @@ export function normalizeProviderLimits(
             },
           ];
     });
+  }
+  if (provider === "antigravity" && (Array.isArray(body.groups) || Array.isArray(body.buckets))) {
+    return antigravitySummaryWindows(body, requestedAt);
   }
   if (provider === "antigravity" && asRecord(body.models)) {
     return Object.entries(asRecord(body.models)!).flatMap(([id, value]) => {
@@ -195,25 +276,49 @@ async function readAntigravityHub(env: NodeJS.ProcessEnv, signal: AbortSignal): 
     );
   const authIndex = asTrimmedString(account?.auth_index);
   if (!authIndex) return {};
-  const response = asRecord(
-    await fetchJson(new URL("/v0/management/api-call", hub).toString(), key, signal, {
-      auth_index: authIndex,
-      method: "POST",
-      url: "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
-      header: { Authorization: "Bearer $TOKEN$", "Content-Type": "application/json" },
-      data: JSON.stringify(
-        env.F5_ANTIGRAVITY_PROJECT ? { project: env.F5_ANTIGRAVITY_PROJECT } : {},
-      ),
-    }),
-  );
-  if (
-    typeof response?.status_code !== "number" ||
-    response.status_code < 200 ||
-    response.status_code >= 300 ||
-    typeof response.body !== "string"
-  )
-    throw new Error("Hub quota request failed.");
-  return JSON.parse(response.body) as unknown;
+  const fetchWindows = async (operation: string) => {
+    // Both hosts may omit quota groups. A host failure must not discard the
+    // other's windows, and a lower reading must not hide an exhausted bucket.
+    const responses = await Promise.allSettled(
+      ["daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com"].map(async (host) => {
+        // Bound each phase to leave time for model fallback within the
+        // capability's overall eight-second timeout.
+        const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(3_000)]);
+        const requestedAt = Date.now();
+        const response = asRecord(
+          await fetchJson(new URL("/v0/management/api-call", hub).toString(), key, requestSignal, {
+            auth_index: authIndex,
+            method: "POST",
+            url: `https://${host}/v1internal:${operation}`,
+            header: {
+              Authorization: "Bearer $TOKEN$",
+              "Content-Type": "application/json",
+              "User-Agent": `antigravity/hub/2.24.0 (aidev_client; os_type=${process.platform}; arch=${process.arch}; cl=963137146)`,
+            },
+            data: JSON.stringify(
+              env.F5_ANTIGRAVITY_PROJECT ? { project: env.F5_ANTIGRAVITY_PROJECT } : {},
+            ),
+          }),
+        );
+        if (
+          typeof response?.status_code !== "number" ||
+          response.status_code < 200 ||
+          response.status_code >= 300 ||
+          typeof response.body !== "string"
+        )
+          throw new Error("Hub quota request failed.");
+        return normalizeProviderLimits("antigravity", JSON.parse(response.body), requestedAt);
+      }),
+    );
+    signal.throwIfAborted();
+    return mergeProviderWindows(
+      responses.flatMap((response) => (response.status === "fulfilled" ? [response.value] : [])),
+    );
+  };
+  const summary = await fetchWindows("retrieveUserQuotaSummary");
+  const windows = summary.length ? summary : await fetchWindows("fetchAvailableModels");
+  if (!windows.length) throw new Error("Hub did not return usable quota information.");
+  return { windows };
 }
 
 export function makeProviderLimits(input: {

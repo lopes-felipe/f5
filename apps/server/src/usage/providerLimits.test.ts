@@ -140,20 +140,23 @@ it("reads only the configured hub account and never sends its management key to 
         }),
       ),
     )
-    .mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          status_code: 200,
-          body: JSON.stringify({
-            models: {
-              model: {
-                displayName: "Gemini",
-                quotaInfo: { remainingFraction: 0.75, resetTime: "2026-10-02T19:00:00Z" },
-              },
-            },
+    .mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            status_code: 200,
+            body: JSON.stringify({
+              buckets: [
+                {
+                  bucketId: "gemini-5h",
+                  window: "5h",
+                  remainingFraction: 0.75,
+                  resetTime: "2026-10-02T19:00:00Z",
+                },
+              ],
+            }),
           }),
-        }),
-      ),
+        ),
     );
   vi.stubGlobal("fetch", fetchMock);
   try {
@@ -187,11 +190,16 @@ it("reads only the configured hub account and never sends its management key to 
     expect(fetchMock.mock.calls.map((call) => new URL(call[0]).hostname)).toEqual([
       "hub.example",
       "hub.example",
+      "hub.example",
     ]);
-    const sent = JSON.parse(fetchMock.mock.calls[1]![1].body);
-    expect(sent.auth_index).toBe("right");
-    expect(sent.header.Authorization).toBe("Bearer $TOKEN$");
-    expect(fetchMock.mock.calls[1]![1].redirect).toBe("error");
+    const requests = fetchMock.mock.calls.slice(1).map((call) => {
+      const sent = JSON.parse(call[1].body);
+      expect(sent.auth_index).toBe("right");
+      expect(sent.header.Authorization).toBe("Bearer $TOKEN$");
+      expect(call[1].redirect).toBe("error");
+      return new URL(sent.url).hostname;
+    });
+    expect(requests).toEqual(["daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com"]);
   } finally {
     vi.unstubAllGlobals();
   }
