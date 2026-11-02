@@ -509,6 +509,9 @@ interface ClaudeSessionContext {
   readonly startInput: ProviderAdapterSessionStartInput;
   readonly turnBoundaries: Array<import("../claudeResumeState.ts").ClaudeTurnBoundary>;
   latestUsage?: Record<string, unknown> | undefined;
+  streamUsageInvalidated?: boolean;
+  /** Selected base model whose CLI rejected auto; independent of raw init model spelling. */
+  autoRejectedForModel?: string | undefined;
   requestedRuntime?: Record<string, unknown>;
   lastProviderTitle?: string;
   nativeControl?:
@@ -3577,6 +3580,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         )
           return;
         context.basePermissionMode = "default";
+        context.autoRejectedForModel = context.session.model;
         context.configuredBase = { ...context.configuredBase, permissionMode: "default" };
         // Not awaited inside the message loop; approvals already ask in this mode.
         void context.query.setPermissionMode("default").catch(() => undefined);
@@ -4278,14 +4282,32 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const { event } = message;
         if (event.type === "message_start") {
           reduceClaudeTurnLifecycle(context.lifecycle, { type: "parent-activity" });
+          context.streamUsageInvalidated = false;
+          context.latestUsage = undefined;
         }
         const usageSnapshot = usageFromClaudeStreamEvent(message);
 
         if (usageSnapshot) {
           const usage = asUnknownRecord(usageSnapshot.usage);
-          if (usage)
-            context.latestUsage =
-              event.type === "message_start" ? usage : { ...context.latestUsage, ...usage };
+          if (!usage || (event.type !== "message_start" && context.streamUsageInvalidated)) return;
+          const mergedUsage = { ...context.latestUsage };
+          // Delta counts are cumulative. Null/absent fields retain the start's
+          // counts, while explicit zeros replace them.
+          for (const [key, value] of Object.entries(usage)) {
+            if (value !== null && value !== undefined) mergedUsage[key] = value;
+          }
+          context.latestUsage = mergedUsage;
+          const inputTokens = [
+            "input_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+          ].reduce(
+            (sum, key) =>
+              sum + (typeof mergedUsage[key] === "number" ? (mergedUsage[key] as number) : 0),
+            0,
+          );
+          // Zero-input starts are proxy placeholders, not context measurements.
+          if (inputTokens <= 0) return;
           const modelContextWindowTokens = emittedModelContextWindowTokens(context);
           const stamp = yield* makeEventStamp(context);
           yield* offerRuntimeEvent({
@@ -4297,7 +4319,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             threadId: context.session.threadId,
             ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
             payload: {
-              usage: usageSnapshot.usage,
+              usage: mergedUsage,
               ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
             },
             providerRefs: nativeProviderRefs(context),
@@ -5638,6 +5660,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             });
             return;
           case "compact_boundary":
+            context.streamUsageInvalidated = true;
             context.approximateConversationChars = 0;
             context.latestUsage = undefined;
             context.compactionRecommendationEmitted = false;
@@ -8926,6 +8949,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             fallbackContextWindow: getConfiguredClaudeContextWindow(context.configuredBase),
           });
           if (runtimeModelSelection.apiModel && runtimeModelSelection.baseModel) {
+            if (context.autoRejectedForModel !== runtimeModelSelection.baseModel) {
+              context.autoRejectedForModel = undefined;
+            }
             const previousModel = getClaudeSessionModel(context);
             const previousContextWindow = getConfiguredClaudeContextWindow(context.configuredBase);
             const nextReported = yield* reportedCapabilitiesFor(runtimeModelSelection.baseModel);
@@ -8947,7 +8973,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 (input.interactionMode === undefined &&
                   context.configuredBase?.permissionMode === "plan"),
               workflow: context.workflowExecutionProfile !== undefined,
-              modelChanged: runtimeModelSelection.baseModel !== previousModel,
+              autoRejected: context.autoRejectedForModel === runtimeModelSelection.baseModel,
             });
             const shouldSetModel =
               runtimeModelSelection.baseModel !== previousModel ||

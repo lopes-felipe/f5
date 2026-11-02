@@ -51,7 +51,7 @@ describe("claudeAutoModeRecheck", () => {
     autoRequested: true,
     livePlan: false,
     workflow: false,
-    modelChanged: true,
+    autoRejected: false,
   } as const;
 
   it("keeps the CLI's fallback for follow-ups on the same model", () => {
@@ -60,7 +60,7 @@ describe("claudeAutoModeRecheck", () => {
         ...base,
         base: "default",
         supportsAutoMode: true,
-        modelChanged: false,
+        autoRejected: true,
       }),
     ).toBeUndefined();
   });
