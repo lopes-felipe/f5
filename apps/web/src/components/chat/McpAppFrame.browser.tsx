@@ -70,6 +70,7 @@ const originalFetch = globalThis.fetch;
 let mode = "tool",
   reports: unknown[] = [];
 let active: Awaited<ReturnType<typeof render>> | undefined;
+let skew = 0;
 const source = () =>
   injectMcpAppCsp(
     `<!doctype html><style>html,body{margin:0;height:100%}button{display:block;width:100%;height:100vh}</style><button id="act">Weather action</button><script>
@@ -77,7 +78,27 @@ const pending=new Map();let next=1;
 const request=(method,params)=>new Promise(resolve=>{const id=next++;pending.set(id,resolve);parent.postMessage({jsonrpc:'2.0',id,method,params},'*');});
 window.addEventListener('message',event=>{if(event.source===parent&&event.data?.jsonrpc==='2.0'&&pending.has(event.data.id)){pending.get(event.data.id)(event.data);pending.delete(event.data.id);}});
 const ready=request('ui/initialize',{protocolVersion:'2026-01-26'}).then((reply)=>{parent.postMessage({jsonrpc:'2.0',method:'ui/notifications/initialized'},'*');parent.postMessage({mcpProbe:'ready',hostContext:reply.result?.hostContext},'*');});
+const fullscreenMode=${JSON.stringify(mode)}==='fullscreen';
+let displayMode='inline';
+const askFullscreen=async(source,mode='fullscreen')=>{
+ const reply=await request('ui/request-display-mode',{mode});
+ displayMode=reply.result?.mode;
+ parent.postMessage({mcpProbe:source,mode:displayMode},'*');
+};
+if(fullscreenMode){
+ ready.then(()=>{document.getElementById('act').focus();void askFullscreen('load');});
+ window.addEventListener('message',({data})=>{
+  if(data==='retry'){document.getElementById('act').focus();void askFullscreen('retry');}
+  if(data==='inline')void askFullscreen('inline','inline');
+  if(data?.method==='ui/notifications/host-context-changed'){
+   const left=displayMode==='fullscreen'&&data.params.displayMode==='inline';
+   displayMode=data.params.displayMode??displayMode;
+   if(left){document.getElementById('act').focus();void askFullscreen('exit');}
+  }
+ });
+}
 document.getElementById('act').onclick=async()=>{await ready; const mode=${JSON.stringify(mode)};
+if(mode==='fullscreen'){void askFullscreen('tap');return;}
 if(mode==='noop')return;
 if(mode==='link'){const reply=await request('ui/open-link',{url:'https://example.com/weather'});parent.postMessage({mcpProbe:'done',reply},'*');return;}
 if(mode==='navigate'){location.href='data:text/html,'+encodeURIComponent('<script>parent.postMessage({jsonrpc:"2.0",id:999,method:"tools/call",params:{name:"forecast",arguments:{city:"foreign"}}},"*");<\\/script>');return;}
@@ -89,6 +110,9 @@ const receive = (event: MessageEvent) => {
   if (event.data?.mcpProbe) reports.push(event.data);
 };
 beforeEach(() => {
+  skew = 0;
+  const now = performance.now.bind(performance);
+  vi.spyOn(performance, "now").mockImplementation(() => now() + skew);
   mode = "tool";
   reports = [];
   useStore.setState({ threads: [thread] });
@@ -333,4 +357,53 @@ it("keeps long approval payloads scrollable with both decisions visible", async 
   }
   expect(api.callTool).not.toHaveBeenCalled();
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
+});
+
+async function expectMode(probe: string, mode: string) {
+  await expect
+    .poll(() =>
+      reports.filter((report) => (report as { mcpProbe?: string }).mcpProbe === probe).at(-1),
+    )
+    .toMatchObject({ mcpProbe: probe, mode });
+}
+function tellApp(message: string) {
+  document.querySelector("iframe")!.contentWindow!.postMessage(message, "*");
+}
+it("denies fullscreen on load and idle retries, but permits app input and always permits exit", async () => {
+  mode = "fullscreen";
+  await mount();
+  await ready();
+  await expectMode("load", "inline");
+  // Activation can linger from a previous test's real click; let the browser expire it.
+  await vi.waitFor(() => expect(navigator.userActivation.isActive).toBe(false), {
+    timeout: 6_000,
+  });
+  skew += 5_000;
+  tellApp("retry");
+  await expectMode("retry", "inline");
+  await page.getByTitle("forecast app", { exact: true }).click();
+  await expectMode("tap", "fullscreen");
+  await expect.element(page.getByRole("button", { name: "Return to conversation" })).toBeVisible();
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "a" }));
+  tellApp("inline");
+  await expectMode("inline", "inline");
+  await expect.element(page.getByRole("button", { name: "Expand app", exact: true })).toBeVisible();
+});
+it("rejects activation elsewhere and cannot reopen after the exit button or Escape", async () => {
+  mode = "fullscreen";
+  await mount();
+  await ready();
+  await expectMode("load", "inline");
+  await page.getByRole("button", { name: "Expand app", exact: true }).click();
+  await page.getByRole("button", { name: "Return to conversation" }).click();
+  await expectMode("exit", "inline");
+  reports = [];
+  tellApp("retry");
+  await expectMode("retry", "inline");
+  skew += 5_000;
+  await page.getByTitle("forecast app", { exact: true }).click();
+  await expectMode("tap", "fullscreen");
+  await userEvent.keyboard("{Escape}");
+  await expectMode("exit", "inline");
+  await expect.element(page.getByRole("button", { name: "Expand app", exact: true })).toBeVisible();
 });
