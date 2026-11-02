@@ -5729,11 +5729,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-28T20:53:05.827Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T10:25:21.976Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-13919",
-      "status": "port",
+      "reason": "f5's desktop window uses titleBarStyle \"hiddenInset\" with no titleBarOverlay (apps/desktop/src/main.ts:4118), so no native caption strip overlays the page and the image viewer's close button cannot sit beside the window's Close button.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
