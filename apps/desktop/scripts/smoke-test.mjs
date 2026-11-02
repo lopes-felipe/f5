@@ -527,8 +527,8 @@ try {
       if (!stop) throw new Error("Missing default profile Stop action");
       stop.click();
     });
-  const waitForBackend = (expected) =>
-    page.waitForFunction(
+  const waitForBackend = async (expected) => {
+    await page.waitForFunction(
       async ({ origin, expected }) => {
         try {
           const response = await fetch(`${origin}/api/bootstrap`);
@@ -542,6 +542,18 @@ try {
       { origin: backendOrigin, expected },
       { timeout: 60_000 },
     );
+    if (!expected) return;
+    // HTTP bootstrap is available before runtime-dependent RPCs can run.
+    const deadline = Date.now() + 60_000;
+    while (true) {
+      const { runtime } = await nativeRequest("server.probe", {});
+      if (runtime.state === "ready") return;
+      if (runtime.state === "failed")
+        throw new Error("Desktop smoke backend startup failed: " + runtime.message);
+      if (Date.now() > deadline) throw new Error("Desktop smoke backend runtime did not start");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  };
   const nativeRequest = async (method, body) => {
     try {
       return await page.evaluate(
@@ -599,6 +611,7 @@ try {
       throw new Error(`Desktop smoke request failed: ${method}`, { cause });
     }
   };
+  await waitForBackend(true);
   const terminalInput = {
     threadId: "desktop-shutdown-smoke",
     terminalId: "default",
@@ -863,6 +876,7 @@ try {
       .join("")
       .split("] shutdown complete\n").length - 1;
   const shutdownsBeforeQuit = shutdowns();
+  const mainProcessId = await application.evaluate(() => process.pid);
   let exited = false;
   const closed = application.waitForEvent("close", { timeout: 0 }).then(() => {
     exited = true;
@@ -896,12 +910,34 @@ try {
   }
   if (!exited) {
     console.error("Desktop smoke: releasing an exited main process held by the inspector");
-    // On Windows Playwright launches through cmd.exe, so kill the whole tree.
-    if (process.platform === "win32" && electronProcess.pid)
-      spawnSync("taskkill", ["/pid", String(electronProcess.pid), "/T", "/F"], {
-        stdio: "ignore",
+    // Playwright exposes its cmd.exe launcher on Windows. Include Electron's
+    // own PID so a launcher that has already exited cannot strand the main process.
+    if (process.platform === "win32" && electronProcess.pid) {
+      // Orphaned Windows children can retain inherited output handles after the
+      // launcher exits. Playwright emits close only after those pipes close.
+      const releaseOutput = () => {
+        electronProcess.stdout?.destroy();
+        electronProcess.stderr?.destroy();
+      };
+      if (electronProcess.exitCode !== null || electronProcess.signalCode !== null) releaseOutput();
+      else electronProcess.once("exit", releaseOutput);
+      const killed = spawnSync(
+        "taskkill",
+        ["/pid", String(mainProcessId), "/pid", String(electronProcess.pid), "/T", "/F"],
+        {
+          encoding: "utf8",
+          timeout: 10_000,
+        },
+      );
+      console.error("Desktop smoke inspector cleanup:", {
+        mainProcessId,
+        launcherPid: electronProcess.pid,
+        status: killed.status,
+        error: killed.error?.message,
+        stdout: killed.stdout,
+        stderr: killed.stderr,
       });
-    else electronProcess.kill();
+    } else electronProcess.kill();
     await Promise.race([
       closed,
       new Promise((_, reject) =>
@@ -930,6 +966,7 @@ try {
   await page.waitForLoadState("domcontentloaded");
   await page.goto(providerRendererUrl);
   await page.locator('[contenteditable="true"]').waitFor({ timeout: 60_000 });
+  await waitForBackend(true);
   const quitHistory = await nativeRequest("terminal.open", terminalInput);
   if (countMarker(quitHistory.history, quitTerminalMarker) < 3)
     throw new Error("Desktop quit/reopen lost active terminal output");
