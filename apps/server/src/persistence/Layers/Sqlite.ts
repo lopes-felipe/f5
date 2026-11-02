@@ -3,6 +3,7 @@ import { Effect, Layer, FileSystem, Path, ServiceMap } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { runMigrations } from "../Migrations.ts";
+import { assertDatabaseFileUsable } from "../databaseFiles.ts";
 import { ServerConfig } from "../../config.ts";
 import { ReadSqlClient } from "../ReadSqlClient.ts";
 
@@ -67,6 +68,8 @@ export const makeSqlitePersistenceLive = (dbPath: string) =>
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
+    // A damaged file is unrecoverable at this layer; the defect stops startup.
+    yield* Effect.sync(() => assertDatabaseFileUsable(dbPath));
 
     const writer = Layer.provideMerge(setup, makeRuntimeSqliteLayer({ filename: dbPath }));
     const readers = Layer.effect(

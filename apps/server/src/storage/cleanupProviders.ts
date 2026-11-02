@@ -116,6 +116,9 @@ export function cleanupProviders(input: {
       impact: "high",
       files: (name) =>
         /^(?:state-before-[\w.-]+\.sqlite|daily-\d{13}-[a-f0-9-]{36}\.f5backup)$/.test(name),
+      // Automatic database snapshots; storage/databaseSnapshots.ts prunes them itself.
+      children: /^snapshot-\d{13}$/,
+      childMinAgeMs: () => 0,
     },
     {
       id: "f5ApplicationLogs",
