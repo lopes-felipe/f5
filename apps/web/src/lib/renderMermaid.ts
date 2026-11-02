@@ -7,6 +7,11 @@ let queue: Promise<unknown> = Promise.resolve();
 let pending = 0;
 let nextId = 0;
 
+/** A previously rendered SVG, so a remounted diagram can show it without a loading state. */
+export function peekRenderedMermaid(source: string, theme: "light" | "dark"): string | null {
+  return cache.get(`${theme}\u0000${source}`);
+}
+
 /** Mermaid's configuration is global, so theme changes and rendering share a queue. */
 export async function renderMermaid(
   source: string,

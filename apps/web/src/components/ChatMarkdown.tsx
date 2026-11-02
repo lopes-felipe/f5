@@ -1,5 +1,6 @@
 import { suffixSince, type TextRevision } from "../lib/streamingTextRevision";
 import { useOpenLink } from "../hooks/useOpenLink";
+import { useExternalLinkContextMenu } from "../hooks/useExternalLinkContextMenu";
 import { PrLinkPreview } from "./prHub/PrLinkPreview";
 import { ChatAssetImage } from "./ChatAssetImage";
 import { createContext, useContext } from "react";
@@ -51,6 +52,7 @@ import type { MarkdownHighlighter } from "../lib/markdownHighlighter";
 import {
   EMPTY_STREAMING_MARKDOWN_STATE,
   advanceStreamingMarkdown,
+  startsWithClosedFence,
   type StreamingMarkdownBlockKind,
   type StreamingMarkdownState,
 } from "../lib/streamingMarkdown";
@@ -770,8 +772,13 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
   foldCodeBlocks?: boolean;
 }) {
   const openLink = useOpenLink();
+  const openLinkContextMenu = useExternalLinkContextMenu();
   const repositoryLinks = useContext(RepositoryLinks);
   const { text, cwd, mode, foldCodeBlocks = false } = props;
+  // Renderers read the source through a ref: a new component map on every streamed token
+  // would remount every element of the active block, including rendered diagrams.
+  const textRef = useRef(text);
+  textRef.current = text;
   const wordWrap = useDiffWordWrap();
   const { resolvedTheme } = useTheme();
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
@@ -841,6 +848,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
                   () => undefined,
                 );
               }}
+              onContextMenu={(event) => openLinkContextMenu(event, href)}
             >
               {isGitHub ? (
                 <GitHubIcon aria-hidden="true" className="mr-1 inline size-3 align-baseline" />
@@ -876,7 +884,15 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         }
 
         const language = extractFenceLanguage(codeBlock.className);
-        if (mode === "streaming-lite") {
+        const isClosedFence = () =>
+          hasClosedCodeFence(
+            textRef.current,
+            node?.position?.start.offset,
+            node?.position?.end.offset,
+            codeBlock.code,
+          );
+        // A completed diagram renders as soon as its fence closes; unfinished ones stay source.
+        if (mode === "streaming-lite" && !(language === "mermaid" && isClosedFence())) {
           return (
             <MarkdownCodeBlock code={codeBlock.code} language={language}>
               <pre {...props}>{children}</pre>
@@ -897,6 +913,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         }
 
         const fenceInfo = hastCodeFenceInfo(node);
+        const command = runnableShellCode(language, codeBlock.code);
         return (
           <MarkdownCodeBlock
             code={codeBlock.code}
@@ -904,11 +921,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
             filePath={codeBlockFilePath(fenceInfo.lang, fenceInfo.meta)}
             cwd={cwd}
             lineCount={codeLineCount(codeBlock.code)}
-            command={
-              hasClosedCodeFence(text, node?.position?.start.offset, node?.position?.end.offset)
-                ? runnableShellCode(language, codeBlock.code)
-                : null
-            }
+            command={command !== null && isClosedFence() ? command : null}
           >
             {/* Not keyed on the code: a failed highlighter load would retry on every streaming delta. */}
             <SurfaceErrorBoundary
@@ -967,7 +980,16 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         );
       },
     }),
-    [cwd, diffThemeName, disambiguatorMap, mode, resolvedTheme, wordWrap, openLink, text],
+    [
+      cwd,
+      diffThemeName,
+      disambiguatorMap,
+      mode,
+      resolvedTheme,
+      wordWrap,
+      openLink,
+      openLinkContextMenu,
+    ],
   );
 
   return (
@@ -1050,7 +1072,9 @@ function shouldRenderActiveBlockAsRawPreview(
   text: string,
 ): boolean {
   return (
-    kind === "fenced-code" ||
+    // A closed fence renders like a sealed one even before the parser commits it, so a
+    // diagram neither waits for the response to finish nor flashes back to source.
+    (kind === "fenced-code" && !startsWithClosedFence(text)) ||
     text.length > MAX_STREAMING_ACTIVE_BLOCK_CHARS ||
     countLines(text) > MAX_STREAMING_ACTIVE_BLOCK_LINES
   );
