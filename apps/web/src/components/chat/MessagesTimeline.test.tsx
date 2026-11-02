@@ -1362,7 +1362,7 @@ describe("MessagesTimeline", () => {
   });
 
   it("splits MCP card groups at other tool rows and turn changes", async () => {
-    const { buildTimelineRows, createTimelineRowCache, timelineCompactBottomRowIds } =
+    const { buildTimelineRows, createTimelineRowCache, MCP_CARD_MAX_CALLS } =
       await import("./MessagesTimeline");
     const turnA = TurnId.makeUnsafe("turn-a");
     const turnB = TurnId.makeUnsafe("turn-b");
@@ -1425,10 +1425,77 @@ describe("MessagesTimeline", () => {
       [true, ["work-m4", "work-m5"]],
     ]);
     // Tool rows tighten up against the next tool row, but keep their gap before a message.
-    expect([...timelineCompactBottomRowIds(rows)]).toEqual(["m1", "thought", "m3"]);
+    const compactIds = (built: ReturnType<typeof buildTimelineRows>) =>
+      built.flatMap((row) =>
+        (row.kind === "work" || row.kind === "command") && row.compactBottom ? [row.id] : [],
+      );
+    expect(compactIds(rows)).toEqual(["m1", "thought", "m3"]);
 
     // With the setting off, MCP calls stay in the plain work log.
     expect(build(false).some((row) => row.kind === "work" && row.mcpGroup)).toBe(false);
+
+    // A long run splits into capped cards.
+    const longRun = Array.from({ length: MCP_CARD_MAX_CALLS + 3 }, (_, index) =>
+      call(`long-${index}`, turnA),
+    );
+    const longRows = buildTimelineRows({
+      timelineEntries: longRun,
+      completionDividerBeforeEntryId: null,
+      completionSummary: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      liveActivity: null,
+      expandMcpToolCalls: true,
+      cache: createTimelineRowCache(),
+    });
+    expect(longRows.map((row) => (row.kind === "work" ? row.groupedEntries.length : 0))).toEqual([
+      MCP_CARD_MAX_CALLS,
+      3,
+    ]);
+  });
+
+  it("tightens a tool row when another lands below it, keeping unchanged rows", async () => {
+    const { buildTimelineRows, createTimelineRowCache } = await import("./MessagesTimeline");
+    const cache = createTimelineRowCache();
+    const first = mcpWorkEntry("first", { mcpServerName: "docs", mcpToolName: "read" });
+    const thought: TimelineEntry = {
+      id: "thought",
+      kind: "work",
+      createdAt: "2026-03-17T19:12:29.000Z",
+      entry: {
+        id: "work-thought",
+        createdAt: "2026-03-17T19:12:29.000Z",
+        label: "Thinking",
+        tone: "thinking",
+      },
+    };
+    const build = (timelineEntries: TimelineEntry[]) =>
+      buildTimelineRows({
+        timelineEntries,
+        completionDividerBeforeEntryId: null,
+        completionSummary: null,
+        isWorking: false,
+        activeTurnStartedAt: null,
+        liveActivity: null,
+        expandMcpToolCalls: true,
+        cache,
+      });
+
+    const [alone] = build([first]);
+    expect(alone?.kind === "work" && alone.compactBottom).toBeFalsy();
+    const [tightened, after] = build([first, thought]);
+    // A new row object, so the list re-renders the earlier row with its tighter gap.
+    expect(tightened).not.toBe(alone);
+    expect(tightened?.kind === "work" && tightened.compactBottom).toBe(true);
+    const third = mcpWorkEntry("third", {
+      createdAt: "2026-03-17T19:12:30.000Z",
+      mcpServerName: "docs",
+      mcpToolName: "read",
+    });
+    const next = build([first, thought, third]);
+    expect(next[0]).toBe(tightened);
+    expect(next[1]).not.toBe(after);
+    expect(next[1]?.kind === "work" && next[1].compactBottom).toBe(true);
   });
 
   it("renders collapsed MCP cards with input and result previews", async () => {
@@ -1487,6 +1554,55 @@ describe("MessagesTimeline", () => {
     expect(markup).toMatch(
       /text-destructive-foreground" data-testid="mcp-result-preview">Permission denied: docs are read-only<\/p>/,
     );
+  });
+
+  it("lists a grouped MCP call's hook diagnostics, and its time when it has no duration", async () => {
+    setPersistedAppSettings({
+      expandMcpToolCalls: true,
+      expandMcpToolCallCardsByDefault: false,
+    });
+
+    const markup = await renderMcpTimelineMarkup([
+      mcpWorkEntry("entry-mcp-first", {
+        status: "completed",
+        mcpServerName: "docs",
+        mcpToolName: "read",
+      }),
+      mcpWorkEntry("entry-mcp-hooked", {
+        status: "completed",
+        mcpServerName: "docs",
+        mcpToolName: "write",
+        nestedDiagnostics: [
+          {
+            id: "hook-work",
+            createdAt: "2026-03-17T19:12:28.100Z",
+            label: "preToolUse hook blocked the call",
+            tone: "error",
+            activityKind: "hook.completed",
+            category: "hook",
+            isIssue: true,
+            diagnostic: {
+              type: "hook",
+              id: "hook-1",
+              hookEvent: "preToolUse",
+              source: "plugin",
+              sourcePath: "/Users/example/.claude/hooks.json",
+              handlerType: "command",
+              displayOrder: 1,
+              status: "failed",
+              durationMs: 9,
+              entries: [],
+            },
+          },
+        ],
+      }),
+    ]);
+
+    expect(markup).toContain('data-mcp-call-count="2"');
+    expect(markup).toContain("preToolUse hook blocked the call");
+    expect(markup.match(/preToolUse hook blocked the call/g)).toHaveLength(1);
+    // Neither call has a start time, so each shows when it happened instead.
+    expect(markup.match(/data-testid="mcp-call-time"/g)).toHaveLength(2);
   });
 
   it("renders expanded MCP rows with transcript-style card chrome", async () => {

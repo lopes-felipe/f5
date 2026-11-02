@@ -22,9 +22,19 @@ export function mcpToolNameServerKey(serverName: string): string {
   return serverName.replace(/[^A-Za-z0-9_-]/g, "_");
 }
 
+function capitalizeFirst(text: string): string {
+  return `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
+}
+
+function withoutConnectorPrefix(bare: string): string {
+  return bare.startsWith(CLAUDE_AI_TOOL_PREFIX) ? bare.slice(CLAUDE_AI_TOOL_PREFIX.length) : bare;
+}
+
 /**
  * The server's display label. Tool names only carry a flattened server name
  * ("claude_ai_Claude_Docs"), so real names from status events win when one flattens to it.
+ * Both paths capitalize the same way, so a label stays put when the status event that named
+ * the server scrolls out of the activity window.
  */
 export function resolveMcpServerLabel(
   serverName: string,
@@ -33,15 +43,17 @@ export function resolveMcpServerLabel(
   const bare = bareServerName(serverName);
   const builtIn = F5_SERVER_LABELS[bare.toLowerCase()];
   if (builtIn) return builtIn;
-  const realName = statusNamesByKey.get(serverName) ?? statusNamesByKey.get(bare);
-  if (realName) return realName.replace(CLAUDE_AI_NAME_PREFIX, "").trim() || realName;
-  const withoutConnectorPrefix = bare.startsWith(CLAUDE_AI_TOOL_PREFIX)
-    ? bare.slice(CLAUDE_AI_TOOL_PREFIX.length)
-    : bare;
-  const words = withoutConnectorPrefix.split("_").filter((word) => word.length > 0);
+  const realName =
+    statusNamesByKey.get(mcpToolNameServerKey(serverName)) ??
+    statusNamesByKey.get(mcpToolNameServerKey(bare));
+  if (realName) {
+    return capitalizeFirst(realName.replace(CLAUDE_AI_NAME_PREFIX, "").trim() || realName);
+  }
+  const words = withoutConnectorPrefix(bare)
+    .split("_")
+    .filter((word) => word.length > 0);
   if (words.length === 0) return serverName;
-  const label = words.join(" ");
-  return `${label.charAt(0).toUpperCase()}${label.slice(1)}`;
+  return capitalizeFirst(words.join(" "));
 }
 
 export type McpServerIconKind =
@@ -57,10 +69,11 @@ export type McpServerIconKind =
 const BRAND_ICON_KINDS = ["github", "linear", "slack", "notion", "figma"] as const;
 
 export function mcpServerIconKind(serverName: string, label: string): McpServerIconKind {
-  const haystack = `${serverName} ${label}`.toLowerCase();
-  const brand = BRAND_ICON_KINDS.find((kind) => haystack.includes(kind));
-  if (brand) return brand;
   const bare = bareServerName(serverName).toLowerCase();
+  // Whole words only, so "linear_algebra" or "slackware" keep a monogram.
+  const words = new Set(`${withoutConnectorPrefix(bare)} ${label.toLowerCase()}`.split(/[\s_.-]+/));
+  const brand = BRAND_ICON_KINDS.find((kind) => words.has(kind));
+  if (brand) return brand;
   if (bare.startsWith(CLAUDE_AI_TOOL_PREFIX)) return "claude";
   if (bare.startsWith("f5_")) return "f5";
   return "monogram";
@@ -105,14 +118,19 @@ export function summarizeMcpResult(
     : line;
 }
 
-export type McpCallDisplayStatus = "running" | "failed" | "declined" | "completed";
+/** `interrupted` is a call still marked running on an idle thread: its completion was lost. */
+export type McpCallDisplayStatus = "running" | "failed" | "interrupted" | "declined" | "completed";
 
-/** A card's accent: running wins, then any failure, then all-declined, else completed. */
+/**
+ * A card's accent: running wins, then any failure, then a lost completion, then
+ * all-declined, else completed.
+ */
 export function mcpAggregateStatus(
   statuses: ReadonlyArray<McpCallDisplayStatus>,
 ): McpCallDisplayStatus {
   if (statuses.includes("running")) return "running";
   if (statuses.includes("failed")) return "failed";
+  if (statuses.includes("interrupted")) return "interrupted";
   if (statuses.length > 0 && statuses.every((status) => status === "declined")) {
     return "declined";
   }

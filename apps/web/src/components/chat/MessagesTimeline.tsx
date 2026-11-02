@@ -67,6 +67,7 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   CircleAlertIcon,
+  CircleStopIcon,
   ClockIcon,
   EyeIcon,
   FigmaIcon,
@@ -1419,7 +1420,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [rowExternals, rows],
   );
 
-  const compactBottomRowIds = useMemo(() => timelineCompactBottomRowIds(rows), [rows]);
   const renderItem = useCallback(
     ({ item, index }: { item: TimelineRow; index: number }) => {
       // Rows from the revert target onward: previewed while the popover is open,
@@ -1451,14 +1451,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 row={item}
                 externals={externalsEntry.externals}
                 rowVersion={externalsEntry.version}
-                compactBottom={compactBottomRowIds.has(item.id)}
               />
             ) : null}
           </div>
         </div>
       );
     },
-    [compactBottomRowIds, pendingRevert, revertDimFromRowIndex, rowExternals],
+    [pendingRevert, revertDimFromRowIndex, rowExternals],
   );
 
   // Portalled into the header: turn data never passes through header props.
@@ -1869,6 +1868,9 @@ function shouldRenderWorkEntryAsStandaloneRow(
 }
 
 /** An MCP call drawn as a card (the "expand MCP tool calls" setting), not a log row. */
+/** The most calls one MCP card holds. */
+export const MCP_CARD_MAX_CALLS = 8;
+
 function isMcpCardWorkEntry(
   entry: TimelineWorkEntry,
   options: { settingsExpandMcpToolCalls: boolean },
@@ -1908,6 +1910,8 @@ type TimelineRow =
       /** Back-to-back MCP calls of one turn, rendered as one MCP card. */
       mcpGroup?: boolean;
       workSummary: string;
+      /** Another tool row follows, so this one keeps a tighter bottom gap. */
+      compactBottom?: boolean;
     }
   | {
       kind: "message";
@@ -1930,6 +1934,8 @@ type TimelineRow =
       createdAt: string;
       commandExecution: TimelineCommandExecution;
       nestedDiagnostics?: ReadonlyArray<TimelineWorkEntry>;
+      /** Another tool row follows, so this one keeps a tighter bottom gap. */
+      compactBottom?: boolean;
     }
   | {
       kind: "working";
@@ -1940,18 +1946,9 @@ type TimelineRow =
       thought: string | null;
     };
 
+/** Tool rows followed by another tool row sit closer, so a turn's calls read as one block. */
 function isToolTimelineRow(row: TimelineRow | undefined): boolean {
   return row?.kind === "work" || row?.kind === "command";
-}
-
-/** Tool rows followed by another tool row sit closer, so a turn's calls read as one block. */
-export function timelineCompactBottomRowIds(rows: ReadonlyArray<TimelineRow>): ReadonlySet<string> {
-  const ids = new Set<string>();
-  for (let index = 0; index < rows.length - 1; index += 1) {
-    const row = rows[index];
-    if (row && isToolTimelineRow(row) && isToolTimelineRow(rows[index + 1])) ids.add(row.id);
-  }
-  return ids;
 }
 
 /** Label for the working row: what the running turn is doing right now. */
@@ -3412,6 +3409,12 @@ const MCP_CALL_STATUS_PRESENTATION: Record<
     iconClassName: "text-destructive",
     accentClassName: "border-l-destructive/80",
   },
+  interrupted: {
+    label: "Interrupted",
+    Icon: CircleStopIcon,
+    iconClassName: "text-warning",
+    accentClassName: "border-l-warning/70",
+  },
   declined: {
     label: "Declined",
     Icon: BanIcon,
@@ -3420,18 +3423,26 @@ const MCP_CALL_STATUS_PRESENTATION: Record<
   },
 };
 
-function mcpCallDisplayStatus(entry: TimelineWorkEntry): McpCallDisplayStatus {
+function mcpCallDisplayStatus(
+  entry: TimelineWorkEntry,
+  threadWorking: boolean,
+): McpCallDisplayStatus {
   // Matches automation step drawers: a declined call isn't a failure.
   if (isAutomationEntryFailed(entry)) return "failed";
   if (entry.status === "declined") return "declined";
-  if (entry.status === "inProgress") return "running";
+  // On an idle thread a running call is a completion that never arrived.
+  if (entry.status === "inProgress") return threadWorking ? "running" : "interrupted";
   return "completed";
+}
+
+function mcpCallFinishedAt(entry: TimelineWorkEntry): string {
+  return entry.completedAt ?? entry.createdAt;
 }
 
 /** From the first call's start to the last call's finish. */
 function mcpCallGroupSpan(entries: ReadonlyArray<TimelineWorkEntry>): string | null {
   const starts = entries.map((entry) => Date.parse(entry.startedAt ?? entry.createdAt));
-  const ends = entries.map((entry) => Date.parse(entry.createdAt));
+  const ends = entries.map((entry) => Date.parse(mcpCallFinishedAt(entry)));
   const spanMs = Math.max(...ends) - Math.min(...starts);
   return Number.isFinite(spanMs) && spanMs > 0 ? formatDuration(spanMs) : null;
 }
@@ -3448,7 +3459,9 @@ const McpToolCallGroupCard = memo(function McpToolCallGroupCard(props: {
   onImageExpand: (preview: ExpandedImagePreview) => void;
 }) {
   const { isWorking } = useTimelineRowContext();
-  const aggregate = mcpAggregateStatus(props.entries.map(mcpCallDisplayStatus));
+  const aggregate = mcpAggregateStatus(
+    props.entries.map((entry) => mcpCallDisplayStatus(entry, isWorking)),
+  );
   const callCount = props.entries.length;
   const span = callCount > 1 && aggregate !== "running" ? mcpCallGroupSpan(props.entries) : null;
   return (
@@ -3516,16 +3529,17 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
   const serverName = workEntry.mcpServerName;
   const serverLabel = workEntry.mcpServerLabel ?? serverName;
   const toolName = workEntry.mcpToolName ?? formatMcpToolHeading(workEntry);
-  const status = mcpCallDisplayStatus(workEntry);
+  const status = mcpCallDisplayStatus(workEntry, props.threadWorking);
   const failed = status === "failed";
   const running = status === "running";
   const statusPresentation = MCP_CALL_STATUS_PRESENTATION[status];
-  // Only a running call on a working thread subscribes to the shared clock.
-  const nowIso = useNowIso(running && props.threadWorking);
+  // Only a running call subscribes to the shared clock.
+  const nowIso = useNowIso(running);
   const startedAt = workEntry.startedAt ?? workEntry.createdAt;
-  const finishedMs = workEntry.startedAt
-    ? Date.parse(workEntry.createdAt) - Date.parse(workEntry.startedAt)
-    : Number.NaN;
+  const finishedMs =
+    workEntry.startedAt && status !== "interrupted"
+      ? Date.parse(mcpCallFinishedAt(workEntry)) - Date.parse(workEntry.startedAt)
+      : Number.NaN;
   const duration = running
     ? formatElapsed(startedAt, nowIso)
     : finishedMs > 0
@@ -3584,7 +3598,12 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
             >
               {duration}
             </span>
-          ) : null}
+          ) : (
+            // Without a start time there's no duration to carry the time in its tooltip.
+            <span data-testid="mcp-call-time">
+              {formatTimestamp(workEntry.createdAt, props.timestampFormat)}
+            </span>
+          )}
           {hasNestedContent ? (
             <ChevronDownIcon
               aria-hidden="true"
@@ -3614,6 +3633,12 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
         >
           {failed ? resultPreview : `→ ${resultPreview}`}
         </p>
+      ) : null}
+      {workEntry.nestedDiagnostics && workEntry.nestedDiagnostics.length > 0 ? (
+        <NestedDiagnosticList
+          diagnostics={workEntry.nestedDiagnostics}
+          className="mr-3 mb-2 ml-17"
+        />
       ) : null}
       {workEntry.mcpImages && workEntry.mcpImages.length > 0 ? (
         <div className="flex flex-wrap gap-2 px-3 pb-2.5 pl-17" data-testid="mcp-tool-images">
@@ -4102,7 +4127,8 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
     <div className={cn("group/work-entry relative min-w-0", !ownsTimestamp && "pr-14")}>
       {ownsTimestamp ? null : timestamp("absolute right-1 top-1.5")}
       {row}
-      {workEntry.nestedDiagnostics && workEntry.nestedDiagnostics.length > 0 ? (
+      {/* MCP cards list their calls' diagnostics under each call. */}
+      {!mcpCard && workEntry.nestedDiagnostics && workEntry.nestedDiagnostics.length > 0 ? (
         <NestedDiagnosticList diagnostics={workEntry.nestedDiagnostics} />
       ) : null}
     </div>
@@ -4257,14 +4283,14 @@ const TimelineRowView = memo(function TimelineRowView(props: {
   row: TimelineRow;
   externals: TimelineRowExternals;
   rowVersion: string;
-  compactBottom?: boolean;
 }) {
   "use memo";
   const testRenderCountProps = useTestRenderCountProps();
+  const { row } = props;
   return (
     <TimelineRowWrapper
-      row={props.row}
-      compactBottom={props.compactBottom ?? false}
+      row={row}
+      compactBottom={(row.kind === "work" || row.kind === "command") && row.compactBottom === true}
       testRenderCountProps={testRenderCountProps}
     >
       <SurfaceErrorBoundary
@@ -5178,8 +5204,9 @@ export function buildTimelineRows(input: {
         !automationSurface && isMcpCardWorkEntry(timelineEntry.entry, isolationOptions);
       let cursor = index + 1;
       if (mcpGroup) {
-        // Back-to-back MCP calls of the same turn share one card.
-        while (cursor < timelineEntries.length) {
+        // Back-to-back MCP calls of the same turn share one card. Capped, so a long run
+        // splits into several cards and the list still virtualizes it.
+        while (cursor < timelineEntries.length && groupedEntries.length < MCP_CARD_MAX_CALLS) {
           const nextEntry = timelineEntries[cursor];
           if (
             nextEntry?.kind !== "work" ||
@@ -5315,6 +5342,21 @@ export function buildTimelineRows(input: {
         }),
       ),
     );
+  }
+
+  // A tool row's bottom gap depends on the row after it, so set it on the row object itself:
+  // LegendList then re-renders the earlier row when a tool row lands below it. The adjusted
+  // row is cached under its own inputs, so it keeps its identity while the flag holds.
+  for (let index = 0; index < nextRows.length; index += 1) {
+    const row = nextRows[index]!;
+    if (row.kind !== "work" && row.kind !== "command") continue;
+    const compactBottom = isToolTimelineRow(nextRows[index + 1]);
+    if ((row.compactBottom ?? false) === compactBottom) continue;
+    const { compactBottom: _previous, ...rest } = row;
+    const adjusted: TimelineRow = compactBottom ? { ...rest, compactBottom } : rest;
+    nextRows[index] = adjusted;
+    const cached = nextCacheRows.get(row.id);
+    if (cached) nextCacheRows.set(row.id, { inputs: cached.inputs, row: adjusted });
   }
 
   cache.rows = nextCacheRows;

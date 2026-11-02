@@ -24,7 +24,16 @@ describe("resolveMcpServerLabel", () => {
     expect(mcpToolNameServerKey(realName)).toBe("claude_ai_Claude_Docs");
     expect(resolveMcpServerLabel("claude_ai_Claude_Docs", statusNames)).toBe("Claude Docs");
     const custom = new Map([[mcpToolNameServerKey("my.server"), "my.server"]]);
-    expect(resolveMcpServerLabel("my_server", custom)).toBe("my.server");
+    expect(resolveMcpServerLabel("my_server", custom)).toBe("My.server");
+    // Codex keeps the real name in the tool payload; it still finds its status entry.
+    expect(resolveMcpServerLabel("my.server", custom)).toBe("My.server");
+  });
+
+  it("reads the same with or without the status event", () => {
+    const statusNames = new Map([["github", "github"]]);
+    expect(resolveMcpServerLabel("github", statusNames)).toBe(
+      resolveMcpServerLabel("github", noStatusNames),
+    );
   });
 
   it("falls back to cleaning up the flattened name", () => {
@@ -41,6 +50,14 @@ describe("mcpServerIconKind", () => {
     expect(mcpServerIconKind("claude_ai_Claude_Docs", "Claude Docs")).toBe("claude");
     expect(mcpServerIconKind("f5_thread", "F5 threads")).toBe("f5");
     expect(mcpServerIconKind("filesystem", "Filesystem")).toBe("monogram");
+  });
+
+  it("matches brands as whole words only", () => {
+    expect(mcpServerIconKind("my-github-mirror", "My-github-mirror")).toBe("github");
+    expect(mcpServerIconKind("linear_algebra", "Linear algebra")).toBe("linear");
+    expect(mcpServerIconKind("nonlinear_solver", "Nonlinear solver")).toBe("monogram");
+    expect(mcpServerIconKind("slackware_pkgs", "Slackware pkgs")).toBe("monogram");
+    expect(mcpServerIconKind("githubber", "Githubber")).toBe("monogram");
   });
 });
 
@@ -90,9 +107,10 @@ describe("summarizeMcpResult", () => {
 });
 
 describe("mcpAggregateStatus", () => {
-  it("lets running win, then failures, then all-declined", () => {
+  it("lets running win, then failures, then lost completions, then all-declined", () => {
     expect(mcpAggregateStatus(["completed", "failed", "running"])).toBe("running");
-    expect(mcpAggregateStatus(["completed", "failed", "declined"])).toBe("failed");
+    expect(mcpAggregateStatus(["interrupted", "failed", "declined"])).toBe("failed");
+    expect(mcpAggregateStatus(["completed", "interrupted", "declined"])).toBe("interrupted");
     expect(mcpAggregateStatus(["declined", "declined"])).toBe("declined");
     expect(mcpAggregateStatus(["completed", "declined"])).toBe("completed");
   });

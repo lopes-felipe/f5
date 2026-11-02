@@ -214,7 +214,7 @@ describe("MessagesTimeline live clock", () => {
     }
   });
 
-  it("counts a running MCP call up in its group card, and freezes it on an idle thread", async () => {
+  it("counts a running MCP call up, keeps it open through completion, and marks a lost one interrupted", async () => {
     localStorage.setItem(
       "t3code:app-settings:v1",
       JSON.stringify({
@@ -264,13 +264,35 @@ describe("MessagesTimeline live clock", () => {
         host.querySelector('[data-status="completed"] [data-testid="mcp-result-preview"]'),
       ).not.toBeNull();
 
-      // A lost completion on an idle thread stops counting.
+      // A call opened while it runs stays open once its completion folds into the same entry.
+      runningRow()?.querySelector<HTMLButtonElement>("button")?.click();
+      await vi.waitFor(() =>
+        expect(runningRow()?.querySelector('[data-testid="mcp-input-summary"]')).toBeNull(),
+      );
+      // Coalescing keeps the first snapshot's id and createdAt and records the finish apart.
+      const runningCall = entries[3] as Extract<TimelineEntry, { kind: "work" }>;
+      const finishedCall = {
+        ...runningCall,
+        entry: { ...runningCall.entry, status: "completed", mcpResult: "ok", completedAt: at(75) },
+      } as TimelineEntry;
+      const finished = [...entries.slice(0, 3), finishedCall];
+      await screen.rerender(<Harness entries={finished} />);
+      const exportRow = () =>
+        [...host.querySelectorAll<HTMLElement>('[data-slot="mcp-tool-call"]')].find((row) =>
+          row.textContent?.includes("export"),
+        );
+      await vi.waitFor(() => expect(exportRow()?.dataset.status).toBe("completed"));
+      expect(exportRow()?.querySelector('[data-testid="mcp-input-summary"]')).toBeNull();
+      expect(exportRow()?.textContent).toContain("1m 5s");
+
+      // On an idle thread, a call still marked running lost its completion.
       await screen.rerender(<Harness entries={entries} isWorking={false} />);
-      await vi.waitFor(() => expect(runningRow()?.textContent).toContain("1m 1s"));
-      now = Date.parse(at(90));
-      setNowTickerClockForTests(() => now);
-      await new Promise((resolve) => setTimeout(resolve, 1200));
-      expect(runningRow()?.textContent).toContain("1m 1s");
+      await vi.waitFor(() => {
+        expect(exportRow()?.dataset.status).toBe("interrupted");
+        expect(card()?.className).toContain("border-l-destructive/80");
+      });
+      expect(exportRow()?.querySelector('[aria-label="Interrupted"]')).not.toBeNull();
+      expect(exportRow()?.textContent).not.toContain("1m");
     } finally {
       await screen.unmount();
     }

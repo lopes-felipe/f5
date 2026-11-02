@@ -1601,44 +1601,76 @@ describe("deriveWorkLogEntries", () => {
     expect(deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-2"))).toEqual([]);
   });
 
-  it("replaces an MCP call's running snapshot with its completion", () => {
-    const entries = deriveWorkLogEntries(
+  it("folds an MCP call's completion into its first snapshot", () => {
+    const activities = [
+      makeActivity({
+        id: "mcp-updated",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        turnId: "turn-1",
+        kind: "tool.updated",
+        payload: {
+          itemType: "mcp_tool_call",
+          providerItemId: "mcp-1",
+          status: "inProgress",
+          mcpServerName: "f5_thread",
+          mcpToolName: "thread_read",
+          mcpInput: '{"limit":3}',
+        },
+      }),
+      makeActivity({
+        id: "mcp-completed",
+        createdAt: "2026-02-23T00:00:01.551Z",
+        turnId: "turn-1",
+        kind: "tool.completed",
+        // Some providers leave the input off the completion.
+        payload: {
+          itemType: "mcp_tool_call",
+          providerItemId: "mcp-1",
+          status: "completed",
+          mcpServerName: "f5_thread",
+          mcpToolName: "thread_read",
+          mcpResult: '{"reason":"self"}',
+        },
+      }),
+    ];
+    const running = deriveWorkLogEntries(activities.slice(0, 1), TurnId.makeUnsafe("turn-1"));
+    const summarize = (entries: ReturnType<typeof deriveWorkLogEntries>) =>
+      entries.map((entry) => [
+        entry.id,
+        entry.createdAt,
+        entry.status,
+        entry.completedAt,
+        entry.mcpInput,
+        entry.mcpResult,
+      ]);
+    expect(summarize(running)).toEqual([
       [
-        makeActivity({
-          id: "mcp-updated",
-          createdAt: "2026-02-23T00:00:01.000Z",
-          turnId: "turn-1",
-          kind: "tool.updated",
-          payload: {
-            itemType: "mcp_tool_call",
-            providerItemId: "mcp-1",
-            status: "inProgress",
-            mcpServerName: "f5_thread",
-            mcpToolName: "thread_read",
-            mcpInput: '{"limit":3}',
-          },
-        }),
-        makeActivity({
-          id: "mcp-completed",
-          createdAt: "2026-02-23T00:00:01.551Z",
-          turnId: "turn-1",
-          kind: "tool.completed",
-          payload: {
-            itemType: "mcp_tool_call",
-            providerItemId: "mcp-1",
-            status: "completed",
-            mcpServerName: "f5_thread",
-            mcpToolName: "thread_read",
-            mcpInput: '{"limit":3}',
-            mcpResult: '{"reason":"self"}',
-          },
-        }),
+        "mcp-updated",
+        "2026-02-23T00:00:01.000Z",
+        "inProgress",
+        undefined,
+        '{"limit":3}',
+        undefined,
       ],
-      TurnId.makeUnsafe("turn-1"),
-    );
-    expect(entries.map((entry) => [entry.id, entry.status, entry.startedAt])).toEqual([
-      ["mcp-completed", "completed", "2026-02-23T00:00:01.000Z"],
     ]);
+    const finished = deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-1"));
+    const expected = [
+      [
+        "mcp-updated",
+        "2026-02-23T00:00:01.000Z",
+        "completed",
+        "2026-02-23T00:00:01.551Z",
+        '{"limit":3}',
+        '{"reason":"self"}',
+      ],
+    ];
+    expect(summarize(finished)).toEqual(expected);
+    // The row keeps its id and position once a later turn starts.
+    expect(summarize(deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-2")))).toEqual(
+      expected,
+    );
+    // An unchanged call keeps its entry identity across derives.
+    expect(deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-1"))[0]).toBe(finished[0]);
   });
 
   it("labels MCP servers from status events, with a cleaned-up fallback", () => {

@@ -156,6 +156,8 @@ export interface WorkLogEntry {
   subagentStatesTruncated?: boolean;
   /** When the tool call first showed up; completed rows derive their duration from it. */
   startedAt?: string;
+  /** When a coalesced call finished; its `createdAt` stays the first snapshot's. */
+  completedAt?: string;
   /** A question request with its answers, rendered as a Q&A card. */
   userInput?: WorkLogUserInput;
 }
@@ -762,7 +764,7 @@ function inferWorkLogStatus(
 function shouldKeepHistoricalWorkEntry(
   activity: OrchestrationThreadActivity,
   latestTurnId: TurnId | undefined,
-  terminalCodexProviderItemIds: ReadonlySet<string>,
+  terminalCallKeys: ReadonlySet<string>,
 ): boolean {
   if (!latestTurnId || activity.kind === "htmlRender" || activity.kind === "mcpApp") {
     return true;
@@ -804,9 +806,11 @@ function shouldKeepHistoricalWorkEntry(
     (inferredStatus === "completed" ||
       inferredStatus === "failed" ||
       inferredStatus === "declined");
-  const isLifecycleOfTerminalCodexCollaboration = Boolean(
+  // Every snapshot of a finished collaboration or MCP call stays, so coalescing keeps the
+  // call's first id and position when its turn ends.
+  const isLifecycleOfTerminalCall = Boolean(
     toolPayload?.providerItemId &&
-    terminalCodexProviderItemIds.has(providerCallKey(activity.turnId, toolPayload.providerItemId)),
+    terminalCallKeys.has(providerCallKey(activity.turnId, toolPayload.providerItemId)),
   );
 
   return (
@@ -814,7 +818,7 @@ function shouldKeepHistoricalWorkEntry(
     isHistoricalMcpCall ||
     (isHistoricalFileChange && inferredStatus === "completed") ||
     isTerminalCodexCollaboration ||
-    isLifecycleOfTerminalCodexCollaboration
+    isLifecycleOfTerminalCall
   );
 }
 
@@ -929,32 +933,6 @@ function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>):
   return deduped.filter((entry): entry is WorkLogEntry => entry !== null);
 }
 
-/**
- * An MCP call reports a running snapshot (no result yet) and then its completion. Both
- * differ, so the dedupe keeps both and the stale snapshot spins forever beside the finished
- * card; once a call has a terminal entry, drop its earlier snapshots.
- */
-function dropSupersededMcpSnapshots(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
-  const finishedCallKeys = new Set<string>();
-  for (const entry of entries) {
-    if (
-      entry.itemType === "mcp_tool_call" &&
-      entry.providerItemId &&
-      workEntryLifecyclePrecedence(entry) === TERMINAL_LIFECYCLE_PRECEDENCE
-    ) {
-      finishedCallKeys.add(providerCallKey(entry.turnId, entry.providerItemId));
-    }
-  }
-  if (finishedCallKeys.size === 0) return [...entries];
-  return entries.filter(
-    (entry) =>
-      entry.itemType !== "mcp_tool_call" ||
-      !entry.providerItemId ||
-      workEntryLifecyclePrecedence(entry) === TERMINAL_LIFECYCLE_PRECEDENCE ||
-      !finishedCallKeys.has(providerCallKey(entry.turnId, entry.providerItemId)),
-  );
-}
-
 const TERMINAL_LIFECYCLE_PRECEDENCE = 2;
 
 function workEntryLifecyclePrecedence(entry: WorkLogEntry): number {
@@ -965,15 +943,55 @@ function workEntryLifecyclePrecedence(entry: WorkLogEntry): number {
   return 0;
 }
 
+/** Merged snapshots by their two inputs, so an unchanged call keeps its entry identity. */
+const coalescedSnapshots = new WeakMap<WorkLogEntry, WeakMap<WorkLogEntry, WorkLogEntry>>();
+
+function mergeProviderItemSnapshot(existing: WorkLogEntry, entry: WorkLogEntry): WorkLogEntry {
+  let byLater = coalescedSnapshots.get(existing);
+  const cached = byLater?.get(entry);
+  if (cached) return cached;
+  const laterDefined = Object.fromEntries(
+    Object.entries(entry).filter(([, value]) => value !== undefined),
+  ) as Partial<WorkLogEntry>;
+  const laterWins = workEntryLifecyclePrecedence(entry) >= workEntryLifecyclePrecedence(existing);
+  const lifecycleWinner = laterWins ? entry : existing;
+  const merged: WorkLogEntry = {
+    ...existing,
+    ...laterDefined,
+    id: existing.id,
+    createdAt: existing.createdAt,
+    tone: lifecycleWinner.tone,
+    label: lifecycleWinner.label,
+    ...(lifecycleWinner.activityKind ? { activityKind: lifecycleWinner.activityKind } : {}),
+    ...(lifecycleWinner.status ? { status: lifecycleWinner.status } : {}),
+    // `createdAt` stays the first snapshot's, so the finish time needs its own field.
+    ...(laterWins && workEntryLifecyclePrecedence(entry) === TERMINAL_LIFECYCLE_PRECEDENCE
+      ? { completedAt: entry.createdAt }
+      : {}),
+  };
+  if (!byLater) {
+    byLater = new WeakMap();
+    coalescedSnapshots.set(existing, byLater);
+  }
+  byLater.set(entry, merged);
+  return merged;
+}
+
 /**
- * Folds every snapshot of one collaboration or computer/preview call into a single entry, so a
- * session card counts one action per call and takes the final status.
+ * Folds every snapshot of one collaboration, computer/preview or MCP call into a single entry
+ * that keeps the first snapshot's id and position, so a session card counts one action per
+ * call and a card keeps its row (and expansion) when the call finishes.
  */
 function coalesceProviderItemSnapshots(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
   const result: WorkLogEntry[] = [];
   const indexByProviderItemId = new Map<string, number>();
   for (const entry of entries) {
-    if (!entry.providerItemId || (!entry.codexCollaborationTool && !automationToolSurface(entry))) {
+    if (
+      !entry.providerItemId ||
+      (!entry.codexCollaborationTool &&
+        !automationToolSurface(entry) &&
+        entry.itemType !== "mcp_tool_call")
+    ) {
       result.push(entry);
       continue;
     }
@@ -984,24 +1002,7 @@ function coalesceProviderItemSnapshots(entries: ReadonlyArray<WorkLogEntry>): Wo
       result.push(entry);
       continue;
     }
-    const existing = result[existingIndex]!;
-    const laterDefined = Object.fromEntries(
-      Object.entries(entry).filter(([, value]) => value !== undefined),
-    ) as Partial<WorkLogEntry>;
-    const lifecycleWinner =
-      workEntryLifecyclePrecedence(entry) >= workEntryLifecyclePrecedence(existing)
-        ? entry
-        : existing;
-    result[existingIndex] = {
-      ...existing,
-      ...laterDefined,
-      id: existing.id,
-      createdAt: existing.createdAt,
-      tone: lifecycleWinner.tone,
-      label: lifecycleWinner.label,
-      ...(lifecycleWinner.activityKind ? { activityKind: lifecycleWinner.activityKind } : {}),
-      ...(lifecycleWinner.status ? { status: lifecycleWinner.status } : {}),
-    };
+    result[existingIndex] = mergeProviderItemSnapshot(result[existingIndex]!, entry);
   }
   return result;
 }
@@ -1714,16 +1715,16 @@ export function deriveWorkLogEntries(
   const mode = options?.mode ?? "essential";
   const selectedFilter = options?.filter ?? "all";
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
-  const terminalCodexProviderItemIds = new Set<string>();
+  const terminalCallKeys = new Set<string>();
   for (const activity of ordered) {
     const payload = readToolActivityPayload(activity.payload);
     const status = inferWorkLogStatus(activity, payload?.status);
     if (
       payload?.providerItemId &&
-      payload.codexCollaborationTool &&
+      (payload.codexCollaborationTool || payload.itemType === "mcp_tool_call") &&
       (status === "completed" || status === "failed" || status === "declined")
     ) {
-      terminalCodexProviderItemIds.add(providerCallKey(activity.turnId, payload.providerItemId));
+      terminalCallKeys.add(providerCallKey(activity.turnId, payload.providerItemId));
     }
   }
   const userInputQuestions = userInputQuestionsByRequestId(ordered);
@@ -1775,7 +1776,7 @@ export function deriveWorkLogEntries(
     ordered
       .filter(
         (activity) =>
-          shouldKeepHistoricalWorkEntry(activity, latestTurnId, terminalCodexProviderItemIds) ||
+          shouldKeepHistoricalWorkEntry(activity, latestTurnId, terminalCallKeys) ||
           // Q&A cards stay in the timeline after their turn ends.
           isQuestionUserInputActivity(activity),
       )
@@ -1897,9 +1898,9 @@ export function deriveWorkLogEntries(
       const startedAt =
         toolStartedAt && toolStartedAt < activity.createdAt ? toolStartedAt : undefined;
       // Only these inputs depend on more than the activity itself.
-      const activityMcpServerName = readToolActivityPayload(activity.payload)?.mcpServerName;
-      const mcpServerLabel = activityMcpServerName
-        ? resolveMcpServerLabel(activityMcpServerName, mcpStatusNamesByKey)
+      const toolPayload = readToolActivityPayload(activity.payload);
+      const mcpServerLabel = toolPayload?.mcpServerName
+        ? resolveMcpServerLabel(toolPayload.mcpServerName, mcpStatusNamesByKey)
         : null;
       const cacheKey =
         activity.kind === "runtime.warning"
@@ -1914,7 +1915,6 @@ export function deriveWorkLogEntries(
       if (cached?.cacheKey === cacheKey) {
         return cached.entry;
       }
-      const toolPayload = readToolActivityPayload(activity.payload);
       const diagnostic = diagnosticFromActivity(activity, payload);
       const warningCategory = asTrimmedString(payload?.category);
       const usageLimit =
@@ -2128,7 +2128,7 @@ export function deriveWorkLogEntries(
     });
 
   const deduped = dedupeProviderItemWorkLogEntries(
-    dropSupersededMcpSnapshots(coalesceProviderItemSnapshots(correlateSubagentActivities(entries))),
+    coalesceProviderItemSnapshots(correlateSubagentActivities(entries)),
   );
   const paired = pairDiagnosticLifecycles(deduped);
   const modeFiltered = paired.filter((entry) => {
