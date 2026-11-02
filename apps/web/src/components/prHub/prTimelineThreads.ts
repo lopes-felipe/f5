@@ -1,4 +1,5 @@
 import type {
+  PrHubReviewComment,
   PrHubReviewThread,
   PrHubTimelineComment,
   PrHubTimelineEntry,
@@ -8,11 +9,13 @@ export interface PrTimelineThreadRow {
   readonly type: "thread";
   readonly id: string;
   readonly thread: PrHubReviewThread;
+  /** The thread's first comment, its finding, even when the timeline has not loaded it yet. */
   readonly root: PrHubTimelineComment;
-  /** Oldest first, so a conversation reads in the order it happened. */
+  /** In the thread's own order, so a conversation reads in the order it happened. */
   readonly replies: ReadonlyArray<PrHubTimelineComment>;
-  /** Thread comments the loaded timeline pages do not contain yet. */
-  readonly moreReplies: number;
+  /** The finding's review was dismissed; like a resolved thread, it folds as a unit. */
+  readonly dismissed: boolean;
+  /** The thread has comments the review threads read did not reach. */
   readonly hasMoreReplies: boolean;
   readonly url: string | null;
 }
@@ -21,15 +24,36 @@ export type PrTimelineRow =
   | { readonly type: "entry"; readonly entry: PrHubTimelineEntry }
   | PrTimelineThreadRow;
 
-const instant = (value: string) => {
-  const parsed = Date.parse(value);
-  return Number.isNaN(parsed) ? 0 : parsed;
-};
+/** A thread comment the loaded timeline pages do not contain, rendered from the thread's copy. */
+function threadCommentEntry(
+  thread: PrHubReviewThread,
+  comment: PrHubReviewComment,
+  fallbackCreatedAt: string,
+): PrHubTimelineComment {
+  return {
+    type: "comment",
+    id: comment.id,
+    databaseId: null,
+    kind: "review-comment",
+    author: comment.author ? { login: comment.author, name: null, avatarUrl: null } : null,
+    ...(comment.authorAssociation ? { authorAssociation: comment.authorAssociation } : {}),
+    body: comment.body ?? comment.bodyText,
+    createdAt: comment.createdAt ?? fallbackCreatedAt,
+    updatedAt: comment.updatedAt,
+    url: comment.url || null,
+    path: thread.path,
+    line: thread.line ?? thread.originalLine,
+    reviewState: null,
+    viewerCanUpdate: false,
+    reactions: [],
+  };
+}
 
 /**
  * Keeps review-thread replies with their finding. A thread takes the place of its oldest loaded
  * comment, so later replies — often submitted in another review — no longer scatter across the
- * timeline. Comments of threads that are not loaded stay where they are.
+ * timeline. Comments the timeline has not loaded come from the thread itself, so the finding is
+ * always the root. Comments of threads that are not loaded stay where they are.
  */
 export function groupTimelineReviewThreads(
   entries: ReadonlyArray<PrHubTimelineEntry>,
@@ -39,48 +63,45 @@ export function groupTimelineReviewThreads(
   for (const thread of threads) {
     for (const comment of thread.comments) threadByCommentId.set(comment.id, thread);
   }
-  const membersByThread = new Map<string, PrHubTimelineComment[]>();
-  const claimed = new Set<string>();
+  const loaded = new Map<string, PrHubTimelineComment>();
+  // Entries arrive newest first, so the last member seen is the thread's oldest loaded comment.
+  const anchorByThread = new Map<string, PrHubTimelineComment>();
   for (const entry of entries) {
-    if (entry.type !== "comment" || entry.kind !== "review-comment" || claimed.has(entry.id))
+    if (entry.type !== "comment" || entry.kind !== "review-comment" || loaded.has(entry.id))
       continue;
     const thread = threadByCommentId.get(entry.id);
     if (!thread) continue;
-    claimed.add(entry.id);
-    const members = membersByThread.get(thread.id) ?? [];
-    members.push(entry);
-    membersByThread.set(thread.id, members);
+    loaded.set(entry.id, entry);
+    anchorByThread.set(thread.id, entry);
   }
-  const threadRows = new Map<string, PrTimelineThreadRow>();
+  const rowByAnchor = new Map<string, PrTimelineThreadRow>();
   for (const thread of threads) {
-    const members = membersByThread.get(thread.id);
-    if (!members) continue;
-    const ordered = members.toSorted(
-      (left, right) => instant(left.createdAt) - instant(right.createdAt),
+    const anchor = anchorByThread.get(thread.id);
+    if (!anchor) continue;
+    const [root, ...replies] = thread.comments.map(
+      (comment) => loaded.get(comment.id) ?? threadCommentEntry(thread, comment, anchor.createdAt),
     );
-    const [root, ...replies] = ordered;
     if (!root) continue;
-    const moreReplies = Math.max(0, thread.comments.length - ordered.length);
-    threadRows.set(root.id, {
+    rowByAnchor.set(anchor.id, {
       type: "thread",
       id: thread.id,
       thread,
       root,
       replies,
-      moreReplies,
-      hasMoreReplies: moreReplies > 0 || thread.commentsPageInfo?.hasNextPage === true,
-      url: ordered.find((comment) => comment.url !== null)?.url ?? thread.comments[0]?.url ?? null,
+      dismissed: root.reviewState?.toUpperCase() === "DISMISSED",
+      hasMoreReplies: thread.commentsPageInfo?.hasNextPage === true,
+      url: [root, ...replies].find((comment) => comment.url !== null)?.url ?? null,
     });
   }
   const rows: PrTimelineRow[] = [];
   for (const entry of entries) {
-    const threadRow = entry.type === "comment" ? threadRows.get(entry.id) : undefined;
+    const threadRow = rowByAnchor.get(entry.id);
     if (threadRow) {
       rows.push(threadRow);
-      threadRows.delete(entry.id);
+      rowByAnchor.delete(entry.id);
       continue;
     }
-    if (entry.type === "comment" && entry.kind === "review-comment" && claimed.has(entry.id))
+    if (entry.type === "comment" && entry.kind === "review-comment" && loaded.has(entry.id))
       continue;
     rows.push({ type: "entry", entry });
   }

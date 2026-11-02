@@ -58,7 +58,7 @@ const shape = (rows: ReadonlyArray<PrTimelineRow>) =>
           thread: row.id,
           root: row.root.id,
           replies: row.replies.map((reply) => reply.id),
-          moreReplies: row.moreReplies,
+          dismissed: row.dismissed,
           hasMoreReplies: row.hasMoreReplies,
         },
   );
@@ -83,28 +83,35 @@ describe("groupTimelineReviewThreads", () => {
         thread: "T1",
         root: "finding",
         replies: ["reply-1", "reply-2"],
-        moreReplies: 0,
+        dismissed: false,
         hasMoreReplies: false,
       },
     ]);
   });
 
-  it("counts thread comments the loaded pages do not reach, and flags unread comment pages", () => {
+  it("roots a thread at its finding when the timeline has not loaded it, and flags unread comment pages", () => {
     const entries: PrHubTimelineEntry[] = [
       comment("reply-2", "2026-10-05T00:00:00Z"),
       comment("reply-1", "2026-10-03T00:00:00Z"),
     ];
-    expect(
-      shape(groupTimelineReviewThreads(entries, [thread("T1", ["finding", "reply-1", "reply-2"])])),
-    ).toEqual([
+    const [row] = groupTimelineReviewThreads(entries, [
+      thread("T1", ["finding", "reply-1", "reply-2"]),
+    ]);
+    expect(shape([row!])).toEqual([
       {
         thread: "T1",
-        root: "reply-1",
-        replies: ["reply-2"],
-        moreReplies: 1,
-        hasMoreReplies: true,
+        root: "finding",
+        replies: ["reply-1", "reply-2"],
+        dismissed: false,
+        hasMoreReplies: false,
       },
     ]);
+    // The finding comes from the thread's own copy, so its author and body are the real ones.
+    expect(row?.type === "thread" && row.root).toMatchObject({
+      author: { login: "finding" },
+      body: "finding",
+      createdAt: "2026-10-03T00:00:00Z",
+    });
     expect(
       shape(
         groupTimelineReviewThreads(
@@ -117,7 +124,14 @@ describe("groupTimelineReviewThreads", () => {
         ),
       ),
     ).toEqual([
-      { thread: "T1", root: "finding", replies: [], moreReplies: 0, hasMoreReplies: true },
+      { thread: "T1", root: "finding", replies: [], dismissed: false, hasMoreReplies: true },
+    ]);
+  });
+
+  it("marks a thread whose finding's review was dismissed", () => {
+    const finding = { ...comment("finding", "2026-10-01T00:00:00Z"), reviewState: "DISMISSED" };
+    expect(shape(groupTimelineReviewThreads([finding], [thread("T1", ["finding"])]))).toEqual([
+      { thread: "T1", root: "finding", replies: [], dismissed: true, hasMoreReplies: false },
     ]);
   });
 

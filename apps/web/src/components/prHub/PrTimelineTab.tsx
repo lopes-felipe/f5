@@ -4,7 +4,7 @@ import { PrSendToAgent } from "./PrSendToAgent";
 import { PrMarkdown } from "./PrMarkdown";
 import { PrAuthorLink } from "./PrAuthorLink";
 import { useEffect, useState } from "react";
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueries } from "@tanstack/react-query";
 import {
   AlertTriangleIcon,
   ChevronDownIcon,
@@ -15,9 +15,14 @@ import {
   MessageSquareIcon,
   PencilIcon,
 } from "lucide-react";
-import type { PrHubTimelineComment, TrackedPullRequest } from "@t3tools/contracts";
+import type {
+  PrHubReviewThread,
+  PrHubTimelineComment,
+  TrackedPullRequest,
+} from "@t3tools/contracts";
 
 import {
+  prHubReviewThreadCommentsQueryOptions,
   prHubReviewThreadsQueryOptions,
   prHubTimelineQueryOptions,
 } from "../../lib/prHubReactQuery";
@@ -181,9 +186,10 @@ function TimelineReviewThread({
   mutations: ReturnType<typeof usePrDetailMutations>;
 }) {
   const { thread, root, replies } = row;
-  // Resolved threads fold as a unit, so a settled finding does not crowd the timeline.
-  const [expanded, setExpanded] = useState(!thread.isResolved);
-  const replyCount = replies.length + row.moreReplies;
+  // Resolved and dismissed threads fold as a unit, so a settled finding does not crowd the
+  // timeline.
+  const [expanded, setExpanded] = useState(!thread.isResolved && !row.dismissed);
+  const replyCount = replies.length;
   const line = thread.line ?? thread.originalLine;
   const path = thread.path ?? root.path;
 
@@ -206,6 +212,7 @@ function TimelineReviewThread({
             Resolved
           </span>
         ) : null}
+        {row.dismissed ? <span className="shrink-0 font-medium">Review dismissed</span> : null}
         {thread.isOutdated ? <span className="shrink-0 font-medium">Outdated</span> : null}
         {expanded ? null : (
           <span className="shrink-0">
@@ -240,11 +247,7 @@ function TimelineReviewThread({
       ) : null}
       {row.hasMoreReplies ? (
         <div className="flex flex-wrap items-baseline gap-2 px-1 text-xs text-muted-foreground">
-          <span>
-            {row.moreReplies > 0
-              ? `${row.moreReplies.toLocaleString()} more ${row.moreReplies === 1 ? "reply" : "replies"}`
-              : "More replies"}
-          </span>
+          <span>More replies</span>
           {row.url ? (
             <a
               href={row.url}
@@ -261,6 +264,59 @@ function TimelineReviewThread({
   );
 }
 
+/** Thread pages the timeline walks for grouping; later threads keep plain time order. */
+const TIMELINE_THREAD_PAGES = 10;
+
+/**
+ * Thread membership and resolution come from the review threads read. Until it answers, or when
+ * it fails, review comments stay in plain time order. Every thread page is read, and threads the
+ * read cut short are completed, so a long thread's late replies still group and fold with it.
+ */
+function useTimelineReviewThreads(pr: TrackedPullRequest, active: boolean) {
+  const query = useInfiniteQuery({ ...prHubReviewThreadsQueryOptions(pr.key), enabled: active });
+  const pageCount = query.data?.pages.length ?? 0;
+  useEffect(() => {
+    if (
+      active &&
+      query.hasNextPage &&
+      !query.isFetchingNextPage &&
+      !query.isFetchNextPageError &&
+      pageCount < TIMELINE_THREAD_PAGES
+    )
+      void query.fetchNextPage();
+  }, [active, pageCount, query]);
+  const threads = query.data?.pages.flatMap((page) => page.threads) ?? [];
+  const partial = threads.filter((thread) => thread.commentsPageInfo?.hasNextPage);
+  const completions = useQueries({
+    queries: partial.map((thread) => ({
+      ...prHubReviewThreadCommentsQueryOptions(pr.key, thread.id),
+      enabled: active,
+    })),
+  });
+  const completed = new Map(
+    partial.flatMap((thread, index) => {
+      const data = completions[index]?.data;
+      return data && data.comments.length >= thread.comments.length
+        ? [[thread.id, data] as const]
+        : [];
+    }),
+  );
+  return threads.map((thread): PrHubReviewThread => {
+    const full = completed.get(thread.id);
+    return full
+      ? {
+          ...thread,
+          comments: full.comments,
+          commentsPageInfo: {
+            hasNextPage: full.hasNextPage,
+            endCursor: null,
+            truncated: false,
+          },
+        }
+      : thread;
+  });
+}
+
 export function PrTimelineTab({
   pr,
   active,
@@ -275,16 +331,7 @@ export function PrTimelineTab({
   const entries = pages.flatMap((page) => page.entries);
   const warning = pages.find((page) => page.warning)?.warning;
   const truncated = pages.some((page) => page.pageInfo.truncated);
-  // Thread membership and resolution come from the review threads read; until it answers, or
-  // when it fails, review comments stay in plain time order.
-  const threadsQuery = useInfiniteQuery({
-    ...prHubReviewThreadsQueryOptions(pr.key),
-    enabled: active,
-  });
-  const rows = groupTimelineReviewThreads(
-    entries,
-    threadsQuery.data?.pages.flatMap((page) => page.threads) ?? [],
-  );
+  const rows = groupTimelineReviewThreads(entries, useTimelineReviewThreads(pr, active));
 
   if (query.isPending) {
     return (
@@ -338,7 +385,7 @@ export function PrTimelineTab({
           if (row.type === "thread") {
             return (
               <TimelineReviewThread
-                key={`thread:${row.id}:${row.thread.isResolved}`}
+                key={`thread:${row.id}:${row.thread.isResolved}:${row.dismissed}`}
                 pr={pr}
                 row={row}
                 mutations={mutations}
