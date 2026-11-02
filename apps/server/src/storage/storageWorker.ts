@@ -21,6 +21,13 @@ export type StorageWorkerTask =
     }
   | { kind: "measure"; roots: string[]; checkpoints: string[]; fileRoots?: string[] }
   | { kind: "repositories"; roots: string[] }
+  | {
+      kind: "checkoutScan";
+      checkouts: Array<{ root: string; commonDir: string | null }>;
+      nowMs: number;
+      sizeBudgetMs: number;
+    }
+  | { kind: "removeDependencyFolder"; path: string; checkoutRoot: string; identity: FileIdentity }
   | { kind: "inspectBatch"; items: Array<{ path: string; application?: "chrome" | "bambu" }> }
   | { kind: "inspect"; path: string; application?: "chrome" | "bambu" }
   | {
@@ -74,6 +81,18 @@ export async function executeStorageTask(
     return discoverProviderCandidates(task.providerId, task.root);
   }
   if (task.kind === "repositories") return discoverRepositories(task.roots);
+  if (task.kind === "checkoutScan") {
+    const { scanCheckoutGarbage } = await import("./checkoutGarbage.ts");
+    return scanCheckoutGarbage(task);
+  }
+  if (task.kind === "removeDependencyFolder") {
+    const { removeDependencyFolder } = await import("./checkoutGarbage.ts");
+    return removeDependencyFolder({
+      path: task.path,
+      checkoutRoot: task.checkoutRoot,
+      identity: task.identity,
+    });
+  }
   if (task.kind === "measure") {
     const files: EnumeratedFile[] = [],
       checkpointEntries: StorageMeasurement["checkpointEntries"] = [];
@@ -316,9 +335,16 @@ export function runStorageTask<A>(
   signal?: AbortSignal,
   // Cache inspection/removal can involve millions of files. Their lifetime is
   // controlled by cancellation and the owner pipe, not an absolute 30s cutoff.
-  timeoutMs: number | undefined = ["inspectBatch", "inspect", "remove"].includes(task.kind)
+  timeoutMs: number | undefined = [
+    "inspectBatch",
+    "inspect",
+    "remove",
+    "removeDependencyFolder",
+  ].includes(task.kind)
     ? undefined
-    : 30_000,
+    : task.kind === "checkoutScan"
+      ? 120_000
+      : 30_000,
 ): Promise<A> {
   const source = import.meta.url.endsWith(".ts");
   const entry = source

@@ -125,6 +125,36 @@ export const listStorageAutomationAudit = (limit: number, source?: "automatic" |
     })) satisfies ReadonlyArray<StorageAutomationAuditEntry>;
   });
 
+/**
+ * When a job started skipping without a success since, and its latest skip
+ * reason. `waitingSince` is null when the newest entry is not a skip.
+ */
+export const readSkipsSinceLastSuccess = (job: StorageAutomationJob) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{
+      readonly waitingSince: string | null;
+      readonly lastSkipReason: string | null;
+    }>`
+      WITH last_success AS (
+        SELECT COALESCE(MAX(created_at), '') AS at FROM storage_automation_audit
+        WHERE job = ${job} AND result IN ('removed', 'pulled')
+      )
+      SELECT
+        (SELECT MIN(audit.created_at) FROM storage_automation_audit AS audit, last_success
+          WHERE audit.job = ${job} AND audit.result = 'skipped'
+            AND audit.created_at > last_success.at) AS "waitingSince",
+        (SELECT audit.reason FROM storage_automation_audit AS audit, last_success
+          WHERE audit.job = ${job} AND audit.result = 'skipped'
+            AND audit.created_at > last_success.at
+          ORDER BY audit.created_at DESC, audit.rowid DESC LIMIT 1) AS "lastSkipReason"
+    `;
+    return {
+      waitingSince: rows[0]?.waitingSince ?? null,
+      lastSkipReason: rows[0]?.lastSkipReason ?? null,
+    };
+  });
+
 export const pruneStorageAutomationAudit = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const cutoff = new Date(Date.now() - AUDIT_RETENTION_MS).toISOString();

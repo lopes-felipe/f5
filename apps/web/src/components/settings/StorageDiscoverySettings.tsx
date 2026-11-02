@@ -7,7 +7,12 @@ import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import { toastManager } from "../ui/toast";
 
-export function StorageDiscoverySettings() {
+export function StorageDiscoverySettings({
+  implicitRoots = [],
+}: {
+  /** Project folders that are not repositories, searched for repositories automatically. */
+  readonly implicitRoots?: ReadonlyArray<string>;
+}) {
   const settings = useSettings((s) => s.storageDiscovery);
   const client = useQueryClient();
   const [roots, setRoots] = useState(settings.repositoryRoots.join("\n"));
@@ -52,7 +57,8 @@ export function StorageDiscoverySettings() {
         manual selection.
       </p>
       <label className="flex items-center justify-between gap-3 text-sm">
-        Scan developer caches, Chrome caches, and BambuStudio logs
+        Scan developer caches, browser downloads, unused Docker images, Chrome caches, and
+        BambuStudio logs
         <Switch
           aria-label="Scan machine cleanup candidates"
           checked={enabled}
@@ -70,6 +76,22 @@ export function StorageDiscoverySettings() {
           disabled={pending}
         />
       </label>
+      {implicitRoots.length > 0 ? (
+        <div className="space-y-1 text-xs">
+          <span>From projects</span>
+          <ul
+            aria-label="Repository search folders from projects"
+            className="space-y-1 rounded border border-border bg-background p-2 font-mono text-muted-foreground"
+          >
+            {implicitRoots.map((root) => (
+              <li key={root}>{root}</li>
+            ))}
+          </ul>
+          <p className="text-muted-foreground">
+            These projects are folders of repositories, so they are searched automatically.
+          </p>
+        </div>
+      ) : null}
       <p className="text-xs text-muted-foreground">
         Repositories are discovered without adding projects. Scans skip dependencies, build output,
         symlinks, and other mounted volumes. Prefer specific source-code folders: selecting an

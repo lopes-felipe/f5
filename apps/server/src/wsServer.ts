@@ -3083,6 +3083,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         ),
       );
       yield* Scope.provide(worktreeSetup.startup, subscriptionsScope);
+      // Takes the maintenance lock before the queue dispatcher can resume a turn.
+      yield* Scope.provide(
+        storageMaintenance.startScheduledCompaction(
+          Deferred.await(orchestrationRuntime).pipe(Effect.ignore),
+        ),
+        subscriptionsScope,
+      );
       yield* Scope.provide(orchestrationReactor.start, subscriptionsScope);
       yield* Scope.provide(providerSessionReaper.start(), subscriptionsScope);
       let lastStorageRevision = -1;
@@ -3124,6 +3131,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         yield* Scope.provide(
           diskSpaceMonitor.value.start({
             estimateReclaimable: storageMaintenance.summarizeReclaimable,
+            pendingCompaction: storageMaintenance.getPendingCompaction,
           }),
           subscriptionsScope,
         );
@@ -6776,6 +6784,16 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const body = stripRequestTag(request.body);
         yield* storageMaintenance.cancel(body.operationId);
         return undefined;
+      }
+
+      case WS_METHODS.storageScheduleCompaction: {
+        const { storageMaintenance } = yield* awaitOrchestrationRuntimeForRoute;
+        const body = stripRequestTag(request.body);
+        const result = yield* storageMaintenance
+          .scheduleCompaction(body.when)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+        if (diskSpaceMonitor._tag === "Some") yield* diskSpaceMonitor.value.noteStorageChanged;
+        return result;
       }
 
       case WS_METHODS.storageAutomationDryRun: {

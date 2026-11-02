@@ -5,10 +5,15 @@ import {
   workflowEntries,
 } from "../orchestration/workflowArchiveLifecycle.ts";
 import { storageLstat, storageReadDir } from "./diskUsage.ts";
-import { recordStorageAutomationAudit, pruneStorageAutomationAudit } from "./automationAudit.ts";
+import {
+  pruneStorageAutomationAudit,
+  readSkipsSinceLastSuccess,
+  recordStorageAutomationAudit,
+} from "./automationAudit.ts";
 import { databaseMaintenanceEffect } from "./databaseMaintenance.ts";
 import {
   MACHINE_CATEGORY_IDS,
+  isUngatedProviderTarget,
   scanCleanupProviders,
   type CleanupFileReview,
 } from "./cleanupProviders.ts";
@@ -43,7 +48,13 @@ import * as Crypto from "node:crypto";
 import * as FS from "node:fs/promises";
 import * as OS from "node:os";
 import * as Path from "node:path";
-import { captureStorageActivity, type StorageActivitySnapshot } from "./storageActivity.ts";
+import {
+  activityForTarget,
+  captureStorageActivity,
+  readStorageProcesses,
+  type StorageActivitySnapshot,
+} from "./storageActivity.ts";
+import type { CheckoutGarbageScan } from "./checkoutGarbage.ts";
 
 import {
   type CheckpointRef,
@@ -51,6 +62,9 @@ import {
   type ProjectKind,
   CommandId,
   type DiskSpaceReclaimableItem,
+  type PendingDatabaseCompaction,
+  type StorageScheduleCompactionRequest,
+  type StorageScheduleCompactionResult,
   type StorageCleanupCategoryId,
   type StorageAutomationJob,
   type StorageCleanupCategoryResult,
@@ -120,6 +134,7 @@ import {
   liveDatabaseBytes,
   readDatabasePages,
   vacuumFreeSpaceShortfall,
+  vacuumSpaceRequirement,
 } from "./databaseSpace.ts";
 import {
   enumerateFiles,
@@ -131,6 +146,7 @@ import {
   type EnumeratedFile,
 } from "./diskUsage.ts";
 import { probeLegacyState, type LegacyProbeResult } from "./legacyStateProbe.ts";
+import { inspectDockerImages, pruneDockerImages } from "./dockerImages.ts";
 import {
   isPathWithinRoot,
   removeFileIfSafe,
@@ -151,9 +167,18 @@ const AUTO_CONVERT_MIN_FREE_BYTES = 256 * 1024 * 1024;
 const AUTO_CONVERT_MIN_FREE_FRACTION = 0.2;
 /** Conversion reserves the database, so automatic runs wait for this quiet interval. */
 const AUTO_CONVERT_QUIET_MS = 30 * 60 * 1_000;
+/** Automatic conversion skipped this long is offered to run now or at the next start. */
+const PENDING_COMPACTION_AFTER_MS = 3 * 24 * 60 * 60 * 1_000;
+export const AUTO_CONVERT_SKIP_PREFIX = "switching to incremental auto-vacuum waits: ";
+/** A compaction scheduled for the next start waits this long at most for the server to be ready. */
+const SCHEDULED_COMPACTION_READY_WAIT = "20 seconds";
 export const PURGE_FAILURE_BACKOFF_MS = 24 * 60 * 60 * 1_000;
 
 const WORKTREE_SCAN_MAX_DEPTH = 4;
+const DOCKER_IMAGES_TARGET_ID = "docker:unused-images";
+/** Dependency folders of a checkout a thread used this recently are kept. */
+const CHECKOUT_RECENT_USE_MS = 24 * 60 * 60 * 1_000;
+const CHECKOUT_SIZE_BUDGET_MS = 60_000;
 const GIT_WORKTREE_METADATA_UNRESOLVED = "Git worktree metadata could not be resolved.";
 
 export class StorageMaintenanceError extends Schema.TaggedErrorClass<StorageMaintenanceError>()(
@@ -256,6 +281,25 @@ export interface StorageMaintenanceShape {
     readonly maxDurationMs: number;
   }) => Effect.Effect<DatabaseSpaceResult, StorageMaintenanceError>;
   /**
+   * The one-time conversion the automatic job has skipped for
+   * {@link PENDING_COMPACTION_AFTER_MS} or longer, or null. Never fails.
+   */
+  readonly getPendingCompaction: Effect.Effect<PendingDatabaseCompaction | null>;
+  /** Requests the full compaction for the next server start, or withdraws the request. */
+  readonly scheduleCompaction: (
+    when: StorageScheduleCompactionRequest["when"],
+  ) => Effect.Effect<StorageScheduleCompactionResult, StorageMaintenanceError>;
+  /**
+   * Startup, before the queue dispatcher starts: when a compaction was
+   * scheduled, removes the request first (a crash cannot loop), takes the
+   * maintenance lock at once so no turn starts or resumes before it, and
+   * compacts once `ready` completes or after a short wait. Free space is
+   * still checked; quiet-time and busy-agent checks are not.
+   */
+  readonly startScheduledCompaction: (
+    ready: Effect.Effect<void>,
+  ) => Effect.Effect<void, never, Scope.Scope>;
+  /**
    * Per-thread provider logs last written before `modifiedBefore` whose
    * thread is deleted or gone (or archived, with `includeArchived`), and not
    * busy. Live threads keep their logs: transcript repair rebuilds from them.
@@ -357,8 +401,19 @@ interface WorktreeReview {
   /** External worktrees: the project checkout Git runs in. */
   readonly projectRoot?: string;
 }
+interface DependencyFolderReview {
+  readonly checkoutRoot: string;
+  readonly identity: FileIdentity;
+}
+interface TemporaryPackReview {
+  readonly repositoryRoot: string;
+  readonly packDirectory: string;
+  readonly identity: FileIdentity;
+}
 interface StorageReview {
   readonly files?: ReadonlyMap<string, CleanupFileReview>;
+  readonly dependencyFolders?: ReadonlyMap<string, DependencyFolderReview>;
+  readonly temporaryPacks?: ReadonlyMap<string, TemporaryPackReview>;
   readonly worktrees: ReadonlyMap<string, WorktreeReview>;
   readonly identities: ReadonlyMap<string, FileIdentity | null>;
   readonly threads: ReadonlyMap<string, ThreadRow>;
@@ -393,7 +448,8 @@ function isArchivePolicy(policy: WorktreeRemovalPolicy): boolean {
   );
 }
 function manualAuditJob(category: StorageCleanupCategoryId): StorageAutomationJob {
-  if (MACHINE_CATEGORY_IDS.has(category)) return "machine-cleanup";
+  if (MACHINE_CATEGORY_IDS.has(category) || category === "dockerUnusedImages")
+    return "machine-cleanup";
   if (category.startsWith("purge")) return "thread-purge";
   if (category === "databaseVacuum") return "database-vacuum";
   if (category === "codexMarketplaceStaging") return "codex-marketplace-staging";
@@ -804,9 +860,9 @@ const makeStorageMaintenance = Effect.gen(function* () {
   );
   const withSql = Effect.provideService(SqlClient.SqlClient, sql);
   const readPages = withSql(readDatabasePages);
-  const compactDatabase = (operationId?: string) =>
+  const compactDatabase = (operationId?: string, heldGate?: Scope.Closeable) =>
     Effect.gen(function* () {
-      const gate = yield* engine.acquireMaintenanceLock();
+      const gate = heldGate ?? (yield* engine.acquireMaintenanceLock());
       return yield* Effect.scoped(
         Effect.gen(function* () {
           if (operationId && cancelledOperations.has(operationId))
@@ -1091,11 +1147,13 @@ const makeStorageMaintenance = Effect.gen(function* () {
         kind: input.metadataOperation.includes("legacy") ? "legacyCleanup" : "storageMaintenance",
         ownThreadId: null,
       };
-      if (basePolicy.kind === "externalCleanup")
+      if (basePolicy.kind === "externalCleanup") {
+        const searchRoots = yield* readRepositorySearchRoots;
         basePolicy = {
           ...basePolicy,
-          discoveredRepositoryRoots: (yield* readDiscovery).repositoryRoots,
+          discoveredRepositoryRoots: [...searchRoots.configured, ...searchRoots.implicit],
         };
+      }
       const policy: WorktreeRemovalPolicy =
         (basePolicy.kind === "storageMaintenance" || basePolicy.kind === "externalCleanup") &&
         input.disposablePaths
@@ -1491,14 +1549,43 @@ const makeStorageMaintenance = Effect.gen(function* () {
       return { targets, warnings };
     });
 
+  /**
+   * Configured repository search folders, plus registered project folders
+   * that are not repositories themselves (a folder of repositories). Cached
+   * briefly for the same settings and projects: worktree readiness checks
+   * read it once per worktree, and each project costs a Git call.
+   */
+  let searchRootsCache: {
+    readonly atMs: number;
+    readonly key: string;
+    readonly value: { readonly configured: ReadonlyArray<string>; readonly implicit: string[] };
+  } | null = null;
+  const readRepositorySearchRoots = Effect.gen(function* () {
+    const configured = (yield* readDiscovery).repositoryRoots;
+    const projects = yield* listProjectRoots();
+    const key = JSON.stringify([configured, projects.map((entry) => entry.root)]);
+    if (searchRootsCache?.key === key && Date.now() - searchRootsCache.atMs < 60_000)
+      return searchRootsCache.value;
+    const implicit: string[] = [];
+    for (const { project, root } of projects) {
+      if (root === null || root === Path.parse(root).root || root === OS.homedir()) continue;
+      if ((yield* commonDirOf(project.workspaceRoot)) !== null) continue;
+      if ([...configured, ...implicit].some((other) => pathContainsOrEquals(other, root))) continue;
+      implicit.push(root);
+    }
+    const value = { configured, implicit };
+    searchRootsCache = { atMs: Date.now(), key, value };
+    return value;
+  });
+
   /** Registered linked worktrees of each project repository, read once per repository. */
   const listProjectRegistrations = () =>
     Effect.gen(function* () {
       const warnings: StoragePathWarning[] = [];
       const projects = [...(yield* listProjectRoots())];
       const protectedProjectRoots = projects.flatMap((entry) => (entry.root ? [entry.root] : []));
-      const discovery = yield* readDiscovery;
-      for (const root of discovery.repositoryRoots) {
+      const searchRoots = yield* readRepositorySearchRoots;
+      for (const root of [...searchRoots.configured, ...searchRoots.implicit]) {
         const found = yield* Effect.tryPromise(() =>
           runStorageTask<{ repositories: string[]; warnings: StoragePathWarning[] }>({
             kind: "repositories",
@@ -1526,10 +1613,14 @@ const makeStorageMaintenance = Effect.gen(function* () {
         readonly projectRoot: string;
         readonly projectName: string;
       }> = [];
+      /** Every checkout seen, main or linked, with its repository's common dir. */
+      const checkouts = new Map<string, string>();
       for (const { project, root } of projects) {
         if (root === null) continue;
         const common = yield* commonDirOf(project.workspaceRoot);
-        if (!common || seenRepositories.has(common)) continue;
+        if (!common) continue;
+        if (!checkouts.has(root)) checkouts.set(root, common);
+        if (seenRepositories.has(common)) continue;
         seenRepositories.add(common);
         const entries = yield* git.listWorktrees(project.workspaceRoot).pipe(
           Effect.catch((error) =>
@@ -1541,6 +1632,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
           ),
         );
         for (const entry of entries) {
+          if (!entry.bare && !checkouts.has(entry.canonicalPath))
+            checkouts.set(entry.canonicalPath, common);
           if (entry.isMain || entry.bare || seen.has(entry.canonicalPath)) continue;
           seen.add(entry.canonicalPath);
           registrations.push({
@@ -1554,10 +1647,13 @@ const makeStorageMaintenance = Effect.gen(function* () {
       }
       return {
         registrations,
+        checkouts: [...checkouts].map(([root, commonDir]) => ({ root, commonDir })),
+        implicitRoots: searchRoots.implicit,
         projectRoots: protectedProjectRoots,
         warnings,
       };
     });
+  type ProjectRegistrations = Effect.Success<ReturnType<typeof listProjectRegistrations>>;
 
   /**
    * Linked worktrees of project repositories that live outside the F5 and
@@ -1569,6 +1665,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
     readonly worktreeReviews: Map<string, WorktreeReview>;
     readonly signal?: AbortSignal | undefined;
     readonly activitySnapshot?: StorageActivitySnapshot;
+    readonly listed?: ProjectRegistrations;
   }) =>
     Effect.gen(function* () {
       const warnings: StoragePathWarning[] = [];
@@ -1576,7 +1673,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
       const managedRoots = yield* canonicalWorktreesRoots;
       const legacyRoot = yield* canonicalOrNull(Path.join(legacyT3BaseDir(), "worktrees"));
       const disposablePathsFor = yield* makeDisposablePathsLookup;
-      const listed = yield* listProjectRegistrations();
+      const listed = scan?.listed ?? (yield* listProjectRegistrations());
       warnings.push(...listed.warnings);
       const candidates: Array<(typeof listed.registrations)[number]> = [];
       for (const registration of listed.registrations) {
@@ -1664,10 +1761,13 @@ const makeStorageMaintenance = Effect.gen(function* () {
     });
 
   /** Unlocked worktree registrations whose directory no longer exists. */
-  const computeStaleRegistrationTargets = (threads?: ReadonlyArray<ThreadRow>) =>
+  const computeStaleRegistrationTargets = (
+    threads?: ReadonlyArray<ThreadRow>,
+    registrations?: ProjectRegistrations,
+  ) =>
     Effect.gen(function* () {
       const allThreads = threads ?? (yield* queryThreadRows());
-      const listed = yield* listProjectRegistrations();
+      const listed = registrations ?? (yield* listProjectRegistrations());
       const targets: Array<StorageCleanupTarget & { readonly projectRoot: string }> = [];
       for (const { entry, projectRoot, projectName } of listed.registrations) {
         if (entry.locked !== null) continue;
@@ -1745,6 +1845,181 @@ const makeStorageMaintenance = Effect.gen(function* () {
           ...probe.targetsByCategory,
           legacyT3Worktrees: enrichedTargets,
         },
+      };
+    });
+
+  /**
+   * Per checkout: whether an agent is working in it, and the latest
+   * interaction of a thread bound to it. A thread binds to the innermost
+   * checkout containing its folder; one working in a folder of repositories
+   * binds to none of them.
+   */
+  const readCheckoutThreadUse = (input: {
+    readonly threads: ReadonlyArray<ThreadRow>;
+    readonly busySegments: ReadonlySet<string>;
+    readonly checkoutRoots: ReadonlyArray<string>;
+    readonly nowMs: number;
+  }) =>
+    Effect.gen(function* () {
+      const use = new Map<string, { busy: boolean; recent: boolean }>();
+      const canonicalDirs = new Map<string, string>();
+      for (const thread of input.threads) {
+        if (thread.deletedAt !== null) continue;
+        const directory = thread.worktreePath ?? thread.workspaceRoot;
+        if (!directory) continue;
+        const segment = toSafeThreadAttachmentSegment(thread.threadId);
+        const busy = segment !== null && input.busySegments.has(segment);
+        const recent = Date.parse(thread.lastInteractionAt) > input.nowMs - CHECKOUT_RECENT_USE_MS;
+        if (!busy && !recent) continue;
+        let canonical = canonicalDirs.get(directory);
+        if (canonical === undefined) {
+          canonical = (yield* canonicalOrNull(directory)) ?? Path.resolve(directory);
+          canonicalDirs.set(directory, canonical);
+        }
+        const owner = input.checkoutRoots
+          .filter((root) => pathContainsOrEquals(root, canonical))
+          .toSorted((left, right) => right.length - left.length)[0];
+        if (!owner) continue;
+        const previous = use.get(owner);
+        use.set(owner, {
+          busy: (previous?.busy ?? false) || busy,
+          recent: (previous?.recent ?? false) || recent,
+        });
+      }
+      return (root: string): string | undefined => {
+        const entry = use.get(root);
+        if (entry?.busy) return "An agent is working in this checkout.";
+        if (entry?.recent) return "A thread used this checkout in the last 24 hours.";
+        return undefined;
+      };
+    });
+
+  const activityBlockReason = (
+    snapshot: StorageActivitySnapshot | undefined,
+    path: string,
+  ): string | undefined => {
+    if (!snapshot) return undefined;
+    if ("error" in snapshot) return snapshot.error;
+    const activity = activityForTarget(path, snapshot.processes);
+    return activity.state === "idle" ? undefined : activity.reason;
+  };
+
+  /**
+   * Dependency and build folders, and Git's leftover temporary packs, in
+   * every known checkout: project and discovered repositories, their linked
+   * worktrees, and F5's managed worktrees.
+   */
+  const computeCheckoutGarbageTargets = (input: {
+    readonly threads: ReadonlyArray<ThreadRow>;
+    readonly busySegments: ReadonlySet<string>;
+    readonly managedWorktreePaths: ReadonlyArray<string>;
+    readonly registrations: ProjectRegistrations;
+    readonly activitySnapshot: StorageActivitySnapshot;
+    readonly signal?: AbortSignal | undefined;
+  }) =>
+    Effect.gen(function* () {
+      const nowMs = Date.now();
+      const checkouts = new Map<string, string | null>();
+      for (const checkout of input.registrations.checkouts)
+        checkouts.set(checkout.root, checkout.commonDir);
+      for (const path of input.managedWorktreePaths) {
+        const canonical = (yield* canonicalOrNull(path)) ?? Path.resolve(path);
+        if (!checkouts.has(canonical)) checkouts.set(canonical, null);
+      }
+      const folderReviews = new Map<string, DependencyFolderReview>();
+      const packReviews = new Map<string, TemporaryPackReview>();
+      const scanned = yield* Effect.tryPromise(() =>
+        runStorageTask<CheckoutGarbageScan>(
+          {
+            kind: "checkoutScan",
+            checkouts: [...checkouts].map(([root, commonDir]) => ({ root, commonDir })),
+            nowMs,
+            sizeBudgetMs: CHECKOUT_SIZE_BUDGET_MS,
+          },
+          input.signal,
+        ),
+      ).pipe(Effect.result);
+      if (scanned._tag === "Failure")
+        return {
+          folderTargets: [] as StorageCleanupTarget[],
+          packTargets: [] as StorageCleanupTarget[],
+          folderReviews,
+          packReviews,
+          measured: false,
+          warnings: [
+            warningFor(
+              input.registrations.checkouts[0]?.root ?? config.worktreesDir,
+              `Checkouts could not be scanned: ${String(scanned.failure)}`,
+            ),
+          ],
+        };
+      const scan = scanned.success;
+      const threadBlock = yield* readCheckoutThreadUse({
+        threads: input.threads,
+        busySegments: input.busySegments,
+        checkoutRoots: [...checkouts.keys()],
+        nowMs,
+      });
+      const folderTargets = scan.folders.map((folder): StorageCleanupTarget => {
+        const blocked =
+          threadBlock(folder.checkoutRoot) ??
+          activityBlockReason(input.activitySnapshot, folder.checkoutRoot);
+        if (!blocked)
+          folderReviews.set(folder.path, {
+            checkoutRoot: folder.checkoutRoot,
+            identity: folder.identity,
+          });
+        return {
+          id: folder.path,
+          label: homeRelative(folder.path),
+          path: folder.path,
+          bytes: folder.bytes,
+          projectName: Path.basename(folder.checkoutRoot),
+          safeToDelete: blocked === undefined,
+          latestMtime: new Date(folder.identity.mtimeMs).toISOString(),
+          detail: `${homeRelative(folder.checkoutRoot)} · ${folder.restoreHint}`,
+          ...(blocked
+            ? {
+                disabledReason: blocked,
+                blockingReasons: [{ code: "workspace_in_use", message: blocked }],
+              }
+            : {}),
+        };
+      });
+      const packTargets = scan.packs.map((pack): StorageCleanupTarget => {
+        const blocked = activityBlockReason(input.activitySnapshot, pack.repositoryRoot);
+        if (!blocked)
+          packReviews.set(pack.path, {
+            repositoryRoot: pack.repositoryRoot,
+            packDirectory: pack.packDirectory,
+            identity: pack.identity,
+          });
+        return {
+          id: pack.path,
+          label: `${Path.basename(pack.repositoryRoot)} · ${Path.basename(pack.path)}`,
+          path: pack.path,
+          bytes: pack.bytes,
+          projectName: Path.basename(pack.repositoryRoot),
+          safeToDelete: blocked === undefined,
+          latestMtime: new Date(pack.identity.mtimeMs).toISOString(),
+          detail: `Left by an interrupted Git fetch · ${homeRelative(pack.repositoryRoot)}`,
+          ...(blocked
+            ? {
+                disabledReason: blocked,
+                blockingReasons: [{ code: "workspace_in_use", message: blocked }],
+              }
+            : {}),
+        };
+      });
+      return {
+        folderTargets,
+        packTargets,
+        folderReviews,
+        packReviews,
+        measured: scan.measured,
+        warnings: scan.warnings
+          .slice(0, 20)
+          .map((warning) => warningFor(warning.path, warning.reason)),
       };
     });
 
@@ -2004,15 +2279,28 @@ const makeStorageMaintenance = Effect.gen(function* () {
         activitySnapshot,
       });
       warnings.push(...f5WorktreeCandidates.warnings);
+      const projectRegistrations = yield* listProjectRegistrations();
       const externalWorktreeCandidates = yield* computeExternalWorktreeTargets({
         threads: allThreads,
         worktreeReviews,
         signal,
         activitySnapshot,
+        listed: projectRegistrations,
       });
       warnings.push(...externalWorktreeCandidates.warnings);
-      const staleRegistrationCandidates = yield* computeStaleRegistrationTargets(allThreads);
+      const staleRegistrationCandidates = yield* computeStaleRegistrationTargets(allThreads, {
+        ...projectRegistrations,
+        warnings: [],
+      });
       warnings.push(...staleRegistrationCandidates.warnings);
+      const checkoutGarbage = yield* computeCheckoutGarbageTargets({
+        threads: allThreads,
+        busySegments,
+        managedWorktreePaths: listedWorktrees.paths,
+        registrations: projectRegistrations,
+        activitySnapshot,
+        signal,
+      });
       const vacuumBytes = yield* computeVacuumReclaimableBytes();
       phase("providers", measured.entries);
       const codexLeftovers = yield* computeCodexMarketplaceLeftovers(signal);
@@ -2070,6 +2358,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
               ...(config.defaultStateDir ? [config.defaultStateDir] : []),
             ]),
           ],
+          providerHomesDir,
           settings: discoverySettings,
           ...(signal ? { signal } : {}),
         }),
@@ -2250,6 +2539,79 @@ const makeStorageMaintenance = Effect.gen(function* () {
           }),
         );
       }
+      categories.push(
+        categoryUsage({
+          id: "dependencyFolders",
+          section: "worktrees",
+          title: "Delete dependency and build folders",
+          description:
+            "Deletes node_modules, .venv and .turbo folders in idle checkouts. Checkouts, branches and conversations stay; reinstall dependencies before working there again.",
+          bytes: checkoutGarbage.folderTargets.reduce((total, target) => total + target.bytes, 0),
+          reclaimableBytes: checkoutGarbage.folderTargets
+            .filter((target) => target.safeToDelete)
+            .reduce((total, target) => total + target.bytes, 0),
+          defaultSelected: false,
+          impact: "medium",
+          targets: checkoutGarbage.folderTargets,
+          warnings: checkoutGarbage.measured ? [] : checkoutGarbage.warnings,
+        }),
+        categoryUsage({
+          id: "gitTemporaryPacks",
+          section: "worktrees",
+          title: "Delete interrupted Git downloads",
+          description:
+            "Deletes temporary pack files older than a day that an interrupted git fetch left in a repository's object store.",
+          bytes: checkoutGarbage.packTargets.reduce((total, target) => total + target.bytes, 0),
+          reclaimableBytes: checkoutGarbage.packTargets
+            .filter((target) => target.safeToDelete)
+            .reduce((total, target) => total + target.bytes, 0),
+          defaultSelected: true,
+          impact: "none",
+          targets: checkoutGarbage.packTargets,
+        }),
+      );
+      warnings.push(...(checkoutGarbage.measured ? checkoutGarbage.warnings : []));
+      let dockerReclaimableBytes = 0;
+      if (discoverySettings.machineCleanupEnabled) {
+        const docker = yield* Effect.tryPromise(() => inspectDockerImages(undefined, signal)).pipe(
+          Effect.catch((error) =>
+            Effect.succeed({ status: "unavailable" as const, reason: String(error) }),
+          ),
+        );
+        const ready = docker.status === "ready" && docker.reclaimableBytes > 0;
+        if (ready) dockerReclaimableBytes = docker.reclaimableBytes;
+        categories.push(
+          categoryUsage({
+            id: "dockerUnusedImages",
+            section: "machine",
+            title: "Unused Docker images",
+            description:
+              "Runs docker image prune --all for images no container uses. Volumes, containers and build cache are kept.",
+            bytes: docker.status === "ready" ? docker.totalBytes : 0,
+            reclaimableBytes: dockerReclaimableBytes,
+            defaultSelected: false,
+            impact: "low",
+            disabledReason:
+              docker.status === "unavailable"
+                ? docker.reason
+                : ready
+                  ? undefined
+                  : "Every Docker image is used by a container.",
+            targets:
+              docker.status === "ready" && ready
+                ? [
+                    {
+                      id: DOCKER_IMAGES_TARGET_ID,
+                      label: "Unused Docker images",
+                      bytes: docker.reclaimableBytes,
+                      safeToDelete: true,
+                      detail: `${Math.max(0, docker.imageCount - docker.activeCount)} of ${docker.imageCount} images are not used by a container`,
+                    },
+                  ]
+                : [],
+          }),
+        );
+      }
 
       const legacyCategoryMeta: ReadonlyArray<{
         readonly id: LegacyCleanupCategoryId;
@@ -2408,7 +2770,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
       const reclaimableBytes =
         [...fileCandidates.values()].reduce((sum, bytes) => sum + bytes, 0) +
         sumNonOverlappingPathUsages(treeCandidates) +
-        vacuumBytes;
+        vacuumBytes +
+        dockerReclaimableBytes;
       const legacyUsages = Object.values(legacyProbe.targetsByCategory)
         .flatMap((targets) =>
           targets.map((target) => ({ path: target.path ?? target.id, bytes: target.bytes })),
@@ -2460,6 +2823,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
         machineBytes,
         serverName: OS.hostname(),
         discoveryRoots: discoverySettings.repositoryRoots,
+        implicitDiscoveryRoots: projectRegistrations.implicitRoots,
         machineCleanupScanned: discoverySettings.machineCleanupEnabled,
         scannedAt: nowIso(),
         stateDir: config.stateDir,
@@ -2531,6 +2895,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
         persistenceBytes,
         review: {
           files: providerScan.reviews,
+          dependencyFolders: checkoutGarbage.folderReviews,
+          temporaryPacks: checkoutGarbage.packReviews,
           identities,
           worktrees: worktreeReviews,
           threads: new Map(allThreads.map((thread) => [thread.threadId, thread])),
@@ -2649,10 +3015,12 @@ const makeStorageMaintenance = Effect.gen(function* () {
             expiresAt: new Date(issued.expiresAtMs).toISOString(),
           };
       }
+      const pendingCompaction = latest ? yield* getPendingCompaction : null;
       return {
         report: latest
           ? {
               ...latest.report,
+              ...(pendingCompaction ? { pendingCompaction } : {}),
               categories: latest.report.categories.map((category) => ({
                 ...category,
                 targets: category.targets
@@ -2766,6 +3134,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
           (categoryId === "legacyT3Worktrees" ||
             categoryId === "inactiveF5Worktrees" ||
             categoryId === "externalWorktrees" ||
+            categoryId === "dependencyFolders" ||
             MACHINE_CATEGORY_IDS.has(categoryId)) &&
           !targetSelections.has(categoryId)
         ) {
@@ -2785,7 +3154,9 @@ const makeStorageMaintenance = Effect.gen(function* () {
       for (const category of requestedCategories) {
         for (const target of category.targets) {
           if (
-            MACHINE_CATEGORY_IDS.has(category.id) &&
+            (MACHINE_CATEGORY_IDS.has(category.id) ||
+              category.id === "dependencyFolders" ||
+              category.id === "gitTemporaryPacks") &&
             targetSelections.get(category.id)?.has(target.id) &&
             !target.safeToDelete
           )
@@ -4669,17 +5040,18 @@ const makeStorageMaintenance = Effect.gen(function* () {
       const warnings: StoragePathWarning[] = [];
       const perTargetReclaimed: PerTargetReclaimed = [];
       const settings = yield* readDiscovery;
+      const providerHomesDir =
+        config.providerHomesDir ?? Path.join(config.stateDir, "provider-homes");
+      const targets = [...(selected ?? [])];
       if (
-        categoryId !== "f5Backups" &&
-        categoryId !== "f5ApplicationLogs" &&
-        !settings.machineCleanupEnabled
+        !settings.machineCleanupEnabled &&
+        !targets.every((path) => isUngatedProviderTarget({ categoryId, path, providerHomesDir }))
       )
         return resultFor({
           categoryId,
           status: "Skipped",
           message: "Machine cleanup was disabled. Rescan before retrying.",
         });
-      const targets = [...(selected ?? [])];
       for (const [index, id] of targets.entries()) {
         if (checkCancelled(request.operationId)) break;
         const review = operationReviews.get(request.operationId)?.files?.get(id);
@@ -4733,6 +5105,192 @@ const makeStorageMaintenance = Effect.gen(function* () {
         warnings,
         perTargetReclaimed,
         reclaimedBytes: perTargetReclaimed.reduce((sum, target) => sum + target.reclaimedBytes, 0),
+      });
+    });
+
+  const cleanDependencyFolders = (
+    request: CleanupOperation,
+    context: StorageCleanupContext | undefined,
+    selected: ReadonlySet<string> | undefined,
+  ) =>
+    Effect.gen(function* () {
+      const warnings: StoragePathWarning[] = [];
+      const perTargetReclaimed: PerTargetReclaimed = [];
+      const reviews = operationReviews.get(request.operationId)?.dependencyFolders;
+      const targets = [...(selected ?? [])];
+      // Threads may have started working in a checkout since the scan.
+      const threads = yield* queryThreadRows();
+      const threadBlock = yield* readCheckoutThreadUse({
+        threads,
+        busySegments: yield* readBusyThreadSegments(threads),
+        checkoutRoots: [...new Set([...(reviews?.values() ?? [])].map((r) => r.checkoutRoot))],
+        nowMs: Date.now(),
+      });
+      for (const [index, id] of targets.entries()) {
+        if (checkCancelled(request.operationId)) break;
+        const review = reviews?.get(id);
+        if (!review) {
+          warnings.push(warningFor(id, "No reviewed target identity. Rescan."));
+          continue;
+        }
+        const blocked = threadBlock(review.checkoutRoot);
+        if (blocked) {
+          warnings.push(warningFor(id, blocked));
+          continue;
+        }
+        yield* publishProgress(request, context, {
+          categoryId: "dependencyFolders",
+          phase: "deleting",
+          message: "Deleting " + homeRelative(id),
+          completedTargets: index,
+          totalTargets: targets.length,
+        });
+        const controller = new AbortController();
+        markStorageMutation(request.operationId);
+        const timer = setInterval(() => {
+          if (checkCancelled(request.operationId)) controller.abort();
+        }, 100);
+        const outcome = yield* Effect.tryPromise(() =>
+          runStorageTask<{
+            activity: StorageFileInspection["activity"];
+            removedBytes: number;
+            warnings: StoragePathWarning[];
+          }>(
+            {
+              kind: "removeDependencyFolder",
+              path: id,
+              checkoutRoot: review.checkoutRoot,
+              identity: review.identity,
+            },
+            controller.signal,
+          ),
+        ).pipe(Effect.ensuring(Effect.sync(() => clearInterval(timer))), Effect.result);
+        if (outcome._tag === "Failure") {
+          warnings.push(
+            warningFor(
+              id,
+              "Cleanup interrupted or failed; a partly deleted folder is offered again after a rescan. " +
+                String(outcome.failure),
+            ),
+          );
+          continue;
+        }
+        if (outcome.success.activity.state !== "idle") {
+          warnings.push(warningFor(id, outcome.success.activity.reason));
+          continue;
+        }
+        warnings.push(...outcome.success.warnings);
+        if (outcome.success.removedBytes > 0 || outcome.success.warnings.length === 0)
+          perTargetReclaimed.push({
+            id,
+            path: id,
+            reclaimedBytes: outcome.success.removedBytes,
+            status: "Removed",
+          });
+      }
+      return resultFor({
+        categoryId: "dependencyFolders",
+        status: perTargetReclaimed.length ? "Cleaned" : "Skipped",
+        warnings,
+        perTargetReclaimed,
+        reclaimedBytes: perTargetReclaimed.reduce((sum, target) => sum + target.reclaimedBytes, 0),
+      });
+    });
+
+  const cleanTemporaryPacks = (
+    request: CleanupOperation,
+    context: StorageCleanupContext | undefined,
+    selected: ReadonlySet<string> | undefined,
+  ) =>
+    Effect.gen(function* () {
+      const warnings: StoragePathWarning[] = [];
+      const perTargetReclaimed: PerTargetReclaimed = [];
+      const reviews = operationReviews.get(request.operationId)?.temporaryPacks;
+      const targets = [...(selected ?? [])];
+      // A fresh process list: a fetch that started since the scan writes its own pack.
+      const processes = yield* Effect.tryPromise(() => readStorageProcesses()).pipe(
+        Effect.orElseSucceed(() => null),
+      );
+      if (processes === null)
+        return resultFor({
+          categoryId: "gitTemporaryPacks",
+          status: "Skipped",
+          message: "Process activity could not be verified. Close Git and rescan.",
+        });
+      for (const [index, id] of targets.entries()) {
+        if (checkCancelled(request.operationId)) break;
+        const review = reviews?.get(id);
+        if (!review) {
+          warnings.push(warningFor(id, "No reviewed target identity. Rescan."));
+          continue;
+        }
+        const repositoryReal = yield* Effect.tryPromise(() =>
+          FS.realpath(review.repositoryRoot),
+        ).pipe(Effect.orElseSucceed(() => review.repositoryRoot));
+        const activity = activityForTarget(repositoryReal, processes);
+        if (activity.state !== "idle") {
+          warnings.push(warningFor(id, activity.reason));
+          continue;
+        }
+        yield* publishProgress(request, context, {
+          categoryId: "gitTemporaryPacks",
+          phase: "deleting",
+          message: "Deleting " + Path.basename(id),
+          completedTargets: index,
+          totalTargets: targets.length,
+        });
+        markStorageMutation(request.operationId);
+        const outcome = yield* Effect.promise(() =>
+          removeFileIfSafe({
+            path: id,
+            allowedRoot: review.packDirectory,
+            expectedIdentity: review.identity,
+          }),
+        );
+        if (outcome.kind === "removed")
+          perTargetReclaimed.push({
+            id,
+            path: id,
+            reclaimedBytes: outcome.reclaimedBytes,
+            status: "Removed",
+          });
+        else if (outcome.warning) warnings.push(outcome.warning);
+      }
+      return resultFor({
+        categoryId: "gitTemporaryPacks",
+        status: perTargetReclaimed.length ? "Cleaned" : "Skipped",
+        warnings,
+        perTargetReclaimed,
+        reclaimedBytes: perTargetReclaimed.reduce((sum, target) => sum + target.reclaimedBytes, 0),
+      });
+    });
+
+  const pruneDockerUnusedImages = (request: CleanupOperation) =>
+    Effect.gen(function* () {
+      if (!(yield* readDiscovery).machineCleanupEnabled)
+        return resultFor({
+          categoryId: "dockerUnusedImages",
+          status: "Skipped",
+          message: "Machine cleanup was disabled. Rescan before retrying.",
+        });
+      const controller = new AbortController();
+      const timer = setInterval(() => {
+        if (checkCancelled(request.operationId)) controller.abort();
+      }, 100);
+      const reclaimedBytes = yield* Effect.tryPromise({
+        try: () => pruneDockerImages(undefined, controller.signal),
+        catch: (cause) =>
+          new StorageMaintenanceError({
+            operation: "StorageMaintenance.cleanup.dockerUnusedImages",
+            message: cause instanceof Error ? cause.message : String(cause),
+            cause,
+          }),
+      }).pipe(Effect.ensuring(Effect.sync(() => clearInterval(timer))));
+      return resultFor({
+        categoryId: "dockerUnusedImages",
+        status: "Cleaned",
+        reclaimedBytes,
+        perTargetReclaimed: [{ id: DOCKER_IMAGES_TARGET_ID, reclaimedBytes, status: "Removed" }],
       });
     });
 
@@ -4851,6 +5409,12 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 );
               case "databaseVacuum":
                 return vacuumDatabase(request.operationId);
+              case "dockerUnusedImages":
+                return pruneDockerUnusedImages(request);
+              case "dependencyFolders":
+                return cleanDependencyFolders(request, context, targetSelections.get(categoryId));
+              case "gitTemporaryPacks":
+                return cleanTemporaryPacks(request, context, targetSelections.get(categoryId));
               case "legacyT3Userdata":
               case "legacyT3Diverged":
               case "legacyT3Worktrees":
@@ -5186,6 +5750,145 @@ const makeStorageMaintenance = Effect.gen(function* () {
       } satisfies DatabaseSpaceResult;
     }).pipe(Effect.mapError(toStorageMaintenanceError("StorageMaintenance.reclaimDatabaseSpace")));
 
+  const compactionMarkerPath = Path.join(config.stateDir, "storage", "compact-on-restart");
+
+  const getPendingCompaction: StorageMaintenanceShape["getPendingCompaction"] = Effect.gen(
+    function* () {
+      const pages = yield* readPages;
+      const freeBytes = freeDatabaseBytes(pages);
+      if (
+        pages.autoVacuum !== 0 ||
+        freeBytes < AUTO_CONVERT_MIN_FREE_BYTES ||
+        freeBytes < pages.pageCount * pages.pageSize * AUTO_CONVERT_MIN_FREE_FRACTION
+      )
+        return null;
+      // Skips since the database was last compacted, automatically or by hand.
+      const { waitingSince, lastSkipReason } =
+        yield* readSkipsSinceLastSuccess("database-vacuum").pipe(withSql);
+      if (
+        waitingSince === null ||
+        Date.parse(waitingSince) > Date.now() - PENDING_COMPACTION_AFTER_MS
+      )
+        return null;
+      const liveBytes = liveDatabaseBytes(pages);
+      const statfs = yield* Effect.promise(() => loadStatfs());
+      const requirement = statfs
+        ? yield* Effect.tryPromise(() =>
+            vacuumSpaceRequirement({ dbPath: config.dbPath, liveBytes, statfs }),
+          ).pipe(Effect.orElseSucceed(() => null))
+        : null;
+      return {
+        freeBytes,
+        liveBytes,
+        requiredFreeDiskBytes: requirement?.requiredFreeDiskBytes ?? Math.ceil(liveBytes * 2.2),
+        availableDiskBytes: requirement?.availableDiskBytes ?? 0,
+        waitingSince,
+        lastSkipReason: lastSkipReason?.startsWith(AUTO_CONVERT_SKIP_PREFIX)
+          ? lastSkipReason.slice(AUTO_CONVERT_SKIP_PREFIX.length)
+          : lastSkipReason,
+        scheduledForRestart: yield* Effect.promise(() => exists(compactionMarkerPath)),
+      } satisfies PendingDatabaseCompaction;
+    },
+  ).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("pending database compaction check failed", {
+        cause: Cause.pretty(cause),
+      }).pipe(Effect.as(null)),
+    ),
+  );
+
+  const scheduleCompaction: StorageMaintenanceShape["scheduleCompaction"] = (when) =>
+    Effect.tryPromise({
+      try: async () => {
+        if (when === "cancel") {
+          await FS.rm(compactionMarkerPath, { force: true });
+          return { scheduledForRestart: false };
+        }
+        await FS.mkdir(Path.dirname(compactionMarkerPath), { recursive: true });
+        await FS.writeFile(compactionMarkerPath, JSON.stringify({ requestedAt: nowIso() }) + "\n");
+        return { scheduledForRestart: true };
+      },
+      catch: (cause) =>
+        new StorageMaintenanceError({
+          operation: "StorageMaintenance.scheduleCompaction",
+          message: "Could not save the compaction request.",
+          cause,
+        }),
+    });
+
+  const runScheduledCompaction = (gate: Scope.Closeable) => {
+    const operationId = `scheduled-compaction-${Crypto.randomUUID()}`;
+    const audit = (result: "removed" | "skipped" | "failed", reason: string) =>
+      recordStorageAutomationAudit({
+        operationId,
+        job: "database-vacuum",
+        target: "state database",
+        result,
+        reason,
+      }).pipe(withSql, Effect.asVoid);
+    return Effect.gen(function* () {
+      const pages = yield* readPages;
+      if (pages.autoVacuum === AUTO_VACUUM_INCREMENTAL)
+        return yield* audit(
+          "skipped",
+          "scheduled compaction skipped: the database already returns free space in steps",
+        );
+      const statfs = yield* Effect.promise(() => loadStatfs());
+      const shortfall = statfs
+        ? (yield* Effect.tryPromise(() =>
+            vacuumSpaceRequirement({
+              dbPath: config.dbPath,
+              liveBytes: liveDatabaseBytes(pages),
+              statfs,
+            }),
+          )).shortfall
+        : "free disk space cannot be inspected";
+      if (shortfall !== null)
+        return yield* audit("skipped", `scheduled compaction skipped: ${shortfall}`);
+      const beforeBytes = yield* Effect.promise(() => databaseFileBytes(config.dbPath));
+      yield* compactDatabase(undefined, gate);
+      const afterBytes = yield* Effect.promise(() => databaseFileBytes(config.dbPath));
+      yield* noteStorageMutated;
+      yield* audit(
+        "removed",
+        `scheduled compaction switched to incremental auto-vacuum; the file shrank by ${Math.max(0, beforeBytes - afterBytes)} bytes`,
+      );
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("scheduled database compaction failed", {
+          cause: Cause.pretty(cause),
+        }).pipe(Effect.andThen(audit("failed", storageCauseMessage(cause)))),
+      ),
+    );
+  };
+
+  const startScheduledCompaction: StorageMaintenanceShape["startScheduledCompaction"] = (ready) =>
+    Effect.gen(function* () {
+      const scheduled = yield* Effect.promise(async () => {
+        try {
+          await FS.rm(compactionMarkerPath);
+          return true;
+        } catch (error) {
+          if (isEnoent(error)) return false;
+          throw error;
+        }
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("scheduled database compaction request could not be cleared", {
+            cause: Cause.pretty(cause),
+          }).pipe(Effect.as(false)),
+        ),
+      );
+      if (!scheduled) return;
+      const gate = yield* engine.acquireMaintenanceLock();
+      yield* Effect.logInfo("compacting the database as scheduled for this start");
+      yield* Effect.race(ready, Effect.sleep(SCHEDULED_COMPACTION_READY_WAIT)).pipe(
+        Effect.andThen(runScheduledCompaction(gate)),
+        Effect.ensuring(Scope.close(gate, Exit.void).pipe(Effect.ignore)),
+        Effect.forkScoped,
+      );
+    });
+
   const terminalThreadLogs = (input: {
     readonly modifiedBefore: string;
     readonly includeArchived: boolean;
@@ -5440,6 +6143,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
               "providerLogRotations",
               "providerLogsForTerminalThreads",
               "codexMarketplaceStaging",
+              "gitTemporaryPacks",
             ].includes(entry.categoryId);
             const candidates = fileOnly
               ? entry.perTargetReclaimed.slice(0, 5)
@@ -5579,6 +6283,9 @@ const makeStorageMaintenance = Effect.gen(function* () {
     cancel,
     purgeThreads,
     reclaimDatabaseSpace,
+    getPendingCompaction,
+    scheduleCompaction,
+    startScheduledCompaction,
     listTerminalThreadLogs,
     pruneTerminalThreadLogs,
     cleanInactiveWorktreesAutomatically,

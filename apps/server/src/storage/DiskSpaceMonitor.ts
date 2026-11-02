@@ -1,4 +1,8 @@
-import type { DiskSpaceReclaimableItem, DiskSpaceStatus } from "@t3tools/contracts";
+import type {
+  DiskSpaceReclaimableItem,
+  DiskSpaceStatus,
+  PendingDatabaseCompaction,
+} from "@t3tools/contracts";
 import { Cause, Effect, Layer, Path, PubSub, Schedule, ServiceMap, Stream } from "effect";
 import type { Scope } from "effect";
 import * as Semaphore from "effect/Semaphore";
@@ -46,6 +50,8 @@ export interface DiskSpaceMonitorShape {
    */
   readonly start: <E>(input: {
     readonly estimateReclaimable: Effect.Effect<ReadonlyArray<DiskSpaceReclaimableItem>, E>;
+    /** The stuck one-time database compaction, read on every periodic check. */
+    readonly pendingCompaction?: Effect.Effect<PendingDatabaseCompaction | null>;
   }) => Effect.Effect<void, never, Scope.Scope>;
 }
 
@@ -76,6 +82,9 @@ const shapeKey = (status: DiskSpaceStatus) =>
     status.level,
     status.volumes.map((volume) => [volume.path, volume.level]),
     status.reclaimable,
+    status.pendingCompaction
+      ? [status.pendingCompaction.waitingSince, status.pendingCompaction.scheduledForRestart]
+      : null,
   ]);
 
 /** Pushed when the shape changes or a volume's free space moved by a step since the last push. */
@@ -111,6 +120,9 @@ export const makeDiskSpaceMonitor = (options?: {
       readonly computedAtMs: number;
     } | null = null;
     let reclaimableGeneration = 0;
+    let pendingCompaction: PendingDatabaseCompaction | null = null;
+    let readPendingCompaction: Effect.Effect<PendingDatabaseCompaction | null> =
+      Effect.succeed(null);
     let lastPublished: DiskSpaceStatus | null = null;
 
     const publishIfChanged = (status: DiskSpaceStatus) =>
@@ -154,6 +166,7 @@ export const makeDiskSpaceMonitor = (options?: {
         criticalThresholdBytes: CRITICAL_DISK_SPACE_BYTES,
         volumes,
         reclaimable: level === "ok" ? [] : (reclaimable?.items ?? []),
+        ...(pendingCompaction ? { pendingCompaction } : {}),
       };
       const previousLevel = current?.status.level ?? "ok";
       current = { status, checkedAtMs };
@@ -197,17 +210,24 @@ export const makeDiskSpaceMonitor = (options?: {
       ),
     );
 
+    const refreshPendingCompaction = Effect.suspend(() => readPendingCompaction).pipe(
+      Effect.map((pending) => {
+        pendingCompaction = pending;
+      }),
+    );
+
     const noteStorageChanged: DiskSpaceMonitorShape["noteStorageChanged"] = Effect.suspend(() => {
       reclaimable = null;
       // An estimate already running scanned before the change.
       reclaimableGeneration += 1;
       if (current !== null)
         current = { ...current, status: { ...current.status, reclaimable: [] } };
-      return getStatus({ force: true });
+      return refreshPendingCompaction.pipe(Effect.andThen(getStatus({ force: true })));
     }).pipe(Effect.asVoid);
 
-    const start: DiskSpaceMonitorShape["start"] = ({ estimateReclaimable }) =>
+    const start: DiskSpaceMonitorShape["start"] = ({ estimateReclaimable, pendingCompaction }) =>
       Effect.gen(function* () {
+        if (pendingCompaction) readPendingCompaction = pendingCompaction;
         let estimating = false;
         const refreshReclaimable = Effect.suspend(() => {
           if (
@@ -241,7 +261,8 @@ export const makeDiskSpaceMonitor = (options?: {
             Effect.ensuring(Effect.sync(() => (estimating = false))),
           );
         });
-        const tick = getStatus({ force: true }).pipe(
+        const tick = refreshPendingCompaction.pipe(
+          Effect.andThen(getStatus({ force: true })),
           Effect.andThen(refreshReclaimable.pipe(Effect.forkScoped)),
           Effect.asVoid,
           Effect.catchCause((cause) =>

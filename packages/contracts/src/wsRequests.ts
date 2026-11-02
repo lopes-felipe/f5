@@ -302,6 +302,7 @@ import {
   StorageGetStatusRequest,
   StorageGetTargetsRequest,
   StorageGetOperationRequest,
+  StorageScheduleCompactionRequest,
 } from "./storage";
 import {
   TerminalClearInput,
@@ -619,6 +620,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.storageGetOperation, StorageGetOperationRequest),
   tagRequestBody(WS_METHODS.storageCleanup, StorageCleanupRequest),
   tagRequestBody(WS_METHODS.storageCancelCleanup, StorageCancelCleanupRequest),
+  tagRequestBody(WS_METHODS.storageScheduleCompaction, StorageScheduleCompactionRequest),
   tagRequestBody(WS_METHODS.storageAutomationDryRun, StorageAutomationDryRunInput),
   tagRequestBody(WS_METHODS.storageAutomationAudit, StorageAutomationAuditInput),
   tagRequestBody(WS_METHODS.storageGetDiskSpace, StorageGetDiskSpaceRequest),
