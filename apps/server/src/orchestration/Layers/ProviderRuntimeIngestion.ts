@@ -120,7 +120,7 @@ import {
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { reconcileCodexThreadSnapshots } from "../codexSnapshotReconciliation.ts";
-import { makeToolUpdateCoalescer } from "../toolUpdateCoalescing.ts";
+import { isSupersedableToolUpdate, makeToolUpdateCoalescer } from "../toolUpdateCoalescing.ts";
 import { truncateMiddleByBytes } from "../outputTruncation.ts";
 import {
   extractToolResultImages,
@@ -2454,6 +2454,7 @@ const make = Effect.gen(function* () {
   };
   // Tool updates wait briefly so a chatty call appends only its newest state. Every other
   // event for the thread flushes them first, so the completion still follows the last update.
+  const toolUpdateCoalescingEnabled = process.env.F5_COALESCE_TOOL_UPDATES !== "false";
   let enqueueToolUpdateFlush: ((threadId: ThreadId) => void) | null = null;
   const pendingToolUpdates = makeToolUpdateCoalescer<{
     readonly event: ProviderRuntimeEvent;
@@ -2481,6 +2482,7 @@ const make = Effect.gen(function* () {
             Effect.tap(() =>
               Effect.sync(() => recordToolUpdate(update.trackingKey, update.signature)),
             ),
+            // The superseded states were never stored, so a lost append needs a history repair.
             Effect.catchCause((cause) =>
               Cause.hasInterruptsOnly(cause)
                 ? Effect.failCause(cause)
@@ -2488,7 +2490,17 @@ const make = Effect.gen(function* () {
                     threadId,
                     activityId: update.activity.id,
                     cause: Cause.pretty(cause),
-                  }),
+                  }).pipe(
+                    Effect.andThen(
+                      providerService.requireHistoryReconciliation?.(update.event) ?? Effect.void,
+                    ),
+                    Effect.catchCause((markCause) =>
+                      Effect.logError("could not persist incomplete provider history marker", {
+                        eventId: update.event.eventId,
+                        cause: Cause.pretty(markCause),
+                      }),
+                    ),
+                  ),
             ),
           ),
       { discard: true },
@@ -6221,6 +6233,7 @@ const make = Effect.gen(function* () {
       if (toolUpdateKey && event.type === "item.completed") lastToolUpdates.delete(toolUpdateKey);
       // Updates that own extracted images or computer evidence are never superseded.
       const canCoalesceToolUpdate =
+        toolUpdateCoalescingEnabled &&
         event.type === "item.updated" &&
         !lifecycle.images?.mcpImages?.length &&
         !isPreparedComputerEvent(event);
@@ -6230,11 +6243,14 @@ const make = Effect.gen(function* () {
             toolUpdateKey && activity.kind === "tool.updated"
               ? JSON.stringify([activity.tone, activity.summary, activity.turnId, activity.payload])
               : undefined;
-          if (signature && canCoalesceToolUpdate) {
+          if (signature && canCoalesceToolUpdate && isSupersedableToolUpdate(activity.payload)) {
             const coalescingKey = `${activity.turnId ?? ""}\u0000${toolUpdateKey!}`;
-            // A newer state replaces the pending one, even when it repeats the last append.
-            pendingToolUpdates.discard(thread.id, coalescingKey);
-            if (lastToolUpdates.get(toolUpdateKey!) === signature) return;
+            // A repeat of the last append drops the pending state it supersedes. Otherwise the
+            // offer replaces it in place, so the open window keeps its original deadline.
+            if (lastToolUpdates.get(toolUpdateKey!) === signature) {
+              pendingToolUpdates.discard(thread.id, coalescingKey);
+              return;
+            }
             const full = pendingToolUpdates.offer(thread.id, coalescingKey, {
               event,
               activity,
@@ -6822,10 +6838,16 @@ const make = Effect.gen(function* () {
           event.type === "thread.turn-interrupt-requested" ||
           event.type === "thread.session-stop-requested"
         ) {
-          return worker.enqueue({
-            source: "assistant-delta-flush-thread",
-            threadId: event.payload.threadId,
-          });
+          return worker
+            .enqueue({ source: "tool-update-flush", threadId: event.payload.threadId })
+            .pipe(
+              Effect.andThen(
+                worker.enqueue({
+                  source: "assistant-delta-flush-thread",
+                  threadId: event.payload.threadId,
+                }),
+              ),
+            );
         }
         if (event.type !== "thread.turn-start-requested") return Effect.void;
         return worker.enqueue({ source: "domain", event });

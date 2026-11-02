@@ -8476,6 +8476,44 @@ describe("ProviderRuntimeIngestion", () => {
     ).toEqual(["repeat-4", "repeat-5", "repeat-other"]);
   });
 
+  it("keeps appending a tool's progress while its updates arrive faster than the window", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const appended = async () => {
+      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      return (
+        readModel.threads
+          .find((entry) => entry.id === "thread-1")
+          ?.activities.filter(
+            (activity: ProviderRuntimeTestActivity) => activity.kind === "tool.updated",
+          ).length ?? 0
+      );
+    };
+
+    // A replacement must keep the open window's deadline instead of restarting it.
+    let count = 0;
+    for (let index = 0; index < 100 && count === 0; index += 1) {
+      harness.emit({
+        type: "item.updated",
+        eventId: asEventId(`chatty-${index}`),
+        provider: "opencode",
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-chatty"),
+        itemId: asItemId("item-chatty-tool"),
+        payload: {
+          itemType: "command_execution",
+          status: "in_progress",
+          title: "Run",
+          detail: `step ${index}`,
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      count = await appended();
+    }
+    expect(count).toBeGreaterThan(0);
+  });
+
   it("reuses the same checkpoint turn count for repeated turn.diff.updated events in one turn", async () => {
     const harness = await createHarness();
     const turnId = asTurnId("turn-diff-repeat");

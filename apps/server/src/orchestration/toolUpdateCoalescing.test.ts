@@ -1,7 +1,7 @@
 import { ThreadId } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { makeToolUpdateCoalescer } from "./toolUpdateCoalescing.ts";
+import { isSupersedableToolUpdate, makeToolUpdateCoalescer } from "./toolUpdateCoalescing.ts";
 
 const threadA = ThreadId.makeUnsafe("thread-a");
 const threadB = ThreadId.makeUnsafe("thread-b");
@@ -73,5 +73,41 @@ describe("makeToolUpdateCoalescer", () => {
     expect(coalescer.offer(threadA, "a", "a1")).toBe(false);
     expect(coalescer.offer(threadA, "a", "a2")).toBe(false);
     expect(coalescer.offer(threadA, "b", "b1")).toBe(true);
+  });
+});
+
+describe("isSupersedableToolUpdate", () => {
+  it("supersedes ordinary tool updates", () => {
+    expect(isSupersedableToolUpdate({ itemType: "command_execution", title: "Run" })).toBe(true);
+    expect(
+      isSupersedableToolUpdate({
+        itemType: "mcp_tool_call",
+        mcpServerName: "github",
+        mcpToolName: "list_issues",
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps every snapshot of calls that clients fold field by field", () => {
+    expect(
+      isSupersedableToolUpdate({
+        itemType: "collab_agent_tool_call",
+        codexCollaborationTool: "spawnAgent",
+      }),
+    ).toBe(false);
+    expect(
+      isSupersedableToolUpdate({
+        itemType: "mcp_tool_call",
+        computerTool: true,
+        mcpToolName: "computer_click",
+      }),
+    ).toBe(false);
+    expect(
+      isSupersedableToolUpdate({
+        itemType: "mcp_tool_call",
+        mcpServerName: "f5_preview",
+        mcpToolName: "preview_navigate",
+      }),
+    ).toBe(false);
   });
 });

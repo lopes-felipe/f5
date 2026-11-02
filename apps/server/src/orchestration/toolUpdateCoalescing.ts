@@ -1,7 +1,27 @@
 import type { ThreadId } from "@t3tools/contracts";
+import { automationToolSurface } from "@t3tools/shared/computerAction";
 
 export const TOOL_UPDATE_COALESCE_WINDOW_MS = 50;
 export const MAX_PENDING_TOOL_UPDATES_PER_THREAD = 512;
+
+/**
+ * Clients fold every snapshot of a Codex collaboration or computer/preview call and keep
+ * fields that only earlier snapshots carried, so those updates are never superseded.
+ */
+export function isSupersedableToolUpdate(payload: unknown): boolean {
+  if (typeof payload !== "object" || payload === null) return true;
+  const fields = payload as Record<string, unknown>;
+  const text = (value: unknown) => (typeof value === "string" ? value : undefined);
+  if (fields.codexCollaborationTool !== undefined) return false;
+  return (
+    automationToolSurface({
+      computerTool: fields.computerTool === true,
+      itemType: text(fields.itemType),
+      mcpServerName: text(fields.mcpServerName),
+      mcpToolName: text(fields.mcpToolName),
+    }) === undefined
+  );
+}
 
 interface ThreadWindow<A> {
   timer: ReturnType<typeof setTimeout> | null;
