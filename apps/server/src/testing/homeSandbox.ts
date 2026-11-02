@@ -138,11 +138,29 @@ function isSamePath(left: string, right: string): boolean {
 
 function isSameOrInside(path: string, root: string): boolean {
   const relative = Path.relative(normalizePath(root), normalizePath(path));
-  return relative === "" || (!relative.startsWith("..") && !Path.isAbsolute(relative));
+  // Only a `..` segment leaves the root; a child named `..backup` stays inside.
+  const escapes = relative === ".." || relative.startsWith(`..${Path.sep}`);
+  return relative === "" || (!escapes && !Path.isAbsolute(relative));
 }
 
 function isRealHome(value: string | undefined, realHomes: ReadonlyArray<string>): boolean {
   return value !== undefined && realHomes.some((home) => isSamePath(value, home));
+}
+
+/** Owned sandbox homes already deleted; restoring one would point HOME at nothing. */
+const retiredHomes = new Set<string>();
+
+function isRetiredHome(value: string | undefined): boolean {
+  return value !== undefined && retiredHomes.has(normalizePath(value));
+}
+
+/** Points a snapshot's home variables at the run-wide fake home. */
+function useRunHome(snapshot: EnvSnapshot): void {
+  const fallback = process.env.F5_TEST_HOME;
+  snapshot.HOME = fallback;
+  snapshot.USERPROFILE = fallback;
+  snapshot.HOMEDRIVE = undefined;
+  snapshot.HOMEPATH = undefined;
 }
 
 /**
@@ -164,11 +182,7 @@ export function createHomeSandbox(input: HomeSandboxOptions = {}): HomeSandbox {
   const snapshot = captureEnv();
   if (isRealHome(snapshot.HOME, realHomes) || isRealHome(snapshot.USERPROFILE, realHomes)) {
     // Something already restored the real home; never put it back again.
-    const fallback = process.env.F5_TEST_HOME;
-    snapshot.HOME = fallback;
-    snapshot.USERPROFILE = fallback;
-    snapshot.HOMEDRIVE = undefined;
-    snapshot.HOMEPATH = undefined;
+    useRunHome(snapshot);
   }
   const ownsHome = input.home === undefined;
   const home = input.home ?? FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-home-sandbox-"));
@@ -182,6 +196,9 @@ export function createHomeSandbox(input: HomeSandboxOptions = {}): HomeSandbox {
     // Leaving our (soon deleted) home in place for it is the safe failure.
     const active = process.env[HOME_ENV_NAME];
     if (active !== undefined && isSamePath(active, home)) {
+      // An older overlapping sandbox released first and deleted the home this
+      // snapshot captured; return to the run-wide fake home instead.
+      if (isRetiredHome(snapshot[HOME_ENV_NAME]) && process.env.F5_TEST_HOME) useRunHome(snapshot);
       if (snapshot[HOME_ENV_NAME] === undefined) {
         // No safe home to return to: keep the sandbox path rather than unset
         // HOME, which would make os.homedir() fall back to the real home.
@@ -191,6 +208,7 @@ export function createHomeSandbox(input: HomeSandboxOptions = {}): HomeSandbox {
       }
     }
     if (ownsHome) {
+      retiredHomes.add(normalizePath(home));
       try {
         FS.rmSync(home, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
       } catch {

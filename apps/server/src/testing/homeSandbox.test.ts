@@ -128,8 +128,11 @@ describe.sequential("homeSandbox", () => {
       // A timed-out test releasing late must not yank the next test's home.
       first.release();
       expect(Path.resolve(OS.homedir())).toBe(Path.resolve(second.home));
+      expect(FS.existsSync(OS.homedir())).toBe(true);
+      // The first home is gone, so the second falls back to the run's fake home.
       second.release();
-      expect(Path.resolve(OS.homedir())).toBe(Path.resolve(first.home));
+      expect(Path.resolve(OS.homedir())).toBe(Path.resolve(process.env.F5_TEST_HOME!));
+      expect(FS.existsSync(OS.homedir())).toBe(true);
     } finally {
       second.release();
       restoreEnv(before);
@@ -182,6 +185,7 @@ describe.sequential("homeSandbox", () => {
       Path.join(realHome, ".f5"),
       Path.join(realHome, ".f5", "userdata", "state.sqlite"),
       Path.join(realHome, ".t3", "worktrees", "blocked"),
+      Path.join(realHome, ".f5", "..backup", "state.sqlite"),
     ]) {
       expect(() => assertOutsideRealUserState(path, [realHome])).toThrow(/real user state/u);
     }

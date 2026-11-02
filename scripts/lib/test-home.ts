@@ -13,6 +13,16 @@ export function isLiveTestRun(env: NodeJS.ProcessEnv = process.env): boolean {
   );
 }
 
+/** The account's home from the user database, which `HOME` cannot redirect. */
+function accountHome(): string | undefined {
+  try {
+    return userInfo().homedir || undefined;
+  } catch {
+    // A UID without a passwd entry (common in containers) makes userInfo() throw.
+    return undefined;
+  }
+}
+
 function playwrightBrowsersPath(realHome: string): string {
   if (process.platform === "darwin") return join(realHome, "Library", "Caches", "ms-playwright");
   if (process.platform === "win32")
@@ -31,7 +41,7 @@ function playwrightBrowsersPath(realHome: string): string {
  */
 export function isolateTestHome(env: NodeJS.ProcessEnv = process.env): void {
   if (env.VITEST !== "true" || env.F5_TEST_HOME || isLiveTestRun(env)) return;
-  const realHome = env.F5_TEST_REAL_HOME ?? userInfo().homedir ?? homedir();
+  const realHome = env.F5_TEST_REAL_HOME ?? accountHome() ?? homedir();
   const home = mkdtempSync(join(tmpdir(), "f5-vitest-home-"));
   env.PLAYWRIGHT_BROWSERS_PATH ??= playwrightBrowsersPath(realHome);
   env.F5_TEST_REAL_HOME = realHome;
