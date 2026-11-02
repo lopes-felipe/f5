@@ -129,6 +129,7 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 150, name: "ExcludeImageOnlyPromptFromSearch" },
       { migration_id: 151, name: "ProviderHandoffState" },
       { migration_id: 152, name: "UpstreamTopicOutcomes" },
+      { migration_id: 153, name: "ProjectionThreadCommandExecutionsDescription" },
     ]);
     const activityIndexes = yield* sql<{
       name: string;

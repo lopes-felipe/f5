@@ -582,6 +582,7 @@ function upsertCommandExecution(
     return commandExecutions;
   }
   const nextCwd = event.payload.commandExecution.cwd ?? existing?.cwd;
+  const nextDescription = event.payload.commandExecution.description ?? existing?.description;
   const nextCommandExecution = {
     id: event.payload.commandExecution.id,
     threadId: event.payload.threadId,
@@ -589,6 +590,7 @@ function upsertCommandExecution(
     providerItemId: event.payload.commandExecution.providerItemId,
     command: event.payload.commandExecution.command,
     ...(nextCwd !== undefined ? { cwd: nextCwd } : {}),
+    ...(nextDescription !== undefined ? { description: nextDescription } : {}),
     title: event.payload.commandExecution.title,
     status: event.payload.commandExecution.status,
     detail: event.payload.commandExecution.detail,
@@ -607,6 +609,7 @@ function upsertCommandExecution(
     existing.providerItemId === nextCommandExecution.providerItemId &&
     existing.command === nextCommandExecution.command &&
     (existing.cwd ?? undefined) === nextCommandExecution.cwd &&
+    (existing.description ?? undefined) === nextCommandExecution.description &&
     existing.title === nextCommandExecution.title &&
     existing.status === nextCommandExecution.status &&
     existing.detail === nextCommandExecution.detail &&

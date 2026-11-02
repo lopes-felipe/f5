@@ -50,6 +50,7 @@ import {
   classifyCompactCommand,
   deriveNarratedActivityDisplayHints,
   isGenericCommandTitle,
+  parseCommandExecutionTitle,
   resolveCommandExecutionSummaryText,
 } from "@t3tools/shared/commandSummary";
 import { compareCommandExecutions } from "./lib/commandExecutions";
@@ -2432,11 +2433,13 @@ function commandTimelineEntry(
   commandExecution: OrchestrationCommandExecutionSummary,
 ): TimelineEntry {
   const commandClassification = classifyCompactCommand(commandExecution.command);
+  // Background titles carry a " — <status>" suffix that labels should not show.
+  const baseTitle = commandExecution.title
+    ? parseCommandExecutionTitle(commandExecution.title).baseTitle
+    : null;
+  const specificTitle = baseTitle && !isGenericCommandTitle(baseTitle) ? baseTitle : null;
   if (commandClassification.kind === "file-read") {
-    const label =
-      commandExecution.title && !isGenericCommandTitle(commandExecution.title)
-        ? commandExecution.title
-        : "Read file";
+    const label = specificTitle ?? "Read file";
     return {
       id: commandExecution.id,
       kind: "work" as const,
@@ -2462,10 +2465,7 @@ function commandTimelineEntry(
   }
 
   if (commandClassification.kind === "search") {
-    const label =
-      commandExecution.title && !isGenericCommandTitle(commandExecution.title)
-        ? commandExecution.title
-        : commandClassification.summary;
+    const label = specificTitle ?? commandClassification.summary;
     return {
       id: commandExecution.id,
       kind: "work" as const,

@@ -1720,6 +1720,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             ? {
                 ...existingRow,
                 cwd: event.payload.commandExecution.cwd ?? existingRow.cwd,
+                description: event.payload.commandExecution.description ?? existingRow.description,
                 title: event.payload.commandExecution.title,
                 status: event.payload.commandExecution.status,
                 detail: event.payload.commandExecution.detail,
@@ -1736,6 +1737,9 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
                 command: event.payload.commandExecution.command,
                 ...(event.payload.commandExecution.cwd
                   ? { cwd: event.payload.commandExecution.cwd }
+                  : {}),
+                ...(event.payload.commandExecution.description
+                  ? { description: event.payload.commandExecution.description }
                   : {}),
                 title: event.payload.commandExecution.title,
                 status: event.payload.commandExecution.status,

@@ -4,15 +4,27 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import {
+  commandExecutionBackgroundStatus,
   normalizeCommandExecutionDetail,
   resolveCommandExecutionDisplayCommand,
   resolveCommandExecutionSummaryText,
 } from "@t3tools/shared/commandSummary";
-import { CheckIcon, ChevronDownIcon, ChevronRightIcon, CopyIcon } from "lucide-react";
+import {
+  BanIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  CircleStopIcon,
+  CopyIcon,
+  LoaderCircleIcon,
+  XIcon,
+  type LucideIcon,
+} from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { TimestampFormat } from "../../appSettings";
+import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import type { DisplayCommandTokenKind } from "../../lib/commandExecutions";
 import { tokenizeDisplayCommand } from "../../lib/commandExecutions";
 import {
@@ -32,6 +44,8 @@ interface CommandTranscriptCardProps {
   execution: OrchestrationCommandExecutionSummary | OrchestrationCommandExecution;
   expanded: boolean;
   timestampFormat: TimestampFormat;
+  /** Commands that ran here show no cwd line; any other cwd is shown in the expanded body. */
+  workspaceRoot?: string | undefined;
   /**
    * Whether the thread is working. A command left `running` on an idle thread
    * (a missed completion) keeps its last elapsed time instead of counting up.
@@ -41,13 +55,47 @@ interface CommandTranscriptCardProps {
   onExpandedBodyResize?: () => void;
 }
 
-const STATUS_BADGE_CLASS_NAME: Record<OrchestrationCommandExecutionSummary["status"], string> = {
-  running: "border-info/32 bg-info/8 text-info-foreground dark:bg-info/16",
-  completed: "border-success/32 bg-success/8 text-success-foreground dark:bg-success/16",
-  failed:
-    "border-destructive/32 bg-destructive/8 text-destructive-foreground dark:bg-destructive/16",
-  interrupted: "border-warning/32 bg-warning/8 text-warning-foreground dark:bg-warning/16",
-  declined: "border-border bg-muted/40 text-muted-foreground",
+interface StatusPresentation {
+  readonly label: string;
+  readonly Icon: LucideIcon;
+  readonly iconClassName: string;
+  readonly borderClassName: string;
+}
+
+const STATUS_PRESENTATION: Record<
+  OrchestrationCommandExecutionSummary["status"],
+  StatusPresentation
+> = {
+  running: {
+    label: "Running",
+    Icon: LoaderCircleIcon,
+    iconClassName: "animate-spin text-info motion-reduce:animate-none",
+    borderClassName: "border-l-info/70",
+  },
+  completed: {
+    label: "Completed",
+    Icon: CheckIcon,
+    iconClassName: "text-success",
+    borderClassName: "border-l-success/70",
+  },
+  failed: {
+    label: "Failed",
+    Icon: XIcon,
+    iconClassName: "text-destructive",
+    borderClassName: "border-l-destructive/80",
+  },
+  interrupted: {
+    label: "Interrupted",
+    Icon: CircleStopIcon,
+    iconClassName: "text-warning",
+    borderClassName: "border-l-warning/70",
+  },
+  declined: {
+    label: "Declined",
+    Icon: BanIcon,
+    iconClassName: "text-muted-foreground",
+    borderClassName: "border-l-border",
+  },
 };
 
 // Shell syntax colours from the semantic set so themes recolour them too.
@@ -68,6 +116,9 @@ const COMMAND_TOKEN_CLASS_NAME: Record<DisplayCommandTokenKind, string> = {
 const INLINE_OUTPUT_PREVIEW_CHAR_LIMIT = 16_000;
 const INLINE_OUTPUT_PREVIEW_HEAD_CHARS = 8_000;
 const INLINE_OUTPUT_PREVIEW_MARKER = "\n\n[... output preview shortened ...]\n\n";
+const FAILED_OUTPUT_TAIL_LINES = 4;
+const FAILED_OUTPUT_TAIL_CHAR_LIMIT = 600;
+const FAILED_OUTPUT_TAIL_SCAN_CHARS = 8_000;
 
 const HighlightedCommandText = memo(function HighlightedCommandText(props: { command: string }) {
   const tokens = tokenizeDisplayCommand(props.command);
@@ -120,6 +171,47 @@ function buildInlineOutputPreview(output: string): { text: string; shortened: bo
   };
 }
 
+/**
+ * Last few non-empty lines of a failed command's output, kept to a character
+ * budget from the end so minified or single-line output stays cheap to render.
+ */
+function buildOutputTail(output: string): string {
+  const tail = output
+    .slice(-FAILED_OUTPUT_TAIL_SCAN_CHARS)
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .slice(-FAILED_OUTPUT_TAIL_LINES)
+    .join("\n");
+  return tail.length > FAILED_OUTPUT_TAIL_CHAR_LIMIT
+    ? `…${tail.slice(-(FAILED_OUTPUT_TAIL_CHAR_LIMIT - 1))}`
+    : tail;
+}
+
+function comparablePath(path: string): string {
+  return path.replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase();
+}
+
+function resolveCwdLabel(
+  cwd: string | undefined,
+  workspaceRoot: string | undefined,
+): string | null {
+  if (!cwd) return null;
+  // Same case-insensitive comparison the workspace-relative formatter uses.
+  if (workspaceRoot && comparablePath(cwd) === comparablePath(workspaceRoot)) {
+    return null;
+  }
+  return formatWorkspaceRelativePath(cwd, workspaceRoot);
+}
+
+function CommandStatusIcon(props: { status: OrchestrationCommandExecutionSummary["status"] }) {
+  const { label, Icon, iconClassName } = STATUS_PRESENTATION[props.status];
+  return (
+    <span role="img" aria-label={label} title={label} className="inline-flex shrink-0">
+      <Icon className={cn("size-3.5", iconClassName)} aria-hidden />
+    </span>
+  );
+}
+
 const CommandTranscriptOutput = memo(function CommandTranscriptOutput(props: {
   executionId: OrchestrationCommandExecutionSummary["id"];
   outputText: string;
@@ -129,6 +221,20 @@ const CommandTranscriptOutput = memo(function CommandTranscriptOutput(props: {
 }) {
   const [showFullOutput, setShowFullOutput] = useState(false);
   const preview = useMemo(() => buildInlineOutputPreview(props.outputText), [props.outputText]);
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    onCopy: () => {
+      toastManager.add({ type: "success", title: "Output copied" });
+    },
+    onError: (error) => {
+      console.error("[CommandTranscriptCard] output copy failed:", error);
+      toastManager.add({
+        type: "error",
+        title: "Could not copy output",
+        description:
+          error instanceof Error ? error.message : "An unexpected clipboard error occurred.",
+      });
+    },
+  });
 
   useEffect(() => {
     setShowFullOutput(false);
@@ -137,10 +243,32 @@ const CommandTranscriptOutput = memo(function CommandTranscriptOutput(props: {
   const displayOutput = showFullOutput || !preview.shortened ? props.outputText : preview.text;
   const showPreviewToggle =
     !props.isLoadingOutput && props.outputError === null && preview.shortened;
+  const canCopyOutput =
+    !props.isLoadingOutput && props.outputError === null && props.outputText.length > 0;
 
   return (
     <div>
-      <p className="text-2xs uppercase tracking-wider text-muted-foreground">Output</p>
+      <div className="flex min-h-6 items-center justify-between gap-2">
+        <p className="text-2xs uppercase tracking-wider text-muted-foreground">Output</p>
+        {canCopyOutput && (
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            aria-label={isCopied ? "Output copied" : "Copy output"}
+            onClick={() => {
+              copyToClipboard(props.outputText);
+            }}
+          >
+            {isCopied ? (
+              <CheckIcon className="size-3 text-success" />
+            ) : (
+              <CopyIcon className="size-3" />
+            )}
+            {isCopied ? "Copied" : "Copy output"}
+          </Button>
+        )}
+      </div>
       <div className="mt-1 max-h-80 overflow-auto rounded-md bg-background/70 p-2">
         <pre className="whitespace-pre-wrap break-words font-mono text-[length:var(--f5-chat-font-size)] text-foreground">
           {props.isLoadingOutput
@@ -183,17 +311,20 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
   execution,
   expanded,
   timestampFormat,
+  workspaceRoot,
   threadWorking = true,
   onToggle,
   onExpandedBodyResize,
 }: CommandTranscriptCardProps) {
   const expandedBodyRef = useRef<HTMLDivElement | null>(null);
   const queryClient = useQueryClient();
+  // Failed commands load their output while collapsed so the error tail shows.
+  const detailEnabled = expanded || execution.status === "failed";
   const detailQuery = useQuery(
     threadCommandExecutionQueryOptions({
       threadId,
       commandExecutionId: execution.id,
-      enabled: expanded,
+      enabled: detailEnabled,
     }),
   );
   const detailExecution = detailQuery.data?.commandExecution ?? null;
@@ -235,8 +366,17 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
         : "Failed to load output."
       : null;
   const waitingForDetail = threadId !== null && detailExecution === null && outputError === null;
+  const description = detailSource.description ?? execution.description;
+  const backgroundStatus = commandExecutionBackgroundStatus(detailSource);
+  const cwdLabel = resolveCwdLabel(detailSource.cwd ?? execution.cwd, workspaceRoot);
+  const showFailedOutputTail = !expanded && detailSource.status === "failed";
+  const failedOutputTail = useMemo(
+    () => (showFailedOutputTail ? buildOutputTail(outputText) : ""),
+    [outputText, showFailedOutputTail],
+  );
 
   useEffect(() => {
+    // Collapsed failed cards only want a best-effort tail; don't poll for them.
     if (!expanded || !threadId || detailExecution !== null || detailQuery.data === undefined) {
       return;
     }
@@ -285,20 +425,24 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
     detailSource.completedAt ??
       (detailSource.status === "running" ? nowIso : detailSource.updatedAt),
   );
-  const meta = duration
-    ? `${formatTimestamp(detailSource.startedAt, timestampFormat)} • ${duration}`
-    : formatTimestamp(detailSource.startedAt, timestampFormat);
+  const startedAtLabel = formatTimestamp(detailSource.startedAt, timestampFormat);
+  const showExitCode = detailSource.exitCode !== null && detailSource.exitCode !== 0;
 
   return (
-    <div className="group rounded-xl border border-border/60 bg-card/35">
-      <div className="flex w-full items-start gap-3 px-3 py-3">
+    <div
+      className={cn(
+        "group rounded-xl border border-l-2 border-border/60 bg-card/35",
+        STATUS_PRESENTATION[detailSource.status].borderClassName,
+      )}
+    >
+      <div className="flex w-full items-start gap-2.5 px-3 py-2.5">
         <button
           type="button"
           onClick={onToggle}
-          className="flex min-w-0 flex-1 items-start gap-3 text-left"
+          className="flex min-w-0 flex-1 items-start gap-2.5 text-left"
           aria-expanded={expanded}
         >
-          <span className="mt-0.5 text-muted-foreground">
+          <span className="mt-px text-muted-foreground">
             {expanded ? (
               <ChevronDownIcon className="size-4" />
             ) : (
@@ -306,21 +450,38 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
             )}
           </span>
           <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <span
-                className={cn(
-                  "inline-flex rounded-full border px-2 py-0.5 text-2xs font-medium uppercase tracking-wider",
-                  STATUS_BADGE_CLASS_NAME[detailSource.status],
-                )}
-              >
-                {detailSource.status}
-              </span>
-              {detailSource.exitCode !== null && (
-                <span className="text-2xs text-muted-foreground">exit {detailSource.exitCode}</span>
+            <div className="flex min-h-4 min-w-0 items-center gap-2">
+              <CommandStatusIcon status={detailSource.status} />
+              {description && (
+                <span className="min-w-0 truncate text-xs text-muted-foreground">
+                  {description}
+                </span>
               )}
-              <span className="text-2xs text-muted-foreground">{meta}</span>
+              {backgroundStatus !== null && (
+                <span
+                  className="shrink-0 rounded-full border border-border/70 px-1.5 text-2xs leading-4 text-muted-foreground"
+                  title={`Ran in the background (${backgroundStatus})`}
+                >
+                  background
+                </span>
+              )}
+              <span
+                className="ml-auto flex shrink-0 items-center gap-2 text-2xs tabular-nums text-muted-foreground"
+                title={`Started ${startedAtLabel}`}
+              >
+                {showExitCode && (
+                  <span className="text-destructive-foreground">exit {detailSource.exitCode}</span>
+                )}
+                <span>{duration ?? startedAtLabel}</span>
+              </span>
             </div>
-            <code className="mt-2 block overflow-x-auto whitespace-pre-wrap break-all font-mono text-[length:var(--f5-chat-font-size)] text-foreground">
+            <code
+              className={cn(
+                "mt-1 whitespace-pre-wrap break-all font-mono text-[length:var(--f5-chat-font-size)] text-foreground",
+                expanded ? "block" : "line-clamp-2",
+              )}
+              title={expanded ? undefined : displayCommand}
+            >
               {summaryText === displayCommand ? (
                 <HighlightedCommandText command={displayCommand} />
               ) : (
@@ -329,7 +490,7 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
             </code>
           </div>
         </button>
-        <div className="mt-0.5 shrink-0 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
+        <div className="shrink-0 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
           <Button
             type="button"
             size="xs"
@@ -350,9 +511,31 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
         </div>
       </div>
 
+      {failedOutputTail.length > 0 && (
+        // Outside the toggle so the error text stays selectable; bottom-anchored
+        // so wrapped earlier lines clip at the top and the last line stays visible.
+        <div className="-mt-1 flex max-h-20 flex-col justify-end overflow-hidden pr-3 pb-2.5 pl-[2.375rem]">
+          <pre
+            data-testid="command-failed-output-tail"
+            className="whitespace-pre-wrap break-all rounded-md bg-destructive/6 px-2 py-1 font-mono text-xs text-muted-foreground"
+          >
+            {failedOutputTail}
+          </pre>
+        </div>
+      )}
+
       {expanded && (
         <div ref={expandedBodyRef} className="border-t border-border/60 px-3 py-3">
           <div className="space-y-3">
+            {cwdLabel !== null && (
+              <p
+                className="truncate font-mono text-2xs text-muted-foreground"
+                title={detailSource.cwd ?? execution.cwd}
+              >
+                in {cwdLabel}
+              </p>
+            )}
+
             {showCommandSection && (
               <div>
                 <p className="text-2xs uppercase tracking-wider text-muted-foreground">Command</p>

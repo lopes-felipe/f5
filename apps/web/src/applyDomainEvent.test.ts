@@ -1511,6 +1511,49 @@ describe("applyDomainEvent", () => {
     expect(next).toBe(initialState);
   });
 
+  it("keeps a command description when a later record omits it", () => {
+    const commandExecutionId = "command-1" as Thread["commandExecutions"][number]["id"];
+    const recordCommand = (input: {
+      readonly sequence: number;
+      readonly description?: string;
+      readonly status: "running" | "completed";
+    }) =>
+      makeEvent(
+        "thread.command-execution-recorded",
+        {
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          commandExecution: {
+            id: commandExecutionId,
+            turnId: TurnId.makeUnsafe("turn-1"),
+            providerItemId: null,
+            command: "df -h",
+            ...(input.description ? { description: input.description } : {}),
+            title: "Command run",
+            status: input.status,
+            detail: null,
+            exitCode: null,
+            startedAt: "2026-04-01T09:01:00.000Z",
+            completedAt: input.status === "completed" ? "2026-04-01T09:01:05.000Z" : null,
+            updatedAt: "2026-04-01T09:01:05.000Z",
+          },
+        },
+        { sequence: input.sequence },
+      );
+
+    const started = applyDomainEvent(
+      makeState({ threads: [makeThread({ commandExecutions: [] })] }),
+      recordCommand({ sequence: 1, description: "Check free disk space", status: "running" }),
+    );
+    const completed = applyDomainEvent(
+      started,
+      recordCommand({ sequence: 2, status: "completed" }),
+    );
+
+    expect(started.threads[0]?.commandExecutions[0]?.description).toBe("Check free disk space");
+    expect(completed.threads[0]?.commandExecutions[0]?.description).toBe("Check free disk space");
+    expect(completed.threads[0]?.commandExecutions[0]?.status).toBe("completed");
+  });
+
   it("buffers thread.message-sent while details are loading and the buffer is retained", () => {
     const threadId = ThreadId.makeUnsafe("thread-1");
     const turnId = TurnId.makeUnsafe("turn-1");
