@@ -65,7 +65,11 @@ export function isolateTestHome(
   if (env.VITEST !== "true" || env.F5_TEST_HOME) return undefined;
   const incomingHome = env.HOME || env.USERPROFILE || undefined;
   const realHome =
-    env.F5_TEST_REAL_HOME ?? (options.accountHome ?? defaultAccountHome)() ?? homedir();
+    env.F5_TEST_REAL_HOME ??
+    (options.accountHome ?? defaultAccountHome)() ??
+    // No passwd entry: the incoming home is the best record of the real one.
+    incomingHome ??
+    homedir();
   const protectedHomes = new Set(
     [...(env.F5_TEST_PROTECTED_HOMES?.split(delimiter) ?? []), realHome, incomingHome]
       .filter((home): home is string => Boolean(home))

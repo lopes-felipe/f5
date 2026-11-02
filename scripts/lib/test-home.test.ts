@@ -102,14 +102,7 @@ describe("isolateTestHome", () => {
 
   it("falls back to the incoming home when the account has no passwd entry", () => {
     const env: NodeJS.ProcessEnv = { VITEST: "true", HOME: "/home/container" };
-    // os.homedir() reads HOME, which is the incoming home at this point.
-    const previousHome = process.env.HOME;
-    process.env.HOME = "/home/container";
-    try {
-      isolate(env, () => undefined);
-    } finally {
-      process.env.HOME = previousHome;
-    }
+    isolate(env, () => undefined);
     expect(env.F5_TEST_REAL_HOME).toBe("/home/container");
   });
 });
