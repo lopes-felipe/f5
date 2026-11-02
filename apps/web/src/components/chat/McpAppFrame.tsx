@@ -185,7 +185,6 @@ export function McpAppFrame({ app, threadId }: { app: McpAppView; threadId: Thre
           frame.current?.contentWindow?.postMessage(outgoing, "*");
       });
     };
-    let appUserActive = false;
     const bridge = makeMcpAppHost({
       app: app.reference,
       hostVersion: "1",
@@ -258,9 +257,8 @@ export function McpAppFrame({ app, threadId }: { app: McpAppView; threadId: Thre
         if (["canceled", "cleared", "rejected"].includes(result.disposition))
           throw new McpAppHostRefusal("The message was not accepted.");
       },
-      requestDisplayMode: async (mode) => {
-        // receive dispatches synchronously. Read the attestation before awaiting liveness.
-        if (mode === "fullscreen" && !appUserActive)
+      requestDisplayMode: async (mode, context) => {
+        if (mode === "fullscreen" && !context.userActive)
           return current.current.fullscreen ? "fullscreen" : "inline";
         await active();
         // An exit or other parent input may occur during the asynchronous document checks.
@@ -324,14 +322,9 @@ export function McpAppFrame({ app, threadId }: { app: McpAppView; threadId: Thre
         document.activeElement === frame.current &&
         navigator.userActivation?.isActive === true &&
         performance.now() - lastPageInputAt.current >= PAGE_ACTIVATION_MS;
-      void guard.check().then((valid) => {
-        if (valid && !controller.signal.aborted) {
-          appUserActive = userActive;
-          try {
-            bridge.receive(event.data);
-          } finally {
-            appUserActive = false;
-          }
+      void guard.inspect().then((status) => {
+        if (status.valid && !controller.signal.aborted) {
+          bridge.receive(event.data, { userActive: userActive && status.userActive });
         }
       });
     };

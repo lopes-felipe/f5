@@ -23,3 +23,22 @@ it("expands short JSON errors to exact diagnostics and collapses to the readable
     await screen.unmount();
   }
 });
+
+it("shows a short wrapped error in full without requiring an expansion control", async () => {
+  const error = "A short error message that wraps across more than three lines in a narrow column.";
+  const screen = await render(
+    <div style={{ width: 100 }}>
+      <ThreadErrorBanner error={error} />
+    </div>,
+  );
+  try {
+    const text = page.getByText(error, { exact: true });
+    await expect.element(text).toBeVisible();
+    const element = text.element();
+    expect(getComputedStyle(element).webkitLineClamp).toBe("none");
+    expect(element.scrollHeight).toBeLessThanOrEqual(element.clientHeight + 1);
+    expect(page.getByRole("button", { name: "Show full error" }).query()).toBeNull();
+  } finally {
+    await screen.unmount();
+  }
+});

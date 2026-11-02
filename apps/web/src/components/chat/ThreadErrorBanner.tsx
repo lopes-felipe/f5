@@ -1,7 +1,7 @@
 import { memo } from "react";
 import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { CircleAlertIcon, XIcon } from "lucide-react";
-import { ExpandableText } from "../settings/ExpandableText";
+import { ExpandableErrorText } from "./ExpandableErrorText";
 
 export function getThreadErrorBannerMessage(error: string): string {
   let payload: unknown;
@@ -33,7 +33,7 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
     <Alert variant="error">
       <CircleAlertIcon />
       <AlertDescription className="min-w-0" title={error}>
-        <ExpandableText
+        <ExpandableErrorText
           key={error}
           text={error}
           collapsedText={getThreadErrorBannerMessage(error)}

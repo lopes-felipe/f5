@@ -1,7 +1,7 @@
 import { useId, useState } from "react";
 import { cn } from "../../lib/utils";
 
-export function ExpandableText({
+export function ExpandableErrorText({
   text,
   collapsedText = text,
 }: {
@@ -15,7 +15,7 @@ export function ExpandableText({
     <div className="min-w-0">
       <div
         id={textId}
-        className={cn("whitespace-pre-wrap break-words", !expanded && "line-clamp-3")}
+        className={cn("whitespace-pre-wrap break-words", !expanded && canExpand && "line-clamp-3")}
       >
         {expanded ? text : collapsedText}
       </div>
