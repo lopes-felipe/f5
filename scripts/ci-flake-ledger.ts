@@ -4,12 +4,14 @@
 // as untrusted data, never executed, and never trusted for markers or metadata.
 //
 //   node scripts/ci-flake-ledger.ts <downloaded-artifacts-dir>
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { FAILURE_RECORD_FILE, readFlakyRecords, truncateUtf8 } from "./lib/ci-flaky-records.ts";
+import { runGh, type Gh } from "./lib/github-cli.ts";
+
+export { runGh, type Gh } from "./lib/github-cli.ts";
 
 export const LABEL = "ci-flaky";
 export const MAX_ISSUES_PER_RUN = 20;
@@ -369,24 +371,6 @@ export function occurrenceComment(
 }
 
 // --- GitHub -------------------------------------------------------------------
-
-export type Gh = (args: readonly string[], input?: string) => Promise<string>;
-
-export const runGh: Gh = (args, input) =>
-  new Promise((resolvePromise, reject) => {
-    const child = spawn("gh", args, { stdio: ["pipe", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => (stdout += chunk));
-    child.stderr.on("data", (chunk) => (stderr += chunk));
-    child.once("error", reject);
-    child.once("close", (code) =>
-      code === 0
-        ? resolvePromise(stdout)
-        : reject(new Error(`gh ${args.slice(0, 2).join(" ")} exited ${code}: ${stderr.trim()}`)),
-    );
-    child.stdin.end(input ?? "");
-  });
 
 interface Issue {
   number: number;

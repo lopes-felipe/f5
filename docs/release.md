@@ -12,6 +12,19 @@ Betas need no version PR or dispatch. After stable 0.1.1, main candidates are
 the same commit keeps its version. Gaps are intentional. The newest commit whose
 required CI jobs pass supersedes older unpublished betas, even while its candidate
 is still building; a failed newer candidate does not cause an older beta to ship.
+In beta/all automation modes, the publisher automatically reruns a selected failed
+or timed-out candidate's failed jobs, up to three total attempts (including manual
+reruns). Publication waits for the rerun without falling back to an older candidate.
+Automatic reruns use `GITHUB_TOKEN`. If their completion does not trigger another
+publisher workflow, publication resumes through the ten-minute scheduled
+reconciliation. GitHub may delay scheduled runs when capacity is constrained.
+After the third attempt, or for a cancelled run, manually rerun failed jobs with
+`gh run rerun <run-id> --failed`. Shadow mode never reruns candidates.
+
+CI queue cleanup supersedes older queued runs before their replacement passes.
+If that replacement later fails, intermediate sources whose CI was cancelled
+cannot qualify until manually rerun; publication may wait for a newer eligible
+main source to pass. Cleanup skips replacements already known to have failed.
 
 For a stable release:
 
@@ -26,8 +39,9 @@ That commit produces no beta. Subsequent main commits target 0.1.3-beta.N.
 
 A pending stable request holds later betas across build failures, reruns, missed
 events and restarts. Later merges never cancel or silently change its candidate.
-First rerun failed jobs when the source is sound. For a source fix, merge it and
-request an explicit recovery PR for the same unpublished version:
+After automatic retries are exhausted, rerun failed jobs when the source is sound.
+For a source fix, merge it and request an explicit recovery PR for the same
+unpublished version:
 
 ```sh
 bun run release:prepare --stable 0.1.2 --recover <failed-request-uuid>
