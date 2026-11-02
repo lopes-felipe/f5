@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import type { PrHubPeek } from "@t3tools/contracts";
 import * as nativeApi from "../../nativeApi";
 import { writeTextToClipboard } from "../../hooks/useCopyToClipboard";
+import { useExternalLinkContextMenu } from "../../hooks/useExternalLinkContextMenu";
 import { getPrHubSelectedAccountId } from "../../lib/prHubAccount";
 import { OpenLinkAnchor } from "../OpenLinkAnchor";
 import { Button } from "../ui/button";
@@ -15,6 +16,7 @@ const readPreviewApi = () => {
 };
 
 export function PrLinkPreview({ url, children }: { url: string; children: ReactNode }) {
+  const openLinkContextMenu = useExternalLinkContextMenu();
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState<PrHubPeek | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,7 +47,12 @@ export function PrLinkPreview({ url, children }: { url: string; children: ReactN
         if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
       }}
     >
-      <OpenLinkAnchor href={url} target="_blank" rel="noopener noreferrer">
+      <OpenLinkAnchor
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        onContextMenu={(event) => openLinkContextMenu(event, url)}
+      >
         {children}
       </OpenLinkAnchor>
       {open ? (

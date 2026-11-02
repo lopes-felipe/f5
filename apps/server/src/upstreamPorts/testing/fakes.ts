@@ -280,6 +280,13 @@ export class FakeGitHub {
   }
 
   readonly github: UpstreamGitHub = {
+    readPullRequestTopicEvidence: ({ repo, number }) =>
+      this.call("topic evidence " + number, () => {
+        const pr = this.prs.find(
+          (entry) => entry.repo === repo.owner + "/" + repo.name && entry.number === number,
+        );
+        return pr ? { texts: [pr.body], complete: true } : null;
+      }),
     available: () => Effect.succeed(this.available),
     findPullRequest: ({ repo, number }) =>
       this.call(`find ${repo.owner}/${repo.name}#${number}`, () =>

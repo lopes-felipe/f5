@@ -40,7 +40,11 @@ import {
   isKnownProviderKind as isKnownProviderKindValue,
   ProviderKind as ProviderKindSchema,
 } from "./providerKind";
-import { TOOL_LIFECYCLE_ITEM_TYPES, ToolCompletionEnvelope } from "./toolLifecycle";
+import {
+  ComputerStepSummary,
+  TOOL_LIFECYCLE_ITEM_TYPES,
+  ToolCompletionEnvelope,
+} from "./toolLifecycle";
 import {
   ApprovalRequestId,
   CheckpointRef,
@@ -393,6 +397,8 @@ export const OrchestrationMessage = Schema.Struct({
   id: MessageId,
   role: OrchestrationMessageRole,
   text: Schema.String,
+  /** Server-owned submission provenance; missing historical stamps remain possibly human. */
+  authorship: Schema.optional(Schema.Literals(["human", "automation"])),
   reasoningText: Schema.optional(Schema.String),
   /** Reasoning tokens attributed to this assistant message. */
   reasoningTokens: Schema.optional(NonNegativeInt),
@@ -545,6 +551,8 @@ const CommandExecutionRecordFields = {
   providerItemId: Schema.NullOr(ProviderItemId),
   command: TrimmedNonEmptyString,
   cwd: Schema.optional(FilesystemPath),
+  /** Provider-authored one-line intent, e.g. Claude's Bash `description`. */
+  description: Schema.optional(TrimmedNonEmptyString),
   title: Schema.NullOr(TrimmedNonEmptyString),
   status: OrchestrationCommandExecutionStatus,
   detail: Schema.NullOr(Schema.String),
@@ -759,6 +767,7 @@ export type CompactSubagentState = typeof CompactSubagentState.Type;
 
 export const CompactToolActivityPayload = Schema.Struct({
   computerTool: Schema.optional(Schema.Boolean),
+  computerStep: Schema.optional(ComputerStepSummary),
   imagePath: Schema.optional(TrimmedNonEmptyString),
   itemType: CompactToolLifecycleItemType,
   providerItemId: Schema.optional(ProviderItemId),
@@ -1031,6 +1040,12 @@ export const OrchestrationThread = Schema.Struct({
   ),
   messages: Schema.Array(OrchestrationMessage),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(Schema.withDecodingDefault(() => [])),
+  /**
+   * Set only by the startup snapshot for archived threads: `proposedPlans` is
+   * empty because it was not loaded, not because the thread has none. The
+   * thread's tail details carry them.
+   */
+  proposedPlansOmitted: Schema.optional(Schema.Boolean),
   tasks: Schema.Array(TaskItem).pipe(Schema.withDecodingDefault(() => [])),
   tasksTurnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(() => null)),
   tasksUpdatedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
@@ -2350,6 +2365,7 @@ export const ThreadMessageSentPayload = Schema.Struct({
   messageId: MessageId,
   role: OrchestrationMessageRole,
   text: Schema.String,
+  authorship: OrchestrationMessage.fields.authorship,
   reasoningText: Schema.optional(Schema.String),
   skillCall: Schema.optional(UserMessageSkillCall),
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
@@ -3036,6 +3052,8 @@ export const OrchestrationThreadTailDetails = Schema.Struct({
   commandExecutions: Schema.Array(OrchestrationCommandExecutionSummary).pipe(
     Schema.withDecodingDefault(() => []),
   ),
+  /** Every plan of the thread, uncapped: replaces the client's plans, including ones a startup snapshot omitted. */
+  proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(Schema.withDecodingDefault(() => [])),
   tasks: Schema.Array(TaskItem).pipe(Schema.withDecodingDefault(() => [])),
   tasksTurnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(() => null)),
   tasksUpdatedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),

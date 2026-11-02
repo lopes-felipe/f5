@@ -7,6 +7,7 @@ import {
   type OrchestrationMessage,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
 } from "@t3tools/contracts";
+import { isImageOnlyBootstrapPrompt } from "@t3tools/shared/composerSendText";
 import { isUnsupportedCodexModelError } from "./provider/codexErrors.ts";
 import { Cause, Effect, ServiceMap } from "effect";
 import type * as Duration from "effect/Duration";
@@ -21,6 +22,11 @@ export const THREAD_TITLE_REGENERATION_RECENT_USER_MESSAGE_COUNT = 4;
 // messages are not subsequently discarded by a second head-only truncation.
 export const THREAD_TITLE_REGENERATION_MAX_CONTEXT_CHARS = 8_000;
 const THREAD_TITLE_CONTEXT_TRUNCATION_MARKER = "\n\n[… earlier thread context truncated …]\n\n";
+
+/** A user message's words for naming the thread, without the prompt that stands in for images. */
+export function userMessageTitleText(text: string): string {
+  return isImageOnlyBootstrapPrompt(text) ? "" : text.trim();
+}
 
 export function formatThreadTitleRegenerationContext(
   messages: ReadonlyArray<OrchestrationMessage>,
@@ -37,7 +43,7 @@ export function formatThreadTitleRegenerationContext(
   const selected = [first, ...recent];
   const sections = selected.map((message, index) => {
     const label = index === 0 ? "First user message" : `Recent user message ${index}`;
-    return `${label}:\n${message.text.trim() || "[Image attachment without text]"}`;
+    return `${label}:\n${userMessageTitleText(message.text) || "[Image attachment without text]"}`;
   });
   const text = sections.join("\n\n");
   const boundedText =
@@ -161,6 +167,7 @@ export const resolveBestEffortGeneratedTitleResult = (input: {
   readonly titleGenerationModelSelection?: ModelSelection | undefined;
   readonly previousTitle?: string | undefined;
   readonly linkedContext?: string | undefined;
+  readonly instructions?: string | undefined;
   readonly defaultTitle: string;
   readonly textGeneration: TextGenerationShape;
   readonly logPrefix: string;
@@ -195,6 +202,7 @@ export const resolveBestEffortGeneratedTitleResult = (input: {
           message: input.titleSourceText,
           ...(input.previousTitle !== undefined ? { previousTitle: input.previousTitle } : {}),
           ...(input.linkedContext !== undefined ? { linkedContext: input.linkedContext } : {}),
+          ...(input.instructions ? { instructions: input.instructions } : {}),
           ...(input.attachments.length > 0 ? { attachments: input.attachments } : {}),
           model,
           ...(requestedModelSelection

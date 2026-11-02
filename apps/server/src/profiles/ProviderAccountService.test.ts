@@ -15,6 +15,49 @@ import type { PtyProcess } from "../terminal/Services/PTY";
 import { ProviderAccountService, assertOAuthPortAvailable } from "./ProviderAccountService";
 import { acquireInstanceLock } from "./InstanceLock";
 
+for (const scenario of [
+  { name: "default", expected: "t3-code" },
+  { name: "instance override", instance: "instance", expected: "instance" },
+  { name: "settings override", instance: "instance", settings: "settings", expected: "settings" },
+]) {
+  it(`resolves Claude account commands with the ${scenario.name} entrypoint`, async () => {
+    const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-claude-account-env-"));
+    const id = ProviderInstanceId.make("claudeAgent");
+    vi.stubEnv("CLAUDE_CODE_ENTRYPOINT", "claude-desktop");
+    try {
+      await FS.mkdir(Path.join(root, ".claude"));
+      await FS.writeFile(
+        Path.join(root, ".claude", "settings.json"),
+        JSON.stringify({ env: { CLAUDE_CODE_ENTRYPOINT: scenario.settings } }),
+      );
+      const settings = Schema.decodeUnknownSync(ServerSettings)({
+        providerInstances: {
+          [id]: {
+            driver: "claudeAgent",
+            config: { homePath: root },
+            environment:
+              scenario.instance === undefined
+                ? []
+                : [{ name: "CLAUDE_CODE_ENTRYPOINT", value: scenario.instance }],
+          },
+        },
+      });
+      const account = await ProviderAccountService.resolve(
+        { stateDir: root } as ServerConfigShape,
+        { getSettings: Effect.succeed(settings) } as unknown as ServerSettingsShape,
+        id,
+      );
+      expect(account.environment.CLAUDE_CODE_ENTRYPOINT).toBe(scenario.expected);
+      expect(account.environment.CLAUDE_CONFIG_DIR).toBe(Path.join(root, ".claude"));
+      expect(account.invocation(["auth", "status"]).args).toContain("status");
+      expect(account.invocation(["auth", "login"]).args).toContain("login");
+    } finally {
+      vi.unstubAllEnvs();
+      await FS.rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
 it("reports an external OAuth listener without stopping its owner", async () => {
   const listener = Net.createServer();
   await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));

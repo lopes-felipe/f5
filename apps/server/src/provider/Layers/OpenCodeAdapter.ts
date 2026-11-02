@@ -6,6 +6,7 @@ import {
 } from "@t3tools/shared/agentAutomationSupport";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import { loadOpenCodeCommands } from "../opencodeRuntime.ts";
+import { leadingSlashCommandName } from "../nativeCommandInput.ts";
 import {
   EventId,
   type OpenCodeSettings,
@@ -2013,6 +2014,16 @@ export function makeOpenCodeAdapter(
       capabilities: {
         sessionModelSwitch: "in-session",
         runtimeCapabilities: providerRuntimeCapabilities(PROVIDER),
+      },
+      // Mirrors sendTurn: a registered command runs natively. Before the session
+      // has listed its commands, any leading `/name` command may be one.
+      classifyTurnInput: (threadId, text) => {
+        const context = sessions.get(threadId);
+        if (context) {
+          const name = /^\/([^\s]+)/.exec(text.trimStart())?.[1];
+          return name && context.nativeCommands.has(name) ? "native-command" : "prompt";
+        }
+        return leadingSlashCommandName(text) !== undefined ? "native-command" : "prompt";
       },
       startSession: (input) => withStartLock(input.threadId, startSessionUnlocked(input)),
       sendTurn,

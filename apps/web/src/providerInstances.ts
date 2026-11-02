@@ -273,7 +273,13 @@ export function resolveDefaultProviderModelSelection(
   return model ? { instanceId, model } : null;
 }
 
-/** Started threads keep their exact native session instance until handoff is supported. */
+/**
+ * Resolves the composer's provider instance. A started thread is locked to its
+ * native session instance only against a server without context handoff.
+ * `keepRequested` never substitutes another instance for an unavailable
+ * request: on a started thread that would hand the conversation to a provider
+ * the user did not pick.
+ */
 export function resolveComposerProviderInstance(
   entries: ReadonlyArray<ProviderInstanceEntry>,
   input: {
@@ -281,6 +287,7 @@ export function resolveComposerProviderInstance(
     readonly preferredDriver: ProviderDriverKind | undefined;
     readonly lockedDriver: ProviderDriverKind | null;
     readonly lockedInstanceId?: ProviderInstanceId | undefined;
+    readonly keepRequested?: boolean;
   },
 ): ProviderInstanceEntry | undefined {
   const compatible = entries.filter(
@@ -293,6 +300,7 @@ export function resolveComposerProviderInstance(
     if (requested?.enabled && requested.isAvailable) return requested;
   }
   if (input.lockedDriver) return undefined;
+  if (input.keepRequested && input.candidates.some((id) => id != null)) return undefined;
   return (
     resolveSelectableProviderInstanceEntry(
       compatible.filter((entry) => entry.driverKind === input.preferredDriver),

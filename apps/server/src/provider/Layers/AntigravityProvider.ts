@@ -10,6 +10,29 @@ import {
 import { antigravityProfileDirectory } from "../acp/AntigravityAcpSupport.ts";
 import { buildServerProvider, providerModelsFromSettings } from "../providerSnapshot.ts";
 
+/** Keep account model IDs unique and distinguish repeated picker labels. */
+export function buildAntigravityModels(
+  choices: ReadonlyArray<{ readonly value: string; readonly name: string }>,
+): ServerProviderModel[] {
+  const ids = new Set<string>();
+  const names = new Set<string>();
+  return choices.flatMap((choice) => {
+    if (!choice.value.trim() || ids.has(choice.value)) return [];
+    ids.add(choice.value);
+    const baseName = choice.name.trim() ? choice.name : choice.value;
+    const name = names.has(baseName) ? `${baseName} (${choice.value})` : baseName;
+    names.add(baseName);
+    return [
+      {
+        slug: choice.value,
+        name,
+        isCustom: false,
+        capabilities: createModelCapabilities({ optionDescriptors: [] }),
+      },
+    ];
+  });
+}
+
 export async function hasAntigravityAccount(
   stateDir: string,
   instanceId: string,

@@ -52,7 +52,8 @@ type ThreadStatusLabel =
 export type ThreadStatusInput = Pick<
   Thread,
   "interactionMode" | "latestTurn" | "lastVisitedAt" | "proposedPlans" | "session"
->;
+> &
+  Partial<Pick<Thread, "proposedPlansOmitted">>;
 
 export interface ResolveThreadStatusInput {
   thread: ThreadStatusInput;
@@ -171,8 +172,10 @@ export function resolveThreadStatus(input: ResolveThreadStatusInput): ThreadStat
     return "failed";
   }
 
+  // Archived threads whose plans the startup snapshot omitted cannot be judged.
   const hasPlanReadyPrompt =
     !hasPendingUserInput &&
+    thread.proposedPlansOmitted !== true &&
     thread.interactionMode === "plan" &&
     isLatestTurnSettled(thread.latestTurn, thread.session) &&
     hasActionableProposedPlan(

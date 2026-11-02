@@ -1,6 +1,7 @@
 import "../../index.css";
 
-import { page } from "vitest/browser";
+import type {} from "@vitest/browser-playwright";
+import { cdp, page } from "vitest/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 import type {
@@ -137,6 +138,46 @@ describe("ProviderModelPicker", () => {
 
   afterEach(() => {
     document.body.innerHTML = "";
+  });
+
+  it("only closes the picker when an outside touch lands over another control", async () => {
+    await page.viewport(1024, 900);
+    await cdp().send("Emulation.setTouchEmulationEnabled", { enabled: true });
+    const outside = document.createElement("button");
+    outside.textContent = "Fork thread";
+    outside.style.cssText = "position:fixed;bottom:10px;right:10px;width:100px;height:40px";
+    const fork = vi.fn();
+    outside.addEventListener("click", fork);
+    document.body.append(outside);
+    const mounted = await mountPicker();
+    try {
+      expect(matchMedia("(pointer: coarse)").matches).toBe(true);
+      await page.getByRole("button", { name: /GPT-5.5/ }).click();
+      await expect.element(page.getByPlaceholder("Search models...")).toBeVisible();
+      const bounds = outside.getBoundingClientRect();
+      const frame = window.frameElement?.getBoundingClientRect();
+      // Vitest scales its test iframe to fit the runner window.
+      const scaleX = frame ? frame.width / window.innerWidth : 1;
+      const scaleY = frame ? frame.height / window.innerHeight : 1;
+      const touchPoints = [
+        {
+          x: (bounds.x + bounds.width / 2) * scaleX + (frame?.left ?? 0),
+          y: (bounds.y + bounds.height / 2) * scaleY + (frame?.top ?? 0),
+        },
+      ];
+      await cdp().send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints });
+      await cdp().send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await expect.element(page.getByPlaceholder("Search models...")).not.toBeInTheDocument();
+      expect(fork).not.toHaveBeenCalled();
+      // Once closed, the same tap still activates the underlying control normally.
+      await cdp().send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints });
+      await cdp().send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await vi.waitFor(() => expect(fork).toHaveBeenCalledOnce());
+    } finally {
+      await mounted.cleanup();
+      outside.remove();
+      await cdp().send("Emulation.setTouchEmulationEnabled", { enabled: false });
+    }
   });
 
   it("opens from the trigger, focuses search, and filters across providers", async () => {

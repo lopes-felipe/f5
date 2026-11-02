@@ -37,7 +37,15 @@ interface CreateProjectBackedDraftThreadInput {
   onboardingLiteStatus: AppSettings["onboardingLiteStatus"];
   updateSettings: (patch: Partial<AppSettings>) => void;
   options?: CreateProjectBackedDraftThreadOptions;
+  /**
+   * Whether the project was in the store when the request began. Callers that
+   * await before this function read it first; defaults to the current store.
+   */
+  projectKnownAtRequest?: boolean;
 }
+
+const projectIsKnown = (projectId: ProjectId): boolean =>
+  useStore.getState().projects.some((project) => project.id === projectId);
 
 export interface CreateProjectBackedDraftThreadResult {
   projectId: ProjectId;
@@ -88,7 +96,8 @@ export async function createProjectBackedDraftThread({
   projectId,
   routeThreadId,
   updateSettings,
-}: CreateProjectBackedDraftThreadInput): Promise<CreateProjectBackedDraftThreadResult> {
+  projectKnownAtRequest = projectIsKnown(projectId),
+}: CreateProjectBackedDraftThreadInput): Promise<CreateProjectBackedDraftThreadResult | null> {
   let resolvedSettings: ServerSettings | undefined;
   let runtimeMode = defaultDraftRuntimeMode(projectId);
   try {
@@ -98,6 +107,9 @@ export async function createProjectBackedDraftThread({
   } catch {
     // Local draft creation remains available while reconnecting.
   }
+  // Removal can land while settings load; a draft opened after that belongs
+  // to a project that no longer exists, so neither create nor navigate.
+  if (projectKnownAtRequest && !projectIsKnown(projectId)) return null;
   // Re-read drafts after the await: concurrent clicks must reuse the first draft.
   const {
     getDraftThread,
@@ -214,6 +226,7 @@ export function useCreateProjectBackedDraftThread() {
   return useCallback(
     async (projectId: ProjectId, options?: CreateProjectBackedDraftThreadOptions) => {
       const { forceNonDefaultEnvMode = false, ...draftOptions } = options ?? {};
+      const projectKnownAtRequest = projectIsKnown(projectId);
       // A thread without a project gets its own folder from the server: no branch, no worktree.
       if (isScratchProject(useStore.getState().projects.find((entry) => entry.id === projectId)))
         return createProjectBackedDraftThread({
@@ -242,6 +255,7 @@ export function useCreateProjectBackedDraftThread() {
         routeThreadId,
         updateSettings: updateAppSettings,
         options: { ...draftOptions, envMode },
+        projectKnownAtRequest,
       });
     },
     [navigate, onboardingLiteStatus, resolveProjectThreadEnvMode, routeThreadId],

@@ -4,6 +4,37 @@ import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 import { UserInputQuestionStep } from "./UserInputQuestionStep";
 
+it("hides custom answers for provider option-only questions", async () => {
+  const screen = await render(
+    <UserInputQuestionStep
+      question={{
+        id: "branch",
+        header: "Branch",
+        question: "Choose",
+        options: [{ label: "Main", description: "main", value: "opt-main" }],
+        allowCustomAnswer: false,
+      }}
+      questionIndex={0}
+      questionCount={1}
+      selectedOptionLabels={[]}
+      disabled={false}
+      customMode="inline"
+      customOpen
+      shortcutScope="panel"
+      onSelectOption={() => {}}
+      onToggleOption={() => {}}
+      onAdvance={() => {}}
+    />,
+  );
+  try {
+    await expect.element(page.getByRole("button", { name: /Main/ })).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Other…" })).not.toBeInTheDocument();
+    await expect.element(page.getByRole("textbox")).not.toBeInTheDocument();
+  } finally {
+    await screen.unmount();
+  }
+});
+
 function Questions() {
   const [index, setIndex] = useState(0);
   const [disabled, setDisabled] = useState(false);
@@ -30,7 +61,9 @@ function Questions() {
         selectedOptionLabels={answers[id] ? [answers[id]!] : []}
         onSelectOption={(label) => setAnswers({ ...answers, [id]: label })}
         onToggleOption={() => {}}
-        onAdvance={() => setIndex((current) => current + 1)}
+        onAdvance={() => {
+          if (answers[id]) setIndex((current) => current + 1);
+        }}
       />
     </>
   );

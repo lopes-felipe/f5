@@ -297,6 +297,9 @@ export const StorageRetentionDays = Schema.NullOr(
 );
 export type StorageRetentionDays = typeof StorageRetentionDays.Type;
 
+/** Thread title instructions beyond this are cut from the title prompt; editors stop here. */
+export const THREAD_TITLE_INSTRUCTIONS_MAX_CHARS = 2_000;
+
 export const MAX_WORKTREE_CLEANUP_MIN_IDLE_HOURS = 720;
 export const DEFAULT_WORKTREE_CLEANUP_MIN_IDLE_HOURS = 24;
 
@@ -341,6 +344,8 @@ export type WorktreeCleanup = typeof WorktreeCleanup.Type;
 export const StorageDiscoverySettings = Schema.Struct({
   machineCleanupEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   repositoryRoots: Schema.Array(TrimmedNonEmptyString).pipe(Schema.withDecodingDefault(() => [])),
+  /** Search project folders that are not repositories, such as a folder of clones, for repositories. */
+  searchProjectFolders: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
 });
 export type StorageDiscoverySettings = typeof StorageDiscoverySettings.Type;
 
@@ -440,6 +445,7 @@ export const ProjectSettingsOverrides = Schema.Struct({
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   worktreeSubmodules: Schema.optionalKey(WorktreeSubmodules),
   textGenerationModelSelection: Schema.optionalKey(ModelSelection),
+  threadTitleInstructions: Schema.optionalKey(TrimmedString),
   sourceControlWriting: Schema.optionalKey(SourceControlWritingSettingsPatch),
   enableClaudePromptSuggestions: Schema.optionalKey(Schema.Boolean),
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
@@ -513,6 +519,8 @@ export const ServerSettings = Schema.Struct({
       model: DEFAULT_GIT_TEXT_GENERATION_MODEL,
     })),
   ),
+  /** Appended to the prompt for new and regenerated thread titles. */
+  threadTitleInstructions: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
   reviewGuideModelSelection: Schema.NullOr(ModelSelection).pipe(
     Schema.withDecodingDefault(() => null),
   ),
@@ -721,6 +729,7 @@ export const ServerSettingsPatch = Schema.Struct({
   addProjectBaseDirectory: Schema.optionalKey(Schema.String),
   projectsRoot: Schema.optionalKey(Schema.String),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
+  threadTitleInstructions: Schema.optionalKey(TrimmedString),
   sessionNotesModelSelection: Schema.optionalKey(ModelSelectionPatch),
   reviewGuideModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   prHubDefaultMergeMethod: Schema.optionalKey(
@@ -797,6 +806,7 @@ export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "defaultThreadEnvMode",
   "worktreeSubmodules",
   "textGenerationModelSelection",
+  "threadTitleInstructions",
   "sourceControlWriting",
   "enableClaudePromptSuggestions",
   "enableAssistantStreaming",

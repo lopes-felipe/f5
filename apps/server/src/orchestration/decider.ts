@@ -1154,6 +1154,15 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         threadId: command.threadId,
       });
       if (
+        isScratchProject(readModel.projects.find((project) => project.id === thread.projectId)) &&
+        (command.branch != null || command.worktreePath != null)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Threads without a project cannot have a branch or worktree.",
+        });
+      }
+      if (
         command.expectedArchivedAt !== undefined &&
         thread.archivedAt !== command.expectedArchivedAt
       ) {

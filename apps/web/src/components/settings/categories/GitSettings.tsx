@@ -184,7 +184,7 @@ function SyncSettings() {
         description={
           gitAutoRefreshEnabled
             ? `Keeps local git status refreshed every ${settings.gitStatusAutoRefreshIntervalSeconds} seconds.`
-            : "Stops background refreshes, but git status still loads when opened and after explicit git actions."
+            : "Stops background refreshes and upstream fetches. Local git status still loads when opened and after explicit git actions."
         }
         control={
           <div className="flex items-center gap-3">

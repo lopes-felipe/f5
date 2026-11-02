@@ -13,6 +13,11 @@ const MISSING_CONVERSATION_PATTERNS = [
   "conversation not found",
   "could not resume the requested conversation",
   "could not load the saved conversation",
+  // Pi: the resumed process reported a different or no session file.
+  "did not confirm the expected persisted session file",
+  "resume metadata is invalid",
+  // Claude: the cursor names a session whose resume boundary was never persisted.
+  "no persisted claude resume boundary",
 ] as const;
 
 export function isClaudeMissingResumePointError(text: string): boolean {

@@ -1,4 +1,5 @@
 import { projectLatestTurnSession } from "@t3tools/shared/turnStateTransitions";
+import { resolveTurnAssistantMessage } from "@t3tools/shared/turnAssistantMessage";
 import { recordMessageAppend, recordMessageListChange } from "./lib/streamingTextRevision";
 import { detailEntityKey, detailEventIsCovered } from "./orchestration/detailCoverage";
 import {
@@ -231,6 +232,7 @@ function upsertMessage(
 ): Thread["messages"] {
   const existingIndex = messages.findIndex((entry) => entry.id === payload.messageId);
   const existing = existingIndex >= 0 ? messages[existingIndex] : undefined;
+  const authorship = payload.authorship ?? existing?.authorship;
   const attachments = mapMessageAttachmentsFromReadModel(
     payload.attachments,
     existing?.attachments,
@@ -255,6 +257,7 @@ function upsertMessage(
     existing &&
     existing.role === payload.role &&
     existing.text === nextText &&
+    existing.authorship === authorship &&
     existing.reasoningText === nextReasoningText &&
     areUnknownEqual(existing.skillCall, payload.skillCall) &&
     (existing.turnId ?? null) === payload.turnId &&
@@ -270,6 +273,7 @@ function upsertMessage(
     id: payload.messageId,
     role: payload.role,
     text: nextText,
+    ...(authorship !== undefined ? { authorship } : {}),
     ...(nextReasoningText !== undefined ? { reasoningText: nextReasoningText } : {}),
     ...(existing?.reasoningTokens !== undefined
       ? { reasoningTokens: existing.reasoningTokens }
@@ -581,6 +585,7 @@ function upsertCommandExecution(
     return commandExecutions;
   }
   const nextCwd = event.payload.commandExecution.cwd ?? existing?.cwd;
+  const nextDescription = event.payload.commandExecution.description ?? existing?.description;
   const nextCommandExecution = {
     id: event.payload.commandExecution.id,
     threadId: event.payload.threadId,
@@ -588,6 +593,7 @@ function upsertCommandExecution(
     providerItemId: event.payload.commandExecution.providerItemId,
     command: event.payload.commandExecution.command,
     ...(nextCwd !== undefined ? { cwd: nextCwd } : {}),
+    ...(nextDescription !== undefined ? { description: nextDescription } : {}),
     title: event.payload.commandExecution.title,
     status: event.payload.commandExecution.status,
     detail: event.payload.commandExecution.detail,
@@ -606,6 +612,7 @@ function upsertCommandExecution(
     existing.providerItemId === nextCommandExecution.providerItemId &&
     existing.command === nextCommandExecution.command &&
     (existing.cwd ?? undefined) === nextCommandExecution.cwd &&
+    (existing.description ?? undefined) === nextCommandExecution.description &&
     existing.title === nextCommandExecution.title &&
     existing.status === nextCommandExecution.status &&
     existing.detail === nextCommandExecution.detail &&
@@ -1622,8 +1629,17 @@ function reduceDomainEvent(
     }
 
     case "thread.proposed-plan-upserted": {
-      const threads = updateThread(state.threads, event.payload.threadId, (thread) => {
-        const proposedPlans = upsertProposedPlan(thread.proposedPlans, event.payload.proposedPlan);
+      // Plans are detail entities: an older tail must not overwrite a newer
+      // plan. Unlike turn diffs, a thread without loaded details still applies
+      // upserts, because its plans came with the startup snapshot. While its
+      // tail hydrates, the upsert is applied now and also buffered for replay
+      // over the tail, so a failed or cancelled hydration does not lose it.
+      const detailGate = gateThreadDetailMutations(state, event.payload.threadId, event);
+      const applyPlan = !detailEventIsCovered(state, event.payload.threadId, event);
+      const threads = updateThread(detailGate.state.threads, event.payload.threadId, (thread) => {
+        const proposedPlans = applyPlan
+          ? upsertProposedPlan(thread.proposedPlans, event.payload.proposedPlan)
+          : thread.proposedPlans;
         if (
           proposedPlans === thread.proposedPlans &&
           thread.lastInteractionAt === event.occurredAt
@@ -1636,14 +1652,25 @@ function reduceDomainEvent(
           lastInteractionAt: event.occurredAt,
         };
       });
-      return threads === state.threads ? state : { ...state, threads };
+      return threads === detailGate.state.threads
+        ? detailGate.state
+        : { ...detailGate.state, threads };
     }
 
     case "thread.turn-diff-completed": {
       const detailGate = gateThreadDetailMutations(state, event.payload.threadId, event);
       const threads = updateThread(detailGate.state.threads, event.payload.threadId, (thread) => {
+        const assistantMessageId =
+          resolveTurnAssistantMessage(thread.messages, event.payload.turnId)?.id ??
+          (thread.latestTurn?.turnId === event.payload.turnId
+            ? thread.latestTurn.assistantMessageId
+            : null) ??
+          event.payload.assistantMessageId;
         const turnDiffSummaries = detailGate.applyDetailMutations
-          ? upsertTurnDiffSummary(thread.turnDiffSummaries, event.payload)
+          ? upsertTurnDiffSummary(thread.turnDiffSummaries, {
+              ...event.payload,
+              assistantMessageId,
+            })
           : thread.turnDiffSummaries;
         if (turnDiffSummaries === null) {
           return thread;
@@ -1655,8 +1682,7 @@ function reduceDomainEvent(
         const latestTurn = preserveTurn
           ? {
               ...previousTurn,
-              assistantMessageId:
-                event.payload.assistantMessageId ?? previousTurn.assistantMessageId,
+              assistantMessageId: assistantMessageId ?? previousTurn.assistantMessageId,
             }
           : ({
               turnId: event.payload.turnId,
@@ -1670,7 +1696,7 @@ function reduceDomainEvent(
                   ? (previousTurn.startedAt ?? event.payload.completedAt)
                   : event.payload.completedAt,
               completedAt: event.payload.completedAt,
-              assistantMessageId: event.payload.assistantMessageId,
+              assistantMessageId,
             } satisfies NonNullable<Thread["latestTurn"]>);
         if (
           turnDiffSummaries === thread.turnDiffSummaries &&

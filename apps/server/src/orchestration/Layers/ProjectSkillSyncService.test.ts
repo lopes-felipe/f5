@@ -34,7 +34,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-async function fixture(failFirst = false) {
+async function fixture(failFirst = false, scratch = false) {
   const directory = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-skills-incremental-"));
   const roots = [Path.join(directory, "one"), Path.join(directory, "two")];
   for (const root of roots) {
@@ -49,6 +49,7 @@ async function fixture(failFirst = false) {
     title: `Project ${i}`,
     workspaceRoot: root,
     deletedAt: null,
+    kind: scratch && i === 0 ? "scratch" : "standard",
     skills: [],
   })) as unknown as OrchestrationProject[];
   const events = Effect.runSync(PubSub.unbounded<OrchestrationEvent>());
@@ -187,6 +188,14 @@ it("refreshes only dirty projects, preserves watchers, and exposes malformed/del
   );
   await h.change(0);
   expect(h.projects[0]?.skills?.map((skill) => skill.commandName)).toContain("restored");
+});
+
+it("never scans or watches the shared scratch root", async () => {
+  const h = await fixture(false, true);
+  expect(h.scan.mock.calls.every(([input]) => input.projectId !== h.projects[0]!.id)).toBe(true);
+  expect([...h.registrations.keys()].some((path) => path.startsWith(h.roots[0]!))).toBe(false);
+  expect(h.projects[0]?.skills).toEqual([]);
+  expect(h.projects[1]?.skills).toHaveLength(1);
 });
 
 it("keeps later projects and watchers alive when the first dispatch fails, then retries it", async () => {

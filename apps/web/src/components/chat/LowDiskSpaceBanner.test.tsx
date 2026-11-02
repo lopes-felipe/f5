@@ -71,6 +71,39 @@ describe("LowDiskSpaceBanner", () => {
     expect(markup).toContain("new turns are held");
     expect(markup).toContain("Turns start again once more than 2 GB is free.");
   });
+
+  it("mentions a stuck database compaction and whether it is scheduled", () => {
+    const pendingCompaction = {
+      freeBytes: 10 * GB,
+      liveBytes: 8 * GB,
+      requiredFreeDiskBytes: 18 * GB,
+      availableDiskBytes: 4 * GB,
+      waitingSince: "2026-10-09T00:00:00.000Z",
+      lastSkipReason: "an agent is working",
+      scheduledForRestart: false,
+    };
+    const volumes = [
+      {
+        path: "/data",
+        roles: ["userdata" as const],
+        freeBytes: 4 * GB,
+        totalBytes: 0,
+        level: "low" as const,
+      },
+    ];
+    expect(render(status({ level: "low", volumes, pendingCompaction }))).toContain(
+      "Database compaction pending (10 GB): run it from Storage.",
+    );
+    expect(
+      render(
+        status({
+          level: "low",
+          volumes,
+          pendingCompaction: { ...pendingCompaction, scheduledForRestart: true },
+        }),
+      ),
+    ).toContain("runs when F5 next starts.");
+  });
 });
 
 describe("newerDiskSpaceStatus", () => {

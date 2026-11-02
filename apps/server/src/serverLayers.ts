@@ -43,6 +43,7 @@ import { ServerConfig } from "./config";
 import { OrchestrationCommandReceiptRepositoryLive } from "./persistence/Layers/OrchestrationCommandReceipts";
 import { OrchestrationEventStoreLive } from "./persistence/Layers/OrchestrationEventStore";
 import { ProviderSessionRuntimeRepositoryLive } from "./persistence/Layers/ProviderSessionRuntime";
+import { ProviderHandoffStateRepositoryLive } from "./persistence/Layers/ProviderHandoffState";
 import { ProviderTerminalEventRepositoryLive } from "./persistence/Layers/ProviderTerminalEvents";
 import { ProviderTerminalEventRepository } from "./persistence/Services/ProviderTerminalEvents";
 import { ProjectMcpConfigRepositoryLive } from "./persistence/Layers/ProjectMcpConfigs";
@@ -430,6 +431,7 @@ export function makeServerOrchestrationRuntimeLayer() {
     providerSessionDirectoryLayer,
     RuntimeReceiptBusLive,
     ProviderTurnDeliveryRepositoryLive,
+    ProviderHandoffStateRepositoryLive,
     ProjectionTurnRepositoryLive,
     threadBackgroundWorkLayer,
     StorageMaintenanceLive.pipe(

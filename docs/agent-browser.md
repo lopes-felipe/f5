@@ -832,6 +832,15 @@ and verified under the lease already held, and a repeated `ready` for the superv
 process changes nothing. When a turn completes or is interrupted, F5 calls
 `turn_ended` (`{hook_event_name: "Stop", session_id, turn_id}`) through
 `mcpServer/tool/call`, once per turn, so the runtime releases that turn's browser session.
+Codex ends an interrupted turn at once, but `node_repl` keeps running a call in flight,
+still driving Chrome, until `turn_ended` returns (29 s in certification). So when a
+model call to `node_repl` was running at the interrupt (Codex reported it started and
+not completed), F5 stops the runtime before sending the interrupt, so it stops even if
+the interrupt fails. Calls are tracked as Codex reports them, ahead of the session's
+ordered output preparation, which an MCP app capture can hold. The cost: the REPL's
+state is gone, and the next turn waits for the reload (every MCP server of the session,
+as above) and the adoption. A completion F5 hasn't seen yet errs the same way: an
+unneeded restart, never a missed stop.
 The `node_repl` source and output are fully masked in F5's activity. A user MCP server
 already named `node_repl` blocks the integration with that reason.
 
@@ -1018,13 +1027,18 @@ versions (stamped as floors) and `admission: "session"`, and computes:
 - `tool-inventory`: Codex lists exactly the enabled tools, with schemas;
 - `open-tab-read-title`: the model's call opens a loopback fixture page and reads its
   title;
-- `interrupt-drains`: a turn interrupted during a hanging call completes as
-  `interrupted`, `turn_ended` succeeds, and a fresh tab claim works afterwards;
+- `interrupt-drains`: a turn interrupted during a call's tab loop completes as
+  `interrupted`, the session stops the runtime (or, with no call running, `turn_ended`
+  succeeds), the loop goes quiet within 2 s and stays quiet for 5 s, and a fresh tab
+  claim works on the next turn's runtime. The id predates the stop; the report's
+  `interrupt.path` says which of the two (`stopped` or `drained`) happened;
 - `background-work-stops-on-pause`: a `fetch` timer and a tab loop in a call still in
   flight drive the fixture, the session is paused, `node_repl` is gone and the fixture
   goes quiet within 2 s and stays quiet for 5 s;
 - `policy-off-kills`: after the next turn restarts the runtime, turning the integration
-  off does the same, and the following turn doesn't restart it;
+  off does the same, and the following turn doesn't restart it. For this and the pause
+  check, a tab loop that Chrome ends before it is observably running is recorded
+  (`loopsEndedByChrome`) and started once more;
 - `registrations-unchanged`. The Claude harness records manifest and `connected` timings,
   compares the origins it reads back and the bytes of two real launches, and lists the
   assertions it cannot yet observe (permission mode, routing isolation, stale native host,

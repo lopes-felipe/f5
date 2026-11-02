@@ -189,6 +189,16 @@ export interface ProviderServiceShape {
   ) => Effect.Effect<ProviderAdapterCapabilities, ProviderServiceError>;
 
   /**
+   * Whether the instance's adapter would run `text` as a native command rather
+   * than an ordinary prompt. Unknown instances and adapters classify as prompt.
+   */
+  readonly classifyTurnInput?: (input: {
+    readonly threadId: ThreadId;
+    readonly instanceId: ProviderInstanceId;
+    readonly text: string;
+  }) => Effect.Effect<"prompt" | "native-command">;
+
+  /**
    * Capabilities of the session generation a thread is bound to, routed
    * through the persisted binding (never starts or recovers a session).
    * `null` when the thread has no provider binding.

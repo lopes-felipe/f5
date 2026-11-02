@@ -93,7 +93,7 @@ function formatMessages(messages: ReadonlyArray<OrchestrationMessage>): string |
   return messages.map(formatMessage).join("\n\n");
 }
 
-function collectCompactableRange(input: {
+export function collectCompactableRange(input: {
   readonly thread: OrchestrationThread;
   readonly direction: ThreadCompactionDirection | null;
   readonly pivotMessageId: string | null;

@@ -105,7 +105,11 @@ export function expandCollapsedComposerCursor(
   let expandedCursor = 0;
 
   for (const segment of segments) {
-    if (segment.type === "mention" || segment.type === "pull-request") {
+    if (
+      segment.type === "mention" ||
+      segment.type === "pull-request" ||
+      segment.type === "thread-reference"
+    ) {
       const expandedLength = segment.raw.length;
       if (remaining <= 1) {
         return expandedCursor + (remaining === 0 ? 0 : expandedLength);
@@ -181,7 +185,11 @@ export function collapseExpandedComposerCursor(
   let collapsedCursor = 0;
 
   for (const segment of segments) {
-    if (segment.type === "mention" || segment.type === "pull-request") {
+    if (
+      segment.type === "mention" ||
+      segment.type === "pull-request" ||
+      segment.type === "thread-reference"
+    ) {
       const expandedLength = segment.raw.length;
       if (remaining === 0) {
         return collapsedCursor;

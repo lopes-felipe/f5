@@ -20,6 +20,7 @@ import { DeliveryAttemptContext } from "../deliveryAttemptContext";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
 import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
+import { redactProviderRuntimeFailure } from "../failureText.ts";
 import {
   makeNativeOperationCoordinator,
   nativeOperationSqlRepository,
@@ -935,7 +936,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     }): Effect.Effect<void> =>
       Effect.gen(function* () {
         let event: ProviderRuntimeEvent = {
-          ...item.event,
+          ...redactProviderRuntimeFailure(item.event),
           providerInstanceId: item.event.providerInstanceId ?? item.source.instanceId,
         };
         carryPreparedComputerEvidence(item.event, event);
@@ -3013,6 +3014,14 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         ),
       );
 
+    const classifyTurnInput: NonNullable<ProviderServiceShape["classifyTurnInput"]> = (input) =>
+      registry.getByInstance(input.instanceId).pipe(
+        Effect.map(
+          (adapter) => adapter.classifyTurnInput?.(input.threadId, input.text) ?? "prompt",
+        ),
+        Effect.orElseSucceed(() => "prompt" as const),
+      );
+
     const getSessionCapabilities: ProviderServiceShape["getSessionCapabilities"] = (threadId) =>
       Effect.gen(function* () {
         const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
@@ -4114,6 +4123,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         ),
       listSessions,
       getCapabilities,
+      classifyTurnInput,
       getSessionCapabilities,
       assertSessionAction,
       mcpApps,

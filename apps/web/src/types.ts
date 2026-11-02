@@ -9,6 +9,7 @@ import type {
   OrchestrationThreadActivity,
   OrchestrationThreadActivityCursor,
   OrchestrationMessageCursor,
+  OrchestrationMessage,
   ThreadCompaction as ContractThreadCompaction,
   PlanningWorkflowSummary as ContractPlanningWorkflow,
   ProjectMemory as ContractProjectMemory,
@@ -105,6 +106,7 @@ export interface ChatMessage {
   id: MessageId;
   role: "user" | "assistant" | "system";
   text: string;
+  authorship?: OrchestrationMessage["authorship"];
   reasoningText?: string;
   reasoningTokens?: number;
   reasoningTokensEstimated?: boolean;
@@ -175,6 +177,11 @@ export interface Thread {
   messages: ChatMessage[];
   commandExecutions: OrchestrationCommandExecutionSummary[];
   proposedPlans: ProposedPlan[];
+  /**
+   * The startup snapshot left this archived thread's plans out: `proposedPlans`
+   * is not authoritative until thread details load (`useThreadPlansHydrated`).
+   */
+  proposedPlansOmitted?: boolean;
   error: string | null;
   createdAt: string;
   archivedAt: string | null;

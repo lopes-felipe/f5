@@ -9,6 +9,7 @@ import {
   isControlEvent,
 } from "../commandAdmission.ts";
 import { readPersistedSessionGeneration } from "../../provider/sessionCapabilities.ts";
+import { readSubmissionSource } from "../../provider/submissionProvenance.ts";
 import { registerShutdown, AcceptedShutdownWork } from "../../shutdown.ts";
 import {
   WorkspaceWriteContext,
@@ -668,7 +669,25 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               let nextReadModel = commandReadModel;
 
               for (const nextEvent of eventBases) {
-                const savedEvent = yield* eventStore.append(nextEvent);
+                // Stamp the durable event as well as the live push so recall behaves
+                // identically before and after reconnecting or replaying history.
+                const authorship =
+                  nextEvent.type === "thread.message-sent" &&
+                  nextEvent.payload.role === "user" &&
+                  nextEvent.commandId
+                    ? envelope.command.type === "thread.turn.start" &&
+                      envelope.command.presentation === "continuation"
+                      ? "automation"
+                      : yield* readSubmissionSource(
+                          nextEvent.commandId,
+                          nextEvent.payload.threadId,
+                        ).pipe(Effect.provideService(SqlClient.SqlClient, sql))
+                    : undefined;
+                const savedEvent = yield* eventStore.append(
+                  nextEvent.type === "thread.message-sent" && authorship === "automation"
+                    ? { ...nextEvent, payload: { ...nextEvent.payload, authorship } }
+                    : nextEvent,
+                );
                 appendedEventIds.add(savedEvent.eventId);
                 nextReadModel = yield* measurePerformanceStage(
                   probe,
@@ -888,6 +907,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   let replayFromSequence = 0;
   let bootstrapSource: "projection-snapshot" | "event-replay" = "event-replay";
+  const heapUsedBeforeHydrate = process.memoryUsage().heapUsed;
   const projectionSnapshotExit = yield* Effect.exit(
     withStartupPhaseTiming(
       "orchestration.snapshot.hydrate",
@@ -931,7 +951,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   hasDeletedThreads = readModel.threads.some((thread) => thread.deletedAt !== null);
   if (hasDeletedThreads) readModel = withoutDeletedThreadDetails(readModel);
-  yield* observeReadModelRetention(readModel);
+  yield* observeReadModelRetention(readModel, heapUsedBeforeHydrate);
 
   const worker = Effect.gen(function* () {
     for (;;) {

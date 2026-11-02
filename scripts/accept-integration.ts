@@ -38,6 +38,9 @@ import {
 } from "./lib/integration-acceptance.ts";
 import { startMutationServer } from "./lib/mutation-fixture.ts";
 import { remoteTagCommit } from "./lib/release-promotion.ts";
+import { loadCandidate } from "./release/candidate-store.ts";
+import { candidateDmgSource } from "./release/release-candidate.ts";
+import { stat } from "node:fs/promises";
 
 const root = resolve(import.meta.dirname, "..");
 const argument = (name: string) => {
@@ -45,16 +48,33 @@ const argument = (name: string) => {
   return index < 0 ? undefined : process.argv[index + 1];
 };
 const integration = argument("--integration") as ProviderIntegration | undefined;
-const tag = argument("--tag");
+let tag = argument("--tag");
+const candidateRun = argument("--candidate-run");
 const artifact = argument("--artifact");
 const appPath = resolve(argument("--app") ?? "/Applications/F5.app");
-if (!integration || !(integration in PROVIDER_INTEGRATION_RECORDS) || !tag || !artifact)
+if (
+  !integration ||
+  !(integration in PROVIDER_INTEGRATION_RECORDS) ||
+  (!tag && !candidateRun) ||
+  !artifact
+)
   throw new Error(
-    "Usage: integrations:accept --integration <claude-chrome|codex-chrome|codex-computer> --tag <vX.Y.Z> --artifact <dmg>",
+    "Usage: integrations:accept --integration <claude-chrome|codex-chrome|codex-computer> (--tag <vX.Y.Z> | --candidate-run <run ID>) --artifact <dmg>",
   );
 if (process.platform !== "darwin") throw new Error("Acceptance runs on macOS only.");
 if (process.env.F5_AGENT_PROCESS === "1")
   throw new Error("Run acceptance from Terminal, not from an F5 agent.");
+if (
+  candidateRun &&
+  (!/^[1-9]\d*$/.test(candidateRun) || !Number.isSafeInteger(Number(candidateRun)))
+)
+  throw new Error("Invalid candidate run ID");
+const candidate = candidateRun ? await loadCandidate(Number(candidateRun)) : null;
+if (candidate) {
+  if (tag && tag !== "v" + candidate.version) throw new Error("Candidate version/tag mismatch");
+  tag = "v" + candidate.version;
+}
+if (!tag) throw new Error("Missing acceptance tag");
 const version = tag.replace(/^v/, "");
 const expectedName = macArtifactName(version, process.arch);
 if (basename(artifact) !== expectedName)
@@ -89,6 +109,26 @@ const artifactSha256 = await new Promise<string>((resolveHash, reject) => {
     .on("error", reject)
     .on("end", () => resolveHash(hash.digest("hex")));
 });
+const sourceCommit = candidate
+  ? candidateDmgSource(
+      candidate,
+      process.arch,
+      expectedName,
+      (await stat(artifact)).size,
+      artifactSha256,
+    )
+  : remoteTagCommit(tag, {
+      local: (name) => run("git", ["rev-list", "-n", "1", name]).trim(),
+      remote: (name) =>
+        run("git", [
+          "ls-remote",
+          "--tags",
+          "origin",
+          "refs/tags/" + name,
+          "refs/tags/" + name + "^{}",
+        ]),
+    });
+if (candidate) run("git", ["fetch", "origin", sourceCommit]);
 const mount = await mkdtemp(join(tmpdir(), "f5-accept-"));
 try {
   run("hdiutil", [
@@ -110,13 +150,7 @@ try {
   await rm(mount, { recursive: true, force: true });
 }
 
-// The records the release embeds come from the tag's tree as the remote has it (the
-// release workflow built from that commit), never from a local or moved tag.
-const sourceCommit = remoteTagCommit(tag, {
-  local: (name) => run("git", ["rev-list", "-n", "1", name]).trim(),
-  remote: (name) =>
-    run("git", ["ls-remote", "--tags", "origin", `refs/tags/${name}`, `refs/tags/${name}^{}`]),
-});
+// Records come from the trusted candidate source or immutable remote tag.
 const tagged = JSON.parse(
   run("git", [
     "show",
@@ -200,6 +234,11 @@ if (failed.length) {
   console.error("Do not promote. Withdraw the record and cut a new release.");
   process.exitCode = 1;
 } else {
-  console.log(`\nAcceptance passed. Commit ${output} to main, then run:`);
-  console.log(`  bun run release:promote --tag ${tag}`);
+  console.log(
+    candidate
+      ? "\nAcceptance passed. Merge only " +
+          output +
+          " to main; the publisher reconciles automatically."
+      : `\nAcceptance passed. Commit ${output} to main, then run:\n  bun run release:promote --tag ${tag}`,
+  );
 }
