@@ -188,7 +188,13 @@ export function summarizeEvidence(
         stopChecks.physicalAndChordDuringRendererFreeze === true &&
         typeof measurements.rendererFreezeDurationMs === "number" &&
         measurements.rendererFreezeDurationMs > 0;
-    if (scenario.id === "backend-stop") passed &&= stopChecks.backendFrozenAtStop === true;
+    if (scenario.id === "backend-stop") {
+      passed &&= stopChecks.backendFrozenAtStop === true;
+      if (manifest.identity.platform === "win32")
+        passed &&=
+          stopChecks.backendClockCalibrated === true &&
+          stopChecks.physicalAndChordDuringBackendFreeze === true;
+    }
   } else if (["main-stop", "renderer-stop", "backend-stop"].includes(scenario.id)) {
     passed = false;
   }

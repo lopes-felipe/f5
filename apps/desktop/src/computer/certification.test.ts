@@ -60,18 +60,28 @@ describe("preview availability is not certification", () => {
       reason: "os-too-old",
     });
   });
-  it("keeps Windows packaged and Linux unavailable", () => {
-    expect(computerCertificationStatus("win32", true, "1", "10.0.22631")).toMatchObject({
-      reason: "not-certified",
+  it("permits Windows 19041+ packaged opt-in preview without a development bypass", () => {
+    expect(computerCertificationStatus("win32", true, undefined, "10.0.19041")).toEqual({
+      available: true,
     });
+    expect(computerCertificationStatus("win32", true, undefined, "10.0.26340")).toEqual({
+      available: true,
+    });
+    expect(computerCertificationStatus("win32", true, undefined, "10.0.18363")).toMatchObject({
+      reason: "os-too-old",
+    });
+  });
+  it("keeps Linux unavailable", () => {
     expect(computerCertificationStatus("linux", false, "1", "6.0.0")).toMatchObject({
       reason: "unsupported-platform",
     });
   });
-  it("opens background control on macOS by default, including packaged builds", () => {
-    expect(computerBackgroundGate("darwin", true, undefined)).toEqual({ available: true });
-    expect(computerBackgroundGate("darwin", false, undefined)).toEqual({ available: true });
-    expect(computerBackgroundGate("win32", true, "1")).toEqual({
+  it.each(["darwin", "win32"])("offers background preview on %s in packaged builds", (platform) => {
+    expect(computerBackgroundGate(platform, true, undefined)).toEqual({ available: true });
+    expect(computerBackgroundGate(platform, false, undefined)).toEqual({ available: true });
+  });
+  it("keeps background control unavailable on unsupported platforms", () => {
+    expect(computerBackgroundGate("linux", false, "1")).toEqual({
       available: false,
       reason: "unsupported-platform",
     });

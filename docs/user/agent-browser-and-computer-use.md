@@ -1,6 +1,6 @@
 # Agent browser and computer use
 
-Let Claude and Codex open, read and click through pages in F5's preview browser. On macOS they
+Let Claude and Codex open, read and click through pages in F5's preview browser. On macOS and Windows they
 can optionally control other apps too. Both are off until you turn them on, and you can take
 control back at any time.
 
@@ -40,16 +40,32 @@ one entry per line:
 Blocked navigations fail the agent's action instead of opening your browser. Sign-in popups stay
 with you.
 
-## Computer use (macOS preview)
+## Computer use (preview)
 
-On macOS 14 or later, the agent can also see and control apps you approve:
+On macOS 14 or later and Windows x64 build 19041 or newer, the agent can also see
+and control apps you approve:
 
 1. In **Settings → Browser & Computer**, turn on **Agent browser access** and **Computer use (preview)**.
-2. Grant **Screen Recording** and **Accessibility** to F5 in System Settings.
+2. On macOS, grant **Screen Recording** and **Accessibility** to F5 in System Settings.
+   On Windows, run F5 unelevated in an unlocked interactive session.
 3. Start a new turn. When the agent asks for an app, approve it in F5's dialog.
 
-Any input from you pauses the agent. Press **⌃⌘Esc** to stop it. While paused, the agent can't
+Computer use is off by default, and foreground is the default execution mode.
+Your input pauses foreground control. Press **⌃⌘Esc** on macOS or
+**Ctrl+Alt+Shift+F12** on Windows to stop every scope. While paused, the agent can't
 take screenshots or inspect apps either.
+
+Windows is an opt-in, uncertified preview. Native workflow, lifecycle and capture
+privacy checks passed on Windows 11. Full provider workflows, physical emergency
+stop, display transitions, Windows 10 and installer checks remain pending; see the
+[acceptance record](../computer-certification/windows-preview.md#rollout-record).
+Elevated/protected system UI stays outside the agent's control.
+
+Foreground uses the mouse and keyboard. Background uses accessibility inside one
+approved app per agent; interacting with that app pauses its agent while other
+background apps can continue. Actions that need the foreground request a takeover.
+Windows app approvals apply to F5 computer tools; other agent code retains its
+own Windows permissions.
 
 ## Your own Chrome (macOS)
 
@@ -91,8 +107,8 @@ instead.
 ## Good to know
 
 > [!WARNING]
-> Computer use is an uncertified, opt-in preview. Windows and Claude's own built-in computer
-> control are not available.
+> Computer use is an uncertified, opt-in preview. Claude's own built-in computer
+> control is not available.
 
 - Turning off **Agent browser access** stops automation on the next tool call, even for agents
   already running.
@@ -108,7 +124,7 @@ instead.
 - Both modes mask regions that cannot be audited and preserve app approvals, hidden-app filtering
   and secure-input restrictions. A completed audit means the accessibility calls finished; it does
   not prove every visually present password field was exposed.
-- Selectable masking requires an updated macOS helper. Older helpers and other platforms keep
+- Selectable masking requires an updated computer helper. Older helpers and other platforms keep
   their existing behavior; captures without mode metadata are labeled **Legacy / unknown**.
 - You'll be asked to confirm before closing a tab an agent opened.
 

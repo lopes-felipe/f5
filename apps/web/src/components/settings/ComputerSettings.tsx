@@ -10,7 +10,8 @@ import {
   computerAgentProviderFor,
 } from "@t3tools/shared/agentAutomationSupport";
 import type { ProviderKind } from "@t3tools/contracts";
-import { COMPUTER_STOP_SHORTCUT_LABEL } from "../computerControls";
+import { computerStopShortcutLabel } from "../computerControls";
+import { useAgentComputerActivityStore } from "../../agentComputerActivityStore";
 import type {
   ComputerAutomationBackendStatus,
   ComputerBackgroundUnavailableReason,
@@ -22,7 +23,7 @@ import { Select, SelectTrigger, SelectValue, SelectPopup, SelectItem } from "../
 import { Switch } from "../ui/switch";
 import { SettingsRow } from "./SettingsCard";
 const BACKGROUND_UNAVAILABLE: Record<ComputerBackgroundUnavailableReason, string> = {
-  "unsupported-platform": "Background control is macOS only.",
+  "unsupported-platform": "Background control is unavailable on this operating system.",
   "peer-capability": "This F5 build or helper does not support background control.",
   "preview-off": "Background control is not enabled in this build yet.",
   permissions: "Grant computer control permissions first.",
@@ -35,7 +36,10 @@ export function backgroundUnavailableReason(
 ): string | undefined {
   if (!bridged) return "Choose background on the computer running F5.";
   if (!status) return "Checking…";
-  if (!status.available) return BACKGROUND_UNAVAILABLE.permissions;
+  if (!status.available)
+    return status.hostPlatform === "win32"
+      ? "Resolve Windows computer status first."
+      : BACKGROUND_UNAVAILABLE.permissions;
   if (!status.background) return BACKGROUND_UNAVAILABLE["peer-capability"];
   if (status.background.available) return undefined;
   return BACKGROUND_UNAVAILABLE[status.background.reason ?? "peer-capability"];
@@ -57,7 +61,7 @@ export function computerPasswordMaskingDescription(
     "Fast mode improves screenshot performance. Password fields Chrome omits from accessibility search may appear in screenshots sent to your model.";
   return status?.available && status.passwordMaskingSupported
     ? description
-    : `${description} Selecting a masking mode requires an updated macOS helper. Existing captures use their platform's behavior; password masking is Legacy / unknown.`;
+    : `${description} Selecting a masking mode requires an updated computer helper. Existing captures use their platform's behavior; password masking is Legacy / unknown.`;
 }
 const configuredActivityCache = new WeakMap<
   Thread["activities"],
@@ -141,6 +145,8 @@ export function ComputerSettings() {
       : [];
   });
   const backgroundUnavailable = backgroundUnavailableReason(status, !!bridge);
+  const host = useAgentComputerActivityStore((state) => state.leases);
+  const shortcut = computerStopShortcutLabel(status ?? host);
   const run = (action: () => Promise<unknown>) => {
     setError("");
     void action().catch(() => setError("Could not update computer control."));
@@ -149,7 +155,7 @@ export function ComputerSettings() {
     <>
       <SettingsRow
         title="Computer use (preview)"
-        description={`Opt-in macOS preview: let supported agents (see Agent support) see and control apps you approve. Signed-build safety certification is pending. Press ${COMPUTER_STOP_SHORTCUT_LABEL} to stop; your input pauses control. Project approvals expire when F5 closes. Windows remains unavailable.`}
+        description={`Opt-in computer control preview: let supported agents (see Agent support) see and control apps you approve. Signed-build safety certification is pending. Stop: ${shortcut}. Your input pauses foreground control; interacting with a background target pauses that app. Project approvals expire when F5 closes.${(status ?? host).hostPlatform === "win32" ? " On Windows, app approvals govern F5 computer tools; other agent code retains its own permissions." : ""}`}
         control={
           <Switch
             aria-label="Let agents control this computer"
@@ -168,7 +174,10 @@ export function ComputerSettings() {
               ? "Checking…"
               : status.available
                 ? "F5 computer control preview ready"
-                : `${COMPUTER_UNAVAILABLE_LABEL[status.reason]}${status.detail ? `: ${status.detail}` : ""}`
+                : status.hostPlatform === "win32" && status.reason === "missing-permissions"
+                  ? (status.detail ??
+                    "Run F5 unelevated in an unlocked, connected Windows session.")
+                  : `${COMPUTER_UNAVAILABLE_LABEL[status.reason]}${status.detail ? `: ${status.detail}` : ""}`
         }
         control={
           status &&

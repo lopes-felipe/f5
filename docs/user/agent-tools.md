@@ -47,23 +47,24 @@ guide starts generation with the model chosen under **Settings → Git**. Readin
 the saved guide and its running or failed state. See [HTML renders](html-renders.md) and
 [PR Hub](pr-hub-forges.md).
 
-Computer control is opt-in on macOS. See **Settings → Browser & Computer → Agent support**
+Computer control is opt-in on macOS and Windows x64. See **Settings → Browser & Computer → Agent support**
 for each enabled provider and a readable readiness reason.
 
 | Agent                     | F5 preview                                                            | F5 computer control                                                           |
 | ------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| Claude, Codex             | Available in desktop sessions                                         | Native macOS preview; per-app consent required                                |
+| Claude, Codex             | Available in desktop sessions                                         | Native macOS and Windows preview; per-app consent required                    |
 | Cursor, Grok, Antigravity | Awaiting per-harness preview startup verification                     | Awaiting per-harness live verification                                        |
 | OpenCode                  | Unavailable: session attribution cannot be confirmed before execution | Same attribution gate; external servers have a separate connection limitation |
 | Muse                      | Unavailable: the pinned SDK cannot configure MCP per session          | Same SDK limitation                                                           |
 
 Provider built-in computer tools and the Codex Chrome plugin await certification.
 Claude in Chrome is off by default and awaits native-host discovery and a signed
-macOS arm64 certification run. Windows computer control remains unavailable.
+macOS arm64 certification run. Windows computer control is an uncertified preview;
+see the [acceptance record](../computer-certification/windows-preview.md#rollout-record).
 
 Approve apps in F5's native dialog. Pending requests show their thread, project and
 expiry, and raise the existing attention badge/notification. **⌃⌘Esc** stops the Mac
-host; Pause all always pauses every target, and Retry Stop remains available for an
+host; **Ctrl+Alt+Shift+F12** stops the Windows host. Pause all always pauses every target, and Retry Stop remains available for an
 unconfirmed stop. Resume on the computer running F5. If an action's outcome is unknown,
 check the app before resuming and observe before retrying.
 

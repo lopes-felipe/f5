@@ -12,6 +12,27 @@ import {
 const appId = "org.example.chromium-computer-fixture.4d01a26c-372f-40dd-8b7b-47ec17b07056";
 const metadata = { version: 1, bundle: CHROMIUM_FIXTURE_BUNDLE, appId };
 const roots: string[] = [];
+it("pins the Windows fixture executable and rejects traversal or arbitrary app names", () => {
+  const windows = {
+    version: 1,
+    platform: "win32",
+    appId: "f5-chromium-fixture.exe",
+    bundle: "ChromiumFixture",
+  };
+  expect(decodeChromiumFixture(windows)).toEqual({
+    appId: "f5-chromium-fixture.exe",
+    platform: "win32",
+  });
+  for (const patch of [
+    { appId: "electron.exe" },
+    { appId: "../f5.exe" },
+    { bundle: "../UserApp" },
+  ]) {
+    expect(() => decodeChromiumFixture({ ...windows, ...patch })).toThrow(
+      "Invalid Chromium fixture metadata",
+    );
+  }
+});
 afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });

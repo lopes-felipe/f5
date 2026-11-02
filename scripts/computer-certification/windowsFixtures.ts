@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Target } from "./identity";
 import { cleanEnvironment } from "./process";
 import { record } from "./model";
+import { prepareElectronFixture } from "./electronFixture";
 
 export const WINDOWS_FIXTURE_BINARY = "ComputerControlFixture.exe";
 export function windowsFixtureMetadata(value: unknown): boolean {
@@ -73,7 +74,10 @@ export async function prepareWindowsFixtures(target: Target, directory: string) 
       },
     );
     await copyFile(join(root, "target", triple, "release/f5-computer-fixture.exe"), output);
-    return await probeWindowsFixture(directory);
+    return (
+      (await probeWindowsFixture(directory)) &&
+      (await prepareElectronFixture(target.repo, directory))
+    );
   } catch {
     return false;
   }

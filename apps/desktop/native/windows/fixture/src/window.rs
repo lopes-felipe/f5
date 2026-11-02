@@ -1,19 +1,25 @@
-use f5_computer_fixture::{Mode, Receipt, SECURE_TEXT};
+use f5_computer_fixture::{Mode, Receipt, WindowCommand, SECURE_TEXT};
 use std::cell::RefCell;
 use std::io::{BufRead, Write};
-use windows::core::{w, PCWSTR};
+use windows::core::{w, BOOL, PCWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::HiDpi::*;
+use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+use windows::Win32::UI::Input::*;
+use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 const STATUS: u32 = WM_APP + 1;
 const CLOSE_REQUEST: u32 = WM_APP + 2;
+const CONTROL_REQUEST: u32 = WM_APP + 3;
 const INPUT_ID: usize = 100;
 const PRESS_ID: usize = 101;
 const SECURE_ID: usize = 102;
+const FINISH_ID: usize = 103;
+const INSTRUCTION_ID: usize = 104;
 struct State {
     mode: Mode,
     input: HWND,
@@ -31,6 +37,73 @@ fn emit(kind: &str, state: Option<serde_json::Value>) {
     );
     let _ = output.flush();
 }
+unsafe extern "system" fn monitor_receipt(
+    monitor: HMONITOR,
+    _: HDC,
+    _: *mut RECT,
+    data: LPARAM,
+) -> BOOL {
+    let mut info = MONITORINFOEXW::default();
+    info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+    if !GetMonitorInfoW(monitor, &mut info as *mut _ as *mut MONITORINFO).as_bool() {
+        return BOOL(0);
+    }
+    let mut mode = DEVMODEW {
+        dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+        ..Default::default()
+    };
+    if !EnumDisplaySettingsW(
+        PCWSTR(info.szDevice.as_ptr()),
+        ENUM_CURRENT_SETTINGS,
+        &mut mode,
+    )
+    .as_bool()
+    {
+        return BOOL(0);
+    }
+    let r = info.monitorInfo.rcMonitor;
+    (*(data.0 as *mut Vec<serde_json::Value>)).push(serde_json::json!({
+        "displayId":String::from_utf16_lossy(&info.szDevice).trim_end_matches('\0'),
+        "bounds":{"x":r.left,"y":r.top,"width":r.right-r.left,"height":r.bottom-r.top},
+        "rotation":mode.Anonymous1.Anonymous2.dmDisplayOrientation.0 * 90,
+    }));
+    BOOL(1)
+}
+unsafe fn observation(hwnd: HWND) -> windows::core::Result<()> {
+    let mut bounds = RECT::default();
+    GetWindowRect(hwnd, &mut bounds)?;
+    let mut origin = POINT::default();
+    if !ClientToScreen(hwnd, &mut origin).as_bool() {
+        return Err(windows::core::Error::from_thread());
+    }
+    let mut displays: Vec<serde_json::Value> = Vec::new();
+    if !EnumDisplayMonitors(
+        None,
+        None,
+        Some(monitor_receipt),
+        LPARAM(&mut displays as *mut _ as isize),
+    )
+    .as_bool()
+    {
+        return Err(windows::core::Error::from_thread());
+    }
+    STATE.with(|slot| {
+        if let Some(state) = slot.borrow().as_ref() {
+            let mut secure = RECT::default();
+            let _ = GetWindowRect(state.secure, &mut secure);
+            let rect = |r: RECT| serde_json::json!({"x":r.left,"y":r.top,"width":r.right-r.left,"height":r.bottom-r.top});
+            emit("observation", Some(serde_json::json!({
+                "pid":std::process::id(), "windowId":hwnd.0 as u64,
+                "bounds":rect(bounds), "dpi":GetDpiForWindow(hwnd),
+                "foregroundWindowId":GetForegroundWindow().0 as u64,
+                "marker":{"x":origin.x+30,"y":origin.y+25,"width":400,"height":40},
+                "secure":rect(secure), "receipt":state.receipt.summary(),
+                "displays":displays,
+            })));
+        }
+    });
+    Ok(())
+}
 unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     match message {
         WM_COMMAND => {
@@ -40,6 +113,7 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
                 if let Some(state) = slot.borrow_mut().as_mut() {
                     if id == PRESS_ID && notification == BN_CLICKED as usize {
                         state.receipt.press();
+                        println!("FIXTURE_PRESSED");
                         emit("press", Some(state.receipt.summary()));
                     } else if [INPUT_ID, SECURE_ID].contains(&id)
                         && notification == EN_CHANGE as usize
@@ -53,6 +127,9 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
                             let mut buffer = vec![0u16; length + 1];
                             let read = GetWindowTextW(control, &mut buffer).max(0) as usize;
                             state.receipt.input(&buffer[..read.min(length)], secure);
+                            if !secure && state.receipt.expected_text_received {
+                                println!("FIXTURE_TYPED");
+                            }
                             buffer.fill(0);
                         }
                         emit("input", Some(state.receipt.summary()));
@@ -101,6 +178,23 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
     }
 }
 
+unsafe extern "system" fn finish_button(
+    hwnd: HWND,
+    message: u32,
+    w: WPARAM,
+    l: LPARAM,
+    _: usize,
+    _: usize,
+) -> LRESULT {
+    if message == WM_LBUTTONUP {
+        let mut source = INPUT_MESSAGE_SOURCE::default();
+        if GetCurrentInputMessageSource(&mut source).is_ok() && source.originId == IMO_HARDWARE {
+            println!("FIXTURE_ACKNOWLEDGED");
+            let _ = EnableWindow(hwnd, false);
+        }
+    }
+    DefSubclassProc(hwnd, message, w, l)
+}
 pub fn run(mode: Mode) -> windows::core::Result<()> {
     unsafe {
         // Coordinates and window geometry remain in physical pixels on each display.
@@ -205,6 +299,23 @@ pub fn run(mode: Mode) -> windows::core::Result<()> {
             220,
             PRESS_ID,
         )?;
+        let finish = control(
+            w!("BUTTON"),
+            w!("Finish check"),
+            WINDOW_STYLE(BS_PUSHBUTTON as u32),
+            270,
+            FINISH_ID,
+        )?;
+        if !SetWindowSubclass(finish, Some(finish_button), 1, 0).as_bool() {
+            return Err(windows::core::Error::from_thread());
+        }
+        let instruction = control(
+            w!("STATIC"),
+            w!("Ready: keep input idle"),
+            WINDOW_STYLE(0),
+            315,
+            INSTRUCTION_ID,
+        )?;
         STATE.with(|slot| {
             *slot.borrow_mut() = Some(State {
                 mode,
@@ -227,11 +338,13 @@ pub fn run(mode: Mode) -> windows::core::Result<()> {
             // Successful SetWindowRgn transfers ownership to Windows.
         }
         let _ = ShowWindow(hwnd, SW_SHOW);
+        println!("FIXTURE_READY");
         emit(
             "ready",
             Some(serde_json::json!({ "pid": std::process::id(), "protocolVersion": 1 })),
         );
         let gui_thread = GetCurrentThreadId();
+        let (commands, pending_commands) = std::sync::mpsc::sync_channel(16);
         std::thread::spawn(move || {
             // Observation/control of this fixture only. No arbitrary HWND, file,
             // shell, helper message, consent answer or input API is accepted.
@@ -239,26 +352,28 @@ pub fn run(mode: Mode) -> windows::core::Result<()> {
                 let Ok(line) = line else {
                     break;
                 };
-                let message = match line.as_str() {
-                    "status" => STATUS,
-                    "close" => CLOSE_REQUEST,
-                    _ => {
-                        emit("invalid-command", None);
-                        continue;
-                    }
+                let Some(command) = WindowCommand::parse(&line) else {
+                    emit("invalid-command", None);
+                    continue;
                 };
+                let closing = command == WindowCommand::Close;
+                if commands.try_send(command).is_err() {
+                    return;
+                }
                 // A window handle can be reused after closure. Only the fixture's
                 // process-lifetime GUI thread receives stdin commands; it resolves
                 // its own window on that thread before closing anything.
-                if PostThreadMessageW(gui_thread, message, WPARAM(0), LPARAM(0)).is_err() {
+                if PostThreadMessageW(gui_thread, CONTROL_REQUEST, WPARAM(0), LPARAM(0)).is_err() {
                     return;
                 }
-                if message == CLOSE_REQUEST {
+                if closing {
                     return;
                 }
             }
             let _ = PostThreadMessageW(gui_thread, CLOSE_REQUEST, WPARAM(0), LPARAM(0));
         });
+        let mut restored = RECT::default();
+        GetWindowRect(hwnd, &mut restored)?;
         let mut message = MSG::default();
         loop {
             let result = GetMessageW(&mut message, None, 0, 0).0;
@@ -278,6 +393,94 @@ pub fn run(mode: Mode) -> windows::core::Result<()> {
                         });
                     }
                     CLOSE_REQUEST => DestroyWindow(hwnd)?,
+                    CONTROL_REQUEST => {
+                        while let Ok(command) = pending_commands.try_recv() {
+                            match command {
+                                WindowCommand::Close => {
+                                    DestroyWindow(hwnd)?;
+                                    break;
+                                }
+                                WindowCommand::Status => {}
+                                WindowCommand::Cue(text) => {
+                                    let text = text.encode_utf16().chain([0]).collect::<Vec<_>>();
+                                    SetWindowTextW(instruction, PCWSTR(text.as_ptr()))?;
+                                }
+                                WindowCommand::Place { x, y } => {
+                                    SetWindowPos(
+                                        hwnd,
+                                        None,
+                                        x,
+                                        y,
+                                        600,
+                                        400,
+                                        SWP_NOZORDER | SWP_NOACTIVATE,
+                                    )?;
+                                    GetWindowRect(hwnd, &mut restored)?;
+                                }
+                                WindowCommand::Fullscreen => {
+                                    GetWindowRect(hwnd, &mut restored)?;
+                                    let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                                    let mut info = MONITORINFO {
+                                        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                                        ..Default::default()
+                                    };
+                                    if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+                                        return Err(windows::core::Error::from_thread());
+                                    }
+                                    SetWindowLongW(
+                                        hwnd,
+                                        GWL_STYLE,
+                                        (WS_POPUP | WS_VISIBLE).0 as i32,
+                                    );
+                                    SetWindowPos(
+                                        hwnd,
+                                        None,
+                                        info.rcMonitor.left,
+                                        info.rcMonitor.top,
+                                        info.rcMonitor.right - info.rcMonitor.left,
+                                        info.rcMonitor.bottom - info.rcMonitor.top,
+                                        SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                                    )?;
+                                }
+                                WindowCommand::Restore => {
+                                    SetWindowLongW(
+                                        hwnd,
+                                        GWL_STYLE,
+                                        (WS_OVERLAPPEDWINDOW | WS_VISIBLE).0 as i32,
+                                    );
+                                    SetWindowPos(
+                                        hwnd,
+                                        None,
+                                        restored.left,
+                                        restored.top,
+                                        600,
+                                        400,
+                                        SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                                    )?;
+                                }
+                                WindowCommand::ReplaceInput => {
+                                    let previous =
+                                        STATE.with(|slot| slot.borrow().as_ref().unwrap().input);
+                                    // No RefCell borrow across synchronous window messages.
+                                    // Create first to prevent immediate HWND/runtime-ID reuse.
+                                    let replacement = control(
+                                        w!("EDIT"),
+                                        w!(""),
+                                        WS_BORDER | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+                                        100,
+                                        INPUT_ID,
+                                    )?;
+                                    DestroyWindow(previous)?;
+                                    STATE.with(|slot| {
+                                        slot.borrow_mut().as_mut().unwrap().input = replacement
+                                    });
+                                }
+                            }
+                            let _ = InvalidateRect(Some(hwnd), None, true);
+                            let _ = UpdateWindow(hwnd);
+                            observation(hwnd)?;
+                        }
+                    }
                     _ => {}
                 }
                 continue;

@@ -4,6 +4,16 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Computer use
+
+- Add an opt-in Windows x64 computer-use preview with app approvals, foreground and
+  background accessibility actions, scoped screenshots and password masking,
+  pause/resume, and Ctrl+Alt+Shift+F12 emergency stop. Computer use remains off by
+  default and foreground remains the default mode. Native workflow, lifecycle and
+  capture privacy checks passed on Windows 11; full provider, physical-stop,
+  display, Windows 10 and installed-build acceptance remain pending. Signed
+  certification remains false.
+
 ### Installation
 
 - First desktop release for macOS, Windows and Linux, with in-app updates from the GitHub release feed:

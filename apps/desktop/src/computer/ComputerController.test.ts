@@ -480,7 +480,7 @@ it("blocks capture and inspection while paused, including when there is no lease
   }
 });
 
-it("rejects subtree inspection off macOS instead of silently inspecting the whole window", async () => {
+it("forwards subtree inspection on Windows without silently inspecting the whole window", async () => {
   const h = make("win32");
   await expect(
     h.controller.invoke(
@@ -492,7 +492,15 @@ it("rejects subtree inspection off macOS instead of silently inspecting the whol
         elementRef: "e1",
       }),
     ),
-  ).rejects.toMatchObject({ error: { _tag: "UnsupportedAction" } });
-  expect(h.request).not.toHaveBeenCalled();
+  ).resolves.toEqual({ ok: true });
+  expect(h.request).toHaveBeenCalledWith(
+    expect.objectContaining({
+      op: "inspect",
+      appId: "one",
+      snapshotId: "s",
+      elementRef: "e1",
+    }),
+    expect.anything(),
+  );
   h.controller.close();
 });

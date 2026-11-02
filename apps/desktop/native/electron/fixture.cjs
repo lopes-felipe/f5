@@ -4,7 +4,7 @@ const { app, BrowserWindow, ipcMain } = require("electron");
 const { join } = require("node:path");
 const { mkdirSync } = require("node:fs");
 
-const dataDirectory = join(__dirname, "../../../../fixture-userdata");
+const dataDirectory = join(__dirname, "../fixture-userdata");
 mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
 app.setPath("userData", dataDirectory);
 app.setPath("sessionData", dataDirectory);

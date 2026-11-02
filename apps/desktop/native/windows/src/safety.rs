@@ -1,3 +1,24 @@
+pub const INPUT_MARK: usize = 0xF5C0;
+pub const PROBE_MARK: usize = 0xF5C1;
+
+/// None is a non-activity packet; true is motion; false is a button/wheel event.
+pub fn raw_mouse_activity(
+    extra: u32,
+    buttons: u16,
+    absolute: bool,
+    x: i32,
+    y: i32,
+) -> Option<bool> {
+    if extra == INPUT_MARK as u32 || extra == PROBE_MARK as u32 {
+        None
+    } else if buttons != 0 {
+        Some(false)
+    } else if absolute || x != 0 || y != 0 {
+        Some(true)
+    } else {
+        None
+    }
+}
 pub fn restrict_tier<'a>(a: &'a str, b: &'a str) -> &'a str {
     let tiers = ["blocked", "view", "click", "full"];
     let rank = |tier| tiers.iter().position(|value| *value == tier).unwrap_or(0);
@@ -47,8 +68,44 @@ pub fn grant_allows(tier: &str, allow_typing: bool, needed: &str) -> bool {
     }
     needed == "click" || (needed == "type" && (tier == "full" || allow_typing))
 }
-pub fn hooks_healthy(mouse_ack: u64, keyboard_ack: u64, sent: u64) -> bool {
-    mouse_ack >= sent && keyboard_ack >= sent
+pub fn input_monitors_healthy(
+    mouse_registered: bool,
+    mouse_responsive: bool,
+    keyboard_queued: bool,
+    keyboard_ack: u64,
+    sent: u64,
+) -> bool {
+    mouse_registered && mouse_responsive && keyboard_queued && keyboard_ack >= sent
+}
+/// Alt can cause F12 to arrive as WM_SYSKEYDOWN rather than WM_KEYDOWN.
+pub fn stop_chord(message: u32, key: u32, control: bool, alt: bool, shift: bool) -> bool {
+    matches!(message, 0x100 | 0x104) && key == 0x7b && control && alt && shift
+}
+pub fn insert_selected_text(
+    prior: &str,
+    prefix: &str,
+    selected: &str,
+    suffix: &str,
+    text: &str,
+) -> Option<String> {
+    if prior.len() > 40000 || [prefix, selected, suffix].concat() != prior {
+        return None;
+    }
+    Some([prefix, text, suffix].concat())
+}
+pub fn input_conflicts(
+    background: bool,
+    pointer_move: bool,
+    target_window: u64,
+    target_pid: u64,
+    event_window: u64,
+    event_pid: u64,
+) -> bool {
+    !background
+        || (!pointer_move
+            && (event_window == 0
+                || target_window == event_window
+                || (target_pid != 0 && target_pid == event_pid)))
 }
 /// No rectangular authorization for windows whose input recipient is uncertain.
 pub fn input_target_is_certain(
@@ -72,6 +129,39 @@ pub fn system_process(executable: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stop_chord_recognizes_system_keydown_and_never_keyup_or_partial_modifiers() {
+        assert!(stop_chord(0x100, 0x7b, true, true, true));
+        assert!(stop_chord(0x104, 0x7b, true, true, true));
+        assert!(!stop_chord(0x105, 0x7b, true, true, true));
+        assert!(!stop_chord(0x104, 0x7b, true, false, true));
+        assert!(!stop_chord(0x104, 0x7a, true, true, true));
+    }
+    #[test]
+    fn inserts_at_the_selection_and_rejects_inconsistent_or_truncated_ranges() {
+        assert_eq!(
+            insert_selected_text("hello world", "hello ", "world", "", "Ω🙂").as_deref(),
+            Some("hello Ω🙂")
+        );
+        assert_eq!(
+            insert_selected_text("hello world", "hello", "", " world", "!").as_deref(),
+            Some("hello! world")
+        );
+        assert_eq!(insert_selected_text("private", "", "other", "", "x"), None);
+        assert_eq!(
+            insert_selected_text("hello world", "", "hello", "", "x"),
+            None
+        );
+    }
+    #[test]
+    fn background_input_conflicts_are_local_and_fail_closed_on_unknown_recipients() {
+        assert!(!input_conflicts(true, true, 10, 20, 10, 20));
+        assert!(!input_conflicts(true, false, 10, 20, 11, 21));
+        assert!(input_conflicts(true, false, 10, 20, 10, 21));
+        assert!(input_conflicts(true, false, 10, 20, 11, 20));
+        assert!(input_conflicts(true, false, 10, 20, 0, 0));
+        assert!(input_conflicts(false, true, 10, 20, 11, 21));
+    }
     #[test]
     fn executable_identity_can_only_narrow_a_packaged_app_tier() {
         assert_eq!(restrict_tier("full", "view"), "view");
@@ -111,9 +201,23 @@ mod tests {
     }
     #[test]
     fn either_missing_hook_fails_health_check() {
-        assert!(hooks_healthy(20, 20, 20));
-        assert!(!hooks_healthy(20, 19, 20));
-        assert!(!hooks_healthy(19, 20, 20));
+        assert!(input_monitors_healthy(true, true, true, 20, 20));
+        assert!(!input_monitors_healthy(true, true, true, 19, 20));
+        assert!(!input_monitors_healthy(true, false, true, 20, 20));
+        assert!(!input_monitors_healthy(false, true, true, 20, 20));
+        assert!(!input_monitors_healthy(true, true, false, 20, 20));
+    }
+    #[test]
+    fn raw_mouse_ignores_own_input_and_distinguishes_motion_from_buttons() {
+        for extra in [INPUT_MARK as u32, PROBE_MARK as u32] {
+            assert_eq!(raw_mouse_activity(extra, 1, false, 100, 100), None);
+        }
+        assert_eq!(raw_mouse_activity(0, 0, false, 0, 0), None);
+        assert_eq!(raw_mouse_activity(0, 0, false, -10, 0), Some(true));
+        assert_eq!(raw_mouse_activity(0, 0, true, 0, 0), Some(true));
+        assert_eq!(raw_mouse_activity(0, 1, false, 0, 0), Some(false));
+        assert_eq!(raw_mouse_activity(0, 0x400, false, 0, 0), Some(false));
+        assert_eq!(raw_mouse_activity(0, 1, false, 20, 20), Some(false));
     }
     #[test]
     fn rejects_cloaked_click_through_layered_regions_and_overlays() {
@@ -355,9 +459,9 @@ mod keyboard_tests {
     #[test]
     fn independently_removed_hooks_cannot_borrow_the_other_acknowledgement() {
         for probe in 1..100 {
-            assert!(!hooks_healthy(probe, probe - 1, probe));
-            assert!(!hooks_healthy(probe - 1, probe, probe));
-            assert!(hooks_healthy(probe, probe, probe));
+            assert!(!input_monitors_healthy(true, true, true, probe - 1, probe));
+            assert!(!input_monitors_healthy(true, false, true, probe, probe));
+            assert!(input_monitors_healthy(true, true, true, probe, probe));
         }
     }
 }

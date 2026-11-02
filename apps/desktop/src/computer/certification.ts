@@ -39,19 +39,20 @@ export async function verifyCodexChromeAdoption(
 /** Only signed, installed certification runs may open these gates. */
 export const COMPUTER_CONTROL_CERTIFIED = { darwin: false, win32: false } as const;
 /** Explicit opt-in preview availability is separate from signed-build certification. */
-export const COMPUTER_CONTROL_PREVIEW = { darwin: true, win32: false } as const;
+export const COMPUTER_CONTROL_PREVIEW = { darwin: true, win32: true } as const;
 /**
- * Background (accessibility-only) control alongside the user. Available in the macOS preview;
+ * Background (accessibility-only) control alongside the user. Available in both desktop previews;
  * users still choose it in Settings, and the foreground stays the default execution mode.
  */
-export const COMPUTER_BACKGROUND_PREVIEW = { darwin: true, win32: false } as const;
+export const COMPUTER_BACKGROUND_PREVIEW = { darwin: true, win32: true } as const;
 export function computerBackgroundGate(
   platform: string,
   packaged: boolean,
   devOverride: string | undefined,
 ): ComputerBackgroundStatus {
-  if (platform !== "darwin") return { available: false, reason: "unsupported-platform" };
-  if (!COMPUTER_BACKGROUND_PREVIEW.darwin && (packaged || devOverride !== "1"))
+  if (platform !== "darwin" && platform !== "win32")
+    return { available: false, reason: "unsupported-platform" };
+  if (!COMPUTER_BACKGROUND_PREVIEW[platform] && (packaged || devOverride !== "1"))
     return { available: false, reason: "preview-off" };
   return { available: true };
 }
@@ -98,7 +99,10 @@ export function computerCertificationStatus(
     return {
       available: false,
       reason: "not-certified",
-      detail: "Computer control is awaiting signed-build safety certification.",
+      detail:
+        platform === "win32"
+          ? "Windows computer control is awaiting interactive Windows preview acceptance."
+          : "Computer control is awaiting signed-build safety certification.",
     };
   return { available: true };
 }

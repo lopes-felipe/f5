@@ -8,7 +8,7 @@ import { Button } from "./ui/button";
 import {
   pauseComputerThread,
   stopComputerTurn,
-  COMPUTER_STOP_SHORTCUT_LABEL,
+  computerStopShortcutLabel,
 } from "./computerControls";
 
 const PAUSE_CAUSE_LABEL: Record<NonNullable<AgentComputerUseHolder["pauseCause"]>, string> = {
@@ -93,6 +93,7 @@ export function ComputerUseBanner() {
   const [error, setError] = useState("");
   const stopUnconfirmed = useAgentComputerActivityStore((state) => state.stopUnconfirmed);
   const leases = useAgentComputerActivityStore((state) => state.leases);
+  const shortcut = computerStopShortcutLabel(leases);
   const holder = primaryComputerHolder(leases);
   const threadId = leases.pendingTakeover?.threadId ?? holder?.threadId;
   const paused = useAgentComputerActivityStore((state) =>
@@ -158,7 +159,7 @@ export function ComputerUseBanner() {
           <Button
             size="xs"
             variant="ghost"
-            title={`Stop shortcut: ${COMPUTER_STOP_SHORTCUT_LABEL}`}
+            title={`Stop shortcut: ${shortcut}`}
             onClick={() => {
               const snapshot = [...targets];
               void run(
@@ -182,7 +183,7 @@ export function ComputerUseBanner() {
           </Button>
         </>
       ) : (
-        <span className="text-xs">{COMPUTER_STOP_SHORTCUT_LABEL} to stop</span>
+        <span className="text-xs">{shortcut} to stop</span>
       )}
       {retryTargets.length ? (
         <Button

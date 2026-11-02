@@ -36,6 +36,7 @@ export function commandsFor(
       bun(["run", "lint"], "lint"),
       bun(["run", "typecheck"], "typecheck"),
       bun(["run", "test:full"], "full-tests"),
+      bun(["run", "upstream-ports:check"], "upstream-ports"),
     ];
   if (s.runner === "browser-smoke")
     return [
@@ -176,7 +177,65 @@ export function commandsFor(
   if (hostPlatform !== target.platform) return "interactive-platform-unavailable";
   // The development wrapper must NEVER be used against installed/signed apps.
   if (target.app) return "installed-observation-driver-required";
-  if (target.platform === "win32") return "windows-interactive-driver-required";
+  if (target.platform === "win32" && s.runner === "windows-helper") {
+    if (!target.fixtureDirectory) return "fixture-prerequisites-unavailable";
+    return [
+      {
+        ...bun([
+          "apps/desktop/src/computer/rehearseHelperWindows.ts",
+          "--helper",
+          helperPath(target),
+          "--output",
+          output,
+          "--fixture-bin-dir",
+          target.fixtureDirectory,
+        ]),
+        env: { F5_COMPUTER_WINDOWS_REHEARSAL: "1" },
+      },
+    ];
+  }
+  const windowsNativeDrivers: Readonly<Record<string, string>> = {
+    capture: "rehearseCaptureWindows.ts",
+    displays: "rehearseDisplaysWindows.ts",
+    "windows-lifecycle": "rehearseLifecycleWindows.ts",
+  };
+  if (target.platform === "win32" && windowsNativeDrivers[s.runner]) {
+    if (!target.fixtureDirectory) return "fixture-prerequisites-unavailable";
+    return [
+      {
+        ...bun([
+          join("apps/desktop/src/computer", windowsNativeDrivers[s.runner]!),
+          "--helper",
+          helperPath(target),
+          "--output",
+          output,
+          "--fixture-bin-dir",
+          target.fixtureDirectory,
+        ]),
+        env: { F5_COMPUTER_WINDOWS_REHEARSAL: "1" },
+      },
+    ];
+  }
+  if (target.platform === "win32") {
+    if (
+      ![
+        "electron-discovery",
+        "electron",
+        "electron-chromium",
+        "electron-grant-memory",
+        "electron-session-actions",
+        "electron-main-stop",
+        "electron-renderer-stop",
+        "electron-backend-stop",
+        "electron-background",
+        "electron-profile-isolation",
+        "electron-profile-isolation-readonly",
+        "electron-profile-inspection-diagnostic",
+      ].includes(s.runner)
+    )
+      return "windows-interactive-driver-required";
+    if (!target.fixtureDirectory) return "fixture-prerequisites-unavailable";
+  }
   if (s.runner.startsWith("electron") || s.runner === "windows-closed") {
     const provider = PROFILE_SCENARIO_IDS.includes(s.id) ? "codex" : s.selectedProvider!;
     const launch = launches[provider];
@@ -194,6 +253,8 @@ export function commandsFor(
       "windows-closed": ["--windows-closed"],
       "electron-main-stop": ["--stop-main", "--diagnose-chord"],
       "electron-renderer-stop": ["--stop-renderer", "--diagnose-chord"],
+      "electron-backend-stop": ["--stop-backend"],
+      "electron-background": ["--background-fixture"],
     };
     if (!(s.runner in flags)) return "scenario-driver-required";
     return [

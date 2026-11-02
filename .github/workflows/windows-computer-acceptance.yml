@@ -1,0 +1,121 @@
+name: Windows computer acceptance
+
+# Attended desktop only. Never execute PR code automatically on this runner.
+on:
+  workflow_dispatch:
+    inputs:
+      operator_ready:
+        description: "I am attending the Windows desktop and will approve only synthetic test apps"
+        type: boolean
+        required: true
+        default: false
+      phase:
+        type: choice
+        options: [native, lifecycle, privacy, displays, provider-workflows, profiles, physical-stop]
+        default: native
+      provider:
+        type: choice
+        options: [both, claude, codex]
+        default: both
+      windows_version:
+        description: "Attended runner OS; acceptance must be repeated on both versions"
+        type: choice
+        options: [windows-11, windows-10]
+        default: windows-11
+permissions:
+  contents: read
+concurrency:
+  group: windows-computer-interactive
+  cancel-in-progress: false
+jobs:
+  acceptance:
+    if: inputs.operator_ready
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+      - f5-computer-interactive
+      - ${{ inputs.windows_version }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      SUITE: ${{ runner.temp }}/f5-computer-${{ github.run_id }}-${{ github.run_attempt }}
+      PHASE: ${{ inputs.phase }}
+      PROVIDER: ${{ inputs.provider }}
+      WINDOWS_VERSION: ${{ inputs.windows_version }}
+      CLAUDE_HOME: ${{ vars.F5_WINDOWS_CLAUDE_HOME }}
+      CLAUDE_BINARY: ${{ vars.F5_WINDOWS_CLAUDE_BINARY }}
+      CODEX_HOME: ${{ vars.F5_WINDOWS_CODEX_HOME }}
+      CODEX_BINARY: ${{ vars.F5_WINDOWS_CODEX_BINARY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.13.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.3.9
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+      - name: Require the actual unelevated interactive desktop
+        run: |
+          node scripts/computer-certification/windowsRunner.ts "$env:WINDOWS_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw "An elevated/service/disconnected runner cannot validate desktop control" }
+      - run: bun install --frozen-lockfile
+      - name: Prepare exact artifacts and synthetic fixtures
+        run: |
+          $launch = @()
+          if ($env:PHASE -in @("provider-workflows", "profiles", "physical-stop")) {
+            foreach ($name in @("claude", "codex")) {
+              if ($env:PHASE -eq "profiles" -and $name -ne "codex") { continue }
+              if ($env:PROVIDER -ne "both" -and $env:PROVIDER -ne $name) { continue }
+              $homePath = [Environment]::GetEnvironmentVariable($name.ToUpper() + "_HOME")
+              $binaryPath = [Environment]::GetEnvironmentVariable($name.ToUpper() + "_BINARY")
+              if (-not $homePath -or -not $binaryPath) { throw "Configure the selected provider home and executable on this runner" }
+              $launch += @("--$name-home", $homePath, "--$name-binary", $binaryPath)
+            }
+          }
+          bun scripts/computer-certification.ts prepare --output "$env:SUITE" --platform win32 --arch x64 --provider "$env:PROVIDER" @launch
+          if ($LASTEXITCODE -ne 0) { throw "Acceptance preparation failed" }
+      - name: Run attended scenarios
+        run: |
+          $scenarios = @("windows-helper")
+          $group = "workflows"
+          if ($env:PHASE -eq "lifecycle") {
+            $group = "recovery"
+            $scenarios = @("windows-lifecycle")
+          } elseif ($env:PHASE -in @("privacy", "displays")) {
+            $group = "protection"
+            $scenarios = if ($env:PHASE -eq "privacy") { @("capture") } else { @("displays") }
+          } elseif ($env:PHASE -eq "profiles") {
+            if ($env:PROVIDER -eq "claude") { throw "Profile isolation currently requires Codex; select codex or both" }
+            $scenarios = @("profile-readiness", "profile-inspection-diagnostic", "profile-isolation")
+          } elseif ($env:PHASE -ne "native") {
+            $scenarios = @()
+            $phases = if ($env:PHASE -eq "physical-stop") { @("main-stop", "renderer-stop", "backend-stop") } else { @("discovery", "fixture-workflow", "chromium-workflow", "windows-background", "grant-memory", "session-actions") }
+            if ($env:PHASE -eq "physical-stop") { $group = "recovery" }
+            foreach ($provider in @("claude", "codex")) {
+              if ($env:PROVIDER -ne "both" -and $env:PROVIDER -ne $provider) { continue }
+              foreach ($phase in $phases) { $scenarios += "$phase.$provider" }
+            }
+          }
+          foreach ($scenario in $scenarios) {
+            bun scripts/computer-certification.ts run --output "$env:SUITE" --group "$group" --scenario "$scenario" --operator-ready
+            if ($LASTEXITCODE -ne 0) { throw "Acceptance stopped at $scenario; input is never retried automatically" }
+          }
+      - name: Report coverage without changing release gates
+        if: always()
+        run: |
+          if (Test-Path "$env:SUITE/manifest.json") {
+            bun scripts/computer-certification.ts report --output "$env:SUITE"
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-computer-${{ inputs.phase }}-${{ github.run_id }}
+          path: |
+            ${{ env.SUITE }}/manifest.json
+            ${{ env.SUITE }}/*.raw.json
+            ${{ env.SUITE }}/*.result.json
+          if-no-files-found: ignore
