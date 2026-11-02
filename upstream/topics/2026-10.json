@@ -4552,14 +4552,16 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T00:20:18.818Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T23:20:41.368Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-13129",
+      "reason": "F5 identifies sidebar projects by project ID and workspace path, so local Git remotes cannot group unrelated repositories together.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-19202"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "sidebar",
