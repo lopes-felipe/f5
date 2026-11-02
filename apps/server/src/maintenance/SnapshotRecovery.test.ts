@@ -18,6 +18,20 @@ import {
 const T0 = "2026-10-01T10:00:00.000Z";
 const T1 = "2026-10-01T11:00:00.000Z";
 const T2 = "2026-10-01T12:00:00.000Z";
+const T1_30 = "2026-10-01T11:30:00.000Z";
+
+const tracking = {
+  version: 1,
+  source: "claude-task-tools",
+  nativeSessionId: "native-1",
+  generation: 3,
+  syncState: "synced",
+  pendingCalls: [],
+  invalidatedCallIds: [],
+  handledCallIds: ["call-1", "call-2"],
+  provenance: [],
+  suppressedTaskIds: ["task-gone"],
+} as const;
 
 function thread(id: string, overrides: Record<string, unknown> = {}) {
   return {
@@ -42,7 +56,12 @@ function thread(id: string, overrides: Record<string, unknown> = {}) {
   };
 }
 
-function message(id: string, role: "user" | "assistant", createdAt: string) {
+function message(
+  id: string,
+  role: "user" | "assistant",
+  createdAt: string,
+  overrides: Record<string, unknown> = {},
+) {
   return {
     id,
     role,
@@ -51,6 +70,7 @@ function message(id: string, role: "user" | "assistant", createdAt: string) {
     streaming: false,
     createdAt,
     updatedAt: createdAt,
+    ...overrides,
   };
 }
 
@@ -111,6 +131,29 @@ const snapshot = decodeRecoverySnapshot({
         workspaceRoot: "/tmp/project-1",
         defaultModel: null,
         scripts: [],
+        memories: [
+          {
+            id: "memory-1",
+            projectId: "project-1",
+            scope: "project",
+            type: "feedback",
+            name: "Run tests",
+            description: "How to run tests",
+            body: "Use bun run test.",
+            createdAt: T0,
+            updatedAt: T0,
+          },
+        ],
+        skills: [
+          {
+            id: "skill-1",
+            projectId: "project-1",
+            scope: "project",
+            commandName: "deploy",
+            description: "Deploy the app",
+            updatedAt: T0,
+          },
+        ],
         createdAt: T0,
         updatedAt: T0,
         deletedAt: null,
@@ -128,7 +171,58 @@ const snapshot = decodeRecoverySnapshot({
     ],
     threads: [
       thread("thread-live", {
-        messages: [message("m1", "user", T0), message("m2", "assistant", T1)],
+        messages: [
+          message("m1", "user", T0, { turnId: "turn-1" }),
+          message("m2", "assistant", T1, { turnId: "turn-1", reasoningTokens: 42 }),
+        ],
+        checkpoints: [
+          {
+            turnId: "turn-1",
+            checkpointTurnCount: 1,
+            checkpointRef: "refs/f5/checkpoints/thread-live/1",
+            status: "ready",
+            files: [],
+            assistantMessageId: "m2",
+            completedAt: T1,
+          },
+        ],
+        // The latest turn was interrupted before it captured a checkpoint.
+        latestTurn: {
+          turnId: "turn-2",
+          state: "interrupted",
+          requestedAt: T1,
+          startedAt: T1,
+          completedAt: T1_30,
+          processingQuiescedAt: T1_30,
+          assistantMessageId: null,
+        },
+        // Older than the messages: replaying it last would move the thread back.
+        tasks: [{ id: "task-1", content: "Ship it", activeForm: "Shipping it", status: "pending" }],
+        tasksTurnId: "turn-1",
+        tasksUpdatedAt: T0,
+        sessionNotes: {
+          title: "Live thread",
+          currentState: "Working",
+          taskSpecification: "Ship it",
+          filesAndFunctions: "",
+          workflow: "",
+          errorsAndCorrections: "",
+          codebaseAndSystemDocumentation: "",
+          learnings: "",
+          keyResults: "",
+          worklog: "",
+          updatedAt: T1,
+          sourceLastInteractionAt: T1,
+        },
+        compaction: {
+          summary: "Earlier work",
+          trigger: "manual",
+          estimatedTokens: 10,
+          modelContextWindowTokens: 1000,
+          createdAt: T1,
+        },
+        titleState: { needsRefinement: true, refinementCount: 1, lastRefinedTurn: 1 },
+        lastInteractionAt: T1_30,
         proposedPlans: [
           {
             id: "plan-1",
@@ -154,7 +248,7 @@ const snapshot = decodeRecoverySnapshot({
           status: "running",
           providerName: "codex",
           runtimeMode: "full-access",
-          activeTurnId: "turn-1",
+          activeTurnId: "turn-2",
           lastError: null,
           updatedAt: T1,
         },
@@ -162,6 +256,20 @@ const snapshot = decodeRecoverySnapshot({
         pinOrderKey: 0,
       }),
       thread("thread-archived", { archivedAt: T2, messages: [message("m3", "user", T0)] }),
+      thread("thread-settled", {
+        settledAt: T2,
+        settledBy: "user",
+        autoSettleDisabled: true,
+        // An emptied list still carries its tracking state.
+        tasks: [],
+        tasksTurnId: null,
+        tasksUpdatedAt: T1,
+        tasksTracking: tracking,
+        pinnedAt: T0,
+        pinOrderKey: 1,
+      }),
+      // Snoozing unpins, so a snoozed thread is never also pinned.
+      thread("thread-snoozed", { snoozedUntil: "2026-10-05T09:00:00.000Z", snoozedAt: T2 }),
       thread("thread-deleted", { deletedAt: T2 }),
       thread("author-a"),
       thread("author-b"),
@@ -215,6 +323,58 @@ it("derives the same event IDs from the same snapshot", () => {
   assert.equal(new Set(first).size, first.length);
 });
 
+it.effect("restores the latest turn, task tracking, title state and per-pin times", () =>
+  Effect.gen(function* () {
+    yield* rebuildFromSnapshot(snapshot);
+    const restored = yield* (yield* ProjectionSnapshotQuery).getBootstrapSnapshot();
+    const live = restored.threads.find((entry) => entry.id === "thread-live")!;
+    assert.equal(live.latestTurn?.turnId, "turn-2");
+    assert.equal(live.latestTurn?.state, "interrupted");
+    assert.equal(live.lastInteractionAt, T1_30);
+    assert.deepEqual(live.titleState, {
+      needsRefinement: true,
+      refinementCount: 1,
+      lastRefinedTurn: 1,
+    });
+    assert.equal(live.messages[1]?.reasoningTokens, 42);
+    const settled = restored.threads.find((entry) => entry.id === "thread-settled")!;
+    assert.deepEqual(settled.tasksTracking, tracking);
+    assert.equal(settled.pinnedAt, T0);
+    assert.equal(live.pinnedAt, T1);
+  }).pipe(Effect.provide(layer)),
+);
+
+it("reports same-count content changes, not just count changes", () => {
+  const live = snapshot.threads.find((entry) => entry.id === "thread-live")!;
+  const settled = snapshot.threads.find((entry) => entry.id === "thread-settled")!;
+  const changed = {
+    ...snapshot,
+    threads: snapshot.threads.map((entry) =>
+      entry === live
+        ? {
+            ...live,
+            messages: live.messages.map((item, index) =>
+              index === 0 ? { ...item, text: "edited" } : item,
+            ),
+            activities: live.activities.map((item) => ({ ...item, createdAt: T0 })),
+            latestTurn: null,
+          }
+        : entry === settled
+          ? { ...settled, tasksTracking: { ...tracking, generation: 0 } }
+          : entry,
+    ),
+  };
+  const fields = compareRecoveredReadModel(snapshot, changed).map(
+    (mismatch) => `${mismatch.entity}:${mismatch.field}`,
+  );
+  assert.includeMembers(fields, [
+    "thread thread-live:messages[0]",
+    "thread thread-live:activities[0]",
+    "thread thread-live:latestTurn",
+    "thread thread-settled:tasksTracking",
+  ]);
+});
+
 it("reports missing threads and changed message counts", () => {
   const damaged = {
     ...snapshot,
@@ -228,6 +388,6 @@ it("reports missing threads and changed message counts", () => {
   assert.includeMembers(fields, [
     "model:threads",
     "thread thread-archived:present",
-    "thread thread-live:messages",
+    "thread thread-live:messages.length",
   ]);
 });
