@@ -240,6 +240,29 @@ Unreadable provider homes show unavailable usage without preventing cleanup of a
 categories. Refused attachment removals retain their registry entry until a confirmed retry
 successfully removes the file, or confirms it is absent.
 
+**Repositories and worktrees** also lists `node_modules`, `.turbo` and Python `.venv` folders
+in every known checkout, and Git downloads that were interrupted more than a day ago. Dependency
+folders are never selected by default, and a checkout's folders are blocked while an agent works
+there or a thread used it in the last 24 hours; reinstall them with the restore command shown on
+each target. Folders that contain a Git checkout are never offered. A project folder that is not
+itself a repository, such as a folder of clones, is searched for repositories automatically and
+appears under **From projects** in Storage discovery; turn this off there, and note that your home
+folder and the folders above it are never searched this way.
+
+With machine cache scanning on, Storage also offers the devbox warmup cache, Playwright browsers,
+the Electron and node-gyp download caches, Claude plugin trash in `~/.claude`, and unused Docker
+images (`docker image prune --all`; containers, volumes and build cache are kept, but locally
+built images without a registry copy are lost). Docker images are only offered when Docker runs
+on this machine. F5's own updater downloads and plugin trash in F5's Claude home are always
+offered once they are a day old.
+
+Automatic database compaction waits for a quiet moment. If it has been skipped for three days,
+the Database section shows how much space is stuck and offers **Compact now** or **Compact on
+next restart**, which compacts as soon as F5 has finished starting. Either way agents pause until
+it finishes; a scheduled compaction shows its progress in Storage and can be cancelled there.
+Both need room for a temporary copy of the database and stay disabled until enough disk space is
+free.
+
 Cleanup belongs to the profile backend and continues if its window disconnects or you
 leave Settings. Progress and results reappear on reconnect. Cancel stops before the next
 target; an irreversible thread cleanup finishes its current target. After a backend restart,

@@ -84,6 +84,7 @@ import {
 import { projectLatestTurnSession } from "@t3tools/shared/turnStateTransitions";
 import { revertTaskToolState } from "@t3tools/shared/claudeTaskToolProjection";
 import { mergeSessionCapabilities } from "../provider/sessionCapabilities.ts";
+import { resolveTurnAssistantMessage } from "./turnAssistantMessage.ts";
 
 type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
 
@@ -1356,6 +1357,12 @@ export function projectEvent(
           return nextBase;
         }
 
+        const assistantMessageId =
+          resolveTurnAssistantMessage(thread.messages, payload.turnId)?.id ??
+          (thread.latestTurn?.turnId === payload.turnId
+            ? thread.latestTurn.assistantMessageId
+            : null) ??
+          payload.assistantMessageId;
         const checkpoint = yield* decodeForEvent(
           OrchestrationCheckpointSummary,
           {
@@ -1364,7 +1371,7 @@ export function projectEvent(
             checkpointRef: payload.checkpointRef,
             status: payload.status,
             files: payload.files,
-            assistantMessageId: payload.assistantMessageId,
+            assistantMessageId,
             completedAt: payload.completedAt,
           },
           event.type,
@@ -1402,8 +1409,7 @@ export function projectEvent(
         const nextLatestTurn = shouldPreserveRunningLatestTurn
           ? {
               ...thread.latestTurn,
-              assistantMessageId:
-                payload.assistantMessageId ?? thread.latestTurn.assistantMessageId,
+              assistantMessageId,
             }
           : {
               turnId: payload.turnId,
@@ -1421,7 +1427,7 @@ export function projectEvent(
                 thread.latestTurn?.turnId === payload.turnId
                   ? thread.latestTurn.processingQuiescedAt
                   : null,
-              assistantMessageId: payload.assistantMessageId,
+              assistantMessageId,
               ...((thread.latestTurn?.workflowExecutionProfile ??
               thread.session?.workflowExecutionProfile)
                 ? {

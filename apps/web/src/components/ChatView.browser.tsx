@@ -1,4 +1,6 @@
 import { writePullRequestReferenceDrag } from "../lib/pullRequestReference";
+import { F5_THREAD_REFERENCE_MIME, writeThreadReferenceDrag } from "../lib/threadReferenceDrag";
+import { promptLinkScheme } from "./promptLinks/copyPromptLink";
 import { waitForTimelineLayout } from "../test/timeline";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { resetProtocolStateForTests, setServerBootstrap } from "../protocolState";
@@ -2410,6 +2412,127 @@ describe("ChatView timeline (full app)", () => {
       expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
         "Keep my draft",
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it.each([true, false])(
+    "switches a started thread's provider only with context handoff (capability: %s)",
+    async (handoff) => {
+      serverBootstrapFixture = handoff
+        ? {
+            ...baseServerBootstrapFixture,
+            capabilities: [...baseServerBootstrapFixture.capabilities, "provider-context-handoff"],
+          }
+        : baseServerBootstrapFixture;
+      setServerBootstrap(serverBootstrapFixture);
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotForTargetUser({
+          targetMessageId: "msg-handoff-target" as MessageId,
+          targetText: "Remember the plan",
+          fillerPairCount: 2,
+          targetPairIndex: 0,
+        }),
+        configureFixture: (next) => {
+          next.serverConfig = {
+            ...next.serverConfig,
+            providers: [
+              createTestServerProvider("codex", { checkedAt: NOW_ISO }),
+              createTestServerProvider("claudeAgent", {
+                models: [
+                  {
+                    slug: "claude-fable-5",
+                    name: "Claude Fable 5",
+                    isCustom: false,
+                    capabilities: null,
+                  },
+                ],
+              }),
+            ],
+          };
+        },
+      });
+      try {
+        await vi.waitFor(() => expect(document.body.textContent).toContain("Remember the plan"));
+        const drafts = useComposerDraftStore.getState();
+        drafts.setProvider(THREAD_ID, "claudeAgent");
+        drafts.setProviderInstance(THREAD_ID, ProviderInstanceId.makeUnsafe("claudeAgent"));
+        drafts.setModel(THREAD_ID, "claude-fable-5");
+        drafts.setPrompt(THREAD_ID, "Continue with Claude");
+        if (handoff)
+          await vi.waitFor(() =>
+            expect(document.body.textContent).toContain(
+              "The conversation so far will be handed off",
+            ),
+          );
+        const send = await waitForSendButton();
+        await vi.waitFor(() => expect(send.disabled).toBe(false));
+        expect(document.body.textContent?.includes("Switching to")).toBe(handoff);
+        send.click();
+        await vi.waitFor(() => {
+          const command = getDispatchCommandRequests("thread.turn.start")[0]?.command as
+            | { modelSelection?: { instanceId: string } }
+            | undefined;
+          expect(command?.modelSelection?.instanceId).toBe(handoff ? "claudeAgent" : "codex");
+        });
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it("keeps a started thread's unavailable provider instead of handing off to another", async () => {
+    serverBootstrapFixture = {
+      ...baseServerBootstrapFixture,
+      capabilities: [...baseServerBootstrapFixture.capabilities, "provider-context-handoff"],
+    };
+    setServerBootstrap(serverBootstrapFixture);
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-unavailable-target" as MessageId,
+        targetText: "Remember the plan",
+        fillerPairCount: 2,
+        targetPairIndex: 0,
+      }),
+      configureFixture: (next) => {
+        next.serverConfig = {
+          ...next.serverConfig,
+          settings: {
+            ...DEFAULT_SERVER_SETTINGS,
+            providers: {
+              ...DEFAULT_SERVER_SETTINGS.providers,
+              codex: { ...DEFAULT_SERVER_SETTINGS.providers.codex, enabled: false },
+            },
+          },
+          providers: [
+            createTestServerProvider("codex", { enabled: false }),
+            createTestServerProvider("claudeAgent", {
+              models: [
+                {
+                  slug: "claude-fable-5",
+                  name: "Claude Fable 5",
+                  isCustom: false,
+                  capabilities: null,
+                },
+              ],
+            }),
+          ],
+        };
+      },
+    });
+    try {
+      await vi.waitFor(() => expect(document.body.textContent).toContain("Remember the plan"));
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Keep going");
+      await vi.waitFor(() =>
+        expect(document.body.textContent).toContain("It is turned off in Settings."),
+      );
+      expect(document.body.textContent).not.toContain("Switching to");
+      const send = await waitForSendButton();
+      expect(send.disabled).toBe(true);
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
     } finally {
       await mounted.cleanup();
     }
@@ -6146,6 +6269,104 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it("drops dragged threads as reference chips and keeps the canonical text through send", async () => {
+    const toast = vi.spyOn(toastManager, "add");
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-thread-drag" as MessageId,
+        targetText: "Thread target",
+      }),
+    });
+    const dropThreads = async (threads: Array<{ threadId: string; title: string }>) => {
+      const transfer = new DataTransfer();
+      expect(writeThreadReferenceDrag(transfer, threads)).toBe(true);
+      (await waitForComposerShell()).dispatchEvent(
+        new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }),
+      );
+    };
+    const promptOf = () => useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt;
+    try {
+      await dropThreads([{ threadId: THREAD_ID, title: "Self" }]);
+      await vi.waitFor(() =>
+        expect(toast).toHaveBeenCalledWith(
+          expect.objectContaining({ type: "info", title: "A thread can't reference itself." }),
+        ),
+      );
+      expect(promptOf() ?? "").toBe("");
+
+      await dropThreads([
+        { threadId: "source-a", title: "Source A" },
+        { threadId: "source-b", title: "Source B" },
+      ]);
+      const first = `[Source A](${promptLinkScheme}://thread/source-a)`;
+      const second = `[Source B](${promptLinkScheme}://thread/source-b)`;
+      await vi.waitFor(() => {
+        expect(promptOf()).toBe(`${first} ${second} `);
+        expect(document.querySelectorAll("[data-composer-thread-reference]")).toHaveLength(2);
+      });
+
+      // A thread already referenced is not added twice.
+      await dropThreads([{ threadId: "source-a", title: "Source A" }]);
+      expect(promptOf()).toBe(`${first} ${second} `);
+
+      // The cap counts references already in the prompt.
+      await dropThreads(
+        Array.from({ length: 10 }, (_, index) => ({ threadId: `extra-${index}`, title: "Extra" })),
+      );
+      await vi.waitFor(() =>
+        expect(toast).toHaveBeenCalledWith(
+          expect.objectContaining({ title: "Up to 10 thread references per message." }),
+        ),
+      );
+      await vi.waitFor(() =>
+        expect(document.querySelectorAll("[data-composer-thread-reference]")).toHaveLength(10),
+      );
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+
+      const expected = promptOf()!.trim();
+      (await waitForSendButton()).click();
+      await vi.waitFor(() =>
+        expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(1),
+      );
+      const command = getSubmittedTurnCommand(getDispatchCommandRequests("thread.turn.start")[0]!);
+      expect(command?.message?.text).toBe(expected);
+    } finally {
+      toast.mockRestore();
+      await mounted.cleanup();
+    }
+  });
+
+  it("refuses an invalid thread drag payload", async () => {
+    const toast = vi.spyOn(toastManager, "add");
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-thread-drag-invalid" as MessageId,
+        targetText: "Thread target",
+      }),
+    });
+    try {
+      const transfer = new DataTransfer();
+      transfer.setData(F5_THREAD_REFERENCE_MIME, JSON.stringify({ version: 2, threads: [] }));
+      (await waitForComposerShell()).dispatchEvent(
+        new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }),
+      );
+      await vi.waitFor(() =>
+        expect(toast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "error",
+            title: "Unable to add the thread reference to chat.",
+          }),
+        ),
+      );
+      expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "").toBe("");
+    } finally {
+      toast.mockRestore();
+      await mounted.cleanup();
+    }
+  });
+
   it("inserts an authorized internal file drag and reauthorizes the mention before send", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -7307,6 +7528,77 @@ describe("ChatView timeline (full app)", () => {
         } else {
           await new Promise((resolve) => setTimeout(resolve, 100));
           expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+        }
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it.each([null, "/state/scratch/research-12345678"])(
+    "uses only the scratch thread folder for terminal/header controls (%s)",
+    async (scratchPath) => {
+      const initial = createSnapshotForTargetUser({
+        targetMessageId: "scratch-user" as MessageId,
+        targetText: "Research a topic",
+        fillerPairCount: 1,
+        targetPairIndex: 0,
+      });
+      const snapshot: OrchestrationReadModel = {
+        ...initial,
+        projects: initial.projects.map((project) => ({
+          ...project,
+          kind: "scratch",
+          title: "No project",
+          workspaceRoot: "/state/scratch",
+        })),
+        threads: initial.threads.map((thread) => ({
+          ...thread,
+          branch: null,
+          worktreePath: null,
+          scratchPath,
+          messages: thread.messages.map((message) =>
+            message.role === "assistant"
+              ? { ...message, text: "```bash\necho scratch\n```" }
+              : message,
+          ),
+        })),
+      };
+      const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+      try {
+        const terminal = page.getByRole("button", { name: "Toggle terminal drawer", exact: true });
+        if (scratchPath) await expect.element(terminal).toBeEnabled();
+        else await expect.element(terminal).toBeDisabled();
+        expect(
+          page
+            .getByRole("navigation", { name: "Breadcrumb", exact: true })
+            .getByRole("button", { name: "Project actions for No project" })
+            .all(),
+        ).toHaveLength(0);
+        expect(
+          page.getByRole("button", { name: "Project scripts", exact: true }).all(),
+        ).toHaveLength(0);
+        const run = page.getByRole("button", { name: "Run in terminal", exact: true });
+        await expect.element(run).toBeVisible();
+        await run.click();
+        if (scratchPath) {
+          await vi.waitFor(() =>
+            expect(wsRequests.some((body) => body._tag === WS_METHODS.terminalWrite)).toBe(true),
+          );
+          expect(wsRequests.find((body) => body._tag === WS_METHODS.terminalOpen)).toMatchObject({
+            cwd: scratchPath,
+            env: { T3CODE_PROJECT_ROOT: scratchPath },
+          });
+          const open = wsRequests.find((body) => body._tag === WS_METHODS.terminalOpen)!;
+          expect(open.env).not.toHaveProperty("T3CODE_WORKTREE_PATH");
+        } else {
+          await vi.waitFor(() =>
+            expect(document.body.textContent).toContain(
+              "Terminal is available after the first message",
+            ),
+          );
+          expect(wsRequests.some((body) => body._tag === WS_METHODS.terminalOpen)).toBe(false);
+          expect(wsRequests.some((body) => body._tag === WS_METHODS.terminalWrite)).toBe(false);
         }
       } finally {
         await mounted.cleanup();

@@ -11,6 +11,7 @@ import { useDiskSpaceStatus, diskSpaceQueryKey } from "../../../hooks/useDiskSpa
 import { Link } from "@tanstack/react-router";
 import { beginProtocolUpload, protocolFetch } from "../../../protocolState";
 import {
+  type PendingDatabaseCompaction,
   type StorageCleanupCategoryId,
   type StorageCleanupCategoryUsage,
   type StorageCleanupProgressPayload,
@@ -54,7 +55,7 @@ const storageQueryKey = ["storage", "usage"] as const;
 
 const SECTION_TITLES = {
   database: "Database",
-  worktrees: "Worktrees",
+  worktrees: "Repositories and worktrees",
   logs: "Logs",
   attachments: "Attachments",
   providers: "Provider homes",
@@ -80,6 +81,14 @@ function isTargetLevelCategoryId(categoryId: StorageCleanupCategoryId): boolean 
     "uvDiscardedCaches",
     "chromeCaches",
     "bambuStudioLogs",
+    "dependencyFolders",
+    "gitTemporaryPacks",
+    "claudePluginTrash",
+    "devboxWarmupCache",
+    "playwrightBrowsers",
+    "electronDownloadCache",
+    "nodeGypCache",
+    "f5UpdaterCache",
   ].includes(categoryId);
 }
 
@@ -120,6 +129,93 @@ function usageBySection(
     sections.set(category.section, [...(sections.get(category.section) ?? []), category]);
   }
   return sections;
+}
+
+/**
+ * Shown when automatic compaction has been skipped for days (busy agents,
+ * recent use, or too little free disk). Offers a manual run or a run on the
+ * next server start, when no agent is working yet.
+ */
+function PendingCompactionCallout({
+  pending,
+  disabled,
+  canCompactNow,
+  onCompactNow,
+}: {
+  readonly pending: PendingDatabaseCompaction;
+  readonly disabled: boolean;
+  readonly canCompactNow: boolean;
+  readonly onCompactNow: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const scheduleMutation = useMutation({
+    mutationFn: (when: "restart" | "cancel") =>
+      ensureNativeApi().storage.scheduleCompaction({ when }),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: storageQueryKey });
+      void queryClient.invalidateQueries({ queryKey: diskSpaceQueryKey });
+    },
+    onError: (error) => {
+      toastManager.add({
+        type: "error",
+        title: "Could not schedule compaction",
+        description: error instanceof Error ? error.message : String(error),
+      });
+    },
+  });
+  const shortfall = pending.requiredFreeDiskBytes > pending.availableDiskBytes;
+  const actionsDisabled = disabled || shortfall || scheduleMutation.isPending;
+  return (
+    <div
+      role="status"
+      className="mb-3 space-y-2 rounded-lg border border-warning/40 bg-warning/8 px-3 py-3 text-xs"
+    >
+      <p className="text-foreground">
+        Compaction pending: {formatByteSize(pending.freeBytes)} stuck since{" "}
+        {new Date(pending.waitingSince).toLocaleDateString()}
+        {pending.lastSkipReason ? ` (${pending.lastSkipReason})` : ""}. Takes a few minutes and
+        pauses agents.
+      </p>
+      {shortfall ? (
+        <p className="text-muted-foreground">
+          Needs {formatByteSize(pending.requiredFreeDiskBytes)} free;{" "}
+          {formatByteSize(pending.availableDiskBytes)} available. Free space with the items below
+          first.
+        </p>
+      ) : pending.scheduledForRestart ? (
+        <p className="text-muted-foreground">Compaction runs when F5 next starts.</p>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={actionsDisabled || !canCompactNow}
+          onClick={onCompactNow}
+        >
+          Compact now
+        </Button>
+        {pending.scheduledForRestart ? (
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={disabled || scheduleMutation.isPending}
+            onClick={() => scheduleMutation.mutate("cancel")}
+          >
+            Cancel scheduled compaction
+          </Button>
+        ) : (
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={actionsDisabled}
+            onClick={() => scheduleMutation.mutate("restart")}
+          >
+            Compact on next restart
+          </Button>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function CategoryRow({
@@ -1028,8 +1124,8 @@ export function StorageSettings() {
             {report?.discoveryRoots ? (
               <p className="mt-1 text-xs text-muted-foreground">
                 Repository search coverage:{" "}
-                {report.discoveryRoots.length
-                  ? report.discoveryRoots.join(", ")
+                {report.discoveryRoots.length || report.implicitDiscoveryRoots?.length
+                  ? [...report.discoveryRoots, ...(report.implicitDiscoveryRoots ?? [])].join(", ")
                   : "registered projects only"}
                 . Machine cache scanning: {report.machineCleanupScanned ? "enabled" : "off"}. Any
                 incomplete or inaccessible locations are listed in scan warnings.
@@ -1296,6 +1392,25 @@ export function StorageSettings() {
                     ) : null}
                   </div>
                 </div>
+                {sectionId === "database" && report.pendingCompaction
+                  ? (() => {
+                      const vacuum = categories.find(
+                        (category) => category.id === "databaseVacuum",
+                      );
+                      return (
+                        <PendingCompactionCallout
+                          pending={report.pendingCompaction}
+                          disabled={running || !confirmation}
+                          canCompactNow={
+                            !!vacuum && vacuum.availability !== "disabled" && vacuum.bytes > 0
+                          }
+                          onCompactNow={() => {
+                            if (vacuum) openCategoryAction(vacuum);
+                          }}
+                        />
+                      );
+                    })()
+                  : null}
                 {sectionId === "providers" ? (
                   <div className="mb-3 space-y-2 text-xs text-muted-foreground">
                     <p>
@@ -1496,7 +1611,7 @@ export function StorageSettings() {
       ) : null}
 
       <WorktreeLocationSettings />
-      <StorageDiscoverySettings />
+      <StorageDiscoverySettings implicitRoots={report?.implicitDiscoveryRoots ?? []} />
       <StorageAutomationSettings />
       <section
         className="rounded-xl border border-border bg-card p-5"

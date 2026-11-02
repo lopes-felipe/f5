@@ -58,6 +58,14 @@ export const LowDiskSpaceBanner = memo(function LowDiskSpaceBanner({
             {reclaimable.map((item) => `${item.title} (${formatByteSize(item.bytes)})`).join(", ")}.
           </p>
         ) : null}
+        {status.pendingCompaction ? (
+          <p>
+            Database compaction pending ({formatByteSize(status.pendingCompaction.freeBytes)})
+            {status.pendingCompaction.scheduledForRestart
+              ? ": runs when F5 next starts."
+              : ": run it from Storage."}
+          </p>
+        ) : null}
       </AlertDescription>
       <AlertAction>
         <Button size="sm" variant={critical ? "default" : "outline"} onClick={onOpenStorage}>

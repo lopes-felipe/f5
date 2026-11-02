@@ -1,5 +1,4 @@
 import { deriveDisplayedUserMessageState } from "~/lib/terminalContext";
-import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "~/lib/composerSendText";
 import {
   normalizeComposerMentions,
   replaceComposerMentionRange,
@@ -46,7 +45,6 @@ export function recallablePromptWithMentions(
       prompt = prompt.slice(0, removed.index) + prompt.slice(removed.index + removed[0].length);
     }
   }
-  if (prompt === IMAGE_ONLY_BOOTSTRAP_PROMPT) return { prompt: "", mentions: [] };
   return { prompt, mentions: recalledMentions };
 }
 

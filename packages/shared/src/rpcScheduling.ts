@@ -376,6 +376,7 @@ export const RPC_METHOD_POLICY = {
   "storage.getStatus": READ_RT,
   "storage.getTargets": READ_RT,
   "storage.getUsage": READ_RT,
+  "storage.scheduleCompaction": MUTATION_RT,
 
   "terminal.clear": MUTATION,
   "terminal.close": MUTATION,

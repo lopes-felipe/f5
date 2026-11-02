@@ -14,11 +14,37 @@ afterwards.
 4. Choose **Agent** or **Plan**. Plan asks for a plan you can accept or revise before any change.
 5. Choose the **workspace**: **Local** (the project checkout) or a
    [worktree](worktrees-and-storage-automation.md) with its own branch and directory.
+   For unrelated work, use [a thread without a project](#threads-without-a-project).
 6. Send your message.
 
 The composer also takes [attachments](attachments-and-media.md), `@` file mentions and `/`
 commands, including provider and project skills. The context ring shows how full the model's
 context window is.
+
+To give the agent another thread as context, drag that thread from the sidebar into the
+composer. If you selected several threads, dragging one of them adds them all, up to 10 per
+message. Each one appears as a chip, and the agent reads it with the
+[`thread_read`](agent-tools.md#f5-browser-and-computer-tools) tool when it needs to. The agent
+can read only references you send yourself, or ones you put in the request of a planning or
+document workflow. References that arrive through Bots or scheduled tasks are not readable.
+Clicking a chip opens that thread.
+
+## Threads without a project
+
+For internet research or one-off tasks, click the sidebar's **New thread without a project**
+button, choose **No project** in Home's project picker, or use **New thread without a project**
+in the command palette. The main **New thread** button also starts one when no project context
+is available. Once the **No project** group exists, its hover **New thread** action starts another.
+You can bind the `chat.newScratch` command in keyboard settings; it has no default shortcut.
+
+The first message creates a separate folder for the thread under `<stateDir>/scratch/`, named
+with its date, first words and a short id. Attachments, generated files and terminals use that
+folder. Provider tools handle internet research as usual. These threads have no Git repository,
+branches, worktrees or workflows. The folders separate working context but are not a filesystem
+sandbox; provider permissions still apply.
+
+Threads are grouped under **No project** in the sidebar and Usage. Deleting a thread removes
+its folder; archiving keeps it.
 
 ## While the agent works
 
@@ -28,6 +54,44 @@ waiting (**Settings → Threads → Follow-up behavior**). **Stop generation** e
 
 Queued messages appear above the composer. You can pause the queue, reorder it, run one now, edit,
 duplicate or cancel it. The queue is stored on the server, so it survives restarts.
+
+## Switch provider mid-thread
+
+On a started thread, the model chip can pick another provider. The composer shows **Switching to
+…** until you send. Your next message starts the new provider and carries the conversation so far
+with it:
+
+- **First switch to a provider.** It starts a fresh session. F5 puts a transcript of the thread's
+  messages in front of your message, once. Long threads are trimmed to fit the new model's context
+  window. F5 keeps the latest exchange and your first message, fills the rest newest first, and
+  shortens very long messages in the middle. The transcript states how many messages it left out.
+  Where the thread was compacted, the compaction summary stands in for the older messages, inside
+  the same budget.
+- **Switching back.** F5 keeps the session you left. When you return to that provider, it resumes
+  the session and sends only the messages since you left. If the session cannot be resumed, or F5
+  cannot confirm it is the same session, the provider starts fresh with the full transcript instead.
+- **What carries over.** Only user and assistant message text. Attachments, tool calls and
+  reasoning are not replayed. The workspace files are unchanged, and the new agent is told to read
+  them for the current state.
+- **Failures.** If a message fails before the provider receives it, the transcript is kept and the
+  retry sends the same transcript. If the provider's session changed in between, or it rejects the
+  resumed session, the retry starts the provider fresh and sends the full transcript instead. Once
+  the provider accepts the message, the transcript is not sent again. F5 never switches providers
+  by itself, and the transcript is never summarized by a model.
+
+F5 refuses the switch, and the message stays unsent, while an approval or question is waiting, a
+provider goal or rewind is in progress, or background work is still running. It also refuses when
+the message starts with a command for the new provider, such as `/compact`, because the command
+would run without the conversation; send an ordinary message first. Codex takes no such commands. A message that starts with a path
+such as `/Users/me/app.ts` is not a command. A message so long that no history fits beside it is
+not sent; shorten it or remove attachments. A message with only attachments carries the transcript
+like any other.
+
+If the thread's selected provider is turned off or unavailable, the composer says so and sending
+waits; F5 does not move the conversation to another provider. Switching models within the same
+provider instance needs none of this, but switching between two instances of one provider, such as
+two Codex accounts, hands the conversation off the same way. The thread records each handoff as an
+activity.
 
 ## Panels
 

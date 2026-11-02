@@ -2497,13 +2497,47 @@ routing.layer("ProviderServiceLive routing", (it) => {
 });
 
 let terminalReceiptPersisted = false;
+let persistedTerminalFailure: string | undefined;
 const durableFanout = makeProviderServiceLayer({
-  recordTerminalEvent: () =>
+  recordTerminalEvent: (event) =>
     Effect.sync(() => {
       terminalReceiptPersisted = true;
+      if (event.type === "turn.completed") persistedTerminalFailure = event.payload.errorMessage;
     }),
 });
 durableFanout.layer("ProviderServiceLive durable terminal fanout", (it) => {
+  it.effect("redacts terminal errors before the recovery receipt and subscriber fanout", () =>
+    Effect.gen(function* () {
+      persistedTerminalFailure = undefined;
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-redacted-terminal");
+      yield* provider.startSession(threadId, {
+        provider: "codex",
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const consumer = yield* provider.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* sleep(20);
+      durableFanout.codex.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-redacted-terminal"),
+        provider: "codex",
+        createdAt: new Date().toISOString(),
+        threadId,
+        turnId: asTurnId("turn-redacted-terminal"),
+        payload: { state: "failed", errorMessage: "clientSecret=private refresh_token=private" },
+      });
+      const observed = Array.from(yield* Fiber.join(consumer))[0];
+      const expected = "clientSecret=[REDACTED] refresh_token=[REDACTED]";
+      assert.equal(persistedTerminalFailure, expected);
+      assert.equal(observed?.type === "turn.completed" && observed.payload.errorMessage, expected);
+    }),
+  );
   it.effect("persists terminal events before subscribers observe them", () =>
     Effect.gen(function* () {
       terminalReceiptPersisted = false;

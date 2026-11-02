@@ -10,7 +10,8 @@ import { customModelSlug } from "@t3tools/shared/customModels";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { Effect, Layer } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import type { SessionConfigOption } from "effect-acp/schema";
+import type { SessionConfigOption, SessionModelState } from "effect-acp/schema";
+import { findModelConfigOption } from "./AcpRuntimeModel.ts";
 import { AcpSessionRuntime, type AcpSpawnInput } from "./AcpSessionRuntime.ts";
 import type { GrokAcpRuntimeInput } from "./GrokAcpSupport.ts";
 
@@ -55,11 +56,8 @@ export function makeCustomAcpRuntime(config: AcpSettings, input: GrokAcpRuntimeI
       ...runtime,
       setSessionModel: (modelId: string) =>
         Effect.gen(function* () {
-          const options = yield* runtime.getConfigOptions;
-          const model = options.find(
-            (option) => option.id === "model" || option.category === "model",
-          );
-          if (model?.type === "select") {
+          const model = findModelConfigOption(yield* runtime.getConfigOptions);
+          if (model) {
             yield* runtime.setConfigOption(model.id, modelId);
             return {};
           }
@@ -69,15 +67,24 @@ export function makeCustomAcpRuntime(config: AcpSettings, input: GrokAcpRuntimeI
   });
 }
 
-/** A configured model must come from this session's native config options, never another instance. */
+/**
+ * A configured model must come from this session's native model selector, never
+ * another instance. The model config option wins; agents without one list
+ * their models in the session model state, which `session/set_model` selects.
+ */
 export function customAcpModels(
   options: ReadonlyArray<SessionConfigOption>,
+  modelState?: SessionModelState | null,
 ): ReadonlyArray<ServerProviderModel> {
-  const model = options.find((option) => option.id === "model" || option.category === "model");
-  if (model?.type !== "select") return [];
+  const model = findModelConfigOption(options);
+  const choices = model
+    ? model.options.flatMap((option) => ("value" in option ? [option] : option.options))
+    : (modelState?.availableModels ?? []).map((choice) => ({
+        value: choice.modelId,
+        name: choice.name,
+      }));
   const seen = new Set<string>();
-  return model.options
-    .flatMap((option) => ("value" in option ? [option] : option.options))
+  return choices
     .filter((choice) => {
       if (!choice.value.trim() || choice.value.length > 4096 || seen.has(choice.value))
         return false;

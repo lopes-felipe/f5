@@ -157,6 +157,36 @@ describe("decider scratch project", () => {
     });
   });
 
+  it("rejects Git metadata updates while allowing title, model and null/omitted Git fields", async () => {
+    const model = await apply(
+      await withScratchProject(),
+      threadCreate(SCRATCH_ID, {
+        scratchPath: `${ROOT}/2026-10-22-hello-0f9e8d7c`,
+      }),
+    );
+    const update = {
+      type: "thread.meta.update" as const,
+      commandId: CommandId.makeUnsafe("update"),
+      threadId: THREAD_ID,
+    };
+    await expect(decide(model, { ...update, branch: "main" })).rejects.toThrow(
+      "cannot have a branch or worktree",
+    );
+    await expect(decide(model, { ...update, worktreePath: "/wt" })).rejects.toThrow(
+      "cannot have a branch or worktree",
+    );
+    await expect(
+      decide(model, { ...update, title: "Research", model: "gpt-5.5" }),
+    ).resolves.toMatchObject({
+      type: "thread.meta-updated",
+    });
+    await expect(
+      decide(model, { ...update, branch: null, worktreePath: null }),
+    ).resolves.toMatchObject({
+      type: "thread.meta-updated",
+    });
+  });
+
   it("keeps scratch folders off threads of ordinary projects", async () => {
     const standard = ProjectId.makeUnsafe("standard");
     const model = await apply(createEmptyReadModel(NOW), {

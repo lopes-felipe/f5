@@ -4,6 +4,7 @@ import {
   SCHEDULED_RUN_EVENT_TYPES,
 } from "../../scheduledTasks/projector.ts";
 import { retainNativeTurnRows } from "@t3tools/shared/nativeHistoryReconciliation";
+import { effectiveThreadReferenceIds } from "@t3tools/shared/threadReferences";
 import { readSubmissionSource } from "../../provider/submissionProvenance.ts";
 import { makeStreamingProjectionUpdates } from "../../persistence/streamingProjectionUpdates.ts";
 import { PerformanceStageProbe, measurePerformanceStage } from "../../observability/Metrics.ts";
@@ -84,6 +85,8 @@ import { truncateMiddleByBytes } from "../outputTruncation.ts";
 import { canRepairErroredTurnFromSuccessfulSettlement } from "../turnStateTransitions.ts";
 import { revertTaskToolState } from "@t3tools/shared/claudeTaskToolProjection";
 import { REASONING_STATUS_ACTIVITY_KIND } from "@t3tools/shared/orchestrationActivityPayload";
+import { readTurnAssistantMessages } from "../turnAssistantMessage.ts";
+import { MessageId } from "@t3tools/contracts";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
   projects: "projection.projects",
@@ -1465,6 +1468,19 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             yield* sql`INSERT OR IGNORE INTO thread_message_authorship(message_id,thread_id,source) SELECT m.message_id,m.thread_id,${source ?? "human"} FROM projection_thread_messages m JOIN projection_threads t ON t.thread_id=m.thread_id WHERE m.message_id=${event.payload.messageId} AND m.thread_id=${event.payload.threadId}`.pipe(
               Effect.mapError(toPersistenceSqlError("ProjectionPipeline.authorship:write")),
             );
+            // Only an explicit human stamp lets the agent read the threads this message
+            // references; automation and unstamped submissions never grant access.
+            if (source === "human") {
+              for (const targetThreadId of effectiveThreadReferenceIds(nextMessage.text, {
+                exclude: event.payload.threadId,
+              })) {
+                yield* sql`INSERT OR IGNORE INTO thread_reference_grants(thread_id,target_thread_id,message_id,created_at) SELECT m.thread_id,${targetThreadId},m.message_id,${event.payload.createdAt} FROM projection_thread_messages m JOIN projection_threads t ON t.thread_id=m.thread_id WHERE m.message_id=${event.payload.messageId} AND m.thread_id=${event.payload.threadId}`.pipe(
+                  Effect.mapError(
+                    toPersistenceSqlError("ProjectionPipeline.referenceGrants:write"),
+                  ),
+                );
+              }
+            }
           }
           return;
         }
@@ -1704,6 +1720,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             ? {
                 ...existingRow,
                 cwd: event.payload.commandExecution.cwd ?? existingRow.cwd,
+                description: event.payload.commandExecution.description ?? existingRow.description,
                 title: event.payload.commandExecution.title,
                 status: event.payload.commandExecution.status,
                 detail: event.payload.commandExecution.detail,
@@ -1720,6 +1737,9 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
                 command: event.payload.commandExecution.command,
                 ...(event.payload.commandExecution.cwd
                   ? { cwd: event.payload.commandExecution.cwd }
+                  : {}),
+                ...(event.payload.commandExecution.description
+                  ? { description: event.payload.commandExecution.description }
                   : {}),
                 title: event.payload.commandExecution.title,
                 status: event.payload.commandExecution.status,
@@ -2287,11 +2307,18 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             turnId: event.payload.turnId,
             checkpointTurnCount: event.payload.checkpointTurnCount,
           });
+          const [reply] = yield* readTurnAssistantMessages(sql, [event.payload]).pipe(
+            Effect.mapError(toPersistenceSqlError("ProjectionPipeline.checkpointReply")),
+          );
+          const assistantMessageId = reply
+            ? MessageId.makeUnsafe(reply.id)
+            : (Option.getOrNull(existingTurn)?.assistantMessageId ??
+              event.payload.assistantMessageId);
 
           if (Option.isSome(existingTurn)) {
             yield* projectionTurnRepository.upsertByTurnId({
               ...existingTurn.value,
-              assistantMessageId: event.payload.assistantMessageId,
+              assistantMessageId,
               state:
                 existingTurn.value.state === "running" || existingTurn.value.state === "interrupted"
                   ? existingTurn.value.state
@@ -2313,7 +2340,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             turnId: event.payload.turnId,
             threadId: event.payload.threadId,
             pendingMessageId: null,
-            assistantMessageId: event.payload.assistantMessageId,
+            assistantMessageId,
             state: nextState,
             requestedAt: event.payload.completedAt,
             startedAt: event.payload.completedAt,

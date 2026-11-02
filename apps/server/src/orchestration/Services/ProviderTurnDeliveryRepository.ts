@@ -39,6 +39,36 @@ export const DeliveryAcceptanceReceipt = Schema.Struct({
   acceptedAt: Schema.String,
 });
 
+/**
+ * The prepared cross-provider handoff of one delivery. Retries reuse it
+ * byte-for-byte; `consumed` clears the matching pending marker atomically with
+ * the acceptance receipt, while `deferred` (a native command, or no history
+ * fitting the request) keeps it for a later turn. `block` is cleared to a
+ * manifest once the delivery settles and falls out of retention.
+ */
+export const DeliveryHandoff = Schema.Struct({
+  id: Schema.String,
+  rendererVersion: Schema.Number,
+  disposition: Schema.Literals(["consumed", "deferred"]),
+  fromProvider: Schema.String,
+  fromInstanceId: Schema.String,
+  fromModel: Schema.NullOr(Schema.String),
+  toProvider: Schema.String,
+  toInstanceId: Schema.String,
+  toModel: Schema.NullOr(Schema.String),
+  requestedMode: Schema.Literals(["full", "delta"]),
+  effectiveMode: Schema.Literals(["full", "delta"]),
+  messageIds: Schema.Array(Schema.String),
+  includedCount: Schema.Number,
+  omittedCount: Schema.Number,
+  summaryIncluded: Schema.Boolean,
+  block: Schema.NullOr(Schema.String),
+});
+export type DeliveryHandoff = typeof DeliveryHandoff.Type;
+
+/** Settled deliveries per thread whose rendered handoff text is retained. */
+export const DELIVERY_HANDOFF_BODY_RETENTION = 20;
+
 export const ProviderTurnDelivery = Schema.Struct({
   deliveryId: CommandId,
   threadId: ThreadId,
@@ -51,6 +81,7 @@ export const ProviderTurnDelivery = Schema.Struct({
   acceptanceReceipt: Schema.optional(Schema.NullOr(DeliveryAcceptanceReceipt)),
   attemptId: Schema.optional(Schema.NullOr(Schema.String)),
   historyEvidence: Schema.optional(Schema.NullOr(DeliveryHistoryEvidence)),
+  handoff: Schema.optional(Schema.NullOr(DeliveryHandoff)),
   event: OrchestrationEvent,
   errorCode: Schema.NullOr(Schema.String),
   errorDetail: Schema.NullOr(Schema.String),
@@ -112,6 +143,19 @@ export interface ProviderTurnDeliveryRepositoryShape {
     readonly preSendTurnIds: ReadonlyArray<TurnId>;
     readonly historyEvidence: typeof DeliveryHistoryEvidence.Type | null;
   }) => Effect.Effect<boolean, ProviderTurnDeliveryRepositoryError>;
+  /**
+   * Stores the prepared handoff once per delivery, fenced to the claiming
+   * attempt. Returns the stored payload: the new one, or one an earlier attempt
+   * of the same delivery already wrote. Null when the attempt no longer owns it.
+   * `replace` overwrites an earlier attempt's payload that is no longer safe to
+   * send; only an attempt that owns dispatch can, and nothing was accepted yet.
+   */
+  readonly recordHandoff: (input: {
+    readonly deliveryId: CommandId;
+    readonly attemptId: string;
+    readonly handoff: DeliveryHandoff;
+    readonly replace?: boolean;
+  }) => Effect.Effect<DeliveryHandoff | null, ProviderTurnDeliveryRepositoryError>;
   readonly claim: (
     deliveryId: CommandId,
     preSendTurnIds: ReadonlyArray<TurnId>,

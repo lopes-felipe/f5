@@ -5,6 +5,7 @@ import { ThreadPrLinks } from "../prHub/ThreadPrLinks";
 import {
   type EditorId,
   type ProjectId,
+  type ProjectKind,
   type ProjectScript,
   type ResolvedKeybindingsConfig,
   type ThreadId,
@@ -60,6 +61,7 @@ interface ChatHeaderProps {
   nativeGoalSummary?: string | undefined;
   scheduledOrigin?: import("@t3tools/contracts").ScheduledOrigin | null | undefined;
   activeProjectId?: ProjectId | undefined;
+  activeProjectKind?: ProjectKind | undefined;
   activeProjectIcon?: Project["icon"] | undefined;
   activeProjectName: string | undefined;
   onNewThreadInProject?: (() => void) | undefined;
@@ -131,6 +133,7 @@ export const ChatHeader = memo(function ChatHeader({
   nativeGoalSummary,
   scheduledOrigin,
   activeProjectId,
+  activeProjectKind,
   activeProjectIcon,
   activeProjectName,
   onNewThreadInProject,
@@ -190,7 +193,10 @@ export const ChatHeader = memo(function ChatHeader({
       shortcutLabel: null,
       state: filesState,
       disabled: !workspaceFilesAvailable,
-      disabledReason: "Workspace files are unavailable until this thread has an active project.",
+      disabledReason:
+        activeProjectKind === "scratch"
+          ? "Workspace files are available after the first message creates the thread's folder."
+          : "Workspace files are unavailable because the project's folder is missing.",
       onToggle: onToggleFiles,
     },
     {
@@ -243,7 +249,10 @@ export const ChatHeader = memo(function ChatHeader({
     shortcutLabel: terminalToggleShortcutLabel,
     state: terminalOpen ? "active" : "closed",
     disabled: !terminalAvailable,
-    disabledReason: "Terminal is unavailable until this thread has an active project.",
+    disabledReason:
+      activeProjectKind === "scratch"
+        ? "Terminal is available after the first message creates the thread's folder."
+        : "Terminal is unavailable because the project's folder is missing.",
     onToggle: onToggleTerminal,
   };
 
@@ -269,6 +278,7 @@ export const ChatHeader = memo(function ChatHeader({
               {activeProjectId ? (
                 <ProjectIcon
                   projectId={activeProjectId}
+                  kind={activeProjectKind}
                   name={activeProjectName}
                   icon={activeProjectIcon}
                   className="size-4 shrink-0"
@@ -292,6 +302,7 @@ export const ChatHeader = memo(function ChatHeader({
             {activeProjectId ? (
               <ProjectIcon
                 projectId={activeProjectId}
+                kind={activeProjectKind}
                 name={activeProjectName}
                 icon={activeProjectIcon}
                 className="size-4 shrink-0"

@@ -19,6 +19,10 @@ import { makeHtmlPreviewBroker } from "./htmlRender/HtmlPreviewBroker.ts";
 import { makeHtmlRenderRuntime } from "./htmlRender/HtmlRenderRuntime.ts";
 import { ThreadMcpBroker } from "./mcp/threadMcpTools.ts";
 import { makeThreadToolHandler } from "./mcp/threadToolRuntime.ts";
+import { ProjectionThreadMessageRepositoryLive } from "./persistence/Layers/ProjectionThreadMessages.ts";
+import { ProjectionThreadProposedPlanRepositoryLive } from "./persistence/Layers/ProjectionThreadProposedPlans.ts";
+import { ProjectionThreadMessageRepository } from "./persistence/Services/ProjectionThreadMessages.ts";
+import { ProjectionThreadProposedPlanRepository } from "./persistence/Services/ProjectionThreadProposedPlans.ts";
 import { PrHubFederation } from "./prHub/Layers/PrHubFederation.ts";
 import { PrHubReviewGuideService } from "./prHub/Layers/PrHubReviewGuideService.ts";
 import { publicOtlpConfiguration, resolveOtlpConfiguration } from "@t3tools/shared/observability";
@@ -227,6 +231,7 @@ import {
   Ref,
   Result,
   Schema,
+  Semaphore,
   Scope,
   ServiceMap,
   Stream,
@@ -365,7 +370,10 @@ import {
 import { isPrivateHttpPath, makeServerAuth } from "./serverAuth.ts";
 import { getReviewPreviewDiff } from "./git/ReviewDiffService.ts";
 import { decodeJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
-import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
+import {
+  getMessageTextLengthIssue,
+  getThreadReferenceLimitIssue,
+} from "@t3tools/shared/providerInput";
 import { CodexControlClientRegistry } from "./codex/CodexControlClientRegistry.ts";
 import { CodexMcpEventBus } from "./codex/CodexMcpEventBus.ts";
 import { CodexMcpSyncService } from "./codex/CodexMcpSyncService.ts";
@@ -1122,6 +1130,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   yield* startScheduledBackups(backupService);
 
   const clients = yield* Ref.make(new Set<WebSocket>());
+  const scratchProjectSemaphore = yield* Semaphore.make(1);
   const logger = createLogger("ws");
   const readiness = yield* makeServerReadiness;
   const shouldLogThreadOpenTimings =
@@ -1523,7 +1532,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       input.command as typeof input.command & {
         readonly dispatchSource?: unknown;
       };
-    const inputLengthIssue = getProviderTurnInputLengthIssue(turnStartCommand.message.text);
+    const inputLengthIssue =
+      getMessageTextLengthIssue(turnStartCommand.message.text) ??
+      getThreadReferenceLimitIssue(turnStartCommand.message.text);
     if (inputLengthIssue) {
       return yield* new RouteRequestError({
         message: inputLengthIssue.message,
@@ -2946,9 +2957,24 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           attachmentsDir: serverConfig.attachmentsDir,
           preview: htmlPreviewBroker,
         });
+        const threadContextRepositories = yield* Effect.gen(function* () {
+          return {
+            messages: yield* ProjectionThreadMessageRepository,
+            plans: yield* ProjectionThreadProposedPlanRepository,
+          };
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              ProjectionThreadMessageRepositoryLive,
+              ProjectionThreadProposedPlanRepositoryLive,
+            ),
+          ),
+        );
         yield* threadMcpBroker.value
           .register(
             makeThreadToolHandler({
+              ...threadContextRepositories,
+              sql,
               engine: orchestrationEngine,
               federation: threadMcpFederation.value,
               guides: prHubReviewGuide,
@@ -3057,6 +3083,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         ),
       );
       yield* Scope.provide(worktreeSetup.startup, subscriptionsScope);
+      // Clears a scheduled compaction's request now, and runs it once startup is ready.
+      yield* Scope.provide(
+        storageMaintenance.startScheduledCompaction(
+          Deferred.await(orchestrationRuntime).pipe(Effect.ignore),
+        ),
+        subscriptionsScope,
+      );
       yield* Scope.provide(orchestrationReactor.start, subscriptionsScope);
       yield* Scope.provide(providerSessionReaper.start(), subscriptionsScope);
       let lastStorageRevision = -1;
@@ -3098,6 +3131,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         yield* Scope.provide(
           diskSpaceMonitor.value.start({
             estimateReclaimable: storageMaintenance.summarizeReclaimable,
+            pendingCompaction: storageMaintenance.getPendingCompaction,
           }),
           subscriptionsScope,
         );
@@ -5045,54 +5079,58 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case WS_METHODS.projectsCloneList:
         return projectClones.list();
       case WS_METHODS.projectsEnsureScratch: {
-        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
-        const workspaceRoot = yield* Effect.tryPromise({
-          try: () => prepareScratchRoot(serverConfig.stateDir),
-          catch: (cause) =>
-            new RouteRequestError({
-              message:
-                cause instanceof Error
-                  ? cause.message
-                  : "Could not create the folder for threads without a project.",
-            }),
-        });
-        const findLive = orchestrationEngine
-          .getReadModel()
-          .pipe(
-            Effect.map((model) =>
-              model.projects.find((project) => isScratchProject(project) && !project.deletedAt),
-            ),
-          );
-        const existing = yield* findLive;
-        if (existing) return { projectId: existing.id };
-        // The id and command id depend only on the profile, so racing or retried creates
-        // converge on one project: a duplicate either replays the receipt or is refused.
-        const projectId = ProjectId.makeUnsafe(scratchProjectIdFor(activeProfile.id));
-        yield* orchestrationEngine
-          .dispatch({
-            type: "project.scratch.create",
-            commandId: CommandId.makeUnsafe(`scratch-project-create:${projectId}`),
-            projectId,
-            workspaceRoot,
-            createdAt: new Date().toISOString(),
-          })
-          .pipe(
-            Effect.catch((error) =>
-              findLive.pipe(
-                Effect.flatMap((raced) =>
-                  raced
-                    ? Effect.void
-                    : Effect.fail(new RouteRequestError({ message: String(error) })),
+        return yield* scratchProjectSemaphore.withPermits(1)(
+          Effect.gen(function* () {
+            const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+            const findLive = orchestrationEngine
+              .getReadModel()
+              .pipe(
+                Effect.map((model) =>
+                  model.projects.find((project) => isScratchProject(project) && !project.deletedAt),
                 ),
-              ),
-            ),
-          );
-        const created = yield* findLive;
-        if (!created)
-          return yield* new RouteRequestError({
-            message: "Could not create the home for threads without a project.",
-          });
-        return { projectId: created.id };
+              );
+            const existing = yield* findLive;
+            if (existing) return { projectId: existing.id };
+            const workspaceRoot = yield* Effect.tryPromise({
+              try: () => prepareScratchRoot(serverConfig.stateDir),
+              catch: (cause) =>
+                new RouteRequestError({
+                  message:
+                    cause instanceof Error
+                      ? cause.message
+                      : "Could not create the folder for threads without a project.",
+                }),
+            });
+            // The id and command id depend only on the profile, so racing or retried creates
+            // converge on one project: a duplicate either replays the receipt or is refused.
+            const projectId = ProjectId.makeUnsafe(scratchProjectIdFor(activeProfile.id));
+            yield* orchestrationEngine
+              .dispatch({
+                type: "project.scratch.create",
+                commandId: CommandId.makeUnsafe(`scratch-project-create:${projectId}`),
+                projectId,
+                workspaceRoot,
+                createdAt: new Date().toISOString(),
+              })
+              .pipe(
+                Effect.catch((error) =>
+                  findLive.pipe(
+                    Effect.flatMap((raced) =>
+                      raced
+                        ? Effect.void
+                        : Effect.fail(new RouteRequestError({ message: String(error) })),
+                    ),
+                  ),
+                ),
+              );
+            const created = yield* findLive;
+            if (!created)
+              return yield* new RouteRequestError({
+                message: "Could not create the home for threads without a project.",
+              });
+            return { projectId: created.id };
+          }),
+        );
       }
       case WS_METHODS.projectsCreateNew: {
         const body = stripRequestTag(request.body);
@@ -6746,6 +6784,16 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const body = stripRequestTag(request.body);
         yield* storageMaintenance.cancel(body.operationId);
         return undefined;
+      }
+
+      case WS_METHODS.storageScheduleCompaction: {
+        const { storageMaintenance } = yield* awaitOrchestrationRuntimeForRoute;
+        const body = stripRequestTag(request.body);
+        const result = yield* storageMaintenance
+          .scheduleCompaction(body.when)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+        if (diskSpaceMonitor._tag === "Some") yield* diskSpaceMonitor.value.noteStorageChanged;
+        return result;
       }
 
       case WS_METHODS.storageAutomationDryRun: {

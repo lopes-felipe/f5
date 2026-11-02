@@ -157,6 +157,34 @@ describe("custom local ACP", () => {
       await rm(f.cwd, { recursive: true, force: true });
     }
   });
+  it("lists models from the option the runtime selects, else from session model state", () => {
+    const modelState = {
+      currentModelId: "state-a",
+      availableModels: [
+        { modelId: "state-a", name: "State A" },
+        { modelId: "state-a", name: "Duplicate" },
+        { modelId: " ", name: "Blank" },
+      ],
+    };
+    const select = (id: string, value: string, category?: string) => ({
+      id,
+      name: id,
+      ...(category ? { category } : {}),
+      type: "select" as const,
+      currentValue: value,
+      options: [{ value, name: value }],
+    });
+    expect(
+      customAcpModels(
+        [select("model", "uncategorized"), select("llm", "categorized", "model")],
+        modelState,
+      ).map((model) => model.slug),
+    ).toEqual(["categorized"]);
+    expect(customAcpModels([select("mode", "ask", "mode")], modelState)).toMatchObject([
+      { slug: "state-a", name: "State A" },
+    ]);
+    expect(customAcpModels([], null)).toEqual([]);
+  });
   it("never launches a disabled agent", async () => {
     const config = Schema.decodeUnknownSync(AcpSettings)({ command: "/unavailable/agent" });
     const result = await run(checkCustomAcpProvider(config, {}, false, []));

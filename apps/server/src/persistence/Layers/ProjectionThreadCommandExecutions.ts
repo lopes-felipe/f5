@@ -23,6 +23,7 @@ const ProjectionThreadCommandExecutionDbRowSchema = Schema.Struct({
   providerItemId: ProjectionThreadCommandExecution.fields.providerItemId,
   command: ProjectionThreadCommandExecution.fields.command,
   cwd: Schema.NullOr(TrimmedNonEmptyString),
+  description: Schema.NullOr(TrimmedNonEmptyString),
   title: ProjectionThreadCommandExecution.fields.title,
   status: ProjectionThreadCommandExecution.fields.status,
   detail: ProjectionThreadCommandExecution.fields.detail,
@@ -45,6 +46,7 @@ export const ProjectionThreadCommandExecutionSummaryDbRowSchema = Schema.Struct(
   providerItemId: ProjectionThreadCommandExecutionSummary.fields.providerItemId,
   command: ProjectionThreadCommandExecutionSummary.fields.command,
   cwd: Schema.NullOr(TrimmedNonEmptyString),
+  description: Schema.NullOr(TrimmedNonEmptyString),
   title: ProjectionThreadCommandExecutionSummary.fields.title,
   status: ProjectionThreadCommandExecutionSummary.fields.status,
   detail: ProjectionThreadCommandExecutionSummary.fields.detail,
@@ -59,10 +61,11 @@ type ProjectionThreadCommandExecutionSummaryDbRow =
   typeof ProjectionThreadCommandExecutionSummaryDbRowSchema.Type;
 
 function fromDbRow(row: ProjectionThreadCommandExecutionDbRow): ProjectionThreadCommandExecution {
-  const { cwd, ...rest } = row;
+  const { cwd, description, ...rest } = row;
   return {
     ...rest,
     ...(cwd !== null ? { cwd } : {}),
+    ...(description !== null ? { description } : {}),
     outputTruncated: row.outputTruncated === 1,
   };
 }
@@ -70,10 +73,11 @@ function fromDbRow(row: ProjectionThreadCommandExecutionDbRow): ProjectionThread
 function fromSummaryDbRow(
   row: ProjectionThreadCommandExecutionSummaryDbRow,
 ): ProjectionThreadCommandExecutionSummary {
-  const { cwd, ...rest } = row;
+  const { cwd, description, ...rest } = row;
   return {
     ...rest,
     ...(cwd !== null ? { cwd } : {}),
+    ...(description !== null ? { description } : {}),
   };
 }
 
@@ -98,6 +102,7 @@ const makeProjectionThreadCommandExecutionRepository = Effect.gen(function* () {
           provider_item_id,
           command,
           cwd,
+          description,
           title,
           status,
           detail,
@@ -117,6 +122,7 @@ const makeProjectionThreadCommandExecutionRepository = Effect.gen(function* () {
           ${row.providerItemId},
           ${row.command},
           ${row.cwd ?? null},
+          ${row.description ?? null},
           ${row.title},
           ${row.status},
           ${row.detail},
@@ -136,6 +142,7 @@ const makeProjectionThreadCommandExecutionRepository = Effect.gen(function* () {
           provider_item_id = excluded.provider_item_id,
           command = excluded.command,
           cwd = excluded.cwd,
+          description = excluded.description,
           title = excluded.title,
           status = excluded.status,
           detail = excluded.detail,
@@ -162,6 +169,7 @@ const makeProjectionThreadCommandExecutionRepository = Effect.gen(function* () {
           provider_item_id AS "providerItemId",
           command,
           cwd,
+          description,
           title,
           status,
           detail,
@@ -191,6 +199,7 @@ const makeProjectionThreadCommandExecutionRepository = Effect.gen(function* () {
           provider_item_id AS "providerItemId",
           command,
           cwd,
+          description,
           title,
           status,
           detail,
@@ -218,6 +227,7 @@ const makeProjectionThreadCommandExecutionRepository = Effect.gen(function* () {
           provider_item_id AS "providerItemId",
           command,
           cwd,
+          description,
           title,
           status,
           detail,

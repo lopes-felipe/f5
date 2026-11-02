@@ -234,8 +234,39 @@ interface SearchToolConfig {
   readonly rejectFlags?: ReadonlySet<string>;
 }
 
+export type CommandExecutionBackgroundStatus = "running" | "completed" | "failed" | "stopped";
+
+export interface ParsedCommandExecutionTitle {
+  readonly baseTitle: string;
+  readonly backgroundStatus: CommandExecutionBackgroundStatus | null;
+}
+
+// Claude retitles backgrounded tools as "<title> — <status>" (see the Claude
+// adapter's backgroundToolTitle); the suffix is the only stored background marker.
+const BACKGROUND_TITLE_PATTERN = /^(.*\S)\s+—\s+(running|completed|failed|stopped)$/s;
+
+export function parseCommandExecutionTitle(title: string): ParsedCommandExecutionTitle {
+  const trimmed = title.trim();
+  const match = BACKGROUND_TITLE_PATTERN.exec(trimmed);
+  if (!match?.[1] || !match[2]) {
+    return { baseTitle: trimmed, backgroundStatus: null };
+  }
+  return {
+    baseTitle: match[1],
+    backgroundStatus: match[2] as CommandExecutionBackgroundStatus,
+  };
+}
+
+export function commandExecutionBackgroundStatus(
+  execution: Pick<ComparableCommandExecutionLike, "title">,
+): CommandExecutionBackgroundStatus | null {
+  return execution.title ? parseCommandExecutionTitle(execution.title).backgroundStatus : null;
+}
+
 export function isGenericCommandTitle(title: string): boolean {
-  return /^(?:ran|running) command$|^command run$/i.test(title.trim());
+  return /^(?:ran|running) command$|^command run$/i.test(
+    parseCommandExecutionTitle(title).baseTitle,
+  );
 }
 
 function shellBasename(command: string): string {
@@ -441,13 +472,16 @@ export function resolveCommandExecutionSummaryText(
   execution: Pick<ComparableCommandExecutionLike, "command" | "detail" | "title">,
 ): string {
   const displayCommand = resolveCommandExecutionDisplayCommand(execution);
-  const searchSummary = deriveSearchCommandSummary(displayCommand);
-  return execution.title &&
-    execution.title !== execution.command &&
-    execution.title !== displayCommand &&
-    !isGenericCommandTitle(execution.title)
-    ? execution.title
-    : (searchSummary ?? displayCommand);
+  const baseTitle = execution.title ? parseCommandExecutionTitle(execution.title).baseTitle : null;
+  if (
+    baseTitle &&
+    baseTitle !== execution.command &&
+    baseTitle !== displayCommand &&
+    !isGenericCommandTitle(baseTitle)
+  ) {
+    return baseTitle;
+  }
+  return deriveSearchCommandSummary(displayCommand) ?? displayCommand;
 }
 
 function parseSedFileReadCommand(command: string): FileReadCommandMatch | null {

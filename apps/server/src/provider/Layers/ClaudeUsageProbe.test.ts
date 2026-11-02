@@ -11,10 +11,72 @@ import { it as effectIt } from "@effect/vitest";
 import { TestClock } from "effect/testing";
 import { probeClaudeAccountUsage, withClaudeProbeQuery } from "./ClaudeProvider.ts";
 import { FakeClaudeCodeProcess, respondToInitializeRequest } from "./ClaudeSdk.testUtils.ts";
+import { ACCOUNT_ATTEMPT_TTL_MS } from "../../usage/accountUsage.ts";
 
 const settings = Schema.decodeSync(ClaudeSettings)({});
 const run = <A, E>(effect: Effect.Effect<A, E, import("effect").Path.Path>) =>
   Effect.runPromise(effect.pipe(Effect.provide(NodePath.layer)));
+
+effectIt.effect(
+  "reuses capabilities for one failed refresh, retries immediately and fences account changes",
+  () =>
+    Effect.gen(function* () {
+      const directory = mkdtempSync(join(tmpdir(), "f5-claude-probe-fallback-"));
+      const statePath = join(directory, ".claude.json");
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          unlinkSync(statePath);
+          rmdirSync(directory);
+        }),
+      );
+      const setOrganization = (id: string) =>
+        writeFileSync(statePath, JSON.stringify({ oauthAccount: { organizationUuid: id } }));
+      setOrganization("org-a");
+      let fail = false;
+      const createQuery = vi.fn<typeof query>(
+        () =>
+          ({
+            initializationResult: async () => {
+              if (fail) throw new Error("initialization failed");
+              return {
+                commands: [{ name: "review", description: "Review", argumentHint: "" }],
+                account: { email: "account@example.com", subscriptionType: "max" },
+              };
+            },
+          }) as unknown as Query,
+      );
+      const probes = yield* makeClaudeInstanceProbes(
+        settings,
+        {
+          ...process.env,
+          CLAUDE_CONFIG_DIR: directory,
+        },
+        { cwd: process.cwd(), createQuery },
+      );
+      const first = yield* probes.capabilities;
+      expect(first?.email).toBe("account@example.com");
+      expect(first?.slashCommands[0]?.name).toBe("review");
+      yield* TestClock.adjust(ACCOUNT_ATTEMPT_TTL_MS + 1);
+      fail = true;
+      expect(yield* probes.capabilities).toEqual(first);
+      expect(createQuery).toHaveBeenCalledTimes(2);
+      expect(yield* probes.capabilities).toBeUndefined();
+      expect(createQuery).toHaveBeenCalledTimes(3);
+      fail = false;
+      expect((yield* probes.capabilities)?.email).toBe("account@example.com");
+      expect(createQuery).toHaveBeenCalledTimes(4);
+      yield* probes.capabilities;
+      expect(createQuery).toHaveBeenCalledTimes(4);
+      yield* TestClock.adjust(ACCOUNT_ATTEMPT_TTL_MS + 1);
+      setOrganization("org-b");
+      fail = true;
+      expect(yield* probes.capabilities).toBeUndefined();
+      expect(createQuery).toHaveBeenCalledTimes(5);
+      fail = false;
+      expect((yield* probes.capabilities)?.email).toBe("account@example.com");
+      expect(createQuery).toHaveBeenCalledTimes(6);
+    }).pipe(Effect.scoped, Effect.provide(NodePath.layer)),
+);
 
 describe("Claude account probe", () => {
   it("uses real SDK initialization and get_usage without writing a prompt; aborts once", async () => {

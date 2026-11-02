@@ -866,6 +866,8 @@ export function normalizeClaudeModelOptions(
   return Object.keys(nextOptions).length > 0 ? nextOptions : undefined;
 }
 
+export const CLAUDE_ULTRATHINK_PROMPT_PREFIX = "Ultrathink:";
+
 export function applyClaudePromptEffortPrefix(
   text: string,
   effort: ClaudeCodeEffort | null | undefined,
@@ -877,10 +879,10 @@ export function applyClaudePromptEffortPrefix(
   if (effort !== "ultrathink") {
     return trimmed;
   }
-  if (trimmed.startsWith("Ultrathink:")) {
+  if (trimmed.startsWith(CLAUDE_ULTRATHINK_PROMPT_PREFIX)) {
     return trimmed;
   }
-  return `Ultrathink:\n${trimmed}`;
+  return `${CLAUDE_ULTRATHINK_PROMPT_PREFIX}\n${trimmed}`;
 }
 
 /**

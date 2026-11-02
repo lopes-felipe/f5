@@ -163,6 +163,12 @@ export interface ProviderAdapterShape<TError> {
     record: import("@t3tools/contracts").NativeOperationRecord,
   ) => Effect.Effect<{ state: "completed" | "failed" | "indeterminate"; result?: unknown }, TError>;
   readonly renameThread?: (threadId: ThreadId, title: string) => Effect.Effect<void, TError>;
+  /**
+   * Whether `text` would run as a provider-native command (a slash command or
+   * compaction) rather than an ordinary prompt. Context handoffs are never
+   * prepended to native commands. Defaults to "prompt".
+   */
+  readonly classifyTurnInput?: (threadId: ThreadId, text: string) => "prompt" | "native-command";
   readonly previewClaudeFileRewind?: (
     threadId: ThreadId,
     userMessageId: string,

@@ -40,6 +40,11 @@ import { ComposerPendingApprovalActions } from "~/components/chat/ComposerPendin
 import { ComposerPendingApprovalPanel } from "~/components/chat/ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "~/components/chat/ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "~/components/chat/ComposerPlanFollowUpBanner";
+import {
+  ComposerProviderHandoffBanner,
+  ComposerProviderUnavailableBanner,
+  type ProviderHandoffEndpoint,
+} from "~/components/chat/ComposerProviderHandoffBanner";
 import { FileChip } from "~/components/chat/FileChip";
 import type {
   ComposerAttachments,
@@ -70,6 +75,13 @@ export interface ChatComposerProps {
   activeProject: import("~/types").Project | undefined;
   resolvedTheme: "light" | "dark";
   hasComposerHeader: boolean;
+  /** The next send switches provider instances with a context handoff. */
+  pendingProviderHandoff?: {
+    readonly from: ProviderHandoffEndpoint;
+    readonly to: ProviderHandoffEndpoint;
+  } | null;
+  /** The started thread's selected provider cannot take the next send. */
+  unavailableProviderSelection?: { readonly name: string; readonly reason: string } | null;
   isComposerFooterCompact: boolean;
 
   prompt: string;
@@ -144,6 +156,8 @@ export function ChatComposer({
   activeProject,
   resolvedTheme,
   hasComposerHeader,
+  pendingProviderHandoff,
+  unavailableProviderSelection,
   isComposerFooterCompact,
   prompt,
   mentions,
@@ -488,6 +502,20 @@ export function ChatComposer({
                   planTitle={proposedPlanTitle(activeProposedPlan.planMarkdown) ?? null}
                 />
               </div>
+            ) : pendingProviderHandoff ? (
+              <div className="rounded-t-[calc(var(--radius-xl)-1px)] border-b border-border bg-muted/40">
+                <ComposerProviderHandoffBanner
+                  from={pendingProviderHandoff.from}
+                  to={pendingProviderHandoff.to}
+                />
+              </div>
+            ) : unavailableProviderSelection ? (
+              <div className="rounded-t-[calc(var(--radius-xl)-1px)] border-b border-border bg-muted/40">
+                <ComposerProviderUnavailableBanner
+                  name={unavailableProviderSelection.name}
+                  reason={unavailableProviderSelection.reason}
+                />
+              </div>
             ) : null}
 
             {/* Textarea area: never remount the editor when its layout changes. */}
@@ -757,7 +785,9 @@ export function ChatComposer({
                   isComposerApprovalState
                     ? (activePendingApproval?.detail ?? "Resolve this approval request to continue")
                     : activePendingProgress
-                      ? "Type your own answer, or leave this blank to use the selected option"
+                      ? activePendingProgress.activeQuestion?.allowCustomAnswer === false
+                        ? "Choose one of the options above"
+                        : "Type your own answer, or leave this blank to use the selected option"
                       : showPlanFollowUpPrompt && activeProposedPlan
                         ? "Add feedback to refine the plan, or leave this blank to implement it"
                         : revertInProgress
@@ -768,7 +798,12 @@ export function ChatComposer({
                               ? "Ask for follow-up changes or attach files"
                               : "Ask F5 to build, fix, or explain... (@ files, / commands)"
                 }
-                disabled={isConnecting || isComposerApprovalState || isPendingTurnDispatchBlocked}
+                disabled={
+                  isConnecting ||
+                  isComposerApprovalState ||
+                  isPendingTurnDispatchBlocked ||
+                  activePendingProgress?.activeQuestion?.allowCustomAnswer === false
+                }
                 id={composerEditorId}
                 ariaLabel="Message"
                 suggestionListId={composerSuggestionListId}

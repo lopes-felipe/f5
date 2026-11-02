@@ -39,6 +39,15 @@ export class UpstreamGitHubError extends Data.TaggedError("UpstreamGitHubError")
 }
 
 export interface UpstreamGitHub {
+  /** A single GitHub snapshot of the body and commit trailers. Incomplete data cannot prove exclusion. */
+  readonly readPullRequestTopicEvidence: (input: {
+    readonly cwd: string;
+    readonly repo: GitHubRepoRef;
+    readonly number: number;
+  }) => Effect.Effect<
+    { readonly texts: ReadonlyArray<string>; readonly complete: boolean } | null,
+    UpstreamGitHubError
+  >;
   /**
    * Whether the profile has a usable GitHub credential. Fails only with
    * transient errors; a missing or rejected credential is `false`.
@@ -264,6 +273,44 @@ export function makeUpstreamGitHub(cli: GitHubCliShape): UpstreamGitHub {
     });
 
   return {
+    readPullRequestTopicEvidence: (input) =>
+      Effect.gen(function* () {
+        const response = yield* cli
+          .runGraphql({
+            cwd: input.cwd,
+            query:
+              "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { body commits(first: 100) { nodes { commit { message } } pageInfo { hasNextPage } } } } }",
+            variables: { owner: input.repo.owner, name: input.repo.name, number: input.number },
+          })
+          .pipe(Effect.mapError((error) => cliFailure("pull request topic evidence", error)));
+        const pr = (
+          response as {
+            data?: {
+              repository?: {
+                pullRequest?: {
+                  body?: unknown;
+                  commits?: {
+                    nodes?: Array<{ commit?: { message?: unknown } } | null>;
+                    pageInfo?: { hasNextPage?: boolean };
+                  };
+                } | null;
+              };
+            };
+          }
+        )?.data?.repository?.pullRequest;
+        if (!pr || typeof pr.body !== "string") return null;
+        const messages = pr.commits?.nodes?.map((node) => node?.commit?.message) ?? [];
+        return {
+          texts: [
+            pr.body,
+            ...messages.filter((message): message is string => typeof message === "string"),
+          ],
+          complete:
+            Array.isArray(pr.commits?.nodes) &&
+            pr.commits?.pageInfo?.hasNextPage === false &&
+            messages.every((message) => typeof message === "string"),
+        };
+      }),
     available,
     findPullRequest,
     findPullRequestForBranch,

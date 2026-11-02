@@ -37,17 +37,26 @@ type Statfs = (path: string) => Promise<{ bavail: number; bsize: number }>;
 export const sqliteTempDirectory = () =>
   process.env.SQLITE_TMPDIR || process.env.TMPDIR || OS.tmpdir();
 
+export interface VacuumSpaceRequirement {
+  /** Free space a full VACUUM needs on the tighter volume it writes to. */
+  readonly requiredFreeDiskBytes: number;
+  /** Free space on that volume now. */
+  readonly availableDiskBytes: number;
+  /** Why the VACUUM would not fit, or null when it does. */
+  readonly shortfall: string | null;
+}
+
 /**
- * Why a full VACUUM would not fit on disk, or null when it does. Checks the
- * database's volume and the temp directory's, and adds both copies up when
- * they are the same volume.
+ * The free space a full VACUUM needs and has. Checks the database's volume
+ * and the temp directory's, and adds both copies up when they are the same
+ * volume.
  */
-export async function vacuumFreeSpaceShortfall(input: {
+export async function vacuumSpaceRequirement(input: {
   readonly dbPath: string;
   readonly liveBytes: number;
   readonly statfs: Statfs;
   readonly tempDirectory?: string;
-}): Promise<string | null> {
+}): Promise<VacuumSpaceRequirement> {
   const copyBytes = input.liveBytes * VACUUM_COPY_FACTOR;
   const dbDirectory = Path.dirname(input.dbPath);
   const tempDirectory = input.tempDirectory ?? sqliteTempDirectory();
@@ -60,17 +69,37 @@ export async function vacuumFreeSpaceShortfall(input: {
     FS.stat(tempDirectory).catch(() => null),
   ]);
   if (tempStat === null || tempStat.dev === dbStat.dev) {
-    return (await free(dbDirectory)) < copyBytes * 2
-      ? `free disk is below ${VACUUM_COPY_FACTOR * 2}x the database's live data`
-      : null;
+    const available = await free(dbDirectory);
+    return {
+      requiredFreeDiskBytes: Math.ceil(copyBytes * 2),
+      availableDiskBytes: available,
+      shortfall:
+        available < copyBytes * 2
+          ? `free disk is below ${VACUUM_COPY_FACTOR * 2}x the database's live data`
+          : null,
+    };
   }
-  if ((await free(dbDirectory)) < copyBytes) {
-    return `free disk next to the database is below ${VACUUM_COPY_FACTOR}x its live data`;
-  }
-  if ((await free(tempDirectory)) < copyBytes) {
-    return `free space in the temp directory (${tempDirectory}) is below ${VACUUM_COPY_FACTOR}x the database's live data`;
-  }
-  return null;
+  const [dbFree, tempFree] = await Promise.all([free(dbDirectory), free(tempDirectory)]);
+  return {
+    requiredFreeDiskBytes: Math.ceil(copyBytes),
+    availableDiskBytes: Math.min(dbFree, tempFree),
+    shortfall:
+      dbFree < copyBytes
+        ? `free disk next to the database is below ${VACUUM_COPY_FACTOR}x its live data`
+        : tempFree < copyBytes
+          ? `free space in the temp directory (${tempDirectory}) is below ${VACUUM_COPY_FACTOR}x the database's live data`
+          : null,
+  };
+}
+
+/** Why a full VACUUM would not fit on disk, or null when it does. */
+export async function vacuumFreeSpaceShortfall(input: {
+  readonly dbPath: string;
+  readonly liveBytes: number;
+  readonly statfs: Statfs;
+  readonly tempDirectory?: string;
+}): Promise<string | null> {
+  return (await vacuumSpaceRequirement(input)).shortfall;
 }
 
 export interface DatabasePages {

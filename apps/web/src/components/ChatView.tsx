@@ -1,9 +1,16 @@
 import { ThreadFindBar, type ThreadFindMatch } from "./chat/ThreadFindBar";
 import { ThreadFindContext } from "./chat/threadFindContext";
+import { queuedTurnLabel } from "./chat/NextTurnQueuePanel.logic";
 import {
   hasPullRequestReferenceDrag,
   readPullRequestReferenceDrag,
 } from "../lib/pullRequestReference";
+import { hasThreadReferenceDrag, readThreadReferenceDrag } from "../lib/threadReferenceDrag";
+import {
+  formatThreadReference,
+  referencedThreadIds,
+  THREAD_REFERENCE_MAX_PER_MESSAGE,
+} from "@t3tools/shared/threadReferences";
 import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
 import {
   deriveProviderInstanceEntries,
@@ -20,7 +27,13 @@ import { pickPreferredModel } from "../providerModels";
 import { AgentComputerLiveCard } from "./AgentComputerLiveCard";
 import { parseNativeReviewTarget } from "@t3tools/shared/nativeReviewTarget";
 import { isScratchProject } from "@t3tools/shared/scratchProject";
-import { resolveThreadWorkspaceCwd, threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
+import {
+  resolveThreadWorkspaceCwd,
+  threadWorkspaceCwd,
+  threadAttachmentWorkspaceRoots,
+  threadTerminalCommandCwd,
+  threadTerminalRuntimeEnv as workspaceTerminalRuntimeEnv,
+} from "@t3tools/shared/threadWorkspace";
 import { NativeRuntimePanel } from "./chat/NativeRuntimePanel";
 import { NativeRuntimeTray } from "./chat/NativeRuntimeTray";
 import { McpSignInTray } from "./chat/McpSignInTray";
@@ -32,6 +45,7 @@ import { getProviderModelCapabilities } from "../providerModels";
 import { OpenLinkThread } from "../hooks/useOpenLink";
 import { formatUsageLimits } from "../lib/usageLimits";
 import { useServerCapability } from "~/protocolState";
+import { hasHandoffableConversation } from "@t3tools/shared/conversationHandoff";
 import { describeTaskSync, ThreadTasksPanel } from "./chat/composer/ThreadTasksPanel";
 import {
   ComposerStatusStrip,
@@ -45,7 +59,7 @@ import {
   WorktreeStatusChip,
 } from "./chat/composer/StatusStripChips";
 import { isWorktreeSetupChip, summarizeQueueChip } from "./chat/composer/ComposerStatusStrip.logic";
-import { workspaceBasenameMatch } from "../lib/workspaceBasename";
+import { findWorkspaceBasenameFile, isWorkspaceBasenameLookup } from "../lib/workspaceBasename";
 import { resolveChatAssetTarget } from "../lib/chatAssetTarget";
 import { isExternalTextPreviewPath, resolveFilePreviewTarget } from "../lib/filePreviewTarget";
 import { WorkspaceMediaView } from "./WorkspaceMediaView";
@@ -114,7 +128,10 @@ import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
 } from "@t3tools/contracts";
-import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
+import {
+  getMessageTextLengthIssue,
+  getThreadReferenceLimitIssue,
+} from "@t3tools/shared/providerInput";
 import { formatByteSize } from "@t3tools/shared/byteSize";
 import {
   createModelSelection,
@@ -220,7 +237,12 @@ import {
   type PendingUserInputQuestionIndexByRequestId,
 } from "../pendingUserInputDraftStore";
 import { nextRewindDraftReadTicket, useStore } from "../store";
-import { selectThreadIndexById, useThread, useThreadSummaries } from "../threadSelectors";
+import {
+  selectThreadById,
+  selectThreadIndexById,
+  useThread,
+  useThreadSummaries,
+} from "../threadSelectors";
 import { useTestRenderCountProps } from "../lib/testRenderCount";
 import {
   deletePendingTurnDispatchArtifacts,
@@ -301,8 +323,6 @@ import { type NewProjectScriptInput } from "./ProjectScriptsControl";
 import {
   commandForProjectScript,
   nextProjectScriptId,
-  projectScriptCwd,
-  projectScriptRuntimeEnv,
   projectScriptIdFromCommand,
 } from "~/projectScripts";
 import { AppTitlebar } from "./AppTitlebar";
@@ -358,7 +378,7 @@ import {
   MessagesTimeline,
   type MessagesTimelineEmptyState,
 } from "./chat/MessagesTimeline";
-import { promptLinkRepositoryOf } from "./promptLinks/copyPromptLink";
+import { promptLinkRepositoryOf, promptLinkScheme } from "./promptLinks/copyPromptLink";
 import { OlderActivityHistoryControl } from "./chat/OlderActivityHistoryControl";
 import { NewerMessageHistoryControl } from "./chat/NewerMessageHistoryControl";
 
@@ -463,12 +483,17 @@ import {
   revokeComposerImagePreviewUrls,
   revokeUserMessagePreviewUrls,
   resolveThreadModelOptionsSeed,
+  resolveSubmissionIntent,
+  shouldRunNativeReviewShortcut,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { ThreadDetailsLoadingState } from "./StartupLoadingState";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./ui/empty";
 import { WORK_LOG_PAGE_SIZE } from "./chat/workLogConstants";
-import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "../lib/composerSendText";
+import {
+  IMAGE_ONLY_BOOTSTRAP_PROMPT,
+  isImageOnlyBootstrapPrompt,
+} from "@t3tools/shared/composerSendText";
 
 const ATTACHMENT_PREVIEW_HANDOFF_TTL_MS = 5000;
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
@@ -1485,16 +1510,37 @@ export default memo(function ChatView({
     activeThread && activeThread.session === null && !selectedProviderByThreadId
       ? (importedThreadProvider ?? inferProviderForModel(activeThread.model, "codex"))
       : null;
-  const lockedProvider: ProviderKind | null = hasThreadStarted
+  // A server that hands the conversation off lets a started thread switch
+  // providers; an older server keeps the started thread's provider locked.
+  const providerContextHandoff = useServerCapability("provider-context-handoff");
+  const providerLocked = hasThreadStarted && !providerContextHandoff;
+  /** The live session's instance; a send naming another one switches providers. */
+  const sessionInstanceId: ProviderInstanceId | null = activeThread?.session
+    ? (activeThread.session.providerInstanceId ??
+      defaultInstanceIdForDriver(ProviderDriverKind.make(activeThread.session.provider)))
+    : null;
+  const lockedProvider: ProviderKind | null = providerLocked
     ? (sessionProvider ??
       importedThreadProvider ??
       selectedProviderByThreadId ??
+      inferredThreadProvider)
+    : null;
+  // A started thread always requests its own instance, even when the session or
+  // an older thread never recorded one, so nothing falls back to another provider.
+  const startedThreadProvider = hasThreadStarted
+    ? (sessionProvider ??
+      selectedProviderByThreadId ??
+      importedThreadProvider ??
       inferredThreadProvider)
     : null;
   const requestedInstanceId =
     composerDraft.providerInstanceId ??
     activeThread?.session?.providerInstanceId ??
     activeThread?.modelSelection?.instanceId ??
+    sessionInstanceId ??
+    (startedThreadProvider
+      ? defaultInstanceIdForDriver(ProviderDriverKind.make(startedThreadProvider))
+      : undefined) ??
     activeProject?.defaultModelSelection?.instanceId;
   const selectedProviderEntry = useMemo(() => {
     const entries = deriveProviderInstanceEntries(providerStatuses);
@@ -1507,15 +1553,17 @@ export default memo(function ChatView({
     const preferred =
       selectedProviderByThreadId ?? (isServerThread ? inferredThreadProvider : null);
     return resolveComposerProviderInstance(entries, {
-      candidates: [hasThreadStarted ? lockedInstanceId : requestedInstanceId],
+      candidates: [providerLocked ? lockedInstanceId : requestedInstanceId],
       preferredDriver: preferred ? ProviderDriverKind.make(preferred) : undefined,
       lockedDriver: lockedProvider ? ProviderDriverKind.make(lockedProvider) : null,
-      lockedInstanceId: hasThreadStarted ? lockedInstanceId : undefined,
+      lockedInstanceId: providerLocked ? lockedInstanceId : undefined,
+      keepRequested: hasThreadStarted,
     });
   }, [
     providerStatuses,
     requestedInstanceId,
     lockedProvider,
+    providerLocked,
     hasThreadStarted,
     activeThread?.session?.providerInstanceId,
     activeThread?.modelSelection?.instanceId,
@@ -1526,6 +1574,7 @@ export default memo(function ChatView({
   const noProviderAvailable = selectedProviderEntry === undefined;
   const selectedProvider = (selectedProviderEntry?.driverKind ??
     lockedProvider ??
+    (hasThreadStarted ? (sessionProvider ?? importedThreadProvider) : null) ??
     selectedProviderByThreadId ??
     "codex") as ProviderKind;
   const selectedThreadTitleModel = resolveThreadTitleModel(settings);
@@ -1538,7 +1587,7 @@ export default memo(function ChatView({
     [selectedThreadTitleModel],
   );
   const providerSelectionChanged =
-    !hasThreadStarted &&
+    !providerLocked &&
     selectedProviderEntry !== undefined &&
     requestedInstanceId !== undefined &&
     requestedInstanceId !== selectedProviderEntry.instanceId;
@@ -2095,6 +2144,18 @@ export default memo(function ChatView({
     () => withoutSettledRewindFailures(threadActivities, openRewindOperationIds),
     [openRewindOperationIds, threadActivities],
   );
+  const pendingUserInputs = useMemo(
+    () =>
+      activeThread?.pendingUserInputs
+        ? activeThread.pendingUserInputs.map((input) => ({ ...input }))
+        : derivePendingUserInputs(threadActivities),
+    [threadActivities, activeThread?.pendingUserInputs],
+  );
+  // Q&A cards say "waiting" exactly while the composer still asks.
+  const pendingUserInputRequestIds = useMemo(
+    () => new Set<string>(pendingUserInputs.map((input) => input.requestId)),
+    [pendingUserInputs],
+  );
   const workLogEntries = useMemo(
     () =>
       deriveWorkLogEntries(workLogActivities, activeLatestTurn?.turnId ?? undefined, {
@@ -2102,10 +2163,12 @@ export default memo(function ChatView({
         suppressCommandToolLifecycle: showAgentCommandTranscripts && commandExecutions.length > 0,
         mode: workLogMode,
         filter: workLogFilter,
+        pendingUserInputRequestIds,
       }),
     [
       activeLatestTurn?.turnId,
       commandExecutions.length,
+      pendingUserInputRequestIds,
       settings.runtimeWarningVisibility,
       showAgentCommandTranscripts,
       workLogActivities,
@@ -2120,13 +2183,6 @@ export default memo(function ChatView({
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
-  );
-  const pendingUserInputs = useMemo(
-    () =>
-      activeThread?.pendingUserInputs
-        ? activeThread.pendingUserInputs.map((input) => ({ ...input }))
-        : derivePendingUserInputs(threadActivities),
-    [threadActivities, activeThread?.pendingUserInputs],
   );
   // The projected list is complete only once the server thread's details loaded.
   const pendingUserInputsLoaded =
@@ -2406,10 +2462,62 @@ export default memo(function ChatView({
     [activeLatestTurn, activeThread?.session, localDispatchStartedAt],
   );
   const isComposerApprovalState = activePendingApproval !== null;
+  // The next send switches provider instances; the server hands the conversation off.
+  const pendingProviderHandoff = useMemo(() => {
+    if (!providerContextHandoff || !activeThread || noProviderAvailable) return null;
+    if (!hasHandoffableConversation(activeThread.messages)) return null;
+    const fromInstanceId =
+      activeThread.session?.providerInstanceId ??
+      (activeThread.session
+        ? defaultInstanceIdForDriver(ProviderDriverKind.make(activeThread.session.provider))
+        : activeThread.modelSelection?.instanceId);
+    if (!fromInstanceId || fromInstanceId === selectedProviderInstanceId) return null;
+    const entries = deriveProviderInstanceEntries(providerStatuses);
+    const nameOf = (instanceId: ProviderInstanceId) =>
+      entries.find((entry) => entry.instanceId === instanceId)?.displayName ?? instanceId;
+    return {
+      from: { name: nameOf(fromInstanceId), model: activeThread.model ?? null },
+      to: { name: nameOf(selectedProviderInstanceId), model: selectedModel ?? null },
+    };
+  }, [
+    providerContextHandoff,
+    activeThread,
+    noProviderAvailable,
+    selectedProviderInstanceId,
+    selectedModel,
+    providerStatuses,
+  ]);
+  // A started thread keeps an unavailable selection rather than handing the
+  // conversation to a provider nobody picked; say why it cannot send.
+  const unavailableProviderSelection = useMemo(() => {
+    if (!providerContextHandoff || !hasThreadStarted || !noProviderAvailable) return null;
+    if (requestedInstanceId === undefined) return null;
+    const entry = deriveProviderInstanceEntries(providerStatuses).find(
+      (candidate) => candidate.instanceId === requestedInstanceId,
+    );
+    return {
+      name: entry?.displayName ?? requestedInstanceId,
+      reason: !entry
+        ? "It is no longer configured."
+        : !entry.enabled
+          ? "It is turned off in Settings."
+          : (entry.snapshot.unavailableReason ??
+            entry.snapshot.message ??
+            "It is not available right now."),
+    };
+  }, [
+    providerContextHandoff,
+    hasThreadStarted,
+    noProviderAvailable,
+    requestedInstanceId,
+    providerStatuses,
+  ]);
   const hasComposerHeader =
     isComposerApprovalState ||
     blockingUserInputs.length > 0 ||
-    (showPlanFollowUpPrompt && activeProposedPlan !== null);
+    (showPlanFollowUpPrompt && activeProposedPlan !== null) ||
+    pendingProviderHandoff !== null ||
+    unavailableProviderSelection !== null;
   const composerFooterHasWideActions = showPlanFollowUpPrompt || activePendingProgress !== null;
   const lastSyncedPendingInputRef = useRef<{
     requestId: string | null;
@@ -2944,16 +3052,16 @@ export default memo(function ChatView({
     sessionProvider,
   ]);
   const activeProjectCwd = activeProject?.cwd ?? null;
+  const activeProjectKind = activeProject?.kind;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
+  const activeThreadScratchPath = activeThread?.scratchPath ?? null;
   const threadTerminalRuntimeEnv = useMemo(() => {
     if (!activeProjectCwd) return {};
-    return projectScriptRuntimeEnv({
-      project: {
-        cwd: activeProjectCwd,
-      },
-      worktreePath: activeThreadWorktreePath,
-    });
-  }, [activeProjectCwd, activeThreadWorktreePath]);
+    return workspaceTerminalRuntimeEnv(
+      { worktreePath: activeThreadWorktreePath, scratchPath: activeThreadScratchPath },
+      { cwd: activeProjectCwd, kind: activeProjectKind },
+    );
+  }, [activeProjectCwd, activeProjectKind, activeThreadWorktreePath, activeThreadScratchPath]);
   // Default true while loading to avoid toolbar flicker.
   const isGitRepo =
     !isScratchProject(activeProject) &&
@@ -2970,7 +3078,7 @@ export default memo(function ChatView({
       if (!api || !worktreeSetup) return;
       const setupThreadId = worktreeSetup.threadId;
       // Discarding a settled setup deletes the still-empty thread; keep its text.
-      const discardedText =
+      const queuedText =
         action === "cancel" && worktreeSetup.phase !== "running"
           ? (useNextTurnQueueStore
               .getState()
@@ -2978,6 +3086,9 @@ export default memo(function ChatView({
                 (item) => item.itemId === worktreeSetup.itemId,
               )?.command.message.text ?? null)
           : null;
+      // An image-only turn has no words of the user's to keep.
+      const discardedText =
+        queuedText !== null && isImageOnlyBootstrapPrompt(queuedText) ? null : queuedText;
       setWorktreeSetupBusy(true);
       try {
         await api.worktreeSetup[action]({
@@ -3391,12 +3502,11 @@ export default memo(function ChatView({
       if (!api || !activeThreadId || !activeProject || !activeThread || !isServerThread) {
         throw new Error("The thread terminal is unavailable.");
       }
-      const targetCwd =
-        options?.cwd ??
-        projectScriptCwd({
-          project: { cwd: activeProject.cwd },
-          worktreePath: options?.worktreePath ?? activeThread.worktreePath ?? null,
-        });
+      const terminalThread = {
+        worktreePath: options?.worktreePath ?? activeThread.worktreePath,
+        scratchPath: activeThread.scratchPath,
+      };
+      const targetCwd = threadTerminalCommandCwd(terminalThread, activeProject, options?.cwd);
       const baseTerminalId =
         terminalState.activeTerminalId ||
         terminalState.terminalIds[0] ||
@@ -3416,13 +3526,7 @@ export default memo(function ChatView({
       }
       setTerminalFocusRequestId((value) => value + 1);
 
-      const runtimeEnv = projectScriptRuntimeEnv({
-        project: {
-          cwd: activeProject.cwd,
-        },
-        worktreePath: options?.worktreePath ?? activeThread.worktreePath ?? null,
-        ...(options?.env ? { extraEnv: options.env } : {}),
-      });
+      const runtimeEnv = workspaceTerminalRuntimeEnv(terminalThread, activeProject, options?.env);
       const openTerminalInput: Parameters<typeof api.terminal.open>[0] = shouldCreateNewTerminal
         ? {
             threadId: activeThreadId,
@@ -4162,7 +4266,11 @@ export default memo(function ChatView({
           useNextTurnQueueStore.getState().addOptimistic({
             submissionId: input.command.commandId,
             threadId: input.command.threadId,
-            text: deriveDisplayedUserMessageState(input.command.message.text).visibleText,
+            // Uploaded attachments carry no kind, so the composer snapshot says which they were.
+            text: queuedTurnLabel(deriveDisplayedUserMessageState(input.command.message.text), {
+              imageCount: input.rollback.images.filter((image) => image.type === "image").length,
+              fileCount: input.rollback.images.filter((image) => image.type === "file").length,
+            }),
             createdAtMs: Date.now(),
           });
         }
@@ -4172,16 +4280,16 @@ export default memo(function ChatView({
           .submit({
             submissionId: input.command.commandId,
             command: input.command,
-            intent: input.command.bootstrap
-              ? "auto"
-              : input.intent === "send-now"
-                ? "queue-head"
-                : input.intent === "steer" ||
-                    ((input.intent === undefined || input.intent === "auto") &&
-                      phase === "running" &&
-                      settings.followUpBehavior === "steer")
-                  ? "steer"
-                  : (input.intent ?? "auto"),
+            intent: resolveSubmissionIntent({
+              bootstrap: Boolean(input.command.bootstrap),
+              intent: input.intent,
+              running: phase === "running",
+              followUpBehavior: settings.followUpBehavior,
+              switchesProvider:
+                sessionInstanceId !== null &&
+                input.command.modelSelection !== undefined &&
+                input.command.modelSelection.instanceId !== sessionInstanceId,
+            }),
           })
           .then(async (submission) => {
             if (submission.disposition === "queued") {
@@ -4256,6 +4364,7 @@ export default memo(function ChatView({
       clearPendingTurnDispatch,
       recoveryEpoch,
       phase,
+      sessionInstanceId,
       settings.followUpBehavior,
       setStorePendingTurnDispatch,
       setThreadError,
@@ -4797,7 +4906,7 @@ export default memo(function ChatView({
       return;
     }
 
-    const workspaceRoots = [activeThread?.worktreePath, activeProject.cwd];
+    const workspaceRoots = threadAttachmentWorkspaceRoots(activeThread, activeProject);
     const normalizeAbsolutePathForComparison = createCachedAbsolutePathComparisonNormalizer(
       window.desktopBridge?.resolveRealPath ?? identityAbsolutePathNormalizer,
     );
@@ -4902,12 +5011,13 @@ export default memo(function ChatView({
     }
   };
 
+  const hasComposerReferenceDrag = (types: ArrayLike<string>): boolean =>
+    dataTransferHasFileTreeMention(types) ||
+    hasPullRequestReferenceDrag(types) ||
+    hasThreadReferenceDrag(types);
+
   const claimFileTreeMentionDrag = (event: React.DragEvent<HTMLDivElement>): boolean => {
-    if (
-      !dataTransferHasFileTreeMention(event.dataTransfer.types) &&
-      !hasPullRequestReferenceDrag(event.dataTransfer.types)
-    )
-      return false;
+    if (!hasComposerReferenceDrag(event.dataTransfer.types)) return false;
     event.preventDefault();
     event.stopPropagation();
     event.nativeEvent.stopPropagation();
@@ -4928,46 +5038,86 @@ export default memo(function ChatView({
   };
 
   const onComposerFileMentionDragLeaveCapture = (event: React.DragEvent<HTMLDivElement>) => {
-    if (
-      !dataTransferHasFileTreeMention(event.dataTransfer.types) &&
-      !hasPullRequestReferenceDrag(event.dataTransfer.types)
-    )
-      return;
+    if (!hasComposerReferenceDrag(event.dataTransfer.types)) return;
     event.stopPropagation();
     const nextTarget = event.relatedTarget;
     if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
     setIsDragOverComposer(false);
   };
 
+  /** Appends reference links to the end of the prompt, or explains why the composer is blocked. */
+  const appendComposerReferences = (links: ReadonlyArray<string>, errorTitle: string): boolean => {
+    if (
+      links.length === 0 ||
+      isConnecting ||
+      isComposerApprovalState ||
+      isPendingTurnDispatchBlocked ||
+      blockingUserInputs.length > 0
+    ) {
+      toastManager.add({ type: "error", title: errorTitle });
+      return false;
+    }
+    const current = promptRef.current;
+    return applyPromptReplacement(
+      current.length,
+      current.length,
+      `${current && !/\s$/.test(current) ? " " : ""}${links.join(" ")} `,
+    );
+  };
+
   const onComposerFileMentionDropCapture = (event: React.DragEvent<HTMLDivElement>) => {
+    if (hasThreadReferenceDrag(event.dataTransfer.types)) {
+      claimFileTreeMentionDrag(event);
+      dragDepthRef.current = 0;
+      setIsDragOverComposer(false);
+      const errorTitle = "Unable to add the thread reference to chat.";
+      const dragged = readThreadReferenceDrag(event.dataTransfer);
+      if (!dragged) {
+        toastManager.add({ type: "error", title: errorTitle });
+        return;
+      }
+      const existing = referencedThreadIds([promptRef.current]);
+      const candidates = dragged.filter(
+        (item, index) =>
+          item.threadId !== threadId &&
+          !existing.includes(item.threadId) &&
+          dragged.findIndex((other) => other.threadId === item.threadId) === index,
+      );
+      if (candidates.length === 0) {
+        if (dragged.some((item) => item.threadId === threadId))
+          toastManager.add({ type: "info", title: "A thread can't reference itself." });
+        return;
+      }
+      const room = Math.max(0, THREAD_REFERENCE_MAX_PER_MESSAGE - existing.length);
+      const accepted = candidates.slice(0, room);
+      const state = useStore.getState();
+      const links = accepted.map((item) =>
+        formatThreadReference({
+          threadId: item.threadId,
+          title: selectThreadById(state, item.threadId as ThreadId)?.title ?? item.title,
+          scheme: promptLinkScheme,
+        }),
+      );
+      if (accepted.length > 0 && !appendComposerReferences(links, errorTitle)) return;
+      if (accepted.length < candidates.length)
+        toastManager.add({
+          type: "warning",
+          title: `Up to ${THREAD_REFERENCE_MAX_PER_MESSAGE} thread references per message.`,
+        });
+      return;
+    }
     if (hasPullRequestReferenceDrag(event.dataTransfer.types)) {
       claimFileTreeMentionDrag(event);
       dragDepthRef.current = 0;
       setIsDragOverComposer(false);
       const reference = readPullRequestReferenceDrag(event.dataTransfer);
-      if (
-        !reference ||
-        isConnecting ||
-        isComposerApprovalState ||
-        isPendingTurnDispatchBlocked ||
-        blockingUserInputs.length > 0
-      ) {
-        toastManager.add({ type: "error", title: "Unable to add the PR reference to chat." });
-        return;
-      }
-      const current = promptRef.current;
-      applyPromptReplacement(
-        current.length,
-        current.length,
-        `${current && !/\s$/.test(current) ? " " : ""}${reference} `,
+      appendComposerReferences(
+        reference ? [reference] : [],
+        "Unable to add the PR reference to chat.",
       );
       return;
     }
-    if (
-      !dataTransferHasFileTreeMention(event.dataTransfer.types) &&
-      !hasPullRequestReferenceDrag(event.dataTransfer.types)
-    )
-      return;
+    if (!dataTransferHasFileTreeMention(event.dataTransfer.types)) return;
     const payload = readFileTreeDragMention(event.dataTransfer);
     claimFileTreeMentionDrag(event);
     dragDepthRef.current = 0;
@@ -5294,12 +5444,17 @@ export default memo(function ChatView({
     }
     if (noProviderAvailable) return;
     if (
-      /^\/review(?:\s|$)/.test(promptRef.current.trim()) &&
-      activeThread.session?.provider === "codex" &&
       api.nativeOperations &&
-      activeThread.session.capabilities?.actions.some(
-        (action) => action.action === "nativeReview" && action.supported,
-      )
+      activeThread.session?.capabilities &&
+      shouldRunNativeReviewShortcut({
+        prompt: promptRef.current,
+        sessionProvider: activeThread.session.provider,
+        sessionInstanceId,
+        selectedInstanceId: selectedProviderInstanceId,
+        nativeReviewSupported: activeThread.session.capabilities.actions.some(
+          (action) => action.action === "nativeReview" && action.supported,
+        ),
+      })
     ) {
       const argument = promptRef.current.trim().slice(7).trim();
       sendInFlightRef.current = true;
@@ -5485,7 +5640,7 @@ export default memo(function ChatView({
     const { filePaths: composerFilePathsSnapshot, invalidPathCount: invalidComposerFilePathCount } =
       sanitizeAttachedFileReferencePaths({
         filePaths: composerFilePathsSnapshotBeforePreflight,
-        workspaceRoots: [activeThread.worktreePath, activeProject.cwd],
+        workspaceRoots: threadAttachmentWorkspaceRoots(activeThread, activeProject),
         normalizeAbsolutePathForComparison,
       });
     if (invalidComposerFilePathCount > 0) {
@@ -5531,10 +5686,9 @@ export default memo(function ChatView({
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
     const outgoingMessageText = messageTextForSend || IMAGE_ONLY_BOOTSTRAP_PROMPT;
-    const inputLengthIssue = getProviderTurnInputLengthIssue(
-      outgoingMessageText,
-      sendLimits.maxInputChars,
-    );
+    const inputLengthIssue =
+      getMessageTextLengthIssue(outgoingMessageText, sendLimits.maxInputChars) ??
+      getThreadReferenceLimitIssue(outgoingMessageText);
     if (inputLengthIssue) {
       setThreadError(threadIdForSend, inputLengthIssue.message);
       sendInFlightRef.current = false;
@@ -6038,10 +6192,9 @@ export default memo(function ChatView({
           providerSkills: selectedProviderSnapshot?.skills,
         },
       );
-      const inputLengthIssue = getProviderTurnInputLengthIssue(
-        outgoingMessageText,
-        getServerSendLimits().maxInputChars,
-      );
+      const inputLengthIssue =
+        getMessageTextLengthIssue(outgoingMessageText, getServerSendLimits().maxInputChars) ??
+        getThreadReferenceLimitIssue(outgoingMessageText);
       if (inputLengthIssue) {
         setThreadError(threadIdForSend, inputLengthIssue.message);
         return;
@@ -6235,7 +6388,7 @@ export default memo(function ChatView({
     const planMarkdown = activeProposedPlan.planMarkdown;
     const implementationPrompt = buildPlanImplementationPrompt(planMarkdown);
     const outgoingImplementationPrompt = implementationPrompt;
-    const inputLengthIssue = getProviderTurnInputLengthIssue(
+    const inputLengthIssue = getMessageTextLengthIssue(
       outgoingImplementationPrompt,
       getServerSendLimits().maxInputChars,
     );
@@ -6465,7 +6618,7 @@ export default memo(function ChatView({
         scheduleComposerFocus();
         return;
       }
-      if (hasThreadStarted && instanceId !== selectedProviderInstanceId) {
+      if (providerLocked && instanceId !== selectedProviderInstanceId) {
         scheduleComposerFocus();
         return;
       }
@@ -6482,7 +6635,7 @@ export default memo(function ChatView({
     [
       activeThread,
       composerDraft.modelOptions,
-      hasThreadStarted,
+      providerLocked,
       isPendingTurnDispatchBlocked,
       lockedProvider,
       modelOptionsByInstance,
@@ -6975,6 +7128,7 @@ export default memo(function ChatView({
       options?: { suppressAutocomplete?: boolean },
     ) => {
       if (activePendingProgress?.activeQuestion && activePendingUserInput) {
+        if (activePendingProgress.activeQuestion.allowCustomAnswer === false) return;
         onChangeActivePendingUserInputCustomAnswer(
           activePendingProgress.activeQuestion.id,
           nextPrompt,
@@ -7229,12 +7383,9 @@ export default memo(function ChatView({
       }
 
       const api = readNativeApi();
-      if (workspaceRoot && api && !/[\\/]/u.test(parsed.path) && parsed.path.length <= 256) {
-        void api.projects
-          .searchEntries({ cwd: workspaceRoot, query: parsed.path, limit: 25 })
-          .then((result) =>
-            openFile(workspaceBasenameMatch(parsed.path, result.entries) ?? parsed.path),
-          )
+      if (workspaceRoot && api && isWorkspaceBasenameLookup(parsed.path)) {
+        void findWorkspaceBasenameFile(api, workspaceRoot, parsed.path)
+          .then((match) => openFile(match ?? parsed.path))
           .catch(() => openFile(parsed.path));
       } else openFile(parsed.path);
       return true;
@@ -7753,6 +7904,7 @@ export default memo(function ChatView({
     selectedModel,
     selectedModelForPickerWithCustomFallback,
     hasThreadStarted,
+    providerLocked,
     modelOptionsByInstance,
     isClaudeUltrathink,
     providerStatuses,
@@ -7882,10 +8034,13 @@ export default memo(function ChatView({
                 nativeGoal ? `Goal: ${nativeGoal.objective} · ${nativeGoal.status}` : undefined
               }
               activeProjectId={activeProject?.id}
+              activeProjectKind={activeProject?.kind}
               activeProjectIcon={activeProject?.icon}
               activeProjectName={activeProject?.name}
               onNewThreadInProject={projectBreadcrumbActions.createThread}
-              onOpenProjectSettings={projectBreadcrumbActions.openSettings}
+              onOpenProjectSettings={
+                isScratchProject(activeProject) ? undefined : projectBreadcrumbActions.openSettings
+              }
               workflowTitle={activeWorkflow?.workflow.title}
               workflowType={
                 activeWorkflow
@@ -7913,13 +8068,15 @@ export default memo(function ChatView({
               onOpenWorkflow={activeWorkflow ? handleOpenActiveWorkflow : undefined}
               isGitRepo={isGitRepo}
               openInCwd={threadWorkspaceCwd(activeThread, activeProject) ?? null}
-              activeProjectScripts={activeProject?.scripts}
+              activeProjectScripts={
+                isScratchProject(activeProject) ? undefined : activeProject?.scripts
+              }
               preferredScriptId={
                 activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
               }
               keybindings={keybindings}
               availableEditors={availableEditors}
-              terminalAvailable={activeProject != null}
+              terminalAvailable={workspaceRoot !== undefined}
               terminalOpen={terminalState.terminalOpen}
               workspaceFilesAvailable={workspaceRoot !== undefined}
               previewAvailable={Boolean(window.desktopBridge?.preview)}
@@ -8295,6 +8452,8 @@ export default memo(function ChatView({
                       activeProject={activeProject}
                       resolvedTheme={resolvedTheme}
                       hasComposerHeader={hasComposerHeader}
+                      pendingProviderHandoff={pendingProviderHandoff}
+                      unavailableProviderSelection={unavailableProviderSelection}
                       isComposerFooterCompact={isComposerFooterCompact}
                       prompt={prompt}
                       mentions={composerDraft.mentions}

@@ -868,6 +868,7 @@ export function createWsNativeApi(): NativeApi {
         transport.request(WS_METHODS.storageGetOperation, input, context),
       cleanup: (input) => transport.request(WS_METHODS.storageCleanup, input),
       cancelCleanup: (input) => transport.request(WS_METHODS.storageCancelCleanup, input),
+      scheduleCompaction: (input) => transport.request(WS_METHODS.storageScheduleCompaction, input),
       automationDryRun: () => transport.request(WS_METHODS.storageAutomationDryRun, {}),
       automationAudit: (input = {}, context) =>
         transport.request(WS_METHODS.storageAutomationAudit, input, context),

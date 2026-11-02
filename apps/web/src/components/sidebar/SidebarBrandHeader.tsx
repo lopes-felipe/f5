@@ -1,8 +1,21 @@
-import { RocketIcon, ScrollTextIcon, TriangleAlertIcon } from "lucide-react";
+import { useRouter } from "@tanstack/react-router";
+import {
+  ArrowLeftIcon,
+  ArrowRightIcon,
+  RocketIcon,
+  ScrollTextIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
 
 import { APP_STAGE_LABEL, APP_VERSION } from "../../branding";
 import { isElectron } from "../../env";
+import { shortcutLabelForCommand, useServerKeybindings } from "../../keybindings";
 import { cn } from "../../lib/utils";
+import {
+  navigateHistory,
+  useCanNavigateHistory,
+  type HistoryDirection,
+} from "../../navigationHistory";
 import { ProfileSwitcher } from "../ProfileSwitcher";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
@@ -109,7 +122,41 @@ function DesktopUpdateButtons({ update }: { update: DesktopUpdateController }) {
   );
 }
 
-/** Wordmark, profile switcher and (desktop) update controls. */
+function HistoryNavigationButton({ direction }: { direction: HistoryDirection }) {
+  const router = useRouter();
+  const keybindings = useServerKeybindings();
+  const enabled = useCanNavigateHistory(direction);
+  const label = direction === "back" ? "Go back" : "Go forward";
+  const shortcutLabel = shortcutLabelForCommand(
+    keybindings,
+    direction === "back" ? "navigation.back" : "navigation.forward",
+  );
+  const Icon = direction === "back" ? ArrowLeftIcon : ArrowRightIcon;
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            aria-label={label}
+            className="text-muted-foreground"
+            disabled={!enabled}
+            onClick={() => navigateHistory(router.history, direction)}
+            size="icon-xs"
+            variant="ghost"
+          />
+        }
+      >
+        <Icon className="size-3.5" />
+      </TooltipTrigger>
+      <TooltipPopup side="bottom">
+        {label}
+        {shortcutLabel ? ` (${shortcutLabel})` : ""}
+      </TooltipPopup>
+    </Tooltip>
+  );
+}
+
+/** Wordmark, history navigation (desktop), profile switcher and update controls. */
 export function SidebarBrandHeader({ update }: { update: DesktopUpdateController }) {
   return (
     <SidebarHeader
@@ -119,6 +166,12 @@ export function SidebarBrandHeader({ update }: { update: DesktopUpdateController
       )}
     >
       <SidebarWordmark />
+      {isElectron ? (
+        <div className="hidden shrink-0 items-center md:flex">
+          <HistoryNavigationButton direction="back" />
+          <HistoryNavigationButton direction="forward" />
+        </div>
+      ) : null}
       <div className="ml-auto flex min-w-0 items-center gap-1">
         {isElectron && update.showButton ? <DesktopUpdateButtons update={update} /> : null}
         <ProfileSwitcher />

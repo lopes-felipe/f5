@@ -1,5 +1,7 @@
 import type { ClaudeSettings } from "@t3tools/contracts";
 import type { query } from "@anthropic-ai/claude-agent-sdk";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { Cache, Clock, Duration, Effect, Exit, Path, Ref } from "effect";
 import * as Semaphore from "effect/Semaphore";
 import {
@@ -7,7 +9,8 @@ import {
   probeClaudeAccountUsage,
   type ClaudeCapabilitiesProbe,
 } from "../Layers/ClaudeProvider.ts";
-import { makeClaudeCapabilitiesCacheKey } from "./ClaudeHome.ts";
+import { makeClaudeCapabilitiesCacheKey, makeClaudeEnvironment } from "./ClaudeHome.ts";
+import { resolveClaudeUserStatePath } from "../claudeInventory.ts";
 import { ACCOUNT_ATTEMPT_TTL_MS } from "../../usage/accountUsage.ts";
 
 /**
@@ -48,25 +51,60 @@ export const makeClaudeInstanceProbes = (
   Effect.gen(function* () {
     const path = yield* Path.Path;
     const lock = yield* Semaphore.make(1);
-    const initialized = yield* Ref.make<{ at: number; value: ClaudeCapabilitiesProbe } | null>(
-      null,
-    );
+    const probeEnvironment = yield* makeClaudeEnvironment(settings, environment);
+    const configDir =
+      probeEnvironment.CLAUDE_CONFIG_DIR ||
+      path.join(probeEnvironment.HOME || probeEnvironment.USERPROFILE || homedir(), ".claude");
+    const accountPath = resolveClaudeUserStatePath(probeEnvironment, configDir);
+    const accountIdentity = Effect.promise(async () => {
+      try {
+        const state: unknown = JSON.parse(await readFile(accountPath, "utf8"));
+        if (!state || typeof state !== "object" || !("oauthAccount" in state)) return undefined;
+        return JSON.stringify(state.oauthAccount);
+      } catch {
+        return undefined;
+      }
+    });
+    const lastGood = yield* Ref.make<{
+      identity: string | undefined;
+      value: ClaudeCapabilitiesProbe;
+    } | null>(null);
+    const initialized = yield* Ref.make<{
+      at: number;
+      identity: string | undefined;
+      value: ClaudeCapabilitiesProbe;
+    } | null>(null);
     const key = yield* makeClaudeCapabilitiesCacheKey(settings);
     const cache = yield* Cache.makeWith({
       capacity: 4,
       // Only a successful probe earns the TTL; a failed one retries on the next check.
       timeToLive: (exit) =>
-        Exit.isSuccess(exit) && exit.value !== undefined ? ACCOUNT_ATTEMPT_TTL_MS : Duration.zero,
+        Exit.isSuccess(exit) && exit.value.fresh ? ACCOUNT_ATTEMPT_TTL_MS : Duration.zero,
       lookup: () =>
         lock.withPermits(1)(
           Effect.gen(function* () {
+            const identity = yield* accountIdentity;
             // A capabilities miss may have waited behind usage initialization.
             const recent = yield* Ref.get(initialized);
-            if (recent && (yield* Clock.currentTimeMillis) - recent.at < ACCOUNT_ATTEMPT_TTL_MS)
-              return recent.value;
-            return yield* probeClaudeCapabilities(settings, environment, options).pipe(
+            if (
+              recent &&
+              recent.identity === identity &&
+              (yield* Clock.currentTimeMillis) - recent.at < ACCOUNT_ATTEMPT_TTL_MS
+            )
+              return { fresh: true, value: recent.value };
+            const value = yield* probeClaudeCapabilities(settings, environment, options).pipe(
               Effect.provideService(Path.Path, path),
             );
+            if (value !== undefined) {
+              yield* Ref.set(lastGood, { identity, value });
+              return { fresh: true, value };
+            }
+            // Consume the fallback once. A miss never earns the normal cache TTL.
+            const previous = yield* Ref.getAndSet(lastGood, null);
+            return {
+              fresh: false,
+              value: previous?.identity === identity ? previous?.value : undefined,
+            };
           }),
         ),
     });
@@ -75,16 +113,21 @@ export const makeClaudeInstanceProbes = (
         ...options,
         onCapabilities: (value) =>
           Effect.gen(function* () {
-            yield* Ref.set(initialized, { at: yield* Clock.currentTimeMillis, value });
-            yield* Cache.set(cache, key, value);
+            const identity = yield* accountIdentity;
+            yield* Ref.set(initialized, { at: yield* Clock.currentTimeMillis, identity, value });
+            yield* Ref.set(lastGood, { identity, value });
+            yield* Cache.set(cache, key, { fresh: true, value });
           }),
       }).pipe(Effect.provideService(Path.Path, path)),
     );
     return {
-      capabilities: Cache.get(cache, key),
+      capabilities: Cache.get(cache, key).pipe(Effect.map((result) => result.value)),
       usage,
       invalidate: lock.withPermits(1)(
-        Ref.set(initialized, null).pipe(Effect.andThen(Cache.invalidateAll(cache))),
+        Ref.set(initialized, null).pipe(
+          Effect.andThen(Ref.set(lastGood, null)),
+          Effect.andThen(Cache.invalidateAll(cache)),
+        ),
       ),
     };
   });

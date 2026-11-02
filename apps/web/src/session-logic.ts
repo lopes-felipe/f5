@@ -5,6 +5,7 @@ import { messageListStructure } from "./lib/streamingTextRevision";
 import { Schema } from "effect";
 import {
   AGENT_BRIDGE_TURN_SUBMITTED_ACTIVITY_KIND,
+  PROVIDER_CONTEXT_HANDOFF_ACTIVITY_KIND,
   SCHEDULED_TASK_TURN_SUBMITTED_ACTIVITY_KIND,
   ApprovalRequestId,
   ProviderApprovalOption,
@@ -13,6 +14,7 @@ import {
   type ElicitationReceiptState,
   type CodexCollaborationTool,
   type CompactSubagentState,
+  type ComputerStepSummary,
   ProviderItemId,
   type RuntimeItemStatus,
   type OrchestrationCommandExecutionSummary,
@@ -28,6 +30,7 @@ import {
   type TurnId,
 } from "@t3tools/contracts";
 import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStderr";
+import { automationToolSurface } from "@t3tools/shared/computerAction";
 import { ELICITATION_SUBMITTED_ACTIVITY_KIND } from "@t3tools/shared/pendingUserInputs";
 import {
   normalizeCodexCollaborationTool,
@@ -47,9 +50,11 @@ import {
   classifyCompactCommand,
   deriveNarratedActivityDisplayHints,
   isGenericCommandTitle,
+  parseCommandExecutionTitle,
   resolveCommandExecutionSummaryText,
 } from "@t3tools/shared/commandSummary";
 import { compareCommandExecutions } from "./lib/commandExecutions";
+import { mcpToolNameServerKey, resolveMcpServerLabel } from "./lib/mcpServerDisplay";
 import { formatUsageLimitActivityLabel, readUsageLimitActivityDisplay } from "./lib/usageLimits";
 import type { RuntimeWarningVisibility, WorkLogFilter, WorkLogMode } from "./appSettings";
 
@@ -121,8 +126,13 @@ export interface WorkLogEntry {
   subagentResult?: string;
   subagentModel?: string;
   mcpServerName?: string;
+  /** The server's display name ("Claude Docs"); the raw name stays in `mcpServerName`. */
+  mcpServerLabel?: string;
   mcpToolName?: string;
   computerTool?: boolean;
+  computerStep?: ComputerStepSummary;
+  /** Derived before historical filtering so hidden work cannot join separate runs. */
+  automationRunId?: string;
   mcpInput?: string;
   mcpResult?: string;
   mcpImages?: ReadonlyArray<{ attachmentId: string; mimeType: string; sizeBytes: number }>;
@@ -144,6 +154,24 @@ export interface WorkLogEntry {
   codexCollaborationTool?: CodexCollaborationTool;
   subagentStates?: ReadonlyArray<CompactSubagentState>;
   subagentStatesTruncated?: boolean;
+  /** When the tool call first showed up; completed rows derive their duration from it. */
+  startedAt?: string;
+  /** When a coalesced call finished; its `createdAt` stays the first snapshot's. */
+  completedAt?: string;
+  /** A question request with its answers, rendered as a Q&A card. */
+  userInput?: WorkLogUserInput;
+}
+
+export interface WorkLogUserInputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  answers: ReadonlyArray<{ text: string; custom: boolean }>;
+}
+
+export interface WorkLogUserInput {
+  state: "answered" | "pending" | "unanswered";
+  questions: ReadonlyArray<WorkLogUserInputQuestion>;
 }
 
 export interface PendingApproval {
@@ -465,6 +493,7 @@ function parseUserInputQuestions(
           return {
             label: optionRecord.label,
             description: optionRecord.description,
+            ...(typeof optionRecord.value === "string" ? { value: optionRecord.value } : {}),
           };
         })
         .filter((option): option is UserInputQuestion["options"][number] => option !== null);
@@ -476,6 +505,7 @@ function parseUserInputQuestions(
         options: UserInputQuestion["options"];
         multiSelect?: boolean;
         optional?: boolean;
+        allowCustomAnswer?: boolean;
         initialAnswer?: string;
       } = {
         id: question.id,
@@ -486,6 +516,8 @@ function parseUserInputQuestions(
       if (typeof question.initialAnswer === "string" && question.initialAnswer.length <= 64 * 1024)
         parsedQuestion.initialAnswer = question.initialAnswer;
       if (typeof question.optional === "boolean") parsedQuestion.optional = question.optional;
+      if (typeof question.allowCustomAnswer === "boolean")
+        parsedQuestion.allowCustomAnswer = question.allowCustomAnswer;
       if (typeof question.multiSelect === "boolean") {
         parsedQuestion.multiSelect = question.multiSelect;
       }
@@ -713,6 +745,8 @@ const ALWAYS_VISIBLE_KINDS = new Set([
   AGENT_BRIDGE_TURN_SUBMITTED_ACTIVITY_KIND,
   // So does "Queued by scheduled task …" in a conversation bound to a task.
   SCHEDULED_TASK_TURN_SUBMITTED_ACTIVITY_KIND,
+  // "Context handed off from … to …" marks where a provider switch happened.
+  PROVIDER_CONTEXT_HANDOFF_ACTIVITY_KIND,
 ]);
 
 function inferWorkLogStatus(
@@ -734,7 +768,7 @@ function inferWorkLogStatus(
 function shouldKeepHistoricalWorkEntry(
   activity: OrchestrationThreadActivity,
   latestTurnId: TurnId | undefined,
-  terminalCodexProviderItemIds: ReadonlySet<ProviderItemId>,
+  terminalCallKeys: ReadonlySet<string>,
 ): boolean {
   if (!latestTurnId || activity.kind === "htmlRender" || activity.kind === "mcpApp") {
     return true;
@@ -751,24 +785,44 @@ function shouldKeepHistoricalWorkEntry(
       ? (activity.payload as Record<string, unknown>)
       : null;
   const toolPayload = readToolActivityPayload(payload);
+  // Automation cards are part of the conversation history. Keep every lifecycle
+  // snapshot so coalescing retains the start time and handles lost completions.
+  const isHistoricalAutomation =
+    (activity.kind === "tool.started" ||
+      activity.kind === "tool.updated" ||
+      activity.kind === "tool.completed") &&
+    toolPayload !== null &&
+    automationToolSurface(toolPayload) !== undefined;
   const requestKind = extractWorkLogRequestKind(payload);
   const inferredStatus = inferWorkLogStatus(activity, toolPayload?.status);
   const isHistoricalFileChange =
     toolPayload?.itemType === "file_change" || requestKind === "file-change";
+  // MCP cards are part of the conversation like automation cards; only finished calls
+  // stay, so an earlier turn never shows a stale spinner.
+  const isHistoricalMcpCall =
+    toolPayload?.itemType === "mcp_tool_call" &&
+    (inferredStatus === "completed" ||
+      inferredStatus === "failed" ||
+      inferredStatus === "declined");
 
   const isTerminalCodexCollaboration =
     Boolean(toolPayload?.codexCollaborationTool) &&
     (inferredStatus === "completed" ||
       inferredStatus === "failed" ||
       inferredStatus === "declined");
-  const isLifecycleOfTerminalCodexCollaboration = Boolean(
-    toolPayload?.providerItemId && terminalCodexProviderItemIds.has(toolPayload.providerItemId),
+  // Every snapshot of a finished collaboration or MCP call stays, so coalescing keeps the
+  // call's first id and position when its turn ends.
+  const isLifecycleOfTerminalCall = Boolean(
+    toolPayload?.providerItemId &&
+    terminalCallKeys.has(providerCallKey(activity.turnId, toolPayload.providerItemId)),
   );
 
   return (
+    isHistoricalAutomation ||
+    isHistoricalMcpCall ||
     (isHistoricalFileChange && inferredStatus === "completed") ||
     isTerminalCodexCollaboration ||
-    isLifecycleOfTerminalCodexCollaboration
+    isLifecycleOfTerminalCall
   );
 }
 
@@ -801,8 +855,10 @@ function workEntryVisibleSignature(entry: WorkLogEntry): string {
     codexCollaborationTool: entry.codexCollaborationTool,
     subagentStatesTruncated: entry.subagentStatesTruncated,
     mcpServerName: entry.mcpServerName,
+    mcpServerLabel: entry.mcpServerLabel,
     mcpToolName: entry.mcpToolName,
     computerTool: entry.computerTool,
+    computerStep: entry.computerStep,
     mcpInput: entry.mcpInput,
     mcpResult: entry.mcpResult,
     mcpImages: entry.mcpImages?.map((image) => image.attachmentId) ?? [],
@@ -810,9 +866,38 @@ function workEntryVisibleSignature(entry: WorkLogEntry): string {
   });
 }
 
+function providerCallKey(turnId: TurnId | null | undefined, itemId: string): string {
+  return JSON.stringify([turnId ?? null, itemId]);
+}
+
+function diagnosticCallKeyResolver(
+  calls: ReadonlyArray<{
+    turnId?: TurnId | null;
+    providerItemId?: ProviderItemId | null;
+  }>,
+): (entry: WorkLogEntry) => string | undefined {
+  const keysByItemId = new Map<ProviderItemId, Set<string>>();
+  for (const call of calls) {
+    if (!call.providerItemId) continue;
+    const keys = keysByItemId.get(call.providerItemId) ?? new Set<string>();
+    keys.add(providerCallKey(call.turnId, call.providerItemId));
+    keysByItemId.set(call.providerItemId, keys);
+  }
+  return (entry) => {
+    if (!entry.parentProviderItemId) return undefined;
+    const keys = keysByItemId.get(entry.parentProviderItemId);
+    if (entry.turnId) {
+      const key = providerCallKey(entry.turnId, entry.parentProviderItemId);
+      return keys?.has(key) ? key : undefined;
+    }
+    // Legacy diagnostics without a turn may attach only to an unambiguous call.
+    return keys?.size === 1 ? keys.values().next().value : undefined;
+  };
+}
+
 function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
   const deduped: Array<WorkLogEntry | null> = [];
-  const latestByProviderItemId = new Map<ProviderItemId, { index: number; signature: string }>();
+  const latestByProviderItemId = new Map<string, { index: number; signature: string }>();
   const terminalTieKeys = new Set<string>();
 
   for (const entry of entries) {
@@ -828,7 +913,8 @@ function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>):
     // regress a finished item to in-progress and hide its inline diff. A
     // later-stamped in-progress update (a task backgrounded after its tool
     // result, or a reused item id in another turn) is real and stays.
-    const tieKey = `${entry.providerItemId}\u0000${entry.createdAt}`;
+    const callKey = providerCallKey(entry.turnId, entry.providerItemId);
+    const tieKey = JSON.stringify([callKey, entry.createdAt]);
     if (workEntryLifecyclePrecedence(entry) === TERMINAL_LIFECYCLE_PRECEDENCE) {
       terminalTieKeys.add(tieKey);
     } else if (terminalTieKeys.has(tieKey)) {
@@ -836,13 +922,13 @@ function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>):
     }
 
     const signature = workEntryVisibleSignature(entry);
-    const previous = latestByProviderItemId.get(entry.providerItemId);
+    const previous = latestByProviderItemId.get(callKey);
     if (previous && previous.signature === signature) {
       deduped[previous.index] = null;
     }
 
     deduped.push(entry);
-    latestByProviderItemId.set(entry.providerItemId, {
+    latestByProviderItemId.set(callKey, {
       index: deduped.length - 1,
       signature,
     });
@@ -861,77 +947,231 @@ function workEntryLifecyclePrecedence(entry: WorkLogEntry): number {
   return 0;
 }
 
-function coalesceCodexCollaborationEntries(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
+/** Merged snapshots by their two inputs, so an unchanged call keeps its entry identity. */
+const coalescedSnapshots = new WeakMap<WorkLogEntry, WeakMap<WorkLogEntry, WorkLogEntry>>();
+
+function mergeProviderItemSnapshot(existing: WorkLogEntry, entry: WorkLogEntry): WorkLogEntry {
+  let byLater = coalescedSnapshots.get(existing);
+  const cached = byLater?.get(entry);
+  if (cached) return cached;
+  const laterDefined = Object.fromEntries(
+    Object.entries(entry).filter(([, value]) => value !== undefined),
+  ) as Partial<WorkLogEntry>;
+  const laterWins = workEntryLifecyclePrecedence(entry) >= workEntryLifecyclePrecedence(existing);
+  const lifecycleWinner = laterWins ? entry : existing;
+  const merged: WorkLogEntry = {
+    ...existing,
+    ...laterDefined,
+    id: existing.id,
+    createdAt: existing.createdAt,
+    tone: lifecycleWinner.tone,
+    label: lifecycleWinner.label,
+    ...(lifecycleWinner.activityKind ? { activityKind: lifecycleWinner.activityKind } : {}),
+    ...(lifecycleWinner.status ? { status: lifecycleWinner.status } : {}),
+    // `createdAt` stays the first snapshot's, so the finish time needs its own field.
+    ...(laterWins && workEntryLifecyclePrecedence(entry) === TERMINAL_LIFECYCLE_PRECEDENCE
+      ? { completedAt: entry.createdAt }
+      : {}),
+  };
+  if (!byLater) {
+    byLater = new WeakMap();
+    coalescedSnapshots.set(existing, byLater);
+  }
+  byLater.set(entry, merged);
+  return merged;
+}
+
+/**
+ * Folds every snapshot of one collaboration, computer/preview or MCP call into a single entry
+ * that keeps the first snapshot's id and position, so a session card counts one action per
+ * call and a card keeps its row (and expansion) when the call finishes.
+ */
+function coalesceProviderItemSnapshots(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
   const result: WorkLogEntry[] = [];
-  const indexByProviderItemId = new Map<ProviderItemId, number>();
+  const indexByProviderItemId = new Map<string, number>();
   for (const entry of entries) {
-    if (!entry.providerItemId || !entry.codexCollaborationTool) {
+    if (
+      !entry.providerItemId ||
+      (!entry.codexCollaborationTool &&
+        !automationToolSurface(entry) &&
+        entry.itemType !== "mcp_tool_call")
+    ) {
       result.push(entry);
       continue;
     }
-    const existingIndex = indexByProviderItemId.get(entry.providerItemId);
+    const callKey = providerCallKey(entry.turnId, entry.providerItemId);
+    const existingIndex = indexByProviderItemId.get(callKey);
     if (existingIndex === undefined) {
-      indexByProviderItemId.set(entry.providerItemId, result.length);
+      indexByProviderItemId.set(callKey, result.length);
       result.push(entry);
       continue;
     }
-    const existing = result[existingIndex]!;
-    const laterDefined = Object.fromEntries(
-      Object.entries(entry).filter(([, value]) => value !== undefined),
-    ) as Partial<WorkLogEntry>;
-    const lifecycleWinner =
-      workEntryLifecyclePrecedence(entry) >= workEntryLifecyclePrecedence(existing)
-        ? entry
-        : existing;
-    result[existingIndex] = {
-      ...existing,
-      ...laterDefined,
-      id: existing.id,
-      createdAt: existing.createdAt,
-      tone: lifecycleWinner.tone,
-      label: lifecycleWinner.label,
-      ...(lifecycleWinner.activityKind ? { activityKind: lifecycleWinner.activityKind } : {}),
-      ...(lifecycleWinner.status ? { status: lifecycleWinner.status } : {}),
-    };
+    result[existingIndex] = mergeProviderItemSnapshot(result[existingIndex]!, entry);
   }
   return result;
+}
+
+const automationRunEntries = new WeakMap<WorkLogEntry, { runId: string; entry: WorkLogEntry }>();
+
+/** Assign boundaries while ordinary work is still present, without mutating cached entries. */
+function preserveAutomationRunBoundaries(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
+  let run: { surface: string; turnId: TurnId | undefined; id: string } | undefined;
+  const diagnosticCallKey = diagnosticCallKeyResolver(entries.filter((entry) => !entry.diagnostic));
+  return entries.map((entry) => {
+    // Correlated diagnostics nest under calls; they do not separate timeline rows.
+    if (entry.diagnostic && diagnosticCallKey(entry)) return entry;
+    const surface = entry.mcpApp || entry.htmlRender ? undefined : automationToolSurface(entry);
+    if (!surface) {
+      if (entry.tone !== "thinking") run = undefined;
+      return entry;
+    }
+    if (!run || run.surface !== surface || run.turnId !== entry.turnId) {
+      run = { surface, turnId: entry.turnId, id: entry.id };
+    }
+    const cached = automationRunEntries.get(entry);
+    if (cached?.runId === run.id) return cached.entry;
+    const annotated = { ...entry, automationRunId: run.id };
+    automationRunEntries.set(entry, { runId: run.id, entry: annotated });
+    return annotated;
+  });
 }
 
 function collapseWhitespace(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-/** Each user-input request's question text, joined with " · " when it asked several. */
-function userInputQuestionTextByRequestId(
+/** Each user-input request's parsed questions; form-only elicitations have none. */
+function userInputQuestionsByRequestId(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
-): ReadonlyMap<string, string> {
-  const questions = new Map<string, string>();
+): ReadonlyMap<string, ReadonlyArray<UserInputQuestion>> {
+  const questions = new Map<string, ReadonlyArray<UserInputQuestion>>();
   for (const activity of activities) {
     if (activity.kind !== "user-input.requested") continue;
     const payload = workLogPayload(activity);
     if (typeof payload?.requestId !== "string") continue;
-    const text = (parseUserInputQuestions(payload) ?? [])
-      .map((question) => collapseWhitespace(question.question))
-      .filter(Boolean)
-      .join(" · ");
-    if (text) questions.set(payload.requestId, text);
+    const parsed = parseUserInputQuestions(payload);
+    if (parsed) questions.set(payload.requestId, parsed);
   }
   return questions;
+}
+
+/** Real MCP server names from status events, keyed by their flattened tool-name form. */
+function mcpStatusServerNamesByKey(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlyMap<string, string> {
+  const names = new Map<string, string>();
+  for (const activity of activities) {
+    if (activity.kind !== "mcp.status.updated") continue;
+    const name = asTrimmedString(workLogPayload(activity)?.name);
+    if (name) names.set(mcpToolNameServerKey(name), name);
+  }
+  return names;
+}
+
+/** The question text, joined with " · " when the request asked several. */
+function userInputQuestionText(questions: ReadonlyArray<UserInputQuestion> | undefined): string {
+  return (questions ?? [])
+    .map((question) => collapseWhitespace(question.question))
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** One question's answers: a string, a string array, or Codex's `{ answers }` record. */
+function userInputAnswerTexts(value: unknown): string[] {
+  const answer =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as { answers?: unknown }).answers
+      : value;
+  return (Array.isArray(answer) ? answer : [answer])
+    .filter((item): item is string => typeof item === "string")
+    .map(collapseWhitespace)
+    .filter(Boolean);
 }
 
 /** The submitted answers as one line; empty when nothing was answered. */
 function userInputAnswerPreview(answers: unknown): string {
   if (!answers || typeof answers !== "object") return "";
-  const values = Object.values(answers as Record<string, unknown>).flatMap((value) => {
-    const answer =
-      value && typeof value === "object" && !Array.isArray(value)
-        ? (value as { answers?: unknown }).answers
-        : value;
-    return (Array.isArray(answer) ? answer : [answer]).filter(
-      (item): item is string => typeof item === "string",
+  return Object.values(answers as Record<string, unknown>)
+    .flatMap(userInputAnswerTexts)
+    .join(" · ");
+}
+
+/**
+ * An unresolved request is open while the composer still offers it. Callers without that
+ * projection fall back to "it belongs to the latest turn".
+ */
+function isUserInputStillPending(
+  requestId: string,
+  turnId: TurnId | null,
+  latestTurnId: TurnId | undefined,
+  pendingRequestIds: ReadonlySet<string> | undefined,
+): boolean {
+  if (pendingRequestIds) return pendingRequestIds.has(requestId);
+  return (turnId ?? undefined) === latestTurnId;
+}
+
+/**
+ * A resolved row's card. Answers render as pills; a value-free receipt (Muse, Pi) still
+ * says whether the questions were answered. An indeterminate receipt, or a receipt
+ * following a resolution that already carried the answers, keeps its own row.
+ */
+function userInputResolution(
+  payload: Record<string, unknown> | null,
+  answeredRequestIds: ReadonlySet<string>,
+  questions: ReadonlyArray<UserInputQuestion>,
+): WorkLogUserInput | undefined {
+  const receipt = payload?.receipt;
+  if (receipt === undefined) return workLogUserInput(questions, payload?.answers, "unanswered");
+  if (receipt === "indeterminate") return undefined;
+  if (typeof payload?.requestId === "string" && answeredRequestIds.has(payload.requestId)) {
+    return undefined;
+  }
+  return workLogUserInput(questions, undefined, receipt === "resolved" ? "answered" : "unanswered");
+}
+
+function workLogUserInput(
+  questions: ReadonlyArray<UserInputQuestion>,
+  answers: unknown,
+  /** The state when no answer values are known. */
+  fallbackState: WorkLogUserInput["state"],
+): WorkLogUserInput {
+  const answerRecord =
+    answers && typeof answers === "object" && !Array.isArray(answers)
+      ? (answers as Record<string, unknown>)
+      : {};
+  const items = questions.map((question) => {
+    const optionLabels = new Set(
+      question.options.map((option) => collapseWhitespace(option.label)),
     );
+    return {
+      id: question.id,
+      header: question.header,
+      question: question.question,
+      answers: userInputAnswerTexts(answerRecord[question.id]).map((text) => ({
+        text,
+        custom: !optionLabels.has(text),
+      })),
+    };
   });
-  return values.map(collapseWhitespace).filter(Boolean).join(" · ");
+  return {
+    state: items.some((item) => item.answers.length > 0) ? "answered" : fallbackState,
+    questions: items,
+  };
+}
+
+function isFailedToolActivity(activity: OrchestrationThreadActivity): boolean {
+  const status = inferWorkLogStatus(activity, readToolActivityPayload(activity.payload)?.status);
+  return status === "failed" || status === "declined" || activity.tone === "error";
+}
+
+/** Claude's AskUserQuestion tool row repeats what the Q&A card already shows. */
+function isQuestionToolActivity(activity: OrchestrationThreadActivity): boolean {
+  if (!activity.kind.startsWith("tool.")) return false;
+  const toolPayload = readToolActivityPayload(activity.payload);
+  return (
+    toolPayload?.itemType === "dynamic_tool_call" &&
+    /^askuserquestion\s*:/i.test(toolPayload.detail ?? "")
+  );
 }
 
 function workLogPayload(activity: OrchestrationThreadActivity): Record<string, unknown> | null {
@@ -1079,7 +1319,7 @@ function pairDiagnosticLifecycles(entries: ReadonlyArray<WorkLogEntry>): WorkLog
       ) {
         return [];
       }
-      return [`${entry.diagnostic.type}:${entry.diagnostic.id}`];
+      return [providerCallKey(entry.turnId, entry.diagnostic.type + ":" + entry.diagnostic.id)];
     }),
   );
 
@@ -1090,7 +1330,7 @@ function pairDiagnosticLifecycles(entries: ReadonlyArray<WorkLogEntry>): WorkLog
     ) {
       return [entry];
     }
-    const key = `${entry.diagnostic.type}:${entry.diagnostic.id}`;
+    const key = providerCallKey(entry.turnId, entry.diagnostic.type + ":" + entry.diagnostic.id);
     if (completedKeys.has(key)) {
       return [];
     }
@@ -1455,6 +1695,14 @@ export function deriveLiveWorkActivity(
   return { kind: "idle" };
 }
 
+// Activities keep their identity across store updates, so a streamed append
+// reuses every earlier row instead of rebuilding it. Entries are never mutated
+// after derivation; later passes copy the ones they change.
+const workLogEntryByActivity = new WeakMap<
+  OrchestrationThreadActivity,
+  { readonly cacheKey: string; readonly entry: WorkLogEntry }
+>();
+
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   latestTurnId: TurnId | undefined,
@@ -1463,24 +1711,81 @@ export function deriveWorkLogEntries(
     readonly runtimeWarningVisibility?: RuntimeWarningVisibility;
     readonly mode?: WorkLogMode;
     readonly filter?: WorkLogFilter;
+    /** The requests the composer still offers; open Q&A cards follow it when given. */
+    readonly pendingUserInputRequestIds?: ReadonlySet<string>;
   },
 ): WorkLogEntry[] {
   const runtimeWarningVisibility = options?.runtimeWarningVisibility ?? "hidden";
   const mode = options?.mode ?? "essential";
   const selectedFilter = options?.filter ?? "all";
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
-  const terminalCodexProviderItemIds = new Set<ProviderItemId>();
+  const terminalCallKeys = new Set<string>();
   for (const activity of ordered) {
     const payload = readToolActivityPayload(activity.payload);
     const status = inferWorkLogStatus(activity, payload?.status);
     if (
       payload?.providerItemId &&
-      payload.codexCollaborationTool &&
+      (payload.codexCollaborationTool || payload.itemType === "mcp_tool_call") &&
       (status === "completed" || status === "failed" || status === "declined")
     ) {
-      terminalCodexProviderItemIds.add(payload.providerItemId);
+      terminalCallKeys.add(providerCallKey(activity.turnId, payload.providerItemId));
     }
   }
+  const userInputQuestions = userInputQuestionsByRequestId(ordered);
+  const mcpStatusNamesByKey = mcpStatusServerNamesByKey(ordered);
+  const resolvedUserInputRequestIds = new Set<string>();
+  // Muse and Pi resolve with a value-free receipt; only these resolutions carry answers.
+  const answeredUserInputRequestIds = new Set<string>();
+  const questionRequestTurnIds = new Set<TurnId>();
+  // Most `tool.started` activities are filtered out below, so collect start times first.
+  const toolStartedAtByCallKey = new Map<string, string>();
+  const toolCallKeyByActivity = new Map<OrchestrationThreadActivity, string>();
+  for (const activity of ordered) {
+    if (activity.kind === "user-input.requested" || activity.kind === "user-input.resolved") {
+      const payload = workLogPayload(activity);
+      const requestId = typeof payload?.requestId === "string" ? payload.requestId : undefined;
+      if (!requestId) continue;
+      if (activity.kind === "user-input.requested") {
+        if (activity.turnId && userInputQuestions.has(requestId)) {
+          questionRequestTurnIds.add(activity.turnId);
+        }
+        continue;
+      }
+      // An indeterminate receipt leaves the request open, as `derivePendingUserInputs` does,
+      // so its card stays until a final resolution replaces it.
+      if (payload?.receipt !== "indeterminate") resolvedUserInputRequestIds.add(requestId);
+      if (payload?.answers && typeof payload.answers === "object") {
+        answeredUserInputRequestIds.add(requestId);
+      }
+      continue;
+    }
+    if (!activity.kind.startsWith("tool.")) continue;
+    const providerItemId = readToolActivityPayload(activity.payload)?.providerItemId;
+    if (!providerItemId) continue;
+    const callKey = providerCallKey(activity.turnId, providerItemId);
+    toolCallKeyByActivity.set(activity, callKey);
+    const startedAt = toolStartedAtByCallKey.get(callKey);
+    if (!startedAt || activity.createdAt < startedAt) {
+      toolStartedAtByCallKey.set(callKey, activity.createdAt);
+    }
+  }
+  const isQuestionUserInputActivity = (activity: OrchestrationThreadActivity) => {
+    if (activity.kind !== "user-input.requested" && activity.kind !== "user-input.resolved") {
+      return false;
+    }
+    const requestId = workLogPayload(activity)?.requestId;
+    return typeof requestId === "string" && userInputQuestions.has(requestId);
+  };
+  const retainedActivityIds = new Set(
+    ordered
+      .filter(
+        (activity) =>
+          shouldKeepHistoricalWorkEntry(activity, latestTurnId, terminalCallKeys) ||
+          // Q&A cards stay in the timeline after their turn ends.
+          isQuestionUserInputActivity(activity),
+      )
+      .map((activity) => String(activity.id)),
+  );
   // A usage limit arrives as one warning per exhausted window and then as the
   // turn's error; show one row per turn. The error carries the combined reset,
   // so it wins; until it arrives, the latest warning stands in.
@@ -1500,11 +1805,25 @@ export function deriveWorkLogEntries(
       usageLimitRowByTurn.set(activity.turnId, activity);
     }
   }
-  const userInputQuestionByRequestId = userInputQuestionTextByRequestId(ordered);
   const entries = ordered
-    .filter((activity) =>
-      shouldKeepHistoricalWorkEntry(activity, latestTurnId, terminalCodexProviderItemIds),
-    )
+    .filter((activity) => {
+      if (activity.kind === "user-input.requested") {
+        // The resolved row carries the questions and the answers.
+        const requestId = workLogPayload(activity)?.requestId;
+        return !(
+          typeof requestId === "string" &&
+          userInputQuestions.has(requestId) &&
+          resolvedUserInputRequestIds.has(requestId)
+        );
+      }
+      // A failed call, or one rejected before any question was asked, keeps its tool row.
+      return !(
+        isQuestionToolActivity(activity) &&
+        activity.turnId !== null &&
+        questionRequestTurnIds.has(activity.turnId) &&
+        !isFailedToolActivity(activity)
+      );
+    })
     .filter(
       (activity) =>
         (activity.kind !== "runtime.warning" && activity.kind !== "runtime.error") ||
@@ -1535,11 +1854,16 @@ export function deriveWorkLogEntries(
         readUsageLimitActivityDisplay(payload?.usageLimit) !== null;
       return alwaysVisible || runtimeWarningVisibility !== "hidden";
     })
-    .filter(
-      (activity) =>
-        activity.kind !== "tool.started" ||
-        Boolean(readToolActivityPayload(activity.payload)?.codexCollaborationTool),
-    )
+    .filter((activity) => {
+      if (activity.kind !== "tool.started") return true;
+      const payload = readToolActivityPayload(activity.payload);
+      // Codex reports MCP calls only as start + completion, so a running computer or
+      // preview call needs its start; coalescing below folds it into the completion.
+      return Boolean(
+        payload?.codexCollaborationTool ||
+        (payload?.providerItemId && automationToolSurface(payload)),
+      );
+    })
     .filter((activity) => activity.kind !== "runtime.configured")
     .filter((activity) => activity.kind !== REASONING_STATUS_ACTIVITY_KIND)
     .filter((activity) => activity.kind !== "account.updated")
@@ -1547,8 +1871,54 @@ export function deriveWorkLogEntries(
     .filter((activity) => activity.kind !== "task.started" && activity.kind !== "task.completed")
     .filter((activity) => activity.summary !== "Checkpoint captured")
     .map((activity) => {
-      const toolPayload = readToolActivityPayload(activity.payload);
       const payload = workLogPayload(activity);
+      const questions =
+        (activity.kind === "user-input.resolved" || activity.kind === "user-input.requested") &&
+        typeof payload?.requestId === "string"
+          ? userInputQuestions.get(payload.requestId)
+          : undefined;
+      const userInput = !questions
+        ? undefined
+        : activity.kind === "user-input.requested"
+          ? workLogUserInput(
+              questions,
+              undefined,
+              isUserInputStillPending(
+                String(payload?.requestId),
+                activity.turnId,
+                latestTurnId,
+                options?.pendingUserInputRequestIds,
+              )
+                ? "pending"
+                : "unanswered",
+            )
+          : userInputResolution(payload, answeredUserInputRequestIds, questions);
+      // "User input submitted" buries what was asked: lead with the question and keep the
+      // answer as the row's detail.
+      const answeredQuestion =
+        activity.kind === "user-input.resolved" ? userInputQuestionText(questions) : "";
+      const toolCallKey = toolCallKeyByActivity.get(activity);
+      const toolStartedAt = toolCallKey ? toolStartedAtByCallKey.get(toolCallKey) : undefined;
+      const startedAt =
+        toolStartedAt && toolStartedAt < activity.createdAt ? toolStartedAt : undefined;
+      // Only these inputs depend on more than the activity itself.
+      const toolPayload = readToolActivityPayload(activity.payload);
+      const mcpServerLabel = toolPayload?.mcpServerName
+        ? resolveMcpServerLabel(toolPayload.mcpServerName, mcpStatusNamesByKey)
+        : null;
+      const cacheKey =
+        activity.kind === "runtime.warning"
+          ? runtimeWarningVisibility
+          : JSON.stringify([
+              userInput ?? null,
+              answeredQuestion,
+              startedAt ?? null,
+              mcpServerLabel,
+            ]);
+      const cached = workLogEntryByActivity.get(activity);
+      if (cached?.cacheKey === cacheKey) {
+        return cached.entry;
+      }
       const diagnostic = diagnosticFromActivity(activity, payload);
       const warningCategory = asTrimmedString(payload?.category);
       const usageLimit =
@@ -1573,12 +1943,6 @@ export function deriveWorkLogEntries(
                 ? payload.message
                 : activity.summary
               : activity.summary;
-      // "User input submitted" buries what was asked: lead with the question and keep the
-      // answer as the row's detail.
-      const answeredQuestion =
-        activity.kind === "user-input.resolved" && typeof payload?.requestId === "string"
-          ? userInputQuestionByRequestId.get(payload.requestId)
-          : undefined;
       const answerPreview = answeredQuestion ? userInputAnswerPreview(payload?.answers) : "";
       const entry: WorkLogEntry = {
         id: activity.id,
@@ -1587,6 +1951,8 @@ export function deriveWorkLogEntries(
         tone: usageLimit || activity.tone === "approval" ? "info" : activity.tone,
         activityKind: activity.kind,
         ...(answeredQuestion && answerPreview ? { detail: answerPreview } : {}),
+        ...(userInput ? { userInput } : {}),
+        ...(startedAt ? { startedAt } : {}),
       };
       if (activity.kind === "mcpApp") {
         const app = readMcpAppView(payload);
@@ -1610,6 +1976,12 @@ export function deriveWorkLogEntries(
         const detail = stripTrailingExitCode(detailSource).output;
         if (detail) {
           entry.detail = detail;
+        }
+      } else if (activity.kind === "runtime.error" && !usageLimit) {
+        // The row label is the generic "Runtime error"; the retained message says what failed.
+        const message = asTrimmedString(payload?.message);
+        if (message && collapseWhitespace(message) !== collapseWhitespace(entry.label)) {
+          entry.detail = message;
         }
       }
       if (toolPayload?.command) {
@@ -1697,8 +2069,12 @@ export function deriveWorkLogEntries(
       }
       if (toolPayload?.mcpServerName) {
         entry.mcpServerName = toolPayload.mcpServerName;
+        if (mcpServerLabel) entry.mcpServerLabel = mcpServerLabel;
       }
       if (toolPayload?.computerTool === true) entry.computerTool = true;
+      if (toolPayload?.computerTool === true && toolPayload.computerStep) {
+        entry.computerStep = toolPayload.computerStep;
+      }
       if (toolPayload?.mcpToolName) {
         entry.mcpToolName = toolPayload.mcpToolName;
       }
@@ -1751,11 +2127,12 @@ export function deriveWorkLogEntries(
         }
       }
       entry.isIssue = usageLimit !== null || isWorkLogIssue(entry);
+      workLogEntryByActivity.set(activity, { cacheKey, entry });
       return entry;
     });
 
   const deduped = dedupeProviderItemWorkLogEntries(
-    coalesceCodexCollaborationEntries(correlateSubagentActivities(entries)),
+    coalesceProviderItemSnapshots(correlateSubagentActivities(entries)),
   );
   const paired = pairDiagnosticLifecycles(deduped);
   const modeFiltered = paired.filter((entry) => {
@@ -1788,7 +2165,15 @@ export function deriveWorkLogEntries(
         return true;
     }
   });
-  return coalesceProtocolWarnings(filtered);
+  const automationDiagnosticCallKey = diagnosticCallKeyResolver(
+    filtered.filter((entry) => automationToolSurface(entry) !== undefined),
+  );
+  const historical = preserveAutomationRunBoundaries(filtered).filter(
+    (entry) =>
+      retainedActivityIds.has(entry.id) ||
+      (entry.diagnostic !== undefined && automationDiagnosticCallKey(entry) !== undefined),
+  );
+  return coalesceProtocolWarnings(historical);
 }
 
 function asTrimmedString(value: unknown): string | undefined {
@@ -2023,21 +2408,26 @@ export function deriveTimelineEntries(
   );
   const diagnosticEntries = workEntries.filter((entry) => entry.diagnostic !== undefined);
   const regularWorkEntries = workEntries.filter((entry) => entry.diagnostic === undefined);
+  const diagnosticCallKey = diagnosticCallKeyResolver([
+    ...regularWorkEntries,
+    ...commandExecutions,
+  ]);
   const pendingDiagnosticsByProviderItemId = new Map<string, WorkLogEntry[]>();
   for (const diagnostic of diagnosticEntries) {
-    if (!diagnostic.parentProviderItemId) {
-      continue;
-    }
-    const key = String(diagnostic.parentProviderItemId);
+    const key = diagnosticCallKey(diagnostic);
+    if (!key) continue;
     const existing = pendingDiagnosticsByProviderItemId.get(key) ?? [];
     existing.push(diagnostic);
     pendingDiagnosticsByProviderItemId.set(key, existing);
   }
-  const takeDiagnostics = (providerItemId: ProviderItemId | null | undefined) => {
+  const takeDiagnostics = (
+    turnId: TurnId | null | undefined,
+    providerItemId: ProviderItemId | null | undefined,
+  ) => {
     if (!providerItemId) {
       return undefined;
     }
-    const key = String(providerItemId);
+    const key = providerCallKey(turnId, providerItemId);
     const diagnostics = pendingDiagnosticsByProviderItemId.get(key);
     if (!diagnostics) {
       return undefined;
@@ -2047,7 +2437,7 @@ export function deriveTimelineEntries(
   };
 
   const workRows: TimelineEntry[] = regularWorkEntries.map((entry) => {
-    const nestedDiagnostics = takeDiagnostics(entry.providerItemId);
+    const nestedDiagnostics = takeDiagnostics(entry.turnId, entry.providerItemId);
     return reuse(entry.id, [entry, ...(nestedDiagnostics ?? [])], () => {
       const nestedEntry = nestedDiagnostics ? { ...entry, nestedDiagnostics } : entry;
       return {
@@ -2062,7 +2452,7 @@ export function deriveTimelineEntries(
     .toSorted(compareCommandExecutions)
     .map((commandExecution) => {
       const providerItemId = commandExecution.providerItemId;
-      const nestedDiagnostics = takeDiagnostics(providerItemId);
+      const nestedDiagnostics = takeDiagnostics(commandExecution.turnId, providerItemId);
       return reuse(commandExecution.id, [commandExecution, ...(nestedDiagnostics ?? [])], () => {
         const row = commandTimelineEntry(commandExecution);
         if (!nestedDiagnostics) return row;
@@ -2072,11 +2462,10 @@ export function deriveTimelineEntries(
       });
     });
   const uncorrelatedDiagnosticRows: TimelineEntry[] = diagnosticEntries
-    .filter(
-      (entry) =>
-        !entry.parentProviderItemId ||
-        pendingDiagnosticsByProviderItemId.has(String(entry.parentProviderItemId)),
-    )
+    .filter((entry) => {
+      const key = diagnosticCallKey(entry);
+      return !key || pendingDiagnosticsByProviderItemId.has(key);
+    })
     .map((entry) =>
       reuse(entry.id, [entry], () => ({
         id: entry.id,
@@ -2110,11 +2499,13 @@ function commandTimelineEntry(
   commandExecution: OrchestrationCommandExecutionSummary,
 ): TimelineEntry {
   const commandClassification = classifyCompactCommand(commandExecution.command);
+  // Background titles carry a " — <status>" suffix that labels should not show.
+  const baseTitle = commandExecution.title
+    ? parseCommandExecutionTitle(commandExecution.title).baseTitle
+    : null;
+  const specificTitle = baseTitle && !isGenericCommandTitle(baseTitle) ? baseTitle : null;
   if (commandClassification.kind === "file-read") {
-    const label =
-      commandExecution.title && !isGenericCommandTitle(commandExecution.title)
-        ? commandExecution.title
-        : "Read file";
+    const label = specificTitle ?? "Read file";
     return {
       id: commandExecution.id,
       kind: "work" as const,
@@ -2140,10 +2531,7 @@ function commandTimelineEntry(
   }
 
   if (commandClassification.kind === "search") {
-    const label =
-      commandExecution.title && !isGenericCommandTitle(commandExecution.title)
-        ? commandExecution.title
-        : commandClassification.summary;
+    const label = specificTitle ?? commandClassification.summary;
     return {
       id: commandExecution.id,
       kind: "work" as const,

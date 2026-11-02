@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { appendAttachedFilesToPrompt } from "~/lib/attachedFiles";
-import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "~/lib/composerSendText";
+import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerSendText";
 import { stepPromptHistory, recallablePrompt } from "./promptHistory";
 
 const messages = [

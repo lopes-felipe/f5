@@ -65,6 +65,33 @@ describe("async questions", () => {
       asyncDraftsByThreadId: {},
     });
   });
+  it("submits native option values and hides custom answers for option-only questions", async () => {
+    const input: PendingUserInput = {
+      ...question,
+      questions: [
+        {
+          id: "branch",
+          header: "Branch",
+          question: "Choose branch",
+          options: [{ label: "Main", description: "Default branch", value: "opt-main" }],
+          allowCustomAnswer: false,
+        },
+      ],
+    };
+    const screen = await render(<AsyncUserInputPanel threadId={threadId} input={input} />);
+    try {
+      await expect.element(page.getByRole("button", { name: "Other…" })).not.toBeInTheDocument();
+      await page.getByRole("button", { name: "Main", exact: true }).click();
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      await vi.waitFor(() =>
+        expect(mocks.dispatch).toHaveBeenCalledWith(
+          expect.objectContaining({ answers: { branch: { answers: ["opt-main"] } } }),
+        ),
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
   it("keeps a typed answer and the question position after a remount", async () => {
     const first = await render(<AsyncUserInputPanel threadId={threadId} input={twoQuestions} />);
     await page.getByRole("button", { name: "Ready", exact: true }).click();

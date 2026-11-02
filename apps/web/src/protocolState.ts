@@ -34,6 +34,10 @@ export function useServerCapability(capability: string): boolean {
     () => false,
   );
 }
+/** Non-reactive read for event handlers outside React. */
+export function hasServerCapability(capability: string): boolean {
+  return bootstrap?.capabilities.includes(capability) ?? false;
+}
 export function requireProtocolUpgrade(): void {
   if (state.upgradeRequired) return;
   state = { ...state, upgradeRequired: true };

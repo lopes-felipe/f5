@@ -18,7 +18,12 @@ export function seedPendingUserInputAnswers(
 ): Record<string, PendingUserInputDraftAnswer> {
   let next = drafts;
   for (const question of questions) {
-    if (question.initialAnswer === undefined || Object.hasOwn(next, question.id)) continue;
+    if (
+      question.allowCustomAnswer === false ||
+      question.initialAnswer === undefined ||
+      Object.hasOwn(next, question.id)
+    )
+      continue;
     if (next === drafts) next = { ...drafts };
     next[question.id] = { customAnswer: question.initialAnswer };
   }
@@ -72,6 +77,18 @@ function normalizeSelectedLabels(labels: readonly string[] | undefined): string[
   return out;
 }
 
+/** Resolve presentation labels to native option IDs at the submission boundary. */
+export function resolvePendingUserInputOptionValues(
+  question: UserInputQuestion | undefined,
+  labels: readonly string[] | undefined,
+): string[] {
+  return normalizeSelectedLabels(labels).flatMap((label) => {
+    const option = question?.options.find((option) => option.label === label);
+    if (question?.allowCustomAnswer === false && !option) return [];
+    return [option?.value ?? label];
+  });
+}
+
 /**
  * Resolve the canonical answer value for a single question draft. Returns:
  * - `string` for a custom free-text answer (which supersedes option picks)
@@ -83,13 +100,14 @@ function normalizeSelectedLabels(labels: readonly string[] | undefined): string[
  */
 export function resolvePendingUserInputAnswer(
   draft: PendingUserInputDraftAnswer | undefined,
+  question?: UserInputQuestion,
 ): PendingUserInputAnswerValue | null {
   const customAnswer = normalizeDraftAnswer(draft?.customAnswer);
-  if (customAnswer) {
+  if (customAnswer && question?.allowCustomAnswer !== false) {
     return customAnswer;
   }
 
-  const labels = normalizeSelectedLabels(draft?.selectedOptionLabels);
+  const labels = resolvePendingUserInputOptionValues(question, draft?.selectedOptionLabels);
   if (labels.length === 0) return null;
   if (labels.length === 1) return labels[0] ?? null;
   return labels;
@@ -141,7 +159,7 @@ export function buildPendingUserInputAnswers(
   const answers: Record<string, PendingUserInputAnswerValue> = {};
 
   for (const question of questions) {
-    const answer = resolvePendingUserInputAnswer(draftAnswers[question.id]);
+    const answer = resolvePendingUserInputAnswer(draftAnswers[question.id], question);
     if (answer === null) {
       if (question.optional) {
         answers[question.id] = "";
@@ -160,7 +178,9 @@ export function countAnsweredPendingUserInputQuestions(
   draftAnswers: Record<string, PendingUserInputDraftAnswer>,
 ): number {
   return questions.reduce((count, question) => {
-    return resolvePendingUserInputAnswer(draftAnswers[question.id]) !== null ? count + 1 : count;
+    return resolvePendingUserInputAnswer(draftAnswers[question.id], question) !== null
+      ? count + 1
+      : count;
   }, 0);
 }
 
@@ -170,7 +190,8 @@ export function findFirstUnansweredPendingUserInputQuestionIndex(
 ): number {
   const unansweredIndex = questions.findIndex(
     (question) =>
-      !question.optional && resolvePendingUserInputAnswer(draftAnswers[question.id]) === null,
+      !question.optional &&
+      resolvePendingUserInputAnswer(draftAnswers[question.id], question) === null,
   );
 
   return unansweredIndex === -1 ? Math.max(questions.length - 1, 0) : unansweredIndex;
@@ -185,8 +206,9 @@ export function derivePendingUserInputProgress(
     questions.length === 0 ? 0 : Math.max(0, Math.min(questionIndex, questions.length - 1));
   const activeQuestion = questions[normalizedQuestionIndex] ?? null;
   const activeDraft = activeQuestion ? draftAnswers[activeQuestion.id] : undefined;
-  const resolvedAnswer = resolvePendingUserInputAnswer(activeDraft);
-  const customAnswer = activeDraft?.customAnswer ?? "";
+  const resolvedAnswer = resolvePendingUserInputAnswer(activeDraft, activeQuestion ?? undefined);
+  const customAnswer =
+    activeQuestion?.allowCustomAnswer === false ? "" : (activeDraft?.customAnswer ?? "");
   const selectedOptionLabels = normalizeSelectedLabels(activeDraft?.selectedOptionLabels);
   const answeredQuestionCount = countAnsweredPendingUserInputQuestions(questions, draftAnswers);
   const isLastQuestion =

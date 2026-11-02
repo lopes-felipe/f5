@@ -4,7 +4,16 @@ import { highlightThreadFind } from "./threadFindHighlights";
 import { HtmlRenderFrame } from "./HtmlRenderFrame";
 import { recordTimelineRowRender } from "../../lib/performanceCounters";
 import { messageTextRevision, messageReasoningContent } from "../../lib/streamingTextRevision";
-import { computerToolHeading } from "@t3tools/shared/computerAction";
+import { computerToolHeading, previewToolHeading } from "@t3tools/shared/computerAction";
+import {
+  automationRunEnd,
+  classifyAutomationEntry,
+  isAutomationEntryFailed,
+  summarizeAutomationRun,
+  type AutomationSurface,
+} from "./AutomationSessionCard.logic";
+import { AutomationSessionCard } from "./AutomationSessionCard";
+import { McpToolCallDetails } from "./McpToolCallDetails";
 import type { PromptLinkRepository } from "@t3tools/shared/promptLinks";
 import { NativeFilePreview } from "./NativeFilePreview";
 import { AttachmentFileChip } from "./AttachmentFileChip";
@@ -51,26 +60,39 @@ import { type TurnDiffSummary } from "../../types";
 import { changedLineCount, summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import ChatMarkdown from "../ChatMarkdown";
 import {
+  BanIcon,
   BotIcon,
   BrainIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   CircleAlertIcon,
+  CircleStopIcon,
   ClockIcon,
   EyeIcon,
+  FigmaIcon,
   GlobeIcon,
   HammerIcon,
   ImageIcon,
+  ListTodoIcon,
   LoaderCircleIcon,
   type LucideIcon,
   MessageSquarePlusIcon,
   SearchIcon,
+  SlackIcon,
   SquarePenIcon,
   TerminalIcon,
+  XIcon,
   ZapIcon,
 } from "lucide-react";
-import { McpIcon, type Icon } from "../Icons";
+import { ClaudeAI, GitHubIcon, LinearIcon, McpIcon, NotionIcon, type Icon } from "../Icons";
+import {
+  mcpAggregateStatus,
+  mcpServerIconKind,
+  mcpServerTint,
+  summarizeMcpResult,
+  type McpCallDisplayStatus,
+} from "../../lib/mcpServerDisplay";
 import { SectionLabel } from "../ui/section-label";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import { FileChip } from "./FileChip";
@@ -96,12 +118,17 @@ import {
   computeMessageDurationStart,
   deriveCodexCollaborationResponseRows,
   deriveTimelineTurnRailItems,
+  describeDynamicToolEntry,
+  type DynamicToolIconKind,
   findNearestMinimapMarkerIndex,
   formatWorkingLabel,
   isFileChangeWorkEntry,
   isFileReadWorkEntry,
   isSearchWorkEntry,
+  mcpServerMonogram,
   normalizeCompactToolLabel,
+  parseJsonObject,
+  summarizeToolInputPairs,
   normalizedSearchSummary,
   normalizedWorkEntryHeading,
   resolveActiveTurnRailIndex,
@@ -131,6 +158,9 @@ import type { RibbonPoint } from "./WorkingRibbon.logic";
 import { useReducedMotion } from "../../hooks/useReducedMotion";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { SkillInlineChip } from "./SkillInlineChip";
+import { UserInputCard } from "./UserInputCard";
+import { ThreadReferenceChip } from "./ThreadReferenceChip";
+import { threadReferenceMatches } from "@t3tools/shared/threadReferences";
 import {
   deriveDisplayedUserMessageState,
   type ParsedTerminalContextEntry,
@@ -206,6 +236,10 @@ function MessagesTimelineEmpty(props: { emptyState: MessagesTimelineEmptyState |
     </Empty>
   );
 }
+
+// Drawn inside the media so dark screenshots keep an edge on the dark background.
+const USER_MEDIA_EDGE_CLASS_NAME =
+  "relative after:pointer-events-none after:absolute after:inset-0 after:z-10 after:rounded-[inherit] after:ring-1 after:ring-inset after:ring-black/9 dark:after:ring-white/12";
 
 const WORK_META_CHIP_CLASS_NAME =
   "inline-flex h-5 items-center rounded-md border border-border bg-muted/50 px-1.5 text-2xs text-muted-foreground";
@@ -849,6 +883,22 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     });
   }, [listRef]);
 
+  const disclosurePinsEndRef = useRef(false);
+  const disclosureSettleFrameRef = useRef<number | null>(null);
+  // A jump or scroll away from the end: stop following the tail now, and drop
+  // any follow scroll or disclosure pin already queued for a later frame.
+  const leaveEnd = useCallback(() => {
+    manualScrollGenerationRef.current++;
+    isAtEndRef.current = false;
+    liveFollowEnabledRef.current = false;
+    setLiveFollowEnabled(false);
+    disclosurePinsEndRef.current = false;
+    if (disclosureSettleFrameRef.current !== null) {
+      window.cancelAnimationFrame(disclosureSettleFrameRef.current);
+      disclosureSettleFrameRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     if (!hasMessages && !isWorking) {
       return;
@@ -894,10 +944,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       if (scrollableNode instanceof HTMLElement) {
         const cancelFollow = () => {
           if (scrollableNode.scrollHeight <= scrollableNode.clientHeight) return;
-          manualScrollGenerationRef.current++;
-          isAtEndRef.current = false;
-          liveFollowEnabledRef.current = false;
-          setLiveFollowEnabled(false);
+          leaveEnd();
         };
         const wheel = (event: WheelEvent) => {
           if (event.deltaY < 0) cancelFollow();
@@ -944,7 +991,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         cleanup();
       }
     };
-  }, [hasMessages, isWorking, listRef, measureTurnRailGutter, syncIsAtEndFromListState]);
+  }, [hasMessages, isWorking, leaveEnd, listRef, measureTurnRailGutter, syncIsAtEndFromListState]);
 
   useLayoutEffect(() => {
     if (!threadId || !hasMessages) return;
@@ -975,8 +1022,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   // A disclosure toggled at the end keeps the end in view while rows re-measure.
   // Anywhere else, maintainVisibleContentPosition holds the toggled row in place.
-  const disclosurePinsEndRef = useRef(false);
-  const disclosureSettleFrameRef = useRef<number | null>(null);
   const pinDisclosureToEnd = useCallback(() => {
     if (!disclosurePinsEndRef.current) return;
     const node = listRef.current?.getScrollableNode?.();
@@ -1017,14 +1062,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [],
   );
 
-  // A jump away from the end: stop following the tail now, and drop any
-  // follow scroll already queued for the next frame.
-  const leaveEnd = useCallback(() => {
-    manualScrollGenerationRef.current++;
-    isAtEndRef.current = false;
-    liveFollowEnabledRef.current = false;
-    setLiveFollowEnabled(false);
-  }, []);
   useLayoutEffect(() => {
     if (!leaveEndRef) return;
     leaveEndRef.current = leaveEnd;
@@ -1391,6 +1428,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       const reverting = dimmed && pendingRevert !== null;
       const externalsEntry = rowExternals.get(item.id);
       return (
+        // Keep `overflow-x-clip`: `hidden` computes `overflow-y: auto`, so ChangedFilesTree would
+        // take this row as its scroller and mount every row of a large tree.
         <div
           className="mx-auto w-full min-w-0 max-w-(--chat-content-max-width) overflow-x-clip"
           data-timeline-root="true"
@@ -1723,10 +1762,13 @@ function RevertStatusPill({ label }: { label: string }) {
 // internally, so the ResizeObserver shim is no longer needed.
 const TimelineRowWrapper = memo(function TimelineRowWrapper({
   row,
+  compactBottom,
   testRenderCountProps,
   children,
 }: {
   row: TimelineRow;
+  /** A tool row followed by another tool row. */
+  compactBottom: boolean;
   testRenderCountProps?: { "data-render-count": number } | undefined;
   children: ReactNode;
 }) {
@@ -1776,7 +1818,7 @@ const TimelineRowWrapper = memo(function TimelineRowWrapper({
       ref={element}
       data-thread-find-active={active ? "true" : undefined}
       data-row-entering={entering ? "" : undefined}
-      className={entering ? "pb-4 motion-safe:animate-rise" : "pb-4"}
+      className={cn(compactBottom ? "pb-1.5" : "pb-4", entering && "motion-safe:animate-rise")}
       {...testRenderCountProps}
       data-timeline-row-id={row.id}
       data-timeline-row-kind={row.kind}
@@ -1819,8 +1861,26 @@ function shouldRenderWorkEntryAsStandaloneRow(
 ): boolean {
   return (
     entry.activityKind === "user-input.resolved" ||
+    !!entry.userInput ||
     !!entry.htmlRender ||
     (entry.itemType === "mcp_tool_call" && options.settingsExpandMcpToolCalls)
+  );
+}
+
+/** An MCP call drawn as a card (the "expand MCP tool calls" setting), not a log row. */
+/** The most calls one MCP card holds. */
+export const MCP_CARD_MAX_CALLS = 8;
+
+function isMcpCardWorkEntry(
+  entry: TimelineWorkEntry,
+  options: { settingsExpandMcpToolCalls: boolean },
+): boolean {
+  return (
+    options.settingsExpandMcpToolCalls &&
+    entry.itemType === "mcp_tool_call" &&
+    !entry.diagnostic &&
+    !entry.mcpApp &&
+    !entry.htmlRender
   );
 }
 
@@ -1843,7 +1903,15 @@ type TimelineRow =
       groupedEntries: TimelineWorkEntry[];
       /** Above the newest user message, so eligible for collapsing. */
       isPriorTurn: boolean;
+      /** Set when the row is one computer or browser-preview run. */
+      automationSurface?: AutomationSurface;
+      /** The run belongs to the turn that is still working, so its calls may be live. */
+      automationActive?: boolean;
+      /** Back-to-back MCP calls of one turn, rendered as one MCP card. */
+      mcpGroup?: boolean;
       workSummary: string;
+      /** Another tool row follows, so this one keeps a tighter bottom gap. */
+      compactBottom?: boolean;
     }
   | {
       kind: "message";
@@ -1866,6 +1934,8 @@ type TimelineRow =
       createdAt: string;
       commandExecution: TimelineCommandExecution;
       nestedDiagnostics?: ReadonlyArray<TimelineWorkEntry>;
+      /** Another tool row follows, so this one keeps a tighter bottom gap. */
+      compactBottom?: boolean;
     }
   | {
       kind: "working";
@@ -1875,6 +1945,11 @@ type TimelineRow =
       /** The latest thought while a later tool runs. */
       thought: string | null;
     };
+
+/** Tool rows followed by another tool row sit closer, so a turn's calls read as one block. */
+function isToolTimelineRow(row: TimelineRow | undefined): boolean {
+  return row?.kind === "work" || row?.kind === "command";
+}
 
 /** Label for the working row: what the running turn is doing right now. */
 function workingActivityLabel(
@@ -2057,8 +2132,30 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   );
 });
 
+/** `text` with each complete thread reference shown as a linked chip. */
+function renderWithThreadReferences(text: string): ReactNode {
+  const matches = threadReferenceMatches(text);
+  if (matches.length === 0) return text;
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  for (const match of matches) {
+    if (match.start > cursor) nodes.push(text.slice(cursor, match.start));
+    nodes.push(
+      <ThreadReferenceChip
+        key={`thread-reference:${match.start}`}
+        threadId={match.threadId}
+        label={match.label}
+        link
+      />,
+    );
+    cursor = match.end;
+  }
+  if (cursor < text.length) nodes.push(text.slice(cursor));
+  return nodes;
+}
+
 /**
- * A user message with its code spans, fences and bold rendered. The full
+ * A user message with its code spans, fences, bold and thread references rendered. The full
  * source is parsed and clipped to the displayed prefix, so a collapsed bubble
  * always shows the start of the expanded one.
  */
@@ -2100,7 +2197,16 @@ function UserMessageMarkupText(props: {
               </code>
             );
           case "bold":
-            return <strong key={segment.start}>{segment.value}</strong>;
+            return <strong key={segment.start}>{renderWithThreadReferences(segment.value)}</strong>;
+          case "thread-reference":
+            return (
+              <ThreadReferenceChip
+                key={segment.start}
+                threadId={segment.threadId}
+                label={segment.label}
+                link
+              />
+            );
           case "codeblock":
             return (
               <pre key={segment.start} className="user-message-codeblock">
@@ -2203,7 +2309,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
         if (matchIndex > cursor) {
           inlineNodes.push(
             <span key={`user-terminal-context-inline-before:${context.header}:${cursor}`}>
-              {textAfterSkillPrefix.slice(cursor, matchIndex)}
+              {renderWithThreadReferences(textAfterSkillPrefix.slice(cursor, matchIndex))}
             </span>,
           );
         }
@@ -2220,7 +2326,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
         if (cursor < textAfterSkillPrefix.length) {
           inlineNodes.push(
             <span key={`user-message-terminal-context-inline-rest:${cursor}`}>
-              {textAfterSkillPrefix.slice(cursor)}
+              {renderWithThreadReferences(textAfterSkillPrefix.slice(cursor))}
             </span>,
           );
         }
@@ -2254,7 +2360,9 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 
     if (textAfterSkillPrefix.length > 0) {
       inlineNodes.push(
-        <span key="user-message-terminal-context-inline-text">{textAfterSkillPrefix}</span>,
+        <span key="user-message-terminal-context-inline-text">
+          {renderWithThreadReferences(textAfterSkillPrefix)}
+        </span>,
       );
     } else if (inlinePrefix.length === 0) {
       return null;
@@ -2282,7 +2390,9 @@ const UserMessageBody = memo(function UserMessageBody(props: {
       >
         {skillNodes}
         {textAfterSkillPrefix.length > 0 ? (
-          <span key="user-message-skill-call-rest">{textAfterSkillPrefix}</span>
+          <span key="user-message-skill-call-rest">
+            {renderWithThreadReferences(textAfterSkillPrefix)}
+          </span>
         ) : null}
       </div>
     );
@@ -2303,7 +2413,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
       className="whitespace-pre-wrap wrap-break-word chat-plaintext leading-relaxed text-foreground"
       {...(testRenderCountProps ?? {})}
     >
-      {textAfterSkillPrefix}
+      {renderWithThreadReferences(textAfterSkillPrefix)}
     </pre>
   );
 });
@@ -2729,10 +2839,12 @@ function workEntryPreview(
     | "cwd"
     | "changedFiles"
     | "itemType"
+    | "label"
     | "lineSummary"
     | "readPaths"
     | "requestKind"
     | "searchSummary"
+    | "toolTitle"
     | "turnId"
   >,
   turnDiffSummaryByTurnId: Map<TurnId, TurnDiffSummary>,
@@ -2762,11 +2874,20 @@ function workEntryPreview(
   if (isFileChangeRow && changedFilesPreview) {
     return changedFilesPreview;
   }
+  const dynamicTool = describeDynamicToolEntry(workEntry);
+  if (dynamicTool) return dynamicTool.preview ?? undefined;
   if (workEntry.detail) return workEntry.detail;
   return changedFilesPreview;
 }
 
 type TimelineEntryIcon = Icon | LucideIcon;
+
+const DYNAMIC_TOOL_ICONS: Record<DynamicToolIconKind, LucideIcon> = {
+  search: SearchIcon,
+  web: GlobeIcon,
+  tasks: ListTodoIcon,
+  tool: HammerIcon,
+};
 
 function workEntryIcon(workEntry: TimelineWorkEntry): TimelineEntryIcon {
   if (workEntry.requestKind === "command") {
@@ -2805,6 +2926,8 @@ function workEntryIcon(workEntry: TimelineWorkEntry): TimelineEntryIcon {
   if (workEntry.itemType === "image_view") return EyeIcon;
   if (workEntry.itemType === "image_generation") return ImageIcon;
   if (workEntry.itemType === "sleep") return ClockIcon;
+  const dynamicTool = describeDynamicToolEntry(workEntry);
+  if (dynamicTool) return DYNAMIC_TOOL_ICONS[dynamicTool.icon];
 
   switch (workEntry.itemType) {
     case "mcp_tool_call":
@@ -2866,6 +2989,11 @@ export function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
     ? computerToolHeading(workEntry.mcpToolName, workEntry.status)
     : undefined;
   if (computer) return `Computer · ${computer}`;
+  const preview =
+    classifyAutomationEntry(workEntry) === "preview"
+      ? previewToolHeading(workEntry.mcpToolName, workEntry.status)
+      : undefined;
+  if (preview) return `Browser · ${preview}`;
   if (workEntry.itemType === "mcp_tool_call") {
     return `MCP Call - ${formatMcpToolHeading(workEntry)}`;
   }
@@ -2890,6 +3018,10 @@ export function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
     const inferredHeading = inferredFileOperationHeading(workEntry);
     if (inferredHeading) {
       return inferredHeading;
+    }
+    const dynamicTool = describeDynamicToolEntry(workEntry);
+    if (dynamicTool) {
+      return dynamicTool.heading;
     }
   }
   return capitalizePhrase(normalizedHeading);
@@ -2949,6 +3081,12 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     : preview
       ? `${heading} - ${preview}`
       : heading;
+  // A humanized tool row still offers the raw call on hover.
+  const dynamicTool = describeDynamicToolEntry(workEntry);
+  const hoverText =
+    dynamicTool && !inlineFilePreview && heading === dynamicTool.heading && workEntry.detail
+      ? `${heading} - ${workEntry.detail}`
+      : displayText;
   const hasChangedFiles = fileChangeEntry
     ? fileChangePreviews.length > 0
     : (workEntry.changedFiles?.length ?? 0) > 0;
@@ -3014,7 +3152,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
               workToneClass(workEntry.tone),
               preview ? "text-muted-foreground" : "",
             )}
-            title={displayText}
+            title={hoverText}
           >
             {workEntry.itemType === "image_view" && workEntry.imagePath ? (
               <button
@@ -3194,13 +3332,183 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   );
 });
 
+// The theme's one six-hue palette; status colors would read as call outcomes.
+const MCP_SERVER_TINT_CLASS_NAMES: Record<number, string> = {
+  1: "border-effort-low/45 bg-effort-low/20",
+  2: "border-effort-medium/45 bg-effort-medium/20",
+  3: "border-effort-high/45 bg-effort-high/20",
+  4: "border-effort-xhigh/45 bg-effort-xhigh/20",
+  5: "border-effort-max/45 bg-effort-max/20",
+  6: "border-effort-deepest/45 bg-effort-deepest/20",
+};
+
+function McpServerIcon(props: { serverName: string; label: string }) {
+  const kind = mcpServerIconKind(props.serverName, props.label);
+  const tileClassName =
+    "flex size-5.5 shrink-0 items-center justify-center rounded-md border text-foreground";
+  if (kind === "monogram") {
+    return (
+      <span
+        aria-hidden="true"
+        data-mcp-server-icon="monogram"
+        className={cn(
+          tileClassName,
+          "text-2xs font-semibold",
+          MCP_SERVER_TINT_CLASS_NAMES[mcpServerTint(props.serverName)],
+        )}
+      >
+        {mcpServerMonogram(props.label)}
+      </span>
+    );
+  }
+  const glyphClassName = "size-3.5";
+  return (
+    <span
+      aria-hidden="true"
+      data-mcp-server-icon={kind}
+      className={cn(tileClassName, "border-border/70 bg-background/60")}
+    >
+      {kind === "github" ? (
+        <GitHubIcon className={glyphClassName} />
+      ) : kind === "linear" ? (
+        <LinearIcon className={glyphClassName} />
+      ) : kind === "notion" ? (
+        <NotionIcon className={glyphClassName} />
+      ) : kind === "slack" ? (
+        <SlackIcon className={glyphClassName} />
+      ) : kind === "figma" ? (
+        <FigmaIcon className={glyphClassName} />
+      ) : kind === "claude" ? (
+        <ClaudeAI className={glyphClassName} />
+      ) : (
+        <img src="/favicon-32x32.png" alt="" className={cn(glyphClassName, "rounded-xs")} />
+      )}
+    </span>
+  );
+}
+
+const MCP_CALL_STATUS_PRESENTATION: Record<
+  McpCallDisplayStatus,
+  { label: string; Icon: LucideIcon; iconClassName: string; accentClassName: string }
+> = {
+  running: {
+    label: "Running",
+    Icon: LoaderCircleIcon,
+    iconClassName: "animate-spin text-info motion-reduce:animate-none",
+    accentClassName: "border-l-info/70",
+  },
+  completed: {
+    label: "Completed",
+    Icon: CheckIcon,
+    iconClassName: "text-success",
+    accentClassName: "border-l-success/70",
+  },
+  failed: {
+    label: "Failed",
+    Icon: XIcon,
+    iconClassName: "text-destructive",
+    accentClassName: "border-l-destructive/80",
+  },
+  interrupted: {
+    label: "Interrupted",
+    Icon: CircleStopIcon,
+    iconClassName: "text-warning",
+    accentClassName: "border-l-warning/70",
+  },
+  declined: {
+    label: "Declined",
+    Icon: BanIcon,
+    iconClassName: "text-muted-foreground",
+    accentClassName: "border-l-border",
+  },
+};
+
+function mcpCallDisplayStatus(
+  entry: TimelineWorkEntry,
+  threadWorking: boolean,
+): McpCallDisplayStatus {
+  // Matches automation step drawers: a declined call isn't a failure.
+  if (isAutomationEntryFailed(entry)) return "failed";
+  if (entry.status === "declined") return "declined";
+  // On an idle thread a running call is a completion that never arrived.
+  if (entry.status === "inProgress") return threadWorking ? "running" : "interrupted";
+  return "completed";
+}
+
+function mcpCallFinishedAt(entry: TimelineWorkEntry): string {
+  return entry.completedAt ?? entry.createdAt;
+}
+
+/** From the first call's start to the last call's finish. */
+function mcpCallGroupSpan(entries: ReadonlyArray<TimelineWorkEntry>): string | null {
+  const starts = entries.map((entry) => Date.parse(entry.startedAt ?? entry.createdAt));
+  const ends = entries.map((entry) => Date.parse(mcpCallFinishedAt(entry)));
+  const spanMs = Math.max(...ends) - Math.min(...starts);
+  return Number.isFinite(spanMs) && spanMs > 0 ? formatDuration(spanMs) : null;
+}
+
+/**
+ * Back-to-back MCP calls of a turn share one card: an "MCP" header, then a row per call
+ * that expands on its own. The accent follows the most telling status in the card.
+ */
+const McpToolCallGroupCard = memo(function McpToolCallGroupCard(props: {
+  entries: ReadonlyArray<TimelineWorkEntry>;
+  expandByDefault: boolean;
+  markdownCwd: string | undefined;
+  timestampFormat: TimestampFormat;
+  onImageExpand: (preview: ExpandedImagePreview) => void;
+}) {
+  const { isWorking } = useTimelineRowContext();
+  const aggregate = mcpAggregateStatus(
+    props.entries.map((entry) => mcpCallDisplayStatus(entry, isWorking)),
+  );
+  const callCount = props.entries.length;
+  const span = callCount > 1 && aggregate !== "running" ? mcpCallGroupSpan(props.entries) : null;
+  return (
+    <div
+      className={cn(
+        "group rounded-xl border border-l-2 border-border/60 bg-card/35",
+        MCP_CALL_STATUS_PRESENTATION[aggregate].accentClassName,
+      )}
+      data-slot="mcp-tool-card"
+      data-mcp-call-count={callCount}
+    >
+      <div
+        className="flex min-h-6 items-center gap-1.5 border-b border-border/60 px-3 py-1 text-2xs text-muted-foreground"
+        data-testid="mcp-card-header"
+      >
+        <McpIcon aria-hidden="true" className="size-3" />
+        <span className="font-semibold tracking-wide">MCP</span>
+        {callCount > 1 ? (
+          <span className="ml-auto tabular-nums" data-testid="mcp-card-call-count">
+            {callCount} calls{span ? ` · ${span}` : ""}
+          </span>
+        ) : null}
+      </div>
+      <div className="divide-y divide-border/60">
+        {props.entries.map((entry) => (
+          <McpToolCallRow
+            key={entry.id}
+            workEntry={entry}
+            expandByDefault={props.expandByDefault}
+            markdownCwd={props.markdownCwd}
+            timestampFormat={props.timestampFormat}
+            threadWorking={isWorking}
+            onImageExpand={props.onImageExpand}
+          />
+        ))}
+      </div>
+    </div>
+  );
+});
+
 const McpToolCallRow = memo(function McpToolCallRow(props: {
   workEntry: TimelineWorkEntry;
   expandByDefault: boolean;
-  turnDiffSummaryByTurnId: Map<TurnId, TurnDiffSummary>;
-  workspaceRoot: string | undefined;
   markdownCwd: string | undefined;
-  timestamp: ReactNode;
+  timestampFormat: TimestampFormat;
+  /** A running call on an idle thread (a lost completion) stops counting. */
+  threadWorking: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
 }) {
   const { workEntry, markdownCwd, expandByDefault, onImageExpand } = props;
@@ -3216,14 +3524,40 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
     setOpen(defaultOpen);
   }, [defaultOpen, userOverrodeOpen]);
 
-  const iconConfig = workToneIcon(workEntry.tone);
-  const EntryIcon = workEntryIcon(workEntry);
-  const heading = formatMcpToolHeading(workEntry);
-  // Hover tooltip gets the fuller "MCP Call - <server>: <tool>" phrasing so a
-  // user scanning a dense timeline can confirm what kind of row this is
-  // without expanding it. The visible heading stays compact because the
-  // "MCP tool call" badge above already labels the kind.
+  // The tooltip keeps the fuller "MCP Call - <server>: <tool>" phrasing.
   const hoverTitle = toolWorkEntryHeading(workEntry);
+  const serverName = workEntry.mcpServerName;
+  const serverLabel = workEntry.mcpServerLabel ?? serverName;
+  const toolName = workEntry.mcpToolName ?? formatMcpToolHeading(workEntry);
+  const status = mcpCallDisplayStatus(workEntry, props.threadWorking);
+  const failed = status === "failed";
+  const running = status === "running";
+  const statusPresentation = MCP_CALL_STATUS_PRESENTATION[status];
+  // Only a running call subscribes to the shared clock.
+  const nowIso = useNowIso(running);
+  const startedAt = workEntry.startedAt ?? workEntry.createdAt;
+  const finishedMs =
+    workEntry.startedAt && status !== "interrupted"
+      ? Date.parse(mcpCallFinishedAt(workEntry)) - Date.parse(workEntry.startedAt)
+      : Number.NaN;
+  const duration = running
+    ? formatElapsed(startedAt, nowIso)
+    : finishedMs > 0
+      ? formatDuration(finishedMs)
+      : null;
+  const inputSummary = useMemo(() => {
+    const input = parseJsonObject(workEntry.mcpInput);
+    return input ? summarizeToolInputPairs(input, { quoteStrings: true }) : null;
+  }, [workEntry.mcpInput]);
+  const resultPreview = useMemo(
+    () =>
+      running
+        ? null
+        : summarizeMcpResult(workEntry.mcpResult, parseJsonObject, (input) =>
+            summarizeToolInputPairs(input, { quoteStrings: true }),
+          ),
+    [running, workEntry.mcpResult],
+  );
 
   const handleOpenChange = useCallback((nextOpen: boolean) => {
     setUserOverrodeOpen(true);
@@ -3232,50 +3566,82 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
 
   return (
     <Collapsible
-      className="group rounded-xl border border-border bg-card"
       open={open}
       onOpenChange={handleOpenChange}
+      data-slot="mcp-tool-call"
+      data-status={status}
     >
       <CollapsibleTrigger
         className={cn(
-          "flex w-full items-start gap-3 rounded-xl px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          "flex w-full items-center gap-2.5 px-3 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
           !hasNestedContent && "cursor-default",
         )}
         disabled={!hasNestedContent}
+        title={hoverTitle}
       >
-        <span className="mt-0.5 shrink-0 text-faint-foreground">
-          {hasNestedContent ? (
-            open ? (
-              <ChevronDownIcon className="size-4" />
-            ) : (
-              <ChevronRightIcon className="size-4" />
-            )
-          ) : (
-            <ChevronRightIcon className="size-4 opacity-0" />
-          )}
+        <statusPresentation.Icon
+          role="img"
+          aria-label={statusPresentation.label}
+          className={cn("size-3.5 shrink-0", statusPresentation.iconClassName)}
+        />
+        <McpServerIcon serverName={serverName ?? toolName} label={serverLabel ?? toolName} />
+        <span className="flex min-w-0 flex-1 items-center gap-1.5 text-ui">
+          {serverLabel ? (
+            <span className="shrink-0 text-muted-foreground">{serverLabel} ›</span>
+          ) : null}
+          <span className="min-w-0 truncate font-medium text-foreground">{toolName}</span>
         </span>
-        <span
-          className={cn(
-            "mt-0.5 flex size-4 shrink-0 items-center justify-center",
-            iconConfig.className,
-          )}
-        >
-          <EntryIcon className="size-3.5" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="inline-flex h-5 items-center rounded-full border border-border bg-muted/50 px-2 text-2xs font-medium text-muted-foreground">
-              MCP tool call
+        <span className="flex shrink-0 items-center gap-2 text-2xs text-muted-foreground tabular-nums">
+          {duration ? (
+            <span
+              title={`Started ${formatTimestamp(startedAt, props.timestampFormat)} · since the call started, including input streaming and any approval wait`}
+            >
+              {duration}
             </span>
-          </div>
-          <p className="mt-1.5 text-ui font-medium text-foreground" title={hoverTitle}>
-            {heading}
-          </p>
-        </div>
-        {props.timestamp}
+          ) : (
+            // Without a start time there's no duration to carry the time in its tooltip.
+            <span data-testid="mcp-call-time">
+              {formatTimestamp(workEntry.createdAt, props.timestampFormat)}
+            </span>
+          )}
+          {hasNestedContent ? (
+            <ChevronDownIcon
+              aria-hidden="true"
+              className={cn(
+                "size-3.5 text-faint-foreground transition-transform duration-(--duration-fast)",
+                !open && "-rotate-90",
+              )}
+            />
+          ) : null}
+        </span>
       </CollapsibleTrigger>
+      {!open && inputSummary ? (
+        <p
+          className="-mt-1 truncate px-3 pb-2 pl-17 text-xs text-muted-foreground"
+          data-testid="mcp-input-summary"
+        >
+          {inputSummary}
+        </p>
+      ) : null}
+      {!open && resultPreview ? (
+        <p
+          className={cn(
+            "-mt-1 truncate px-3 pb-2 pl-17 font-mono text-xs",
+            failed ? "text-destructive-foreground" : "text-muted-foreground",
+          )}
+          data-testid="mcp-result-preview"
+        >
+          {failed ? resultPreview : `→ ${resultPreview}`}
+        </p>
+      ) : null}
+      {workEntry.nestedDiagnostics && workEntry.nestedDiagnostics.length > 0 ? (
+        <NestedDiagnosticList
+          diagnostics={workEntry.nestedDiagnostics}
+          className="mr-3 mb-2 ml-17"
+        />
+      ) : null}
       {workEntry.mcpImages && workEntry.mcpImages.length > 0 ? (
-        <div className="flex flex-wrap gap-2 px-3 pb-2.5 pl-13" data-testid="mcp-tool-images">
+        <div className="flex flex-wrap gap-2 px-3 pb-2.5 pl-17" data-testid="mcp-tool-images">
           {workEntry.mcpImages.map((image) => {
             const url = attachmentPreviewUrlForId(image.attachmentId);
             return (
@@ -3317,29 +3683,13 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
       ) : null}
       {hasNestedContent && (
         <CollapsiblePanel>
-          <div className="border-t border-border px-3 py-3">
-            <div className="space-y-3">
-              {workEntry.mcpInput && (
-                <div>
-                  <p className="text-2xs font-medium text-muted-foreground">Input</p>
-                  <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap wrap-break-word rounded-md bg-muted/40 p-2 font-mono text-xs leading-5 text-foreground">
-                    {workEntry.mcpInput}
-                  </pre>
-                </div>
-              )}
-              {workEntry.mcpResult && (
-                <div>
-                  <p className="text-2xs font-medium text-muted-foreground">Result</p>
-                  <div className="mt-1 max-h-80 overflow-auto rounded-md bg-muted/40 p-2 text-ui text-foreground">
-                    <ChatMarkdown
-                      text={workEntry.mcpResult}
-                      cwd={markdownCwd}
-                      isStreaming={false}
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
+          <div className="border-t border-border/60 px-3 py-3 pl-17">
+            <McpToolCallDetails
+              mcpInput={workEntry.mcpInput}
+              mcpResult={workEntry.mcpResult}
+              markdownCwd={markdownCwd}
+              failed={failed}
+            />
           </div>
         </CollapsiblePanel>
       )}
@@ -3733,56 +4083,62 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
       {formatTimestamp(workEntry.createdAt, props.timestampFormat)}
     </time>
   );
-  // A bordered MCP card spans the full row and shows its time in its own header; a time
-  // in the shared right gutter overlapped the card's corner whenever it was wider.
+  // A bordered MCP card spans the full row and keeps its time in the duration tooltip; a
+  // time in the shared right gutter overlapped the card's corner whenever it was wider.
   const mcpCard =
     !workEntry.diagnostic && workEntry.itemType === "mcp_tool_call" && props.expandMcpToolCalls;
-  const row =
-    workEntry.mcpApp && threadId ? (
-      <McpAppFrame app={workEntry.mcpApp} threadId={threadId} />
-    ) : workEntry.htmlRender ? (
-      <HtmlRenderFrame reference={workEntry.htmlRender} onImageExpand={props.onImageExpand} />
-    ) : workEntry.diagnostic ? (
-      <DiagnosticWorkEntryRow workEntry={workEntry} />
-    ) : workEntry.itemType === "collab_agent_tool_call" ? (
-      <SubagentWorkEntryRow
-        workEntry={workEntry}
-        turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
-        workspaceRoot={props.workspaceRoot}
-        markdownCwd={props.markdownCwd}
-      />
-    ) : mcpCard ? (
-      <McpToolCallRow
-        workEntry={workEntry}
-        expandByDefault={props.expandMcpByDefault}
-        turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
-        workspaceRoot={props.workspaceRoot}
-        markdownCwd={props.markdownCwd}
-        timestamp={timestamp("shrink-0 pt-0.5")}
-        onImageExpand={props.onImageExpand}
-      />
-    ) : (
-      <SimpleWorkEntryRow
-        workEntry={workEntry}
-        turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
-        workspaceRoot={props.workspaceRoot}
-        resolvedTheme={props.resolvedTheme}
-        showFileChangeDiffsInline={props.showFileChangeDiffsInline}
-        chatDiffContext={props.chatDiffContext}
-        onOpenTurnDiff={props.onOpenTurnDiff}
-      />
-    );
+  const ownsTimestamp = mcpCard || Boolean(workEntry.userInput);
+  const row = workEntry.userInput ? (
+    <UserInputCard userInput={workEntry.userInput} timestamp={timestamp("shrink-0")} />
+  ) : workEntry.mcpApp && threadId ? (
+    <McpAppFrame app={workEntry.mcpApp} threadId={threadId} />
+  ) : workEntry.htmlRender ? (
+    <HtmlRenderFrame reference={workEntry.htmlRender} onImageExpand={props.onImageExpand} />
+  ) : workEntry.diagnostic ? (
+    <DiagnosticWorkEntryRow workEntry={workEntry} />
+  ) : workEntry.itemType === "collab_agent_tool_call" ? (
+    <SubagentWorkEntryRow
+      workEntry={workEntry}
+      turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
+      workspaceRoot={props.workspaceRoot}
+      markdownCwd={props.markdownCwd}
+    />
+  ) : mcpCard ? (
+    <McpToolCallGroupCard
+      entries={[workEntry]}
+      expandByDefault={props.expandMcpByDefault}
+      markdownCwd={props.markdownCwd}
+      timestampFormat={props.timestampFormat}
+      onImageExpand={props.onImageExpand}
+    />
+  ) : (
+    <SimpleWorkEntryRow
+      workEntry={workEntry}
+      turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
+      workspaceRoot={props.workspaceRoot}
+      resolvedTheme={props.resolvedTheme}
+      showFileChangeDiffsInline={props.showFileChangeDiffsInline}
+      chatDiffContext={props.chatDiffContext}
+      onOpenTurnDiff={props.onOpenTurnDiff}
+    />
+  );
 
   return (
-    <div className={cn("group/work-entry relative min-w-0", !mcpCard && "pr-14")}>
-      {mcpCard ? null : timestamp("absolute right-1 top-1.5")}
+    <div className={cn("group/work-entry relative min-w-0", !ownsTimestamp && "pr-14")}>
+      {ownsTimestamp ? null : timestamp("absolute right-1 top-1.5")}
       {row}
-      {workEntry.nestedDiagnostics && workEntry.nestedDiagnostics.length > 0 ? (
+      {/* MCP cards list their calls' diagnostics under each call. */}
+      {!mcpCard && workEntry.nestedDiagnostics && workEntry.nestedDiagnostics.length > 0 ? (
         <NestedDiagnosticList diagnostics={workEntry.nestedDiagnostics} />
       ) : null}
     </div>
   );
 });
+
+// Session cards fold their calls' rows, so correlated hook and review results move into the card.
+const renderAutomationDiagnostics = (diagnostics: ReadonlyArray<TimelineWorkEntry>) => (
+  <NestedDiagnosticList diagnostics={diagnostics} className="ml-0" />
+);
 
 // ── Timeline rows ────────────────────────────────────────────────────
 
@@ -3930,8 +4286,13 @@ const TimelineRowView = memo(function TimelineRowView(props: {
 }) {
   "use memo";
   const testRenderCountProps = useTestRenderCountProps();
+  const { row } = props;
   return (
-    <TimelineRowWrapper row={props.row} testRenderCountProps={testRenderCountProps}>
+    <TimelineRowWrapper
+      row={row}
+      compactBottom={(row.kind === "work" || row.kind === "command") && row.compactBottom === true}
+      testRenderCountProps={testRenderCountProps}
+    >
       <SurfaceErrorBoundary
         name="timeline-row"
         resetKeys={[props.row, props.rowVersion]}
@@ -4015,11 +4376,44 @@ function WorkGroupRowContent(props: {
     <WorkEntryRow key={`app:${entry.id}`} workEntry={entry} {...entryProps} />
   ));
   if (!logEntries.length) return <div className="min-w-0 space-y-2">{appRows}</div>;
+  // Automation cards stay visible across turns; only their steps collapse.
+  if (row.automationSurface) {
+    return (
+      <div className="min-w-0 px-1 py-0.5">
+        <AutomationSessionCard
+          surface={row.automationSurface}
+          entries={row.groupedEntries}
+          active={row.automationActive ?? false}
+          renderDiagnostics={renderAutomationDiagnostics}
+          timestampFormat={timestampFormat}
+          markdownCwd={markdownCwd}
+          onImageExpand={actions.onImageExpand}
+        />
+      </div>
+    );
+  }
+  // MCP cards stay visible across turns like automation cards; only their rows expand.
+  if (row.mcpGroup && !appEntries.length) {
+    return (
+      <div className="min-w-0 px-1 py-0.5">
+        <McpToolCallGroupCard
+          entries={logEntries}
+          expandByDefault={expandMcpToolCallCardsByDefault}
+          markdownCwd={markdownCwd}
+          timestampFormat={timestampFormat}
+          onImageExpand={actions.onImageExpand}
+        />
+      </div>
+    );
+  }
+  const expanded = externals.collapseOverride ?? !(row.isPriorTurn && collapseCompletedWorkLogs);
+  const canCollapse = row.isPriorTurn && canSetWorkGroupExpanded;
   const standaloneExpandedMcpEntry =
     row.groupedEntries.length === 1 &&
     (row.groupedEntries[0]?.htmlRender ||
       row.groupedEntries[0]?.mcpApp ||
-      row.groupedEntries[0]?.activityKind === "user-input.resolved")
+      row.groupedEntries[0]?.activityKind === "user-input.resolved" ||
+      row.groupedEntries[0]?.userInput)
       ? row.groupedEntries[0]
       : resolveStandaloneExpandedMcpWorkEntry(row.groupedEntries, {
           settingsExpandMcpToolCalls: expandMcpToolCalls,
@@ -4033,8 +4427,6 @@ function WorkGroupRowContent(props: {
     );
   }
 
-  const expanded = externals.collapseOverride ?? !(row.isPriorTurn && collapseCompletedWorkLogs);
-  const canCollapse = row.isPriorTurn && canSetWorkGroupExpanded;
   const log = !expanded ? (
     <div className="min-w-0 px-1 py-0.5">
       <button
@@ -4144,28 +4536,76 @@ function UserMessageRowContent(props: {
   const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
   const terminalContexts = displayedUserMessage.contexts;
   const canRevertAgentWork = externals.canRevert;
+  // Images sent without words show as media, not as a bubble around them.
+  const mediaOnly =
+    userImages.length > 0 &&
+    userFiles.length === 0 &&
+    displayedUserMessage.attachedFilePaths.length === 0 &&
+    terminalContexts.length === 0 &&
+    displayedUserMessage.visibleText.trim() === "";
+  // A lone image keeps its own shape; a fixed crop hides most of a wide screenshot.
+  const loneImage = mediaOnly && userImages.length === 1;
+  // Several images sent without words share one rounded shape, split by hairlines.
+  const collage = mediaOnly && userImages.length > 1;
   return (
     <div className="group/user-message flex flex-col items-end">
       <div
-        className="max-w-full rounded-xl rounded-br-md border border-border bg-secondary px-4 py-2.5 sm:max-w-[85%]"
+        className={cn(
+          "max-w-full sm:max-w-[85%]",
+          !mediaOnly && "rounded-xl rounded-br-md border border-border bg-secondary px-4 py-2.5",
+        )}
         data-slot="user-message-bubble"
+        data-media-only={mediaOnly ? "" : undefined}
       >
         {userFiles.map((file) => (
           <AttachmentFileChip key={file.id} file={file} />
         ))}
         {userImages.length > 0 && (
-          <div className="mb-2 grid max-w-[420px] grid-cols-2 gap-2">
-            {userImages.map((image: NonNullable<TimelineMessage["attachments"]>[number]) => {
+          <div
+            className={cn(
+              "grid",
+              loneImage
+                ? "max-w-full"
+                : collage
+                  ? cn(
+                      USER_MEDIA_EDGE_CLASS_NAME,
+                      "w-80 max-w-full gap-px overflow-hidden rounded-2xl bg-black/9 dark:bg-white/12",
+                      userImages.length === 2
+                        ? "auto-rows-[12rem] grid-cols-2"
+                        : userImages.length === 3
+                          ? "auto-rows-[calc(6rem-0.5px)] grid-cols-[3fr_2fr]"
+                          : "auto-rows-[6rem] grid-cols-2",
+                    )
+                  : "mb-2 max-w-[420px] grid-cols-2 gap-2",
+            )}
+          >
+            {userImages.map((image: NonNullable<TimelineMessage["attachments"]>[number], index) => {
               const previewUrl = image.previewUrl;
               return (
                 <div
                   key={image.id}
-                  className="overflow-hidden rounded-lg border border-border/80 bg-background/70"
+                  className={cn(
+                    loneImage
+                      ? cn(
+                          USER_MEDIA_EDGE_CLASS_NAME,
+                          "overflow-hidden rounded-2xl bg-background/70",
+                        )
+                      : collage
+                        ? cn(
+                            "overflow-hidden bg-background",
+                            userImages.length === 3 && index === 0 && "row-span-2",
+                            userImages.length > 3 &&
+                              userImages.length % 2 === 1 &&
+                              index === userImages.length - 1 &&
+                              "col-span-2",
+                          )
+                        : "overflow-hidden rounded-lg border border-border/80 bg-background/70",
+                  )}
                 >
                   {previewUrl ? (
                     <button
                       type="button"
-                      className="h-full w-full cursor-zoom-in"
+                      className="block h-full w-full cursor-zoom-in"
                       aria-label={`Preview ${image.name}`}
                       onContextMenu={(event) => {
                         if (!usesCustomImageContextMenu || !hasImageActionMenu) return;
@@ -4190,12 +4630,26 @@ function UserMessageRowContent(props: {
                       <img
                         src={previewUrl}
                         alt={image.name}
-                        className="h-full max-h-[220px] w-full object-cover"
+                        className={cn(
+                          "block object-cover",
+                          // A fixed height keeps the row from growing when the image loads.
+                          loneImage
+                            ? "h-48 w-auto min-w-24 max-w-full"
+                            : collage
+                              ? "size-full"
+                              : "h-full max-h-[220px] w-full",
+                        )}
                         draggable={false}
                       />
                     </button>
                   ) : (
-                    <div className="flex min-h-18 items-center justify-center px-2 py-3 text-center text-2xs text-muted-foreground">
+                    <div
+                      className={cn(
+                        "flex min-h-18 items-center justify-center px-2 py-3 text-center text-2xs text-muted-foreground",
+                        loneImage && "h-48 w-64 max-w-full",
+                        collage && "h-full",
+                      )}
+                    >
                       {image.name}
                     </div>
                   )}
@@ -4526,7 +4980,7 @@ function CommandRowContent(props: {
 }) {
   "use memo";
   const { row, externals } = props;
-  const { actions, isWorking, threadId, timestampFormat } = useTimelineRowContext();
+  const { actions, isWorking, threadId, timestampFormat, workspaceRoot } = useTimelineRowContext();
   return (
     <div className="min-w-0 px-1 py-0.5">
       <CommandTranscriptCard
@@ -4534,6 +4988,7 @@ function CommandRowContent(props: {
         execution={row.commandExecution}
         expanded={externals.expanded}
         timestampFormat={timestampFormat}
+        workspaceRoot={workspaceRoot}
         threadWorking={isWorking}
         onToggle={() => actions.onToggleCommandExecution(row.commandExecution.id)}
       />
@@ -4740,16 +5195,46 @@ export function buildTimelineRows(input: {
 
     if (timelineEntry.kind === "work") {
       const groupedEntries = [timelineEntry.entry];
-      const shouldIsolateEntry = shouldRenderWorkEntryAsStandaloneRow(
-        timelineEntry.entry,
-        isolationOptions,
-      );
+      // Computer and preview runs become one session card, whatever the MCP expand setting.
+      const automationSurface = classifyAutomationEntry(timelineEntry.entry);
+      const shouldIsolateEntry =
+        !automationSurface &&
+        shouldRenderWorkEntryAsStandaloneRow(timelineEntry.entry, isolationOptions);
+      const mcpGroup =
+        !automationSurface && isMcpCardWorkEntry(timelineEntry.entry, isolationOptions);
       let cursor = index + 1;
-      if (!shouldIsolateEntry) {
+      if (mcpGroup) {
+        // Back-to-back MCP calls of the same turn share one card. Capped, so a long run
+        // splits into several cards and the list still virtualizes it.
+        while (cursor < timelineEntries.length && groupedEntries.length < MCP_CARD_MAX_CALLS) {
+          const nextEntry = timelineEntries[cursor];
+          if (
+            nextEntry?.kind !== "work" ||
+            classifyAutomationEntry(nextEntry.entry) ||
+            !isMcpCardWorkEntry(nextEntry.entry, isolationOptions) ||
+            nextEntry.entry.turnId !== timelineEntry.entry.turnId
+          ) {
+            break;
+          }
+          groupedEntries.push(nextEntry.entry);
+          cursor += 1;
+        }
+      } else if (automationSurface) {
+        const end = automationRunEnd(timelineEntries, index, (candidate) =>
+          candidate.kind === "work" ? candidate.entry : undefined,
+        );
+        for (; cursor < end; cursor += 1) {
+          const nextEntry = timelineEntries[cursor];
+          if (nextEntry?.kind === "work") groupedEntries.push(nextEntry.entry);
+        }
+      } else if (!shouldIsolateEntry) {
         while (cursor < timelineEntries.length) {
           const nextEntry = timelineEntries[cursor];
           if (!nextEntry || nextEntry.kind !== "work") break;
-          if (shouldRenderWorkEntryAsStandaloneRow(nextEntry.entry, isolationOptions)) {
+          if (
+            classifyAutomationEntry(nextEntry.entry) ||
+            shouldRenderWorkEntryAsStandaloneRow(nextEntry.entry, isolationOptions)
+          ) {
             break;
           }
           groupedEntries.push(nextEntry.entry);
@@ -4760,15 +5245,27 @@ export function buildTimelineRows(input: {
       const isPriorTurn =
         index < lastUserMessageEntryIndex &&
         !groupedEntries.some((entry) => entry.subagentType && entry.status === "inProgress");
+      // Only the working turn's calls can still be running; elsewhere an in-progress
+      // snapshot is a completion that never arrived.
+      const automationActive =
+        automationSurface !== undefined && input.isWorking && index > lastUserMessageEntryIndex;
       nextRows.push(
-        reuse(timelineEntry.id, ["work", isPriorTurn, ...groupedEntries], () => ({
-          kind: "work",
-          id: timelineEntry.id,
-          createdAt: timelineEntry.createdAt,
-          groupedEntries,
-          isPriorTurn,
-          workSummary: summarizeWorkGroup(groupedEntries),
-        })),
+        reuse(
+          timelineEntry.id,
+          ["work", isPriorTurn, automationSurface, automationActive, mcpGroup, ...groupedEntries],
+          () => ({
+            kind: "work",
+            id: timelineEntry.id,
+            createdAt: timelineEntry.createdAt,
+            groupedEntries,
+            isPriorTurn,
+            ...(automationSurface ? { automationSurface, automationActive } : {}),
+            ...(mcpGroup ? { mcpGroup } : {}),
+            workSummary: automationSurface
+              ? summarizeAutomationRun(automationSurface, groupedEntries, automationActive)
+              : summarizeWorkGroup(groupedEntries),
+          }),
+        ),
       );
       index = cursor - 1;
       continue;
@@ -4845,6 +5342,21 @@ export function buildTimelineRows(input: {
         }),
       ),
     );
+  }
+
+  // A tool row's bottom gap depends on the row after it, so set it on the row object itself:
+  // LegendList then re-renders the earlier row when a tool row lands below it. The adjusted
+  // row is cached under its own inputs, so it keeps its identity while the flag holds.
+  for (let index = 0; index < nextRows.length; index += 1) {
+    const row = nextRows[index]!;
+    if (row.kind !== "work" && row.kind !== "command") continue;
+    const compactBottom = isToolTimelineRow(nextRows[index + 1]);
+    if ((row.compactBottom ?? false) === compactBottom) continue;
+    const { compactBottom: _previous, ...rest } = row;
+    const adjusted: TimelineRow = compactBottom ? { ...rest, compactBottom } : rest;
+    nextRows[index] = adjusted;
+    const cached = nextCacheRows.get(row.id);
+    if (cached) nextCacheRows.set(row.id, { inputs: cached.inputs, row: adjusted });
   }
 
   cache.rows = nextCacheRows;

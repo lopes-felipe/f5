@@ -12,6 +12,7 @@ import { useRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
+import { parsePersistedAppSettings } from "../../appSettings";
 import { setNowTickerClockForTests } from "../../lib/nowTicker";
 import type { deriveTimelineEntries } from "../../session-logic";
 import { MessagesTimeline } from "./MessagesTimeline";
@@ -77,7 +78,37 @@ function runningCommand(id: string, seconds: number): TimelineEntry {
   } as unknown as TimelineEntry;
 }
 
-function Harness(props: { entries: TimelineEntry[] }) {
+function mcpCall(
+  id: string,
+  toolName: string,
+  status: "inProgress" | "completed" | "failed",
+  startSeconds: number,
+  endSeconds: number,
+): TimelineEntry {
+  const createdAt = at(endSeconds);
+  return {
+    id,
+    kind: "work",
+    createdAt,
+    entry: {
+      id: `work-${id}`,
+      createdAt,
+      startedAt: at(startSeconds),
+      turnId: TurnId.makeUnsafe("turn-clock"),
+      label: "MCP tool call",
+      itemType: "mcp_tool_call",
+      tone: status === "failed" ? "error" : "tool",
+      status,
+      mcpServerName: "claude_ai_Claude_Docs",
+      mcpServerLabel: "Claude Docs",
+      mcpToolName: toolName,
+      mcpInput: JSON.stringify({ query: toolName }),
+      ...(status === "inProgress" ? {} : { mcpResult: status === "failed" ? "Not found" : "ok" }),
+    },
+  } as unknown as TimelineEntry;
+}
+
+function Harness(props: { entries: TimelineEntry[]; isWorking?: boolean }) {
   const listRef = useRef<LegendListRef | null>(null);
   const queryClient = useRef(
     new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } }),
@@ -88,7 +119,7 @@ function Harness(props: { entries: TimelineEntry[] }) {
         <MessagesTimeline
           threadId={ThreadId.makeUnsafe("thread-clock")}
           hasMessages
-          isWorking
+          isWorking={props.isWorking ?? true}
           activeTurnStartedAt={TURN_START}
           liveActivity={null}
           listRef={listRef}
@@ -138,6 +169,7 @@ describe("MessagesTimeline live clock", () => {
   afterEach(() => {
     setNowTickerClockForTests(null);
     assistantRowRenders.clear();
+    localStorage.clear();
     document.body.innerHTML = "";
   });
 
@@ -177,6 +209,90 @@ describe("MessagesTimeline live clock", () => {
       }
 
       expect(assistantRowRenders.get("Finished earlier answer")).toBe(settledRenders);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("counts a running MCP call up, keeps it open through completion, and marks a lost one interrupted", async () => {
+    localStorage.setItem(
+      "t3code:app-settings:v1",
+      JSON.stringify({
+        ...parsePersistedAppSettings(null),
+        expandMcpToolCalls: true,
+        expandMcpToolCallCardsByDefault: false,
+      }),
+    );
+    let now = Date.parse(at(70));
+    setNowTickerClockForTests(() => now);
+    const entries = [
+      message("user-mcp", "user", "Look it up", 0),
+      mcpCall("mcp-done", "search", "completed", 1, 3),
+      mcpCall("mcp-failed", "fetch", "failed", 3, 4),
+      mcpCall("mcp-running", "export", "inProgress", 10, 10),
+    ];
+    const host = document.body.appendChild(document.createElement("div"));
+    const screen = await render(<Harness entries={entries} />, { container: host });
+    try {
+      const card = () => host.querySelector<HTMLElement>('[data-slot="mcp-tool-card"]');
+      const runningRow = () =>
+        host.querySelector<HTMLElement>('[data-slot="mcp-tool-call"][data-status="running"]');
+      await vi.waitFor(() => {
+        expect(card()?.dataset.mcpCallCount).toBe("3");
+        expect(runningRow()?.textContent).toContain("1m");
+      });
+      // Running wins the accent, and the header has no span while anything runs.
+      expect(card()?.className).toContain("border-l-info/70");
+      expect(host.querySelector('[data-testid="mcp-card-call-count"]')?.textContent).toBe(
+        "3 calls",
+      );
+
+      now = Date.parse(at(71));
+      setNowTickerClockForTests(() => now);
+      await vi.waitFor(() => expect(runningRow()?.textContent).toContain("1m 1s"));
+
+      // Rows open independently.
+      const failedRow = host.querySelector<HTMLElement>('[data-status="failed"]');
+      expect(failedRow?.querySelector('[data-testid="mcp-result-preview"]')?.textContent).toBe(
+        "Not found",
+      );
+      failedRow?.querySelector<HTMLButtonElement>("button")?.click();
+      await vi.waitFor(() =>
+        expect(failedRow?.querySelector('[data-testid="mcp-result-preview"]')).toBeNull(),
+      );
+      expect(
+        host.querySelector('[data-status="completed"] [data-testid="mcp-result-preview"]'),
+      ).not.toBeNull();
+
+      // A call opened while it runs stays open once its completion folds into the same entry.
+      runningRow()?.querySelector<HTMLButtonElement>("button")?.click();
+      await vi.waitFor(() =>
+        expect(runningRow()?.querySelector('[data-testid="mcp-input-summary"]')).toBeNull(),
+      );
+      // Coalescing keeps the first snapshot's id and createdAt and records the finish apart.
+      const runningCall = entries[3] as Extract<TimelineEntry, { kind: "work" }>;
+      const finishedCall = {
+        ...runningCall,
+        entry: { ...runningCall.entry, status: "completed", mcpResult: "ok", completedAt: at(75) },
+      } as TimelineEntry;
+      const finished = [...entries.slice(0, 3), finishedCall];
+      await screen.rerender(<Harness entries={finished} />);
+      const exportRow = () =>
+        [...host.querySelectorAll<HTMLElement>('[data-slot="mcp-tool-call"]')].find((row) =>
+          row.textContent?.includes("export"),
+        );
+      await vi.waitFor(() => expect(exportRow()?.dataset.status).toBe("completed"));
+      expect(exportRow()?.querySelector('[data-testid="mcp-input-summary"]')).toBeNull();
+      expect(exportRow()?.textContent).toContain("1m 5s");
+
+      // On an idle thread, a call still marked running lost its completion.
+      await screen.rerender(<Harness entries={entries} isWorking={false} />);
+      await vi.waitFor(() => {
+        expect(exportRow()?.dataset.status).toBe("interrupted");
+        expect(card()?.className).toContain("border-l-destructive/80");
+      });
+      expect(exportRow()?.querySelector('[aria-label="Interrupted"]')).not.toBeNull();
+      expect(exportRow()?.textContent).not.toContain("1m");
     } finally {
       await screen.unmount();
     }

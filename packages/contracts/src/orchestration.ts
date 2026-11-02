@@ -40,7 +40,11 @@ import {
   isKnownProviderKind as isKnownProviderKindValue,
   ProviderKind as ProviderKindSchema,
 } from "./providerKind";
-import { TOOL_LIFECYCLE_ITEM_TYPES, ToolCompletionEnvelope } from "./toolLifecycle";
+import {
+  ComputerStepSummary,
+  TOOL_LIFECYCLE_ITEM_TYPES,
+  ToolCompletionEnvelope,
+} from "./toolLifecycle";
 import {
   ApprovalRequestId,
   CheckpointRef,
@@ -545,6 +549,8 @@ const CommandExecutionRecordFields = {
   providerItemId: Schema.NullOr(ProviderItemId),
   command: TrimmedNonEmptyString,
   cwd: Schema.optional(FilesystemPath),
+  /** Provider-authored one-line intent, e.g. Claude's Bash `description`. */
+  description: Schema.optional(TrimmedNonEmptyString),
   title: Schema.NullOr(TrimmedNonEmptyString),
   status: OrchestrationCommandExecutionStatus,
   detail: Schema.NullOr(Schema.String),
@@ -759,6 +765,7 @@ export type CompactSubagentState = typeof CompactSubagentState.Type;
 
 export const CompactToolActivityPayload = Schema.Struct({
   computerTool: Schema.optional(Schema.Boolean),
+  computerStep: Schema.optional(ComputerStepSummary),
   imagePath: Schema.optional(TrimmedNonEmptyString),
   itemType: CompactToolLifecycleItemType,
   providerItemId: Schema.optional(ProviderItemId),

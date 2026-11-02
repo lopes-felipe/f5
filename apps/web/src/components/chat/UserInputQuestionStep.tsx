@@ -90,7 +90,7 @@ export function UserInputQuestionStep({
   const isMultiSelect = question.multiSelect === true;
   const isLastQuestion = questionIndex >= questionCount - 1;
   const hasOptions = question.options.length > 0;
-  const showInlineCustom = customMode === "inline";
+  const showInlineCustom = customMode === "inline" && question.allowCustomAnswer !== false;
   // A question without options can only be answered in free text.
   const customFieldOpen = showInlineCustom && (customOpen || !hasOptions);
   const customFieldRef = useRef<HTMLTextAreaElement | null>(null);
@@ -345,7 +345,7 @@ export function UserInputQuestionStep({
             }}
           />
         ) : null}
-        {customMode === "composer" ? (
+        {customMode === "composer" && question.allowCustomAnswer !== false ? (
           <p className="mt-2 text-xs text-muted-foreground">
             Or type your own answer in the composer
           </p>

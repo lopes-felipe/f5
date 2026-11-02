@@ -338,6 +338,48 @@ it("retains required-check metadata for both check runs and legacy statuses", ()
     { name: "optional", required: false },
   ]);
 });
+it("lists failed and cancelled checks first and keeps GitHub's order within each group", () => {
+  const run = (name: string, status: string, conclusion: string | null) => ({
+    __typename: "CheckRun",
+    name,
+    status,
+    conclusion,
+  });
+  const result = decodeGitHubPrDetail(
+    responseWithPullRequest({
+      ...trackedPr(),
+      commits: {
+        nodes: [
+          {
+            commit: {
+              statusCheckRollup: {
+                contexts: {
+                  nodes: [
+                    run("lint", "COMPLETED", "SUCCESS"),
+                    run("integration", "COMPLETED", "CANCELLED"),
+                    run("types", "IN_PROGRESS", null),
+                    { __typename: "StatusContext", context: "deploy", state: "ERROR" },
+                    run("unit", "COMPLETED", "FAILURE"),
+                    run("docs", "COMPLETED", "SKIPPED"),
+                  ],
+                },
+              },
+            },
+          },
+        ],
+      },
+    }),
+    trackedPr(),
+  );
+  expect(result.detail.checks.map((check) => [check.name, check.status])).toEqual([
+    ["integration", "cancelled"],
+    ["deploy", "failure"],
+    ["unit", "failure"],
+    ["lint", "success"],
+    ["types", "pending"],
+    ["docs", "skipped"],
+  ]);
+});
 it("reads edited review activity without paging the PR commit history for a watch", () => {
   const editedAt = "2026-10-19T12:00:00Z";
   const result = decodeGitHubPrTimeline(
