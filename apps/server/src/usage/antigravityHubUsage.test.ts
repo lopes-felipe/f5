@@ -179,12 +179,12 @@ describe("Antigravity hub quotas", () => {
       },
       { discoveryDelayMs: 5_500 },
     );
-    expect(section.outcome).toBe("available");
+    expect(section.outcome).toBe("unavailable");
     expect(section.snapshot?.data.windows.map((window) => window.id).sort()).toEqual([
       "3p-5h",
       "gemini",
     ]);
-    expect(fresh).toBe(true);
+    expect(fresh).toBe(false);
   });
 
   it("bounds discovery even when the transport ignores cancellation", async () => {
@@ -206,8 +206,8 @@ describe("Antigravity hub quotas", () => {
             : hubResponse(summary === "empty" ? { buckets: [] } : {});
         return hubResponse({ models: { gemini: { quotaInfo: { remainingFraction: 0.75 } } } });
       });
-      expect(section.outcome).toBe("available");
-      expect(fresh).toBe(true);
+      expect(section.outcome).toBe(summary === "http" ? "unavailable" : "available");
+      expect(fresh).toBe(summary !== "http");
       expect(section.snapshot?.data.windows.map((window) => window.id).sort()).toEqual([
         "3p-5h",
         "gemini",

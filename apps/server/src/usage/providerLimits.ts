@@ -370,7 +370,9 @@ async function readAntigravityHub(
     throw new AccountUsageReadError("temporary-failure");
   return {
     windows,
-    partial: windows.length > 0 && responses.some((response) => !response.windows.length),
+    partial:
+      windows.length > 0 &&
+      responses.some((response) => response.failed || !response.windows.length),
   };
 }
 
