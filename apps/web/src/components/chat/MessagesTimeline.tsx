@@ -4732,7 +4732,7 @@ function CommandRowContent(props: {
 }) {
   "use memo";
   const { row, externals } = props;
-  const { actions, isWorking, threadId, timestampFormat } = useTimelineRowContext();
+  const { actions, isWorking, threadId, timestampFormat, workspaceRoot } = useTimelineRowContext();
   return (
     <div className="min-w-0 px-1 py-0.5">
       <CommandTranscriptCard
@@ -4740,6 +4740,7 @@ function CommandRowContent(props: {
         execution={row.commandExecution}
         expanded={externals.expanded}
         timestampFormat={timestampFormat}
+        workspaceRoot={workspaceRoot}
         threadWorking={isWorking}
         onToggle={() => actions.onToggleCommandExecution(row.commandExecution.id)}
       />

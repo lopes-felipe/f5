@@ -222,6 +222,124 @@ describe("CommandTranscriptCard", () => {
     }
   });
 
+  it("renders running, background, failed and described cards", async () => {
+    const host = document.createElement("div");
+    host.style.width = "720px";
+    host.style.padding = "16px";
+    host.style.display = "grid";
+    host.style.gap = "8px";
+    document.body.append(host);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <CommandTranscriptCard
+          execution={makeExecution({
+            id: "command-running" as OrchestrationCommandExecution["id"],
+            status: "running",
+            exitCode: null,
+            completedAt: null,
+            command: "/bin/zsh -lc 'bun run test --filter web'",
+          })}
+          expanded={false}
+          timestampFormat="locale"
+          threadWorking={false}
+          onToggle={() => {}}
+        />
+        <CommandTranscriptCard
+          execution={makeExecution({
+            id: "command-background" as OrchestrationCommandExecution["id"],
+            title: "Command run — completed",
+            description: "Remove pedregal worktrees",
+            command:
+              '/bin/zsh -lc \'cd ~/dev/wolt/pedregal; for w in inc3903-bounded-reader aobs-p11 aobs-p12 aobs-p14 aobs-p3 pr597075-feedback; do git worktree remove ".worktrees/$w" && echo "removed $w"; done; git worktree prune; git worktree list; df -h /System/Volumes/Data | tail -1\'',
+          })}
+          expanded={false}
+          timestampFormat="locale"
+          onToggle={() => {}}
+        />
+        <CommandTranscriptCard
+          execution={makeExecution({
+            id: "command-failed" as OrchestrationCommandExecution["id"],
+            status: "failed",
+            exitCode: 1,
+            description: "Typecheck web",
+            command: "/bin/zsh -lc 'bun run typecheck'",
+            output: [
+              "$ tsc --noEmit",
+              "src/a.ts(1,7): error TS2322: Type 'string' is not assignable to type 'number'.",
+              "src/b.ts(4,1): error TS2304: Cannot find name 'foo'.",
+              "",
+              "Found 2 errors in 2 files.",
+              'error: script "typecheck" exited with code 1',
+            ].join("\n"),
+          })}
+          expanded={false}
+          timestampFormat="locale"
+          onToggle={() => {}}
+        />
+        <CommandTranscriptCard
+          execution={makeExecution({
+            id: "command-expanded" as OrchestrationCommandExecution["id"],
+            description: "List web sources",
+            cwd: "/Users/me/project/apps/web",
+            output: "index.ts\nmain.tsx\n",
+          })}
+          expanded
+          workspaceRoot="/Users/me/project"
+          timestampFormat="locale"
+          onToggle={() => {}}
+        />
+      </QueryClientProvider>,
+      { container: host },
+    );
+
+    try {
+      expect(host.textContent).not.toContain("Command run");
+      expect(host.textContent).toContain("background");
+      expect(host.textContent).toContain("Remove pedregal worktrees");
+      expect(host.textContent).toContain("exit 1");
+      expect(host.textContent).toContain("Found 2 errors in 2 files.");
+      expect(host.textContent).not.toContain("$ tsc --noEmit");
+      expect(host.textContent).toContain("in project/apps/web");
+      const backgroundCommand = host.querySelectorAll("code")[1];
+      expect(backgroundCommand?.className).toContain("line-clamp-2");
+      expect(backgroundCommand!.getBoundingClientRect().height).toBeLessThan(60);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("copies the full output from the expanded card", async () => {
+    const toastSpy = vi.spyOn(toastManager, "add");
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <CommandTranscriptCard
+        execution={makeExecution({ output: "line one\nline two\n" })}
+        expanded
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+      host,
+    );
+
+    try {
+      await page.getByRole("button", { name: "Copy output" }).click();
+
+      await vi.waitFor(() => {
+        expect(navigator.clipboard.writeText).toHaveBeenCalledWith("line one\nline two\n");
+        expect(toastSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ type: "success", title: "Output copied" }),
+        );
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("copies the command instead of a distinct summary title", async () => {
     const host = document.createElement("div");
     document.body.append(host);

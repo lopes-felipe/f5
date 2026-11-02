@@ -7410,6 +7410,70 @@ describe("ProviderRuntimeIngestion", () => {
     expect(detail.commandExecution?.output).toContain("Darwin kernel-version");
   });
 
+  it("stores the Claude Bash description and keeps it across later updates", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const toolInput = {
+      command: "df -h /System/Volumes/Data",
+      description: "Check free disk space",
+      run_in_background: true,
+    };
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-command-description-turn-started"),
+      provider: "claudeAgent",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-command-description"),
+      payload: {},
+    });
+    harness.emit({
+      type: "item.started",
+      eventId: asEventId("evt-command-description-started"),
+      provider: "claudeAgent",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-command-description"),
+      itemId: asItemId("item-command-description"),
+      payload: {
+        itemType: "command_execution",
+        status: "inProgress",
+        title: "Command run",
+        detail: `Bash: ${toolInput.command}`,
+        data: { toolName: "Bash", input: toolInput },
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-command-description-completed"),
+      provider: "claudeAgent",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-command-description"),
+      itemId: asItemId("item-command-description"),
+      payload: {
+        itemType: "command_execution",
+        status: "completed",
+        title: "Command run — completed",
+        detail: `Bash: ${toolInput.command}`,
+      },
+    });
+
+    await harness.drain();
+
+    const result = await Effect.runPromise(
+      harness.threadCommandExecutionQuery.getThreadCommandExecutions({
+        threadId: asThreadId("thread-1"),
+      }),
+    );
+
+    expect(result.executions).toHaveLength(1);
+    expect(result.executions[0]?.description).toBe("Check free disk space");
+    expect(result.executions[0]?.status).toBe("completed");
+    expect(result.executions[0]?.title).toBe("Command run — completed");
+  });
+
   it("captures command output deltas that arrive before the lifecycle record", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

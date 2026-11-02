@@ -549,6 +549,8 @@ const CommandExecutionRecordFields = {
   providerItemId: Schema.NullOr(ProviderItemId),
   command: TrimmedNonEmptyString,
   cwd: Schema.optional(FilesystemPath),
+  /** Provider-authored one-line intent, e.g. Claude's Bash `description`. */
+  description: Schema.optional(TrimmedNonEmptyString),
   title: Schema.NullOr(TrimmedNonEmptyString),
   status: OrchestrationCommandExecutionStatus,
   detail: Schema.NullOr(Schema.String),

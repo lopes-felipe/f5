@@ -338,6 +338,7 @@ interface OpenCommandExecutionState {
   readonly providerItemId: ProviderItemId;
   readonly command: string;
   cwd: string | undefined;
+  description: string | undefined;
   title: string | null;
   detail: string | null;
   status: OrchestrationCommandExecutionStatus;
@@ -739,6 +740,30 @@ function extractCommandExecutionCwd(
     asTrimmedNonEmptyString(rawPayload?.cwd) ??
     asTrimmedNonEmptyString(asRecord(rawPayload?.run)?.cwd)
   );
+}
+
+const COMMAND_EXECUTION_DESCRIPTION_MAX_CHARS = 200;
+
+function extractCommandExecutionDescription(
+  event: Extract<
+    ProviderRuntimeEvent,
+    { type: "item.started" | "item.updated" | "item.completed" }
+  >,
+): string | undefined {
+  const payloadData = asRecord(event.payload.data);
+  const payloadItem = asRecord(payloadData?.item);
+  const rawPayload = runtimeRawPayloadRecord(event);
+  const rawItem = asRecord(rawPayload?.item);
+  const description =
+    asTrimmedNonEmptyString(asRecord(payloadData?.input)?.description) ??
+    asTrimmedNonEmptyString(asRecord(payloadItem?.input)?.description) ??
+    asTrimmedNonEmptyString(asRecord(rawItem?.input ?? rawPayload?.input)?.description);
+  if (!description) {
+    return undefined;
+  }
+  return description.length > COMMAND_EXECUTION_DESCRIPTION_MAX_CHARS
+    ? `${description.slice(0, COMMAND_EXECUTION_DESCRIPTION_MAX_CHARS - 1).trimEnd()}…`
+    : description;
 }
 
 function parseExitCodeFromDetail(detail: string | undefined): number | null {
@@ -3852,6 +3877,7 @@ const make = Effect.gen(function* () {
     const pendingOutput = pendingCommandExecutionOutput.get(input.commandExecutionId);
     const status = commandExecutionStatusFromLifecycleEvent(input.event);
     const eventCwd = extractCommandExecutionCwd(input.event);
+    const eventDescription = extractCommandExecutionDescription(input.event);
     const command = extractCommandExecutionCommand(input.event);
     const normalizedTitle = normalizeLifecycleCommandExecutionTitle(
       input.event.payload.title,
@@ -3868,6 +3894,7 @@ const make = Effect.gen(function* () {
         providerItemId: input.providerItemId,
         command,
         cwd: fallbackCwd,
+        description: eventDescription,
         title: normalizedTitle ?? null,
         detail: input.event.payload.detail ?? null,
         status,
@@ -3883,6 +3910,7 @@ const make = Effect.gen(function* () {
       } satisfies OpenCommandExecutionState);
 
     commandExecution.cwd = eventCwd ?? commandExecution.cwd ?? fallbackCwd;
+    commandExecution.description = eventDescription ?? commandExecution.description;
     commandExecution.title = normalizedTitle ?? commandExecution.title;
     commandExecution.detail = input.event.payload.detail ?? commandExecution.detail;
     commandExecution.status = status;
@@ -3906,6 +3934,7 @@ const make = Effect.gen(function* () {
         providerItemId: commandExecution.providerItemId,
         command: commandExecution.command,
         cwd: commandExecution.cwd,
+        ...(commandExecution.description ? { description: commandExecution.description } : {}),
         title: commandExecution.title,
         status: commandExecution.status,
         detail: commandExecution.detail,
@@ -3986,6 +4015,7 @@ const make = Effect.gen(function* () {
           providerItemId: commandExecution.providerItemId,
           command: commandExecution.command,
           cwd: commandExecution.cwd,
+          ...(commandExecution.description ? { description: commandExecution.description } : {}),
           title: commandExecution.title,
           status: commandExecution.status,
           detail: commandExecution.detail,

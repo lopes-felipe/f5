@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   classifyCompactCommand,
+  commandExecutionBackgroundStatus,
   deriveNarratedActivityDisplayHints,
   deriveSearchCommandSummary,
   detectFileReadCommand,
   displayCommandExecutionCommand,
+  isGenericCommandTitle,
   normalizeCommandExecutionDetail,
+  parseCommandExecutionTitle,
   resolveCommandExecutionDisplayCommand,
   resolveCommandExecutionSummaryText,
 } from "./commandSummary";
@@ -164,6 +167,50 @@ describe("commandSummary", () => {
         detail: null,
       }),
     ).toBe("Searching apps, packages for chat.newLocal, chat.scrollToBottom, workflow.new, …");
+  });
+
+  it.each(["running", "completed", "failed", "stopped"] as const)(
+    "treats Claude background titles ending in '%s' as generic",
+    (status) => {
+      const title = `Command run — ${status}`;
+      expect(isGenericCommandTitle(title)).toBe(true);
+      expect(parseCommandExecutionTitle(title)).toEqual({
+        baseTitle: "Command run",
+        backgroundStatus: status,
+      });
+      expect(commandExecutionBackgroundStatus({ title })).toBe(status);
+    },
+  );
+
+  it("leaves titles without a known background suffix untouched", () => {
+    expect(parseCommandExecutionTitle("Command run")).toEqual({
+      baseTitle: "Command run",
+      backgroundStatus: null,
+    });
+    expect(parseCommandExecutionTitle("Deploy — paused")).toEqual({
+      baseTitle: "Deploy — paused",
+      backgroundStatus: null,
+    });
+    expect(commandExecutionBackgroundStatus({ title: null })).toBeNull();
+    expect(isGenericCommandTitle("Deploy — completed")).toBe(false);
+  });
+
+  it("shows the command instead of a generic background title", () => {
+    expect(
+      resolveCommandExecutionSummaryText({
+        command: "/bin/zsh -lc 'df -h'",
+        title: "Command run — completed",
+      }),
+    ).toBe("df -h");
+  });
+
+  it("drops the background suffix from specific titles", () => {
+    expect(
+      resolveCommandExecutionSummaryText({
+        command: "/bin/zsh -lc 'bun run build'",
+        title: "Build web — running",
+      }),
+    ).toBe("Build web");
   });
 
   it("normalizes Claude shell tool detail summaries", () => {

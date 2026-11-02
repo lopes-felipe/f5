@@ -38,7 +38,7 @@ function renderCard(markup: ReactElement): string {
 }
 
 describe("CommandTranscriptCard", () => {
-  it("renders completed badges with the success palette", () => {
+  it("renders completed status as a labelled success icon and accent", () => {
     const markup = renderCard(
       <CommandTranscriptCard
         execution={makeExecution({
@@ -51,12 +51,13 @@ describe("CommandTranscriptCard", () => {
       />,
     );
 
-    expect(markup).toContain("border-success/32");
-    expect(markup).toContain("bg-success/8");
-    expect(markup).toContain("text-success-foreground");
+    expect(markup).toContain('aria-label="Completed"');
+    expect(markup).toContain("border-l-success/70");
+    expect(markup).toContain("text-success");
+    expect(markup).not.toContain(">completed<");
   });
 
-  it("renders running badges with the info palette", () => {
+  it("renders running status as a spinning info icon", () => {
     const markup = renderCard(
       <CommandTranscriptCard
         execution={makeExecution({
@@ -72,9 +73,122 @@ describe("CommandTranscriptCard", () => {
       />,
     );
 
-    expect(markup).toContain("border-info/32");
-    expect(markup).toContain("bg-info/8");
-    expect(markup).toContain("text-info-foreground");
+    expect(markup).toContain('aria-label="Running"');
+    expect(markup).toContain("border-l-info/70");
+    expect(markup).toContain("animate-spin");
+  });
+
+  it("shows the command, not the title, for Claude background commands", () => {
+    const markup = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({
+          command: "/bin/zsh -lc 'df -h /System/Volumes/Data'",
+          title: "Command run — completed",
+        })}
+        expanded={false}
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+
+    expect(markup).not.toContain("Command run");
+    expect(markup).toContain("/System/Volumes/Data");
+    expect(markup).toContain(">background</span>");
+    expect(markup).toContain("Ran in the background (completed)");
+  });
+
+  it("renders the provider description above the command", () => {
+    const markup = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({ description: "Check free disk space" })}
+        expanded={false}
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("Check free disk space");
+    expect(markup).not.toContain(">background</span>");
+  });
+
+  it("only shows non-zero exit codes and keeps the start time in a tooltip", () => {
+    const success = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({ exitCode: 0 })}
+        expanded={false}
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+    const failure = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({ status: "failed", exitCode: 2, output: "" })}
+        expanded={false}
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+
+    expect(success).not.toContain("exit 0");
+    expect(success).toContain('title="Started ');
+    expect(success).toContain("<span>1.0s</span>");
+    expect(failure).toContain("exit 2");
+    expect(failure).toContain('aria-label="Failed"');
+  });
+
+  it("shows the last output lines of a collapsed failed command", () => {
+    const markup = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({
+          status: "failed",
+          exitCode: 1,
+          output: ["line-1", "line-2", "", "line-3", "line-4", "error: boom", "  "].join("\n"),
+        })}
+        expanded={false}
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("line-2\nline-3\nline-4\nerror: boom</pre>");
+    expect(markup).not.toContain("line-1");
+  });
+
+  it("does not show an output tail for collapsed successful commands", () => {
+    const markup = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({ output: "SUCCESS-OUTPUT" })}
+        expanded={false}
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+
+    expect(markup).not.toContain("SUCCESS-OUTPUT");
+  });
+
+  it("shows the cwd only when it differs from the workspace root", () => {
+    const renderWithCwd = (cwd: string) =>
+      renderCard(
+        <CommandTranscriptCard
+          execution={makeExecution({ cwd })}
+          expanded
+          timestampFormat="locale"
+          workspaceRoot="/Users/me/project/"
+          onToggle={() => {}}
+          onExpandedBodyResize={() => {}}
+        />,
+      );
+
+    expect(renderWithCwd("/Users/me/project")).not.toContain("in project");
+    expect(renderWithCwd("/Users/me/project/apps/web")).toContain("in project/apps/web");
+    expect(renderWithCwd("/tmp/scratch")).toContain("in /tmp/scratch");
   });
 
   it("does not repeat the same command in header, command, and detail sections", () => {
@@ -270,6 +384,22 @@ describe("CommandTranscriptCard", () => {
 
     expect(markup).toContain('title="Copy command"');
     expect(markup).toContain(">Output</p>");
+    expect(markup).toContain('aria-label="Copy output"');
+  });
+
+  it("hides the copy output button when there is no output", () => {
+    const markup = renderCard(
+      <CommandTranscriptCard
+        execution={makeExecution({ output: "" })}
+        expanded
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("(no output)");
+    expect(markup).not.toContain('aria-label="Copy output"');
   });
 
   it("shows a compact preview for very large outputs by default", () => {
