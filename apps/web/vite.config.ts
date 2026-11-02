@@ -5,7 +5,11 @@ import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import { defineConfig } from "vitest/config";
 
 import { ciTestReports } from "../../scripts/lib/ci-test-reports";
+import { isolateTestHome } from "../../scripts/lib/test-home";
 import pkg from "./package.json" with { type: "json" };
+
+// No-op outside Vitest; dev and production builds keep the real home.
+isolateTestHome();
 
 const port = Number(process.env.PORT ?? 5733);
 const sourcemapEnv = process.env.T3CODE_WEB_SOURCEMAP?.trim().toLowerCase();
