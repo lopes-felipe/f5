@@ -18077,11 +18077,21 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T11:31:19.141Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/orchestration/Layers/ProjectSkillSyncService.ts:132",
+          "apps/web/src/components/ChatView.tsx:2969"
+        ],
+        "f5Refs": [
+          "ab4cad2b4b3a4a69ea17e8fe9a2999fd0cba0e40"
+        ]
+      },
       "id": "pr-18309",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -30223,11 +30233,13 @@
     },
     {
       "createdAt": "2026-10-26T13:50:40.934Z",
-      "decidedAt": "2026-10-30T16:43:01.965Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T11:31:19.141Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-20796",
-      "status": "port",
+      "reason": "F5 leaves pnpm-global installations manual-only.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -43038,11 +43050,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
-      "decidedAt": "2026-10-30T00:20:18.818Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T11:31:19.141Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-23160",
-      "status": "port",
+      "reason": "F5 uses CLI-backed Codex accounts without a managed/existing setup mode.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -55285,11 +55299,13 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
-      "decidedAt": "2026-10-30T00:20:18.818Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-02T11:31:19.141Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-25235",
-      "status": "port",
+      "reason": "F5 treats standalone Codex installs as unmanaged and does not invoke codex update.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
