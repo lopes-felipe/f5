@@ -39,7 +39,7 @@ import { makeClaudeTextGeneration } from "../../git/Layers/ClaudeTextGeneration.
 import { ServerConfig } from "../../config.ts";
 import { PreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
 import { ProviderDriverError } from "../Errors.ts";
-import { makeClaudeAdapter, resolveClaudeConfigDir } from "../Layers/ClaudeAdapter.ts";
+import { makeClaudeAdapter } from "../Layers/ClaudeAdapter.ts";
 import { readClaudeInventory, resolveClaudeUserStatePath } from "../claudeInventory.ts";
 import {
   deleteClaudeSessionTranscript,
@@ -64,6 +64,7 @@ import {
   claudeAccountUsageIdentity,
   makeClaudeContinuationGroupKey,
   makeClaudeProcessEnvironment,
+  resolveClaudeConfigDir,
 } from "./ClaudeHome.ts";
 import { parseClaudeLaunchArgs } from "@t3tools/shared/cliArgs";
 

@@ -125,8 +125,6 @@ import * as NodePath from "node:path";
 import * as EffectNodePath from "@effect/platform-node/NodePath";
 import { resolveClaudeConfigDir } from "../Drivers/ClaudeHome.ts";
 
-export { resolveClaudeConfigDir };
-
 import {
   type CanUseTool,
   type ElicitationResult,

@@ -1,6 +1,7 @@
 import * as NodeOS from "node:os";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodePath from "@effect/platform-node/NodePath";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, FileSystem, Path } from "effect";
 
@@ -15,10 +16,37 @@ import {
 
 it.layer(NodeServices.layer)("ClaudeHome", (it) => {
   describe("Claude process entrypoint", () => {
-    it.effect("honors Windows instance env case and ProgramData managed settings", () =>
+    it.effect("reads POSIX managed settings with a Windows Path service", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
+        const reads: string[] = [];
+        const environment = yield* makeClaudeProcessEnvironment(
+          { homePath: "" },
+          {},
+          undefined,
+          "linux",
+        ).pipe(
+          Effect.provide(NodePath.layerWin32),
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            readFileString: (file) => {
+              reads.push(file);
+              return Effect.succeed(
+                file === "/etc/claude-code/managed-settings.json"
+                  ? '{"env":{"CLAUDE_CODE_ENTRYPOINT":"managed"}}'
+                  : "{}",
+              );
+            },
+          }),
+        );
+        expect(environment.CLAUDE_CODE_ENTRYPOINT).toBe("managed");
+        expect(reads).toContain("/etc/claude-code/managed-settings.json");
+      }),
+    );
+
+    it.effect("honors Windows instance env case and Program Files managed settings", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
         const base = {
           USERPROFILE: "/isolated",
           PROGRAMDATA: "/program-data",
@@ -31,9 +59,7 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
               ...fs,
               readFileString: (file) =>
                 Effect.succeed(
-                  file === path.join("/program-data", "ClaudeCode", "managed-settings.json")
-                    ? managed
-                    : "{}",
+                  file === "C:\\Program Files\\ClaudeCode\\managed-settings.json" ? managed : "{}",
                 ),
             }),
           );

@@ -45,11 +45,11 @@ import {
   isClaudeMissingConversationError,
   makeClaudeAdapterLive,
   probeClaudeSessionAvailability,
-  resolveClaudeConfigDir,
   type ClaudeAdapterLiveOptions,
   type ClaudeSessionProbeInput,
   type ClaudeSessionStoreFs,
 } from "./ClaudeAdapter.ts";
+import { resolveClaudeConfigDir } from "../Drivers/ClaudeHome.ts";
 import { FakeClaudeCodeProcess, respondToInitializeRequest } from "./ClaudeSdk.testUtils.ts";
 import type { AgentBrowserPolicy } from "../../mcp/browserAccess.ts";
 import { ComputerAutomationBrokerRuntime } from "../../computer/ComputerAutomationBroker";

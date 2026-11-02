@@ -10,8 +10,15 @@ import { accountUsageIdentity } from "../../usage/accountUsage.ts";
 import { claudeManagedSettingsDir } from "../claudeInventory.ts";
 
 /**
- * Resolve the config directory as the CLI child does, including its home,
- * working directory, and Unicode normalization.
+ * Mirrors the Claude CLI's config dir resolution:
+ * `(CLAUDE_CONFIG_DIR ?? join(os.homedir(), ".claude")).normalize("NFC")`,
+ * evaluated as the CLI child would see it.
+ *
+ * `os.homedir()` in the child reads `USERPROFILE` on Windows and `HOME`
+ * elsewhere, so the matching variable is read from the child env for
+ * `platform`. Relative values are resolved against `cwd`, the child's working
+ * directory. When `cwd` is undefined the child inherits the server's cwd, so
+ * `process.cwd()` is the right base.
  */
 export function resolveClaudeConfigDir(
   env: NodeJS.ProcessEnv,
@@ -50,16 +57,15 @@ export const makeClaudeProcessEnvironment = Effect.fn("makeClaudeProcessEnvironm
         ? variable.name.toUpperCase() === "CLAUDE_CODE_ENTRYPOINT"
         : variable.name === "CLAUDE_CODE_ENTRYPOINT",
     )?.value ?? "t3-code";
-  const managedSettingsPath =
-    platform === "win32"
-      ? baseEnv.PROGRAMDATA?.trim()
-        ? path.join(baseEnv.PROGRAMDATA.trim(), "ClaudeCode", "managed-settings.json")
-        : undefined
-      : path.join(claudeManagedSettingsDir(platform), "managed-settings.json");
+  const managedPath = platform === "win32" ? NodePath.win32 : NodePath.posix;
+  const managedSettingsPath = managedPath.join(
+    claudeManagedSettingsDir(platform),
+    "managed-settings.json",
+  );
   let settingsEntrypoint: string | undefined;
   for (const file of [
     path.join(resolveClaudeConfigDir(environment, undefined, platform), "settings.json"),
-    ...(managedSettingsPath ? [managedSettingsPath] : []),
+    managedSettingsPath,
   ]) {
     const value = yield* fs.readFileString(file).pipe(
       Effect.flatMap(decodeSettingsEnv),

@@ -132,7 +132,12 @@ export const makeMcpAccountExecutionResolver = Effect.gen(function* () {
               baseEnv: process.env,
             })
           : { ...process.env });
-      return { ...identity, environment, providerOptions };
+      return {
+        ...identity,
+        environment,
+        providerOptions,
+        instanceEnvironment: account?.instance.environment,
+      };
     }).pipe(
       Effect.mapError(
         (cause) =>

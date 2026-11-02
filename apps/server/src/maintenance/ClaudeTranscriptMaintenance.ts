@@ -8,7 +8,7 @@ import {
   beginClaudeTranscriptMaintenance,
   findClaudeTranscript,
 } from "../provider/claudeTranscript.ts";
-import { resolveClaudeConfigDir } from "../provider/Layers/ClaudeAdapter.ts";
+import { resolveClaudeConfigDir } from "../provider/Drivers/ClaudeHome.ts";
 import { readPersistedCwd } from "../provider/runtimePayload.ts";
 import { withProviderThreadAccess } from "../provider/providerThreadAccess.ts";
 import type { ProviderSessionDirectoryShape } from "../provider/Services/ProviderSessionDirectory.ts";
