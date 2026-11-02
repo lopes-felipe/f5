@@ -18,8 +18,9 @@
 import * as FS from "node:fs";
 import * as Path from "node:path";
 
-import { DatabaseDamage } from "@t3tools/contracts";
-import { Schema } from "effect";
+// Type-only: the SQLite layer loads this module, and it must stay importable
+// by plain Node (strip-types), which cannot resolve the contracts' sources.
+import type { DatabaseDamage } from "@t3tools/contracts";
 
 const SQLITE_CORRUPT = 11;
 const SQLITE_NOTADB = 26;
@@ -42,13 +43,34 @@ export function databaseDamageMarkerPath(databasePath: string): string {
   return `${Path.resolve(databasePath)}.damaged`;
 }
 
-const PersistedDamage = Schema.Struct({
-  damage: DatabaseDamage,
+interface PersistedDamage {
+  readonly damage: DatabaseDamage;
   /** Identity of the damaged file; a restored file has a different one. */
-  dev: Schema.Number,
-  ino: Schema.Number,
-});
-const decodePersistedDamage = Schema.decodeUnknownSync(Schema.fromJsonString(PersistedDamage));
+  readonly dev: number;
+  readonly ino: number;
+}
+
+const isNullableString = (value: unknown) => value === null || typeof value === "string";
+
+/** The marker is written only by {@link persist}; anything else is treated as unreadable. */
+function decodePersistedDamage(raw: string): PersistedDamage | null {
+  const value = JSON.parse(raw) as Partial<PersistedDamage> | null;
+  const damage = value?.damage as Partial<DatabaseDamage> | undefined;
+  if (
+    typeof value?.dev !== "number" ||
+    typeof value.ino !== "number" ||
+    typeof damage?.detectedAt !== "string" ||
+    typeof damage.errorCode !== "number" ||
+    typeof damage.message !== "string" ||
+    typeof damage.databasePath !== "string" ||
+    !isNullableString(damage.recoveryFile) ||
+    !isNullableString(damage.recoveryError) ||
+    !isNullableString(damage.latestSnapshot)
+  ) {
+    return null;
+  }
+  return value as PersistedDamage;
+}
 
 function fileIdentity(path: string): { dev: number; ino: number } | null {
   try {
@@ -110,7 +132,7 @@ export function loadPersistedDatabaseDamage(databasePath: string): PersistedDama
   } catch {
     return "none";
   }
-  let persisted: typeof PersistedDamage.Type | null = null;
+  let persisted: PersistedDamage | null = null;
   try {
     persisted = decodePersistedDamage(raw);
   } catch {
