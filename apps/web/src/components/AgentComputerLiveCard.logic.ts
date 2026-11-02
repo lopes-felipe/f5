@@ -46,12 +46,25 @@ function capitalize(text: string): string {
 
 type ActivitySummary = Pick<ComputerActivity, "op" | "status">;
 
+interface ComputerCardState {
+  readonly paused?: boolean | undefined;
+  readonly held?: boolean | undefined;
+  /** The thread holds the Chrome lease: "unknown" when its session doesn't report calls. */
+  readonly chrome?: "idle" | "working" | "unknown" | undefined;
+}
+
 /** Plain-language line for what the agent is doing on the computer. */
 export function describeComputerAction(
   activity: ActivitySummary | undefined,
-  state: { readonly paused?: boolean | undefined; readonly held?: boolean | undefined },
+  state: ComputerCardState,
 ): string {
   if (state.paused) return "You have control";
+  if (!activity && state.held && state.chrome)
+    return state.chrome === "working"
+      ? "Agent is using Chrome"
+      : state.chrome === "idle"
+        ? "Chrome ready · not in use"
+        : "Agent can use Chrome";
   if (!activity) return state.held ? "Agent is controlling this computer" : "Idle";
   const words = humanizeOp(activity.op) || "action";
   const [ongoing, done] = COMPUTER_ACTION_VERB[activity.op] ?? [
@@ -72,11 +85,12 @@ export function describeComputerAction(
 
 export function computerStatusTone(
   activity: ActivitySummary | undefined,
-  state: { readonly paused?: boolean | undefined; readonly held?: boolean | undefined },
+  state: ComputerCardState,
 ): ComputerStatusTone {
   if (state.paused) return "warning";
   if (activity?.status === "failed") return "error";
   if (activity?.status === "interrupted") return "warning";
+  if (!activity && state.held && state.chrome === "idle") return "ok";
   if (activity?.status === "started" || state.held) return "pending";
   if (activity?.status === "completed") return "ok";
   return "off";

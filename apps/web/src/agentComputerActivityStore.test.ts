@@ -1,7 +1,11 @@
 import { ThreadId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isAgentComputerActive, useAgentComputerActivityStore } from "./agentComputerActivityStore";
-import { computerUseBannerTargets, computerUseBannerText } from "./components/ComputerUseBanner";
+import {
+  computerUseBannerTargets,
+  computerUseBannerText,
+  primaryComputerHolder,
+} from "./components/ComputerUseBanner";
 const threadId = ThreadId.makeUnsafe("computer-thread");
 beforeEach(() => useAgentComputerActivityStore.getState().resetConnection());
 describe("computer activity", () => {
@@ -221,6 +225,25 @@ describe("computer use banner text", () => {
       "An agent in another F5 profile is controlling this computer",
     );
     expect(computerUseBannerText({ holders: [] }, false)).toBeNull();
+  });
+  it("says whether an agent is using Chrome, not that it controls the computer", () => {
+    const chrome = { threadId, delivery: "foreground" as const, state: "active" as const };
+    expect(computerUseBannerText({ holders: [{ ...chrome, browser: "idle" }] }, false)).toBe(
+      "An agent can use Chrome",
+    );
+    expect(computerUseBannerText({ holders: [{ ...chrome, browser: "working" }] }, false)).toBe(
+      "An agent is using Chrome",
+    );
+    expect(computerUseBannerText({ holders: [chrome] }, false)).toBe("An agent can use Chrome");
+    // An idle Chrome runtime doesn't outrank an agent working in an app.
+    const idle = { ...chrome, threadId: ThreadId.makeUnsafe("b"), browser: "idle" as const };
+    expect(primaryComputerHolder({ holders: [idle, holder] })).toBe(holder);
+    expect(computerUseBannerText({ holders: [idle, holder] }, false)).toBe(
+      "An agent is working in TextEdit in the background",
+    );
+    expect(computerUseBannerText({ holders: [{ ...chrome, state: "paused" }] }, false)).toBe(
+      "Computer control paused",
+    );
   });
 });
 

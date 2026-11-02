@@ -58,6 +58,7 @@ export type CodexChromeBroker = Pick<
   | "chromeRecoveryRequired"
   | "adoptIntegrationProcess"
   | "stopIntegrationProcess"
+  | "reportChromeCalls"
   | "onChromeDisabled"
 >;
 
@@ -184,6 +185,7 @@ export class CodexChromeSession {
     this.clearIdle();
     if (running) this.calls.add(itemId);
     else this.calls.delete(itemId);
+    this.reportCalls();
   }
 
   /** Whether a model call to `node_repl` is running; read before interrupting its turn. */
@@ -240,6 +242,7 @@ export class CodexChromeSession {
   turnEnded(turnId: string): void {
     this.turnActive = false;
     this.calls.clear();
+    this.reportCalls();
     if (this.phase === "ready" && !this.drained.has(turnId)) {
       this.drained.add(turnId);
       if (this.drained.size > 64) this.drained = new Set([turnId]);
@@ -321,6 +324,7 @@ export class CodexChromeSession {
         false,
       );
       this.leaseHeld = true;
+      this.reportCalls();
     } catch (error) {
       if (this.epoch !== epoch) return;
       return this.stop("pending", `Chrome is busy: ${message(error)}`);
@@ -474,13 +478,21 @@ export class CodexChromeSession {
     if (this.launchToken) broker.stopIntegrationProcess(this.launchToken, reason);
     this.launchToken = undefined;
     // Main keeps the lease until the stopped group is gone.
-    if (this.leaseHeld)
+    if (this.leaseHeld) {
+      broker.reportChromeCalls(this.deps.threadId, this.deps.generation, undefined);
       broker.host.send({
         type: "chromeLeaseRelease",
         requestId: randomUUID(),
         holder: this.holder(),
       });
+    }
     this.leaseHeld = false;
+  }
+
+  /** The banner shows whether Chrome is in use, not only that its lease is held. */
+  private reportCalls(): void {
+    if (!this.leaseHeld) return;
+    this.deps.broker.reportChromeCalls(this.deps.threadId, this.deps.generation, this.callRunning);
   }
 
   private holder() {

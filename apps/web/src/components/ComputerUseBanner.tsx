@@ -22,13 +22,18 @@ const PAUSE_CAUSE_LABEL: Record<NonNullable<AgentComputerUseHolder["pauseCause"]
   "access-changed": "access changed",
 };
 
-/** The holder the banner speaks for: foreground control first, then the first background one. */
+/**
+ * The holder the banner speaks for: foreground control first, then the first background
+ * one. A Chrome runtime that is only holding its lease comes last.
+ */
 export function primaryComputerHolder(
   leases: typeof AgentComputerUseChanged.Type,
 ): AgentComputerUseHolder | undefined {
+  const busy = leases.holders.filter((holder) => holder.browser !== "idle");
   return (
-    leases.holders.find((holder) => holder.delivery === "foreground") ??
-    leases.holders.find((holder) => holder.state === "active") ??
+    busy.find((holder) => holder.delivery === "foreground") ??
+    busy.find((holder) => holder.state === "active") ??
+    busy[0] ??
     leases.holders[0]
   );
 }
@@ -77,6 +82,9 @@ export function computerUseBannerText(
     case "active":
       break;
   }
+  // Chrome holders have no backend; their lease lasts the browser runtime's life.
+  if (!holder.backend)
+    return holder.browser === "working" ? "An agent is using Chrome" : "An agent can use Chrome";
   if (holder.delivery === "foreground")
     return holder.appId
       ? `An agent is controlling ${app} in the foreground`
@@ -108,11 +116,12 @@ export function ComputerUseBanner() {
     .filter(([, value]) => value)
     .map(([id]) => id as AgentComputerUseHolder["threadId"]);
   if (!text && !retryTargets.length) return null;
-  // Background-only control is ambient: a quieter style, no takeover of the user's attention.
+  // Background-only control and an idle Chrome runtime are ambient: a quieter style, no
+  // takeover of the user's attention.
   const ambient =
     !leases.pendingTakeover &&
     !leases.otherProfile &&
-    holder?.delivery === "background" &&
+    (holder?.delivery === "background" || holder?.browser === "idle") &&
     holder.state === "active" &&
     !paused;
   const backend = holder?.backend;

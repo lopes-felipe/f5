@@ -277,6 +277,12 @@ export const AgentComputerUseHolder = Schema.Struct({
   appName: Schema.optional(Schema.String),
   state: ComputerExecutionState,
   pauseCause: Schema.optional(ComputerPauseCause),
+  /**
+   * Chrome holders whose session reports its browser calls: whether one is running. A
+   * Chrome lease lasts the browser runtime's life, so holding it doesn't mean Chrome is in
+   * use. Absent when the session doesn't report its calls.
+   */
+  browser: Schema.optional(Schema.Literals(["idle", "working"])),
 });
 export type AgentComputerUseHolder = typeof AgentComputerUseHolder.Type;
 /**

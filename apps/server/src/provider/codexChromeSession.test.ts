@@ -60,6 +60,7 @@ function harness(overrides: Partial<CodexChromeSessionDeps> = {}) {
       }),
     ),
     stopIntegrationProcess: vi.fn(),
+    reportChromeCalls: vi.fn(),
     onChromeDisabled: (listener: (threadId: string, generation: string) => void) => {
       disabled.add(listener);
       return () => disabled.delete(listener);
@@ -426,6 +427,31 @@ describe("CodexChromeSession", () => {
     h.session.toolCall("call-3", true);
     h.session.turnEnded("turn-1");
     expect(h.session.callRunning).toBe(false);
+  });
+
+  it("reports whether a call is running while it holds the lease, and stops on release", async () => {
+    const h = harness();
+    h.session.toolCall("early", true);
+    h.session.toolCall("early", false);
+    // Nothing is reported before the lease is held.
+    expect(h.broker.reportChromeCalls).not.toHaveBeenCalled();
+    await ready(h);
+    h.session.toolCall("call-1", true);
+    h.session.toolCall("call-1", false);
+    h.session.toolCall("call-2", true);
+    h.session.turnEnded("turn-1");
+    h.idle();
+    expect(h.broker.reportChromeCalls.mock.calls).toEqual([
+      ["thread-1", "gen-1", false],
+      ["thread-1", "gen-1", true],
+      ["thread-1", "gen-1", false],
+      ["thread-1", "gen-1", true],
+      ["thread-1", "gen-1", false],
+      ["thread-1", "gen-1", undefined],
+    ]);
+    // Released: later calls report nothing.
+    h.session.toolCall("call-3", true);
+    expect(h.broker.reportChromeCalls).toHaveBeenCalledTimes(6);
   });
 
   it("drains a turn interrupted between calls and keeps the runtime", async () => {

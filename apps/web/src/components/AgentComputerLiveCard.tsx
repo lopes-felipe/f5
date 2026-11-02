@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import {
   useAgentComputerActivityStore,
+  computerHolderFor,
   isAgentComputerActive,
   EMPTY_COMPUTER_REQUESTS,
 } from "../agentComputerActivityStore";
@@ -60,6 +61,10 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
       state.leases.holders.some((holder) => holder.threadId === threadId) ||
       state.leases.pendingTakeover?.threadId === threadId,
   );
+  const chrome = useAgentComputerActivityStore((state) => {
+    const holder = computerHolderFor(state.leases, threadId);
+    return holder && !holder.backend ? (holder.browser ?? "unknown") : undefined;
+  });
   const lastLeaseAt = useAgentComputerActivityStore((state) => state.lastLeaseAt[threadId]);
   const [now, setNow] = useState(Date.now());
   const [error, setError] = useState("");
@@ -113,7 +118,7 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
   }
   const native = activity?.backend === "native";
   const backendLabel = computerBackendLabel(activity?.backend);
-  const tone = computerStatusTone(activity, { paused, held });
+  const tone = computerStatusTone(activity, { paused, held, chrome });
   return (
     <div
       className={cn(
@@ -142,7 +147,7 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
           <span className="truncate">
             {stopUnconfirmed
               ? "Stop unconfirmed"
-              : describeComputerAction(activity, { paused, held })}
+              : describeComputerAction(activity, { paused, held, chrome })}
           </span>
           {activity?.appName && !paused ? (
             <span className="truncate font-normal text-muted-foreground">· {activity.appName}</span>

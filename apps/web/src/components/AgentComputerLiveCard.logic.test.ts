@@ -94,6 +94,20 @@ describe("computer live card text", () => {
     expect(describeComputerAction(undefined, {})).toBe("Idle");
   });
 
+  it("describes a held Chrome lease by whether a browser call is running", () => {
+    expect(describeComputerAction(undefined, { held: true, chrome: "idle" })).toBe(
+      "Chrome ready · not in use",
+    );
+    expect(describeComputerAction(undefined, { held: true, chrome: "working" })).toBe(
+      "Agent is using Chrome",
+    );
+    expect(describeComputerAction(undefined, { held: true, chrome: "unknown" })).toBe(
+      "Agent can use Chrome",
+    );
+    expect(computerStatusTone(undefined, { held: true, chrome: "idle" })).toBe("ok");
+    expect(computerStatusTone(undefined, { held: true, chrome: "working" })).toBe("pending");
+  });
+
   it("labels every tier", () => {
     expect(COMPUTER_TIER_LABEL).toEqual({
       view: "View only",

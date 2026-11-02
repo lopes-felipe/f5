@@ -436,6 +436,30 @@ describe("computer broker safety boundaries", () => {
       h.broker.close();
     }
   });
+  it("tells an idle Chrome runtime's lease from one running a browser call", async () => {
+    const h = await harness();
+    try {
+      h.ipc.emit("message", {
+        type: "chromeLeaseChanged",
+        holder: { profileId: "p", threadId: "t", sessionGeneration: "s", provider: "codex" },
+      });
+      const chrome = () => h.broker.computerUse().holders.find((holder) => holder.threadId === "t");
+      // A session that doesn't report its calls: unknown.
+      expect(chrome()).not.toHaveProperty("browser");
+      h.broker.reportChromeCalls("t", "s", false);
+      expect(chrome()?.browser).toBe("idle");
+      h.broker.reportChromeCalls("t", "s", true);
+      expect(chrome()?.browser).toBe("working");
+      // Another generation's report neither applies to nor clears the current one.
+      h.broker.reportChromeCalls("t", "old", false);
+      h.broker.reportChromeCalls("t", "old", undefined);
+      expect(chrome()?.browser).toBe("working");
+      h.broker.reportChromeCalls("t", "s", undefined);
+      expect(chrome()).not.toHaveProperty("browser");
+    } finally {
+      h.broker.close();
+    }
+  });
   it("restores anonymous contention and paused controls in a reconnect snapshot", async () => {
     const h = await harness();
     try {

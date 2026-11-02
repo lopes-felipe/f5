@@ -90,6 +90,7 @@ export interface ComputerUseSnapshot {
     appName?: string;
     state: ComputerExecutionState;
     pauseCause?: ComputerPauseCause;
+    browser?: "idle" | "working";
   }>;
   readonly pendingTakeover?: {
     threadId: string;
@@ -98,6 +99,9 @@ export interface ComputerUseSnapshot {
     state: ComputerExecutionState;
   };
   readonly otherProfile: boolean;
+}
+function chromeCallsKey(threadId: string, generation: string): string {
+  return `${threadId}\u0000${generation}`;
 }
 /** WebSocket shape of the merged snapshot. */
 export function agentComputerUsePush(
@@ -204,6 +208,8 @@ export class ComputerAutomationBrokerRuntime {
   private readonly nativePaused = new Set<string>();
   private mainHolders: ReadonlyArray<ComputerLeaseHolder> = [];
   private chromeHolder: ChromeLeaseHolder | null = null;
+  /** Whether a browser call runs, per thread and session generation (`reportChromeCalls`). */
+  private readonly chromeCalls = new Map<string, boolean>();
   private readonly setupConsents = new Map<
     string,
     {
@@ -479,12 +485,19 @@ export class ComputerAutomationBrokerRuntime {
     if (
       this.chromeHolder &&
       !holders.some((holder) => holder.threadId === this.chromeHolder!.threadId)
-    )
+    ) {
+      const running = this.chromeCalls.get(
+        chromeCallsKey(this.chromeHolder.threadId, this.chromeHolder.sessionGeneration),
+      );
       holders.push({
         threadId: this.chromeHolder.threadId,
         delivery: "foreground",
         state: "active",
+        ...(running === undefined
+          ? {}
+          : { browser: running ? ("working" as const) : ("idle" as const) }),
       });
+    }
     const pending = this.pendingTakeover;
     const pendingState = pending ? this.executionStates.get(pending.threadId)?.state : undefined;
     return {
@@ -668,6 +681,17 @@ export class ComputerAutomationBrokerRuntime {
    */
   stopIntegrationProcess(launchToken: string, reason?: "release" | "unresponsive"): void {
     this.host.send({ type: "chromeProcessStop", launchToken, ...(reason ? { reason } : {}) });
+  }
+  /**
+   * A session holding the Chrome lease reports whether a browser call is running, so the
+   * banner doesn't call an idle runtime's lease control; `undefined` stops reporting.
+   */
+  reportChromeCalls(threadId: string, generation: string, running: boolean | undefined): void {
+    const key = chromeCallsKey(threadId, generation);
+    if (this.chromeCalls.get(key) === running) return;
+    if (running === undefined) this.chromeCalls.delete(key);
+    else this.chromeCalls.set(key, running);
+    this.publishUse();
   }
   /** Called with each binding whose provider-native Chrome policy is off after a refresh. */
   onChromeDisabled(listener: (threadId: string, generation: string) => void): () => void {
