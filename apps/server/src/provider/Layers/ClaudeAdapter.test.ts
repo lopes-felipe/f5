@@ -45,11 +45,11 @@ import {
   isClaudeMissingConversationError,
   makeClaudeAdapterLive,
   probeClaudeSessionAvailability,
-  resolveClaudeConfigDir,
   type ClaudeAdapterLiveOptions,
   type ClaudeSessionProbeInput,
   type ClaudeSessionStoreFs,
 } from "./ClaudeAdapter.ts";
+import { resolveClaudeConfigDir } from "../Drivers/ClaudeHome.ts";
 import { FakeClaudeCodeProcess, respondToInitializeRequest } from "./ClaudeSdk.testUtils.ts";
 import type { AgentBrowserPolicy } from "../../mcp/browserAccess.ts";
 import { ComputerAutomationBrokerRuntime } from "../../computer/ComputerAutomationBroker";
@@ -2339,6 +2339,7 @@ describe("ClaudeAdapterLive", () => {
       USERPROFILE: "/isolated-account",
       ANTHROPIC_API_KEY: "instance-key",
       ANTHROPIC_BASE_URL: "https://instance.example",
+      CLAUDE_CODE_ENTRYPOINT: "instance-entrypoint",
     };
     const harness = makeHarness({ processEnvironment: environment });
     return Effect.gen(function* () {
@@ -2353,6 +2354,7 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(env?.USERPROFILE, environment.USERPROFILE);
       assert.equal(env?.ANTHROPIC_API_KEY, environment.ANTHROPIC_API_KEY);
       assert.equal(env?.ANTHROPIC_BASE_URL, environment.ANTHROPIC_BASE_URL);
+      assert.equal(env?.CLAUDE_CODE_ENTRYPOINT, environment.CLAUDE_CODE_ENTRYPOINT);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

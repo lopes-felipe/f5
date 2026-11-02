@@ -5,7 +5,7 @@ import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodePath from "@effect/platform-node/NodePath";
 import { describe, it, assert } from "@effect/vitest";
-import { Effect, Fiber, Layer, Schema, Sink, Stream } from "effect";
+import { Effect, Fiber, FileSystem, Layer, Path, Schema, Sink, Stream } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { vi } from "vitest";
@@ -64,13 +64,19 @@ function mockHandle(result: { stdout: string; stderr: string; code: number }) {
 }
 
 function mockSpawnerLayer(
-  handler: (args: ReadonlyArray<string>) => { stdout: string; stderr: string; code: number },
+  handler: (
+    args: ReadonlyArray<string>,
+    environment?: NodeJS.ProcessEnv,
+  ) => { stdout: string; stderr: string; code: number },
 ) {
   return Layer.succeed(
     ChildProcessSpawner.ChildProcessSpawner,
     ChildProcessSpawner.make((command) => {
-      const cmd = command as unknown as { args: ReadonlyArray<string> };
-      return Effect.succeed(mockHandle(handler(cmd.args)));
+      const cmd = command as unknown as {
+        args: ReadonlyArray<string>;
+        options?: { env?: NodeJS.ProcessEnv };
+      };
+      return Effect.succeed(mockHandle(handler(cmd.args, cmd.options?.env)));
     }),
   );
 }
@@ -410,6 +416,68 @@ function makeRuntimeLayer(input?: {
 }
 
 describe("McpRuntimeService", () => {
+  for (const scenario of [
+    { name: "unconfigured default", configured: false, expected: "t3-code" },
+    { name: "default", expected: "t3-code" },
+    { name: "instance override", instance: "instance", expected: "instance" },
+    { name: "settings override", instance: "instance", settings: "settings", expected: "settings" },
+  ]) {
+    it.effect(`uses the ${scenario.name} entrypoint for Claude preflight commands`, () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "f5-mcp-claude-env-" });
+        yield* fs.makeDirectory(path.join(root, ".claude"));
+        yield* fs.writeFileString(
+          path.join(root, ".claude", "settings.json"),
+          JSON.stringify({ env: { CLAUDE_CODE_ENTRYPOINT: scenario.settings } }),
+        );
+        const instanceId = ProviderInstanceId.make("claudeAgent");
+        const commands: string[] = [];
+        const settingsLayer = ServerSettingsService.layerTest({
+          providerInstances: {
+            [instanceId]: {
+              driver: ProviderDriverKind.make("claudeAgent"),
+              config: { homePath: root },
+              environment:
+                scenario.instance === undefined
+                  ? []
+                  : [{ name: "CLAUDE_CODE_ENTRYPOINT", value: scenario.instance }],
+            },
+          },
+        });
+        const runtimeLayer = makeRuntimeLayer({
+          spawnerLayer: mockSpawnerLayer((args, environment) => {
+            assert.equal(environment?.CLAUDE_CODE_ENTRYPOINT, scenario.expected);
+            commands.push(args.join(" "));
+            return {
+              stdout: args[0] === "--version" ? "claude 1.2.3\n" : '{"loggedIn":true}\n',
+              stderr: "",
+              code: 0,
+            };
+          }),
+        }).pipe(
+          Layer.provide(scenario.configured === false ? Layer.empty : settingsLayer),
+          Layer.provide(
+            ServerConfig.layerTest(root, path.join(root, "state")).pipe(
+              Layer.provide(Layer.mergeAll(NodeFileSystem.layer, NodePath.layer)),
+            ),
+          ),
+        );
+        const status = yield* McpRuntimeService.use((service) =>
+          service.getProviderStatus({
+            provider: "claudeAgent",
+            projectId,
+            instanceId,
+            homePath: root,
+          }),
+        ).pipe(Effect.provide(runtimeLayer));
+        assert.equal(status.authStatus, "authenticated");
+        assert.deepEqual(commands, ["--version", "auth status"]);
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeFileSystem.layer, NodePath.layer))),
+    );
+  }
+
   for (const state of [
     "ready",
     "starting",
