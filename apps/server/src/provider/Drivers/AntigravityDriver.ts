@@ -4,7 +4,6 @@ import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroke
 import * as NodeOS from "node:os";
 import { makeProviderLimits } from "../../usage/providerLimits.ts";
 import { acquireAccountAdmission } from "../../profiles/ProviderAccountGuard.ts";
-import { createModelCapabilities } from "@t3tools/shared/model";
 import * as AcpErrors from "effect-acp/errors";
 import { ProviderDriverError } from "../Errors.ts";
 import {
@@ -18,7 +17,10 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import { ServerConfig } from "../../config.ts";
 import { makeGrokTextGeneration } from "../../git/Layers/GrokTextGeneration.ts";
 import { makeGrokAdapter } from "../Layers/GrokAdapter.ts";
-import { checkAntigravityProviderStatus } from "../Layers/AntigravityProvider.ts";
+import {
+  buildAntigravityModels,
+  checkAntigravityProviderStatus,
+} from "../Layers/AntigravityProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeAntigravityAcpRuntime } from "../acp/AntigravityAcpSupport.ts";
 import type { GrokAcpRuntimeInput } from "../acp/GrokAcpSupport.ts";
@@ -88,14 +90,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
                   const choices = model.options.flatMap((option) =>
                     "value" in option ? [option] : option.options,
                   );
-                  models = choices
-                    .filter((choice) => choice.value.trim())
-                    .map((choice) => ({
-                      slug: choice.value,
-                      name: choice.name,
-                      isCustom: false,
-                      capabilities: createModelCapabilities({ optionDescriptors: [] }),
-                    }));
+                  models = buildAntigravityModels(choices);
                 }
               });
               yield* refreshSnapshot;

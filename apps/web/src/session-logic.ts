@@ -488,6 +488,7 @@ function parseUserInputQuestions(
           return {
             label: optionRecord.label,
             description: optionRecord.description,
+            ...(typeof optionRecord.value === "string" ? { value: optionRecord.value } : {}),
           };
         })
         .filter((option): option is UserInputQuestion["options"][number] => option !== null);
@@ -499,6 +500,7 @@ function parseUserInputQuestions(
         options: UserInputQuestion["options"];
         multiSelect?: boolean;
         optional?: boolean;
+        allowCustomAnswer?: boolean;
         initialAnswer?: string;
       } = {
         id: question.id,
@@ -509,6 +511,8 @@ function parseUserInputQuestions(
       if (typeof question.initialAnswer === "string" && question.initialAnswer.length <= 64 * 1024)
         parsedQuestion.initialAnswer = question.initialAnswer;
       if (typeof question.optional === "boolean") parsedQuestion.optional = question.optional;
+      if (typeof question.allowCustomAnswer === "boolean")
+        parsedQuestion.allowCustomAnswer = question.allowCustomAnswer;
       if (typeof question.multiSelect === "boolean") {
         parsedQuestion.multiSelect = question.multiSelect;
       }

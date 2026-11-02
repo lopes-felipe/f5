@@ -74,7 +74,13 @@ describe("Antigravity isolation and native requests", () => {
         { optionId: "dev", name: "Development", kind: "allow_once" },
       ],
     };
-    expect(antigravityQuestion(request)?.options).toHaveLength(2);
+    expect(antigravityQuestion(request)).toMatchObject({
+      allowCustomAnswer: false,
+      options: [{ value: "prod" }, { value: "dev" }],
+    });
+    expect(antigravityQuestionResponse(request, { interaction_1: "prod" })).toEqual({
+      outcome: { outcome: "selected", optionId: "prod" },
+    });
     expect(antigravityQuestionResponse(request, { interaction_1: "Production" })).toEqual({
       outcome: { outcome: "selected", optionId: "prod" },
     });

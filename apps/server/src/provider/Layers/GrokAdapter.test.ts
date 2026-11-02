@@ -324,8 +324,13 @@ it.layer(AntigravityAdapterTestLayer)("Antigravity native questions", (it) => {
         false,
       );
       const request = question!;
+      assert.equal(request.payload.questions[0]?.allowCustomAnswer, false);
+      assert.deepEqual(
+        request.payload.questions[0]?.options.map((option) => option.value),
+        ["dev", "prod"],
+      );
       yield* adapter.respondToUserInput(threadId, ApprovalRequestId.make(request.requestId!), {
-        interaction_test: "Development",
+        interaction_test: "dev",
       });
       yield* Fiber.join(turn);
       assert.equal(events.filter((event) => event.type === "user-input.resolved").length, 1);

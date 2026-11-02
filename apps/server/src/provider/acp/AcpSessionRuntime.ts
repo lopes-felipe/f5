@@ -1,5 +1,5 @@
 import { rememberAcpSetupFailure } from "./AcpAdapterSupport";
-import { redactAcpLogPayload } from "./AcpNativeLogging";
+import { redactAcpLogPayload, redactAcpDiagnosticText } from "./AcpNativeLogging";
 import {
   Cause,
   Clock,
@@ -321,6 +321,8 @@ const makeAcpSessionRuntime = (
     let memoizedMcpServers: ReadonlyArray<EffectAcpSchema.McpServer> | undefined;
     const redactLog = (value: unknown) =>
       options.logWritersRedact ? value : redactAcpLogPayload(value);
+    const sanitizeDiagnostic = (text: string) =>
+      redactAcpDiagnosticText(options.sanitizeStderr?.(text) ?? text);
     const logRequest = (event: AcpSessionRequestLogEvent) =>
       options.requestLogger
         ? options.requestLogger({
@@ -341,10 +343,8 @@ const makeAcpSessionRuntime = (
                         : {}),
                       message: setup
                         ? "ACP_REQUEST_FAILED"
-                        : (
-                            options.sanitizeStderr?.(
-                              String(error instanceof Error ? error.message : "ACP_REQUEST_FAILED"),
-                            ) ?? (error instanceof Error ? error.message : "ACP_REQUEST_FAILED")
+                        : sanitizeDiagnostic(
+                            error instanceof Error ? error.message : "ACP_REQUEST_FAILED",
                           ).slice(0, 2000),
                     };
                   })(),
@@ -404,7 +404,7 @@ const makeAcpSessionRuntime = (
           ? { transformStdoutLine: options.transformStdoutLine }
           : {}),
         ...(options.onStderr ? { onStderr: options.onStderr } : {}),
-        ...(options.sanitizeStderr ? { sanitizeStderr: options.sanitizeStderr } : {}),
+        sanitizeStderr: sanitizeDiagnostic,
         ...(options.protocolLogging?.logIncoming !== undefined
           ? { logIncoming: options.protocolLogging.logIncoming }
           : {}),

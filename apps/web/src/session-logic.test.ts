@@ -643,6 +643,23 @@ describe("derivePendingApprovals", () => {
 });
 
 describe("derivePendingUserInputs", () => {
+  it("preserves provider option IDs and the custom-answer restriction from persisted activities", () => {
+    const question = {
+      id: "branch",
+      header: "Branch",
+      question: "Choose",
+      allowCustomAnswer: false,
+      options: [{ label: "main", description: "main", value: "opt-main" }],
+    };
+    expect(
+      derivePendingUserInputs([
+        makeActivity({
+          kind: "user-input.requested",
+          payload: { requestId: "branch-request", questions: [question] },
+        }),
+      ])[0]?.questions,
+    ).toEqual([question]);
+  });
   it("preserves bounded editor prefills from persisted activities", () => {
     const question = {
       id: "editor",
