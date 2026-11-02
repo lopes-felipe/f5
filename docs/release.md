@@ -15,8 +15,16 @@ is still building; a failed newer candidate does not cause an older beta to ship
 In beta/all automation modes, the publisher automatically reruns a selected failed
 or timed-out candidate's failed jobs, up to three total attempts (including manual
 reruns). Publication waits for the rerun without falling back to an older candidate.
+Automatic reruns use `GITHUB_TOKEN`. If their completion does not trigger another
+publisher workflow, publication resumes through the ten-minute scheduled
+reconciliation. GitHub may delay scheduled runs when capacity is constrained.
 After the third attempt, or for a cancelled run, manually rerun failed jobs with
 `gh run rerun <run-id> --failed`. Shadow mode never reruns candidates.
+
+CI queue cleanup supersedes older queued runs before their replacement passes.
+If that replacement later fails, intermediate sources whose CI was cancelled
+cannot qualify until manually rerun; publication may wait for a newer eligible
+main source to pass. Cleanup skips replacements already known to have failed.
 
 For a stable release:
 

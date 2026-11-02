@@ -54,9 +54,17 @@ topology before claiming a scheduling gain. The docs exclusions are unchanged.
 Superseded PR runs are cancelled through concurrency groups. Main runs retain
 per-SHA groups. The `ci-supersede.yml` queue-cleanup workflow checks changed files
 through GitHub's API and cancels older queued main push runs after a newer
-descendant's CI run exists. It preserves commits touching `release-intent.json`
+beta-eligible descendant's CI run exists. It skips acceptance-report-only commits
+when choosing that replacement, matching beta source selection. A replacement run
+does not need to have passed: if it later fails, unpublished betas may wait until a
+newer eligible source passes rather than falling back to an intermediate commit.
+Cleanup leaves older runs alone when the newest eligible run has already completed
+without success.
+It preserves commits touching `release-intent.json`
 (including additions, removals and renames), so stable requests retain their exact-SHA
-qualification. It checks job start times and rechecks run status immediately before
+qualification. True merge commits and truncated file lists are preserved because
+they cannot prove first-parent intent safety through the commits API.
+It checks queued job status and runner assignment, then rechecks run status immediately before
 cancellation; running main runs are left to finish. Only the newest eligible SHA
 must qualify for betas. Schedule and dispatch runs are unaffected.
 GitHub has no atomic queued-only cancellation API, so a run can still start in the

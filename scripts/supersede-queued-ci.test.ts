@@ -26,6 +26,7 @@ const run = (id: number): WorkflowRun => ({
 function harness() {
   const state = {
     newest: run(3) as WorkflowRun | undefined,
+    newestRuns: null as WorkflowRun[] | null,
     queued: [[run(1)], [run(2), run(3)]],
     total: 3,
     files: [[{ filename: "src/main.ts" }]] as {
@@ -33,11 +34,14 @@ function harness() {
       previous_filename?: string;
       status?: string;
     }[][],
+    filesBySha: new Map<string, { filename: string; previous_filename?: string }[]>(),
+    parentsBySha: new Map<string, { sha: string }[]>(),
     comparison: "ahead",
     current: new Map<number, WorkflowRun>(),
-    jobs: [[{ status: "queued", started_at: null }]] as {
+    jobs: [[{ status: "queued", started_at: null, runner_id: 0 }]] as {
       status: string;
       started_at: string | null;
+      runner_id: number | null;
     }[][],
     fileError: false,
     cancelError: false,
@@ -49,10 +53,17 @@ function harness() {
     if (path.includes("status=queued"))
       response = state.queued.map((workflow_runs) => ({ total_count: state.total, workflow_runs }));
     else if (path.startsWith("actions/workflows/"))
-      response = { workflow_runs: state.newest ? [state.newest] : [] };
+      response = {
+        workflow_runs: state.newestRuns ?? (state.newest ? [state.newest] : []),
+      };
     else if (path.startsWith("commits/")) {
       if (state.fileError) throw new Error("commit API unavailable");
-      response = state.files.map((files) => ({ files }));
+      const sha = path.split("/")[1]!.split("?")[0]!;
+      const files = state.filesBySha.get(sha);
+      response = (files ? [files] : state.files).map((files) => ({
+        files,
+        parents: state.parentsBySha.get(sha) ?? [{ sha: "0".repeat(40) }],
+      }));
     } else if (path.startsWith("compare/")) response = { status: state.comparison };
     else if (path.endsWith("/cancel")) {
       if (state.cancelError) {
@@ -85,6 +96,86 @@ describe("supersedeQueuedCi", () => {
       "--slurp",
       root + "actions/workflows/ci.yml/runs?branch=main&event=push&status=queued&per_page=100",
     ]);
+  });
+
+  it("uses the latest beta-eligible commit when the newest push is acceptance-only", async () => {
+    const { state, gh, cancellations } = harness();
+    state.newestRuns = [run(3), run(2), run(1)];
+    state.filesBySha.set(run(3).head_sha, [
+      { filename: "docs/computer-certification/acceptance-1.2.3-codex.json" },
+    ]);
+    state.filesBySha.set(run(2).head_sha, [{ filename: "src/main.ts" }]);
+    expect(await supersedeQueuedCi(repository, gh)).toEqual([1]);
+    expect(cancellations()).toHaveLength(1);
+    expect(gh).toHaveBeenCalledWith([
+      "api",
+      "repos/" +
+        repository +
+        "/compare/" +
+        run(1).head_sha +
+        "..." +
+        run(2).head_sha +
+        "?per_page=1",
+    ]);
+  });
+
+  it("keeps queued eligible sources when every newer run is acceptance-only", async () => {
+    const { state, gh, cancellations } = harness();
+    state.newestRuns = [run(3), run(2)];
+    state.filesBySha.set(run(3).head_sha, [
+      { filename: "docs/computer-certification/acceptance-3.json" },
+    ]);
+    state.queued = [[run(2)]];
+    expect(await supersedeQueuedCi(repository, gh)).toEqual([]);
+    expect(cancellations()).toEqual([]);
+  });
+
+  it("does not mistake a rename of source code into an acceptance report for acceptance-only changes", async () => {
+    const { state, gh } = harness();
+    state.filesBySha.set(run(3).head_sha, [
+      {
+        filename: "docs/computer-certification/acceptance-3.json",
+        previous_filename: "src/main.ts",
+      },
+    ]);
+    expect(await supersedeQueuedCi(repository, gh)).toEqual([1, 2]);
+  });
+
+  it.each(["failure", "cancelled", "timed_out", "action_required"])(
+    "keeps older sources when the newest eligible run already ended in %s",
+    async (conclusion) => {
+      const { state, gh, cancellations } = harness();
+      state.newest = { ...run(3), status: "completed", conclusion };
+      expect(await supersedeQueuedCi(repository, gh)).toEqual([]);
+      expect(cancellations()).toEqual([]);
+    },
+  );
+
+  it("uses a successful newest eligible run to supersede queued sources", async () => {
+    const { state, gh } = harness();
+    state.newest = { ...run(3), status: "completed", conclusion: "success" };
+    expect(await supersedeQueuedCi(repository, gh)).toEqual([1, 2]);
+  });
+
+  it("keeps true merge commits whose API diff cannot prove first-parent intent safety", async () => {
+    const { state, gh, cancellations } = harness();
+    state.parentsBySha.set(
+      run(1).head_sha,
+      [run(2), run(3)].map((run) => ({ sha: run.head_sha })),
+    );
+    state.queued = [[run(1)]];
+    expect(await supersedeQueuedCi(repository, gh)).toEqual([]);
+    expect(cancellations()).toEqual([]);
+  });
+
+  it("does not use an ambiguous merge commit as a replacement source", async () => {
+    const { state, gh, cancellations } = harness();
+    state.parentsBySha.set(
+      run(3).head_sha,
+      [run(1), run(2)].map((run) => ({ sha: run.head_sha })),
+    );
+    expect(await supersedeQueuedCi(repository, gh)).toEqual([]);
+    expect(cancellations()).toEqual([]);
   });
 
   it.each(["added", "modified", "removed", "renamed"])(
@@ -160,14 +251,31 @@ describe("supersedeQueuedCi", () => {
   });
 
   it.each([
-    { status: "in_progress", started_at: null },
-    { status: "completed", started_at: "2026-11-02T10:00:00Z" },
-    { status: "queued", started_at: "2026-11-02T10:00:00Z" },
+    { status: "in_progress", started_at: null, runner_id: 12 },
+    { status: "completed", started_at: "2026-11-02T10:00:00Z", runner_id: 12 },
+    { status: "queued", started_at: "2026-11-02T10:00:00Z", runner_id: 12 },
+    { status: "queued", started_at: null, runner_id: null },
   ])("preserves runs whose jobs have started (%j)", async (job) => {
     const { state, gh, cancellations } = harness();
     state.jobs.push([job]);
     await supersedeQueuedCi(repository, gh);
     expect(cancellations()).toEqual([]);
+  });
+
+  it("cancels a queued job with started_at set and runner_id zero", async () => {
+    const { state, gh, cancellations } = harness();
+    state.queued = [[run(1)]];
+    state.jobs = [
+      [
+        {
+          status: "queued",
+          started_at: "2026-11-02T10:00:00Z",
+          runner_id: 0,
+        },
+      ],
+    ];
+    expect(await supersedeQueuedCi(repository, gh)).toEqual([1]);
+    expect(cancellations()).toHaveLength(1);
   });
 
   it.each([undefined, { ...run(3), event: "pull_request" }])(

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ReleaseCandidate, StableRequest } from "./release/release-candidate.ts";
 import type { WorkflowRun } from "./release/release-github.ts";
+import { parsePublicationLease } from "./release/release-lease.ts";
 import { appendFileSync } from "node:fs";
 
 const state = vi.hoisted(() => ({
@@ -275,6 +276,8 @@ it.each([
   { mode: "all", conclusion: "failure", attempt: 3 },
   { mode: "all", conclusion: "failure", attempt: 4 },
   { mode: "all", conclusion: "cancelled", attempt: 1 },
+  { mode: "all", conclusion: "startup_failure", attempt: 1 },
+  { mode: "all", conclusion: "action_required", attempt: 1 },
   { mode: "shadow", conclusion: "failure", attempt: 1 },
 ])(
   "blocks a $conclusion candidate at attempt $attempt in $mode mode",
@@ -314,6 +317,32 @@ it("reports a failed automatic rerun as a blocked build", async () => {
     reason: expect.stringContaining("rerun API unavailable"),
     attempt: 1,
   });
+});
+it("cannot rerun twice by using the no-candidate retry marker as a publication lease", async () => {
+  vi.stubEnv("RELEASE_AUTOMATION_MODE", "all");
+  vi.stubEnv("GITHUB_OUTPUT", "/fixture/output");
+  vi.mocked(appendFileSync).mockClear();
+  state.builds[0]!.conclusion = "failure";
+  await reconcileReleases({ leaseOnly: true });
+  const selection = JSON.parse(state.writes.get("release-publication-lease.json")!);
+  expect(selection).toEqual({ candidateRun: null });
+  expect(appendFileSync).toHaveBeenCalledExactlyOnceWith(
+    "/fixture/output",
+    "selection_ready=true\nlease_key=none\n",
+  );
+  // The full --lease CLI path parses the saved marker before reconciliation.
+  await expect(async () =>
+    reconcileReleases({ lease: parsePublicationLease(selection) }),
+  ).rejects.toThrow("Invalid publication lease");
+  expect(state.gh).toHaveBeenCalledExactlyOnceWith([
+    "api",
+    "-X",
+    "POST",
+    "repos/lopes-felipe/f5/actions/runs/100/rerun-failed-jobs",
+  ]);
+  expect(state.load).not.toHaveBeenCalled();
+  expect(state.assemble).not.toHaveBeenCalled();
+  expect(state.publish).not.toHaveBeenCalled();
 });
 it.each(["ci", "build", "stable", "upgrade", "artifact"])(
   "always records the blocking or waiting outcome for %s",
