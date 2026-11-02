@@ -17,7 +17,8 @@ describe("Codex Chrome adoption", () => {
       verified += 1;
       return { ok: true as const, teamId: "2DC432GLL2", identifier: "codex" };
     };
-    await expect(verifyCodexChromeAdoption(4242, 4343, verify, "darwin", "arm64")).resolves.toBe(
+    // darwin-arm64 is certified (#394); Windows has no Codex Chrome record yet.
+    await expect(verifyCodexChromeAdoption(4242, 4343, verify, "win32", "x64")).resolves.toBe(
       "Codex Chrome control isn't certified.",
     );
     expect(verified).toBe(0);
