@@ -179,6 +179,7 @@ import {
   type ComposerTrigger,
   collapseExpandedComposerCursor,
   detectComposerTrigger,
+  isPathSuggestionCurrent,
   expandCollapsedComposerCursor,
   isStandaloneModelPickerSlashCommand,
   parseStandaloneComposerSlashCommand,
@@ -2951,6 +2952,7 @@ export default memo(function ChatView({
         type: "path",
         path: entry.path,
         pathKind: entry.kind,
+        searchTarget: workspaceEntriesQuery.data!.searchedTarget,
         label: basenameOfPath(entry.path),
         description: entry.parentPath ?? "",
       }));
@@ -2974,6 +2976,7 @@ export default memo(function ChatView({
     composerNativeSlashCommands,
     selectedProvider,
     workspaceEntries,
+    workspaceEntriesQuery.data,
   ]);
   const dismissedComposerPromptRef = useRef<string | null>(null);
   const composerMenuOpen =
@@ -7039,6 +7042,7 @@ export default memo(function ChatView({
       const { snapshot, trigger } = resolveActiveComposerTrigger();
       if (!trigger) return;
       if (item.type === "path") {
+        if (!isPathSuggestionCurrent(item.searchTarget, trigger, workspaceCwd)) return;
         const replacement = `@${serializeComposerMentionPath(item.path)} `;
         const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
           snapshot.value,
@@ -7104,6 +7108,7 @@ export default memo(function ChatView({
       isPendingTurnDispatchBlocked,
       resolveActiveComposerTrigger,
       selectedProvider,
+      workspaceCwd,
     ],
   );
   const onComposerMenuItemHighlighted = useCallback((itemId: string | null) => {

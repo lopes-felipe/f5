@@ -38,6 +38,7 @@ export function claudeAutoModeRecheck(input: {
   readonly supportsAutoMode: boolean | undefined;
   readonly livePlan: boolean;
   readonly workflow: boolean;
+  readonly modelChanged: boolean;
 }):
   | {
       readonly base: PermissionMode;
@@ -45,8 +46,10 @@ export function claudeAutoModeRecheck(input: {
       readonly downgraded: boolean;
     }
   | undefined {
-  // A workflow's base is plan; its runtime mode never becomes live.
-  if (!input.autoRequested || input.workflow) return undefined;
+  // A workflow's base is plan; its runtime mode never becomes live. On the
+  // same model, preserve the CLI's effective mode even if discovery claimed
+  // auto support: another prompt must not retry an already rejected mode.
+  if (!input.autoRequested || input.workflow || !input.modelChanged) return undefined;
   const next: PermissionMode = input.supportsAutoMode === true ? "auto" : "default";
   if (next === input.base) return undefined;
   return {

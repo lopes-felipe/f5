@@ -8947,6 +8947,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 (input.interactionMode === undefined &&
                   context.configuredBase?.permissionMode === "plan"),
               workflow: context.workflowExecutionProfile !== undefined,
+              modelChanged: runtimeModelSelection.baseModel !== previousModel,
             });
             const shouldSetModel =
               runtimeModelSelection.baseModel !== previousModel ||

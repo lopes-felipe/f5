@@ -12743,6 +12743,65 @@ describe("ClaudeAdapterLive", () => {
       );
     });
 
+    it.effect(
+      "keeps the init fallback on same-model follow-ups and retries after a model change",
+      () => {
+        const harness = makeAutoHarness();
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          const events = yield* collectEvents(adapter);
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            model: AUTO_MODEL,
+            runtimeMode: "auto",
+          });
+          harness.query.emit({
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-auto",
+            uuid: "init-auto-fallback",
+            model: AUTO_MODEL,
+            permissionMode: "default",
+          } as unknown as SDKMessage);
+          for (let attempt = 0; attempt < 100 && warningsIn(events).length === 0; attempt += 1)
+            yield* settle;
+          assert.deepEqual(warningsIn(events), [CLAUDE_AUTO_UNAVAILABLE_WARNING]);
+          harness.query.setPermissionModeCalls.length = 0;
+
+          for (const model of [AUTO_MODEL, undefined]) {
+            yield* adapter.sendTurn({
+              threadId: THREAD_ID,
+              input: "continue",
+              ...(model ? { model } : {}),
+              interactionMode: "default",
+              attachments: [],
+            });
+            yield* completeTurn(harness, events);
+          }
+          assert.deepEqual(harness.query.setPermissionModeCalls, ["default", "default"]);
+
+          yield* adapter.sendTurn({
+            threadId: THREAD_ID,
+            input: "switch model",
+            model: NO_AUTO_MODEL,
+            attachments: [],
+          });
+          yield* completeTurn(harness, events);
+          yield* adapter.sendTurn({
+            threadId: THREAD_ID,
+            input: "retry auto on a supported model",
+            model: AUTO_MODEL,
+            attachments: [],
+          });
+          assert.deepEqual(harness.query.setPermissionModeCalls, ["default", "default", "auto"]);
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+        );
+      },
+    );
+
     it.effect("fails closed when the CLI reports a mode other than auto", () => {
       const harness = makeAutoHarness();
       return Effect.gen(function* () {

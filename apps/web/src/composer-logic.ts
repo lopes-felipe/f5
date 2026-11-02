@@ -17,6 +17,24 @@ export interface ComposerTrigger {
   inline?: true;
 }
 
+export interface ComposerPathSearchTarget {
+  readonly cwd: string | null;
+  readonly query: string;
+}
+
+export function isPathSuggestionCurrent(
+  searchedTarget: ComposerPathSearchTarget,
+  trigger: ComposerTrigger | null,
+  cwd: string | null,
+): boolean {
+  return (
+    cwd !== null &&
+    trigger?.kind === "path" &&
+    searchedTarget.cwd === cwd &&
+    searchedTarget.query.trim() === trigger.query.trim()
+  );
+}
+
 const isInlineTokenSegment = (segment: ComposerPromptSegment): boolean => segment.type !== "text";
 
 function clampCursor(text: string, cursor: number): number {
@@ -40,6 +58,12 @@ function tokenStartForCursor(text: string, cursor: number): number {
     index -= 1;
   }
   return index + 1;
+}
+
+function isPathWord(text: string, start: number, cursor: number): boolean {
+  let end = cursor;
+  while (end < text.length && !isWhitespace(text[end] ?? "")) end += 1;
+  return text.slice(start + 1, end).includes("/");
 }
 
 function unescapeQuotedMentionQuery(query: string): string {
@@ -260,6 +284,7 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
   if (linePrefix.startsWith("/")) {
     const commandMatch = /^\/(\S*)$/.exec(linePrefix);
     if (commandMatch) {
+      if (isPathWord(text, lineStart, cursor)) return null;
       const commandQuery = commandMatch[1] ?? "";
       return {
         kind: "slash-command",
@@ -282,6 +307,7 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
     return { kind: "skill", query: skillMatch[1] ?? "", rangeStart: tokenStart, rangeEnd: cursor };
   }
   if (token.startsWith("/")) {
+    if (isPathWord(text, tokenStart, cursor)) return null;
     const inline = text.slice(lineStart, tokenStart).trim() !== "";
     return {
       kind: "slash-command",

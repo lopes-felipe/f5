@@ -93,15 +93,20 @@ export function projectSearchEntriesQueryOptions(input: {
       if (!input.cwd) {
         throw new Error("Workspace entry search is unavailable.");
       }
-      return api.projects.searchEntries({
+      const result = await api.projects.searchEntries({
         cwd: input.cwd,
         query: input.query,
         limit,
       });
+      return { ...result, searchedTarget: { cwd: input.cwd, query: input.query } };
     },
     enabled: (input.enabled ?? true) && input.cwd !== null,
     staleTime: input.staleTime ?? DEFAULT_SEARCH_ENTRIES_STALE_TIME,
-    placeholderData: (previous) => previous ?? EMPTY_SEARCH_ENTRIES_RESULT,
+    placeholderData: (previous) =>
+      previous ?? {
+        ...EMPTY_SEARCH_ENTRIES_RESULT,
+        searchedTarget: { cwd: input.cwd ?? "", query: input.query },
+      },
   });
 }
 

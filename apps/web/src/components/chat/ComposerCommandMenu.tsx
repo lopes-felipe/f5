@@ -1,6 +1,10 @@
 import { type ProjectEntry } from "@t3tools/contracts";
 import { memo } from "react";
-import { type ComposerSlashCommand, type ComposerTriggerKind } from "../../composer-logic";
+import {
+  type ComposerPathSearchTarget,
+  type ComposerSlashCommand,
+  type ComposerTriggerKind,
+} from "../../composer-logic";
 import { BotIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { Command, CommandItem, CommandList } from "../ui/command";
@@ -12,6 +16,7 @@ export type ComposerCommandItem =
       type: "path";
       path: string;
       pathKind: ProjectEntry["kind"];
+      searchTarget: ComposerPathSearchTarget;
       label: string;
       description: string;
     }
