@@ -5869,11 +5869,13 @@
     },
     {
       "createdAt": "2026-11-02T10:32:38.196Z",
-      "decidedAt": "2026-11-03T10:30:22.437Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T10:54:17.393Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-28004",
-      "status": "port",
+      "reason": "F5 uses provider-reported costs without LiteLLM pricing.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "usage"
@@ -9422,11 +9424,13 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
-      "decidedAt": "2026-11-03T10:30:22.437Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T10:54:17.393Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-29415",
-      "status": "port",
+      "reason": "F5 has no rollout usage scanner to reconcile.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "usage",
