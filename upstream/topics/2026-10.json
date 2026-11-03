@@ -44335,11 +44335,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-03T10:30:22.437Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T18:45:17.710Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-23461",
-      "status": "port",
+      "reason": "F5 has no CDP relay or Playwright event forwarding; its preview console messages are truncated before snapshot serialization.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview browser",

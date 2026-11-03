@@ -2492,11 +2492,22 @@
     },
     {
       "createdAt": "2026-11-02T10:32:38.196Z",
-      "decidedAt": "2026-11-03T10:30:22.437Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T18:45:20.588Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:431",
+          "apps/server/src/prHub/readModel.ts:131",
+          "apps/server/src/prHub/readModel.ts:154"
+        ],
+        "f5Refs": [
+          "f1cc8af8f57279da57761302bd8554b6e12e5845"
+        ]
+      },
       "id": "pr-24772",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "pr-hub",
@@ -3983,11 +3994,13 @@
     },
     {
       "createdAt": "2026-11-02T10:32:38.196Z",
-      "decidedAt": "2026-11-03T10:30:22.437Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T18:45:16.527Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-27231",
-      "status": "port",
+      "reason": "F5 renders settled threads directly per project without the paginated, scope-keyed older-settled shelf that causes the upstream update loop.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "sidebar"
