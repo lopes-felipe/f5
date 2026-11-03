@@ -1,7 +1,6 @@
 import { ThreadId, type AgentTranscriptPage } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
-import { page } from "vitest/browser";
 import { useAgentTranscript } from "./useAgentTranscript";
 import { useAgentTranscriptStore } from "../lib/agentTranscriptStore";
 
@@ -100,9 +99,10 @@ describe("transcript refresh scheduling", () => {
       await screen.unmount();
     }
   });
-  it("bounds a cached refresh to four requests and keeps the catch-up cursor", async () => {
+  it("bounds a live poll to four requests and keeps the catch-up cursor", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     mocks.read.mockResolvedValue(empty);
-    const screen = await render(<Harness />);
+    const screen = await render(<Harness live />);
     try {
       await vi.waitFor(() => expect(state()?.inFlight).toBe(false));
       mocks.read.mockClear();
@@ -110,7 +110,7 @@ describe("transcript refresh scheduling", () => {
         ...empty,
         nextCursor: "page:" + mocks.read.mock.calls.length,
       }));
-      await page.getByRole("button", { name: "Refresh transcript" }).click();
+      await vi.advanceTimersByTimeAsync(1000);
       await vi.waitFor(() => expect(state()?.inFlight).toBe(false));
       expect(mocks.read).toHaveBeenCalledTimes(4);
       expect(state()?.nextCursor).toBe("page:4");

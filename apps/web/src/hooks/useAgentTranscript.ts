@@ -26,7 +26,7 @@ export function useAgentTranscript(input: {
   const ids = input.workItemIds.join("\u0000");
   const lastRequest = useRef(0);
   const request = useCallback(
-    (mode: "tail" | "earlier" | "latest" | "drain" = "tail") =>
+    (mode: "tail" | "earlier" | "latest" | "drain" = "tail", bounded = false) =>
       runAgentTranscriptRequest(key, async () => {
         const store = useAgentTranscriptStore.getState();
         let current = store.entries[key] ?? newTranscriptState();
@@ -38,9 +38,9 @@ export function useAgentTranscript(input: {
         lastRequest.current = Date.now();
         let cursor =
           mode === "earlier" ? current.earlierCursor : (current.nextCursor ?? current.tailCursor);
-        // Initial opens and settlement drain fully. Each live refresh yields
+        // Opens, manual refreshes and settlement drain fully. Each live poll yields
         // after four requests so catch-up cannot monopolize the connection.
-        const maxRequests = mode === "tail" && current.loaded ? 4 : Infinity;
+        const maxRequests = bounded ? 4 : Infinity;
         let requests = 0;
         try {
           do {
@@ -103,11 +103,11 @@ export function useAgentTranscript(input: {
     )
       return;
     const interval = setInterval(
-      () => void request(),
+      () => void request("tail", true),
       state.reason === "session-not-running" ? 10000 : 2000,
     );
     const timeout = setTimeout(
-      () => void request(),
+      () => void request("tail", true),
       Math.max(0, 1000 - (Date.now() - lastRequest.current)),
     );
     return () => {
