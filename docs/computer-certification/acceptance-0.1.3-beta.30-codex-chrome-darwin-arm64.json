@@ -1,0 +1,38 @@
+{
+  "kind": "acceptance",
+  "integration": "codex-chrome",
+  "tag": "v0.1.3-beta.30",
+  "platform": "darwin",
+  "arch": "arm64",
+  "artifactName": "F5-0.1.3-beta.30-arm64.dmg",
+  "artifactSha256": "24feb32e32597bd5245a5336b947d54d5f02015a5a324c6b312d452e0c980e42",
+  "recordIds": ["codex-chrome-darwin-arm64-26.1023.51421"],
+  "sourceCommit": "18f10acfe3c64aef7be2ee0b98cde69b5f3466ad",
+  "checks": {
+    "toggle-readiness": true,
+    "consent-once": true,
+    "open-tab-read-title": true,
+    "pause-stops": true,
+    "emergency-stop": true,
+    "idle-stop": true,
+    "registrations-unchanged": true
+  },
+  "observations": {
+    "pause-stops": {
+      "hitsBeforePause": 20,
+      "hitsAfterPause": 0
+    },
+    "emergency-stop": {
+      "runningBefore": 1,
+      "stoppedWithinMs": 54
+    },
+    "idle-stop": {
+      "runningBefore": 1,
+      "stoppedWithinMs": 535949
+    },
+    "registrations-unchanged": {
+      "changed": 0,
+      "present": 8
+    }
+  }
+}

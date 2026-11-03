@@ -1,4 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -675,282 +676,306 @@ describe("WebSocket Server", () => {
     );
   });
 
-  it("returns thread details from projections while orchestration runtime startup is still pending", async () => {
-    const stateDir = makeTempDir("t3code-state-thread-details-pending-runtime-");
-    const persistenceLayer = makeSqlitePersistenceLive(path.join(stateDir, "state.sqlite")).pipe(
-      Layer.provide(NodeServices.layer),
-    );
-    const workspaceRoot = stateDir;
-
-    h.server = await createTestServer({
-      cwd: workspaceRoot,
-      stateDir,
-      persistenceLayer,
-    });
-    let addr = h.server.address();
-    let port = typeof addr === "object" && addr !== null ? addr.port : 0;
-    expect(port).toBeGreaterThan(0);
-
-    const [seedWs] = await connectAndAwaitWelcome(port);
-    connections.push(seedWs);
-
-    const createProjectResponse = await sendRequest(
-      seedWs,
-      ORCHESTRATION_WS_METHODS.dispatchCommand,
-      {
-        type: "project.create",
-        commandId: "cmd-project-pending-runtime-create",
-        projectId: "project-pending-runtime",
-        title: "Pending Runtime Project",
-        workspaceRoot,
-        defaultModel: "gpt-5-codex",
-        createdAt: "2026-01-01T00:00:00.000Z",
-      },
-    );
-    expect(createProjectResponse.error).toBeUndefined();
-
-    const createThreadResponse = await sendRequest(
-      seedWs,
-      ORCHESTRATION_WS_METHODS.dispatchCommand,
-      {
-        type: "thread.create",
-        commandId: "cmd-thread-pending-runtime-create",
-        threadId: "thread-pending-runtime",
-        projectId: "project-pending-runtime",
-        title: "Pending Runtime Thread",
-        model: "gpt-5-codex",
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        branch: null,
-        worktreePath: null,
-        createdAt: "2026-01-01T00:00:00.000Z",
-      },
-    );
-    expect(createThreadResponse.error).toBeUndefined();
-
-    await closeTestServer();
-    h.server = null;
-
-    vi.resetModules();
-    vi.doMock("./serverLayers.ts", async () => {
-      const actual = await vi.importActual<typeof import("./serverLayers.ts")>("./serverLayers.ts");
-      const orchestrationEngineModule = await vi.importActual<
-        typeof import("./orchestration/Services/OrchestrationEngine.ts")
-      >("./orchestration/Services/OrchestrationEngine.ts");
-      const orchestrationReactorModule = await vi.importActual<
-        typeof import("./orchestration/Services/OrchestrationReactor.ts")
-      >("./orchestration/Services/OrchestrationReactor.ts");
-      const providerCommandReactorModule = await vi.importActual<
-        typeof import("./orchestration/Services/ProviderCommandReactor.ts")
-      >("./orchestration/Services/ProviderCommandReactor.ts");
-      const providerTurnDeliveryWorkerModule = await vi.importActual<
-        typeof import("./orchestration/Services/ProviderTurnDeliveryWorker.ts")
-      >("./orchestration/Services/ProviderTurnDeliveryWorker.ts");
-      const workflowServiceModule = await vi.importActual<
-        typeof import("./orchestration/Services/WorkflowService.ts")
-      >("./orchestration/Services/WorkflowService.ts");
-      const codeReviewWorkflowServiceModule = await vi.importActual<
-        typeof import("./orchestration/Services/CodeReviewWorkflowService.ts")
-      >("./orchestration/Services/CodeReviewWorkflowService.ts");
-      const investigationWorkflowServiceModule = await vi.importActual<
-        typeof import("./orchestration/Services/InvestigationWorkflowService.ts")
-      >("./orchestration/Services/InvestigationWorkflowService.ts");
-      const projectSetupScriptRunnerModule = await vi.importActual<
-        typeof import("./project/Services/ProjectSetupScriptRunner.ts")
-      >("./project/Services/ProjectSetupScriptRunner.ts");
-      const providerSessionDirectoryModule = await vi.importActual<
-        typeof import("./provider/Services/ProviderSessionDirectory.ts")
-      >("./provider/Services/ProviderSessionDirectory.ts");
-      const providerSessionReaperModule = await vi.importActual<
-        typeof import("./provider/Services/ProviderSessionReaper.ts")
-      >("./provider/Services/ProviderSessionReaper.ts");
-      const threadBackgroundWorkModule = await vi.importActual<
-        typeof import("./orchestration/Services/ThreadBackgroundWork.ts")
-      >("./orchestration/Services/ThreadBackgroundWork.ts");
-      const usageServiceModule = await vi.importActual<
-        typeof import("./usage/Services/UsageService.ts")
-      >("./usage/Services/UsageService.ts");
-      const nextTurnQueueDispatcherModule = await vi.importActual<
-        typeof import("./nextTurnQueue/Services/NextTurnQueueDispatcher.ts")
-      >("./nextTurnQueue/Services/NextTurnQueueDispatcher.ts");
-      const storageMaintenanceModule = await vi.importActual<
-        typeof import("./storage/StorageMaintenance.ts")
-      >("./storage/StorageMaintenance.ts");
-      const worktreeManagerModule = await vi.importActual<
-        typeof import("./project/Services/WorktreeManager.ts")
-      >("./project/Services/WorktreeManager.ts");
-      const worktreeSetupModule = await vi.importActual<
-        typeof import("./project/Services/WorktreeSetup.ts")
-      >("./project/Services/WorktreeSetup.ts");
-      const storageCleanupWorkerModule = await vi.importActual<
-        typeof import("./storage/StorageCleanupWorker.ts")
-      >("./storage/StorageCleanupWorker.ts");
-      const skillSyncModule = await vi.importActual<
-        typeof import("./orchestration/Services/ProjectSkillSyncService.ts")
-      >("./orchestration/Services/ProjectSkillSyncService.ts");
-      const defaultBranchAutoPullModule = await vi.importActual<
-        typeof import("./git/DefaultBranchAutoPull.ts")
-      >("./git/DefaultBranchAutoPull.ts");
-      const pendingRuntimeLayer = Layer.mergeAll(
-        Layer.succeed(orchestrationEngineModule.OrchestrationEngineService, {
-          getReadModel: () => Effect.die(new Error("unused in pending-runtime ws test")),
-          readEvents: () => Stream.empty,
-          dispatch: () => Effect.die(new Error("unused in pending-runtime ws test")),
-          acquireMaintenanceLock: () => Scope.make("sequential"),
-          streamDomainEvents: Stream.empty,
-        }),
-        Layer.succeed(orchestrationReactorModule.OrchestrationReactor, {
-          start: Effect.never,
-        }),
-        Layer.succeed(providerCommandReactorModule.ProviderCommandReactor, {} as any),
-        Layer.succeed(providerTurnDeliveryWorkerModule.ProviderTurnDeliveryWorker, {} as any),
-        Layer.succeed(providerSessionReaperModule.ProviderSessionReaper, {
-          sweep: () => Effect.void,
-          start: () => Effect.void,
-        }),
-        Layer.succeed(threadBackgroundWorkModule.ThreadBackgroundWork, {
-          recordProviderEvent: () => Effect.void,
-          getSnapshot: Effect.succeed({
-            entries: [],
-            generatedAt: "2026-01-01T00:00:00.000Z",
-          }),
-          getThreadSnapshot: () =>
-            Effect.succeed({ entries: [], generatedAt: "2026-01-01T00:00:00.000Z" }),
-          dismiss: () => Effect.succeed({ dismissedCount: 0 }),
-          expireStale: () => Effect.void,
-          listProtectedThreadIds: () => Effect.succeed(new Set()),
-          hasFreshProtectingWork: () => Effect.succeed(false),
-          changes: Stream.empty,
-        }),
-        Layer.succeed(usageServiceModule.UsageService, {
-          consumeResetCredit: () => Effect.die("unused reset credit"),
-          refreshAccount: () => Effect.succeed({ snapshot: null, fresh: false }),
-          getSummary: () => Effect.die("unused usage summary"),
-          getAccounts: () => Effect.succeed([]),
-          getQuotaHistory: Effect.die("unused quota history"),
-        }),
-        Layer.succeed(providerSessionDirectoryModule.ProviderSessionDirectory, {} as any),
-        Layer.succeed(skillSyncModule.ProjectSkillSyncService, {
-          start: Effect.void,
-          drain: Effect.void,
-          getWarnings: () => Effect.succeed([]),
-        }),
-        Layer.succeed(workflowServiceModule.WorkflowService, {} as any),
-        Layer.succeed(codeReviewWorkflowServiceModule.CodeReviewWorkflowService, {} as any),
-        Layer.succeed(investigationWorkflowServiceModule.InvestigationWorkflowService, {} as any),
-        Layer.succeed(projectSetupScriptRunnerModule.ProjectSetupScriptRunner, {} as any),
-        Layer.succeed(storageMaintenanceModule.StorageMaintenance, {
-          startScheduledCompaction: () => Effect.void,
-          getPendingCompaction: Effect.succeed(null),
-        } as any),
-        Layer.succeed(WorktreePreparation, {
-          prepare: () => Effect.void,
-          needsPreparation: () => Effect.succeed(false),
-          startBackground: () => Effect.void,
-          startup: Effect.void,
-        }),
-        Layer.succeed(worktreeManagerModule.WorktreeManager, {} as never),
-        Layer.succeed(WorkspaceTransition, {} as never),
-        Layer.succeed(worktreeSetupModule.WorktreeSetup, {
-          startup: Effect.void,
-          changes: Stream.empty,
-        } as any),
-        Layer.succeed(storageCleanupWorkerModule.StorageCleanupWorker, {
-          start: Effect.void,
-        } as any),
-        Layer.succeed(defaultBranchAutoPullModule.DefaultBranchAutoPull, {
-          start: Effect.void,
-        } as any),
-        Layer.succeed(nextTurnQueueDispatcherModule.NextTurnQueueDispatcher, {
-          start: Effect.void,
-          notify: () => Effect.void,
-          drain: Effect.void,
-          getSnapshot: () => Effect.die("unused queue snapshot"),
-          getSummary: Effect.succeed({ threads: [] }),
-          submitAndSettle: () => Effect.die("unused queue submission"),
-          promote: () => Effect.die("unused queue promote"),
-          refreshGate: () => Effect.die("unused queue refresh"),
-          changes: Stream.empty,
-          summaryChanges: Stream.empty,
-        } as any),
+  it.each(["starting", "failed"] as const)(
+    "returns projection details and activity 503 while runtime is %s",
+    async (runtimeState) => {
+      const stateDir = makeTempDir("t3code-state-thread-details-pending-runtime-");
+      const persistenceLayer = makeSqlitePersistenceLive(path.join(stateDir, "state.sqlite")).pipe(
+        Layer.provide(NodeServices.layer),
       );
-      return {
-        ...actual,
-        makeServerOrchestrationRuntimeLayer: () => pendingRuntimeLayer,
+      const workspaceRoot = stateDir;
+
+      h.server = await createTestServer({
+        cwd: workspaceRoot,
+        stateDir,
+        persistenceLayer,
+      });
+      let addr = h.server.address();
+      let port = typeof addr === "object" && addr !== null ? addr.port : 0;
+      expect(port).toBeGreaterThan(0);
+
+      const [seedWs] = await connectAndAwaitWelcome(port);
+      connections.push(seedWs);
+
+      const createProjectResponse = await sendRequest(
+        seedWs,
+        ORCHESTRATION_WS_METHODS.dispatchCommand,
+        {
+          type: "project.create",
+          commandId: "cmd-project-pending-runtime-create",
+          projectId: "project-pending-runtime",
+          title: "Pending Runtime Project",
+          workspaceRoot,
+          defaultModel: "gpt-5-codex",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      );
+      expect(createProjectResponse.error).toBeUndefined();
+
+      const createThreadResponse = await sendRequest(
+        seedWs,
+        ORCHESTRATION_WS_METHODS.dispatchCommand,
+        {
+          type: "thread.create",
+          commandId: "cmd-thread-pending-runtime-create",
+          threadId: "thread-pending-runtime",
+          projectId: "project-pending-runtime",
+          title: "Pending Runtime Thread",
+          model: "gpt-5-codex",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      );
+      expect(createThreadResponse.error).toBeUndefined();
+
+      await closeTestServer();
+      h.server = null;
+
+      vi.resetModules();
+      vi.doMock("./serverLayers.ts", async () => {
+        const actual =
+          await vi.importActual<typeof import("./serverLayers.ts")>("./serverLayers.ts");
+        const orchestrationEngineModule = await vi.importActual<
+          typeof import("./orchestration/Services/OrchestrationEngine.ts")
+        >("./orchestration/Services/OrchestrationEngine.ts");
+        const orchestrationReactorModule = await vi.importActual<
+          typeof import("./orchestration/Services/OrchestrationReactor.ts")
+        >("./orchestration/Services/OrchestrationReactor.ts");
+        const providerCommandReactorModule = await vi.importActual<
+          typeof import("./orchestration/Services/ProviderCommandReactor.ts")
+        >("./orchestration/Services/ProviderCommandReactor.ts");
+        const providerTurnDeliveryWorkerModule = await vi.importActual<
+          typeof import("./orchestration/Services/ProviderTurnDeliveryWorker.ts")
+        >("./orchestration/Services/ProviderTurnDeliveryWorker.ts");
+        const workflowServiceModule = await vi.importActual<
+          typeof import("./orchestration/Services/WorkflowService.ts")
+        >("./orchestration/Services/WorkflowService.ts");
+        const codeReviewWorkflowServiceModule = await vi.importActual<
+          typeof import("./orchestration/Services/CodeReviewWorkflowService.ts")
+        >("./orchestration/Services/CodeReviewWorkflowService.ts");
+        const investigationWorkflowServiceModule = await vi.importActual<
+          typeof import("./orchestration/Services/InvestigationWorkflowService.ts")
+        >("./orchestration/Services/InvestigationWorkflowService.ts");
+        const projectSetupScriptRunnerModule = await vi.importActual<
+          typeof import("./project/Services/ProjectSetupScriptRunner.ts")
+        >("./project/Services/ProjectSetupScriptRunner.ts");
+        const providerSessionDirectoryModule = await vi.importActual<
+          typeof import("./provider/Services/ProviderSessionDirectory.ts")
+        >("./provider/Services/ProviderSessionDirectory.ts");
+        const providerSessionReaperModule = await vi.importActual<
+          typeof import("./provider/Services/ProviderSessionReaper.ts")
+        >("./provider/Services/ProviderSessionReaper.ts");
+        const threadBackgroundWorkModule = await vi.importActual<
+          typeof import("./orchestration/Services/ThreadBackgroundWork.ts")
+        >("./orchestration/Services/ThreadBackgroundWork.ts");
+        const usageServiceModule = await vi.importActual<
+          typeof import("./usage/Services/UsageService.ts")
+        >("./usage/Services/UsageService.ts");
+        const nextTurnQueueDispatcherModule = await vi.importActual<
+          typeof import("./nextTurnQueue/Services/NextTurnQueueDispatcher.ts")
+        >("./nextTurnQueue/Services/NextTurnQueueDispatcher.ts");
+        const storageMaintenanceModule = await vi.importActual<
+          typeof import("./storage/StorageMaintenance.ts")
+        >("./storage/StorageMaintenance.ts");
+        const worktreeManagerModule = await vi.importActual<
+          typeof import("./project/Services/WorktreeManager.ts")
+        >("./project/Services/WorktreeManager.ts");
+        const worktreeSetupModule = await vi.importActual<
+          typeof import("./project/Services/WorktreeSetup.ts")
+        >("./project/Services/WorktreeSetup.ts");
+        const storageCleanupWorkerModule = await vi.importActual<
+          typeof import("./storage/StorageCleanupWorker.ts")
+        >("./storage/StorageCleanupWorker.ts");
+        const skillSyncModule = await vi.importActual<
+          typeof import("./orchestration/Services/ProjectSkillSyncService.ts")
+        >("./orchestration/Services/ProjectSkillSyncService.ts");
+        const defaultBranchAutoPullModule = await vi.importActual<
+          typeof import("./git/DefaultBranchAutoPull.ts")
+        >("./git/DefaultBranchAutoPull.ts");
+        const { McpAppService } = await import("./mcpApps/McpAppService.ts");
+        const { ThreadSettlementService } =
+          await import("./orchestration/Layers/ThreadSettlementService.ts");
+        const { PullRequestWatchService } =
+          await import("./orchestration/Layers/PullRequestWatchService.ts");
+        const pendingRuntimeLayer = Layer.mergeAll(
+          Layer.mock(McpAppService)({}),
+          Layer.mock(ThreadSettlementService)({ start: Effect.void }),
+          Layer.mock(PullRequestWatchService)({ start: Effect.void, changes: Stream.empty }),
+          Layer.succeed(orchestrationEngineModule.OrchestrationEngineService, {
+            getReadModel: () => Effect.die(new Error("unused in pending-runtime ws test")),
+            readEvents: () => Stream.empty,
+            dispatch: () => Effect.die(new Error("unused in pending-runtime ws test")),
+            acquireMaintenanceLock: () => Scope.make("sequential"),
+            streamDomainEvents: Stream.empty,
+          }),
+          Layer.succeed(orchestrationReactorModule.OrchestrationReactor, {
+            start:
+              runtimeState === "starting"
+                ? Effect.never
+                : Effect.die(new Error("injected runtime failure")),
+          }),
+          Layer.succeed(providerCommandReactorModule.ProviderCommandReactor, {} as any),
+          Layer.succeed(providerTurnDeliveryWorkerModule.ProviderTurnDeliveryWorker, {} as any),
+          Layer.succeed(providerSessionReaperModule.ProviderSessionReaper, {
+            sweep: () => Effect.void,
+            start: () => Effect.void,
+          }),
+          Layer.succeed(threadBackgroundWorkModule.ThreadBackgroundWork, {
+            recordProviderEvent: () => Effect.void,
+            getSnapshot: Effect.succeed({
+              entries: [],
+              generatedAt: "2026-01-01T00:00:00.000Z",
+            }),
+            getThreadSnapshot: () =>
+              Effect.succeed({ entries: [], generatedAt: "2026-01-01T00:00:00.000Z" }),
+            dismiss: () => Effect.succeed({ dismissedCount: 0 }),
+            expireStale: () => Effect.void,
+            listProtectedThreadIds: () => Effect.succeed(new Set()),
+            hasFreshProtectingWork: () => Effect.succeed(false),
+            changes: Stream.empty,
+          }),
+          Layer.succeed(usageServiceModule.UsageService, {
+            consumeResetCredit: () => Effect.die("unused reset credit"),
+            refreshAccount: () => Effect.succeed({ snapshot: null, fresh: false }),
+            getSummary: () => Effect.die("unused usage summary"),
+            getAccounts: () => Effect.succeed([]),
+            getQuotaHistory: Effect.die("unused quota history"),
+          }),
+          Layer.succeed(providerSessionDirectoryModule.ProviderSessionDirectory, {} as any),
+          Layer.succeed(skillSyncModule.ProjectSkillSyncService, {
+            start: Effect.void,
+            drain: Effect.void,
+            getWarnings: () => Effect.succeed([]),
+          }),
+          Layer.succeed(workflowServiceModule.WorkflowService, {} as any),
+          Layer.succeed(codeReviewWorkflowServiceModule.CodeReviewWorkflowService, {} as any),
+          Layer.succeed(investigationWorkflowServiceModule.InvestigationWorkflowService, {} as any),
+          Layer.succeed(projectSetupScriptRunnerModule.ProjectSetupScriptRunner, {} as any),
+          Layer.succeed(storageMaintenanceModule.StorageMaintenance, {
+            startScheduledCompaction: () => Effect.void,
+          } as any),
+          Layer.succeed(WorktreePreparation, {
+            prepare: () => Effect.void,
+            needsPreparation: () => Effect.succeed(false),
+            startBackground: () => Effect.void,
+            startup: Effect.void,
+          }),
+          Layer.succeed(worktreeManagerModule.WorktreeManager, {} as never),
+          Layer.succeed(WorkspaceTransition, {} as never),
+          Layer.succeed(worktreeSetupModule.WorktreeSetup, {
+            startup: Effect.void,
+            changes: Stream.empty,
+          } as any),
+          Layer.succeed(storageCleanupWorkerModule.StorageCleanupWorker, {
+            start: Effect.void,
+          } as any),
+          Layer.succeed(defaultBranchAutoPullModule.DefaultBranchAutoPull, {
+            start: Effect.void,
+          } as any),
+          Layer.succeed(nextTurnQueueDispatcherModule.NextTurnQueueDispatcher, {
+            start: Effect.void,
+            notify: () => Effect.void,
+            drain: Effect.void,
+            getSnapshot: () => Effect.die("unused queue snapshot"),
+            getSummary: Effect.succeed({ threads: [] }),
+            submitAndSettle: () => Effect.die("unused queue submission"),
+            promote: () => Effect.die("unused queue promote"),
+            refreshGate: () => Effect.die("unused queue refresh"),
+            changes: Stream.empty,
+            summaryChanges: Stream.empty,
+          } as any),
+        );
+        return {
+          ...actual,
+          makeServerOrchestrationRuntimeLayer: () => pendingRuntimeLayer,
+        };
+      });
+      const { createServer: createServerWithPendingRuntime } = await import("./wsServer");
+
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      h.server = await createTestServer({
+        cwd: workspaceRoot,
+        stateDir,
+        persistenceLayer,
+        createServerFactory: createServerWithPendingRuntime,
+      });
+      addr = h.server.address();
+      port = typeof addr === "object" && addr !== null ? addr.port : 0;
+      expect(port).toBeGreaterThan(0);
+      const assertActivity = async () => {
+        const activity = await fetch(`http://127.0.0.1:${port}/api/desktop/activity`, {
+          signal: AbortSignal.timeout(1000),
+        });
+        expect(activity.status).toBe(503);
+        expect(await activity.json()).toEqual({ state: runtimeState });
       };
-    });
-    const { createServer: createServerWithPendingRuntime } = await import("./wsServer");
+      if (runtimeState === "failed") await vi.waitFor(assertActivity, { timeout: 2000 });
+      else await assertActivity();
 
-    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const [ws] = await connectAndAwaitWelcome(port);
+      connections.push(ws);
 
-    h.server = await createTestServer({
-      cwd: workspaceRoot,
-      stateDir,
-      persistenceLayer,
-      createServerFactory: createServerWithPendingRuntime,
-    });
-    addr = h.server.address();
-    port = typeof addr === "object" && addr !== null ? addr.port : 0;
-    expect(port).toBeGreaterThan(0);
-
-    const [ws] = await connectAndAwaitWelcome(port);
-    connections.push(ws);
-
-    const settingsResponse = await Promise.race([
-      sendRequest(ws, WS_METHODS.serverGetProjectSettings, {
-        projectId: "project-pending-runtime",
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("Project settings waited for runtime startup")), 1000),
-      ),
-    ]);
-    expect(settingsResponse.error).toBeUndefined();
-    expect(settingsResponse.result).toMatchObject({ skillScanWarnings: [] });
-
-    const threadDetailsResponse = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getThreadDetails, {
-      threadId: "thread-pending-runtime",
-    });
-    expect(threadDetailsResponse.error).toBeUndefined();
-    expect(threadDetailsResponse.result).toEqual(
-      expect.objectContaining({
-        threadId: "thread-pending-runtime",
-        messages: [],
-        checkpoints: [],
-      }),
-    );
-
-    // Runtime-dependent methods never park in route slots while the runtime is
-    // not ready: twelve of them (more than the ordinary lane's eight slots) all
-    // come back at once, as `ServerStarting` while it starts or with the
-    // startup failure once this incomplete runtime mock has failed.
-    const held = await Promise.all(
-      Array.from({ length: 12 }, () =>
-        sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot, undefined, {
-          retryServerStarting: false,
+      const settingsResponse = await Promise.race([
+        sendRequest(ws, WS_METHODS.serverGetProjectSettings, {
+          projectId: "project-pending-runtime",
         }),
-      ),
-    );
-    for (const response of held) {
-      expect(response.error).toBeDefined();
-      if (response.error?.code !== "ServerStarting")
-        expect(response.error?.message).toContain("Orchestration runtime unavailable");
-    }
-    const probe = await sendRequest(ws, WS_METHODS.serverProbe);
-    expect(probe.result).toEqual({
-      runtime: expect.objectContaining({ state: expect.stringMatching(/^(starting|failed)$/) }),
-    });
-    const startup = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getStartupSnapshot, {});
-    expect(startup.error).toBeUndefined();
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Project settings waited for runtime startup")), 1000),
+        ),
+      ]);
+      expect(settingsResponse.error).toBeUndefined();
+      expect(settingsResponse.result).toMatchObject({ skillScanWarnings: [] });
 
-    await new Promise((resolve) => setTimeout(resolve, 50));
+      const threadDetailsResponse = await sendRequest(
+        ws,
+        ORCHESTRATION_WS_METHODS.getThreadDetails,
+        {
+          threadId: "thread-pending-runtime",
+        },
+      );
+      expect(threadDetailsResponse.error).toBeUndefined();
+      expect(threadDetailsResponse.result).toEqual(
+        expect.objectContaining({
+          threadId: "thread-pending-runtime",
+          messages: [],
+          checkpoints: [],
+        }),
+      );
 
-    const loggedLines = [...logSpy.mock.calls, ...warnSpy.mock.calls, ...errorSpy.mock.calls]
-      .map(([message]) => (typeof message === "string" ? message : ""))
-      .filter(Boolean);
-    expect(loggedLines.some((line) => line.includes("startup timed out"))).toBe(false);
-  });
+      // Runtime-dependent calls must reject without occupying ordinary route
+      // slots in both the deliberately starting and failed runtime cases.
+      const held = await Promise.all(
+        Array.from({ length: 12 }, () =>
+          sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot, undefined, {
+            retryServerStarting: false,
+          }),
+        ),
+      );
+      for (const response of held) {
+        expect(response.error).toBeDefined();
+        if (response.error?.code !== "ServerStarting")
+          expect(response.error?.message).toContain("Orchestration runtime unavailable");
+      }
+      const probe = await sendRequest(ws, WS_METHODS.serverProbe);
+      expect(probe.result).toEqual({
+        runtime: expect.objectContaining({ state: runtimeState }),
+      });
+      const startup = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getStartupSnapshot, {});
+      expect(startup.error).toBeUndefined();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const loggedLines = [...logSpy.mock.calls, ...warnSpy.mock.calls, ...errorSpy.mock.calls]
+        .map(([message]) => (typeof message === "string" ? message : ""))
+        .filter(Boolean);
+      expect(loggedLines.some((line) => line.includes("startup timed out"))).toBe(false);
+    },
+  );
 
   it("answers runtime-dependent requests with ServerStarting before claiming a slot", async () => {
     const stateDir = makeTempDir("t3code-state-server-starting-");
@@ -1637,12 +1662,83 @@ describe("WebSocket Server", () => {
     },
   );
 
+  it("counts an accepted pending start before any provider session exists", async () => {
+    const stateDir = makeTempDir("f5-desktop-activity-");
+    const persistenceLayer = makeSqlitePersistenceLive(path.join(stateDir, "state.sqlite")).pipe(
+      Layer.provide(NodeServices.layer),
+    );
+    h.server = await createTestServer({ cwd: stateDir, stateDir, persistenceLayer });
+    const address = h.server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    const createdAt = new Date().toISOString();
+    for (const body of [
+      {
+        type: "project.create",
+        commandId: "activity-project",
+        projectId: "activity-project",
+        title: "Activity",
+        workspaceRoot: stateDir,
+        defaultModel: "gpt-5-codex",
+        createdAt,
+      },
+      {
+        type: "thread.create",
+        commandId: "activity-thread",
+        projectId: "activity-project",
+        threadId: "activity-thread",
+        title: "Activity",
+        model: "gpt-5-codex",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      },
+    ]) {
+      const response = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, body);
+      expect(response.error).toBeUndefined();
+    }
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO projection_turns
+        (thread_id, turn_id, pending_message_id, state, requested_at, checkpoint_files_json)
+        VALUES ('activity-thread', NULL, 'accepted-pending-message', 'pending', ${createdAt}, '[]')`;
+      }).pipe(Effect.provide(persistenceLayer)),
+    );
+    const response = await fetch(`http://127.0.0.1:${port}/api/desktop/activity`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ busyThreadCount: 1 });
+  });
+
   it("authenticates bootstrap metadata and rejects stale upload protocols before consuming bytes", async () => {
     h.server = await createTestServer({ cwd: "/test", authToken: "secret-token" });
     const address = h.server.address();
     const port = typeof address === "object" && address ? address.port : 0;
     const base = `http://127.0.0.1:${port}`;
     expect((await fetch(`${base}/api/bootstrap`)).status).toBe(401);
+    expect((await fetch(`${base}/api/desktop/activity`)).status).toBe(401);
+    const readActivity = () =>
+      fetch(`${base}/api/desktop/activity`, {
+        headers: { Authorization: "Bearer secret-token" },
+        signal: AbortSignal.timeout(2000),
+      });
+    await vi.waitFor(
+      async () => {
+        const response = await readActivity();
+        await response.text();
+        expect(response.status).toBe(200);
+      },
+      { timeout: 2000 },
+    );
+    const activity = await readActivity();
+    expect(activity.headers.get("cache-control")).toBe("no-store");
+    expect(activity.status).toBe(200);
+    expect(await activity.json()).toEqual({ busyThreadCount: 0 });
     const metadata = await fetch(`${base}/api/bootstrap`, {
       headers: { Authorization: "Bearer secret-token" },
     });

@@ -24,18 +24,21 @@ it.each([false, true])(
     const createWindow = vi.fn(() => restored);
     const startBackend = vi.fn();
     const initializeComputer = vi.fn();
+    const initializeKeepAwake = vi.fn(async () => {});
     const errors = await recoverUpdateSession({
       cleanupStarted: true,
       initializePreview: async () => {
         if (previewFails) throw new Error("preview");
       },
       initializeComputer,
+      initializeKeepAwake,
       runningBeforeInstall: [active],
       startBackend,
       restoreWindows: () => restoreUpdateWindows(snapshots, createWindow),
     });
     expect(errors).toHaveLength(previewFails ? 1 : 0);
     expect(initializeComputer).toHaveBeenCalledTimes(1);
+    expect(initializeKeepAwake).toHaveBeenCalledTimes(1);
     expect(active.stopped).toBe(false);
     expect(inactive.stopped).toBe(true);
     expect(startBackend).toHaveBeenCalledExactlyOnceWith(active);
@@ -43,3 +46,16 @@ it.each([false, true])(
     expect(restored.setBounds).toHaveBeenCalledWith(bounds);
   },
 );
+it("leaves Keep Awake running when update cleanup never started", async () => {
+  const initializeKeepAwake = vi.fn(async () => {});
+  await recoverUpdateSession({
+    cleanupStarted: false,
+    initializePreview: async () => {},
+    initializeComputer: () => {},
+    initializeKeepAwake,
+    runningBeforeInstall: [],
+    startBackend: () => {},
+    restoreWindows: () => {},
+  });
+  expect(initializeKeepAwake).not.toHaveBeenCalled();
+});

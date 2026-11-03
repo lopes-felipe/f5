@@ -459,6 +459,16 @@ export const makeProjectionTurnRepository = Effect.gen(function* () {
     );
 
   return {
+    listRecentPendingTurnStartThreadIds: ({ since }) =>
+      sql<{ threadId: ThreadId }>`SELECT DISTINCT thread_id AS "threadId"
+        FROM projection_turns WHERE turn_id IS NULL AND state = 'pending'
+        AND pending_message_id IS NOT NULL AND checkpoint_turn_count IS NULL
+        AND requested_at >= ${since}`.pipe(
+        Effect.map((rows) => rows.map((row) => row.threadId)),
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionTurnRepository.listRecentPendingTurnStartThreadIds"),
+        ),
+      ),
     upsertByTurnId,
     replacePendingTurnStart,
     getPendingTurnStartByThreadId,

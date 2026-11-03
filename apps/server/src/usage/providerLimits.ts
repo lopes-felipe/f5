@@ -18,6 +18,7 @@ import { mergeProviderUsageWindows } from "./providerUsageWindows.ts";
 const ANTIGRAVITY_READ_BUDGET_MS = 7_000;
 const ANTIGRAVITY_DISCOVERY_TIMEOUT_MS = 6_000;
 const ANTIGRAVITY_QUOTA_TIMEOUT_MS = 3_000;
+const DEFAULT_CURSOR_API_ENDPOINT = "https://api2.cursor.sh";
 // Gemini requires this upstream client version: https://github.com/pingdotgg/t3code/commit/79f1fadfc6020b820d541ca4691d2feebb15dd1b
 const ANTIGRAVITY_USER_AGENT = `antigravity/hub/2.24.0 (aidev_client; os_type=${process.platform}; arch=${process.arch}; cl=963137146)`;
 
@@ -392,7 +393,16 @@ export function makeProviderLimits(input: {
       let value: unknown;
       let partial = false;
       if (input.provider === "cursor") {
-        if (env.CURSOR_API_KEY && !env.CURSOR_AUTH_TOKEN)
+        const endpoint = (
+          input.apiEndpoint?.trim() ||
+          env.CURSOR_API_ENDPOINT?.trim() ||
+          DEFAULT_CURSOR_API_ENDPOINT
+        ).replace(/\/$/, "");
+        const apiKey = env.CURSOR_API_KEY?.trim();
+        let token = env.CURSOR_AUTH_TOKEN?.trim();
+        // API keys can belong to a different account from the CLI login. Exchange only
+        // at Cursor's own endpoint, and never fall back to another account on failure.
+        if (!token && apiKey && endpoint !== DEFAULT_CURSOR_API_ENDPOINT)
           return [
             {
               ...emptyAccountSection("provider-limits"),
@@ -402,7 +412,8 @@ export function makeProviderLimits(input: {
             },
           ];
         if (
-          !env.CURSOR_AUTH_TOKEN &&
+          !token &&
+          !apiKey &&
           (env.AGENT_CLI_CREDENTIAL_STORE === "memory" ||
             (process.platform === "darwin" && env.AGENT_CLI_CREDENTIAL_STORE !== "file"))
         )
@@ -420,9 +431,20 @@ export function makeProviderLimits(input: {
             : process.platform === "darwin"
               ? path.join(home, ".cursor")
               : path.join(env.XDG_CONFIG_HOME || path.join(home, ".config"), "cursor");
-        const token =
-          env.CURSOR_AUTH_TOKEN ||
-          asTrimmedString(asRecord(await jsonFile(path.join(dir, "auth.json")))?.accessToken);
+        if (!token && apiKey) {
+          const exchanged = await fetchJson(
+            `${DEFAULT_CURSOR_API_ENDPOINT}/auth/exchange_user_api_key`,
+            apiKey,
+            signal,
+            {},
+          );
+          token = asTrimmedString(asRecord(exchanged)?.accessToken) ?? undefined;
+          if (!token) throw new AccountUsageReadError("invalid-response");
+        } else if (!token) {
+          token =
+            asTrimmedString(asRecord(await jsonFile(path.join(dir, "auth.json")))?.accessToken) ??
+            undefined;
+        }
         if (!token)
           return [
             {
@@ -433,7 +455,7 @@ export function makeProviderLimits(input: {
             },
           ];
         value = await fetchJson(
-          `${(input.apiEndpoint || env.CURSOR_API_ENDPOINT || "https://api2.cursor.sh").replace(/\/$/, "")}/aiserver.v1.DashboardService/GetCurrentPeriodUsage`,
+          `${endpoint}/aiserver.v1.DashboardService/GetCurrentPeriodUsage`,
           token,
           signal,
           {},

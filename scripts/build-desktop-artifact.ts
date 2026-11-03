@@ -6,6 +6,7 @@ import { withoutSigningCredentials } from "./lib/signing-environment.ts";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync as requireReadLock } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import rootPackageJson from "../package.json" with { type: "json" };
 import desktopPackageJson from "../apps/desktop/package.json" with { type: "json" };
@@ -446,7 +447,7 @@ function resolveGitHubPublishConfig(release: boolean):
   };
 }
 
-const createBuildConfig = Effect.fn("createBuildConfig")(function* (
+export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   platform: typeof BuildPlatform.Type,
   target: string,
   productName: string,
@@ -472,7 +473,9 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     protocols: DESKTOP_PROTOCOLS,
     artifactName: "F5-${version}-${arch}.${ext}",
     asarUnpack: DESKTOP_ASAR_UNPACK,
-    ...(platform !== "mac" ? { afterPack: "verify-claude-runtime.cjs" } : {}),
+    ...(platform !== "mac"
+      ? { afterPack: platform === "linux" ? "linux-after-pack.cjs" : "verify-claude-runtime.cjs" }
+      : {}),
     ...(platform !== "linux"
       ? {
           extraResources: [{ from: "apps/desktop/native-bin", to: "native" }],
@@ -708,6 +711,12 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     path.join(repoRoot, "scripts", "verify-claude-runtime.cjs"),
     path.join(stageAppDir, "verify-claude-runtime.cjs"),
   );
+  if (options.platform === "linux") {
+    yield* fs.copyFile(
+      path.join(repoRoot, "scripts", "linux-after-pack.cjs"),
+      path.join(stageAppDir, "linux-after-pack.cjs"),
+    );
+  }
   yield* assertPlatformBuildResources(options.platform, stageResourcesDir, options.verbose);
 
   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
@@ -968,8 +977,10 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
 
 const cliRuntimeLayer = Layer.mergeAll(Logger.layer([Logger.consolePretty()]), NodeServices.layer);
 
-Command.run(buildDesktopArtifactCli, { version: "0.0.0" }).pipe(
-  Effect.scoped,
-  Effect.provide(cliRuntimeLayer),
-  NodeRuntime.runMain,
-);
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  Command.run(buildDesktopArtifactCli, { version: "0.0.0" }).pipe(
+    Effect.scoped,
+    Effect.provide(cliRuntimeLayer),
+    NodeRuntime.runMain,
+  );
+}

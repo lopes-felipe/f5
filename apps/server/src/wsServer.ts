@@ -1,3 +1,5 @@
+import { desktopBusyThreadCount } from "./orchestration/sessionBusy.ts";
+import { DESKTOP_ACTIVITY_PATH, type DesktopBackendActivity } from "@t3tools/shared/backendPaths";
 import { bindSubmissionTurnIds } from "./nextTurnQueue/submissionStatus.ts";
 import { cancelQueuedSubmission } from "./nextTurnQueue/cancelSubmission.ts";
 import { makeScheduledNotificationDelivery } from "./scheduledTasks/notificationDelivery.ts";
@@ -711,8 +713,13 @@ function readFilePrefix(
       const handle = await fsPromises.open(absolutePath, "r");
       try {
         const buffer = Buffer.allocUnsafe(byteLimit);
-        const { bytesRead } = await handle.read(buffer, 0, byteLimit, 0);
-        return buffer.subarray(0, bytesRead);
+        let offset = 0;
+        while (offset < byteLimit) {
+          const { bytesRead } = await handle.read(buffer, offset, byteLimit - offset, offset);
+          if (bytesRead <= 0) break;
+          offset += bytesRead;
+        }
+        return buffer.subarray(0, offset);
       } finally {
         await handle.close();
       }
@@ -2229,6 +2236,29 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             },
           });
           yield* Effect.promise(() => proxy(req, res));
+          return;
+        }
+        if (url.pathname === DESKTOP_ACTIVITY_PATH && req.method === "GET") {
+          const headers = {
+            "Cache-Control": "no-store",
+            "Content-Type": "application/json; charset=utf-8",
+          };
+          if (runtimeReadiness.state !== "ready") {
+            respond(503, headers, JSON.stringify({ state: runtimeReadiness.state }));
+            return;
+          }
+          const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+          const model = yield* orchestrationEngine.getReadModel();
+          const pending = yield* agentBridgeTurns.listRecentPendingTurnStartThreadIds({
+            since: new Date(Date.now() - 600_000).toISOString(),
+          });
+          respond(
+            200,
+            headers,
+            JSON.stringify({
+              busyThreadCount: desktopBusyThreadCount(model, pending),
+            } satisfies DesktopBackendActivity),
+          );
           return;
         }
         if (url.pathname === "/api/bootstrap" && req.method === "GET") {

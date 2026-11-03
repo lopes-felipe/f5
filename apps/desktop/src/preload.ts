@@ -63,6 +63,9 @@ const systemLocale = argument("f5-system-locale");
 // The isolated preload observes actual DOM gestures; renderer-supplied booleans are ignored.
 let computerGestureAt = -Infinity;
 let browserOpenGestureAt = -Infinity;
+// A separate grant captures trusted mouseup before Base UI's synthetic
+// drag-to-select click, without replenishing a consumed grant on the later click.
+const takeKeepAwakeGesture = createFileActionGesture(window);
 const takeFileActionGesture = createFileActionGesture(window);
 for (const eventName of ["click", "keydown"] as const) {
   window.addEventListener(
@@ -77,6 +80,27 @@ for (const eventName of ["click", "keydown"] as const) {
   );
 }
 contextBridge.exposeInMainWorld("desktopBridge", {
+  keepAwake: {
+    getState: () => ipcRenderer.invoke("desktop:keep-awake-get"),
+    setPreferences: (input) =>
+      ipcRenderer.invoke(
+        "desktop:keep-awake-set",
+        input,
+        (input.mode !== undefined && input.mode !== "off") || input.closedLid === true
+          ? takeKeepAwakeGesture()
+          : false,
+      ),
+    installLidPermission: () =>
+      ipcRenderer.invoke("desktop:keep-awake-install", takeKeepAwakeGesture()),
+    removeLidPermission: () =>
+      ipcRenderer.invoke("desktop:keep-awake-remove", takeKeepAwakeGesture()),
+    onState: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) =>
+        listener(state);
+      ipcRenderer.on("desktop:keep-awake-state", handler);
+      return () => ipcRenderer.removeListener("desktop:keep-awake-state", handler);
+    },
+  },
   htmlPreview: (input) => ipcRenderer.invoke("desktop:html-preview", input),
   browserOpen: {
     current: () => ipcRenderer.invoke("desktop:browser-open-current"),
