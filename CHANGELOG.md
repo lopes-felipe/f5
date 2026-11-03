@@ -4,6 +4,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-03
+
 ### Added
 
 - Claude MCP Apps: tools that declare a `ui://` app render it in the chat and can call tools with your approval, as with Codex.
