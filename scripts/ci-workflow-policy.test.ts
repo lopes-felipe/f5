@@ -218,7 +218,6 @@ describe("CI workflow policy", () => {
       "desktop",
       "windows-build",
       "macos-profiles",
-      "macos-descriptor-drift",
     ]) {
       const job = workflow.jobs[id]!;
       expect(job.permissions, id).toEqual({ contents: "read", "pull-requests": "read" });

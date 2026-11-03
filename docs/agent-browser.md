@@ -679,7 +679,7 @@ record, and **withdrawal is not retroactive**: it reaches users only when they u
 Installed F5 builds keep accepting later ChatGPT builds until then.
 
 `bun apps/server/scripts/generate-claude-chrome-descriptor.ts --check` (CI job
-`macos-descriptor-drift`) re-extracts the Claude descriptor from the pinned CLI and fails
+`macos-profiles`) re-extracts the Claude descriptor from the pinned CLI and fails
 on drift, comparing parsed JSON so formatting never counts. Writing runs the repository
 formatter. Regenerating keeps older records, because journals reference them, and keeps
 any withdrawal. Claude records are **floors** too (`sdkMin`, `cliMin`, no ceiling;

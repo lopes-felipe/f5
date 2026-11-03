@@ -50,8 +50,8 @@ it("derives matrix jobs and release-platform skips from the workflow and release
   expect(windows).toContain("server-unit (2)");
   expect(windows).not.toContain("macos-workspaces");
   expect(all).toContain("macos-workspaces");
-  expect(all).toContain("macos-server-unit (3)");
-  expect(all).toContain("macos-git (GitCore)");
+  expect(all).toContain("macos-server-unit (2)");
+  expect(all).toContain("macos-integration");
   const successful = all.map((name) => ({ name, conclusion: "success" }));
   expect(() => assertReleaseCiJobs(successful, all)).not.toThrow();
   expect(() =>

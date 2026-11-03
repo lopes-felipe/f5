@@ -19,7 +19,7 @@ import {
 import { transientInstallFailure } from "./retry-install.ts";
 import { upgradePlan, sameBaselines } from "./release/release-upgrade-proof.ts";
 import { windowsUpgradeAssets } from "./published-windows-upgrade.ts";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { parse } from "yaml";
 const sha = "a".repeat(40),
   next = "b".repeat(40),
@@ -284,21 +284,27 @@ describe("candidate identity and immutable uploads", () => {
     expect(transientInstallFailure("frozen lockfile had changes")).toBe(false);
   });
 });
-it("keeps the macOS real-Git matrix exhaustive when a suite is added", () => {
+it("runs every macOS real-Git extended suite in the gated integration job", () => {
   const workflow = parse(
     readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
   );
-  const suites = readdirSync(new URL("../apps/server/integration/git/extended", import.meta.url))
-    .filter((f) => f.endsWith(".extended.test.ts"))
-    .map((f) => f.replace(".extended.test.ts", ""))
-    .sort();
-  expect(workflow.jobs["macos-git"].strategy.matrix.suite.toSorted()).toEqual(suites);
+  // The whole-directory script picks up new suites without a matrix to maintain.
+  const step = workflow.jobs["macos-integration"].steps.find(
+    (candidate: { run?: string }) =>
+      candidate.run === "bun run --cwd apps/server test:git:extended",
+  );
+  expect(step?.env?.F5_CI_SUITE_ID).toBe("server-git-extended");
+  const script = JSON.parse(
+    readFileSync(new URL("../apps/server/package.json", import.meta.url), "utf8"),
+  ).scripts["test:git:extended"] as string;
+  // A file list or pinned shard would silently drop suites from macOS coverage.
+  expect(script).toMatch(/ run integration\/git\/extended(?: --|$)/);
+  expect(script).not.toMatch(/--shard|\.test\.ts/);
   expect(workflow.jobs["ci-result"].needs).toEqual(
     expect.arrayContaining([
       "macos-workspaces",
       "macos-server-unit",
       "macos-integration",
-      "macos-git",
       "macos-desktop",
     ]),
   );
