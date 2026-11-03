@@ -103,24 +103,27 @@ it("ignores a mouse wheel", async () => {
   expect(router.history.back).not.toHaveBeenCalled();
 });
 
-it.each([-10, 10])(
-  "leaves sideways scrolling (%i) to a scroller inside a shadow root",
-  async (delta) => {
-    await render(<HistorySwipeNavigation />);
-    const host = mount(document.createElement("div"));
-    const scroller = document.createElement("div");
-    scroller.style.cssText = "width: 100px; overflow-x: auto;";
-    const content = document.createElement("div");
-    content.style.cssText = "width: 1000px; height: 10px;";
-    scroller.append(content);
-    host.attachShadow({ mode: "open" }).append(scroller);
-    scroller.scrollLeft = 200;
+it.each([
+  ["light", -10],
+  ["light", 10],
+  ["shadow", -10],
+  ["shadow", 10],
+] as const)("leaves sideways scrolling to a %s DOM scroller (%i)", async (rootType, delta) => {
+  await render(<HistorySwipeNavigation />);
+  const host = mount(document.createElement("div"));
+  const scroller = document.createElement("div");
+  scroller.style.cssText = "width: 100px; overflow-x: auto;";
+  const content = document.createElement("div");
+  content.style.cssText = "width: 1000px; height: 10px;";
+  scroller.append(content);
+  const root = rootType === "shadow" ? host.attachShadow({ mode: "open" }) : host;
+  root.append(scroller);
+  scroller.scrollLeft = 200;
 
-    scroll(content, repeat(delta, 15));
-    expect(router.history.back).not.toHaveBeenCalled();
-    expect(router.history.forward).not.toHaveBeenCalled();
-  },
-);
+  scroll(content, repeat(delta, 15));
+  expect(router.history.back).not.toHaveBeenCalled();
+  expect(router.history.forward).not.toHaveBeenCalled();
+});
 
 it("checks a remounted shadow scroller before locking the swipe axis", async () => {
   await render(<HistorySwipeNavigation />);
@@ -139,8 +142,6 @@ it("checks a remounted shadow scroller before locking the swipe axis", async () 
   const replacement = scroller.cloneNode(true) as HTMLDivElement;
   scroller.replaceWith(replacement);
   replacement.scrollLeft = 200;
-  // Simulate the old viewport losing its contents during a viewer remount.
-  scroller.replaceChildren();
   for (const delta of repeat(10, 15)) wheel(replacement.firstElementChild!, delta);
   scrollListener!({ phase: "end" });
 
