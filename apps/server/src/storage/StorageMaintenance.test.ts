@@ -53,6 +53,10 @@ import {
   ProviderService,
   type ProviderServiceShape,
 } from "../provider/Services/ProviderService.ts";
+import {
+  reportDatabaseCorruption,
+  resetDatabaseHealthForTest,
+} from "../persistence/databaseHealth.ts";
 import { assertOutsideRealUserState, withHomeSandbox } from "../testing/homeSandbox.ts";
 import { workflowArchiveFixture } from "../orchestration/workflowArchive.testUtils.ts";
 import type { OrchestrationReadModel } from "@t3tools/contracts";
@@ -2792,6 +2796,52 @@ it.layer(makeStorageTestLayer())("StorageMaintenance automatic maintenance", (it
         action: "none",
         reclaimedBytes: 0,
       });
+    }),
+  );
+
+  it.effect("refuses every mutating entry point while the database is damaged", () =>
+    Effect.gen(function* () {
+      const storage = yield* StorageMaintenance;
+      const usage = yield* storage.getUsage();
+      reportDatabaseCorruption(
+        "/tmp/f5-storage-damaged/state.sqlite",
+        Object.assign(new Error("database disk image is malformed"), { errcode: 11 }),
+      );
+      try {
+        const attempts: ReadonlyArray<Effect.Effect<unknown, { readonly message: string }>> = [
+          storage.reclaimDatabaseSpace({ maxDurationMs: 10_000 }),
+          storage.purgeThreads({
+            operationId: "damaged-purge",
+            deletedBefore: daysAgo(30),
+            archivedBefore: null,
+            maxThreads: 1,
+          }),
+          storage.pruneTerminalThreadLogs({
+            operationId: "damaged-logs",
+            modifiedBefore: daysAgo(1),
+            includeArchived: true,
+          }),
+          storage.acceptCleanup({
+            operationId: "damaged-cleanup",
+            backendEpoch: usage.status.backendEpoch,
+            scanId: "scan",
+            nonce: "nonce",
+            categoryIds: ["purgeDeletedThreads"],
+          }),
+        ];
+        for (const attempt of attempts) {
+          const outcome = yield* attempt.pipe(
+            Effect.as("succeeded"),
+            Effect.catch((error) => Effect.succeed(error.message)),
+          );
+          assert.include(outcome, "damaged");
+        }
+        assert.isNull(
+          yield* storage.cleanInactiveWorktreesAutomatically({ operationId: "damaged-worktrees" }),
+        );
+      } finally {
+        resetDatabaseHealthForTest();
+      }
     }),
   );
 });

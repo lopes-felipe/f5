@@ -1,6 +1,7 @@
 import { Data, Effect } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { getDatabaseDamage } from "../persistence/databaseHealth.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "../orchestration/Layers/ProjectionPipeline.ts";
 import { truncateMiddleByBytes } from "../orchestration/outputTruncation.ts";
 
@@ -233,7 +234,10 @@ export const compactThreadEvents = (input: {
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const deadlineMs = Date.now() + input.maxDurationMs;
-    const outOfTime = () => Date.now() > deadlineMs;
+    // Rewriting events after corruption was detected shrinks what recovery
+    // can still read, so damage stops compaction like an exhausted budget.
+    const damaged = () => getDatabaseDamage() !== null;
+    const outOfTime = () => damaged() || Date.now() > deadlineMs;
     const totals = {
       threadsCompacted: 0,
       commandOutputsCompacted: 0,
@@ -491,6 +495,11 @@ export const compactThreadEvents = (input: {
         let pendingCost = 0;
         const flush = Effect.gen(function* () {
           if (pending.length === 0) return;
+          if (damaged()) {
+            pending = [];
+            pendingCost = 0;
+            return;
+          }
           const batch = pending;
           pending = [];
           pendingCost = 0;
@@ -564,6 +573,7 @@ export const compactThreadEvents = (input: {
           if (pendingCost >= MAX_EVENTS_PER_TRANSACTION) yield* flush;
         }
         yield* flush;
+        if (damaged()) return false;
 
         yield* sql`
           INSERT INTO orchestration_event_compaction (
@@ -602,7 +612,9 @@ export const compactThreadEvents = (input: {
             threadId: candidate.threadId,
             cause,
           }).pipe(
-            Effect.andThen(recordFailure(candidate.threadId)),
+            Effect.andThen(
+              Effect.suspend(() => (damaged() ? Effect.void : recordFailure(candidate.threadId))),
+            ),
             Effect.tap(() =>
               Effect.sync(() => {
                 totals.threadsFailed += 1;

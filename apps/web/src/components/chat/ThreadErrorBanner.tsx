@@ -1,6 +1,23 @@
 import { memo } from "react";
 import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { CircleAlertIcon, XIcon } from "lucide-react";
+import { ExpandableErrorText } from "./ExpandableErrorText";
+
+export function getThreadErrorBannerMessage(error: string): string {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(error);
+  } catch {
+    return error;
+  }
+  if (typeof payload !== "object" || payload === null || !("error" in payload)) return error;
+  const nestedError = payload.error;
+  if (typeof nestedError !== "object" || nestedError === null || !("message" in nestedError))
+    return error;
+  return typeof nestedError.message === "string" && nestedError.message.trim().length > 0
+    ? nestedError.message
+    : error;
+}
 
 export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   error,
@@ -16,7 +33,11 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
     <Alert variant="error">
       <CircleAlertIcon />
       <AlertDescription className="min-w-0" title={error}>
-        <span className="line-clamp-3">{error}</span>
+        <ExpandableErrorText
+          key={error}
+          text={error}
+          collapsedText={getThreadErrorBannerMessage(error)}
+        />
         {occurredAt ? (
           <time className="mt-1 block text-2xs text-muted-foreground" dateTime={occurredAt}>
             {new Date(occurredAt).toLocaleString()}

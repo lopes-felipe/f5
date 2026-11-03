@@ -288,8 +288,11 @@ export function injectMcpAppDocumentGuard(html: string, nonce: string): string {
   const script = `<script>(()=>{
     const token=${token},channel=new MessageChannel(),port=channel.port1;
     const send=port.postMessage.bind(port),close=port.close.bind(port);
+    // Capture the native getter before app scripts can replace navigator properties.
+    const activation=navigator.userActivation;
+    const isActive=activation&&Object.getOwnPropertyDescriptor(Object.getPrototypeOf(activation),"isActive")?.get?.bind(activation);
     let active=true;
-    port.onmessage=(event)=>{if(event.isTrusted&&active&&typeof event.data?.ping==="string")send({pong:event.data.ping});};
+    port.onmessage=(event)=>{if(event.isTrusted&&active&&typeof event.data?.ping==="string")send({pong:event.data.ping,userActive:isActive?.()===true});};
     port.start();
     window.addEventListener("pagehide",(event)=>{if(event.isTrusted){active=false;send({leave:true});close();}},{capture:true});
     window.addEventListener("keydown",(event)=>{if(event.isTrusted&&event.key==="Escape")send({escape:true});},{capture:true});

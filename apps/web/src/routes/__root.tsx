@@ -26,6 +26,7 @@ import {
   WebSocketConnectionSurface,
 } from "../components/WebSocketConnectionSurface";
 import { Button } from "../components/ui/button";
+import { DatabaseDamageBanner } from "../components/DatabaseDamageBanner";
 import { AnchoredToastProvider, ToastProvider, toastManager } from "../components/ui/toast";
 
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
@@ -102,6 +103,7 @@ function RootRouteView() {
           <DesktopProjectBootstrap />
           <HtmlPreviewHost />
           <SlowRpcWarningToastCoordinator />
+          <DatabaseDamageBanner />
           <WebSocketConnectionSurface>
             <Outlet />
           </WebSocketConnectionSurface>

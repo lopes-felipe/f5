@@ -5,6 +5,7 @@ import { SqlError } from "effect/unstable/sql/SqlError";
 import * as Statement from "effect/unstable/sql/Statement";
 import * as Reactivity from "effect/unstable/reactivity/Reactivity";
 import { snapshotReadDuration, snapshotReadOverruns } from "../observability/Metrics.ts";
+import { reportDatabaseCorruption } from "./databaseHealth.ts";
 import { PersistenceSqlError } from "./Errors.ts";
 
 export class SnapshotReadClients extends ServiceMap.Service<
@@ -40,12 +41,33 @@ const checkDeadline = Effect.flatMap(SnapshotReadDeadline.asEffect(), (deadline)
 );
 
 /** Connections own their lease until statement/transaction scope closure. */
-export const makeLeasedSqlClient = (client: SqlClient.SqlClient, cooperative = false) => {
+export const makeLeasedSqlClient = (
+  client: SqlClient.SqlClient,
+  cooperative = false,
+  /** Database file; corruption errors from any driver are reported for it. */
+  filename?: string,
+) => {
+  const reportCorruption = <A, E>(effect: Effect.Effect<A, E>) =>
+    filename === undefined
+      ? effect
+      : effect.pipe(
+          Effect.tapError((error) =>
+            Effect.sync(() =>
+              reportDatabaseCorruption(
+                filename,
+                // SqlError wraps the driver error, which carries the SQLite code.
+                typeof error === "object" && error !== null && "cause" in error
+                  ? (error.cause ?? error)
+                  : error,
+              ),
+            ),
+          ),
+        );
   const guard = <A, E>(sql: string, effect: Effect.Effect<A, E>) =>
     !cooperative || /^(?:BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE)\b/i.test(sql.trim())
-      ? effect
+      ? reportCorruption(effect)
       : checkDeadline.pipe(
-          Effect.andThen(effect),
+          Effect.andThen(reportCorruption(effect)),
           Effect.tap(() => Effect.yieldNow),
         );
   const acquire = client.reserve.pipe(

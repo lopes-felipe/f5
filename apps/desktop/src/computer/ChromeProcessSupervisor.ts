@@ -151,6 +151,8 @@ export type ChromeStopReason = "emergency" | "unresponsive" | "shutdown" | "rele
 const START_TOLERANCE_MS = 5_000;
 const POLL_MS = 250;
 const IDLE_POLL_MS = 2_000;
+/** How long adoption waits for a provider's extra runtimes to exit before refusing. */
+const ADOPTION_SETTLE_MS = 5_000;
 export const CHROME_EXIT_DEADLINE_MS = 5_000;
 const generationKey = (profileId: string, threadId: string, generation: string) =>
   `${profileId}\0${threadId}\0${generation}`;
@@ -289,15 +291,25 @@ export class ChromeProcessSupervisor {
     if (!duplicate) this.pending.set(token, pending);
     let candidates: ChromeProcessRow[] = [];
     let registration: ChromeProcessRegistration;
-    try {
+    const readCandidates = async () => {
       const rows = await this.io.snapshot();
       if (!rows) throw new Error("The process listing could not be read.");
       const parent = rows.find((row) => row.pid === parentPid);
       if (!parent || parent.zombie || !descendsFrom(rows, parentPid, ancestorPid))
         throw new Error("The provider process could not be verified.");
-      candidates = rows.filter(
+      return rows.filter(
         (row) => row.ppid === parentPid && !row.zombie && row.command === executable,
       );
+    };
+    try {
+      candidates = await readCandidates();
+      // Codex's MCP reload briefly runs two: its own short-lived set of servers, cancelled
+      // about a second later, and the thread's refreshed one. Wait for that to settle.
+      const settleBy = this.io.now() + ADOPTION_SETTLE_MS;
+      while (candidates.length > 1 && this.io.now() < settleBy && !pending.stoppedBy) {
+        await new Promise<void>((resolve) => this.io.setTimeout(resolve, POLL_MS));
+        candidates = await readCandidates();
+      }
       const supervised = this.supervisedCandidate(identity, candidates);
       if (supervised) {
         candidates = [];

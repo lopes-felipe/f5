@@ -16,6 +16,10 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { ServerConfig } from "../config.ts";
 import { OrchestrationProjectionPipelineLive } from "../orchestration/Layers/ProjectionPipeline.ts";
 import { OrchestrationProjectionPipeline } from "../orchestration/Services/ProjectionPipeline.ts";
+import {
+  reportDatabaseCorruption,
+  resetDatabaseHealthForTest,
+} from "../persistence/databaseHealth.ts";
 import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { OrchestrationEventStore } from "../persistence/Services/OrchestrationEventStore.ts";
@@ -535,6 +539,29 @@ it.layer(layer)("compactThreadEvents", (it) => {
         count: number;
       }>`SELECT COUNT(*) AS count FROM orchestration_events WHERE json_extract(payload_json, '$.messageId') = 'oversized-message'`;
       assert.equal(rows[0]!.count, MAX_EVENTS_PER_GROUP + 1);
+    }),
+  );
+
+  it.effect("makes no writes once database damage has been reported", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* reset;
+      yield* seed;
+      const before = yield* sql`SELECT COUNT(*) AS count FROM orchestration_events`;
+      reportDatabaseCorruption(
+        "/tmp/f5-compaction-damaged/state.sqlite",
+        Object.assign(new Error("database disk image is malformed"), { errcode: 11 }),
+      );
+      try {
+        const result = yield* compactThreadEvents({ nowMs: Date.now(), maxDurationMs: 60_000 });
+        assert.deepInclude(result, { threadsCompacted: 0, eventsRemoved: 0, complete: false });
+        const after = yield* sql`SELECT COUNT(*) AS count FROM orchestration_events`;
+        assert.deepEqual(after, before);
+        const watermarks = yield* sql`SELECT * FROM orchestration_event_compaction`;
+        assert.equal(watermarks.length, 0);
+      } finally {
+        resetDatabaseHealthForTest();
+      }
     }),
   );
 
