@@ -11,6 +11,7 @@ import { Equal } from "effect";
 import { PlusIcon, RotateCwIcon } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { useStableCallback } from "../../../hooks/useStableCallback";
 
 import { useSettingsRouteContext } from "../SettingsRouteContext";
 import { useSettings as useUnifiedSettings, useUpdateSettings } from "../../../hooks/useSettings";
@@ -68,6 +69,7 @@ interface ProviderInstanceRow {
 
 export function ProvidersSettings() {
   const unifiedSettings = useUnifiedSettings();
+  const readLatestSettings = useStableCallback(() => unifiedSettings);
   const { updateSettings: updateUnifiedSettings } = useUpdateSettings();
   const queryClient = useQueryClient();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
@@ -183,18 +185,35 @@ export function ProvidersSettings() {
       }),
     );
 
-  const deleteProviderInstance = (id: ProviderInstanceId) => {
+  const confirmRemoval = async (question: string, turnsOff = false) => {
+    try {
+      return await ensureNativeApi().dialogs.confirm(
+        question +
+          "\nThis instance's saved settings, including its custom binary path, will be removed. App-wide legacy overrides will remain." +
+          (turnsOff ? " It will also be turned off." : ""),
+      );
+    } catch {
+      return false;
+    }
+  };
+
+  const deleteProviderInstance = async (id: ProviderInstanceId) => {
+    const instance = unifiedSettings.providerInstances?.[id];
+    const name =
+      instance?.displayName?.trim() || (instance && getDriverOption(instance.driver)?.label) || id;
+    if (!(await confirmRemoval("Remove the " + name + " provider instance?"))) return;
+    const latestSettings = readLatestSettings();
     updateUnifiedSettings({
-      providerInstances: withoutProviderInstanceKey(unifiedSettings.providerInstances, id),
+      providerInstances: withoutProviderInstanceKey(latestSettings.providerInstances, id),
       providerModelPreferences: withoutProviderInstanceKey(
-        unifiedSettings.providerModelPreferences,
+        latestSettings.providerModelPreferences,
         id,
       ),
       dismissedProviderUpdateAdvisories: withoutProviderInstanceKey(
-        unifiedSettings.dismissedProviderUpdateAdvisories,
+        latestSettings.dismissedProviderUpdateAdvisories,
         id,
       ),
-      favorites: withoutProviderInstanceFavorites(unifiedSettings.favorites ?? [], id),
+      favorites: withoutProviderInstanceFavorites(latestSettings.favorites ?? [], id),
     });
   };
 
@@ -237,7 +256,7 @@ export function ProvidersSettings() {
     });
   };
 
-  const resetDefaultInstance = (driverKind: ProviderDriverKind) => {
+  const resetDefaultInstance = async (driverKind: ProviderDriverKind) => {
     type LegacyProviderSettings = ServerSettings["providers"][keyof ServerSettings["providers"]];
     const defaultLegacyProviders = DEFAULT_UNIFIED_SETTINGS.providers as Record<
       string,
@@ -246,21 +265,34 @@ export function ProvidersSettings() {
     const defaultInstanceId = defaultInstanceIdForDriver(driverKind);
     const defaultLegacyProvider = defaultLegacyProviders[driverKind];
     if (defaultLegacyProvider === undefined) return;
+    const row = providerInstanceRows.find(
+      (candidate) => candidate.instanceId === defaultInstanceId,
+    );
+    const name =
+      row?.instance.displayName?.trim() || getDriverOption(driverKind)?.label || driverKind;
+    if (
+      !(await confirmRemoval(
+        "Reset the " + name + " provider to its defaults?",
+        (row?.instance.enabled ?? true) && !defaultLegacyProvider.enabled,
+      ))
+    )
+      return;
+    const latestSettings = readLatestSettings();
     updateUnifiedSettings({
       providers: {
-        ...unifiedSettings.providers,
+        ...latestSettings.providers,
         [driverKind]: defaultLegacyProvider,
       } as typeof unifiedSettings.providers,
       providerInstances: withoutProviderInstanceKey(
-        unifiedSettings.providerInstances,
+        latestSettings.providerInstances,
         defaultInstanceId,
       ),
       providerModelPreferences: withoutProviderInstanceKey(
-        unifiedSettings.providerModelPreferences,
+        latestSettings.providerModelPreferences,
         defaultInstanceId,
       ),
       favorites: withoutProviderInstanceFavorites(
-        unifiedSettings.favorites ?? [],
+        latestSettings.favorites ?? [],
         defaultInstanceId,
       ),
     });

@@ -6,6 +6,28 @@ import { importThemeFile, importVsCodeThemeDocument } from "./vscodeThemeImport"
 import { resolveThemePalette } from "./themePalette";
 
 describe("VS Code theme import", () => {
+  it("imports unmodified JSONC themes and rejects malformed JSONC", async () => {
+    const imported = await importThemeFile(
+      new File(
+        [
+          String.raw`{
+      // VS Code themes allow comments even with a .json extension.
+      "name": "JSONC Night",
+      "type": "dark",
+      "colors": { "editor.background": "#002b36", },
+      /* Token rules may also contain trailing commas. */
+      "tokenColors": [],
+    }`,
+        ],
+        "night.json",
+      ),
+    );
+    expect(imported.name).toBe("JSONC Night");
+    expect(imported.overrides?.dark?.background).toBe("#002b36");
+    await expect(
+      importThemeFile(new File(['{ "colors": {}, /* unfinished'], "bad.json")),
+    ).rejects.toThrow("not valid JSON or JSONC");
+  });
   it("keeps generated fallback muted and placeholder text dimmer than entered text", () => {
     const definition = importVsCodeThemeDocument({
       name: "Dark fallback",
