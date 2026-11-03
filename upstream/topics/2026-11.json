@@ -393,11 +393,21 @@
     },
     {
       "createdAt": "2026-11-01T11:11:31.013Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T19:26:22.752Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "packages/shared/src/shell.ts:133",
+          "apps/desktop/src/syncShellEnvironment.ts:43"
+        ],
+        "f5Refs": [
+          "f1cc8af8f57279da57761302bd8554b6e12e5845"
+        ]
+      },
       "id": "pr-21913",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "desktop",
