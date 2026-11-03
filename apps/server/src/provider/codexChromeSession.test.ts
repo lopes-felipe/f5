@@ -60,6 +60,7 @@ function harness(overrides: Partial<CodexChromeSessionDeps> = {}) {
       }),
     ),
     stopIntegrationProcess: vi.fn(),
+    reportChromeCalls: vi.fn(),
     onChromeDisabled: (listener: (threadId: string, generation: string) => void) => {
       disabled.add(listener);
       return () => disabled.delete(listener);
@@ -426,6 +427,59 @@ describe("CodexChromeSession", () => {
     h.session.toolCall("call-3", true);
     h.session.turnEnded("turn-1");
     expect(h.session.callRunning).toBe(false);
+  });
+
+  it("reports whether a call is running from before it acquires the lease until it releases it", async () => {
+    const h = harness();
+    h.session.toolCall("early", true);
+    h.session.toolCall("early", false);
+    // Nothing is reported before the runtime is verified.
+    expect(h.broker.reportChromeCalls).not.toHaveBeenCalled();
+    await ready(h);
+    const acquire = h.broker.host.correlated.mock.invocationCallOrder[0]!;
+    // Idle is reported before main announces the lease, so it never reads as unknown.
+    expect(h.broker.reportChromeCalls.mock.invocationCallOrder[0]).toBeLessThan(acquire);
+    h.session.toolCall("call-1", true);
+    h.session.toolCall("call-1", false);
+    h.session.toolCall("call-2", true);
+    h.session.turnEnded("turn-1");
+    h.idle();
+    expect(h.broker.reportChromeCalls.mock.calls.map((call) => call[2])).toEqual([
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      // Released: idle while main drains; the broker drops it when the lease ends.
+      false,
+    ]);
+    expect(h.broker.reportChromeCalls.mock.calls.every((call) => call[1] === "gen-1")).toBe(true);
+    h.session.toolCall("call-3", true);
+    expect(h.broker.reportChromeCalls).toHaveBeenCalledTimes(7);
+  });
+
+  it("reports idle on every release path, even during a call", async () => {
+    for (const trigger of ["pause", "off", "interrupt"] as const) {
+      const h = harness();
+      await ready(h);
+      h.session.toolCall("call-1", true);
+      if (trigger === "pause") h.pause.set("thread-1", true);
+      else if (trigger === "off") h.disable();
+      else h.session.turnInterrupted("turn-1", true);
+      expect(h.session.state).toBe("stopped");
+      expect(h.broker.reportChromeCalls.mock.calls.at(-1)).toEqual(["thread-1", "gen-1", false]);
+    }
+  });
+
+  it("withdraws its report when the lease isn't acquired", async () => {
+    const h = harness();
+    h.broker.host.correlated.mockRejectedValueOnce(new Error("busy"));
+    await ready(h);
+    expect(h.broker.reportChromeCalls.mock.calls).toEqual([
+      ["thread-1", "gen-1", false],
+      ["thread-1", "gen-1", undefined],
+    ]);
   });
 
   it("drains a turn interrupted between calls and keeps the runtime", async () => {

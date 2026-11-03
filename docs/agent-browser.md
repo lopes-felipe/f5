@@ -838,7 +838,13 @@ access, so F5 controls the session's runtime, not single calls (`identity.admiss
 - live policy, session generation and pause are checked again, and the Chrome lease is
   acquired and held for the runtime's life, because `node_repl` keeps state and Node
   timers a call started outlive it. Only then is Chrome `connected`; any failure stops
-  the runtime through main and reports the reason;
+  the runtime through main and reports the reason. Holding the lease isn't using Chrome,
+  so the session reports whether a model call to `node_repl` is running
+  (`reportChromeCalls`), from just before it acquires the lease (idle) until it releases
+  it (idle while main drains); the broker drops the report when the lease ends. Every
+  Chrome holder carries `browser` (`idle`, `working`, or `unknown` for sessions that
+  don't report). The banner says "An agent is using Chrome" during a call and, in its
+  quieter style, "An agent can use Chrome" otherwise, never "controlling this computer";
 - a turn waits up to 20 s for that adoption. A runtime still not supervised then is
   stopped for the turn (and swept through main), so the model never reaches an
   unverified, unleased runtime; the next turn starts it again.

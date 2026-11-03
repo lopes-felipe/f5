@@ -245,6 +245,7 @@ nodeRepl.write("finished");`;
           }),
         );
       },
+      reportChromeCalls: () => undefined,
       onChromeDisabled: (listener) => {
         disabled.add(listener);
         return () => disabled.delete(listener);

@@ -436,6 +436,54 @@ describe("computer broker safety boundaries", () => {
       h.broker.close();
     }
   });
+  it("tells an idle Chrome runtime's lease from one running a browser call", async () => {
+    const h = await harness();
+    try {
+      h.ipc.emit("message", {
+        type: "chromeLeaseChanged",
+        holder: { profileId: "p", threadId: "t", sessionGeneration: "s", provider: "codex" },
+      });
+      const chrome = () => h.broker.computerUse().holders.find((holder) => holder.threadId === "t");
+      // A session that doesn't report its calls: unknown, but still marked as Chrome.
+      expect(chrome()?.browser).toBe("unknown");
+      h.broker.reportChromeCalls("t", "s", false);
+      expect(chrome()?.browser).toBe("idle");
+      h.broker.reportChromeCalls("t", "s", true);
+      expect(chrome()?.browser).toBe("working");
+      // Another generation's report neither applies to nor clears the current one.
+      h.broker.reportChromeCalls("t", "old", false);
+      h.broker.reportChromeCalls("t", "old", undefined);
+      expect(chrome()?.browser).toBe("working");
+      h.broker.reportChromeCalls("t", "s", undefined);
+      expect(chrome()?.browser).toBe("unknown");
+    } finally {
+      h.broker.close();
+    }
+  });
+  it("drops a Chrome call report when its lease ends, without the session's help", async () => {
+    const h = await harness();
+    try {
+      const holder = { profileId: "p", threadId: "t", sessionGeneration: "s", provider: "codex" };
+      const chrome = () =>
+        h.broker.computerUse().holders.find((entry) => entry.threadId === "t")?.browser;
+      // Reported before acquiring: the announced lease is idle at once.
+      h.broker.reportChromeCalls("t", "s", false);
+      h.ipc.emit("message", { type: "chromeLeaseChanged", holder });
+      expect(chrome()).toBe("idle");
+      h.ipc.emit("message", { type: "chromeLeaseChanged", holder: null });
+      h.ipc.emit("message", { type: "chromeLeaseChanged", holder });
+      expect(chrome()).toBe("unknown");
+      h.broker.reportChromeCalls("t", "s", true);
+      h.ipc.emit("message", {
+        type: "status",
+        status: { available: false, reason: "no-host" },
+      });
+      h.ipc.emit("message", { type: "chromeLeaseChanged", holder });
+      expect(chrome()).toBe("unknown");
+    } finally {
+      h.broker.close();
+    }
+  });
   it("restores anonymous contention and paused controls in a reconnect snapshot", async () => {
     const h = await harness();
     try {

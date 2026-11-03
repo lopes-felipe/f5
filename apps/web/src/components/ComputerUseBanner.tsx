@@ -22,13 +22,18 @@ const PAUSE_CAUSE_LABEL: Record<NonNullable<AgentComputerUseHolder["pauseCause"]
   "access-changed": "access changed",
 };
 
-/** The holder the banner speaks for: foreground control first, then the first background one. */
+/**
+ * The holder the banner speaks for: foreground control first, then the first background
+ * one. A Chrome runtime that is only holding its lease comes last.
+ */
 export function primaryComputerHolder(
   leases: typeof AgentComputerUseChanged.Type,
 ): AgentComputerUseHolder | undefined {
+  const busy = leases.holders.filter((holder) => holder.browser !== "idle");
   return (
-    leases.holders.find((holder) => holder.delivery === "foreground") ??
-    leases.holders.find((holder) => holder.state === "active") ??
+    busy.find((holder) => holder.delivery === "foreground") ??
+    busy.find((holder) => holder.state === "active") ??
+    busy[0] ??
     leases.holders[0]
   );
 }
@@ -77,6 +82,9 @@ export function computerUseBannerText(
     case "active":
       break;
   }
+  // Only Chrome holders carry `browser`; their lease lasts the browser runtime's life.
+  if (holder.browser)
+    return holder.browser === "working" ? "An agent is using Chrome" : "An agent can use Chrome";
   if (holder.delivery === "foreground")
     return holder.appId
       ? `An agent is controlling ${app} in the foreground`
@@ -87,6 +95,24 @@ export function computerUseBannerText(
   if (background.length <= 1) return `An agent is working in ${app ?? "an app"} in the background`;
   const apps = [...new Set(background.flatMap((entry) => (entry.appName ? [entry.appName] : [])))];
   return `${background.length} agents are working in the background${apps.length ? ` in ${apps.join(", ")}` : ""}`;
+}
+
+/**
+ * Background-only control and an idle Chrome runtime are ambient: a quieter style, no
+ * takeover of the user's attention.
+ */
+export function computerUseBannerAmbient(
+  leases: typeof AgentComputerUseChanged.Type,
+  pausedLocally: boolean,
+): boolean {
+  const holder = primaryComputerHolder(leases);
+  return (
+    !leases.pendingTakeover &&
+    !leases.otherProfile &&
+    (holder?.delivery === "background" || holder?.browser === "idle") &&
+    holder.state === "active" &&
+    !pausedLocally
+  );
 }
 
 export function ComputerUseBanner() {
@@ -108,13 +134,7 @@ export function ComputerUseBanner() {
     .filter(([, value]) => value)
     .map(([id]) => id as AgentComputerUseHolder["threadId"]);
   if (!text && !retryTargets.length) return null;
-  // Background-only control is ambient: a quieter style, no takeover of the user's attention.
-  const ambient =
-    !leases.pendingTakeover &&
-    !leases.otherProfile &&
-    holder?.delivery === "background" &&
-    holder.state === "active" &&
-    !paused;
+  const ambient = computerUseBannerAmbient(leases, paused);
   const backend = holder?.backend;
   // A summary of several background agents controls all of them; otherwise just the one shown.
   const summarized = leases.pendingTakeover ? [] : computerUseBannerTargets(leases);
