@@ -23,6 +23,8 @@ import {
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
   normalizeModelSlug,
+  resolveClaudeModelEffort,
+  resolveModelCapabilities,
   supportsClaudeContextWindow,
 } from "@t3tools/shared/model";
 import {
@@ -151,7 +153,19 @@ export function getClaudeModelCapabilities(model: string | null | undefined): Mo
 export function resolveClaudeEffort(
   caps: ModelCapabilities,
   raw: string | null | undefined,
+  model?: string,
 ): string | undefined {
+  if (model && resolveModelCapabilities("claudeAgent", model, caps).source === "unknown") {
+    return resolveClaudeModelEffort(model, raw, caps) ?? undefined;
+  }
+  if (
+    model &&
+    !caps.optionDescriptors?.some((descriptor) => descriptor.id === "effort") &&
+    caps.supportsEffort !== false
+  ) {
+    const explicit = resolveClaudeModelEffort(model, raw, caps);
+    if (explicit) return explicit;
+  }
   const descriptors = getProviderOptionDescriptors({
     caps,
     ...(raw ? { selections: [{ id: "effort", value: raw }] } : {}),

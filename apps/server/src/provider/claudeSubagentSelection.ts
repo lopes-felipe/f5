@@ -3,7 +3,7 @@ import {
   normalizeModelSlug,
   resolveModelCapabilities,
   resolveReasoningEffortForProvider,
-  resolveSupportedEffort,
+  resolveClaudeModelEffort,
 } from "@t3tools/shared/model";
 
 export interface ClaudeSubagentLaunch {
@@ -78,5 +78,5 @@ export function resolveClaudeSubagentEffort(
   const native = getEffectiveClaudeCodeEffort(
     resolveReasoningEffortForProvider("claudeAgent", effort),
   );
-  return resolveSupportedEffort(resolveModelCapabilities("claudeAgent", model, reported), native);
+  return resolveClaudeModelEffort(model, native, reported);
 }

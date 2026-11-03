@@ -4,6 +4,8 @@ import {
   createReportedClaudeModelCapabilities,
   createReportedCodexModelCapabilities,
   normalizeCodexModelOptions,
+  normalizeClaudeModelOptions,
+  resolveClaudeModelEffort,
   resolveCodexDispatchModelOptions,
   resolveCodexEffectiveReasoningEffort,
   resolveModelCapabilities,
@@ -11,6 +13,23 @@ import {
 } from "./model";
 
 describe("resolveModelCapabilities", () => {
+  it("preserves only explicit SDK effort for uncatalogued Claude models", () => {
+    for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
+      expect(resolveClaudeModelEffort("custom-model", ` ${effort} `)).toBe(effort);
+      expect(normalizeClaudeModelOptions("custom-model", { effort })).toEqual({ effort });
+    }
+    for (const effort of [undefined, null, "", "HIGH", "extreme", "ultrathink"]) {
+      expect(resolveClaudeModelEffort("custom-model", effort)).toBeNull();
+    }
+    expect(normalizeClaudeModelOptions("custom-model", {})).toBeUndefined();
+    const unsupported = createReportedClaudeModelCapabilities({
+      value: "custom-model",
+      supportsEffort: false,
+    });
+    expect(resolveClaudeModelEffort("custom-model", "max", unsupported)).toBeNull();
+    expect(resolveClaudeModelEffort("claude-haiku-4-5", "max")).toBeNull();
+  });
+
   it("falls back to built-ins without reported capabilities", () => {
     const resolved = resolveModelCapabilities("codex", "gpt-5.4");
     expect(resolved.source).toBe("built-in");

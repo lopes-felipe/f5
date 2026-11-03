@@ -69,6 +69,7 @@ function withFakeClaudeEnv<A, E, R>(
     claudeConfig?: Partial<ClaudeSettings>;
     relativeBinary?: boolean;
     stalled?: boolean;
+    resolveCapabilities?: Parameters<typeof makeClaudeTextGeneration>[2];
   },
   effectFn: (
     textGeneration: TextGenerationShape,
@@ -190,11 +191,15 @@ function withFakeClaudeEnv<A, E, R>(
       binaryPath: input.relativeBinary ? path.relative(process.cwd(), claudePath) : claudePath,
       ...input.claudeConfig,
     });
-    const textGeneration = yield* makeClaudeTextGeneration(config, {
-      ...process.env,
-      F5_PROFILE_ISOLATED: "0",
-      CLAUDE_CODE_ENTRYPOINT: "instance-entrypoint",
-    });
+    const textGeneration = yield* makeClaudeTextGeneration(
+      config,
+      {
+        ...process.env,
+        F5_PROFILE_ISOLATED: "0",
+        CLAUDE_CODE_ENTRYPOINT: "instance-entrypoint",
+      },
+      input.resolveCapabilities,
+    );
     return yield* effectFn(textGeneration, path.join(binDir, "last-cwd"), pidPath);
   }).pipe(Effect.scoped);
 }
@@ -256,6 +261,56 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
       );
     }
   }
+  it.effect("forwards explicit SDK effort for an uncatalogued model", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({ structured_output: { ok: true } }),
+        argsMustContain: "--model custom-model --effort max",
+      },
+      (generation) =>
+        generation.generateStructuredJson({
+          cwd: process.cwd(),
+          operation: "custom-effort",
+          prompt: "Return JSON",
+          outputSchema: Schema.Struct({ ok: Schema.Boolean }),
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("claudeAgent"),
+            "custom-model",
+            [{ id: "effort", value: "max" }],
+          ),
+        }),
+    ),
+  );
+
+  for (const model of ["custom-model", "claude-opus-4-6", "claude-haiku-4-5"]) {
+    it.effect(
+      "resolves explicit effort with descriptor-free reported capabilities for " + model,
+      () =>
+        withFakeClaudeEnv(
+          {
+            output: JSON.stringify({ structured_output: { ok: true } }),
+            argsMustContain:
+              model === "claude-haiku-4-5"
+                ? "--model " + model
+                : "--model " + model + " --effort max",
+            argsMustNotContain: model === "claude-haiku-4-5" ? "--effort" : [],
+            resolveCapabilities: () =>
+              Effect.succeed({ source: "reported", optionDescriptors: [] }),
+          },
+          (generation) =>
+            generation.generateStructuredJson({
+              cwd: process.cwd(),
+              operation: "reported-effort",
+              prompt: "Return JSON",
+              outputSchema: Schema.Struct({ ok: Schema.Boolean }),
+              modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), model, [
+                { id: "effort", value: "max" },
+              ]),
+            }),
+        ),
+    );
+  }
+
   it.effect("ignores unsupported Haiku ultrathink and preserves prompt whitespace", () =>
     withFakeClaudeEnv(
       {
