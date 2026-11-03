@@ -5,6 +5,7 @@ import { isKeyboardEventComposing } from "../lib/keyboardComposition";
 type TextFieldElement = HTMLInputElement | HTMLTextAreaElement;
 
 export interface CommitOnBlurOptions {
+  readonly normalizeDraft?: (previous: string, next: string) => string;
   /** A textarea: Enter inserts a newline instead of committing. */
   readonly multiline?: boolean;
   /** Commit the trimmed draft, and skip the commit when only whitespace changed. */
@@ -35,6 +36,7 @@ export function useCommitOnBlur(
 ) {
   const [draft, setDraft] = useState(value);
   const focusedRef = useRef(false);
+  const valueOnFocus = useRef(value);
   const valueRef = useRef(value);
   valueRef.current = value;
 
@@ -47,16 +49,19 @@ export function useCommitOnBlur(
   return {
     value: draft,
     onChange: (event: ChangeEvent<TextFieldElement>) => {
-      setDraft(event.target.value);
+      const next = event.target.value;
+      setDraft(options.normalizeDraft ? options.normalizeDraft(draft, next) : next);
     },
     onFocus: () => {
       focusedRef.current = true;
+      valueOnFocus.current = draft;
     },
     onBlur: () => {
       focusedRef.current = false;
       const next = options.trim ? draft.trim() : draft;
-      if (next === value) {
-        if (next !== draft) setDraft(next);
+      const initial = options.trim ? valueOnFocus.current.trim() : valueOnFocus.current;
+      if (next === initial || next === value) {
+        setDraft(value);
         return;
       }
       if (next !== draft) setDraft(next);
