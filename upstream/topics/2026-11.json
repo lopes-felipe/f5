@@ -4822,11 +4822,20 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
-      "decidedAt": "2026-11-03T10:30:22.437Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T10:56:05.773Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/package.json:40"
+        ],
+        "f5Refs": [
+          "18f10acfe3c64aef7be2ee0b98cde69b5f3466ad"
+        ]
+      },
       "id": "pr-27577",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -5022,11 +5031,13 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
-      "decidedAt": "2026-11-03T10:30:22.437Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T10:56:05.773Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-27703",
-      "status": "port",
+      "reason": "F5 uses Cursor over ACP without the affected Cursor SDK.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -9122,11 +9133,13 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
-      "decidedAt": "2026-11-03T10:30:22.437Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T10:56:05.773Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-29221",
-      "status": "port",
+      "reason": "F5’s OpenCode forks bypass the affected typed message lookup.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
