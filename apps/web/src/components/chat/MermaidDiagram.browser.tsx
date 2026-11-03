@@ -29,6 +29,14 @@ describe("Mermaid diagrams", () => {
     const firstUrl = lightImage.src;
     const lightSvg = await (await fetch(firstUrl)).text();
     expect(lightSvg).toContain("First");
+    await view.getByRole("button", { name: "Expand Mermaid diagram" }).click();
+    await vi.waitFor(() => {
+      const expanded = document.querySelector<HTMLImageElement>('[role="dialog"] img')!;
+      expect(expanded?.naturalWidth).toBeGreaterThan(0);
+      expect(expanded.getBoundingClientRect().width).toBeGreaterThan(expanded.naturalWidth);
+    });
+    await view.getByRole("button", { name: "Close", exact: true }).click();
+    await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull());
     await view.getByRole("button", { name: "Show code" }).click();
     expect(host.querySelector("pre")?.textContent).toBe(source);
     expect(host.querySelector("img")).toBeNull();

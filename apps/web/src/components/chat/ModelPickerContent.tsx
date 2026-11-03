@@ -1,4 +1,5 @@
 import { filterPickerVisibleModels } from "./providerIconUtils";
+import { isKeyboardEventComposing } from "../../lib/keyboardComposition";
 import {
   type ModelSlug,
   type ProviderKind,
@@ -300,7 +301,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
 
   useEffect(() => {
     const onWindowKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.defaultPrevented || event.repeat) {
+      if (event.defaultPrevented || event.repeat || isKeyboardEventComposing(event)) {
         return;
       }
       if (event.target === searchInputRef.current) {
@@ -338,7 +339,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       <div
         ref={pickerContentRef}
         className={cn(
-          "relative flex max-h-96 w-screen max-w-100 overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-lg/5",
+          "relative flex max-h-[min(24rem,var(--available-height))] w-screen max-w-100 overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-lg/5",
           isLocked ? "flex-col" : "flex-row",
         )}
         // Hold the height from when the search started; results scroll instead of resizing.
@@ -413,6 +414,13 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                   setSearchQuery(event.target.value);
                 }}
                 onKeyDown={(event) => {
+                  if (isKeyboardEventComposing(event.nativeEvent)) {
+                    (
+                      event as typeof event & { preventBaseUIHandler?: () => void }
+                    ).preventBaseUIHandler?.();
+                    event.stopPropagation();
+                    return;
+                  }
                   if (event.key === "Escape") {
                     event.preventDefault();
                     event.stopPropagation();

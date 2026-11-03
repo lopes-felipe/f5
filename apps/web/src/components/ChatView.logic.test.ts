@@ -4,6 +4,7 @@ import {
   EventId,
   ProjectId,
   ProviderDriverKind,
+  ProviderInstanceId,
   ThreadId,
   type ModelSelection,
   type ProjectSkill,
@@ -33,6 +34,7 @@ import {
   resolveComposerNativeSlashCommands,
   resolveComposerPickerModel,
   resolveThreadModelOptionsSeed,
+  resolveComposerModelOptionsSeed,
   resolveAttachedFileReferencePaths,
   rewriteComposerRuntimeSkillInvocationForSend,
   shouldRenderTimelineContent,
@@ -45,6 +47,80 @@ import {
   recordMessageListChange,
 } from "../lib/streamingTextRevision";
 import type { ChatMessage } from "../types";
+import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
+import { createTestServerProvider } from "../testServerProvider";
+
+describe("composer fallback option seeding", () => {
+  const requested = ProviderInstanceId.make("codex_old");
+  const fallback = ProviderInstanceId.make("codex_work");
+  const selection: ModelSelection = {
+    instanceId: requested,
+    model: "5.4",
+    options: [{ id: "reasoningEffort", value: "low" }],
+  };
+  const low = { codex: { reasoningEffort: "low" } } as const;
+  const base = {
+    fallback: true,
+    requestedInstanceId: requested,
+    selectedInstanceId: fallback,
+    selectedProvider: "codex" as const,
+    selectedModel: "gpt-5.4",
+    draftModelOptions: null,
+    previous: undefined,
+    threadSelection: selection,
+    projectSelection: { ...selection, options: [{ id: "reasoningEffort", value: "medium" }] },
+    settings: DEFAULT_UNIFIED_SETTINGS,
+    providers: [
+      createTestServerProvider("codex", { instanceId: requested, enabled: false }),
+      createTestServerProvider("codex", { instanceId: fallback }),
+    ],
+  };
+
+  it("seeds the thread's options before the project's, resolving aliases", () => {
+    expect(resolveComposerModelOptionsSeed(base)?.seed).toEqual(low);
+  });
+
+  it("uses the project when the thread has no options", () => {
+    expect(resolveComposerModelOptionsSeed({ ...base, threadSelection: undefined })?.seed).toEqual({
+      codex: { reasoningEffort: "medium" },
+    });
+  });
+
+  it("keeps draft options ahead of inherited selections", () => {
+    expect(
+      resolveComposerModelOptionsSeed({
+        ...base,
+        draftModelOptions: { codex: { reasoningEffort: "high" } },
+      })?.seed,
+    ).toBeNull();
+  });
+
+  it("does not restore inherited effort after an explicit reset to default", () => {
+    const seeded = resolveComposerModelOptionsSeed(base)!;
+    expect(seeded.seed).toEqual(low);
+    expect(resolveComposerModelOptionsSeed({ ...base, previous: seeded.record })).toBeNull();
+    expect(
+      resolveComposerModelOptionsSeed({
+        ...base,
+        previous: seeded.record,
+        threadSelection: { ...selection, options: [{ id: "reasoningEffort", value: "medium" }] },
+      })?.seed,
+    ).toBeNull();
+  });
+
+  it("does not take options saved with another model, instance, or driver", () => {
+    expect(resolveComposerModelOptionsSeed({ ...base, selectedModel: "gpt-5.4-mini" })).toBeNull();
+    expect(
+      resolveComposerModelOptionsSeed({
+        ...base,
+        threadSelection: { ...selection, instanceId: fallback },
+      }),
+    ).toBeNull();
+    expect(
+      resolveComposerModelOptionsSeed({ ...base, selectedProvider: "claudeAgent" }),
+    ).toBeNull();
+  });
+});
 
 describe("shouldRunNativeReviewShortcut", () => {
   const base = {

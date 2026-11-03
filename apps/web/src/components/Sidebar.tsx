@@ -23,19 +23,13 @@ import {
   type GitStatusResult,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
-import { isArchivedWorkflow } from "@t3tools/shared/workflowArchive";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
 import { type AppSettings, useAppSettingsSelector } from "../appSettings";
 import { selectProjectDraftThread, useComposerDraftStore } from "../composerDraftStore";
 import { useStartupReady } from "../lib/startupReady";
 import { cn, newCommandId } from "../lib/utils";
-import {
-  getMostRecentProject,
-  getMostRecentThreadForProject,
-  isArchivedThread,
-  isSnoozedThread,
-} from "../lib/threadOrdering";
+import { getMostRecentProject, getMostRecentThreadForProject } from "../lib/threadOrdering";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { useStore } from "../store";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
@@ -47,14 +41,17 @@ import { useWorkflowCreateDialogStore } from "../workflowCreateDialogStore";
 import { useSummaryStatusById } from "../hooks/useThreadStatusById";
 import {
   bucketThreadsByAttention,
+  isAttentionStatus,
+  isWorkingStatus,
   selectStandaloneThreadsByActivity,
   selectVisibleWorkflowThreads,
 } from "../lib/threadAttentionBuckets";
+import { useNowHour } from "../lib/nowTicker";
 import { useNextTurnQueueStore } from "../nextTurnQueueStore";
 import { pillForStatus } from "../threadStatus";
 import { toastManager } from "./ui/toast";
 import { useTestRenderCountProps } from "../lib/testRenderCount";
-import { useThreadSummaries } from "../threadSelectors";
+import { useLiveActivityHours, useThreadSummaries } from "../threadSelectors";
 import { type Project, type ThreadListItem } from "../types";
 import { Button } from "./ui/button";
 import {
@@ -80,8 +77,10 @@ import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { setWorkflowArchived } from "../archiveActions";
 import {
+  findShelfBucketForThread,
   polledSidebarGitStatusCwds,
   reconcileFrozenOrder,
+  type SidebarShelfBucket,
   resolvePrimaryNewThreadProjectId,
   shouldClearThreadSelectionOnMouseDown,
   toggleWorkflowThreadListExpansion,
@@ -112,12 +111,25 @@ import {
   workflowEntryKey,
 } from "./sidebar/sidebarLists";
 import { useDesktopUpdate } from "./sidebar/useDesktopUpdate";
+import { SidebarPeekProvider, SidebarPeekScrollDismissArea } from "./sidebar/SidebarPeekCard";
+import { SidebarRecentView } from "./sidebar/SidebarRecentView";
+import { bucketRecentSidebarItems, collectRecentSidebarItems } from "./sidebar/sidebarRecent";
+import { useLocalStorage } from "../hooks/useLocalStorage";
+import { Schema } from "effect";
 import { useSidebarThreadActions } from "./sidebar/useSidebarThreadActions";
 import { isScratchProject, withoutScratchProjects } from "@t3tools/shared/scratchProject";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { useStartScratchThread } from "../hooks/useStartScratchThread";
 
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
+
+/** Which list the sidebar shows; a per-viewer convenience, so it lives in localStorage. */
+const SIDEBAR_VIEW_STORAGE_KEY = "f5:sidebar:view";
+const SidebarViewSchema = Schema.Literals(["projects", "recent"]);
+const SIDEBAR_VIEW_OPTIONS = [
+  { value: "projects", label: "Projects" },
+  { value: "recent", label: "Recent" },
+] as const;
 
 /** Deletes a project's threads, then the project; throws the first failure. */
 async function deleteProjectWithThreads(input: {
@@ -147,6 +159,7 @@ function selectSidebarSettings(settings: AppSettings) {
     confirmThreadDelete: settings.confirmThreadDelete,
     gitStatusAutoRefreshIntervalSeconds: settings.gitStatusAutoRefreshIntervalSeconds,
     expandWorkflowThreadsByDefault: settings.expandWorkflowThreadsByDefault,
+    sidebarOlderThreadDays: settings.sidebarOlderThreadDays,
   };
 }
 
@@ -158,7 +171,6 @@ export default function Sidebar() {
   const planningWorkflows = useStore((store) => store.planningWorkflows);
   const codeReviewWorkflows = useStore((store) => store.codeReviewWorkflows);
   const investigationWorkflows = useStore((store) => store.investigationWorkflows);
-  const threadsHydrated = useStore((store) => store.threadsHydrated);
   const pinRevision = useStore((store) => store.pinRevision ?? 0);
   const startupReady = useStartupReady();
   const toggleProject = useStore((store) => store.toggleProject);
@@ -199,12 +211,9 @@ export default function Sidebar() {
   const [expandedThreadListsByProject, setExpandedThreadListsByProject] = useState<
     ReadonlySet<string>
   >(() => new Set());
-  const [collapsedArchivedSectionsByProject, setCollapsedArchivedSectionsByProject] = useState<
-    ReadonlySet<ProjectId>
-  >(() => new Set());
-  const [collapsedSnoozedSectionsByProject, setCollapsedSnoozedSectionsByProject] = useState<
-    ReadonlySet<ProjectId>
-  >(() => new Set());
+  const [openShelfByProject, setOpenShelfByProject] = useState<
+    ReadonlyMap<ProjectId, SidebarShelfBucket | null>
+  >(() => new Map());
   const openWorkflowCreateDialog = useWorkflowCreateDialogStore((state) => state.open);
   const lastCreatedWorkflowId = useWorkflowCreateDialogStore(
     (state) => state.lastCreatedWorkflowId,
@@ -215,12 +224,17 @@ export default function Sidebar() {
   >({});
   const [sidebarHoverFreezeSnapshot, setSidebarHoverFreezeSnapshot] =
     useState<SidebarHoverFreezeSnapshot | null>(null);
-  const archivedSectionsInitializedRef = useRef(false);
   const dragInProgressRef = useRef(false);
   const suppressProjectClickAfterDragRef = useRef(false);
   const sidebarHoverAnchorRef = useRef<HTMLDivElement | null>(null);
   const [sidebarSearchQuery, setSidebarSearchQuery] = useState("");
+  const [sidebarView, setSidebarView] = useLocalStorage(
+    SIDEBAR_VIEW_STORAGE_KEY,
+    "projects",
+    SidebarViewSchema,
+  );
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
+  const multipleThreadsSelected = useThreadSelectionStore((s) => s.selectedThreadIds.size >= 2);
   const listedProjects = useMemo(() => withoutScratchProjects(projects), [projects]);
   const firstProjectId = listedProjects[0]?.id ?? null;
   const mostRecentProjectId = useMemo(
@@ -370,6 +384,25 @@ export default function Sidebar() {
       ),
     [queueSummary],
   );
+  const nowHour = useNowHour();
+  const liveActivityHours = useLiveActivityHours();
+  // Threads aging never folds: the open one, unread, running or waiting, and live terminals.
+  const agingExemptThreadIds = useMemo(() => {
+    const ids = new Set<ThreadId>(unreadThreadIds);
+    if (routeThreadId) ids.add(routeThreadId);
+    for (const [threadId, status] of threadStatusById)
+      if (isWorkingStatus(status) || isAttentionStatus(status)) ids.add(threadId);
+    for (const [threadId, terminalState] of Object.entries(terminalStateByThreadId))
+      if (terminalState.runningTerminalIds.length > 0) ids.add(ThreadId.makeUnsafe(threadId));
+    for (const threadId of pausedQueueThreadIds) ids.add(threadId);
+    return ids;
+  }, [
+    pausedQueueThreadIds,
+    routeThreadId,
+    terminalStateByThreadId,
+    threadStatusById,
+    unreadThreadIds,
+  ]);
   const liveAttentionThreads = useMemo(() => {
     const input = { threads, planningWorkflows, codeReviewWorkflows, investigationWorkflows };
     return bucketThreadsByAttention(
@@ -418,6 +451,13 @@ export default function Sidebar() {
       scheduledThreadIdsByProjectId,
       archivedItemKeysByProjectId,
       attentionThreadIds: liveAttentionThreads.map((thread) => thread.id),
+      recentItemKeys: Object.values(
+        bucketRecentSidebarItems(
+          collectRecentSidebarItems(projectSidebarListsById, liveActivityHours),
+          threadStatusById,
+          nowHour,
+        ),
+      ).flatMap((items) => items.map((item) => item.key)),
     };
   });
   // Hover freezes the "Needs you" order so rows do not reshuffle under the
@@ -997,53 +1037,37 @@ export default function Sidebar() {
     },
   );
 
-  const toggleArchivedSectionForProject = useStableCallback((projectId: ProjectId) => {
-    setCollapsedArchivedSectionsByProject((current) => {
-      const next = new Set(current);
-      if (next.has(projectId)) {
-        next.delete(projectId);
-      } else {
-        next.add(projectId);
-      }
-      return next;
-    });
-  });
+  const toggleShelfBucketForProject = useStableCallback(
+    (projectId: ProjectId, bucket: SidebarShelfBucket) => {
+      setOpenShelfByProject((current) => {
+        const next = new Map(current);
+        next.set(projectId, current.get(projectId) === bucket ? null : bucket);
+        return next;
+      });
+    },
+  );
 
-  const toggleSnoozedSectionForProject = useStableCallback((projectId: ProjectId) => {
-    setCollapsedSnoozedSectionsByProject((current) => {
-      const next = new Set(current);
-      if (next.has(projectId)) next.delete(projectId);
-      else next.add(projectId);
-      return next;
-    });
-  });
-
-  useEffect(() => {
-    if (archivedSectionsInitializedRef.current || !threadsHydrated) {
-      return;
+  // Opening a thread that sits on a shelf opens its bucket, so the open row is always visible.
+  const routeShelf = useMemo(() => {
+    if (routeThreadId === null) return null;
+    for (const [projectId, lists] of projectSidebarListsById) {
+      const bucket = findShelfBucketForThread(lists, routeThreadId);
+      if (bucket) return { projectId, bucket };
     }
-
-    archivedSectionsInitializedRef.current = true;
-    setCollapsedArchivedSectionsByProject(
-      new Set([
-        ...threads.filter((thread) => isArchivedThread(thread)).map((thread) => thread.projectId),
-        ...planningWorkflows
-          .filter((workflow) => isArchivedWorkflow(workflow))
-          .map((workflow) => workflow.projectId),
-        ...codeReviewWorkflows
-          .filter((workflow) => isArchivedWorkflow(workflow))
-          .map((workflow) => workflow.projectId),
-        ...investigationWorkflows
-          .filter((workflow) => isArchivedWorkflow(workflow))
-          .map((workflow) => workflow.projectId),
-      ]),
-    );
-    setCollapsedSnoozedSectionsByProject(
-      new Set(
-        threads.filter((thread) => isSnoozedThread(thread)).map((thread) => thread.projectId),
-      ),
-    );
-  }, [codeReviewWorkflows, investigationWorkflows, planningWorkflows, threads, threadsHydrated]);
+    return null;
+  }, [projectSidebarListsById, routeThreadId]);
+  // Keyed by thread and bucket, not the lists, so closing the bucket afterwards sticks.
+  const routeShelfProjectId = routeShelf?.projectId ?? null;
+  const routeShelfBucket = routeShelf?.bucket ?? null;
+  useEffect(() => {
+    if (routeShelfProjectId === null || routeShelfBucket === null) return;
+    setOpenShelfByProject((current) => {
+      if (current.get(routeShelfProjectId) === routeShelfBucket) return current;
+      const next = new Map(current);
+      next.set(routeShelfProjectId, routeShelfBucket);
+      return next;
+    });
+  }, [routeThreadId, routeShelfProjectId, routeShelfBucket]);
 
   const projectActions: SidebarProjectActions = {
     onTitlePointerDownCapture: handleProjectTitlePointerDownCapture,
@@ -1066,8 +1090,7 @@ export default function Sidebar() {
     },
     onExpandThreadList: expandThreadListForProject,
     onCollapseThreadList: collapseThreadListForProject,
-    onToggleArchivedSection: toggleArchivedSectionForProject,
-    onToggleSnoozedSection: toggleSnoozedSectionForProject,
+    onToggleShelfBucket: toggleShelfBucketForProject,
     onPinnedThreadDragEnd: handlePinnedThreadDragEnd,
   };
 
@@ -1081,14 +1104,12 @@ export default function Sidebar() {
         sidebarLists={sidebarLists}
         freezeSnapshot={sidebarHoverFreezeSnapshot}
         threadPreviewLimit={threadPreviewLimit}
-        activeExpanded={expandedThreadListsByProject.has(
-          threadBucketExpansionKey(project.id, "active"),
-        )}
-        archivedExpanded={expandedThreadListsByProject.has(
-          threadBucketExpansionKey(project.id, "archived"),
-        )}
-        archivedSectionCollapsed={collapsedArchivedSectionsByProject.has(project.id)}
-        snoozedSectionCollapsed={collapsedSnoozedSectionsByProject.has(project.id)}
+        expandedThreadLists={expandedThreadListsByProject}
+        openShelfBucket={openShelfByProject.get(project.id) ?? null}
+        olderThreadDays={appSettings.sidebarOlderThreadDays}
+        now={nowHour}
+        liveActivityHours={liveActivityHours}
+        agingExemptThreadIds={agingExemptThreadIds}
         draftThreadsByThreadId={draftThreadsByThreadId}
         persistedThreadIds={persistedThreadIds}
         routeThreadId={routeThreadId}
@@ -1114,218 +1135,285 @@ export default function Sidebar() {
       data-sidebar-root=""
       {...testRenderCountProps}
     >
-      <SidebarBrandHeader update={desktopUpdate} />
-      <SidebarPrimaryActions
-        projectId={primaryProjectId}
-        newThreadShortcutLabel={newThreadShortcutLabel}
-        workflowShortcutLabel={workflowShortcutLabel}
-        onNewThread={threadActions.createThreadInProject}
-        onNewScratchThread={
-          listedProjects.length > 0
-            ? (modifiers) => threadActions.createThreadInProject(null, modifiers)
-            : undefined
+      <SidebarPeekProvider
+        suppressed={
+          threadActions.renamingThreadId !== null ||
+          threadActions.contextMenuOpen ||
+          multipleThreadsSelected
         }
-        scratchShortcutLabel={scratchShortcutLabel}
-        scratchDisabled={scratchDisabled}
-        onNewWorkflow={(projectId) => {
-          // Workflows need a repository; from a thread without a project, pick a project first.
-          if (!isScratchProject(projects.find((entry) => entry.id === projectId)))
-            openWorkflowCreateDialog(projectId);
-          else if (firstProjectId) openWorkflowCreateDialog(firstProjectId);
-          else addProject.handleStartAddProject();
-        }}
-        onAddProject={addProject.handleStartAddProject}
-      />
-
-      <SidebarContent className="gap-0">
-        <SidebarNav
-          searchQuery={sidebarSearchQuery}
-          onSearchQueryChange={setSidebarSearchQuery}
-          onOpenCommandPalette={handleOpenCommandPalette}
-          commandPaletteShortcutLabel={commandPaletteShortcutLabel}
-          pullRequestsShortcutLabel={pullRequestsShortcutLabel}
-        />
-        <SidebarArm64Warning update={desktopUpdate} />
-        {sidebarSearchQuery.trim().length > 0 ? (
-          <SidebarThreadSearchResults
-            query={sidebarSearchQuery}
-            projects={projects}
-            threads={threads}
-            {...(routeThreadId ? { activeThreadId: routeThreadId } : {})}
-            onResultOpened={handleSidebarSearchResultOpened}
-          />
-        ) : null}
-        <div className={cn("px-2", sidebarSearchQuery.trim().length > 0 && "hidden")}>
-          <SidebarAttentionSection
-            threads={attentionThreads}
-            projectsById={projectsById}
-            routeThreadId={routeThreadId}
-            indicatorsForThread={indicatorsForThread}
-            actions={threadActions}
-          />
-        </div>
-        <SidebarGroup
-          className={cn("px-2 pt-0 pb-2", sidebarSearchQuery.trim().length > 0 && "hidden")}
-        >
-          <div className="flex h-7 items-center justify-between px-2">
-            <span className="text-2xs font-medium text-muted-foreground">Threads and projects</span>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    aria-label="Add project"
-                    aria-pressed={addProject.showPathEntry}
-                    className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors duration-(--duration-fast) hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-                    onClick={addProject.handleStartAddProject}
-                  />
-                }
-              >
-                <FolderPlusIcon className="size-4" />
-              </TooltipTrigger>
-              <TooltipPopup side="right">Add project</TooltipPopup>
-            </Tooltip>
-          </div>
-
-          {addProject.showPathEntry && <SidebarAddProjectForm controller={addProject} />}
-
-          <DndContext
-            sensors={projectDnDSensors}
-            collisionDetection={projectCollisionDetection}
-            modifiers={[restrictToVerticalAxis, restrictToFirstScrollableAncestor]}
-            onDragStart={handleProjectDragStart}
-            onDragEnd={handleProjectDragEnd}
-            onDragCancel={handleProjectDragCancel}
-          >
-            <SidebarMenu
-              {...SIDEBAR_TREE_PROPS}
-              aria-label="Threads and projects"
-              ref={attachSidebarTree}
-              className="gap-px"
-            >
-              {projects.filter(isScratchProject).map(renderProjectItem)}
-              <SortableContext
-                items={listedProjects.map((project) => project.id)}
-                strategy={verticalListSortingStrategy}
-              >
-                {listedProjects.map(renderProjectItem)}
-              </SortableContext>
-            </SidebarMenu>
-          </DndContext>
-
-          {!startupReady && projects.length === 0 && !addProject.showPathEntry ? (
-            <StartupSidebarSkeleton />
-          ) : startupReady && projects.length === 0 && !addProject.showPathEntry ? (
-            <div className="mx-1 mt-2 flex flex-col items-center gap-2 rounded-xl border border-dashed border-border px-3 py-5 text-center">
-              <p className="text-ui text-muted-foreground">No projects yet</p>
-              <Button size="sm" variant="outline" onClick={addProject.handleStartAddProject}>
-                <PlusIcon className="size-4" />
-                Add a project
-              </Button>
-              <Button
-                size="sm"
-                variant="link"
-                data-testid="sidebar-start-without-project"
-                onClick={() => void startScratchThread()}
-              >
-                or start without a project
-              </Button>
-            </div>
-          ) : null}
-        </SidebarGroup>
-      </SidebarContent>
-
-      <SidebarSeparator />
-      <AlertDialog
-        open={workflowToArchive !== null}
-        onOpenChange={(open) => {
-          if (!open) setWorkflowToArchive(null);
-        }}
       >
-        <AlertDialogPopup
-          className="sm:max-w-[440px]"
-          initialFocus={archiveCancelRef}
-          finalFocus={archiveTriggerRef}
-        >
-          <AlertDialogHeader className="text-left">
-            <AlertDialogTitle>Archive workflow?</AlertDialogTitle>
-            <p className="mt-1 text-sm font-medium wrap-anywhere">
-              {workflowToArchive?.workflowTitle || "Untitled workflow"}
-            </p>
-            <AlertDialogDescription>
-              Move this workflow to Archived. You can restore it later.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter variant="bare">
-            <AlertDialogClose render={<Button ref={archiveCancelRef} variant="outline" />}>
-              Cancel
-            </AlertDialogClose>
-            <Button
-              onClick={() => {
-                if (!workflowToArchive) return;
-                setWorkflowToArchive(null);
-                void setWorkflowArchived({
-                  ...workflowToArchive,
-                  archived: true,
-                  confirm: false,
-                });
-              }}
+        <SidebarBrandHeader update={desktopUpdate} />
+        <SidebarPrimaryActions
+          projectId={primaryProjectId}
+          newThreadShortcutLabel={newThreadShortcutLabel}
+          workflowShortcutLabel={workflowShortcutLabel}
+          onNewThread={threadActions.createThreadInProject}
+          onNewScratchThread={
+            listedProjects.length > 0
+              ? (modifiers) => threadActions.createThreadInProject(null, modifiers)
+              : undefined
+          }
+          scratchShortcutLabel={scratchShortcutLabel}
+          scratchDisabled={scratchDisabled}
+          onNewWorkflow={(projectId) => {
+            // Workflows need a repository; from a thread without a project, pick a project first.
+            if (!isScratchProject(projects.find((entry) => entry.id === projectId)))
+              openWorkflowCreateDialog(projectId);
+            else if (firstProjectId) openWorkflowCreateDialog(firstProjectId);
+            else addProject.handleStartAddProject();
+          }}
+          onAddProject={addProject.handleStartAddProject}
+        />
+
+        <SidebarPeekScrollDismissArea className="contents">
+          <SidebarContent className="gap-0">
+            <SidebarNav
+              searchQuery={sidebarSearchQuery}
+              onSearchQueryChange={setSidebarSearchQuery}
+              onOpenCommandPalette={handleOpenCommandPalette}
+              commandPaletteShortcutLabel={commandPaletteShortcutLabel}
+              pullRequestsShortcutLabel={pullRequestsShortcutLabel}
+            />
+            <SidebarArm64Warning update={desktopUpdate} />
+            {sidebarSearchQuery.trim().length > 0 ? (
+              <SidebarThreadSearchResults
+                query={sidebarSearchQuery}
+                projects={projects}
+                threads={threads}
+                {...(routeThreadId ? { activeThreadId: routeThreadId } : {})}
+                onResultOpened={handleSidebarSearchResultOpened}
+              />
+            ) : null}
+            <div className={cn("px-2", sidebarSearchQuery.trim().length > 0 && "hidden")}>
+              <SidebarAttentionSection
+                threads={attentionThreads}
+                projectsById={projectsById}
+                routeThreadId={routeThreadId}
+                indicatorsForThread={indicatorsForThread}
+                actions={threadActions}
+              />
+            </div>
+            <SidebarGroup
+              className={cn("px-2 pt-0 pb-2", sidebarSearchQuery.trim().length > 0 && "hidden")}
             >
-              Archive workflow
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogPopup>
-      </AlertDialog>
-      <div className="pb-safe-add">
-        <SidebarFooter className="p-2">
-          <SidebarMenu>
-            <SidebarMenuItem className="flex items-center gap-1">
-              {isOnSettings || isOnUsage ? (
-                <SidebarMenuButton
-                  className={SIDEBAR_NAV_ROW_CLASS_NAME}
-                  onClick={() => window.history.back()}
+              <div className="flex h-8 items-center justify-between gap-2 pr-2 pb-1 pl-1">
+                <div
+                  role="radiogroup"
+                  aria-label="Sidebar view"
+                  className="flex min-w-0 flex-1 rounded-lg border border-border p-0.5"
                 >
-                  <ArrowLeftIcon className="size-4" />
-                  <span>Back</span>
-                </SidebarMenuButton>
-              ) : (
-                <SidebarMenuButton
-                  className={SIDEBAR_NAV_ROW_CLASS_NAME}
-                  onClick={() =>
-                    void navigate({
-                      to: "/settings",
-                      search: resolveSettingsNavigationSearch(router.state.location),
-                    })
-                  }
-                >
-                  <SettingsIcon className="size-4" />
-                  <span>Settings</span>
-                </SidebarMenuButton>
-              )}
-              <Tooltip>
-                <TooltipTrigger
-                  render={
+                  {SIDEBAR_VIEW_OPTIONS.map((option, index) => (
                     <button
+                      key={option.value}
                       type="button"
-                      aria-label="Keyboard shortcuts"
-                      className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors duration-(--duration-fast) hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-                      onClick={() => useShortcutsDialogStore.getState().setOpen(true)}
-                    />
-                  }
+                      role="radio"
+                      aria-checked={sidebarView === option.value}
+                      // One Tab stop; the arrow keys move the choice, as in a radio group.
+                      tabIndex={sidebarView === option.value ? 0 : -1}
+                      data-testid={`sidebar-view-${option.value}`}
+                      className="h-6 min-w-0 flex-1 truncate rounded-md px-2 text-2xs text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-checked:bg-accent aria-checked:font-medium aria-checked:text-foreground"
+                      onClick={() => setSidebarView(option.value)}
+                      onKeyDown={(event) => {
+                        const step =
+                          event.key === "ArrowRight" || event.key === "ArrowDown"
+                            ? 1
+                            : event.key === "ArrowLeft" || event.key === "ArrowUp"
+                              ? -1
+                              : 0;
+                        if (step === 0) return;
+                        event.preventDefault();
+                        const count = SIDEBAR_VIEW_OPTIONS.length;
+                        const next = SIDEBAR_VIEW_OPTIONS[(index + step + count) % count]!;
+                        setSidebarView(next.value);
+                        event.currentTarget.parentElement
+                          ?.querySelector<HTMLElement>(`[data-testid="sidebar-view-${next.value}"]`)
+                          ?.focus();
+                      }}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <button
+                        type="button"
+                        aria-label="Add project"
+                        aria-pressed={addProject.showPathEntry}
+                        className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors duration-(--duration-fast) hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                        onClick={addProject.handleStartAddProject}
+                      />
+                    }
+                  >
+                    <FolderPlusIcon className="size-4" />
+                  </TooltipTrigger>
+                  <TooltipPopup side="right">Add project</TooltipPopup>
+                </Tooltip>
+              </div>
+
+              {addProject.showPathEntry && <SidebarAddProjectForm controller={addProject} />}
+
+              {sidebarView === "recent" ? (
+                <SidebarRecentView
+                  projects={projects}
+                  listsByProjectId={projectSidebarListsById}
+                  statusById={threadStatusById}
+                  now={nowHour}
+                  liveActivityHours={liveActivityHours}
+                  frozenItemKeys={sidebarHoverFreezeSnapshot?.recentItemKeys}
+                  threadPreviewLimit={threadPreviewLimit}
+                  draftThreadsByThreadId={draftThreadsByThreadId}
+                  persistedThreadIds={persistedThreadIds}
+                  routeThreadId={routeThreadId}
+                  pathname={pathname}
+                  expandWorkflowThreadsByDefault={appSettings.expandWorkflowThreadsByDefault}
+                  workflowExpandedById={workflowExpandedById}
+                  indicatorsForThread={indicatorsForThread}
+                  threadActions={threadActions}
+                  projectActions={projectActions}
+                />
+              ) : (
+                <DndContext
+                  sensors={projectDnDSensors}
+                  collisionDetection={projectCollisionDetection}
+                  modifiers={[restrictToVerticalAxis, restrictToFirstScrollableAncestor]}
+                  onDragStart={handleProjectDragStart}
+                  onDragEnd={handleProjectDragEnd}
+                  onDragCancel={handleProjectDragCancel}
                 >
-                  <KeyboardIcon className="size-4" />
-                </TooltipTrigger>
-                <TooltipPopup side="top">
-                  Keyboard shortcuts
-                  {shortcutsShortcutLabel ? (
-                    <span className="ml-1.5 text-muted-foreground">{shortcutsShortcutLabel}</span>
-                  ) : null}
-                </TooltipPopup>
-              </Tooltip>
-            </SidebarMenuItem>
-          </SidebarMenu>
-        </SidebarFooter>
-      </div>
+                  <SidebarMenu
+                    {...SIDEBAR_TREE_PROPS}
+                    aria-label="Threads and projects"
+                    ref={attachSidebarTree}
+                    className="gap-px"
+                  >
+                    {projects.filter(isScratchProject).map(renderProjectItem)}
+                    <SortableContext
+                      items={listedProjects.map((project) => project.id)}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      {listedProjects.map(renderProjectItem)}
+                    </SortableContext>
+                  </SidebarMenu>
+                </DndContext>
+              )}
+
+              {!startupReady && projects.length === 0 && !addProject.showPathEntry ? (
+                <StartupSidebarSkeleton />
+              ) : startupReady && projects.length === 0 && !addProject.showPathEntry ? (
+                <div className="mx-1 mt-2 flex flex-col items-center gap-2 rounded-xl border border-dashed border-border px-3 py-5 text-center">
+                  <p className="text-ui text-muted-foreground">No projects yet</p>
+                  <Button size="sm" variant="outline" onClick={addProject.handleStartAddProject}>
+                    <PlusIcon className="size-4" />
+                    Add a project
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="link"
+                    data-testid="sidebar-start-without-project"
+                    onClick={() => void startScratchThread()}
+                  >
+                    or start without a project
+                  </Button>
+                </div>
+              ) : null}
+            </SidebarGroup>
+          </SidebarContent>
+        </SidebarPeekScrollDismissArea>
+
+        <SidebarSeparator />
+        <AlertDialog
+          open={workflowToArchive !== null}
+          onOpenChange={(open) => {
+            if (!open) setWorkflowToArchive(null);
+          }}
+        >
+          <AlertDialogPopup
+            className="sm:max-w-[440px]"
+            initialFocus={archiveCancelRef}
+            finalFocus={archiveTriggerRef}
+          >
+            <AlertDialogHeader className="text-left">
+              <AlertDialogTitle>Archive workflow?</AlertDialogTitle>
+              <p className="mt-1 text-sm font-medium wrap-anywhere">
+                {workflowToArchive?.workflowTitle || "Untitled workflow"}
+              </p>
+              <AlertDialogDescription>
+                Move this workflow to Archived. You can restore it later.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter variant="bare">
+              <AlertDialogClose render={<Button ref={archiveCancelRef} variant="outline" />}>
+                Cancel
+              </AlertDialogClose>
+              <Button
+                onClick={() => {
+                  if (!workflowToArchive) return;
+                  setWorkflowToArchive(null);
+                  void setWorkflowArchived({
+                    ...workflowToArchive,
+                    archived: true,
+                    confirm: false,
+                  });
+                }}
+              >
+                Archive workflow
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogPopup>
+        </AlertDialog>
+        <div className="pb-safe-add">
+          <SidebarFooter className="p-2">
+            <SidebarMenu>
+              <SidebarMenuItem className="flex items-center gap-1">
+                {isOnSettings || isOnUsage ? (
+                  <SidebarMenuButton
+                    className={SIDEBAR_NAV_ROW_CLASS_NAME}
+                    onClick={() => window.history.back()}
+                  >
+                    <ArrowLeftIcon className="size-4" />
+                    <span>Back</span>
+                  </SidebarMenuButton>
+                ) : (
+                  <SidebarMenuButton
+                    className={SIDEBAR_NAV_ROW_CLASS_NAME}
+                    onClick={() =>
+                      void navigate({
+                        to: "/settings",
+                        search: resolveSettingsNavigationSearch(router.state.location),
+                      })
+                    }
+                  >
+                    <SettingsIcon className="size-4" />
+                    <span>Settings</span>
+                  </SidebarMenuButton>
+                )}
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <button
+                        type="button"
+                        aria-label="Keyboard shortcuts"
+                        className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors duration-(--duration-fast) hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                        onClick={() => useShortcutsDialogStore.getState().setOpen(true)}
+                      />
+                    }
+                  >
+                    <KeyboardIcon className="size-4" />
+                  </TooltipTrigger>
+                  <TooltipPopup side="top">
+                    Keyboard shortcuts
+                    {shortcutsShortcutLabel ? (
+                      <span className="ml-1.5 text-muted-foreground">{shortcutsShortcutLabel}</span>
+                    ) : null}
+                  </TooltipPopup>
+                </Tooltip>
+              </SidebarMenuItem>
+            </SidebarMenu>
+          </SidebarFooter>
+        </div>
+      </SidebarPeekProvider>
     </div>
   );
 }

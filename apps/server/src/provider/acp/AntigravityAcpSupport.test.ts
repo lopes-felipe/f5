@@ -1,11 +1,14 @@
 import * as NodePath from "node:path";
+import * as fs from "node:fs/promises";
+import os from "node:os";
 import { buildAccountExecutionEnvironment } from "../../providerProcessEnv.ts";
 import { fallbackDefaultProfile } from "../../profiles/ProfileRegistryStore.ts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   antigravityAuthorizationUrl,
   antigravityEnvironment,
   antigravityProfileDirectory,
+  linkAntigravityUserSkills,
 } from "./AntigravityAcpSupport.ts";
 import {
   antigravityApprovalOptions,
@@ -14,6 +17,160 @@ import {
 } from "./AntigravityQuestions.ts";
 import { acpElicitationDescriptor, acpElicitationResponse } from "./AcpElicitationForm.ts";
 import type { RequestPermissionRequest } from "effect-acp/schema";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof fs>();
+  return { ...actual, rmdir: vi.fn(actual.rmdir) };
+});
+
+describe("Antigravity profile skills", () => {
+  it("links existing global skills, repairs stale links and preserves profile content", async () => {
+    await withSkillsProfile(
+      async ({ home, userHome, source: configSource, target: configTarget }) => {
+        const cliSource = NodePath.join(userHome, ".gemini", "antigravity-cli", "skills");
+        const cliTarget = NodePath.join(home, "antigravity-cli", "skills");
+        const symlinkType = process.platform === "win32" ? "junction" : "dir";
+        await linkAntigravityUserSkills(home, userHome);
+        await expect(fs.lstat(configTarget)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(fs.lstat(cliTarget)).rejects.toMatchObject({ code: "ENOENT" });
+
+        await fs.mkdir(NodePath.join(configSource, "review"), { recursive: true });
+        await linkAntigravityUserSkills(home, userHome);
+        expect(await fs.readlink(configTarget)).toBe(configSource);
+        expect((await fs.stat(NodePath.join(configTarget, "review"))).isDirectory()).toBe(true);
+        await expect(fs.lstat(cliTarget)).rejects.toMatchObject({ code: "ENOENT" });
+
+        await fs.mkdir(cliTarget, { recursive: true });
+        await linkAntigravityUserSkills(home, userHome);
+        expect((await fs.lstat(cliTarget)).isDirectory()).toBe(true);
+        await fs.mkdir(cliSource, { recursive: true });
+        await fs.unlink(configTarget);
+        await fs.mkdir(NodePath.join(configTarget, "own-skill"), { recursive: true });
+        await linkAntigravityUserSkills(home, userHome);
+        expect(await fs.readlink(cliTarget)).toBe(cliSource);
+        expect((await fs.stat(NodePath.join(configTarget, "own-skill"))).isDirectory()).toBe(true);
+
+        await fs.unlink(cliTarget);
+        await fs.symlink(NodePath.join(home, "missing"), cliTarget, symlinkType);
+        await linkAntigravityUserSkills(home, userHome);
+        expect(await fs.readlink(cliTarget)).toBe(cliSource);
+        await fs.rm(cliSource, { recursive: true });
+        await linkAntigravityUserSkills(home, userHome);
+        await expect(fs.lstat(cliTarget)).rejects.toMatchObject({ code: "ENOENT" });
+        await fs.mkdir(cliTarget, { recursive: true });
+        expect((await fs.stat(cliTarget)).isDirectory()).toBe(true);
+      },
+    );
+  });
+
+  async function withSkillsProfile(
+    run: (profile: {
+      home: string;
+      userHome: string;
+      source: string;
+      target: string;
+    }) => Promise<void>,
+  ) {
+    const temporary = await fs.mkdtemp(NodePath.join(os.tmpdir(), "f5-antigravity-skills-"));
+    const home = NodePath.join(temporary, "profile");
+    const userHome = NodePath.join(temporary, "user");
+    try {
+      await run({
+        home,
+        userHome,
+        source: NodePath.join(userHome, ".gemini", "config", "skills"),
+        target: NodePath.join(home, "config", "skills"),
+      });
+    } finally {
+      await fs.rm(temporary, { recursive: true, force: true });
+    }
+  }
+
+  it.each(["placeholder", "stale link", "removed source"])(
+    "allows concurrent preparations with a %s",
+    async (kind) => {
+      await withSkillsProfile(async ({ home, userHome, source, target }) => {
+        await fs.mkdir(source, { recursive: true });
+        await fs.writeFile(NodePath.join(source, "review.md"), "keep global skills");
+        await fs.mkdir(NodePath.dirname(target), { recursive: true });
+        if (kind === "placeholder") {
+          await fs.mkdir(target);
+        } else {
+          await fs.symlink(
+            kind === "removed source" ? source : NodePath.join(home, "missing"),
+            target,
+            process.platform === "win32" ? "junction" : "dir",
+          );
+        }
+        if (kind === "removed source") await fs.rm(source, { recursive: true });
+
+        await expect(
+          Promise.all(Array.from({ length: 8 }, () => linkAntigravityUserSkills(home, userHome))),
+        ).resolves.toHaveLength(8);
+        if (kind !== "removed source") {
+          expect(await fs.readFile(NodePath.join(source, "review.md"), "utf8")).toBe(
+            "keep global skills",
+          );
+        }
+      });
+    },
+  );
+
+  it("continues linking the other directory after a filesystem error", async () => {
+    await withSkillsProfile(async ({ home, userHome, source }) => {
+      await fs.mkdir(NodePath.dirname(NodePath.dirname(source)), { recursive: true });
+      await fs.writeFile(NodePath.dirname(source), "not a directory");
+      const cliSource = NodePath.join(userHome, ".gemini", "antigravity-cli", "skills");
+      const cliTarget = NodePath.join(home, "antigravity-cli", "skills");
+      await fs.mkdir(cliSource, { recursive: true });
+
+      await expect(linkAntigravityUserSkills(home, userHome)).resolves.toBeUndefined();
+      expect((await fs.lstat(cliTarget)).isSymbolicLink()).toBe(true);
+      expect(await fs.realpath(cliTarget)).toBe(await fs.realpath(cliSource));
+      expect(await fs.readFile(NodePath.dirname(source), "utf8")).toBe("not a directory");
+    });
+  });
+
+  it("preserves a regular file at the profile target", async () => {
+    await withSkillsProfile(async ({ home, userHome, source, target }) => {
+      await fs.mkdir(source, { recursive: true });
+      await fs.mkdir(NodePath.dirname(target), { recursive: true });
+      await fs.writeFile(target, "keep profile content");
+      await linkAntigravityUserSkills(home, userHome);
+      expect(await fs.readFile(target, "utf8")).toBe("keep profile content");
+    });
+  });
+
+  it.each(["EBUSY", "EPERM"])("tolerates %s while replacing a placeholder", async (code) => {
+    await withSkillsProfile(async ({ home, userHome, source, target }) => {
+      await fs.mkdir(source, { recursive: true });
+      await fs.mkdir(target, { recursive: true });
+      const remove = vi
+        .spyOn(fs, "rmdir")
+        .mockRejectedValueOnce(Object.assign(new Error("Directory is in use"), { code }));
+      try {
+        await expect(linkAntigravityUserSkills(home, userHome)).resolves.toBeUndefined();
+        expect(remove).toHaveBeenCalledWith(target);
+        expect((await fs.lstat(target)).isDirectory()).toBe(true);
+      } finally {
+        remove.mockRestore();
+      }
+    });
+  });
+
+  it("removes a link when the global skills folder becomes a file", async () => {
+    await withSkillsProfile(async ({ home, userHome, source, target }) => {
+      await fs.mkdir(source, { recursive: true });
+      await linkAntigravityUserSkills(home, userHome);
+      expect((await fs.lstat(target)).isSymbolicLink()).toBe(true);
+      await fs.rmdir(source);
+      await fs.writeFile(source, "not a skills folder");
+      await linkAntigravityUserSkills(home, userHome);
+      await expect(fs.lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await fs.readFile(source, "utf8")).toBe("not a skills folder");
+    });
+  });
+});
 
 describe("Antigravity isolation and native requests", () => {
   it("isolates profile and instance account paths, ignoring inherited credentials", () => {

@@ -13,7 +13,8 @@ import {
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export type SidebarNewThreadEnvMode = "local" | "worktree";
-export type SidebarThreadBucket = "active" | "archived";
+/** Per-project lists whose "Show more" / "N older" expansion the sidebar remembers. */
+export type SidebarThreadBucket = "active" | "archived" | "older" | "snoozed" | "settled";
 
 export function resolveSidebarComposerDraftPreview(
   draft: ComposerDraftPreviewInput | null | undefined,
@@ -142,11 +143,16 @@ export function reconcileFrozenOrder<T, Key extends string>(input: {
   return ordered;
 }
 
+/**
+ * Whether a workflow row lists its threads: the user's toggle, else open while it holds the
+ * open thread, else collapsed once the workflow completed, else the expand-by-default setting.
+ */
 export function resolveWorkflowThreadListExpanded(input: {
   overrideExpanded?: boolean | undefined;
   expandByDefault: boolean;
   activeThreadId: ThreadId | null;
   workflowThreadIds: readonly ThreadId[];
+  overallState?: "error" | "active" | "completed" | "pending" | undefined;
 }): boolean {
   if (typeof input.overrideExpanded === "boolean") {
     return input.overrideExpanded;
@@ -155,6 +161,8 @@ export function resolveWorkflowThreadListExpanded(input: {
   if (input.activeThreadId !== null && input.workflowThreadIds.includes(input.activeThreadId)) {
     return true;
   }
+
+  if (input.overallState === "completed") return false;
 
   return input.expandByDefault;
 }
@@ -270,6 +278,76 @@ export function buildRenderedProjectThreadIds(input: {
       input.previewLimit,
     ),
   ];
+}
+
+/** A nav badge count: exact below 1000, then one decimal of thousands ("2.2k", "15k"). */
+export function formatCompactCount(count: number): string {
+  if (count < 1000) return String(count);
+  const thousands = count / 1000;
+  const rounded = thousands < 10 ? Math.floor(thousands * 10) / 10 : Math.floor(thousands);
+  return `${String(rounded)}k`;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Splits items into recent ones and those idle longer than `days`, keeping each side in input
+ * order. Exempt keys and items without a parseable activity time stay recent; `days` 0 is off.
+ */
+export function partitionAgedSidebarItems<T>(
+  items: readonly T[],
+  now: number,
+  days: number,
+  exemptKeys: ReadonlySet<string>,
+  accessors: {
+    readonly getKey: (item: T) => string;
+    readonly getActivityAt: (item: T) => string | null | undefined;
+  },
+): { readonly recent: T[]; readonly older: T[] } {
+  if (days <= 0) return { recent: [...items], older: [] };
+  const cutoff = now - days * DAY_MS;
+  const recent: T[] = [];
+  const older: T[] = [];
+  for (const item of items) {
+    const activityAt = accessors.getActivityAt(item);
+    const activityMs = activityAt ? Date.parse(activityAt) : Number.NaN;
+    if (
+      !exemptKeys.has(accessors.getKey(item)) &&
+      Number.isFinite(activityMs) &&
+      activityMs < cutoff
+    )
+      older.push(item);
+    else recent.push(item);
+  }
+  return { recent, older };
+}
+
+/** The quiet lists a project's shelf row holds, in the row's order. */
+export const SIDEBAR_SHELF_BUCKETS = ["scheduled", "snoozed", "settled", "archived"] as const;
+export type SidebarShelfBucket = (typeof SIDEBAR_SHELF_BUCKETS)[number];
+
+/** The shelf bucket that lists a thread, or null when the thread is not on the shelf. */
+export function findShelfBucketForThread(
+  lists: {
+    readonly scheduledThreads: ReadonlyArray<{ readonly id: ThreadId }>;
+    readonly snoozedThreads: ReadonlyArray<{ readonly id: ThreadId }>;
+    readonly settledThreads: ReadonlyArray<{ readonly id: ThreadId }>;
+    readonly archivedSidebarItems: ReadonlyArray<
+      | { readonly kind: "thread"; readonly thread: { readonly id: ThreadId } }
+      | { readonly kind: "workflow" }
+    >;
+  },
+  threadId: ThreadId | null,
+): SidebarShelfBucket | null {
+  if (threadId === null) return null;
+  if (lists.scheduledThreads.some((thread) => thread.id === threadId)) return "scheduled";
+  if (lists.snoozedThreads.some((thread) => thread.id === threadId)) return "snoozed";
+  if (lists.settledThreads.some((thread) => thread.id === threadId)) return "settled";
+  if (
+    lists.archivedSidebarItems.some((item) => item.kind === "thread" && item.thread.id === threadId)
+  )
+    return "archived";
+  return null;
 }
 
 export interface SidebarGitTarget {

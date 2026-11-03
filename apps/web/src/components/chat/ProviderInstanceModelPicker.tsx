@@ -1,4 +1,5 @@
 import { filterPickerVisibleModels } from "./providerIconUtils";
+import { isKeyboardEventComposing } from "../../lib/keyboardComposition";
 import { resolveShortcutCommand } from "~/keybindings";
 import {
   type ModelSlug,
@@ -109,6 +110,7 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
   keybindings?: ResolvedKeybindingsConfig | undefined;
   ultrathinkActive?: boolean;
   compact?: boolean;
+  docked?: boolean;
   disabled?: boolean;
   terminalOpen?: boolean;
   open?: boolean;
@@ -329,7 +331,7 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
   useEffect(() => {
     if (!isOpen) return;
     const handle = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.isComposing) return;
+      if (event.defaultPrevented || isKeyboardEventComposing(event)) return;
       const command = resolveShortcutCommand(event, props.keybindings ?? [], {
         context: { modelPickerOpen: true },
       });
@@ -413,12 +415,15 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
       </PopoverTrigger>
       <PopoverPopup
         align="start"
+        {...(props.docked
+          ? { side: "top" as const, collisionAvoidance: { side: "shift", align: "shift" } as const }
+          : {})}
         className="border-0 bg-transparent p-0 shadow-none before:hidden [--viewport-inline-padding:0] *:data-[slot=popover-viewport]:p-0"
       >
         <TooltipProvider delay={0}>
           <div
             className={cn(
-              "relative flex h-screen max-h-96 w-screen max-w-100 overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-lg/5",
+              "relative flex h-screen max-h-[min(24rem,var(--available-height))] w-screen max-w-100 overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-lg/5",
               props.lockedInstanceId ? "flex-col" : "flex-row",
             )}
           >
@@ -470,6 +475,10 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
                     value={search}
                     onChange={(event) => setSearch(event.target.value)}
                     onKeyDown={(event) => {
+                      if (isKeyboardEventComposing(event.nativeEvent)) {
+                        event.stopPropagation();
+                        return;
+                      }
                       if (event.key === "Escape") {
                         event.preventDefault();
                         event.stopPropagation();

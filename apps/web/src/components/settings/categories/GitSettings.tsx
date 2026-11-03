@@ -19,6 +19,7 @@ import { useSettingsRouteContext } from "../SettingsRouteContext";
 import { SettingsCard, SettingsRow } from "../SettingsCard";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
+import { IntervalSecondsField } from "../IntervalSecondsField";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
 import { Switch } from "../../ui/switch";
 import { Textarea } from "../../ui/textarea";
@@ -188,25 +189,14 @@ function SyncSettings() {
         }
         control={
           <div className="flex items-center gap-3">
-            <Input
-              className="h-8 w-20"
-              type="number"
+            <IntervalSecondsField
               min={GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_ENABLED_MIN}
               max={GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_MAX}
               step={5}
               value={settings.gitStatusAutoRefreshIntervalSeconds}
               disabled={!gitAutoRefreshEnabled}
-              onChange={(event) => {
-                const value = Math.max(
-                  GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_ENABLED_MIN,
-                  Math.min(
-                    GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_MAX,
-                    Math.round(Number(event.currentTarget.value) || 0),
-                  ),
-                );
-                updateSettings({ gitStatusAutoRefreshIntervalSeconds: value });
-              }}
-              aria-label="Git auto-refresh interval in seconds"
+              onCommit={(value) => updateSettings({ gitStatusAutoRefreshIntervalSeconds: value })}
+              label="Git auto-refresh interval in seconds"
             />
             <Switch
               checked={gitAutoRefreshEnabled}
@@ -532,9 +522,7 @@ function PullRequestSettings() {
         }
         control={
           <div className="flex items-center gap-3">
-            <Input
-              className="h-8 w-20"
-              type="number"
+            <IntervalSecondsField
               min={PR_HUB_POLL_INTERVAL_SECONDS_ENABLED_MIN}
               max={PR_HUB_POLL_INTERVAL_SECONDS_MAX}
               step={30}
@@ -544,17 +532,8 @@ function PullRequestSettings() {
                   : prHubSettings.pollIntervalSeconds
               }
               disabled={!prHubRefreshEnabled}
-              onChange={(event) => {
-                const value = Math.max(
-                  PR_HUB_POLL_INTERVAL_SECONDS_ENABLED_MIN,
-                  Math.min(
-                    PR_HUB_POLL_INTERVAL_SECONDS_MAX,
-                    Math.round(Number(event.currentTarget.value) || 0),
-                  ),
-                );
-                void updatePrHubSettings({ pollIntervalSeconds: value });
-              }}
-              aria-label="PR Hub refresh interval in seconds"
+              onCommit={(value) => updatePrHubSettings({ pollIntervalSeconds: value })}
+              label="PR Hub refresh interval in seconds"
             />
             <Switch
               checked={prHubRefreshEnabled}

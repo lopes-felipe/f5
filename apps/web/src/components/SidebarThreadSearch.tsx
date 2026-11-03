@@ -11,7 +11,7 @@ import {
   SearchIcon,
   XIcon,
 } from "lucide-react";
-import { useMemo, useRef, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, type KeyboardEvent, type ReactNode } from "react";
 
 import { useOpenGlobalSearchResult } from "../hooks/useOpenGlobalSearchResult";
 import { buildGlobalSearchQueryInput, parseGlobalSearchQuery } from "../lib/globalSearchQuery";
@@ -65,8 +65,19 @@ export function SidebarThreadSearchInput(props: {
   onQueryChange: (query: string) => void;
   onOpenCommandPalette: () => void;
   commandPaletteShortcutLabel: string | null;
+  /** Focus the field when it mounts (opened from the nav strip's Search button). */
+  autoFocus?: boolean | undefined;
+  /**
+   * The empty field asked to close: Escape (`restoreFocus` true) or focus leaving it.
+   * A field holding a query never dismisses.
+   */
+  onDismiss?: ((restoreFocus: boolean, nextFocus: Element | null) => void) | undefined;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const { autoFocus } = props;
+  useEffect(() => {
+    if (autoFocus) inputRef.current?.focus();
+  }, [autoFocus]);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "ArrowDown" && props.query.trim().length > 0) {
@@ -83,11 +94,31 @@ export function SidebarThreadSearchInput(props: {
       event.preventDefault();
       event.stopPropagation();
       props.onQueryChange("");
+      return;
+    }
+    if (event.key === "Escape" && props.onDismiss) {
+      event.preventDefault();
+      event.stopPropagation();
+      props.onDismiss(true, null);
     }
   };
 
   return (
-    <div className="flex h-8 items-center gap-2 rounded-lg px-2 text-muted-foreground transition-colors focus-within:bg-accent focus-within:text-foreground hover:bg-accent/60 hover:text-foreground">
+    <div
+      className="flex h-8 items-center gap-2 rounded-lg px-2 text-muted-foreground transition-colors focus-within:bg-accent focus-within:text-foreground hover:bg-accent/60 hover:text-foreground"
+      onBlur={(event) => {
+        if (!props.onDismiss || props.query.length > 0) return;
+        // Moving between the field and its own buttons keeps it open.
+        if (
+          event.relatedTarget instanceof Node &&
+          event.currentTarget.contains(event.relatedTarget)
+        )
+          return;
+        // Switching windows blurs the field too; it is still there on return.
+        if (event.relatedTarget === null && !event.currentTarget.ownerDocument.hasFocus()) return;
+        props.onDismiss(false, event.relatedTarget instanceof Element ? event.relatedTarget : null);
+      }}
+    >
       <SearchIcon aria-hidden="true" className="size-4 shrink-0" />
       <input
         ref={inputRef}

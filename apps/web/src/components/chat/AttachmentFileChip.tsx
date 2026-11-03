@@ -1,4 +1,5 @@
 import { FileChip } from "./FileChip";
+import { videoPreviewMimeType } from "@t3tools/shared/filePreview";
 import { useTheme } from "../../hooks/useTheme";
 import { useState } from "react";
 import type { ChatAttachment } from "../../types";
@@ -32,7 +33,7 @@ export function AttachmentFileChip({ file }: { file: ChatAttachment }) {
         trailing={size}
         {...(relativePath ? { onClick: () => setOpen(true) } : { href: url, download: file.name })}
       />
-      {file.mimeType.startsWith("video/") && (
+      {videoPreviewMimeType(file) && (
         <video controls preload="metadata" src={url} className="max-w-full rounded-lg" />
       )}
       <Dialog open={open} onOpenChange={setOpen}>

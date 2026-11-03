@@ -21,30 +21,37 @@ import type { Project, ThreadListItem } from "../../types";
 import { InlineTitleEditor } from "../InlineTitleEditor";
 import { ProjectIcon } from "../ProjectIcon";
 import {
+  partitionAgedSidebarItems,
   reconcileFrozenOrder,
   SIDEBAR_TREE_LEVEL_CLASS_NAME,
+  type SidebarShelfBucket,
   type SidebarThreadBucket,
+  threadBucketExpansionKey,
 } from "../Sidebar.logic";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
-import {
-  SidebarMenuAction,
-  SidebarMenuButton,
-  SidebarMenuSub,
-  SidebarMenuSubItem,
-} from "../ui/sidebar";
+import { SidebarMenuAction, SidebarMenuButton, SidebarMenuSub } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Kbd } from "../ui/kbd";
 import {
   type ProjectSidebarLists,
   type SidebarHoverFreezeSnapshot,
+  type SidebarWorkflowEntry,
   type SidebarWorkflowId,
   type SidebarWorkflowType,
+  isWorkflowRouteActive,
   pinnedThreadSortableId,
   workflowEntryKey,
 } from "./sidebarLists";
+import { liveSidebarActivityAt } from "./sidebarRecent";
 import { SidebarThreadRow } from "./SidebarThreadRow";
-import { SidebarScheduledFolder } from "./SidebarScheduledFolder";
-import { ListToggleRow, SectionToggleRow } from "./SidebarSectionRows";
+import {
+  ScheduledShelfIndicator,
+  SidebarScheduledShelfList,
+  summarizeScheduledThreads,
+  useScheduledFolderMenu,
+} from "./SidebarScheduledFolder";
+import { ListToggleRow, OlderToggleRow } from "./SidebarSectionRows";
+import { SidebarShelfRow, type SidebarShelfSegment } from "./SidebarShelfRow";
 import { SidebarTreeParentContext, sidebarProjectRowId } from "./sidebarTreeRow";
 import {
   SidebarArchivedWorkflowRow,
@@ -122,8 +129,7 @@ export interface SidebarProjectActions {
   onUnarchiveWorkflow: (workflowId: SidebarWorkflowId, type: SidebarWorkflowType) => void;
   onExpandThreadList: (projectId: ProjectId, bucket: SidebarThreadBucket) => void;
   onCollapseThreadList: (projectId: ProjectId, bucket: SidebarThreadBucket) => void;
-  onToggleArchivedSection: (projectId: ProjectId) => void;
-  onToggleSnoozedSection: (projectId: ProjectId) => void;
+  onToggleShelfBucket: (projectId: ProjectId, bucket: SidebarShelfBucket) => void;
   onPinnedThreadDragEnd: (event: DragEndEvent) => void;
 }
 
@@ -132,10 +138,17 @@ export interface SidebarProjectItemProps {
   sidebarLists: ProjectSidebarLists<ThreadSummary>;
   freezeSnapshot: SidebarHoverFreezeSnapshot | null;
   threadPreviewLimit: number;
-  activeExpanded: boolean;
-  archivedExpanded: boolean;
-  archivedSectionCollapsed: boolean;
-  snoozedSectionCollapsed: boolean;
+  /** Expansion keys (`threadBucketExpansionKey`) of every project's lists. */
+  expandedThreadLists: ReadonlySet<string>;
+  openShelfBucket: SidebarShelfBucket | null;
+  /** Days idle before a thread folds into "N older"; 0 keeps the preview count instead. */
+  olderThreadDays: number;
+  /** The clock aging compares against (floored to the hour). */
+  now: number;
+  /** Live activity hours by thread id (`useLiveActivityHours`); summary times can lag. */
+  liveActivityHours: Readonly<Record<string, number>>;
+  /** Threads that never fold: the open one, unread, running, waiting on the user, live terminals. */
+  agingExemptThreadIds: ReadonlySet<ThreadId>;
   draftThreadsByThreadId: Readonly<Record<ThreadId, DraftThreadState>>;
   persistedThreadIds: ReadonlySet<ThreadId>;
   routeThreadId: ThreadId | null;
@@ -164,24 +177,9 @@ const ACTIVE_STATUS_LABELS = new Set([
 const PROJECT_ACTION_CLASS_NAME =
   "top-1 size-6 rounded-md p-0 text-muted-foreground hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
-/**
- * Static group heading ("Workflows" / "Threads") that separates workflow
- * entries from standalone threads inside a project. Matches the type scale of
- * {@link SectionToggleRow}; the optional top margin separates the two groups.
- */
-function GroupLabelRow(props: { label: string; spaced?: boolean }) {
-  return (
-    <SidebarMenuSubItem className="w-full">
-      <div
-        className={cn(
-          "flex min-h-6 items-center px-2 text-2xs font-medium text-faint-foreground select-none",
-          props.spaced && "mt-3",
-        )}
-      >
-        {props.label}
-      </div>
-    </SidebarMenuSubItem>
-  );
+/** The 6px gap between a project's workflows and its threads. */
+function GroupGapRow() {
+  return <li aria-hidden="true" className="h-1.5 shrink-0" />;
 }
 
 export function SidebarProjectItem(props: SidebarProjectItemProps) {
@@ -191,10 +189,9 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
     sidebarLists,
     freezeSnapshot,
     threadPreviewLimit,
-    activeExpanded,
-    archivedExpanded,
-    archivedSectionCollapsed,
-    snoozedSectionCollapsed,
+    expandedThreadLists,
+    openShelfBucket,
+    olderThreadDays,
     draftThreadsByThreadId,
     persistedThreadIds,
     routeThreadId,
@@ -232,21 +229,23 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
     getKey: (thread) => thread.id,
     frozenOrder: freezeSnapshot?.scheduledThreadIdsByProjectId[project.id],
   });
-  const selectedScheduledThread = scheduledThreads.some((thread) => thread.id === routeThreadId);
   const currentScheduledThreads = scheduledThreads.filter((thread) => thread.archivedAt === null);
   const archivedScheduledThreads = scheduledThreads.filter((thread) => thread.archivedAt !== null);
   const selectedArchivedScheduledThread = archivedScheduledThreads.some(
     (thread) => thread.id === routeThreadId,
   );
-  const [scheduledExpanded, setScheduledExpanded] = useState(selectedScheduledThread);
+  const isListExpanded = (bucket: SidebarThreadBucket) =>
+    expandedThreadLists.has(threadBucketExpansionKey(project.id, bucket));
+  const toggleList = (bucket: SidebarThreadBucket) => {
+    if (isListExpanded(bucket)) projectActions.onCollapseThreadList(project.id, bucket);
+    else projectActions.onExpandThreadList(project.id, bucket);
+  };
+  const scheduledExpanded = openShelfBucket === "scheduled";
   const [scheduledShowingAll, setScheduledShowingAll] = useState(false);
   const [scheduledArchivedExpanded, setScheduledArchivedExpanded] = useState(
     selectedArchivedScheduledThread,
   );
   const [scheduledArchivedShowingAll, setScheduledArchivedShowingAll] = useState(false);
-  useEffect(() => {
-    if (selectedScheduledThread) setScheduledExpanded(true);
-  }, [routeThreadId, selectedScheduledThread]);
   useEffect(() => {
     if (selectedArchivedScheduledThread) setScheduledArchivedExpanded(true);
   }, [routeThreadId, selectedArchivedScheduledThread]);
@@ -265,42 +264,165 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
             thread.id === routeThreadId,
         )
       : [];
-  const [settledExpanded, setSettledExpanded] = useState(false);
   const settledThreads = sidebarLists.settledThreads;
-  const projectPinnedSortableIds = [...activeThreads, ...visibleScheduledThreads]
-    .filter((thread) => thread.pinnedAt != null)
-    .map((thread) => pinnedThreadSortableId(thread.id));
   const archivedSidebarItems = reconcileFrozenOrder({
     items: sidebarLists.archivedSidebarItems,
     getKey: (item) => item.key,
     frozenOrder: freezeSnapshot?.archivedItemKeysByProjectId[project.id],
   });
   const projectDraftThreadId = sidebarLists.projectDraftThreadId;
+
+  // Aging: idle threads and finished workflows fold into one "N older" row.
+  const agingEnabled = olderThreadDays > 0;
+  const agingExemptKeys = new Set<string>(props.agingExemptThreadIds);
+  for (const thread of activeThreads) {
+    if (
+      thread.pinnedAt != null ||
+      thread.id === projectDraftThreadId ||
+      isDraftThreadId(thread.id, draftThreadsByThreadId, persistedThreadIds)
+    )
+      agingExemptKeys.add(thread.id);
+  }
+  const workflowMeta = (entry: SidebarWorkflowEntry) =>
+    sidebarLists.workflowMetaByKey.get(workflowEntryKey(entry));
+  for (const entry of projectWorkflows) {
+    const children = workflowThreadsByWorkflowId.get(entry.workflow.id) ?? [];
+    if (
+      isWorkflowRouteActive(pathname, entry.workflow.id, entry.type) ||
+      children.some((thread) => props.agingExemptThreadIds.has(thread.id))
+    )
+      agingExemptKeys.add(workflowEntryKey(entry));
+  }
+  const agedThreads = partitionAgedSidebarItems(
+    activeThreads,
+    props.now,
+    olderThreadDays,
+    agingExemptKeys,
+    {
+      getKey: (thread) => thread.id,
+      getActivityAt: (thread) => liveSidebarActivityAt(thread, props.liveActivityHours),
+    },
+  );
+  const agedWorkflows = partitionAgedSidebarItems(
+    projectWorkflows,
+    props.now,
+    olderThreadDays,
+    agingExemptKeys,
+    {
+      getKey: workflowEntryKey,
+      // Only finished workflows fold; a pending or running one stays in view.
+      getActivityAt: (entry) =>
+        workflowMeta(entry)?.overallState === "completed" ? entry.workflow.updatedAt : null,
+    },
+  );
+  const olderExpanded = isListExpanded("older");
+  const olderCount = agedThreads.older.length + agedWorkflows.older.length;
+  const visibleOlderWorkflows = olderExpanded ? agedWorkflows.older : [];
+  const visibleOlderThreads = olderExpanded ? agedThreads.older : [];
+
+  // The preview limit applies to the threads aging keeps in view: "Show more", then "N older".
+  const activeExpanded = isListExpanded("active");
+  const recentThreads = agingEnabled ? agedThreads.recent : activeThreads;
   const visibleActiveThreads = getVisibleThreadsWithPinnedDraft({
-    threads: activeThreads,
-    expanded: activeExpanded || activeThreads.length <= threadPreviewLimit,
+    threads: recentThreads,
+    expanded: activeExpanded || recentThreads.length <= threadPreviewLimit,
     previewLimit: threadPreviewLimit,
     draftThreadId: projectDraftThreadId,
   });
+  const visibleWorkflows = agingEnabled ? agedWorkflows.recent : projectWorkflows;
+  const hasHiddenActiveThreads = recentThreads.length > threadPreviewLimit;
+
+  // The shelf's open list, with the preview limit and "Show all N".
+  const previewList = <T,>(
+    items: readonly T[],
+    bucket: SidebarThreadBucket,
+    getId: (item: T) => string,
+  ) =>
+    isListExpanded(bucket) || items.length <= threadPreviewLimit
+      ? [...items]
+      : items.filter((item, index) => index < threadPreviewLimit || getId(item) === routeThreadId);
+  const visibleSnoozedThreads =
+    openShelfBucket === "snoozed"
+      ? previewList(snoozedThreads, "snoozed", (thread) => thread.id)
+      : [];
+  const visibleSettledThreads =
+    openShelfBucket === "settled"
+      ? previewList(settledThreads, "settled", (thread) => thread.id)
+      : [];
   const visibleArchivedItems =
-    archivedExpanded || archivedSidebarItems.length <= threadPreviewLimit
-      ? archivedSidebarItems
-      : archivedSidebarItems.slice(0, threadPreviewLimit);
-  const hasHiddenActiveThreads = activeThreads.length > threadPreviewLimit;
-  // Only label the groups when both are present; a lone list needs no heading.
-  const showGroupLabels = projectWorkflows.length > 0 && visibleActiveThreads.length > 0;
-  const hasHiddenArchivedItems = archivedSidebarItems.length > threadPreviewLimit;
+    openShelfBucket === "archived"
+      ? previewList(archivedSidebarItems, "archived", (item) =>
+          item.kind === "thread" ? item.thread.id : item.key,
+        )
+      : [];
+  const projectPinnedSortableIds = [
+    ...visibleActiveThreads,
+    ...visibleOlderThreads,
+    ...visibleScheduledThreads,
+  ]
+    .filter((thread) => thread.pinnedAt != null)
+    .map((thread) => pinnedThreadSortableId(thread.id));
   const orderedProjectThreadIds = [
-    ...visibleActiveThreads
+    ...[...visibleActiveThreads, ...visibleOlderThreads]
       .filter((thread) => !isDraftThreadId(thread.id, draftThreadsByThreadId, persistedThreadIds))
       .map((thread) => thread.id),
     ...visibleScheduledThreads.map((thread) => thread.id),
     ...visibleArchivedScheduledThreads.map((thread) => thread.id),
-    ...(!snoozedSectionCollapsed ? snoozedThreads.map((thread) => thread.id) : []),
-    ...(!archivedSectionCollapsed
-      ? visibleArchivedItems.flatMap((item) => (item.kind === "thread" ? [item.thread.id] : []))
-      : []),
+    ...visibleSnoozedThreads.map((thread) => thread.id),
+    ...visibleSettledThreads.map((thread) => thread.id),
+    ...visibleArchivedItems.flatMap((item) => (item.kind === "thread" ? [item.thread.id] : [])),
   ];
+  const openScheduledMenu = useScheduledFolderMenu(scheduledThreads, indicatorsForThread);
+  const shelfSegments: SidebarShelfSegment[] = [
+    {
+      bucket: "scheduled",
+      count: scheduledThreads.length,
+      indicator: (
+        <ScheduledShelfIndicator
+          summary={summarizeScheduledThreads(scheduledThreads, indicatorsForThread)}
+        />
+      ),
+      onContextMenu: (position) => void openScheduledMenu(position),
+    },
+    { bucket: "snoozed", count: snoozedThreads.length },
+    { bucket: "settled", count: settledThreads.length },
+    { bucket: "archived", count: archivedSidebarItems.length },
+  ];
+  const renderWorkflow = (entry: SidebarWorkflowEntry) => {
+    const meta = workflowMeta(entry);
+    return (
+      <SidebarWorkflowItem
+        key={entry.workflow.id}
+        entry={entry}
+        workflowThreads={workflowThreadsByWorkflowId.get(entry.workflow.id) ?? []}
+        threadLabels={meta?.threadLabels ?? new Map()}
+        overallState={meta?.overallState ?? "pending"}
+        phases={meta?.phases}
+        currentStep={meta?.currentStep}
+        pathname={pathname}
+        routeThreadId={routeThreadId}
+        expandByDefault={props.expandWorkflowThreadsByDefault}
+        overrideExpanded={props.workflowExpandedById[entry.workflow.id]}
+        onToggleCollapsed={projectActions.onToggleWorkflowCollapsed}
+        onArchive={projectActions.onArchiveWorkflow}
+        indicatorsForThread={indicatorsForThread}
+        actions={threadActions}
+      />
+    );
+  };
+  const renderActiveThread = (thread: (typeof activeThreads)[number]) => (
+    <SidebarThreadRow
+      key={thread.id}
+      thread={thread}
+      section="active"
+      isActive={routeThreadId === thread.id}
+      isDraft={isDraftThreadId(thread.id, draftThreadsByThreadId, persistedThreadIds)}
+      orderedIds={orderedProjectThreadIds}
+      isRenaming={threadActions.renamingThreadId === thread.id}
+      actions={threadActions}
+      {...indicatorsForThread(thread)}
+    />
+  );
   const activeCount = project.expanded
     ? 0
     : [
@@ -500,148 +622,88 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
                 >
                   {/* One tree level: the guide line sits under the project's folder icon. */}
                   <SidebarMenuSub className={SIDEBAR_TREE_LEVEL_CLASS_NAME}>
-                    {showGroupLabels ? <GroupLabelRow label="Workflows" /> : null}
-                    {projectWorkflows.map((entry) => {
-                      const meta = sidebarLists.workflowMetaByKey.get(workflowEntryKey(entry));
-                      return (
-                        <SidebarWorkflowItem
-                          key={entry.workflow.id}
-                          entry={entry}
-                          workflowThreads={workflowThreadsByWorkflowId.get(entry.workflow.id) ?? []}
-                          threadLabels={meta?.threadLabels ?? new Map()}
-                          overallState={meta?.overallState ?? "pending"}
-                          pathname={pathname}
-                          routeThreadId={routeThreadId}
-                          expandByDefault={props.expandWorkflowThreadsByDefault}
-                          overrideExpanded={props.workflowExpandedById[entry.workflow.id]}
-                          onToggleCollapsed={projectActions.onToggleWorkflowCollapsed}
-                          onArchive={projectActions.onArchiveWorkflow}
-                          indicatorsForThread={indicatorsForThread}
-                          actions={threadActions}
-                        />
-                      );
-                    })}
-                    {showGroupLabels ? <GroupLabelRow label="Threads" spaced /> : null}
-                    {visibleActiveThreads.map((thread) => {
-                      const isDraftThread = isDraftThreadId(
-                        thread.id,
-                        draftThreadsByThreadId,
-                        persistedThreadIds,
-                      );
-                      return (
-                        <SidebarThreadRow
-                          key={thread.id}
-                          thread={thread}
-                          section="active"
-                          isActive={routeThreadId === thread.id}
-                          isDraft={isDraftThread}
-                          orderedIds={orderedProjectThreadIds}
-                          isRenaming={threadActions.renamingThreadId === thread.id}
-                          actions={threadActions}
-                          {...indicatorsForThread(thread)}
-                        />
-                      );
-                    })}
+                    {visibleWorkflows.map(renderWorkflow)}
+                    {visibleWorkflows.length > 0 && visibleActiveThreads.length > 0 ? (
+                      <GroupGapRow />
+                    ) : null}
+                    {visibleActiveThreads.map(renderActiveThread)}
 
                     {hasHiddenActiveThreads ? (
                       <ListToggleRow
                         label={activeExpanded ? "Show less" : "Show more"}
-                        onSelect={() => {
-                          if (activeExpanded) {
-                            projectActions.onCollapseThreadList(project.id, "active");
-                          } else {
-                            projectActions.onExpandThreadList(project.id, "active");
+                        onSelect={() => toggleList("active")}
+                      />
+                    ) : null}
+
+                    {agingEnabled && olderCount > 0 ? (
+                      <OlderToggleRow
+                        label={`${olderCount} older than ${olderThreadDays} days`}
+                        expanded={olderExpanded}
+                        onToggle={() => toggleList("older")}
+                      />
+                    ) : null}
+                    {visibleOlderWorkflows.map(renderWorkflow)}
+                    {visibleOlderThreads.map(renderActiveThread)}
+
+                    <SidebarShelfRow
+                      projectId={project.id}
+                      segments={shelfSegments}
+                      openBucket={openShelfBucket}
+                      onToggle={(bucket) => projectActions.onToggleShelfBucket(project.id, bucket)}
+                    >
+                      {openShelfBucket === "scheduled" ? (
+                        <SidebarScheduledShelfList
+                          visibleThreads={visibleScheduledThreads}
+                          currentThreadCount={currentScheduledThreads.length}
+                          archivedThreads={archivedScheduledThreads}
+                          visibleArchivedThreads={visibleArchivedScheduledThreads}
+                          archivedExpanded={scheduledArchivedExpanded}
+                          archivedShowingAll={scheduledArchivedShowingAll}
+                          showingAll={scheduledShowingAll}
+                          previewLimit={threadPreviewLimit}
+                          onToggleShowAll={() => setScheduledShowingAll((showing) => !showing)}
+                          onToggleArchived={() =>
+                            setScheduledArchivedExpanded((expanded) => !expanded)
                           }
-                        }}
-                      />
-                    ) : null}
-
-                    {scheduledThreads.length > 0 && (
-                      <SidebarScheduledFolder
-                        threads={scheduledThreads}
-                        visibleThreads={visibleScheduledThreads}
-                        currentThreadCount={currentScheduledThreads.length}
-                        archivedThreads={archivedScheduledThreads}
-                        visibleArchivedThreads={visibleArchivedScheduledThreads}
-                        archivedExpanded={scheduledArchivedExpanded}
-                        archivedShowingAll={scheduledArchivedShowingAll}
-                        expanded={scheduledExpanded}
-                        showingAll={scheduledShowingAll}
-                        previewLimit={threadPreviewLimit}
-                        onToggle={() => setScheduledExpanded((expanded) => !expanded)}
-                        onToggleShowAll={() => setScheduledShowingAll((showing) => !showing)}
-                        onToggleArchived={() =>
-                          setScheduledArchivedExpanded((expanded) => !expanded)
-                        }
-                        onToggleArchivedShowAll={() =>
-                          setScheduledArchivedShowingAll((showing) => !showing)
-                        }
-                        routeThreadId={routeThreadId}
-                        orderedIds={orderedProjectThreadIds}
-                        indicatorsForThread={indicatorsForThread}
-                        actions={threadActions}
-                      />
-                    )}
-
-                    {snoozedThreads.length > 0 ? (
-                      <SectionToggleRow
-                        label={`Snoozed (${snoozedThreads.length})`}
-                        expanded={!snoozedSectionCollapsed}
-                        onToggle={() => projectActions.onToggleSnoozedSection(project.id)}
-                      />
-                    ) : null}
-
-                    {!snoozedSectionCollapsed
-                      ? snoozedThreads.map((thread) => (
-                          <SidebarThreadRow
-                            key={`snoozed:${thread.id}`}
-                            thread={thread}
-                            section="snoozed"
-                            isActive={routeThreadId === thread.id}
-                            orderedIds={orderedProjectThreadIds}
-                            threadStatus={null}
-                            prStatus={null}
-                            terminalStatus={null}
-                            isUnread={indicatorsForThread(thread).isUnread}
-                            isRenaming={false}
-                            actions={threadActions}
-                          />
-                        ))
-                      : null}
-
-                    {settledThreads.length > 0 ? (
-                      <SectionToggleRow
-                        label={`Settled (${settledThreads.length})`}
-                        expanded={settledExpanded}
-                        onToggle={() => setSettledExpanded((value) => !value)}
-                      />
-                    ) : null}
-                    {settledExpanded
-                      ? settledThreads.map((thread) => (
-                          <SidebarThreadRow
-                            key={`settled:${thread.id}`}
-                            thread={thread}
-                            section="settled"
-                            isActive={routeThreadId === thread.id}
-                            orderedIds={orderedProjectThreadIds}
-                            isRenaming={threadActions.renamingThreadId === thread.id}
-                            actions={threadActions}
-                            {...indicatorsForThread(thread)}
-                            threadStatus={null}
-                            terminalStatus={null}
-                          />
-                        ))
-                      : null}
-                    {archivedSidebarItems.length > 0 ? (
-                      <SectionToggleRow
-                        label="Archived"
-                        expanded={!archivedSectionCollapsed}
-                        onToggle={() => projectActions.onToggleArchivedSection(project.id)}
-                      />
-                    ) : null}
-
-                    {!archivedSectionCollapsed &&
-                      visibleArchivedItems.map((item) =>
+                          onToggleArchivedShowAll={() =>
+                            setScheduledArchivedShowingAll((showing) => !showing)
+                          }
+                          routeThreadId={routeThreadId}
+                          orderedIds={orderedProjectThreadIds}
+                          indicatorsForThread={indicatorsForThread}
+                          actions={threadActions}
+                        />
+                      ) : null}
+                      {visibleSnoozedThreads.map((thread) => (
+                        <SidebarThreadRow
+                          key={`snoozed:${thread.id}`}
+                          thread={thread}
+                          section="snoozed"
+                          isActive={routeThreadId === thread.id}
+                          orderedIds={orderedProjectThreadIds}
+                          threadStatus={null}
+                          prStatus={null}
+                          terminalStatus={null}
+                          isUnread={indicatorsForThread(thread).isUnread}
+                          isRenaming={false}
+                          actions={threadActions}
+                        />
+                      ))}
+                      {visibleSettledThreads.map((thread) => (
+                        <SidebarThreadRow
+                          key={`settled:${thread.id}`}
+                          thread={thread}
+                          section="settled"
+                          isActive={routeThreadId === thread.id}
+                          orderedIds={orderedProjectThreadIds}
+                          isRenaming={threadActions.renamingThreadId === thread.id}
+                          actions={threadActions}
+                          {...indicatorsForThread(thread)}
+                          threadStatus={null}
+                          terminalStatus={null}
+                        />
+                      ))}
+                      {visibleArchivedItems.map((item) =>
                         item.kind === "workflow" ? (
                           <SidebarArchivedWorkflowRow
                             key={item.key}
@@ -663,19 +725,22 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
                           />
                         ),
                       )}
-
-                    {!archivedSectionCollapsed && hasHiddenArchivedItems ? (
-                      <ListToggleRow
-                        label={archivedExpanded ? "Show less" : "Show more"}
-                        onSelect={() => {
-                          if (archivedExpanded) {
-                            projectActions.onCollapseThreadList(project.id, "archived");
-                          } else {
-                            projectActions.onExpandThreadList(project.id, "archived");
-                          }
-                        }}
-                      />
-                    ) : null}
+                      {(
+                        [
+                          ["snoozed", snoozedThreads.length],
+                          ["settled", settledThreads.length],
+                          ["archived", archivedSidebarItems.length],
+                        ] as const
+                      ).map(([bucket, count]) =>
+                        openShelfBucket === bucket && count > threadPreviewLimit ? (
+                          <ListToggleRow
+                            key={`show-all:${bucket}`}
+                            label={isListExpanded(bucket) ? "Show less" : `Show all ${count}`}
+                            onSelect={() => toggleList(bucket)}
+                          />
+                        ) : null,
+                      )}
+                    </SidebarShelfRow>
                   </SidebarMenuSub>
                 </SortableContext>
               </DndContext>

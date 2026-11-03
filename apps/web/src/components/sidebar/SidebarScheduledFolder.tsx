@@ -1,21 +1,98 @@
 import type { ThreadId } from "@t3tools/contracts";
+import { CircleAlertIcon, LoaderIcon } from "lucide-react";
+
 import { readNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
-import { ChevronRightIcon, CircleAlertIcon, FolderClockIcon, LoaderIcon } from "lucide-react";
-
 import { isSnoozedThread } from "../../lib/threadOrdering";
-import { cn } from "../../lib/utils";
 import type { ThreadListItem } from "../../types";
-import { SIDEBAR_TREE_LEVEL_CLASS_NAME } from "../Sidebar.logic";
-import { SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubItem } from "../ui/sidebar";
 import { SidebarThreadRow } from "./SidebarThreadRow";
 import type { SidebarThreadRowIndicators } from "./SidebarWorkflowItem";
 import type { SidebarThreadActions } from "./useSidebarThreadActions";
 import { ListToggleRow, SectionToggleRow } from "./SidebarSectionRows";
-import { SidebarTreeParentContext, useSidebarTreeRowProps } from "./sidebarTreeRow";
 
-export function SidebarScheduledFolder(props: {
-  threads: readonly ThreadListItem[];
+const ATTENTION_LABELS = new Set(["Pending Approval", "Awaiting Input", "Plan Ready"]);
+
+/** Live scheduled runs that need the user, are running, or finished unseen. */
+export function summarizeScheduledThreads(
+  threads: readonly ThreadListItem[],
+  indicatorsForThread: (thread: ThreadListItem) => SidebarThreadRowIndicators,
+): { attention: number; running: number; unread: number } {
+  let attention = 0;
+  let running = 0;
+  let unread = 0;
+  for (const thread of threads) {
+    if (thread.archivedAt !== null || isSnoozedThread(thread)) continue;
+    const indicators = indicatorsForThread(thread);
+    if (indicators.isUnread) unread++;
+    const status = indicators.threadStatus;
+    if (!status) continue;
+    if (ATTENTION_LABELS.has(status.label)) attention++;
+    else if (status.pulse) running++;
+  }
+  return { attention, running, unread };
+}
+
+/** Status marks on the shelf's "scheduled" segment. */
+export function ScheduledShelfIndicator(props: {
+  summary: { attention: number; running: number; unread: number };
+}) {
+  const { attention, running, unread } = props.summary;
+  return (
+    <>
+      {attention > 0 ? (
+        <span
+          className="flex items-center gap-0.5 text-attention-foreground"
+          title={`${attention} need attention`}
+        >
+          <CircleAlertIcon aria-hidden="true" className="size-3" />
+          <span className="sr-only">Needs attention: </span>
+          {attention}
+        </span>
+      ) : null}
+      {running > 0 ? (
+        <span
+          className="flex items-center gap-0.5 text-info-foreground"
+          title={`${running} running`}
+        >
+          <LoaderIcon aria-hidden="true" className="size-3 animate-status-pulse" />
+          <span className="sr-only">Running: </span>
+          {running}
+        </span>
+      ) : null}
+      {unread > 0 ? (
+        <span className="size-1.5 shrink-0 rounded-full bg-primary" title={`${unread} unread`}>
+          <span className="sr-only">Unread: {unread}</span>
+        </span>
+      ) : null}
+    </>
+  );
+}
+
+/** "Mark all as read" for a project's scheduled runs, from the shelf segment's context menu. */
+export function useScheduledFolderMenu(
+  threads: readonly ThreadListItem[],
+  indicatorsForThread: (thread: ThreadListItem) => SidebarThreadRowIndicators,
+) {
+  const markThreadsVisited = useStore((state) => state.markThreadsVisited);
+  return async (position: { x: number; y: number }) => {
+    const api = readNativeApi();
+    if (!api) return;
+    const action = await api.contextMenu.show(
+      [
+        {
+          id: "mark-all-read",
+          label: "Mark all as read",
+          disabled: !threads.some((thread) => indicatorsForThread(thread).isUnread),
+        },
+      ],
+      position,
+    );
+    if (action === "mark-all-read") markThreadsVisited(threads.map((thread) => thread.id));
+  };
+}
+
+/** The open "scheduled" shelf bucket: current runs, then an Archived section for past runs. */
+export function SidebarScheduledShelfList(props: {
   visibleThreads: readonly ThreadListItem[];
   currentThreadCount: number;
   archivedThreads: readonly ThreadListItem[];
@@ -24,48 +101,14 @@ export function SidebarScheduledFolder(props: {
   archivedShowingAll: boolean;
   onToggleArchived: () => void;
   onToggleArchivedShowAll: () => void;
-  expanded: boolean;
   showingAll: boolean;
   previewLimit: number;
-  onToggle: () => void;
   onToggleShowAll: () => void;
   routeThreadId: ThreadId | null;
   orderedIds: readonly ThreadId[];
   indicatorsForThread: (thread: ThreadListItem) => SidebarThreadRowIndicators;
   actions: SidebarThreadActions;
 }) {
-  const markThreadsVisited = useStore((state) => state.markThreadsVisited);
-  const openFolderMenu = async (position: { x: number; y: number }) => {
-    const api = readNativeApi();
-    if (!api) return;
-    const action = await api.contextMenu.show(
-      [
-        {
-          id: "mark-all-read",
-          label: "Mark all as read",
-          disabled: !props.threads.some((thread) => props.indicatorsForThread(thread).isUnread),
-        },
-      ],
-      position,
-    );
-    if (action === "mark-all-read") markThreadsVisited(props.threads.map((thread) => thread.id));
-  };
-  let attention = 0;
-  let running = 0;
-  let unread = 0;
-  for (const thread of props.threads) {
-    if (thread.archivedAt !== null || isSnoozedThread(thread)) continue;
-    const indicators = props.indicatorsForThread(thread);
-    if (indicators.isUnread) unread++;
-    const status = indicators.threadStatus;
-    if (!status) continue;
-    if (["Pending Approval", "Awaiting Input", "Plan Ready"].includes(status.label)) attention++;
-    else if (status.pulse) running++;
-  }
-
-  const treeRowProps = useSidebarTreeRowProps();
-  // The folder is a group of its own in the tree; its threads are its children.
-  const folderRowId = "data-sidebar-row" in treeRowProps ? treeRowProps["data-sidebar-row"] : null;
   const renderThread = (thread: ThreadListItem) => {
     const section =
       thread.archivedAt !== null ? "archived" : isSnoozedThread(thread) ? "snoozed" : "active";
@@ -91,87 +134,30 @@ export function SidebarScheduledFolder(props: {
   };
 
   return (
-    <SidebarMenuSubItem className="w-full" data-testid="scheduled-thread-folder">
-      <SidebarMenuSubButton
-        render={<button type="button" {...treeRowProps} />}
-        data-thread-selection-safe
-        aria-label={`Scheduled (${props.threads.length})`}
-        aria-expanded={props.expanded}
-        className="h-8 w-full translate-x-0 gap-2 rounded-md px-2 text-left"
-        onClick={props.onToggle}
-        onContextMenu={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          void openFolderMenu({ x: event.clientX, y: event.clientY });
-        }}
-        onKeyDown={(event) => {
-          if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
-          event.preventDefault();
-          event.stopPropagation();
-          const rect = event.currentTarget.getBoundingClientRect();
-          void openFolderMenu({ x: rect.left, y: rect.bottom });
-        }}
-      >
-        <ChevronRightIcon
-          aria-hidden="true"
-          className={cn("size-3 shrink-0 transition-transform", props.expanded && "rotate-90")}
+    <>
+      {props.visibleThreads.map(renderThread)}
+      {props.currentThreadCount > props.previewLimit && (
+        <ListToggleRow
+          label={props.showingAll ? "Show less" : `Show all ${props.currentThreadCount}`}
+          onSelect={props.onToggleShowAll}
         />
-        <FolderClockIcon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
-        <span className="flex-1 truncate">Scheduled</span>
-        {attention > 0 && (
-          <span
-            className="flex items-center gap-1 text-attention-foreground"
-            title={`${attention} need attention`}
-          >
-            <CircleAlertIcon aria-hidden="true" className="size-3.5" />
-            <span className="sr-only">Needs attention: </span>
-            {attention}
-          </span>
-        )}
-        {running > 0 && (
-          <span
-            className="flex items-center gap-1 text-info-foreground"
-            title={`${running} running`}
-          >
-            <LoaderIcon aria-hidden="true" className="size-3.5 animate-status-pulse" />
-            <span className="sr-only">Running: </span>
-            {running}
-          </span>
-        )}
-        {unread > 0 && (
-          <span className="size-1.5 shrink-0 rounded-full bg-primary" title={`${unread} unread`}>
-            <span className="sr-only">Unread: {unread}</span>
-          </span>
-        )}
-        <span className="text-2xs tabular-nums text-muted-foreground">{props.threads.length}</span>
-      </SidebarMenuSubButton>
-      {props.expanded && (
-        <SidebarTreeParentContext.Provider value={folderRowId}>
-          <SidebarMenuSub className={SIDEBAR_TREE_LEVEL_CLASS_NAME}>
-            {props.visibleThreads.map(renderThread)}
-            {props.currentThreadCount > props.previewLimit && (
-              <ListToggleRow
-                label={props.showingAll ? "Show less" : "Show more"}
-                onSelect={props.onToggleShowAll}
-              />
-            )}
-            {props.archivedThreads.length > 0 && (
-              <SectionToggleRow
-                label="Archived"
-                expanded={props.archivedExpanded}
-                onToggle={props.onToggleArchived}
-              />
-            )}
-            {props.archivedExpanded && props.visibleArchivedThreads.map(renderThread)}
-            {props.archivedExpanded && props.archivedThreads.length > props.previewLimit && (
-              <ListToggleRow
-                label={props.archivedShowingAll ? "Show less" : "Show more"}
-                onSelect={props.onToggleArchivedShowAll}
-              />
-            )}
-          </SidebarMenuSub>
-        </SidebarTreeParentContext.Provider>
       )}
-    </SidebarMenuSubItem>
+      {props.archivedThreads.length > 0 && (
+        <SectionToggleRow
+          label="Archived"
+          expanded={props.archivedExpanded}
+          onToggle={props.onToggleArchived}
+        />
+      )}
+      {props.archivedExpanded && props.visibleArchivedThreads.map(renderThread)}
+      {props.archivedExpanded && props.archivedThreads.length > props.previewLimit && (
+        <ListToggleRow
+          label={
+            props.archivedShowingAll ? "Show less" : `Show all ${props.archivedThreads.length}`
+          }
+          onSelect={props.onToggleArchivedShowAll}
+        />
+      )}
+    </>
   );
 }

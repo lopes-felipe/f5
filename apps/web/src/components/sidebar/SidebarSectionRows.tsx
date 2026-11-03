@@ -22,7 +22,34 @@ export function ListToggleRow(props: { label: string; onSelect: () => void }) {
   );
 }
 
-/** Collapsible "Snoozed (n)" / "Archived" section label. */
+/** "N older than 7 days": folds idle items under a project; expanding lists them below. */
+export function OlderToggleRow(props: { label: string; expanded: boolean; onToggle: () => void }) {
+  const treeRowProps = useSidebarTreeRowProps();
+  return (
+    <SidebarMenuSubItem className="w-full">
+      <SidebarMenuSubButton
+        render={<button type="button" {...treeRowProps} />}
+        data-thread-selection-safe
+        data-testid="sidebar-older-toggle"
+        aria-expanded={props.expanded}
+        size="sm"
+        className="h-6 w-full translate-x-0 justify-start gap-1 rounded-md pl-8 text-left text-2xs text-muted-foreground hover:bg-transparent hover:text-foreground"
+        onClick={props.onToggle}
+      >
+        <span>{props.label}</span>
+        <ChevronRightIcon
+          aria-hidden="true"
+          className={cn(
+            "size-3.5 shrink-0 text-faint-foreground transition-transform duration-(--duration-fast)",
+            props.expanded && "rotate-90",
+          )}
+        />
+      </SidebarMenuSubButton>
+    </SidebarMenuSubItem>
+  );
+}
+
+/** Collapsible "Archived" section label (a scheduled bucket's past runs). */
 export function SectionToggleRow(props: {
   label: ReactNode;
   expanded: boolean;

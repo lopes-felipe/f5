@@ -810,6 +810,35 @@ describe("settings route", () => {
     }
   });
 
+  it("deep-links to the idle-thread folding setting and persists a new age", async () => {
+    const { screen, router } = await renderSettingsRoute(
+      "/settings?category=general&item=general.sidebar-older-threads",
+    );
+
+    try {
+      const trigger = await vi.waitFor(() => {
+        const target = document.querySelector<HTMLElement>(
+          '[aria-label="Fold idle sidebar threads"]',
+        );
+        expect(router.state.location.search.category).toBe("general");
+        expect(document.activeElement).toBe(target);
+        expect(target?.textContent).toContain("7 days");
+        return target!;
+      });
+      trigger.click();
+      await page.getByRole("option", { name: "Off", exact: true }).click();
+      await vi.waitFor(() =>
+        expect(
+          parsePersistedAppSettings(localStorage.getItem(APP_SETTINGS_STORAGE_KEY))
+            .sidebarOlderThreadDays,
+        ).toBe(0),
+      );
+      expect(trigger.textContent).toContain("Off");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("searches unmounted categories and restores item deep links with back and forward", async () => {
     const { screen, router, history } = await renderSettingsRoute("/settings?category=general");
 

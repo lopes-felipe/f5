@@ -79,6 +79,7 @@ export function useSidebarThreadActions(input: {
   const removeFromSelection = useThreadSelectionStore((s) => s.removeFromSelection);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const [renamingThreadId, setRenamingThreadId] = useState<ThreadId | null>(null);
+  const [contextMenuOpen, setContextMenuOpen] = useState(false);
 
   const attachDropToThread = (event: React.DragEvent, thread: ThreadListItem) => {
     if (!event.dataTransfer.types.includes("Files")) return;
@@ -231,6 +232,38 @@ export function useSidebarThreadActions(input: {
     [executeThreadAction, threadActionMenuItems, threads],
   );
 
+  /** A row's Snooze quick action: just the snooze options of the thread's menu. */
+  const openSnoozeMenu = useCallback(
+    async (threadId: ThreadId, position: { x: number; y: number }) => {
+      const api = readNativeApi();
+      if (!api) return;
+      const thread = threads.find((entry) => entry.id === threadId);
+      if (!thread) return;
+      // Built from the full menu so the controller remembers the wake times it showed.
+      const items = (await threadActionMenuItems(thread)).filter((item) =>
+        item.id.startsWith("snooze:"),
+      );
+      if (items.length === 0) return;
+      setContextMenuOpen(true);
+      try {
+        const clicked = await api.contextMenu.show(nativeThreadActionMenuItems(items), position);
+        if (clicked) await executeThreadAction(threadId, clicked);
+      } finally {
+        setContextMenuOpen(false);
+      }
+    },
+    [executeThreadAction, threadActionMenuItems, threads],
+  );
+
+  const togglePinThread = useCallback(
+    (threadId: ThreadId) => {
+      const thread = threads.find((entry) => entry.id === threadId);
+      if (!thread) return;
+      void executeThreadAction(threadId, thread.pinnedAt != null ? "unpin" : "pin");
+    },
+    [executeThreadAction, threads],
+  );
+
   const handleMultiSelectContextMenu = useCallback(
     async (position: { x: number; y: number }) => {
       const api = readNativeApi();
@@ -334,8 +367,13 @@ export function useSidebarThreadActions(input: {
     ) => {
       event.preventDefault();
       const position = { x: event.clientX, y: event.clientY };
+      // The row's hover card stays closed while its menu is open.
+      const trackMenu = (menu: Promise<void>) => {
+        setContextMenuOpen(true);
+        void menu.finally(() => setContextMenuOpen(false));
+      };
       if (options?.allowMultiSelect === false) {
-        void handleThreadContextMenu(threadId, position);
+        trackMenu(handleThreadContextMenu(threadId, position));
         return;
       }
       const selectionState = useThreadSelectionStore.getState();
@@ -346,12 +384,12 @@ export function useSidebarThreadActions(input: {
         return;
       }
       if (selectionState.selectedThreadIds.has(threadId)) {
-        void handleMultiSelectContextMenu(position);
+        trackMenu(handleMultiSelectContextMenu(position));
       } else {
         if (selectionState.hasSelection()) {
           clearSelection();
         }
-        void handleThreadContextMenu(threadId, position);
+        trackMenu(handleThreadContextMenu(threadId, position));
       }
     },
     [clearSelection, handleMultiSelectContextMenu, handleThreadContextMenu],
@@ -471,6 +509,9 @@ export function useSidebarThreadActions(input: {
 
   return {
     renamingThreadId,
+    contextMenuOpen,
+    togglePinThread,
+    openSnoozeMenu,
     attachDropToThread,
     openPrLink,
     handleNewThread,
