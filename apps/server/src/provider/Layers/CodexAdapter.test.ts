@@ -2753,6 +2753,101 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect.each([
+    {
+      fileSystem: {
+        entries: [
+          { access: "read", path: { type: "path", path: "/w/src" } },
+          { access: "write", path: { type: "glob_pattern", pattern: "/w/out/**" } },
+        ],
+      },
+      expected: "file_change_approval",
+    },
+    {
+      fileSystem: {
+        entries: [{ access: "read", path: { type: "glob_pattern", pattern: "/w/docs/**" } }],
+      },
+      expected: "file_read_approval",
+    },
+    {
+      fileSystem: {
+        entries: [{ access: "read", path: { type: "special", value: "workspace_roots" } }],
+      },
+      expected: "file_read_approval",
+    },
+    { fileSystem: { read: ["/w/src"], write: ["/w/out"] }, expected: "file_change_approval" },
+    { fileSystem: { read: ["/w/src"] }, expected: "file_read_approval" },
+    { fileSystem: { entries: [] }, expected: "permissions_approval" },
+  ])("classifies filesystem permission approvals: %j", ({ fileSystem, expected }) =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const next = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      const permissions = { fileSystem };
+      lifecycleManager.emit("event", {
+        id: asEventId("permission-entries"),
+        kind: "request",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "item/permissions/requestApproval",
+        requestId: ApprovalRequestId.makeUnsafe("permission-entries"),
+        payload: { permissions },
+      });
+      const result = yield* Fiber.join(next);
+      assert.equal(result._tag, "Some");
+      if (result._tag !== "Some" || result.value.type !== "request.opened") return;
+      assert.equal(result.value.payload.requestType, expected);
+      assert.deepEqual(result.value.payload.requestedPermissions, permissions);
+      assert.equal(result.value.payload.approvalOptions, undefined);
+
+      const resolved = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      lifecycleManager.emit("event", {
+        id: asEventId("permission-entries-resolved"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "item/requestApproval/decision",
+        requestId: ApprovalRequestId.makeUnsafe("permission-entries"),
+        requestKind: "permission",
+        payload: {
+          requestMethod: "item/permissions/requestApproval",
+          requestedPermissions: permissions,
+          decision: "accept",
+        },
+      });
+      const resolution = yield* Fiber.join(resolved);
+      assert.equal(resolution._tag, "Some");
+      if (resolution._tag !== "Some" || resolution.value.type !== "request.resolved") return;
+      assert.equal(resolution.value.payload.requestType, expected);
+
+      const external = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      lifecycleManager.emit("event", {
+        id: asEventId("permission-entries-external"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "serverRequest/resolved",
+        requestId: ApprovalRequestId.makeUnsafe("permission-entries"),
+        requestKind: "permission",
+        payload: {
+          request: { method: "item/permissions/requestApproval", kind: "permission" },
+          requestedPermissions: permissions,
+          resolutionSource: "server",
+        },
+      });
+      const externalResolution = yield* Fiber.join(external);
+      assert.equal(externalResolution._tag, "Some");
+      if (
+        externalResolution._tag !== "Some" ||
+        externalResolution.value.type !== "request.resolved"
+      )
+        return;
+      assert.equal(externalResolution.value.payload.requestType, expected);
+    }),
+  );
+
   it.effect("maps Codex permission approval requests to canonical request events", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;

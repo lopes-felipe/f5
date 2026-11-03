@@ -1630,7 +1630,7 @@ export function runtimeEventToActivities(
             ...(event.payload.detail
               ? { detail: truncateApprovalDetail(event.payload.detail) }
               : {}),
-            ...(requestKind === "permission" && event.payload.requestedPermissions
+            ...(event.payload.requestedPermissions
               ? { requestedPermissions: event.payload.requestedPermissions }
               : {}),
           },

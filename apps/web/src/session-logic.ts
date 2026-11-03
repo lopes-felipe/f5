@@ -436,7 +436,7 @@ export function derivePendingApprovals(
         ...(presentation._tag === "Some" ? { presentation: presentation.value } : {}),
         ...(requestKind === "unknown" && requestType ? { requestType } : {}),
         ...(detail ? { detail } : {}),
-        ...(requestKind === "permission" && requestedPermissions ? { requestedPermissions } : {}),
+        ...(requestedPermissions ? { requestedPermissions } : {}),
       });
       continue;
     }

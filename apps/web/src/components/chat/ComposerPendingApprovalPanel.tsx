@@ -60,7 +60,9 @@ export const ComposerPendingApprovalPanel = memo(function ComposerPendingApprova
   pendingCount,
 }: ComposerPendingApprovalPanelProps) {
   const summary = approvalSummary(approval.requestKind);
-  const detailLabel = approvalDetailLabel(approval.requestKind);
+  const detailLabel = approval.requestedPermissions
+    ? "Permission detail"
+    : approvalDetailLabel(approval.requestKind);
 
   return (
     <div className="min-w-0 px-4 py-3.5 sm:px-5 sm:py-4">
@@ -110,7 +112,7 @@ export const ComposerPendingApprovalPanel = memo(function ComposerPendingApprova
           </pre>
         </div>
       ) : null}
-      {approval.requestKind === "permission" ? (
+      {approval.requestKind === "permission" || approval.requestedPermissions ? (
         <pre className="mt-3 min-w-0 max-w-full max-h-40 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] rounded-md border border-border/70 bg-muted/40 p-3 font-mono text-xs leading-relaxed text-foreground">
           {formatRequestedPermissions(approval.requestedPermissions)}
         </pre>

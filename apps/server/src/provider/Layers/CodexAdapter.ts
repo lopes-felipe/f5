@@ -613,7 +613,21 @@ function itemLifecycleStatus(
   }
 }
 
-function toRequestTypeFromMethod(method: string): CanonicalRequestType {
+function permissionRequestType(permissions: Record<string, unknown>): CanonicalRequestType {
+  const fileSystem = asObject(permissions.fileSystem);
+  const entries = Array.isArray(fileSystem?.entries) ? fileSystem.entries : [];
+  const requests = (access: "read" | "write") =>
+    (Array.isArray(fileSystem?.[access]) && fileSystem[access].length > 0) ||
+    entries.some((entry) => asObject(entry)?.access === access);
+  if (requests("write")) return "file_change_approval";
+  if (requests("read")) return "file_read_approval";
+  return "permissions_approval";
+}
+
+function toRequestTypeFromMethod(
+  method: string,
+  requestedPermissions?: unknown,
+): CanonicalRequestType {
   switch (method) {
     case "item/commandExecution/requestApproval":
       return "command_execution_approval";
@@ -628,7 +642,7 @@ function toRequestTypeFromMethod(method: string): CanonicalRequestType {
     case "mcpServer/elicitation/request":
       return "mcp_elicitation_approval";
     case "item/permissions/requestApproval":
-      return "permissions_approval";
+      return permissionRequestType(asObject(requestedPermissions) ?? {});
     case "item/tool/requestUserInput":
       return "tool_user_input";
     case "item/tool/call":
@@ -663,7 +677,7 @@ function toRequestTypeFromResolvedPayload(
   const request = asObject(payload?.request);
   const method = asString(request?.method) ?? asString(payload?.method);
   if (method) {
-    return toRequestTypeFromMethod(method);
+    return toRequestTypeFromMethod(method, payload?.requestedPermissions);
   }
   const requestKind = asString(request?.kind) ?? asString(payload?.requestKind);
   if (requestKind) {
@@ -1382,7 +1396,7 @@ function mapToRuntimeEvents(
         ...runtimeEventBase(event, canonicalThreadId),
         type: "request.opened",
         payload: {
-          requestType: toRequestTypeFromMethod(event.method),
+          requestType: toRequestTypeFromMethod(event.method, requestedPermissions),
           ...(event.method === "mcpServer/elicitation/request"
             ? describeMcpElicitation(payload)
             : {}),
@@ -1399,7 +1413,7 @@ function mapToRuntimeEvents(
     const decision = Schema.decodeUnknownSync(ProviderApprovalDecision)(payload?.decision);
     const requestMethod = asString(payload?.requestMethod);
     const requestType = requestMethod
-      ? toRequestTypeFromMethod(requestMethod)
+      ? toRequestTypeFromMethod(requestMethod, payload?.requestedPermissions)
       : event.requestKind !== undefined
         ? toRequestTypeFromKind(event.requestKind)
         : toRequestTypeFromMethod(event.method);
