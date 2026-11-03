@@ -3,15 +3,10 @@
  *
  *   bun run release:promote --tag v1.2.3
  *
- * A draft that embeds a certifying integration record is published only when main holds
- * an all-passed acceptance report for that tag's exact artifact (see
- * `accept-integration.ts`). On any problem the draft stays a draft.
+ * A draft is published only when every certifying record's evidence commit is in the
+ * tag's history. On any problem the draft stays a draft.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { promotionProblems, remoteTagCommit, type PromotionIo } from "./lib/release-promotion.ts";
 
 const index = process.argv.indexOf("--tag");
@@ -41,22 +36,10 @@ const io: PromotionIo = {
   isAncestor: (commit, revision) =>
     spawnSync("git", ["merge-base", "--is-ancestor", commit, revision]).status === 0,
   release: (name) => {
-    const view = JSON.parse(run("gh", ["release", "view", name, "--json", "isDraft,assets"])) as {
+    const view = JSON.parse(run("gh", ["release", "view", name, "--json", "isDraft"])) as {
       isDraft: boolean;
-      assets: ReadonlyArray<{ name: string }>;
     };
-    return { isDraft: view.isDraft, assets: view.assets.map((asset) => asset.name) };
-  },
-  assetSha256: (name, asset) => {
-    const directory = mkdtempSync(join(tmpdir(), "f5-promote-"));
-    try {
-      run("gh", ["release", "download", name, "--pattern", asset, "--dir", directory]);
-      return createHash("sha256")
-        .update(readFileSync(join(directory, asset)))
-        .digest("hex");
-    } finally {
-      rmSync(directory, { recursive: true, force: true });
-    }
+    return { isDraft: view.isDraft };
   },
 };
 

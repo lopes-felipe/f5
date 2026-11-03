@@ -149,18 +149,7 @@ export async function assembleCandidate(
     candidate,
   );
 }
-export async function verifyCandidateCertification(
-  candidate: ReleaseCandidate,
-  directory: string,
-): Promise<void> {
-  const files = readdirSync(directory);
-  const hashes = new Map(
-    await Promise.all(
-      files
-        .filter((n) => n.endsWith(".dmg"))
-        .map(async (n) => [n, await hashFile(join(directory, n))] as const),
-    ),
-  );
+export async function verifyCandidateCertification(candidate: ReleaseCandidate): Promise<void> {
   const problems = promotionProblems("v" + candidate.version, {
     show,
     commitOf: () => candidate.sourceSha,
@@ -172,8 +161,7 @@ export async function verifyCandidateCertification(
         return false;
       }
     },
-    release: () => ({ isDraft: true, assets: files }),
-    assetSha256: (_tag, name) => hashes.get(name) ?? "",
+    release: () => ({ isDraft: true }),
   });
   if (problems.length) throw new Error("Certification blocks candidate: " + problems.join("; "));
 }
@@ -199,7 +187,7 @@ export async function publishCandidate(
   );
   // Certification can require source changes. Do not reserve an immutable tag
   // (or mutate a draft) until this exact candidate has passed the complete policy.
-  if (!listed || listed.draft) await verifyCandidateCertification(candidate, directory);
+  if (!listed || listed.draft) await verifyCandidateCertification(candidate);
   let release = listed;
   if (release) {
     validateRemoteRelease(release, tag, candidate.kind === "beta");
@@ -308,8 +296,6 @@ export async function publishCandidate(
   );
   release = api<RemoteRelease>("releases/" + release.id);
   if (missingUploads(files, release.assets).length) throw new Error("Release upload incomplete");
-  // The gate refreshes origin/main. Check certification against that same final
-  // evidence snapshot, including an acceptance-only merge during the upload.
   beforePublish();
   const problems = promotionProblems(tag, {
     show,
@@ -322,13 +308,7 @@ export async function publishCandidate(
         return false;
       }
     },
-    release: () => ({ isDraft: release!.draft, assets: release!.assets.map((a) => a.name) }),
-    assetSha256: (_tag, name) => {
-      // All uploaded API digests were checked against these exact local bytes above.
-      const file = files.find((f) => f.name === name);
-      if (!file) throw new Error("Missing certification artifact");
-      return file.sha256;
-    },
+    release: () => ({ isDraft: release!.draft }),
   });
   if (problems.length) throw new Error("Certification blocks publication: " + problems.join("; "));
   // Recheck monotonicity immediately before crossing the public boundary.

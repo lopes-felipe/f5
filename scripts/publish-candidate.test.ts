@@ -229,7 +229,7 @@ vi.mock("./lib/release-promotion.ts", async (importOriginal) => {
     ...original,
     promotionProblems: () =>
       state.certification || (state.certifyAfterUpload && state.assets.length)
-        ? ["Missing exact artifact acceptance"]
+        ? ["record: evidence commit is not in the tag's history"]
         : [],
   };
 });
@@ -615,8 +615,8 @@ describe("publisher integration with immutable platform fixtures", () => {
     const { candidate, directory } = await candidateFixture();
     await assembleCandidate(candidate, directory);
     state.certification = true;
-    await expect(verifyCandidateCertification(candidate, directory)).rejects.toThrow("acceptance");
-    await expect(publishCandidate(candidate, directory)).rejects.toThrow("acceptance");
+    await expect(verifyCandidateCertification(candidate)).rejects.toThrow("evidence commit");
+    await expect(publishCandidate(candidate, directory)).rejects.toThrow("evidence commit");
     expect(state.tag).toBe("");
     expect(state.exists).toBe(false);
     expect(state.writes).toEqual([]);
@@ -653,7 +653,7 @@ describe("publisher integration with immutable platform fixtures", () => {
     const { candidate, directory } = await candidateFixture();
     await assembleCandidate(candidate, directory);
     state.certifyAfterUpload = true;
-    await expect(publishCandidate(candidate, directory)).rejects.toThrow("acceptance");
+    await expect(publishCandidate(candidate, directory)).rejects.toThrow("evidence commit");
     expect(state.exists).toBe(true);
     expect(state.draft).toBe(true);
     expect(state.writes.some((write) => write.includes("draft=false"))).toBe(false);
@@ -666,7 +666,7 @@ describe("publisher integration with immutable platform fixtures", () => {
       publishCandidate(candidate, directory, () => {
         if (++gates === 2) state.certification = true;
       }),
-    ).rejects.toThrow("acceptance");
+    ).rejects.toThrow("evidence commit");
     expect(gates).toBe(2);
     expect(state.draft).toBe(true);
     expect(state.writes.some((write) => write.includes("draft=false"))).toBe(false);

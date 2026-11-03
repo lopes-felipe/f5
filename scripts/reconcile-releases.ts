@@ -356,7 +356,7 @@ async function reconcile(options: ReconcileOptions): Promise<PublicationLease | 
       requalification,
     }),
   );
-  if (mode === "shadow") await verifyCandidateCertification(candidate, directory);
+  if (mode === "shadow") await verifyCandidateCertification(candidate);
   // No candidate executables run here; only trusted tooling parses and hashes the archives.
   if (mode !== "shadow") {
     // Refresh durable intent immediately before publication. A newly merged stable request is a barrier.
