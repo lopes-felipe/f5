@@ -1,7 +1,9 @@
 import claudeChromeRecords from "./certification/claude-chrome.generated.json" with { type: "json" };
 import codexChromeRecords from "./certification/codex-chrome.generated.json" with { type: "json" };
 import codexComputerRecords from "./certification/codex-computer.generated.json" with { type: "json" };
-import { CLAUDE_SDK_BASELINE_VERSION } from "./claudeSdkManifest";
+// Release scripts load this file under plain Node, which cannot resolve an
+// extensionless relative import; the package export resolves everywhere.
+import { CLAUDE_SDK_BASELINE_VERSION } from "@t3tools/shared/claudeSdkManifest";
 
 /**
  * The single certification source for provider-native browser and computer integrations.
