@@ -1,4 +1,4 @@
-import { EventId, RuntimeItemId, ThreadId, TurnId, type ProviderEvent } from "@t3tools/contracts";
+import { EventId, ProviderItemId, ThreadId, TurnId, type ProviderEvent } from "@t3tools/contracts";
 import { expect, it } from "vitest";
 import { CodexGeneratedImages } from "./codexGeneratedImages.ts";
 
@@ -8,7 +8,7 @@ const event = (method: string, item?: Record<string, unknown>): ProviderEvent =>
   provider: "codex",
   threadId: ThreadId.make("thread"),
   turnId: TurnId.make("turn"),
-  ...(item ? { itemId: RuntimeItemId.make(String(item.id)) } : {}),
+  ...(item ? { itemId: ProviderItemId.make(String(item.id)) } : {}),
   createdAt: "2026-11-03T00:00:00Z",
   method,
   payload: item ? { item } : { turn: { status: "completed" } },

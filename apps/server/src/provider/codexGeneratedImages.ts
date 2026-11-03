@@ -1,4 +1,4 @@
-import { EventId, RuntimeItemId, type ProviderEvent } from "@t3tools/contracts";
+import { EventId, ProviderItemId, type ProviderEvent } from "@t3tools/contracts";
 import { appendGeneratedImageEmbeds } from "@t3tools/shared/generatedImageMarkdown";
 
 interface ImageTurn {
@@ -77,7 +77,7 @@ export class CodexGeneratedImages {
       output.push({
         ...base,
         id: EventId.makeUnsafe("generated-images:" + base.id),
-        itemId: answer?.itemId ?? RuntimeItemId.make("generated-images:" + event.turnId),
+        itemId: answer?.itemId ?? ProviderItemId.make("generated-images:" + event.turnId),
         method: "item/completed",
         payload: {
           item: {
