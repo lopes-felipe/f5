@@ -2,6 +2,50 @@ import { expect, it, vi } from "vitest";
 import { userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 import { IntervalSecondsField } from "./IntervalSecondsField";
+import { StrictMode, useState } from "react";
+import { act } from "react";
+
+it("preserves newer typing when an earlier save is acknowledged", async () => {
+  let finish!: () => void;
+  const commit = vi.fn();
+  function Harness() {
+    const [value, setValue] = useState(300);
+    return (
+      <IntervalSecondsField
+        value={value}
+        min={5}
+        max={3600}
+        step={5}
+        disabled={false}
+        label="Interval"
+        onCommit={(seconds) => {
+          commit(seconds);
+          return new Promise<void>((resolve) => {
+            finish = () => {
+              setValue(seconds);
+              resolve();
+            };
+          });
+        }}
+      />
+    );
+  }
+  const screen = await render(
+    <StrictMode>
+      <Harness />
+    </StrictMode>,
+  );
+  const input = screen.getByRole("spinbutton", { name: "Interval" });
+  await input.fill("120");
+  await userEvent.keyboard("{Enter}");
+  expect(commit).toHaveBeenCalledExactlyOnceWith(120);
+  await input.fill("150");
+  await act(async () => finish());
+  await expect.element(input).toHaveValue(150);
+  await userEvent.tab();
+  expect(commit.mock.calls.map(([seconds]) => seconds)).toEqual([120, 150]);
+  await act(async () => finish());
+});
 
 it("keeps a newer draft when an earlier save fails", async () => {
   let reject!: (error: Error) => void;

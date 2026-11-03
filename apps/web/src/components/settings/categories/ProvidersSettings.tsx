@@ -11,6 +11,7 @@ import { Equal } from "effect";
 import { PlusIcon, RotateCwIcon } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { useStableCallback } from "../../../hooks/useStableCallback";
 
 import { useSettingsRouteContext } from "../SettingsRouteContext";
 import { useSettings as useUnifiedSettings, useUpdateSettings } from "../../../hooks/useSettings";
@@ -68,6 +69,7 @@ interface ProviderInstanceRow {
 
 export function ProvidersSettings() {
   const unifiedSettings = useUnifiedSettings();
+  const readLatestSettings = useStableCallback(() => unifiedSettings);
   const { updateSettings: updateUnifiedSettings } = useUpdateSettings();
   const queryClient = useQueryClient();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
@@ -187,7 +189,7 @@ export function ProvidersSettings() {
     try {
       return await ensureNativeApi().dialogs.confirm(
         question +
-          "\nIts saved settings, including any custom binary path, will be removed." +
+          "\nThis instance's saved settings, including its custom binary path, will be removed. App-wide legacy overrides will remain." +
           (turnsOff ? " It will also be turned off." : ""),
       );
     } catch {
@@ -200,17 +202,18 @@ export function ProvidersSettings() {
     const name =
       instance?.displayName?.trim() || (instance && getDriverOption(instance.driver)?.label) || id;
     if (!(await confirmRemoval("Remove the " + name + " provider instance?"))) return;
+    const latestSettings = readLatestSettings();
     updateUnifiedSettings({
-      providerInstances: withoutProviderInstanceKey(unifiedSettings.providerInstances, id),
+      providerInstances: withoutProviderInstanceKey(latestSettings.providerInstances, id),
       providerModelPreferences: withoutProviderInstanceKey(
-        unifiedSettings.providerModelPreferences,
+        latestSettings.providerModelPreferences,
         id,
       ),
       dismissedProviderUpdateAdvisories: withoutProviderInstanceKey(
-        unifiedSettings.dismissedProviderUpdateAdvisories,
+        latestSettings.dismissedProviderUpdateAdvisories,
         id,
       ),
-      favorites: withoutProviderInstanceFavorites(unifiedSettings.favorites ?? [], id),
+      favorites: withoutProviderInstanceFavorites(latestSettings.favorites ?? [], id),
     });
   };
 
@@ -274,21 +277,22 @@ export function ProvidersSettings() {
       ))
     )
       return;
+    const latestSettings = readLatestSettings();
     updateUnifiedSettings({
       providers: {
-        ...unifiedSettings.providers,
+        ...latestSettings.providers,
         [driverKind]: defaultLegacyProvider,
       } as typeof unifiedSettings.providers,
       providerInstances: withoutProviderInstanceKey(
-        unifiedSettings.providerInstances,
+        latestSettings.providerInstances,
         defaultInstanceId,
       ),
       providerModelPreferences: withoutProviderInstanceKey(
-        unifiedSettings.providerModelPreferences,
+        latestSettings.providerModelPreferences,
         defaultInstanceId,
       ),
       favorites: withoutProviderInstanceFavorites(
-        unifiedSettings.favorites ?? [],
+        latestSettings.favorites ?? [],
         defaultInstanceId,
       ),
     });

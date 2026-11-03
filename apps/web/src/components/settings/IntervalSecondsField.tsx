@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { Input } from "../ui/input";
 import { toastManager } from "../ui/toast";
 
@@ -20,28 +20,51 @@ export function IntervalSecondsField({
   label: string;
   onCommit: (seconds: number) => void | Promise<void>;
 }) {
-  const [field, setField] = useState({ saved: value, draft: String(value) });
-  const revision = useRef(0);
+  const [field, setField] = useState({
+    saved: value,
+    draft: String(value),
+    revision: 0,
+    submitted: null as { value: number; revision: number } | null,
+  });
   if (field.saved !== value) {
-    revision.current++;
-    setField({ saved: value, draft: String(value) });
+    const acknowledged = field.submitted?.value === value;
+    const replaceDraft = acknowledged
+      ? field.revision === field.submitted?.revision
+      : field.draft === String(field.saved);
+    setField({
+      ...field,
+      saved: value,
+      draft: replaceDraft ? String(value) : field.draft,
+      submitted: acknowledged ? null : field.submitted,
+    });
   }
   const commit = async () => {
     const parsed = Number(field.draft);
     if (!field.draft.trim() || !Number.isFinite(parsed)) {
-      setField({ saved: value, draft: String(value) });
+      setField((current) => ({ ...current, draft: String(current.saved) }));
       return;
     }
     const seconds = Math.max(min, Math.min(max, Math.round(parsed)));
     setField((current) => ({ ...current, draft: String(seconds) }));
     if (seconds === value) return;
-    const attempt = ++revision.current;
+    const attempt = field.revision + 1;
+    setField((current) => ({
+      ...current,
+      revision: attempt,
+      submitted: { value: seconds, revision: attempt },
+    }));
     try {
       await onCommit(seconds);
     } catch (error) {
-      if (revision.current === attempt) {
-        setField((current) => ({ ...current, draft: String(current.saved) }));
-      }
+      setField((current) =>
+        current.submitted?.revision !== attempt
+          ? current
+          : {
+              ...current,
+              submitted: null,
+              draft: current.revision === attempt ? String(current.saved) : current.draft,
+            },
+      );
       toastManager.add({
         type: "error",
         title: "Interval not saved",
@@ -61,8 +84,7 @@ export function IntervalSecondsField({
       aria-label={label}
       onChange={(event) => {
         const draft = event.currentTarget.value;
-        revision.current++;
-        setField((current) => ({ ...current, draft }));
+        setField((current) => ({ ...current, draft, revision: current.revision + 1 }));
       }}
       onBlur={() => void commit()}
       onKeyDown={(event) => {
