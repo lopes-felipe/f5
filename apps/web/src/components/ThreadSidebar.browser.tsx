@@ -3495,6 +3495,58 @@ describe("Thread sidebar", () => {
     }
   });
 
+  it("shows a collapsed workflow's phase strip and opens its current step", async () => {
+    const workflowTitle = "Phase strip workflow";
+    const branchAThreadId = "phase-strip-branch-a" as ThreadId;
+    const branchBThreadId = "phase-strip-branch-b" as ThreadId;
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = {
+          ...createSnapshot([
+            createSnapshotThread({ id: THREAD_ID }),
+            createSnapshotThread({ id: branchAThreadId, title: `${workflowTitle} Branch A` }),
+            createSnapshotThread({ id: branchBThreadId, title: `${workflowTitle} Branch B` }),
+          ]),
+          planningWorkflows: [
+            createPlanningWorkflow({ title: workflowTitle, branchAThreadId, branchBThreadId }),
+          ],
+        };
+      },
+    });
+
+    try {
+      await waitForSidebarThreadRow(workflowTitle);
+      const strip = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="workflow-phase-strip"]'),
+        "The workflow row should show its phase strip.",
+      );
+      const dots = [...strip.querySelectorAll<HTMLElement>("[data-phase-state]")];
+      expect(dots.length).toBeGreaterThan(1);
+      expect(dots[0]!.dataset.phaseState).toBe("active");
+      expect(dots.slice(1).every((dot) => dot.dataset.phaseState === "pending")).toBe(true);
+      expect(strip.textContent).toContain(`0 of ${dots.length} phases complete, Authoring running`);
+
+      const currentStep = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-testid="workflow-current-step"]'),
+        "A collapsed workflow should name its current step.",
+      );
+      expect(currentStep.textContent).toContain("Branch A · running");
+      currentStep.click();
+      await vi.waitFor(() =>
+        expect(mounted.router.state.location.pathname).toBe(`/${branchAThreadId}`),
+      );
+      // Opening a child expands the workflow, which hides the current-step line.
+      await waitForSidebarThreadRow("Branch A");
+      await vi.waitFor(() =>
+        expect(document.querySelector('[data-testid="workflow-current-step"]')).toBeNull(),
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps workflow subthreads collapsed by default until the workflow is expanded", async () => {
     const workflowTitle = "Collapsed workflow";
     const branchAThreadId = "collapsed-workflow-branch-a" as ThreadId;

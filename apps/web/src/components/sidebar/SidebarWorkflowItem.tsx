@@ -6,6 +6,7 @@ import {
   CheckIcon,
   ChevronRightIcon,
   CircleAlertIcon,
+  CircleDashedIcon,
   LoaderIcon,
 } from "lucide-react";
 
@@ -27,7 +28,11 @@ import {
 } from "../Sidebar.logic";
 import { SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubItem } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import type { WorkflowOverallState } from "../workflow/workflowTimelineTypes";
+import type {
+  WorkflowCurrentStep,
+  WorkflowOverallState,
+  WorkflowPhaseSummary,
+} from "../workflow/workflowTimelineTypes";
 import { workflowThreadDisplayTitle } from "../workflow/workflowUtils";
 import {
   type PrStatusIndicator,
@@ -50,31 +55,138 @@ export interface SidebarThreadRowIndicators {
   isUnread: boolean;
 }
 
-const WORKFLOW_STATE_ICON: Record<
-  Exclude<WorkflowOverallState, "pending">,
-  { icon: typeof CheckIcon; label: string; className: string }
-> = {
-  active: {
-    icon: LoaderIcon,
-    label: "Running",
-    className: "text-info-foreground animate-status-pulse",
-  },
-  error: {
-    icon: CircleAlertIcon,
-    label: "Needs attention",
-    className: "text-destructive-foreground",
-  },
-  completed: { icon: CheckIcon, label: "Completed", className: "text-success-foreground" },
+const PHASE_DOT_CLASS: Record<WorkflowPhaseSummary["state"], string> = {
+  completed: "bg-success",
+  active: "bg-info ring-2 ring-info/30 animate-status-pulse",
+  error: "bg-destructive",
+  pending: "bg-border",
 };
 
-function WorkflowStateIcon({ state }: { state: WorkflowOverallState }) {
-  if (state === "pending") return null;
-  const { icon: Icon, label, className } = WORKFLOW_STATE_ICON[state];
+const PHASE_STATE_LABEL: Record<WorkflowPhaseSummary["state"], string> = {
+  completed: "done",
+  active: "running",
+  error: "needs attention",
+  pending: "pending",
+};
+
+/** "3 of 5 phases complete, Implement running". */
+export function describeWorkflowPhases(phases: readonly WorkflowPhaseSummary[]): string {
+  const done = phases.filter((phase) => phase.state === "completed").length;
+  const current = phases.find((phase) => phase.state === "active" || phase.state === "error");
+  return [
+    `${done} of ${phases.length} phases complete`,
+    ...(current ? [`${current.label} ${PHASE_STATE_LABEL[current.state]}`] : []),
+  ].join(", ");
+}
+
+/** One dot per phase (done, running, failed, pending); the tooltip names each phase. */
+function WorkflowPhaseStrip({ phases }: { phases: readonly WorkflowPhaseSummary[] }) {
+  if (phases.length === 0) return null;
   return (
-    <span title={label} className="inline-flex size-4 shrink-0 items-center justify-center">
-      <Icon aria-hidden="true" className={cn("size-3.5", className)} />
-      <span className="sr-only">{label}</span>
-    </span>
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span
+            className="inline-flex shrink-0 items-center gap-0.5 px-0.5"
+            data-testid="workflow-phase-strip"
+          />
+        }
+      >
+        {phases.map((phase, index) => (
+          <span
+            // Phases keep their order and may share a label across workflow types.
+            key={`${index}:${phase.label}`}
+            aria-hidden="true"
+            data-phase-state={phase.state}
+            className={cn("size-1.5 shrink-0 rounded-full", PHASE_DOT_CLASS[phase.state])}
+          />
+        ))}
+        <span className="sr-only">{describeWorkflowPhases(phases)}</span>
+      </TooltipTrigger>
+      <TooltipPopup side="top" className="flex-col items-start gap-0.5">
+        {phases.map((phase, index) => (
+          <span key={`${index}:${phase.label}`} className="flex items-center gap-1.5">
+            <span
+              aria-hidden="true"
+              className={cn("size-1.5 shrink-0 rounded-full", PHASE_DOT_CLASS[phase.state])}
+            />
+            {phase.label}
+            <span className="text-muted-foreground">{PHASE_STATE_LABEL[phase.state]}</span>
+          </span>
+        ))}
+      </TooltipPopup>
+    </Tooltip>
+  );
+}
+
+const CURRENT_STEP_ICON: Record<
+  WorkflowCurrentStep["state"],
+  { icon: typeof CheckIcon; word: string; className: string }
+> = {
+  running: { icon: LoaderIcon, word: "running", className: "text-info-foreground" },
+  "needs-attention": {
+    icon: CircleAlertIcon,
+    word: "needs attention",
+    className: "text-destructive-foreground",
+  },
+  waiting: { icon: CircleDashedIcon, word: "waiting", className: "text-faint-foreground" },
+  completed: { icon: CheckIcon, word: "completed", className: "text-success-foreground" },
+};
+
+/**
+ * A collapsed workflow's second line: the step it is on, its state, model and time. Clicking
+ * opens that step's thread, or the workflow before the step has one.
+ */
+function WorkflowCurrentStepLine(props: {
+  step: WorkflowCurrentStep;
+  thread: ThreadSummary | undefined;
+  completedAt: string;
+  ownerRowId: string | null;
+  isActive: boolean;
+  onOpen: () => void;
+}) {
+  const { step, thread } = props;
+  const { icon: Icon, word, className } = CURRENT_STEP_ICON[step.state];
+  const model = thread ? (thread.modelSelection?.model ?? thread.model) : step.modelSlot?.model;
+  const at = step.state === "completed" ? props.completedAt : (thread?.lastInteractionAt ?? null);
+  return (
+    <button
+      type="button"
+      data-testid="workflow-current-step"
+      {...(props.ownerRowId ? { "data-sidebar-action-for": props.ownerRowId } : {})}
+      data-thread-selection-safe
+      className={cn(
+        "-mt-0.5 mb-px flex h-5 w-full min-w-0 items-center gap-1.5 rounded-md pr-2 pl-8 text-left text-2xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+        props.isActive && "text-foreground",
+      )}
+      onClick={props.onOpen}
+    >
+      <Icon
+        aria-hidden="true"
+        className={cn(
+          "size-3 shrink-0",
+          className,
+          step.state === "running" && "animate-status-pulse",
+        )}
+      />
+      <span className="min-w-0 truncate">
+        {step.state === "completed" ? "Completed" : step.label}
+        {step.state === "completed" ? null : (
+          <span className="text-faint-foreground">{` · ${word}`}</span>
+        )}
+      </span>
+      <span className="ml-auto flex shrink-0 items-center gap-1.5">
+        {model && step.state !== "completed" ? (
+          <ModelChip
+            model={model}
+            provider={thread ? undefined : step.modelSlot?.provider}
+            sessionProviderName={thread?.sessionProvider}
+            iconOnly
+          />
+        ) : null}
+        {at ? <span className="tabular-nums">{formatRelativeTimeLabel(at)}</span> : null}
+      </span>
+    </button>
   );
 }
 
@@ -101,6 +213,10 @@ export function SidebarWorkflowItem(props: {
   /** Role label per thread from the workflow's phases. */
   threadLabels: ReadonlyMap<ThreadId, string>;
   overallState: WorkflowOverallState;
+  /** Non-skipped phases for the phase strip. */
+  phases?: readonly WorkflowPhaseSummary[] | undefined;
+  /** The step named under the row while it is collapsed. */
+  currentStep?: WorkflowCurrentStep | null | undefined;
   pathname: string;
   routeThreadId: ThreadId | null;
   expandByDefault: boolean;
@@ -121,12 +237,14 @@ export function SidebarWorkflowItem(props: {
     expandByDefault: props.expandByDefault,
     activeThreadId: routeThreadId,
     workflowThreadIds: orderedWorkflowThreadIds,
+    overallState: props.overallState,
   });
   const workflowExpanded = resolveWorkflowThreadListExpanded({
     overrideExpanded: props.overrideExpanded,
     expandByDefault: props.expandByDefault,
     activeThreadId: routeThreadId,
     workflowThreadIds: orderedWorkflowThreadIds,
+    overallState: props.overallState,
   });
   const workflowCollapsed = !workflowExpanded;
   const typeLabel = workflowTypeLabel(type, workflow);
@@ -139,6 +257,11 @@ export function SidebarWorkflowItem(props: {
       params: { workflowId: workflow.id },
     });
   };
+  const currentStep = props.currentStep ?? null;
+  const currentStepThread =
+    currentStep?.threadId != null
+      ? workflowThreads.find((thread) => thread.id === currentStep.threadId)
+      : undefined;
 
   return (
     <SidebarMenuSubItem className="group/workflow-row relative w-full">
@@ -207,7 +330,7 @@ export function SidebarWorkflowItem(props: {
           {workflow.title}
           <span className="sr-only">{`, ${typeLabel} workflow`}</span>
         </span>
-        <WorkflowStateIcon state={props.overallState} />
+        <WorkflowPhaseStrip phases={props.phases ?? []} />
         <span className="relative flex shrink-0 items-center">
           <Tooltip>
             <TooltipTrigger
@@ -233,6 +356,19 @@ export function SidebarWorkflowItem(props: {
           </Tooltip>
         </span>
       </SidebarMenuSubButton>
+      {workflowCollapsed && currentStep ? (
+        <WorkflowCurrentStepLine
+          step={currentStep}
+          thread={currentStepThread}
+          completedAt={workflow.updatedAt}
+          ownerRowId={isTreeRow ? workflowRowId : null}
+          isActive={currentStep.threadId !== null && currentStep.threadId === routeThreadId}
+          onOpen={() => {
+            if (currentStep.threadId !== null) actions.openThread(currentStep.threadId);
+            else openWorkflow();
+          }}
+        />
+      ) : null}
       {!workflowCollapsed && workflowThreads.length > 0 ? (
         // Second tree level: the guide line sits under the workflow's type icon.
         <SidebarTreeParentContext.Provider value={isTreeRow ? workflowRowId : null}>

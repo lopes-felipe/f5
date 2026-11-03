@@ -391,6 +391,8 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
         workflowThreads={workflowThreadsByWorkflowId.get(entry.workflow.id) ?? []}
         threadLabels={meta?.threadLabels ?? new Map()}
         overallState={meta?.overallState ?? "pending"}
+        phases={meta?.phases}
+        currentStep={meta?.currentStep}
         pathname={pathname}
         routeThreadId={routeThreadId}
         expandByDefault={props.expandWorkflowThreadsByDefault}

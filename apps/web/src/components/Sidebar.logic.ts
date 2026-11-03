@@ -143,11 +143,16 @@ export function reconcileFrozenOrder<T, Key extends string>(input: {
   return ordered;
 }
 
+/**
+ * Whether a workflow row lists its threads: the user's toggle, else open while it holds the
+ * open thread, else collapsed once the workflow completed, else the expand-by-default setting.
+ */
 export function resolveWorkflowThreadListExpanded(input: {
   overrideExpanded?: boolean | undefined;
   expandByDefault: boolean;
   activeThreadId: ThreadId | null;
   workflowThreadIds: readonly ThreadId[];
+  overallState?: "error" | "active" | "completed" | "pending" | undefined;
 }): boolean {
   if (typeof input.overrideExpanded === "boolean") {
     return input.overrideExpanded;
@@ -156,6 +161,8 @@ export function resolveWorkflowThreadListExpanded(input: {
   if (input.activeThreadId !== null && input.workflowThreadIds.includes(input.activeThreadId)) {
     return true;
   }
+
+  if (input.overallState === "completed") return false;
 
   return input.expandByDefault;
 }

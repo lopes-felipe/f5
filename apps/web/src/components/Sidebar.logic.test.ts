@@ -433,6 +433,31 @@ describe("workflow thread list helpers", () => {
     ).toBe(true);
   });
 
+  it("collapses completed workflows even when expanding by default", () => {
+    const input = {
+      expandByDefault: true,
+      activeThreadId: null,
+      workflowThreadIds: [ThreadId.makeUnsafe("thread-a")],
+    };
+    expect(resolveWorkflowThreadListExpanded({ ...input, overallState: "completed" })).toBe(false);
+    expect(resolveWorkflowThreadListExpanded({ ...input, overallState: "active" })).toBe(true);
+    // The open thread still reveals its finished workflow, and a user toggle still wins.
+    expect(
+      resolveWorkflowThreadListExpanded({
+        ...input,
+        activeThreadId: ThreadId.makeUnsafe("thread-a"),
+        overallState: "completed",
+      }),
+    ).toBe(true);
+    expect(
+      resolveWorkflowThreadListExpanded({
+        ...input,
+        overrideExpanded: true,
+        overallState: "completed",
+      }),
+    ).toBe(true);
+  });
+
   it("prefers the explicit override over the default and active-thread fallback", () => {
     expect(
       resolveWorkflowThreadListExpanded({

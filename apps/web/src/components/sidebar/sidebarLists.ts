@@ -29,9 +29,14 @@ import { deriveInvestigationTimelinePhases } from "../workflow/investigationWork
 import { threadIdsForInvestigationWorkflow } from "../workflow/investigationWorkflowUtils";
 import { deriveTimelinePhases } from "../workflow/workflowSidebarTimeline";
 import {
+  currentStepFromPhases,
   overallStateFromPhases,
+  phaseSummariesFromPhases,
   threadLabelsFromPhases,
+  threadOrderFromPhases,
+  type WorkflowCurrentStep,
   type WorkflowOverallState,
+  type WorkflowPhaseSummary,
 } from "../workflow/workflowTimelineTypes";
 import { threadIdsForWorkflow } from "../workflow/workflowUtils";
 
@@ -93,6 +98,12 @@ export interface SidebarWorkflowMeta {
   /** Role label per thread ("Branch A", "Merge"...). */
   threadLabels: ReadonlyMap<ThreadId, string>;
   overallState: WorkflowOverallState;
+  /** Non-skipped phases, for the row's phase strip. */
+  phases: readonly WorkflowPhaseSummary[];
+  /** The step a collapsed row names on its second line. */
+  currentStep: WorkflowCurrentStep | null;
+  /** Thread ids in pipeline order (first appearance in the phases' steps). */
+  threadOrder: readonly ThreadId[];
 }
 
 export interface ProjectSidebarLists<T extends ThreadListItem = ThreadListItem> {
@@ -200,10 +211,15 @@ export function buildProjectSidebarLists<T extends ThreadListItem>(input: {
     }
   }
 
+  const workflowMetaByKey = new Map(
+    projectWorkflows.map((entry) => [workflowEntryKey(entry), deriveSidebarWorkflowMeta(entry)]),
+  );
+
   const workflowThreadsByKey = new Map(
     projectWorkflows.map((entry) => [
       workflowEntryKey(entry),
-      sortThreadsByActivity(
+      orderThreadsByPipeline(
+        workflowMetaByKey.get(workflowEntryKey(entry))?.threadOrder ?? [],
         threads.filter((thread) => {
           if (thread.projectId !== project.id) {
             return false;
@@ -221,10 +237,6 @@ export function buildProjectSidebarLists<T extends ThreadListItem>(input: {
         }),
       ),
     ]),
-  );
-
-  const workflowMetaByKey = new Map(
-    projectWorkflows.map((entry) => [workflowEntryKey(entry), deriveSidebarWorkflowMeta(entry)]),
   );
 
   const persistedProjectThreads = threads.filter(
@@ -327,7 +339,26 @@ export function deriveSidebarWorkflowMeta(entry: SidebarWorkflowEntry): SidebarW
   return {
     threadLabels: threadLabelsFromPhases(phases),
     overallState: overallStateFromPhases(phases),
+    phases: phaseSummariesFromPhases(phases),
+    currentStep: currentStepFromPhases(phases),
+    threadOrder: threadOrderFromPhases(phases),
   };
+}
+
+/**
+ * A workflow's threads in pipeline order: those its phases name, in the order they first
+ * appear, then any others by recent activity.
+ */
+export function orderThreadsByPipeline<T extends ThreadListItem>(
+  threadOrder: readonly ThreadId[],
+  threads: readonly T[],
+): T[] {
+  const indexById = new Map(threadOrder.map((threadId, index) => [threadId, index] as const));
+  const ordered = threads
+    .filter((thread) => indexById.has(thread.id))
+    .toSorted((left, right) => indexById.get(left.id)! - indexById.get(right.id)!);
+  const unmatched = sortThreadsByActivity(threads.filter((thread) => !indexById.has(thread.id)));
+  return [...ordered, ...unmatched];
 }
 
 function sortWorkflowEntriesByActivity(
