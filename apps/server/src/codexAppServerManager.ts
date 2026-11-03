@@ -13,7 +13,10 @@ import {
   decodeCodexMcpServerStatus,
 } from "./codex/codexMcpServerStatus.ts";
 import type { CodexControlMcpServerStatus } from "./codex/CodexControlClient.ts";
-import { supportsCodexNativeOperations } from "@t3tools/shared/providerRuntimeCapabilities";
+import {
+  supportsCodexNativeOperations,
+  supportsCodexRelease5,
+} from "@t3tools/shared/providerRuntimeCapabilities";
 import { normalizeProviderRuntimeInfo } from "@t3tools/shared/runtimeInfo";
 import type {
   NativeOperationInput,
@@ -104,6 +107,31 @@ import {
 } from "./codex/JsonRpcStdinWriter.ts";
 import { resolveCodexHome } from "./os-jank.ts";
 import { resolveInvocation } from "./spawn/resolveCommand.ts";
+
+export function buildCodexSampleParams(
+  threadId: string,
+  expectedTurnId: string,
+  prompt: string,
+  effort?: string,
+) {
+  return { threadId, expectedTurnId, prompt, ...(effort ? { effort } : {}) };
+}
+
+export function buildCodexReadMarkParams(threadId: string, expectedRevision: string) {
+  return { threadId, expectedRevision, operation: { type: "read" as const } };
+}
+
+export function buildCodexMemoryReadParams(threadId: string) {
+  return { threadId };
+}
+
+export function buildCodexGoalPauseParams(threadId: string, origin: "user" | "automatic") {
+  return { threadId, status: "paused" as const, origin };
+}
+
+export function buildCodexGoalClearParams(threadId: string) {
+  return { threadId, origin: "user" as const };
+}
 
 type PendingRequestKey = string;
 
@@ -203,6 +231,9 @@ interface CodexSessionContext {
   /** The `additionalContext` of the latest `turn/start`, restored after compaction. */
   lastAdditionalContext?: Record<string, CodexAdditionalContextEntry> | undefined;
   cliVersion?: string | null;
+  readState?: { firstUnread: unknown; revision: string } | null;
+  readMarkInFlight?: boolean;
+  sampleRequestId?: number;
   protocolDecodeFailureCount: number;
   nextRequestId: number;
   stopping: boolean;
@@ -237,6 +268,7 @@ interface CodexSessionContext {
 interface JsonRpcError {
   code?: number;
   message?: string;
+  data?: unknown;
 }
 
 export class CodexJsonRpcError extends Error {
@@ -244,6 +276,7 @@ export class CodexJsonRpcError extends Error {
     readonly method: string,
     readonly code: number | undefined,
     message: string,
+    readonly data?: unknown,
   ) {
     super(`${method} failed: ${message}`);
   }
@@ -1939,9 +1972,56 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     context.lastProviderTitle = title;
   }
 
+  private cacheReadState(context: CodexSessionContext, value: unknown): void {
+    if (value === null) {
+      context.readState = null;
+      return;
+    }
+    const state = asObject(value);
+    if (typeof state?.revision === "string" && "firstUnread" in state)
+      context.readState = { revision: state.revision, firstUnread: state.firstUnread };
+  }
+
+  async markNativeThreadRead(threadId: ThreadId): Promise<void> {
+    const context = this.sessions.get(threadId);
+    if (
+      !context ||
+      !this.isLiveContext(context) ||
+      !supportsCodexRelease5(context.cliVersion) ||
+      context.readMarkInFlight ||
+      !context.readState ||
+      context.readState.firstUnread === null
+    )
+      return;
+    context.readMarkInFlight = true;
+    try {
+      await this.sendRequest(
+        context,
+        "thread/readState/update",
+        buildCodexReadMarkParams(this.nativeThreadId(context), context.readState.revision),
+      );
+    } catch (error) {
+      const data = error instanceof CodexJsonRpcError ? asObject(error.data) : undefined;
+      if (data?.reason === "readStateConflict") this.cacheReadState(context, data.readState);
+      else await Effect.logDebug("Codex read mark failed", { threadId }).pipe(this.runPromise);
+    } finally {
+      context.readMarkInFlight = false;
+    }
+  }
+
   async inspectNativeOperation(input: NativeOperationInspectInput): Promise<unknown> {
     const context = this.requireSession(input.threadId);
     const threadId = this.nativeThreadId(context);
+    if (input.kind === "memory") {
+      if (!supportsCodexRelease5(context.cliVersion))
+        throw new Error("Memory requires Codex 0.166.0 or later.");
+      return this.sendRequest(context, "thread/memory/read", buildCodexMemoryReadParams(threadId));
+    }
+    if (input.kind === "usage") {
+      if (!supportsCodexNativeOperations(context.cliVersion))
+        throw new Error("Usage requires Codex 0.162.0 or later.");
+      return this.sendRequest(context, "account/usage/read", { threadId });
+    }
     if (input.kind === "goal") return this.sendRequest(context, "thread/goal/get", { threadId });
     if (input.kind === "attachments") {
       const response = asObject(
@@ -2025,9 +2105,80 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       return this.sendRequest(context, method, params);
     };
     await onReceipt?.({ nativeThreadId: threadId });
+    if (command.kind === "aside") {
+      if (!supportsCodexRelease5(context.cliVersion) || context.session.activeTurnId)
+        throw new Error("Ask aside requires an idle Codex 0.166.0 session.");
+      const history = asObject(
+        await this.sendRequest(context, "thread/turns/list", {
+          threadId,
+          limit: 1,
+          sortDirection: "desc",
+        }),
+      );
+      const latest = Array.isArray(history?.data) ? asObject(history.data[0]) : undefined;
+      if (
+        !latest ||
+        typeof latest.id !== "string" ||
+        typeof latest.status !== "string" ||
+        !["completed", "failed", "interrupted"].includes(latest.status)
+      )
+        throw new Error("Ask aside requires a settled native turn.");
+      if (signal?.aborted) throw new Error("Aside cancelled.");
+      const requestId = context.nextRequestId;
+      context.sampleRequestId = requestId;
+      const cancel = () => {
+        void this.sendRequest(context, "thread/sample/cancel", { requestId }).catch(
+          () => undefined,
+        );
+      };
+      signal?.addEventListener("abort", cancel, { once: true });
+      try {
+        const result = asObject(
+          await request(
+            "thread/sample",
+            buildCodexSampleParams(
+              threadId,
+              latest.id,
+              command.question,
+              typeof context.requestedRuntime?.effort === "string"
+                ? context.requestedRuntime.effort
+                : undefined,
+            ),
+          ),
+        );
+        const aside = {
+          question: command.question,
+          text:
+            typeof result?.text === "string"
+              ? Buffer.byteLength(result.text, "utf8") > 32000
+                ? Buffer.from(result.text, "utf8").subarray(0, 32000).toString("utf8") +
+                  "\n[Answer truncated]"
+                : result.text
+              : null,
+          inputTokens: result?.inputTokens,
+          cachedInputTokens: result?.cachedInputTokens,
+          outputTokens: result?.outputTokens,
+        };
+        this.emitEvent({
+          ...context.mcpEventIdentity,
+          id: EventId.makeUnsafe(randomUUID()),
+          kind: "notification",
+          provider: "codex",
+          threadId: input.threadId,
+          createdAt: new Date().toISOString(),
+          method: "f5/aside/completed",
+          payload: aside,
+        });
+        return aside;
+      } finally {
+        delete context.sampleRequestId;
+        signal?.removeEventListener("abort", cancel);
+      }
+    }
     if (command.kind === "goalPause")
-      return request("thread/goal/set", { threadId, status: "paused" });
-    if (command.kind === "goalClear") return request("thread/goal/clear", { threadId });
+      return request("thread/goal/set", buildCodexGoalPauseParams(threadId, "user"));
+    if (command.kind === "goalClear")
+      return request("thread/goal/clear", buildCodexGoalClearParams(threadId));
     if (command.kind === "goalSet") {
       let running = false;
       let terminal: unknown;
@@ -2072,6 +2223,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           objective: command.objective,
           tokenBudget: command.tokenBudget,
           status: "active",
+          origin: "user",
         });
         // The operation reservation owns every continuation until the goal settles.
         const result = await completion;
@@ -2293,7 +2445,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       const response = asObject(await this.sendRequest(context, "thread/goal/get", { threadId }));
       const goal = asObject(response?.goal);
       if (goal?.status === "active" && !context.nativeGoalActive) {
-        await this.sendRequest(context, "thread/goal/set", { threadId, status: "paused" });
+        await this.sendRequest(context, "thread/goal/set", {
+          threadId,
+          status: "paused",
+          origin: "automatic",
+        });
         const read = asObject(
           await this.sendRequest(context, "thread/read", { threadId, includeTurns: false }),
         );
@@ -2328,11 +2484,18 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
   async interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void> {
     const context = this.requireSession(threadId);
+    if (context.sampleRequestId !== undefined) {
+      await this.sendRequest(context, "thread/sample/cancel", {
+        requestId: context.sampleRequestId,
+      });
+      return;
+    }
     if (context.nativeGoalActive) {
       try {
         await this.sendRequest(context, "thread/goal/set", {
           threadId: this.nativeThreadId(context),
           status: "paused",
+          origin: "automatic",
         });
       } catch (cause) {
         this.stopSession(threadId);
@@ -3581,6 +3744,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       return;
     }
 
+    if (notification.method === "thread/readState/changed")
+      this.cacheReadState(context, asObject(notification.params)?.readState);
     if (notification.method === "thread/goal/updated") {
       const goal = asObject(asObject(notification.params)?.goal);
       if (goal && goal.status !== "active") context.nativeGoalActive = false;
@@ -3597,6 +3762,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         void this.sendRequest(context, "thread/goal/set", {
           threadId: this.nativeThreadId(context),
           status: "paused",
+          origin: "automatic",
         })
           .catch(() => {
             if (!this.isLiveContext(context)) return;
@@ -4037,11 +4203,32 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     if (response.error) {
       const providerMessage = formatCodexUnsupportedModelError(
         response.error.message ?? "Unknown JSON-RPC error",
+        asObject(response.error.data)?.codexErrorInfo,
       );
-      pending.reject(new CodexJsonRpcError(pending.method, response.error.code, providerMessage));
+      if (
+        response.error.code === -32600 &&
+        asObject(response.error.data)?.reason === "serverShuttingDown"
+      ) {
+        context.beginDrain?.(
+          new Error("Codex is shutting down; reconnect on the next turn."),
+          "session/exited",
+          "Codex is shutting down.",
+        );
+      }
+      pending.reject(
+        new CodexJsonRpcError(
+          pending.method,
+          response.error.code,
+          providerMessage,
+          response.error.data,
+        ),
+      );
       return;
     }
 
+    if (["thread/read", "thread/readState/update"].includes(pending.method)) {
+      this.cacheReadState(context, asObject(response.result)?.readState);
+    }
     pending.resolve(response.result);
   }
 
@@ -4111,7 +4298,18 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const configuredPayload = context.skillsLoaded
       ? {
           ...config,
-          slashCommands: [...context.availableSkills],
+          slashCommands: [
+            ...context.availableSkills,
+            ...(supportsCodexRelease5(context.cliVersion)
+              ? [
+                  {
+                    name: "aside",
+                    description: "Ask a side question without changing the conversation",
+                    argumentHint: "<question>",
+                  },
+                ]
+              : []),
+          ],
         }
       : config;
 

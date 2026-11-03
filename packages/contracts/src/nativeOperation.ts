@@ -33,6 +33,10 @@ export const NativeReviewTarget = /* @__PURE__ */ Schema.Union([
   }),
 ]);
 export const NativeOperationCommand = /* @__PURE__ */ Schema.Union([
+  /* @__PURE__ */ Schema.Struct({
+    kind: /* @__PURE__ */ Schema.Literal("aside"),
+    question: /* @__PURE__ */ TrimmedNonEmptyString.check(/* @__PURE__ */ Schema.isMaxLength(8000)),
+  }),
   /* @__PURE__ */ Schema.Struct({ kind: /* @__PURE__ */ Schema.Literal("compact") }),
   /* @__PURE__ */ Schema.Struct({
     kind: /* @__PURE__ */ Schema.Literal("review"),
@@ -90,7 +94,14 @@ export const NativeOperationListInput = /* @__PURE__ */ Schema.Struct({ threadId
 export const NativeOperationInspectInput = /* @__PURE__ */ Schema.Struct({
   threadId: ThreadId,
   generation: NonNegativeInt,
-  kind: /* @__PURE__ */ Schema.Literals(["task", "filePreview", "goal", "attachments"]),
+  kind: /* @__PURE__ */ Schema.Literals([
+    "task",
+    "filePreview",
+    "goal",
+    "attachments",
+    "memory",
+    "usage",
+  ]),
   nativeId: /* @__PURE__ */ Schema.optional(TrimmedNonEmptyString),
   runId: /* @__PURE__ */ Schema.optional(TrimmedNonEmptyString),
   cursor: /* @__PURE__ */ Schema.optional(
@@ -120,6 +131,7 @@ export const NativeOperationResolutionInput = /* @__PURE__ */ Schema.Struct({
 });
 export type NativeOperationResolutionInput = typeof NativeOperationResolutionInput.Type;
 export const NATIVE_OPERATION_WS_METHODS = {
+  markRead: "provider.markNativeThreadRead",
   historyRecovery: "nativeOperation.historyRecovery",
   resolve: "nativeOperation.resolve",
   fork: "nativeOperation.fork",

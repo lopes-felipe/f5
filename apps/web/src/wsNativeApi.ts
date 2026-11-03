@@ -1066,6 +1066,7 @@ export function createWsNativeApi(): NativeApi {
       analyzeClaudeUsage: (input) => transport.request(USAGE_WS_METHODS.analyzeClaudeUsage, input),
     },
     nativeOperations: {
+      markRead: (input) => transport.request(NATIVE_OPERATION_WS_METHODS.markRead, input),
       historyRecovery: (input) =>
         transport.request(NATIVE_OPERATION_WS_METHODS.historyRecovery, input),
       resolve: (input) => transport.request(NATIVE_OPERATION_WS_METHODS.resolve, input),

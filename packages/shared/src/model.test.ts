@@ -202,6 +202,7 @@ describe("resolveModelSlug", () => {
     expect(DEFAULT_MODEL_BY_PROVIDER.codex).toBe("gpt-6.1-sol");
     expect(getModelOptions("codex").map((option) => option.slug)).toEqual([
       "gpt-6.1-sol",
+      "gpt-6.1-terra",
       "gpt-6-astra",
       "gpt-6-sol",
       "gpt-6-luna",

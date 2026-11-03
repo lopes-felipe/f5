@@ -410,6 +410,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(NATIVE_OPERATION_WS_METHODS.execute, NativeOperationInput),
   tagRequestBody(NATIVE_OPERATION_WS_METHODS.list, NativeOperationListInput),
   tagRequestBody(NATIVE_OPERATION_WS_METHODS.inspect, NativeOperationInspectInput),
+  tagRequestBody(NATIVE_OPERATION_WS_METHODS.markRead, NativeOperationListInput),
   tagRequestBody(ELICITATION_WS_METHODS.submit, ElicitationSubmitInput),
   // Orchestration methods
   tagRequestBody(ORCHESTRATION_WS_METHODS.searchThread, ThreadSearchInput),

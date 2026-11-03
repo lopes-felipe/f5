@@ -500,7 +500,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         resetCreditIdentity,
         consumeResetCredit,
         accountUsage,
-        inventory: ({ projectRoot }) =>
+        inventory: ({ projectRoot, feedbackPath }) =>
           Effect.tryPromise({
             try: () =>
               readCodexInventory(
@@ -513,7 +513,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
                   cwd: serverConfig.cwd,
                   processEnvironment,
                 },
-                { projectRoot },
+                { projectRoot, feedbackPath },
               ),
             catch: (cause) =>
               new ProviderDriverError({

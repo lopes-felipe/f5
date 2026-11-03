@@ -103,6 +103,7 @@ export interface ProviderInstance {
    * home/config dir only.
    */
   readonly inventory?: (input: {
+    readonly feedbackPath?: string | undefined;
     readonly projectRoot?: string | undefined;
   }) => Effect.Effect<ProviderInstanceInventoryEntries, ProviderDriverError>;
   /**
@@ -117,7 +118,15 @@ export interface ProviderInstance {
 /** Inventory body; the registry stamps instance id, driver and timestamps. */
 export type ProviderInstanceInventoryEntries = Pick<
   import("@t3tools/contracts").ProviderInstanceInventory,
-  "hooks" | "plugins" | "connectors" | "agents" | "warnings"
+  | "hooks"
+  | "plugins"
+  | "connectors"
+  | "agents"
+  | "warnings"
+  | "accountWorkspaces"
+  | "feedbackPath"
+  | "feedbackSupported"
+  | "account"
 >;
 
 export interface ProviderContinuationIdentity {

@@ -197,6 +197,7 @@ const RUNNING_STATES: ReadonlySet<NativeOperationRecord["state"]> = new Set([
 ]);
 
 const OPERATION_LABELS: Record<NativeOperationCommand["kind"], string> = {
+  aside: "Aside",
   compact: "Compaction",
   review: "Review",
   stopTask: "Task stop",

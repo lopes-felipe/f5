@@ -238,6 +238,60 @@ function NativeRuntimePanelContent(props: NativeRuntimePanelProps) {
             </DialogDescription>
           </DialogHeader>
           <DialogPanel className="space-y-5 text-sm">
+            {props.provider === "codex" && (
+              <section aria-label="Codex memory and usage" className="space-y-2">
+                <h3 className="font-medium">Reported by Codex</h3>
+                {!capabilities ? (
+                  <p>Start the session to load</p>
+                ) : (
+                  <div className="flex gap-2">
+                    {(["memory", "usage"] as const).map((kind) => (
+                      <Button
+                        key={kind}
+                        variant="outline"
+                        size="xs"
+                        disabled={
+                          reading || !supported(kind === "memory" ? "nativeAside" : "nativeGoals")
+                        }
+                        onClick={() => {
+                          setReading(true);
+                          setError(null);
+                          setInspection(null);
+                          void readNativeApi()
+                            ?.nativeOperations?.inspect({
+                              threadId,
+                              generation: capabilities.generation,
+                              kind,
+                            })
+                            .then((value) => {
+                              const data = object(value);
+                              if (kind === "memory")
+                                setDetail(
+                                  data.summary ?? "No memory summary (memory off or empty)",
+                                );
+                              else {
+                                const usage = object(data.threadUsage);
+                                const dollars = (value: unknown) =>
+                                  typeof value === "number"
+                                    ? "$" + (value / 1_000_000).toFixed(6)
+                                    : "unknown";
+                                setDetail({
+                                  "Reported by Codex": dollars(usage.nativeUsageUsdMicros),
+                                  "Codex estimate": dollars(usage.estimatedUsageUsdMicros),
+                                });
+                              }
+                            })
+                            .catch((cause) => setError(String(cause)))
+                            .finally(() => setReading(false));
+                        }}
+                      >
+                        {kind === "memory" ? "Memory summary" : "Dollar usage"}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
             <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 [&_dt]:text-muted-foreground [&_dd]:break-words">
               <dt>Requested model</dt>
               <dd>
@@ -395,6 +449,17 @@ function NativeRuntimePanelContent(props: NativeRuntimePanelProps) {
                     </p>
                     {record.error && (
                       <p className="break-words text-muted-foreground">{record.error}</p>
+                    )}
+                    {record.command.kind === "aside" && (
+                      <details>
+                        <summary>Aside: {record.command.question}</summary>
+                        <p className="whitespace-pre-wrap">
+                          {String(
+                            object(record.result).text ??
+                              "No text answer; ask as a normal message instead.",
+                          )}
+                        </p>
+                      </details>
                     )}
                     {record.command.kind === "fork" && (
                       <p className="break-words text-muted-foreground">

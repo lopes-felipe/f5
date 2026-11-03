@@ -212,7 +212,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
     metadata.nextReconcileAtMs = nowMs + OAUTH_RECONCILE_INTERVAL_MS;
 
     return Effect.tryPromise({
-      try: () => listAllCodexServerStatuses(metadata.client),
+      try: () => listAllCodexServerStatuses(metadata.client, input.serverName),
       catch: (cause) =>
         cause instanceof Error
           ? new CodexOAuthManagerError({ message: cause.message })

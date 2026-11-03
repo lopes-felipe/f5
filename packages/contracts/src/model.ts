@@ -226,6 +226,7 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
   codex: [
     // NOTE: first codex entry must equal DEFAULT_MODEL_BY_PROVIDER.codex.
     { slug: "gpt-6.1-sol", name: "GPT-6.1 Sol" },
+    { slug: "gpt-6.1-terra", name: "GPT-6.1 Terra" },
     { slug: "gpt-6-astra", name: "GPT-6 Astra" },
     { slug: "gpt-6-sol", name: "GPT-6 Sol" },
     { slug: "gpt-6-luna", name: "GPT-6 Luna" },

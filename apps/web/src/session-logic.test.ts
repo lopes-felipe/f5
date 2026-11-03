@@ -1067,6 +1067,20 @@ describe("hasActionableProposedPlan", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
+  it("retains aside answers across later turns without treating them as messages", () => {
+    const activity: OrchestrationThreadActivity = {
+      id: EventId.makeUnsafe("aside"),
+      kind: "native.aside",
+      summary: "Aside",
+      tone: "info",
+      turnId: null,
+      createdAt: "2026-11-03T00:00:00Z",
+      payload: { nativeAside: { question: "Why?", text: "Because." } },
+    };
+    expect(deriveWorkLogEntries([activity], TurnId.makeUnsafe("later"))).toMatchObject([
+      { activityKind: "native.aside", label: "Aside: Why?", detail: "Because." },
+    ]);
+  });
   it("leads an answered user-input row with the question and shows the answer", () => {
     const question = (id: string, text: string) => ({
       id,

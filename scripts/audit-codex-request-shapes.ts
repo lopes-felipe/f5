@@ -53,6 +53,40 @@ try {
   const baseline = JSON.parse(
     await readFile(path.join(root, "scripts/fixtures/codex-requests/baseline.json"), "utf8"),
   ) as { cliVersion: string; sha256: Record<string, string> };
+  if (process.argv.includes("--write-fixture")) {
+    const files = [
+      ...Object.keys(baseline.sha256),
+      "v2/ThreadSampleParams.ts",
+      "v2/ThreadReadStateUpdateParams.ts",
+      "v2/ThreadMemoryReadParams.ts",
+      "v2/ThreadGoalSetParams.ts",
+      "v2/ThreadGoalClearParams.ts",
+    ];
+    const sha256 = Object.fromEntries(
+      await Promise.all(
+        [...new Set(files)].map(async (file) => [
+          file,
+          createHash("sha256")
+            .update(await readFile(path.join(schemas, file)))
+            .digest("hex"),
+        ]),
+      ),
+    );
+    const fixture = {
+      cliVersion: PINNED_VERSION,
+      sourceRevision: process.env.CODEX_SOURCE_REVISION,
+      experimental: true,
+      sha256,
+    };
+    if (!fixture.sourceRevision)
+      throw new Error("CODEX_SOURCE_REVISION is required to write fixtures");
+    await writeFile(
+      path.join(root, "scripts/fixtures/codex-requests/baseline.json"),
+      JSON.stringify(fixture, null, 2) + "\n",
+    );
+    baseline.cliVersion = PINNED_VERSION;
+    baseline.sha256 = sha256;
+  }
   if (baseline.cliVersion !== PINNED_VERSION) throw new Error("Request fixture version mismatch");
   for (const [file, checksum] of Object.entries(baseline.sha256)) {
     const generated = await readFile(path.join(schemas, file));
@@ -104,9 +138,7 @@ try {
     "--project",
     config,
   ]);
-  console.log(
-    `Codex ${PINNED_VERSION}: all seven real request builders satisfy generated experimental types.`,
-  );
+  console.log(`Codex ${PINNED_VERSION}: request builders satisfy generated experimental types.`);
 } finally {
   await rm(probeDirectory, { recursive: true, force: true });
   await rm(temporary, { recursive: true, force: true });

@@ -1972,17 +1972,19 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           allowRecovery: false,
         });
         const action =
-          input.command.kind === "compact"
-            ? "nativeCompaction"
-            : input.command.kind === "review"
-              ? "nativeReview"
-              : input.command.kind === "fork"
-                ? "nativeFork"
-                : input.command.kind === "stopTask"
-                  ? "childTaskStop"
-                  : input.command.kind === "revertFiles"
-                    ? "fileCheckpointing"
-                    : "nativeGoals";
+          input.command.kind === "aside"
+            ? "nativeAside"
+            : input.command.kind === "compact"
+              ? "nativeCompaction"
+              : input.command.kind === "review"
+                ? "nativeReview"
+                : input.command.kind === "fork"
+                  ? "nativeFork"
+                  : input.command.kind === "stopTask"
+                    ? "childTaskStop"
+                    : input.command.kind === "revertFiles"
+                      ? "fileCheckpointing"
+                      : "nativeGoals";
         const admitted = yield* Deferred.make<
           import("@t3tools/contracts").NativeOperationRecord,
           import("../Errors.ts").ProviderServiceError
@@ -2072,6 +2074,16 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         return yield* Deferred.await(admitted);
       });
     const nativeOperations: NonNullable<ProviderServiceShape["nativeOperations"]> = {
+      markRead: (threadId) =>
+        Effect.gen(function* () {
+          const routed = yield* resolveRoutableSession({
+            threadId,
+            operation: "provider.markNativeThreadRead",
+            allowRecovery: false,
+          });
+          if (routed.adapter.markNativeThreadRead)
+            yield* routed.adapter.markNativeThreadRead(threadId);
+        }).pipe(Effect.catchCause(() => Effect.void)),
       historyRecovery: (input) =>
         withProviderThreadAccess(
           input.threadId,
@@ -2188,9 +2200,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 ? "childTaskInspection"
                 : input.kind === "filePreview"
                   ? "fileCheckpointing"
-                  : input.kind === "goal"
-                    ? "nativeGoals"
-                    : "nativeAttachments";
+                  : input.kind === "memory"
+                    ? "nativeAside"
+                    : input.kind === "goal" || input.kind === "usage"
+                      ? "nativeGoals"
+                      : "nativeAttachments";
             yield* assertSessionAction({
               threadId: input.threadId,
               action,

@@ -22,6 +22,7 @@ export type ProviderInventorySource = typeof ProviderInventorySource.Type;
 const BoundedText = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
 
 export const ProviderInventoryHook = Schema.Struct({
+  environmentId: Schema.optional(BoundedText),
   event: BoundedText,
   matcher: Schema.optional(BoundedText),
   handlerType: Schema.optional(BoundedText),
@@ -72,6 +73,24 @@ export const ProviderInventoryAgent = Schema.Struct({
 export type ProviderInventoryAgent = typeof ProviderInventoryAgent.Type;
 
 export const ProviderInstanceInventory = Schema.Struct({
+  feedbackSupported: Schema.optional(Schema.Boolean),
+  account: Schema.optional(
+    Schema.Struct({
+      type: Schema.Literals(["apiKey", "chatgpt", "gcp", "unknown"]),
+      email: Schema.optional(BoundedText),
+      workspaceName: Schema.optional(BoundedText),
+    }),
+  ),
+  accountWorkspaces: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        name: BoundedText,
+        kind: Schema.optional(BoundedText),
+        active: Schema.Boolean,
+      }),
+    ),
+  ),
+  feedbackPath: Schema.optional(TrimmedNonEmptyString),
   instanceId: ProviderInstanceId,
   driver: ProviderDriverKind,
   generatedAt: IsoDateTime,
@@ -86,6 +105,7 @@ export const ProviderInstanceInventory = Schema.Struct({
 export type ProviderInstanceInventory = typeof ProviderInstanceInventory.Type;
 
 export const ServerGetProviderInventoryInput = Schema.Struct({
+  saveFeedback: Schema.optional(Schema.Boolean),
   instanceId: ProviderInstanceId,
   /** Resolved server-side to the project's workspace root; paths are never accepted. */
   projectId: Schema.optional(ProjectId),

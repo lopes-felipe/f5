@@ -254,7 +254,11 @@ function toSessionError(
       cause,
     });
   }
-  if (normalized.includes("session is closed")) {
+  if (
+    normalized.includes("session is closed") ||
+    (asObject(cause)?.code === -32600 &&
+      asObject(asObject(cause)?.data)?.reason === "serverShuttingDown")
+  ) {
     return new ProviderAdapterSessionClosedError({
       provider: PROVIDER,
       threadId,
@@ -540,7 +544,13 @@ function itemDetail(
   payload: Record<string, unknown>,
 ): string | undefined {
   const nestedResult = asObject(item.result);
-  const durationMs = asNumber(item.durationMs ?? item.duration_ms);
+  const startedAtMs = asNumber(item.startedAtMs);
+  const completedAtMs = asNumber(item.completedAtMs);
+  const durationMs =
+    asNumber(item.durationMs ?? item.duration_ms) ??
+    (startedAtMs !== undefined && completedAtMs !== undefined
+      ? Math.max(0, completedAtMs - startedAtMs)
+      : undefined);
   const action = asObject(item.action);
   const actionQueries = Array.isArray(action?.queries)
     ? action.queries.map(asString).filter((value): value is string => value !== undefined)
@@ -999,6 +1009,9 @@ function mapSubagentActivity(
       agentThreadId,
       agentPath,
       ...(asString(source.model)?.trim() ? { model: asString(source.model)!.trim() } : {}),
+      ...(asString(source.reasoningEffort)?.trim()
+        ? { reasoningEffort: asString(source.reasoningEffort)!.trim() }
+        : {}),
     },
   };
 }
@@ -1530,6 +1543,15 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (event.method === "f5/aside/completed") {
+    return [
+      {
+        type: "thread.metadata.updated",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: { metadata: { nativeAside: payload } },
+      },
+    ];
+  }
   if (
     ["thread/attachment/updated", "thread/goal/updated", "thread/goal/cleared"].includes(
       event.method ?? "",
@@ -3982,6 +4004,8 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             return error;
           },
         }),
+      markNativeThreadRead: (threadId) =>
+        Effect.promise(() => manager.markNativeThreadRead(threadId)),
       inspectNativeOperation: (input) =>
         Effect.tryPromise({
           try: () => manager.inspectNativeOperation(input),

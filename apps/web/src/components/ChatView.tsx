@@ -478,6 +478,7 @@ import {
   resolveThreadModelOptionsSeed,
   resolveSubmissionIntent,
   shouldRunNativeReviewShortcut,
+  shouldRunNativeAsideShortcut,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { ThreadDetailsLoadingState } from "./StartupLoadingState";
@@ -1478,6 +1479,21 @@ export default memo(function ChatView({
   ]);
 
   const sessionProvider = activeThread?.session?.provider ?? null;
+  useEffect(() => {
+    if (!activeThread || sessionProvider !== "codex") return;
+    const threadId = activeThread.id;
+    const timer = window.setTimeout(() => {
+      void readNativeApi()
+        ?.nativeOperations?.markRead?.({ threadId })
+        .catch(() => undefined);
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [
+    activeThread?.id,
+    activeThread?.lastVisitedAt,
+    activeLatestTurn?.completedAt,
+    sessionProvider,
+  ]);
   const providerStatuses = useMemo(
     () =>
       projectProviderSnapshots(
@@ -2080,21 +2096,26 @@ export default memo(function ChatView({
     }
     return null;
   }, [threadActivities]);
-  const composerNativeSlashCommands = useMemo(
-    () =>
-      resolveComposerNativeSlashCommands({
-        runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
-        sessionInstanceId: activeThread?.session?.providerInstanceId,
-        selectedInstanceId: selectedProviderInstanceId,
-        instanceSlashCommands: selectedProviderSnapshot?.slashCommands,
-      }),
-    [
-      activeThread?.session?.providerInstanceId,
-      latestConfiguredRuntimeActivity?.slashCommands,
-      selectedProviderInstanceId,
-      selectedProviderSnapshot?.slashCommands,
-    ],
-  );
+  const composerNativeSlashCommands = useMemo(() => {
+    const resolved = resolveComposerNativeSlashCommands({
+      runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
+      sessionInstanceId: activeThread?.session?.providerInstanceId,
+      selectedInstanceId: selectedProviderInstanceId,
+      instanceSlashCommands: selectedProviderSnapshot?.slashCommands,
+    });
+    return {
+      ...resolved,
+      commands: resolved.commands.filter(
+        (command) => command.name !== "aside" || latestTurnSettled,
+      ),
+    };
+  }, [
+    activeThread?.session?.providerInstanceId,
+    latestConfiguredRuntimeActivity?.slashCommands,
+    selectedProviderInstanceId,
+    selectedProviderSnapshot?.slashCommands,
+    latestTurnSettled,
+  ]);
   const latestModelRerouteActivity = useMemo(() => {
     for (let index = threadActivities.length - 1; index >= 0; index -= 1) {
       const activity = threadActivities[index];
@@ -5312,6 +5333,63 @@ export default memo(function ChatView({
       return;
     }
     if (noProviderAvailable) return;
+    if (
+      /^\/aside(?:\s|$)/u.test(promptRef.current.trim()) &&
+      activeThread.session?.provider === "codex"
+    ) {
+      const session = activeThread.session;
+      const question = promptRef.current.trim().slice(6).trim();
+      if (
+        !question ||
+        question.length > 8000 ||
+        !api.nativeOperations ||
+        !session.capabilities ||
+        !shouldRunNativeAsideShortcut({
+          prompt: promptRef.current,
+          sessionProvider: session.provider,
+          sessionInstanceId,
+          selectedInstanceId: selectedProviderInstanceId,
+          nativeAsideSupported: session.capabilities.actions.some(
+            (action) => action.action === "nativeAside" && action.supported,
+          ),
+        })
+      ) {
+        toastManager.add({
+          type: "error",
+          title: "Aside unavailable",
+          description: "Enter a question of 1–8000 characters in a Codex 0.166.0 session.",
+        });
+        return;
+      }
+      sendInFlightRef.current = true;
+      try {
+        const record = await api.nativeOperations.execute({
+          threadId: activeThread.id,
+          operationId: crypto.randomUUID(),
+          generation: session.capabilities.generation,
+          command: { kind: "aside", question },
+        });
+        if (["requested", "dispatched", "running", "completed"].includes(record.state)) {
+          setPrompt("");
+          promptRef.current = "";
+          onAdmitted?.();
+        } else
+          toastManager.add({
+            type: "error",
+            title: "Aside requires attention",
+            description: record.error ?? record.state,
+          });
+      } catch (cause) {
+        toastManager.add({
+          type: "error",
+          title: "Aside could not start",
+          description: cause instanceof Error ? cause.message : String(cause),
+        });
+      } finally {
+        sendInFlightRef.current = false;
+      }
+      return;
+    }
     if (
       api.nativeOperations &&
       activeThread.session?.capabilities &&

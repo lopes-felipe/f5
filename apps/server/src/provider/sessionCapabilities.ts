@@ -18,7 +18,10 @@ import {
   type ProviderSessionDiscoveryOutcome,
   type ProviderSessionUnavailableReason,
 } from "@t3tools/contracts";
-import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
+import {
+  providerRuntimeCapabilities,
+  supportsCodexRelease5,
+} from "@t3tools/shared/providerRuntimeCapabilities";
 
 import type { ProviderAdapterCapabilities } from "./Services/ProviderAdapter.ts";
 import { isRecord } from "./runtimePayload.ts";
@@ -106,6 +109,10 @@ function supportFor(
       if (input.discovery?.outcome === "failed" || input.discovery?.nativeCommands === false)
         return refuse(unavailable("unsupported", "The provider did not report its commands."));
       return { action, supported: true };
+    case "nativeAside":
+      if (input.driver !== "codex" || !supportsCodexRelease5(input.executableVersion))
+        return refuse(unavailable("unsupported", "Ask aside requires Codex 0.166.0 or later."));
+      return input.active ? { action, supported: true } : noSession();
     case "nativeReview":
     case "nativeCompaction":
     case "nativeFork":
