@@ -624,7 +624,10 @@ function permissionRequestType(permissions: Record<string, unknown>): CanonicalR
   return "permissions_approval";
 }
 
-function toRequestTypeFromMethod(method: string): CanonicalRequestType {
+function toRequestTypeFromMethod(
+  method: string,
+  requestedPermissions?: unknown,
+): CanonicalRequestType {
   switch (method) {
     case "item/commandExecution/requestApproval":
       return "command_execution_approval";
@@ -639,7 +642,7 @@ function toRequestTypeFromMethod(method: string): CanonicalRequestType {
     case "mcpServer/elicitation/request":
       return "mcp_elicitation_approval";
     case "item/permissions/requestApproval":
-      return "permissions_approval";
+      return permissionRequestType(asObject(requestedPermissions) ?? {});
     case "item/tool/requestUserInput":
       return "tool_user_input";
     case "item/tool/call":
@@ -674,7 +677,7 @@ function toRequestTypeFromResolvedPayload(
   const request = asObject(payload?.request);
   const method = asString(request?.method) ?? asString(payload?.method);
   if (method) {
-    return toRequestTypeFromMethod(method);
+    return toRequestTypeFromMethod(method, payload?.requestedPermissions);
   }
   const requestKind = asString(request?.kind) ?? asString(payload?.requestKind);
   if (requestKind) {
@@ -1393,22 +1396,11 @@ function mapToRuntimeEvents(
         ...runtimeEventBase(event, canonicalThreadId),
         type: "request.opened",
         payload: {
-          requestType: requestedPermissions
-            ? permissionRequestType(requestedPermissions)
-            : toRequestTypeFromMethod(event.method),
+          requestType: toRequestTypeFromMethod(event.method, requestedPermissions),
           ...(event.method === "mcpServer/elicitation/request"
             ? describeMcpElicitation(payload)
             : {}),
           ...(commandApprovalOptions ? { approvalOptions: commandApprovalOptions } : {}),
-          ...(requestedPermissions
-            ? {
-                approvalOptions: [
-                  { decision: "decline" as const, label: "Decline" },
-                  { decision: "acceptForSession" as const, label: "Always allow this session" },
-                  { decision: "accept" as const, label: "Approve once" },
-                ],
-              }
-            : {}),
           ...(detail ? { detail } : {}),
           ...(requestedPermissions ? { requestedPermissions } : {}),
           ...(event.payload !== undefined ? { args: event.payload } : {}),
@@ -1421,7 +1413,7 @@ function mapToRuntimeEvents(
     const decision = Schema.decodeUnknownSync(ProviderApprovalDecision)(payload?.decision);
     const requestMethod = asString(payload?.requestMethod);
     const requestType = requestMethod
-      ? toRequestTypeFromMethod(requestMethod)
+      ? toRequestTypeFromMethod(requestMethod, payload?.requestedPermissions)
       : event.requestKind !== undefined
         ? toRequestTypeFromKind(event.requestKind)
         : toRequestTypeFromMethod(event.method);

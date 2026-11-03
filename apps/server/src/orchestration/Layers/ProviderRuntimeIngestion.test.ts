@@ -5834,6 +5834,19 @@ describe("ProviderRuntimeIngestion", () => {
     async (requestType, kind, summary) => {
       const harness = await createHarness();
       const now = new Date().toISOString();
+      const requestedPermissions =
+        kind === "permission"
+          ? { network: true }
+          : {
+              fileSystem: {
+                entries: [
+                  {
+                    access: kind === "file-read" ? "read" : "write",
+                    path: { type: "glob_pattern", pattern: "/w/**" },
+                  },
+                ],
+              },
+            };
 
       harness.emit({
         type: "request.opened",
@@ -5844,10 +5857,8 @@ describe("ProviderRuntimeIngestion", () => {
         requestId: ApprovalRequestId.makeUnsafe("req-permissions"),
         payload: {
           requestType,
-          detail: "Network access requested",
-          requestedPermissions: {
-            network: true,
-          },
+          detail: "Access requested",
+          requestedPermissions,
         },
       });
 
@@ -5872,7 +5883,7 @@ describe("ProviderRuntimeIngestion", () => {
 
       expect(requested?.summary).toBe(summary);
       expect(requestedPayload?.requestKind).toBe(kind);
-      expect(requestedPayload?.requestedPermissions).toEqual({ network: true });
+      expect(requestedPayload?.requestedPermissions).toEqual(requestedPermissions);
     },
   );
 

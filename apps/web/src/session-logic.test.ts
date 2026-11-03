@@ -590,7 +590,12 @@ describe("derivePendingApprovals", () => {
     (requestType) => {
       const requestedPermissions = {
         fileSystem: {
-          entries: [{ access: "read", path: { type: "glob_pattern", pattern: "/w/**" } }],
+          entries: [
+            {
+              access: requestType === "file_read_approval" ? "read" : "write",
+              path: { type: "glob_pattern", pattern: "/w/**" },
+            },
+          ],
         },
       };
       const approvals = derivePendingApprovals([

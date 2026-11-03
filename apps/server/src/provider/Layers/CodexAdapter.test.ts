@@ -2798,10 +2798,53 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       if (result._tag !== "Some" || result.value.type !== "request.opened") return;
       assert.equal(result.value.payload.requestType, expected);
       assert.deepEqual(result.value.payload.requestedPermissions, permissions);
-      assert.deepEqual(
-        result.value.payload.approvalOptions?.map((option) => option.decision),
-        ["decline", "acceptForSession", "accept"],
-      );
+      assert.equal(result.value.payload.approvalOptions, undefined);
+
+      const resolved = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      lifecycleManager.emit("event", {
+        id: asEventId("permission-entries-resolved"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "item/requestApproval/decision",
+        requestId: ApprovalRequestId.makeUnsafe("permission-entries"),
+        requestKind: "permission",
+        payload: {
+          requestMethod: "item/permissions/requestApproval",
+          requestedPermissions: permissions,
+          decision: "accept",
+        },
+      });
+      const resolution = yield* Fiber.join(resolved);
+      assert.equal(resolution._tag, "Some");
+      if (resolution._tag !== "Some" || resolution.value.type !== "request.resolved") return;
+      assert.equal(resolution.value.payload.requestType, expected);
+
+      const external = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      lifecycleManager.emit("event", {
+        id: asEventId("permission-entries-external"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "serverRequest/resolved",
+        requestId: ApprovalRequestId.makeUnsafe("permission-entries"),
+        requestKind: "permission",
+        payload: {
+          request: { method: "item/permissions/requestApproval", kind: "permission" },
+          requestedPermissions: permissions,
+          resolutionSource: "server",
+        },
+      });
+      const externalResolution = yield* Fiber.join(external);
+      assert.equal(externalResolution._tag, "Some");
+      if (
+        externalResolution._tag !== "Some" ||
+        externalResolution.value.type !== "request.resolved"
+      )
+        return;
+      assert.equal(externalResolution.value.payload.requestType, expected);
     }),
   );
 

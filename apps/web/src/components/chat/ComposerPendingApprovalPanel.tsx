@@ -60,7 +60,9 @@ export const ComposerPendingApprovalPanel = memo(function ComposerPendingApprova
   pendingCount,
 }: ComposerPendingApprovalPanelProps) {
   const summary = approvalSummary(approval.requestKind);
-  const detailLabel = approvalDetailLabel(approval.requestKind);
+  const detailLabel = approval.requestedPermissions
+    ? "Permission detail"
+    : approvalDetailLabel(approval.requestKind);
 
   return (
     <div className="min-w-0 px-4 py-3.5 sm:px-5 sm:py-4">
