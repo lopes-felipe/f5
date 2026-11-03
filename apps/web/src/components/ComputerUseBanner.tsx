@@ -82,8 +82,8 @@ export function computerUseBannerText(
     case "active":
       break;
   }
-  // Chrome holders have no backend; their lease lasts the browser runtime's life.
-  if (!holder.backend)
+  // Only Chrome holders carry `browser`; their lease lasts the browser runtime's life.
+  if (holder.browser)
     return holder.browser === "working" ? "An agent is using Chrome" : "An agent can use Chrome";
   if (holder.delivery === "foreground")
     return holder.appId
@@ -95,6 +95,24 @@ export function computerUseBannerText(
   if (background.length <= 1) return `An agent is working in ${app ?? "an app"} in the background`;
   const apps = [...new Set(background.flatMap((entry) => (entry.appName ? [entry.appName] : [])))];
   return `${background.length} agents are working in the background${apps.length ? ` in ${apps.join(", ")}` : ""}`;
+}
+
+/**
+ * Background-only control and an idle Chrome runtime are ambient: a quieter style, no
+ * takeover of the user's attention.
+ */
+export function computerUseBannerAmbient(
+  leases: typeof AgentComputerUseChanged.Type,
+  pausedLocally: boolean,
+): boolean {
+  const holder = primaryComputerHolder(leases);
+  return (
+    !leases.pendingTakeover &&
+    !leases.otherProfile &&
+    (holder?.delivery === "background" || holder?.browser === "idle") &&
+    holder.state === "active" &&
+    !pausedLocally
+  );
 }
 
 export function ComputerUseBanner() {
@@ -116,14 +134,7 @@ export function ComputerUseBanner() {
     .filter(([, value]) => value)
     .map(([id]) => id as AgentComputerUseHolder["threadId"]);
   if (!text && !retryTargets.length) return null;
-  // Background-only control and an idle Chrome runtime are ambient: a quieter style, no
-  // takeover of the user's attention.
-  const ambient =
-    !leases.pendingTakeover &&
-    !leases.otherProfile &&
-    (holder?.delivery === "background" || holder?.browser === "idle") &&
-    holder.state === "active" &&
-    !paused;
+  const ambient = computerUseBannerAmbient(leases, paused);
   const backend = holder?.backend;
   // A summary of several background agents controls all of them; otherwise just the one shown.
   const summarized = leases.pendingTakeover ? [] : computerUseBannerTargets(leases);

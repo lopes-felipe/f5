@@ -53,13 +53,29 @@ interface ComputerCardState {
   readonly chrome?: "idle" | "working" | "unknown" | undefined;
 }
 
+/**
+ * While the thread holds the Chrome lease, its Chrome state outranks any finished native
+ * action: the store keeps the last one indefinitely, and it predates the lease.
+ */
+function showsChrome(activity: ActivitySummary | undefined, state: ComputerCardState): boolean {
+  return state.chrome !== undefined && activity?.status !== "started";
+}
+
+/** The activity the card describes: none while the Chrome state outranks it. */
+export function cardActivity<T extends ActivitySummary>(
+  activity: T | undefined,
+  chrome: ComputerCardState["chrome"],
+): T | undefined {
+  return showsChrome(activity, { chrome }) ? undefined : activity;
+}
+
 /** Plain-language line for what the agent is doing on the computer. */
 export function describeComputerAction(
   activity: ActivitySummary | undefined,
   state: ComputerCardState,
 ): string {
   if (state.paused) return "You have control";
-  if (!activity && state.held && state.chrome)
+  if (showsChrome(activity, state))
     return state.chrome === "working"
       ? "Agent is using Chrome"
       : state.chrome === "idle"
@@ -88,9 +104,9 @@ export function computerStatusTone(
   state: ComputerCardState,
 ): ComputerStatusTone {
   if (state.paused) return "warning";
+  if (showsChrome(activity, state)) return state.chrome === "idle" ? "ok" : "pending";
   if (activity?.status === "failed") return "error";
   if (activity?.status === "interrupted") return "warning";
-  if (!activity && state.held && state.chrome === "idle") return "ok";
   if (activity?.status === "started" || state.held) return "pending";
   if (activity?.status === "completed") return "ok";
   return "off";

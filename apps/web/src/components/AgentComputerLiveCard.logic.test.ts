@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  cardActivity,
   COMPUTER_TIER_LABEL,
   computerBackendLabel,
   computerGrantLabel,
@@ -106,6 +107,25 @@ describe("computer live card text", () => {
     );
     expect(computerStatusTone(undefined, { held: true, chrome: "idle" })).toBe("ok");
     expect(computerStatusTone(undefined, { held: true, chrome: "working" })).toBe("pending");
+  });
+
+  it("shows the Chrome state over a finished native action from before the lease", () => {
+    const failed = { op: "click", status: "failed" as const };
+    for (const old of [done("click"), failed]) {
+      expect(cardActivity(old, "idle")).toBeUndefined();
+      expect(describeComputerAction(old, { held: true, chrome: "idle" })).toBe(
+        "Chrome ready · not in use",
+      );
+      expect(describeComputerAction(old, { held: true, chrome: "working" })).toBe(
+        "Agent is using Chrome",
+      );
+      expect(computerStatusTone(old, { held: true, chrome: "idle" })).toBe("ok");
+    }
+    // A running native action still shows, and without Chrome nothing changes.
+    const running = { op: "click", status: "started" as const };
+    expect(cardActivity(running, "idle")).toBe(running);
+    expect(cardActivity(failed, undefined)).toBe(failed);
+    expect(computerStatusTone(failed, { held: true })).toBe("error");
   });
 
   it("labels every tier", () => {

@@ -2,6 +2,7 @@ import { ThreadId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isAgentComputerActive, useAgentComputerActivityStore } from "./agentComputerActivityStore";
 import {
+  computerUseBannerAmbient,
   computerUseBannerTargets,
   computerUseBannerText,
   primaryComputerHolder,
@@ -234,16 +235,35 @@ describe("computer use banner text", () => {
     expect(computerUseBannerText({ holders: [{ ...chrome, browser: "working" }] }, false)).toBe(
       "An agent is using Chrome",
     );
-    expect(computerUseBannerText({ holders: [chrome] }, false)).toBe("An agent can use Chrome");
+    expect(computerUseBannerText({ holders: [{ ...chrome, browser: "unknown" }] }, false)).toBe(
+      "An agent can use Chrome",
+    );
+    // Without the Chrome marker (an older server), the holder keeps the louder wording.
+    expect(computerUseBannerText({ holders: [chrome] }, false)).toBe(
+      "An agent is controlling this computer",
+    );
+    // Only an idle runtime gets the quieter style.
+    const ambient = (browser: "idle" | "working" | "unknown", paused = false) =>
+      computerUseBannerAmbient({ holders: [{ ...chrome, browser }] }, paused);
+    expect(ambient("idle")).toBe(true);
+    expect(ambient("working")).toBe(false);
+    expect(ambient("unknown")).toBe(false);
+    expect(ambient("idle", true)).toBe(false);
+    expect(
+      computerUseBannerAmbient(
+        { holders: [{ ...chrome, browser: "idle" }], otherProfile: true },
+        false,
+      ),
+    ).toBe(false);
     // An idle Chrome runtime doesn't outrank an agent working in an app.
     const idle = { ...chrome, threadId: ThreadId.makeUnsafe("b"), browser: "idle" as const };
     expect(primaryComputerHolder({ holders: [idle, holder] })).toBe(holder);
     expect(computerUseBannerText({ holders: [idle, holder] }, false)).toBe(
       "An agent is working in TextEdit in the background",
     );
-    expect(computerUseBannerText({ holders: [{ ...chrome, state: "paused" }] }, false)).toBe(
-      "Computer control paused",
-    );
+    expect(
+      computerUseBannerText({ holders: [{ ...chrome, browser: "idle", state: "paused" }] }, false),
+    ).toBe("Computer control paused");
   });
 });
 

@@ -317,6 +317,8 @@ export class CodexChromeSession {
     const gate = await this.gate();
     if (this.epoch !== epoch) return this.release();
     if (gate) return this.stop(gate.state, gate.detail);
+    // Reported first, so the lease main announces on acquiring never reads as unknown.
+    deps.broker.reportChromeCalls(deps.threadId, deps.generation, this.callRunning);
     try {
       await deps.broker.host.correlated(
         { type: "chromeLeaseAcquire", requestId: randomUUID(), holder: this.holder() },
@@ -326,6 +328,7 @@ export class CodexChromeSession {
       this.leaseHeld = true;
       this.reportCalls();
     } catch (error) {
+      deps.broker.reportChromeCalls(deps.threadId, deps.generation, undefined);
       if (this.epoch !== epoch) return;
       return this.stop("pending", `Chrome is busy: ${message(error)}`);
     }
@@ -477,9 +480,10 @@ export class CodexChromeSession {
     const { broker } = this.deps;
     if (this.launchToken) broker.stopIntegrationProcess(this.launchToken, reason);
     this.launchToken = undefined;
-    // Main keeps the lease until the stopped group is gone.
+    // Main keeps the lease until the stopped group is gone: idle until then, and the broker
+    // drops the report when the lease ends.
     if (this.leaseHeld) {
-      broker.reportChromeCalls(this.deps.threadId, this.deps.generation, undefined);
+      broker.reportChromeCalls(this.deps.threadId, this.deps.generation, false);
       broker.host.send({
         type: "chromeLeaseRelease",
         requestId: randomUUID(),

@@ -21,6 +21,7 @@ import {
 import { cn } from "../lib/utils";
 import { readNativeApi } from "../nativeApi";
 import {
+  cardActivity,
   computerBackendLabel,
   computerGrantLabel,
   computerStatusTone,
@@ -61,10 +62,9 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
       state.leases.holders.some((holder) => holder.threadId === threadId) ||
       state.leases.pendingTakeover?.threadId === threadId,
   );
-  const chrome = useAgentComputerActivityStore((state) => {
-    const holder = computerHolderFor(state.leases, threadId);
-    return holder && !holder.backend ? (holder.browser ?? "unknown") : undefined;
-  });
+  const chrome = useAgentComputerActivityStore(
+    (state) => computerHolderFor(state.leases, threadId)?.browser,
+  );
   const lastLeaseAt = useAgentComputerActivityStore((state) => state.lastLeaseAt[threadId]);
   const [now, setNow] = useState(Date.now());
   const [error, setError] = useState("");
@@ -116,9 +116,10 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
       </div>
     );
   }
-  const native = activity?.backend === "native";
-  const backendLabel = computerBackendLabel(activity?.backend);
-  const tone = computerStatusTone(activity, { paused, held, chrome });
+  const shown = cardActivity(activity, chrome);
+  const native = shown?.backend === "native";
+  const backendLabel = computerBackendLabel(shown?.backend);
+  const tone = computerStatusTone(shown, { paused, held, chrome });
   return (
     <div
       className={cn(
@@ -147,10 +148,10 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
           <span className="truncate">
             {stopUnconfirmed
               ? "Stop unconfirmed"
-              : describeComputerAction(activity, { paused, held, chrome })}
+              : describeComputerAction(shown, { paused, held, chrome })}
           </span>
-          {activity?.appName && !paused ? (
-            <span className="truncate font-normal text-muted-foreground">· {activity.appName}</span>
+          {shown?.appName && !paused ? (
+            <span className="truncate font-normal text-muted-foreground">· {shown.appName}</span>
           ) : null}
           {backendLabel ? (
             <span className="shrink-0 font-normal text-muted-foreground">· {backendLabel}</span>
@@ -183,7 +184,7 @@ export function AgentComputerLiveCard({ threadId }: { threadId: ThreadId }) {
             })
           )}
         </div>
-        {activity?.outcome === "OutcomeUnknown" ? (
+        {shown?.outcome === "OutcomeUnknown" ? (
           <p className="text-warning-foreground text-xs">
             Check the app before resuming. Observe the result before another action.
           </p>

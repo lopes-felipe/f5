@@ -90,7 +90,7 @@ export interface ComputerUseSnapshot {
     appName?: string;
     state: ComputerExecutionState;
     pauseCause?: ComputerPauseCause;
-    browser?: "idle" | "working";
+    browser?: "idle" | "working" | "unknown";
   }>;
   readonly pendingTakeover?: {
     threadId: string;
@@ -325,6 +325,14 @@ export class ComputerAutomationBrokerRuntime {
         }
       }
       if (message.type === "chromeLeaseChanged") {
+        // A lease that ended takes its call report with it; the session needn't say so.
+        const previous = this.chromeHolder;
+        if (
+          previous &&
+          (previous.threadId !== message.holder?.threadId ||
+            previous.sessionGeneration !== message.holder.sessionGeneration)
+        )
+          this.chromeCalls.delete(chromeCallsKey(previous.threadId, previous.sessionGeneration));
         this.chromeHolder = message.holder;
         this.chromeOtherProfile = message.otherProfile ?? false;
         this.chromeRecovery = message.recoveryRequired ?? false;
@@ -346,6 +354,7 @@ export class ComputerAutomationBrokerRuntime {
       ) {
         this.mainHolders = [];
         this.chromeHolder = null;
+        this.chromeCalls.clear();
         this.pendingTakeover = undefined;
         this.executionStates.clear();
         this.nativeOtherProfile = false;
@@ -493,9 +502,7 @@ export class ComputerAutomationBrokerRuntime {
         threadId: this.chromeHolder.threadId,
         delivery: "foreground",
         state: "active",
-        ...(running === undefined
-          ? {}
-          : { browser: running ? ("working" as const) : ("idle" as const) }),
+        browser: running === undefined ? "unknown" : running ? "working" : "idle",
       });
     }
     const pending = this.pendingTakeover;
@@ -683,8 +690,9 @@ export class ComputerAutomationBrokerRuntime {
     this.host.send({ type: "chromeProcessStop", launchToken, ...(reason ? { reason } : {}) });
   }
   /**
-   * A session holding the Chrome lease reports whether a browser call is running, so the
-   * banner doesn't call an idle runtime's lease control; `undefined` stops reporting.
+   * A session holding (or about to acquire) the Chrome lease reports whether a browser call
+   * is running, so the banner doesn't call an idle runtime's lease control. The report
+   * ends with the lease; `undefined` withdraws one whose lease was never acquired.
    */
   reportChromeCalls(threadId: string, generation: string, running: boolean | undefined): void {
     const key = chromeCallsKey(threadId, generation);
