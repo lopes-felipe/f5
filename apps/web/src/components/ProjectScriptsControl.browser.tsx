@@ -72,7 +72,8 @@ describe("ProjectScriptsControl", () => {
     await render(<Harness />);
 
     await page.getByRole("button", { name: "Script actions" }).click();
-    await page.getByRole("button", { name: "Edit Test" }).click();
+    // The cog only takes pointer events while its row is hovered, so click it directly.
+    (page.getByRole("button", { name: "Edit Test" }).element() as HTMLElement).click();
     await expect.element(page.getByRole("dialog", { name: "Edit Action" })).toBeVisible();
     await page.getByRole("button", { name: "Delete", exact: true }).click();
     await page.getByRole("button", { name: "Delete action" }).click();
