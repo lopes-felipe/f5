@@ -5825,46 +5825,56 @@ describe("ProviderRuntimeIngestion", () => {
     expect(persistedDetail).toContain("tail界");
   });
 
-  it("preserves requested permission profiles on approval activities", async () => {
-    const harness = await createHarness();
-    const now = new Date().toISOString();
+  it.each([
+    ["permissions_approval", "permission", "Permission approval requested"],
+    ["file_read_approval", "file-read", "File-read approval requested"],
+    ["file_change_approval", "file-change", "File-change approval requested"],
+  ])(
+    "preserves requested permission profiles on %s activities",
+    async (requestType, kind, summary) => {
+      const harness = await createHarness();
+      const now = new Date().toISOString();
 
-    harness.emit({
-      type: "request.opened",
-      eventId: asEventId("evt-permissions-request-opened"),
-      provider: "codex",
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      requestId: ApprovalRequestId.makeUnsafe("req-permissions"),
-      payload: {
-        requestType: "permissions_approval",
-        detail: "Network access requested",
-        requestedPermissions: {
-          network: true,
+      harness.emit({
+        type: "request.opened",
+        eventId: asEventId("evt-permissions-request-opened"),
+        provider: "codex",
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        requestId: ApprovalRequestId.makeUnsafe("req-permissions"),
+        payload: {
+          requestType,
+          detail: "Network access requested",
+          requestedPermissions: {
+            network: true,
+          },
         },
-      },
-    });
+      });
 
-    await waitForThread(harness.engine, (entry) =>
-      entry.activities.some(
+      await waitForThread(harness.engine, (entry) =>
+        entry.activities.some(
+          (activity: ProviderRuntimeTestActivity) =>
+            activity.id === "evt-permissions-request-opened",
+        ),
+      );
+
+      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      const thread = readModel.threads.find(
+        (entry) => entry.id === ThreadId.makeUnsafe("thread-1"),
+      );
+      const requested = thread?.activities.find(
         (activity: ProviderRuntimeTestActivity) => activity.id === "evt-permissions-request-opened",
-      ),
-    );
+      );
+      const requestedPayload =
+        requested?.payload && typeof requested.payload === "object"
+          ? (requested.payload as Record<string, unknown>)
+          : undefined;
 
-    const readModel = await Effect.runPromise(harness.engine.getReadModel());
-    const thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
-    const requested = thread?.activities.find(
-      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-permissions-request-opened",
-    );
-    const requestedPayload =
-      requested?.payload && typeof requested.payload === "object"
-        ? (requested.payload as Record<string, unknown>)
-        : undefined;
-
-    expect(requested?.summary).toBe("Permission approval requested");
-    expect(requestedPayload?.requestKind).toBe("permission");
-    expect(requestedPayload?.requestedPermissions).toEqual({ network: true });
-  });
+      expect(requested?.summary).toBe(summary);
+      expect(requestedPayload?.requestKind).toBe(kind);
+      expect(requestedPayload?.requestedPermissions).toEqual({ network: true });
+    },
+  );
 
   it("maps runtime.error into errored session state", async () => {
     const harness = await createHarness();

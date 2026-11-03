@@ -110,7 +110,7 @@ export const ComposerPendingApprovalPanel = memo(function ComposerPendingApprova
           </pre>
         </div>
       ) : null}
-      {approval.requestKind === "permission" ? (
+      {approval.requestKind === "permission" || approval.requestedPermissions ? (
         <pre className="mt-3 min-w-0 max-w-full max-h-40 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] rounded-md border border-border/70 bg-muted/40 p-3 font-mono text-xs leading-relaxed text-foreground">
           {formatRequestedPermissions(approval.requestedPermissions)}
         </pre>

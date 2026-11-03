@@ -585,6 +585,31 @@ describe("derivePendingApprovals", () => {
     ]);
   });
 
+  it.each(["file_read_approval", "file_change_approval"])(
+    "preserves the permission profile for %s",
+    (requestType) => {
+      const requestedPermissions = {
+        fileSystem: {
+          entries: [{ access: "read", path: { type: "glob_pattern", pattern: "/w/**" } }],
+        },
+      };
+      const approvals = derivePendingApprovals([
+        makeActivity({
+          id: "permission-profile",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          kind: "approval.requested",
+          summary: "File approval",
+          tone: "approval",
+          payload: { requestId: "permission-profile", requestType, requestedPermissions },
+        }),
+      ]);
+      expect(approvals[0]?.requestKind).toBe(
+        requestType === "file_read_approval" ? "file-read" : "file-change",
+      );
+      expect(approvals[0]?.requestedPermissions).toEqual(requestedPermissions);
+    },
+  );
+
   it("keeps unknown approval types actionable", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

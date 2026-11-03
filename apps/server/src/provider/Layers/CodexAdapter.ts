@@ -613,6 +613,17 @@ function itemLifecycleStatus(
   }
 }
 
+function permissionRequestType(permissions: Record<string, unknown>): CanonicalRequestType {
+  const fileSystem = asObject(permissions.fileSystem);
+  const entries = Array.isArray(fileSystem?.entries) ? fileSystem.entries : [];
+  const requests = (access: "read" | "write") =>
+    (Array.isArray(fileSystem?.[access]) && fileSystem[access].length > 0) ||
+    entries.some((entry) => asObject(entry)?.access === access);
+  if (requests("write")) return "file_change_approval";
+  if (requests("read")) return "file_read_approval";
+  return "permissions_approval";
+}
+
 function toRequestTypeFromMethod(method: string): CanonicalRequestType {
   switch (method) {
     case "item/commandExecution/requestApproval":
@@ -1382,11 +1393,22 @@ function mapToRuntimeEvents(
         ...runtimeEventBase(event, canonicalThreadId),
         type: "request.opened",
         payload: {
-          requestType: toRequestTypeFromMethod(event.method),
+          requestType: requestedPermissions
+            ? permissionRequestType(requestedPermissions)
+            : toRequestTypeFromMethod(event.method),
           ...(event.method === "mcpServer/elicitation/request"
             ? describeMcpElicitation(payload)
             : {}),
           ...(commandApprovalOptions ? { approvalOptions: commandApprovalOptions } : {}),
+          ...(requestedPermissions
+            ? {
+                approvalOptions: [
+                  { decision: "decline" as const, label: "Decline" },
+                  { decision: "acceptForSession" as const, label: "Always allow this session" },
+                  { decision: "accept" as const, label: "Approve once" },
+                ],
+              }
+            : {}),
           ...(detail ? { detail } : {}),
           ...(requestedPermissions ? { requestedPermissions } : {}),
           ...(event.payload !== undefined ? { args: event.payload } : {}),
