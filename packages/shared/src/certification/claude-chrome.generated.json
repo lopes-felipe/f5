@@ -5,8 +5,8 @@
     "platform": "darwin",
     "arch": "arm64",
     "versions": {
-      "sdkVersion": "0.3.295",
-      "cliVersion": "2.1.295"
+      "sdkMin": "0.3.295",
+      "cliMin": "2.1.295"
     },
     "identity": {
       "teamId": "Q6L2SF6YDW",
@@ -103,8 +103,8 @@
     "platform": "darwin",
     "arch": "arm64",
     "versions": {
-      "sdkVersion": "0.3.317",
-      "cliVersion": "2.1.317"
+      "sdkMin": "0.3.317",
+      "cliMin": "2.1.317"
     },
     "identity": {
       "teamId": "Q6L2SF6YDW",

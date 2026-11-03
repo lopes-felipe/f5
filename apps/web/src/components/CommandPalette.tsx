@@ -1,5 +1,7 @@
 "use client";
 
+import { resolvePastedPath } from "@t3tools/shared/path";
+
 import { openProjectCloneDialog } from "./ProjectCloneController";
 import {
   copyPromptLink,
@@ -809,7 +811,11 @@ function OpenCommandPaletteDialog(props: {
 
   function handleQueryChange(nextQuery: string): void {
     setHighlightedItemValue(null);
-    setQuery(nextQuery);
+    setQuery(
+      props.surfaceMode === "command" && !nextQuery.startsWith("?") && !nextQuery.startsWith(">")
+        ? resolvePastedPath(query, nextQuery)
+        : nextQuery,
+    );
     if (nextQuery === "" && currentView?.initialQuery) {
       popView();
     }

@@ -3128,6 +3128,7 @@ describe("respondToRequest", () => {
             requestId: "req-permissions-1",
             requestKind: "permission",
             requestMethod: "item/permissions/requestApproval",
+            requestedPermissions: { filesystem: { read: true, write: true } },
             decision,
           },
         }),
@@ -3804,6 +3805,45 @@ describe("Codex server requests", () => {
       payload: {
         request: { method: "applyPatchApproval", kind: "file-change" },
         resolutionSource: "server",
+      },
+    });
+  });
+
+  it("preserves the permission profile when a prompt is resolved externally", () => {
+    const manager = new CodexAppServerManager();
+    const context = requestContext(manager);
+    const requestId = ApprovalRequestId.makeUnsafe("req-external-permission");
+    const requestedPermissions = {
+      fileSystem: {
+        entries: [{ access: "write", path: { type: "glob_pattern", pattern: "/w/out/**" } }],
+      },
+    };
+    context.pendingApprovals.set(requestId, { requestedPermissions });
+    context.nativeRequestCorrelations.set("85", {
+      nativeRequestId: "85",
+      requestId,
+      method: "item/permissions/requestApproval",
+      requestKind: "permission",
+      responseChannel: "approval",
+      resolvedLocally: false,
+    });
+    const events: Array<Record<string, unknown>> = [];
+    manager.on("event", (event) => events.push(event as unknown as Record<string, unknown>));
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "serverRequest/resolved",
+      params: { threadId: "thread_1", requestId: 85 },
+    });
+    expect(context.pendingApprovals.size).toBe(0);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      method: "serverRequest/resolved",
+      payload: {
+        request: { method: "item/permissions/requestApproval", kind: "permission" },
+        requestedPermissions,
       },
     });
   });

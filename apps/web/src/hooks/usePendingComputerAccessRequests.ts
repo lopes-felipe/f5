@@ -3,14 +3,18 @@ import type { ComputerAccessPush } from "@t3tools/contracts";
 import { useAgentComputerActivityStore } from "../agentComputerActivityStore";
 
 /**
- * How long a Codex Chrome session request waits before it asks for attention. Desktop
- * main answers one the profile always allows by itself, and the settled event follows
- * the request within a local round trip, so it should never flash a dialog.
+ * How long a Codex Chrome session or Claude in Chrome setup request waits before it asks
+ * for attention. Desktop main answers one the profile always allows by itself, and the
+ * settled event follows the request within a local round trip, so it should never flash
+ * a dialog.
  */
 export const AUTO_ANSWER_GRACE_MS = 1_000;
 
 function mayBeAutoAnswered(request: typeof ComputerAccessPush.Type): boolean {
-  return request.kind === "chrome-session" && request.chromeSession?.integration === "codex-chrome";
+  return (
+    (request.kind === "chrome-session" && request.chromeSession?.integration === "codex-chrome") ||
+    (request.kind === "chrome-setup" && request.chromeSetup?.provider === "claude")
+  );
 }
 
 /** Deadlines affect attention, never the host's consent decision or retained request history. */

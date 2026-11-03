@@ -225,6 +225,38 @@ describe("AcpRuntimeModel", () => {
     }
   });
 
+  it("ends a tool call that ACP reports as cancelled", () => {
+    const toolCall = (status: "in_progress" | "cancelled") => {
+      const parsed = parseSessionUpdateEvent({
+        sessionId: "session-1",
+        update: {
+          sessionUpdate: status === "in_progress" ? "tool_call" : "tool_call_update",
+          toolCallId: "tool-1",
+          title: "Run sleep 60",
+          kind: "execute",
+          status,
+        },
+      } as EffectAcpSchema.SessionNotification);
+      const event = parsed.events[0];
+      if (event?._tag !== "ToolCallUpdated") {
+        throw new Error("expected a tool call update");
+      }
+      return event.toolCall;
+    };
+
+    const running = toolCall("in_progress");
+    const cancelled = mergeToolCallState(running, toolCall("cancelled"));
+    expect(cancelled.status).toBe("failed");
+    expect(
+      decideToolCallUpdateEmission({
+        previous: running,
+        next: cancelled,
+        lastEmittedDetailLength: 0,
+        skippedSinceEmit: 0,
+      }).emit,
+    ).toBe(true);
+  });
+
   it("trims padded current mode updates before emitting a mode change", () => {
     const result = parseSessionUpdateEvent({
       sessionId: "session-1",

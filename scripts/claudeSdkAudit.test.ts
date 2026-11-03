@@ -6,7 +6,7 @@ import { CLAUDE_SDK_MESSAGE_DISPOSITIONS } from "@t3tools/shared/claudeSdkManife
 import { PROVIDER_INTEGRATION_RECORDS } from "@t3tools/shared/providerIntegrationCertification";
 import {
   deprecatedClaudeSdkReferences,
-  staleClaudeChromeRecords,
+  uncoveredClaudeChromeTarget,
   extractClaudeSdkMessageSurface,
   handledClaudeMessageCases,
   unclassifiedClaudeMessages,
@@ -64,26 +64,26 @@ describe("Claude SDK drift guardrail", () => {
     expect(deprecatedClaudeSdkReferences(program)).toEqual([`${client}:1 setMaxThinkingTokens`]);
   });
 
-  it("requires Claude in Chrome records to follow the SDK pin unless withdrawn", () => {
-    const record = (id: string, sdkVersion: string, withdrawn?: string) => ({
-      id,
-      versions: { sdkVersion },
+  it("requires a non-withdrawn Claude in Chrome floor at or below the SDK pin", () => {
+    const record = (sdkMin: string, arch = "arm64", withdrawn?: string) => ({
+      platform: "darwin",
+      arch,
+      versions: { sdkMin },
       ...(withdrawn ? { withdrawn } : {}),
     });
+    // An older floor keeps covering a bumped pin.
+    expect(uncoveredClaudeChromeTarget([record("0.3.295")], "0.3.317")).toEqual([]);
+    expect(uncoveredClaudeChromeTarget([record("0.3.330")], "0.3.317")).toEqual(["darwin-arm64"]);
     expect(
-      staleClaudeChromeRecords(
-        [
-          record("current", "0.3.295"),
-          record("old", "0.3.200"),
-          record("retired", "0.3.100", "Withdrawn with SDK 0.3.200"),
-        ],
-        "0.3.295",
+      uncoveredClaudeChromeTarget(
+        [record("0.3.295", "arm64", "Withdrawn"), record("0.3.295", "x64")],
+        "0.3.317",
       ),
-    ).toEqual(["old"]);
+    ).toEqual(["darwin-arm64"]);
     const pin = JSON.parse(
       readFileSync(path.join(import.meta.dirname, "../apps/server/package.json"), "utf8"),
     ).dependencies["@anthropic-ai/claude-agent-sdk"];
-    expect(staleClaudeChromeRecords(PROVIDER_INTEGRATION_RECORDS["claude-chrome"], pin)).toEqual(
+    expect(uncoveredClaudeChromeTarget(PROVIDER_INTEGRATION_RECORDS["claude-chrome"], pin)).toEqual(
       [],
     );
   });

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { resolvePastedPath } from "@t3tools/shared/path";
 import { create } from "zustand";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ensureNativeApi } from "../nativeApi";
@@ -162,7 +163,11 @@ export function ProjectCloneController() {
               <div className="flex gap-2">
                 <Input
                   value={parentPath}
-                  onChange={(event) => useCloneDialog.setState({ parentPath: event.target.value })}
+                  onChange={(event) =>
+                    useCloneDialog.setState({
+                      parentPath: resolvePastedPath(parentPath, event.target.value),
+                    })
+                  }
                   disabled={pending}
                 />
                 <Button

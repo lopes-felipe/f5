@@ -9,14 +9,19 @@ import {
   type CodexComputerRecord,
   type IntegrationEvidenceReport,
 } from "@t3tools/shared/providerIntegrationCertification";
-import { codexRecordFromEvidence, mergeIntegrationRecords } from "./integrationRecordMerge";
+import {
+  claudeRecordWithFloors,
+  codexRecordFromEvidence,
+  coveringClaudeChromeRecord,
+  mergeIntegrationRecords,
+} from "./integrationRecordMerge";
 
 const COMMIT = "a".repeat(40);
 const base = PROVIDER_INTEGRATION_RECORDS["claude-chrome"][0]!;
 const record: ClaudeChromeRecord = {
   ...base,
   id: "claude-chrome-darwin-arm64-9.9.9",
-  versions: { ...base.versions, cliVersion: "9.9.9" },
+  versions: { ...base.versions, cliMin: "9.9.9" },
 };
 const older: ClaudeChromeRecord = { ...base, id: "claude-chrome-darwin-arm64-1.0.0" };
 const report: IntegrationEvidenceReport = {
@@ -92,19 +97,82 @@ describe("Claude in Chrome record merge", () => {
       mergeIntegrationRecords({
         existing: [],
         record,
-        report: { ...report, assertions: { ...report.assertions, "permission-mode": false } },
+        report: {
+          ...report,
+          assertions: { ...report.assertions, "terminal-claude-unaffected": false },
+        },
       }),
-    ).toThrow("assertion permission-mode");
+    ).toThrow("assertion terminal-claude-unaffected");
     expect(() =>
       mergeIntegrationRecords({
         existing: [],
         record,
-        report: { ...report, versions: { ...report.versions, cliVersion: "1.0.0" } },
+        report: { ...report, versions: { ...report.versions, cliMin: "1.0.0" } },
       }),
-    ).toThrow("versions.cliVersion");
+    ).toThrow("versions.cliMin");
     expect(() =>
       mergeIntegrationRecords({ existing: [], record, report: { ...report, dirty: true } }),
     ).toThrow("dirty");
+  });
+});
+
+describe("Claude in Chrome floors", () => {
+  const { withdrawn: _withdrawn, ...current } = base;
+  const legacy = {
+    ...current,
+    versions: { sdkVersion: "0.3.295", cliVersion: "2.1.295" },
+  } as ClaudeChromeRecord;
+  const candidate = (patch: Partial<ClaudeChromeRecord> = {}): ClaudeChromeRecord => ({
+    ...base,
+    id: "claude-chrome-darwin-arm64-2.1.400",
+    versions: { sdkMin: "0.3.400", cliMin: "2.1.400" },
+    ...patch,
+  });
+  const floor = claudeRecordWithFloors(legacy);
+
+  it("reads legacy exact versions as floors", () => {
+    expect(floor.versions).toEqual({ sdkMin: "0.3.295", cliMin: "2.1.295" });
+    expect(claudeRecordWithFloors(floor)).toEqual(floor);
+  });
+
+  it("covers a newer CLI with an unchanged descriptor, and nothing else", () => {
+    expect(coveringClaudeChromeRecord([floor], candidate())).toBe(floor);
+    // Key order in the stored identity doesn't matter.
+    const reordered = {
+      ...floor,
+      identity: Object.fromEntries(Object.entries(floor.identity).reverse()),
+    } as ClaudeChromeRecord;
+    expect(coveringClaudeChromeRecord([reordered], candidate())).toBe(reordered);
+    expect(
+      coveringClaudeChromeRecord(
+        [floor],
+        candidate({ identity: { ...base.identity, hostName: "com.anthropic.other" } }),
+      ),
+    ).toBeUndefined();
+    expect(
+      coveringClaudeChromeRecord([floor], candidate({ browsers: base.browsers.slice(1) })),
+    ).toBeUndefined();
+    expect(
+      coveringClaudeChromeRecord(
+        [floor],
+        candidate({ versions: { sdkMin: "0.3.100", cliMin: "2.1.100" } }),
+      ),
+    ).toBeUndefined();
+  });
+
+  it("keeps a withdrawn covering record in force instead of adding an unstamped one", () => {
+    // The record the runtime selects, as `claudeChromeRecordFor` does: withdrawn included.
+    const withdrawn = { ...floor, withdrawn: "Withdrawn" };
+    expect(coveringClaudeChromeRecord([withdrawn], candidate())).toBe(withdrawn);
+    const newer = {
+      ...floor,
+      id: "claude-chrome-darwin-arm64-2.1.350",
+      versions: { sdkMin: "0.3.350", cliMin: "2.1.350" },
+    };
+    // A withdrawn newer floor shadows the older one; the candidate falls under it.
+    expect(coveringClaudeChromeRecord([floor, { ...newer, withdrawn: "W" }], candidate())?.id).toBe(
+      newer.id,
+    );
   });
 });
 

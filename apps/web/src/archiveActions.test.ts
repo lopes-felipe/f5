@@ -97,6 +97,23 @@ describe("bulk deletion cleanup", () => {
     expect(mocks.confirm).not.toHaveBeenCalled();
     expect(mocks.request).toHaveBeenCalledWith([{ projectId: "project", path: "/repo/worktree" }]);
   });
+  it.each([
+    ["/repo/worktree/", "/repo/worktree"],
+    ["C:\\Repo\\Worktree", "c:/repo/worktree/"],
+  ])("offers one removal row for equivalent paths %s and %s", async (firstPath, secondPath) => {
+    const input = harness(["a", "b"]);
+    input.threads[0]!.worktreePath = firstPath;
+    input.threads[1]!.worktreePath = secondPath;
+    mocks.dispatch.mockResolvedValue(undefined);
+
+    const result = await deleteThreadsWithCleanup(input);
+
+    expect(result.succeeded).toEqual(["a", "b"]);
+    expect(result.failures).toEqual([]);
+    expect(mocks.request).toHaveBeenCalledTimes(1);
+    expect(mocks.request).toHaveBeenCalledWith([{ projectId: "project", path: firstPath }]);
+  });
+
   it("batches three deleted conversations and two orphan worktrees into one dialog", async () => {
     const input = harness(["a", "b", "c"]);
     input.threads.push({

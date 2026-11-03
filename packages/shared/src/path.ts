@@ -38,6 +38,37 @@ export function isWindowsAbsolutePath(value: string): boolean {
   return isUncPath(value) || isWindowsDrivePath(value);
 }
 
+const QUOTED_PATH_AT_END = /(?:'((?:[^']|'\\'')+)'|"([^"]+)")\s*$/;
+const SHELL_ESCAPE = /\\([\s'"\\()[\]{}<>|&;$`!*?#~^=])/g;
+
+function isHostPath(value: string): boolean {
+  return value.startsWith("/") || value.startsWith("~/") || isWindowsAbsolutePath(value);
+}
+
+/**
+ * Normalize a shell-quoted path pasted from Finder or Explorer. A full path pasted
+ * after a prefilled folder replaces it, while ordinary typing stays untouched.
+ */
+export function resolvePastedPath(previous: string, next: string): string {
+  const isTyping = next.startsWith(previous)
+    ? next.length === previous.length + 1
+    : previous.startsWith(next);
+  if (isTyping) return next;
+
+  const match = QUOTED_PATH_AT_END.exec(next);
+  // A new prefix before the quote is search text, rather than a prefilled folder.
+  if (match && previous.startsWith(next.slice(0, match.index).trimEnd())) {
+    const quoted = match[1]?.replaceAll("'\\''", "'") ?? match[2] ?? "";
+    if (isHostPath(quoted)) return quoted;
+  }
+
+  const afterFolder = /[/\\]$/.test(previous) && next.startsWith(previous);
+  const path = afterFolder ? next.slice(previous.length) : next;
+  if (!isHostPath(path)) return next;
+  // Backslashes are separators in Windows paths, not shell escapes.
+  return isWindowsAbsolutePath(path) ? path : path.replace(SHELL_ESCAPE, "$1");
+}
+
 export function isExplicitRelativePath(value: string): boolean {
   return (
     value === "." ||

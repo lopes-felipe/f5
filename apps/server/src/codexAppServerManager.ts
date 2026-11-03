@@ -2766,6 +2766,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         requestId: pendingRequest.requestId,
         requestKind: pendingRequest.requestKind,
         requestMethod: pendingRequest.method,
+        ...(pendingRequest.requestedPermissions
+          ? { requestedPermissions: pendingRequest.requestedPermissions }
+          : {}),
         decision,
       },
     });
@@ -3519,6 +3522,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           this.settleElicitation(context, correlation.requestId, "completed");
           return;
         }
+        const requestedPermissions = context.pendingApprovals.get(
+          correlation.requestId,
+        )?.requestedPermissions;
         if (correlation.responseChannel === "approval") {
           context.pendingApprovals.delete(correlation.requestId);
         } else {
@@ -3551,6 +3557,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
               ...(correlation.requestKind ? { kind: correlation.requestKind } : {}),
             },
             resolutionSource: "server",
+            ...(requestedPermissions ? { requestedPermissions } : {}),
           },
         });
         return;

@@ -10,6 +10,7 @@ import { Button } from "../ui/button";
 interface ComposerPendingApprovalActionsProps {
   requestId: ApprovalRequestId;
   requestKind: PendingApproval["requestKind"];
+  requestedPermissions?: PendingApproval["requestedPermissions"];
   canApprove: boolean;
   approvalOptions?: ReadonlyArray<ProviderApprovalOption> | undefined;
   /** Open on Decline and never present an approve choice as the default. */
@@ -43,6 +44,7 @@ function optionVariant(
 export const ComposerPendingApprovalActions = memo(function ComposerPendingApprovalActions({
   requestId,
   requestKind,
+  requestedPermissions,
   canApprove,
   approvalOptions,
   defaultToNo = false,
@@ -57,7 +59,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
           { decision: "cancel" as const, label: "Cancel" },
           { decision: "decline" as const, label: "Decline" },
         ]
-      : requestKind === "permission"
+      : requestKind === "permission" || requestedPermissions
         ? DEFAULT_OPTIONS.filter((option) => option.decision !== "cancel")
         : DEFAULT_OPTIONS;
   const options = suppressAlwaysAllowRule

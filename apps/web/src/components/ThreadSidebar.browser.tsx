@@ -2203,6 +2203,39 @@ describe("Thread sidebar", () => {
     }
   });
 
+  it("preserves search and action prefixes when pasting quoted paths into the palette", async () => {
+    const mounted = await mountApp({ width: 1_400, initialEntries: ["/"] });
+    const input = () =>
+      document.querySelector<HTMLInputElement>('[data-testid="command-palette"] input');
+    try {
+      useCommandPaletteStore.getState().toggleOpen();
+      const field = await waitForElement(input, "Command palette input should render.");
+      setInputValue(field, "?");
+      await vi.waitFor(() => expect(input()?.value).toBe("?"));
+      setInputValue(input()!, '?"/api/v1/users"');
+      await vi.waitFor(() => {
+        expect(input()?.value).toBe('?"/api/v1/users"');
+        expect(
+          document.querySelector<HTMLElement>('[data-testid="command-palette"]')?.dataset
+            .paletteMode,
+        ).toBe("content");
+      });
+
+      setInputValue(input()!, ">");
+      await vi.waitFor(() => expect(input()?.value).toBe(">"));
+      setInputValue(input()!, ">'/etc/hosts'");
+      await vi.waitFor(() => expect(input()?.value).toBe(">'/etc/hosts'"));
+
+      // Folder browsing still normalizes a paste after a prefilled directory.
+      setInputValue(input()!, "~/");
+      await vi.waitFor(() => expect(input()?.value).toBe("~/"));
+      setInputValue(input()!, "~/'/My Projects'");
+      await vi.waitFor(() => expect(input()?.value).toBe("/My Projects"));
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("opens the command palette from the sidebar search input", async () => {
     const mounted = await mountApp({
       width: 1_400,

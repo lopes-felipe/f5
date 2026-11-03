@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import type { AgentComputerUseChanged, AgentComputerUseHolder } from "@t3tools/contracts";
 import { MonitorIcon, SquareIcon } from "lucide-react";
@@ -49,9 +49,14 @@ export function computerUseBannerTargets(
     .filter((entry) => entry.delivery === "background")
     .map((entry) => entry.threadId);
 }
+/**
+ * `chromeLinger`: a Chrome call ended moments ago, so an idle runtime still reads as in use
+ * and the banner doesn't flicker between back-to-back calls.
+ */
 export function computerUseBannerText(
   leases: typeof AgentComputerUseChanged.Type,
   pausedLocally: boolean,
+  chromeLinger = false,
 ): string | null {
   const pending = leases.pendingTakeover;
   if (pending) {
@@ -61,7 +66,11 @@ export function computerUseBannerText(
       : `An agent is asking to take over ${app}`;
   }
   const holder = primaryComputerHolder(leases);
-  if (!holder)
+  // Only Chrome holders carry `browser`; their lease lasts the browser runtime's life, so an
+  // idle runtime past the linger after its last call has nothing to report.
+  const chromeIdle =
+    holder?.browser === "idle" && holder.state === "active" && !pausedLocally && !chromeLinger;
+  if (!holder || chromeIdle)
     return leases.otherProfile
       ? "An agent in another F5 profile is controlling this computer"
       : null;
@@ -82,9 +91,15 @@ export function computerUseBannerText(
     case "active":
       break;
   }
-  // Only Chrome holders carry `browser`; their lease lasts the browser runtime's life.
-  if (holder.browser)
-    return holder.browser === "working" ? "An agent is using Chrome" : "An agent can use Chrome";
+  switch (holder.browser) {
+    case "working":
+    case "idle":
+      return "An agent is using Chrome";
+    case "unknown":
+      return "An agent may be using Chrome";
+    case undefined:
+      break;
+  }
   if (holder.delivery === "foreground")
     return holder.appId
       ? `An agent is controlling ${app} in the foreground`
@@ -98,8 +113,7 @@ export function computerUseBannerText(
 }
 
 /**
- * Background-only control and an idle Chrome runtime are ambient: a quieter style, no
- * takeover of the user's attention.
+ * Background-only control is ambient: a quieter style, no takeover of the user's attention.
  */
 export function computerUseBannerAmbient(
   leases: typeof AgentComputerUseChanged.Type,
@@ -109,10 +123,28 @@ export function computerUseBannerAmbient(
   return (
     !leases.pendingTakeover &&
     !leases.otherProfile &&
-    (holder?.delivery === "background" || holder?.browser === "idle") &&
+    holder?.delivery === "background" &&
     holder.state === "active" &&
     !pausedLocally
   );
+}
+
+/** How long the banner keeps saying Chrome is in use after its last call ends. */
+export const CHROME_BANNER_LINGER_MS = 3000;
+
+/** True while any Chrome call runs and for `CHROME_BANNER_LINGER_MS` after the last one. */
+function useChromeLinger(leases: typeof AgentComputerUseChanged.Type): boolean {
+  const working = leases.holders.some((holder) => holder.browser === "working");
+  const [linger, setLinger] = useState(working);
+  useEffect(() => {
+    if (working) {
+      setLinger(true);
+      return;
+    }
+    const timer = setTimeout(() => setLinger(false), CHROME_BANNER_LINGER_MS);
+    return () => clearTimeout(timer);
+  }, [working]);
+  return working || linger;
 }
 
 export function ComputerUseBanner() {
@@ -129,7 +161,8 @@ export function ComputerUseBanner() {
   const title = useStore((store) =>
     threadId ? store.threads.find((thread) => thread.id === threadId)?.title : undefined,
   );
-  const text = computerUseBannerText(leases, paused);
+  const chromeLinger = useChromeLinger(leases);
+  const text = computerUseBannerText(leases, paused, chromeLinger);
   const retryTargets = Object.entries(stopUnconfirmed)
     .filter(([, value]) => value)
     .map(([id]) => id as AgentComputerUseHolder["threadId"]);

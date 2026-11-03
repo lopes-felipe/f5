@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ComputerAccessAnswer, ComputerAccessRequested } from "@t3tools/contracts";
 import { ComputerConsentAuthority } from "./ComputerConsentAuthority";
+import { claudeTerminalTargets } from "./IntegrationConsentStore";
 
 const request: ComputerAccessRequested = {
   requestId: "r",
@@ -155,6 +156,49 @@ describe("main-owned computer consent", () => {
     await authority.review("profile", offered);
     expect(alwaysAllow).toHaveBeenCalledWith("profile", "codex-chrome");
     expect(answer.mock.calls.at(-1)![1]).toMatchObject({ allowChromeSession: true });
+  });
+  it("remembers always-allow for Claude taking over the terminal, never for other setups", async () => {
+    const terminal = claudeTerminalTargets()[0]!;
+    const claudeSetup = (
+      provider: "claude" | "codex",
+      previousTargets = [terminal],
+    ): ComputerAccessRequested => ({
+      ...request,
+      kind: "chrome-setup",
+      apps: [],
+      chromeSetup: { provider, previousTargets, targetPath: "/f5/wrapper" },
+    });
+    let current = claudeSetup("claude");
+    const alwaysAllow = vi.fn();
+    const show = vi.fn(async (_profileId: string, _options: object) => ({
+      response: 1,
+      checkboxChecked: true,
+    }));
+    const answer = vi.fn();
+    const authority = new ComputerConsentAuthority({
+      platform: "darwin",
+      request: () => current,
+      answer,
+      show,
+      alwaysAllow,
+    });
+    await authority.review("profile", offered);
+    expect(show.mock.calls[0]![1]).toMatchObject({
+      message: "Allow browser integration setup?",
+      checkboxLabel: "Always allow for this profile (revoke in Settings)",
+    });
+    expect(answer.mock.calls.at(-1)![1]).toMatchObject({ allowChromeSetup: true });
+    expect(alwaysAllow).toHaveBeenCalledWith("profile", "claude-chrome");
+    current = claudeSetup("codex");
+    await authority.review("profile", offered);
+    expect(show.mock.calls[1]![1]).not.toHaveProperty("checkboxLabel");
+    // Another F5 profile's wrapper, alone or next to the terminal's, always asks.
+    for (const targets of [["/other-profile/claude/chrome/chrome-native-host"], [terminal, "/x"]]) {
+      current = claudeSetup("claude", targets);
+      await authority.review("profile", offered);
+      expect(show.mock.calls.at(-1)![1]).not.toHaveProperty("checkboxLabel");
+    }
+    expect(alwaysAllow).toHaveBeenCalledOnce();
   });
   it("remembers nothing when the request expires while the dialog is open", async () => {
     const session: ComputerAccessRequested = {

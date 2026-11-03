@@ -1,5 +1,7 @@
 import {
   evidenceMismatches,
+  recordForVersion,
+  type ClaudeChromeRecord,
   type CodexChromeRecord,
   type CodexComputerRecord,
   type IntegrationEvidenceReport,
@@ -64,6 +66,53 @@ export function codexRecordFromEvidence<R extends CodexRecord>(
     id: `${template.integration}-${template.platform}-${template.arch}-${appMin}`,
     versions: { ...facts, ...floors },
   };
+}
+
+/** Claude records held exact `sdkVersion`/`cliVersion` before floors; both read as floors. */
+export function claudeRecordWithFloors(record: ClaudeChromeRecord): ClaudeChromeRecord {
+  const { sdkVersion, cliVersion, ...rest } = record.versions;
+  return {
+    ...record,
+    versions: {
+      ...(sdkVersion ? { sdkMin: sdkVersion } : {}),
+      ...(cliVersion ? { cliMin: cliVersion } : {}),
+      ...rest,
+    },
+  };
+}
+
+const canonical = (value: unknown): string =>
+  JSON.stringify(value, (_key, entry: unknown) =>
+    entry && typeof entry === "object" && !Array.isArray(entry)
+      ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a.localeCompare(b, "en")))
+      : entry,
+  );
+
+/**
+ * The existing record that already covers a freshly extracted `candidate`: the one the
+ * runtime selects for its SDK (`claudeChromeRecordFor`'s rule, withdrawn records
+ * included), when its static identity, browsers and profile isolation are unchanged. A
+ * covered CLI needs no new record (or live run); any descriptor change needs one. A
+ * withdrawn covering record keeps the CLI off until new evidence is stamped.
+ */
+export function coveringClaudeChromeRecord(
+  existing: ReadonlyArray<ClaudeChromeRecord>,
+  candidate: ClaudeChromeRecord,
+): ClaudeChromeRecord | undefined {
+  const sdk = candidate.versions.sdkMin;
+  const selected =
+    sdk === undefined
+      ? undefined
+      : recordForVersion(
+          existing.filter(
+            (record) => record.platform === candidate.platform && record.arch === candidate.arch,
+          ),
+          sdk,
+        );
+  if (!selected) return undefined;
+  const statics = (record: ClaudeChromeRecord) =>
+    canonical([record.identity, record.browsers, record.profileIsolation]);
+  return statics(selected) === statics(candidate) ? selected : undefined;
 }
 
 /**

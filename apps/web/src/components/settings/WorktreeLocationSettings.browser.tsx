@@ -17,6 +17,19 @@ beforeEach(() => {
   });
 });
 
+it("saves a shell-quoted folder pasted after the existing directory", async () => {
+  const view = await render(<WorktreeLocationSettings />);
+  try {
+    const field = page.getByRole("textbox", { name: "Worktree location" });
+    await field.fill("/worktrees'/My Worktrees'");
+    await expect.element(field).toHaveValue("/My Worktrees");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    expect(state.save).toHaveBeenCalledExactlyOnceWith({ worktreesDirectory: "/My Worktrees" });
+  } finally {
+    await view.unmount();
+  }
+});
+
 it("resets once without saving the blurred draft", async () => {
   const view = await render(<WorktreeLocationSettings />);
   try {

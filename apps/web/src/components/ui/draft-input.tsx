@@ -6,6 +6,7 @@ import { Input, type InputProps } from "./input";
 export type DraftInputProps = Omit<InputProps, "value" | "onChange" | "defaultValue"> & {
   readonly value: string;
   readonly onCommit: (next: string) => void;
+  readonly normalizeDraft?: (previous: string, next: string) => string;
 };
 
 /**
@@ -15,7 +16,7 @@ export type DraftInputProps = Omit<InputProps, "value" | "onChange" | "defaultVa
  * round-trip, which otherwise makes fields backed by a server-hydrated
  * value feel laggy.
  */
-export function DraftInput({ value, onCommit, ...rest }: DraftInputProps) {
-  const bag = useCommitOnBlur(value, onCommit);
+export function DraftInput({ value, onCommit, normalizeDraft, ...rest }: DraftInputProps) {
+  const bag = useCommitOnBlur(value, onCommit, normalizeDraft ? { normalizeDraft } : {});
   return <Input {...rest} {...bag} />;
 }

@@ -20,6 +20,7 @@ import {
   FilesIcon,
   Globe2Icon,
   PanelRightIcon,
+  PlayIcon,
   SettingsIcon,
   SquarePenIcon,
   TerminalSquareIcon,
@@ -66,6 +67,8 @@ interface ChatHeaderProps {
   activeProjectName: string | undefined;
   onNewThreadInProject?: (() => void) | undefined;
   onOpenProjectSettings?: (() => void) | undefined;
+  /** Opens Settings → Project → Actions, the only entry point while a project has no actions. */
+  onOpenProjectActions?: (() => void) | undefined;
   workflowTitle?: string | undefined;
   workflowType?: WorkflowTypeValue | undefined;
   onOpenWorkflow?: (() => void) | undefined;
@@ -138,6 +141,7 @@ export const ChatHeader = memo(function ChatHeader({
   activeProjectName,
   onNewThreadInProject,
   onOpenProjectSettings,
+  onOpenProjectActions,
   workflowTitle,
   workflowType,
   onOpenWorkflow,
@@ -295,6 +299,12 @@ export const ChatHeader = memo(function ChatHeader({
                 <SettingsIcon aria-hidden="true" />
                 Project settings
               </MenuItem>
+              {onOpenProjectActions ? (
+                <MenuItem onClick={onOpenProjectActions}>
+                  <PlayIcon aria-hidden="true" />
+                  Manage actions
+                </MenuItem>
+              ) : null}
             </MenuPopup>
           </Menu>
         ) : activeProjectName ? (

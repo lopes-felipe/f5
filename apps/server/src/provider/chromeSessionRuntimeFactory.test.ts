@@ -10,6 +10,7 @@ import {
   type ClaudeChromeRecord,
 } from "@t3tools/shared/providerIntegrationCertification";
 import type { ComputerAutomationBrokerRuntime } from "../computer/ComputerAutomationBroker";
+import { CLAUDE_IN_CHROME_BUILD_NOT_CERTIFIED } from "./Layers/claudeAgentBrowser";
 import { parseNativeHostManifest } from "./chromeNativeHost";
 import { ChromeNativeHostTransactions } from "./chromeNativeHostJournal";
 import { makeChromeNativeHostStorage, readChromeArtifact } from "./chromeNativeHostStorage";
@@ -37,9 +38,11 @@ beforeEach(async () => {
   await writeFile(bundled, "binary");
   await writeFile(
     join(root, "pkg", "package.json"),
-    JSON.stringify({ name: base.identity.platformPackage, version: base.versions.sdkVersion }),
+    JSON.stringify({ name: base.identity.platformPackage, version: base.versions.sdkMin }),
   );
 });
+const bundleVersion = (version: string, name = base.identity.platformPackage) =>
+  writeFile(join(root, "pkg", "package.json"), JSON.stringify({ name, version }));
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
@@ -74,8 +77,48 @@ describe("Claude in Chrome executable identity", () => {
   it("accepts F5's bundled Claude, including through a symlink, without hashing it", async () => {
     await symlink(bundled, join(root, "link"));
     const result = await check({ executablePath: join(root, "link") });
-    expect(result).toMatchObject({ record: { id: certified.id }, executableRealpath: bundled });
+    expect(result).toMatchObject({
+      record: { id: certified.id },
+      sdkVersion: base.versions.sdkMin,
+      executableRealpath: bundled,
+    });
     expect("fingerprint" in result && result.fingerprint.startsWith(bundled)).toBe(true);
+  });
+
+  it("keeps a certified floor for newer bundled SDKs with the same descriptor", async () => {
+    await bundleVersion("99.0.0");
+    expect(await check()).toMatchObject({ record: { id: certified.id }, sdkVersion: "99.0.0" });
+  });
+
+  it("closes for a build below the floor or covered only by an unstamped newer record", async () => {
+    await bundleVersion("0.0.1");
+    expect(await check()).toEqual({
+      unavailable: { reason: "not-certified", detail: CLAUDE_IN_CHROME_BUILD_NOT_CERTIFIED },
+    });
+    // A changed descriptor's unstamped record shadows the older certified floor.
+    const { evidenceId: _evidence, evidenceCommit: _commit, ...changed } = certified;
+    const unstamped = {
+      ...changed,
+      id: "claude-chrome-darwin-arm64-99.0.0",
+      versions: { sdkMin: "99.0.0", cliMin: "99.0.0" },
+    };
+    await bundleVersion("99.1.0");
+    expect(await check({ records: [certified, unstamped] })).toMatchObject({
+      unavailable: { reason: "not-certified" },
+    });
+    // Withdrawing the record that covers the bundled SDK closes the gate (the off-switch),
+    // even when an older certified floor would cover it.
+    const newer = {
+      ...certified,
+      id: "claude-chrome-darwin-arm64-99.0.0",
+      versions: { sdkMin: "99.0.0", cliMin: "99.0.0" },
+    };
+    expect(await check({ records: [certified, newer] })).toMatchObject({
+      record: { id: newer.id },
+    });
+    expect(
+      await check({ records: [certified, { ...newer, withdrawn: "Withdrawn" }] }),
+    ).toMatchObject({ unavailable: { reason: "not-certified" } });
   });
 
   it.each([
@@ -88,12 +131,9 @@ describe("Claude in Chrome executable identity", () => {
       "unverifiable",
     ],
     [
-      "a drifted SDK package",
+      "a different SDK platform package",
       async () => {
-        await writeFile(
-          join(root, "pkg", "package.json"),
-          JSON.stringify({ name: base.identity.platformPackage, version: "0.0.1" }),
-        );
+        await bundleVersion(base.versions.sdkMin!, "@anthropic-ai/claude-agent-sdk-other");
         return {};
       },
       "executable-drift",

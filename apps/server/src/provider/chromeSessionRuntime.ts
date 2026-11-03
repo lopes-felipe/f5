@@ -7,6 +7,7 @@ import { ComputerControlError } from "@t3tools/shared/computerControl";
 import { ChromeArtifactCache } from "./chromeArtifactCache";
 import {
   chromeLaunchDecision,
+  chromeServerHasUncertifiedTools,
   type ChromeLaunchDecision,
   type ChromeNativeHostDescriptor,
   type ChromeServerStatus,
@@ -20,6 +21,7 @@ import type { PersistentChromeNativeHostStorage } from "./chromeNativeHostStorag
 import {
   CLAUDE_IN_CHROME_EXTERNAL_CONFLICT,
   CLAUDE_IN_CHROME_START_FAILED,
+  CLAUDE_IN_CHROME_TOOLS_CHANGED,
   classifyClaudeChromeTool,
   type ClaudeChromeToolClass,
 } from "./Layers/claudeAgentBrowser";
@@ -71,6 +73,8 @@ export const CHROME_ADMISSION_DEADLINE_MS = 1_000;
 export interface ChromeRuntimeDeps {
   readonly descriptor: ChromeNativeHostDescriptor;
   readonly record: ClaudeChromeRecord;
+  /** The bundled SDK version the session runs (at or above the record's floor). */
+  readonly sdkVersion?: string;
   readonly storage: PersistentChromeNativeHostStorage;
   readonly profileId: string;
   readonly userHome: string;
@@ -220,9 +224,7 @@ export class ChromeSessionRuntime {
         providerInstanceId: session.providerInstanceId,
         recordId: this.deps.record.id,
         ...(this.deps.record.evidenceId ? { evidenceId: this.deps.record.evidenceId } : {}),
-        ...(this.deps.record.versions.sdkVersion
-          ? { sdkVersion: this.deps.record.versions.sdkVersion }
-          : {}),
+        ...(this.deps.sdkVersion ? { sdkVersion: this.deps.sdkVersion } : {}),
         executablePath: this.deps.executableRealpath,
         providerHome: session.providerHome,
         userHome: this.deps.userHome,
@@ -256,25 +258,30 @@ export class ChromeSessionRuntime {
     if (!binding || !binding.transaction) return false;
     if (binding.state === "connected") {
       // Live re-check: any provenance mismatch invalidates immediately.
-      if (await this.verifyServer(status)) return true;
+      const check = await this.verifyServerWithReason(status);
+      if (check.ok) return true;
       this.invalidate(
         threadId,
         generation,
         "failed",
-        "Claude in Chrome's connection changed. Reconnect it in F5.",
+        check.toolsChanged
+          ? CLAUDE_IN_CHROME_TOOLS_CHANGED
+          : "Claude in Chrome's connection changed. Reconnect it in F5.",
       );
       return false;
     }
     // Failed and conflicted sessions return only through an explicit reconnect.
     if (binding.state !== "pending") return false;
-    const serverOk = await this.verifyServer(status);
+    const check = await this.verifyServerWithReason(status);
     if (this.current(threadId, generation) !== binding) return false;
-    if (!serverOk) {
+    if (!check.ok) {
       this.invalidate(
         threadId,
         generation,
         "failed",
-        "F5 could not verify the Chrome server's provenance.",
+        check.toolsChanged
+          ? CLAUDE_IN_CHROME_TOOLS_CHANGED
+          : "F5 could not verify the Chrome server's provenance.",
       );
       return false;
     }
@@ -303,6 +310,24 @@ export class ChromeSessionRuntime {
   }
 
   /** Live status re-check; any mismatch invalidates verification immediately. */
+  /**
+   * Verification, and whether a failure is only a tools change: the server lists an
+   * uncertified tool and its provenance passes without the tool list. A command or path
+   * mismatch is never blamed on new tools. One await, so invalidation isn't delayed.
+   */
+  private async verifyServerWithReason(
+    status: ChromeServerStatus | undefined,
+  ): Promise<{ ok: boolean; toolsChanged: boolean }> {
+    const uncertified =
+      status !== undefined && chromeServerHasUncertifiedTools(status, this.toolNames);
+    const { tools: _tools, ...withoutTools } = status ?? {};
+    const [ok, provenanceOk] = await Promise.all([
+      this.verifyServer(status),
+      uncertified ? this.verifyServer(withoutTools as ChromeServerStatus) : false,
+    ]);
+    return { ok, toolsChanged: !ok && uncertified && provenanceOk };
+  }
+
   verifyServer(status: ChromeServerStatus | undefined): Promise<boolean> {
     return (
       this.deps.descriptor.verifyServer?.(status, {
@@ -513,6 +538,7 @@ export function chromeRuntimeHost(input: {
   broker: ComputerAutomationBrokerRuntime;
   descriptor: ChromeNativeHostDescriptor;
   record: ClaudeChromeRecord;
+  sdkVersion?: string;
   storage: PersistentChromeNativeHostStorage;
   userHome: string;
   executableRealpath: string;
@@ -522,6 +548,7 @@ export function chromeRuntimeHost(input: {
   return new ChromeSessionRuntime({
     descriptor: input.descriptor,
     record: input.record,
+    ...(input.sdkVersion ? { sdkVersion: input.sdkVersion } : {}),
     storage: input.storage,
     userHome: input.userHome,
     executableRealpath: input.executableRealpath,

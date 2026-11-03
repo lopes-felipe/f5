@@ -4,6 +4,15 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- A profile can always allow Claude in Chrome taking the browser connection back from your terminal Claude, revocable in Settings → Browser & Computer. Replacing another F5 profile's setup always asks.
+
+### Changed
+
+- Claude in Chrome certification records are version floors: a Claude update with the same browser setup stays covered, and a changed setup or tool list closes Claude in Chrome with its reason until a new live run. Withdrawing the covering record turns it off, and desktop and server use the same gate.
+- The Claude in Chrome live harness observes terminal `claude --chrome` coexistence; permission-mode behaviour, routing isolation, stale native hosts and frozen-server stop are no longer required of the live run.
+
 ## [0.1.3] - 2026-11-03
 
 ### Added

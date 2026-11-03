@@ -11,12 +11,14 @@ import type {
 import {
   PROVIDER_INTEGRATION_RECORDS,
   certifiedIntegrationRecord,
+  claudeChromeRecordFor,
   integrationRecordById,
   type ClaudeChromeRecord,
 } from "@t3tools/shared/providerIntegrationCertification";
 import { ComputerControlError } from "@t3tools/shared/computerControl";
 import type { ComputerAutomationBrokerRuntime } from "../computer/ComputerAutomationBroker";
 import {
+  CLAUDE_IN_CHROME_BUILD_NOT_CERTIFIED,
   CLAUDE_IN_CHROME_HOME_MISMATCH,
   CLAUDE_IN_CHROME_ISOLATED_PROFILE,
   CLAUDE_IN_CHROME_NEEDS_BUNDLED,
@@ -56,6 +58,8 @@ export type ChromeUnavailableReason = {
 
 export interface ClaudeChromeIdentity {
   readonly record: ClaudeChromeRecord;
+  /** The bundled SDK version this build runs, at or above the record's floor. */
+  readonly sdkVersion: string;
   readonly executableRealpath: string;
   /** Metadata identity only: the 240 MB executable is never hashed. */
   readonly fingerprint: string;
@@ -63,8 +67,8 @@ export interface ClaudeChromeIdentity {
 
 /**
  * Executable identity without hashing: the resolved executable must be F5's bundled
- * Claude by realpath, its platform package version must equal the record's SDK
- * version, and the provider must run with the real macOS home.
+ * Claude by realpath, its platform package version must be covered by a certified record
+ * floor (`claudeChromeRecordFor`), and the provider must run with the real macOS home.
  */
 export async function claudeChromeAvailability(input: {
   readonly platform?: string;
@@ -109,19 +113,28 @@ export async function claudeChromeAvailability(input: {
       name?: unknown;
       version?: unknown;
     };
-    if (
-      manifest.name !== record.identity.platformPackage ||
-      manifest.version !== record.versions.sdkVersion
-    )
+    if (manifest.name !== record.identity.platformPackage || typeof manifest.version !== "string")
       return {
         unavailable: {
           reason: "executable-drift",
           detail: "This Claude build isn't certified for Chrome. Update F5.",
         },
       };
+    // Records are floors: the newest one at or below this build decides, and only if stamped.
+    const covering = claudeChromeRecordFor(
+      platform,
+      arch,
+      manifest.version,
+      input.records ?? PROVIDER_INTEGRATION_RECORDS["claude-chrome"],
+    );
+    if (!covering)
+      return {
+        unavailable: { reason: "not-certified", detail: CLAUDE_IN_CHROME_BUILD_NOT_CERTIFIED },
+      };
     const info = await stat(bundled);
     return {
-      record,
+      record: covering,
+      sdkVersion: manifest.version,
       executableRealpath: bundled,
       fingerprint: `${bundled}\0${info.ino}\0${info.size}\0${info.mtimeMs}`,
     };
@@ -216,6 +229,7 @@ export const makeChromeSessionRuntime = (input: {
       broker: input.broker,
       descriptor,
       record: identity.record,
+      sdkVersion: identity.sdkVersion,
       storage,
       userHome: input.userHome,
       executableRealpath: identity.executableRealpath,

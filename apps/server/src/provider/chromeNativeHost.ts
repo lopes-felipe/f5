@@ -138,6 +138,19 @@ export async function verifyClaudeWrapper(
   }
 }
 
+/** Whether the live server lists a tool outside the certified inventory. */
+export function chromeServerHasUncertifiedTools(
+  status: ChromeServerStatus | undefined,
+  toolNames: ReadonlyArray<string>,
+): boolean {
+  if (!Array.isArray(status?.tools)) return false;
+  const allowed = new Set(toolNames);
+  return status.tools.some((tool) => {
+    const name = typeof tool === "string" ? tool : (tool as { name?: unknown } | null)?.name;
+    return typeof name === "string" && !allowed.has(name);
+  });
+}
+
 /** Provenance of the CLI's own Chrome MCP server, checked on every status read. */
 export async function verifyClaudeChromeServer(
   status: ChromeServerStatus | undefined,
