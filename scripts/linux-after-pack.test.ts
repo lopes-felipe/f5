@@ -30,6 +30,7 @@ describe.skipIf(process.platform === "win32")("Linux afterPack", () => {
       } as const;
       let sandboxSpecialBits = 0;
       await fs.mkdir(join(appOutDir, "resources"), { recursive: true });
+      await fs.mkdir(join(appOutDir, "sticky-dir"));
       await fs.mkdir(join(root, "outside"));
       for (const [file, [before]] of Object.entries(modes)) {
         await fs.writeFile(join(root, file), "");
@@ -41,6 +42,7 @@ describe.skipIf(process.platform === "win32")("Linux afterPack", () => {
       }
       await fs.chmod(appOutDir, 0o777);
       await fs.chmod(join(appOutDir, "resources"), 0o777);
+      await fs.chmod(join(appOutDir, "sticky-dir"), 0o1777);
       await fs.chmod(join(root, "outside"), 0o777);
       await fs.symlink("../outside", join(appOutDir, "linked-dir"));
       await fs.symlink("../outside/file", join(appOutDir, "linked-file"));
@@ -57,6 +59,7 @@ describe.skipIf(process.platform === "win32")("Linux afterPack", () => {
         expect((await fs.stat(dir)).mode & 0o7777).toBe(0o755);
       }
       expect((await fs.stat(join(root, "outside"))).mode & 0o7777).toBe(0o777);
+      expect((await fs.stat(join(appOutDir, "sticky-dir"))).mode & 0o7777).toBe(0o1755);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
