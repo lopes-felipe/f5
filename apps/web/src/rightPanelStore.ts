@@ -1,8 +1,16 @@
 import type { PrQuickActionRequest } from "./lib/prQuickActions";
 import type { PullRequestKey, ThreadId } from "@t3tools/contracts";
 import { create } from "zustand";
+import { useAgentTranscriptStore, transcriptKey } from "./lib/agentTranscriptStore";
 
 export type RightPanelSurface =
+  | {
+      id: `agent:${string}`;
+      kind: "agent-transcript";
+      workItemIds: string[];
+      title: string;
+      focusActivityId?: string | null;
+    }
   | {
       id: `pr:${string}`;
       kind: "pull-request";
@@ -40,6 +48,15 @@ export interface OpenFileSurfaceInput {
 }
 
 interface RightPanelStoreState {
+  openAgentTranscript: (
+    threadId: ThreadId,
+    input: {
+      nativeWorkItemId: string;
+      workItemIds: readonly string[];
+      title: string;
+      focusActivityId?: string | null;
+    },
+  ) => void;
   byThreadId: Record<string, ThreadRightPanelState>;
   /** Closed tabs across every thread, oldest first. */
   closedHistory: ClosedRightPanelSurface[];
@@ -48,14 +65,17 @@ interface RightPanelStoreState {
   moveSurface: (threadId: ThreadId, from: number, to: number) => void;
   /** Reopens the most recently closed tab in its own thread, skipping tabs already open. */
   reopenClosed: () => ClosedRightPanelSurface | null;
-  open: (threadId: ThreadId, kind: Exclude<RightPanelSurfaceKind, "file" | "pull-request">) => void;
+  open: (
+    threadId: ThreadId,
+    kind: Exclude<RightPanelSurfaceKind, "file" | "pull-request" | "agent-transcript">,
+  ) => void;
   /**
    * Adds a surface tab without opening the panel or changing the active tab unless
    * `activate` is set. Agent-initiated surfaces use this so they never steal focus.
    */
   addSurface: (
     threadId: ThreadId,
-    kind: Exclude<RightPanelSurfaceKind, "file" | "pull-request">,
+    kind: Exclude<RightPanelSurfaceKind, "file" | "pull-request" | "agent-transcript">,
     options?: { readonly activate?: boolean },
   ) => void;
   consumePullRequestAction: (threadId: ThreadId, surfaceId: string, requestId: string) => void;
@@ -92,7 +112,7 @@ function threadKey(threadId: ThreadId): string {
 }
 
 function singletonSurface(
-  kind: Exclude<RightPanelSurfaceKind, "file" | "pull-request">,
+  kind: Exclude<RightPanelSurfaceKind, "file" | "pull-request" | "agent-transcript">,
 ): RightPanelSurface {
   switch (kind) {
     case "diff":
@@ -189,6 +209,9 @@ function closeWithHistory(
     selectThreadRightPanelState(byThreadId, threadId).surfaces.map((surface) => surface.id),
   );
   const removed = before.surfaces.filter((surface) => !remaining.has(surface.id));
+  for (const surface of removed)
+    if (surface.kind === "agent-transcript")
+      useAgentTranscriptStore.getState().evict(transcriptKey(threadId, surface.id.slice(6)));
   if (!removed.length) return { byThreadId };
   const removedIds = new Set(removed.map((surface) => surface.id));
   const closedHistory = [
@@ -201,6 +224,20 @@ function closeWithHistory(
 }
 
 export const useRightPanelStore = create<RightPanelStoreState>()((set, get) => ({
+  openAgentTranscript: (threadId, input) =>
+    set((state) => ({
+      byThreadId: updateThread(state.byThreadId, threadId, (current) =>
+        upsertSurface(current, {
+          id: `agent:${input.nativeWorkItemId}`,
+          kind: "agent-transcript",
+          title: input.title,
+          workItemIds: [...input.workItemIds],
+          ...(input.focusActivityId !== undefined
+            ? { focusActivityId: input.focusActivityId }
+            : {}),
+        }),
+      ),
+    })),
   byThreadId: {},
   closedHistory: [],
   tabMenuThreadId: null,
@@ -385,6 +422,9 @@ export const useRightPanelStore = create<RightPanelStoreState>()((set, get) => (
     })),
   removeThread: (threadId) =>
     set((state) => {
+      for (const surface of selectThreadRightPanelState(state.byThreadId, threadId).surfaces)
+        if (surface.kind === "agent-transcript")
+          useAgentTranscriptStore.getState().evict(transcriptKey(threadId, surface.id.slice(6)));
       const key = threadKey(threadId);
       const { [key]: _panel, ...byThreadId } = state.byThreadId;
       return {

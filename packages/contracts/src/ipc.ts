@@ -378,6 +378,8 @@ import type {
 import type { GlobalSearchQueryInput, GlobalSearchQueryResult } from "./globalSearch";
 import type {
   AgentsDismissInput,
+  AgentsReadTranscriptInput,
+  AgentTranscriptPage,
   AgentsDismissResult,
   AgentsGetSnapshotInput,
   AgentsSnapshot,
@@ -1316,6 +1318,7 @@ export interface NativeApi {
     cancelTask: (input: AgentBridgeTaskControlInput) => Promise<BotTask>;
   };
   agents: {
+    readTranscript: (input: AgentsReadTranscriptInput) => Promise<AgentTranscriptPage>;
     getSnapshot: (input?: AgentsGetSnapshotInput) => Promise<AgentsSnapshot>;
     dismiss: (input: AgentsDismissInput) => Promise<AgentsDismissResult>;
     onSnapshotUpdated: (callback: (snapshot: AgentsSnapshot) => void) => () => void;

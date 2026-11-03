@@ -18,6 +18,7 @@ import {
   ThreadBackgroundWorkThreadFreshnessInput,
   ThreadBackgroundWorkTransition,
   type ThreadBackgroundWorkRepositoryShape,
+  type OwnedBackgroundWorkEntry,
 } from "../Services/ThreadBackgroundWork.ts";
 
 const MAX_BACKGROUND_WORK_ROWS_PER_THREAD = 200;
@@ -44,6 +45,7 @@ const make = Effect.gen(function* () {
         provider_name,
         provider_instance_id,
         provider_session_identity,
+        native_parent_session_id,
         turn_id,
         classification,
         ownership,
@@ -68,6 +70,7 @@ const make = Effect.gen(function* () {
         ${row.provider},
         ${row.providerInstanceId},
         ${row.providerSessionIdentity},
+        ${row.nativeParentSessionId ?? null},
         ${row.turnId},
         ${row.classification ?? "working"},
         ${row.ownership ?? "direct-subagent"},
@@ -96,6 +99,7 @@ const make = Effect.gen(function* () {
         provider_name = excluded.provider_name,
         provider_instance_id = excluded.provider_instance_id,
         provider_session_identity = excluded.provider_session_identity,
+        native_parent_session_id = COALESCE(projection_thread_background_work.native_parent_session_id, excluded.native_parent_session_id),
         turn_id = COALESCE(excluded.turn_id, projection_thread_background_work.turn_id),
         classification = CASE
           WHEN ${row.classification ?? null} IS NULL
@@ -389,6 +393,23 @@ const make = Effect.gen(function* () {
     );
 
   return {
+    getOwnedEntries: ({ threadId, workItemIds }) =>
+      workItemIds.length === 0
+        ? Effect.succeed([])
+        : sql<
+            Omit<OwnedBackgroundWorkEntry, "active"> & { active: number }
+          >`SELECT provider_work_item_id AS "workItemId", provider_name AS provider,
+        provider_instance_id AS "providerInstanceId", kind, active, status,
+        native_parent_session_id AS "nativeParentSessionId",
+        provider_session_identity AS "providerSessionIdentity"
+        FROM projection_thread_background_work WHERE thread_id = ${threadId}
+        AND EXISTS (SELECT 1 FROM projection_threads WHERE projection_threads.thread_id = ${threadId} AND deleted_at IS NULL)
+        AND provider_work_item_id IN ${sql.in(workItemIds)}`.pipe(
+            Effect.map((rows) => rows.map((row) => ({ ...row, active: row.active === 1 }))),
+            Effect.mapError(
+              toPersistenceSqlError("ThreadBackgroundWorkRepository.getOwnedEntries"),
+            ),
+          ),
     upsertTransition,
     markThreadInactive,
     expireStale,

@@ -114,6 +114,7 @@ function makeLayer(input: {
     stopSession: input.stopSession,
   } as unknown as ProviderServiceShape;
   const backgroundWork: ThreadBackgroundWorkShape = {
+    getOwnedEntries: () => Effect.succeed([]),
     recordProviderEvent: () => Effect.void,
     getSnapshot: Effect.succeed({ entries: [], generatedAt: "1970-01-01T00:00:00.000Z" }),
     getThreadSnapshot: () =>

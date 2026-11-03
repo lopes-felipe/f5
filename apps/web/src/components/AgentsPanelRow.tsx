@@ -8,6 +8,7 @@ import {
   CopyIcon,
   EyeOffIcon,
   SquareIcon,
+  ScrollTextIcon,
   TriangleAlertIcon,
   WorkflowIcon,
   XIcon,
@@ -80,7 +81,9 @@ function activityLine(entry: AgentsPanelEntry): string | null {
   return outcome;
 }
 
-export function AgentStatusGlyph(props: { readonly entry: AgentsPanelEntry }) {
+export function AgentStatusGlyph(props: {
+  readonly entry: Pick<AgentsPanelEntry, "status" | "live">;
+}) {
   const label = agentStatusLabel(props.entry);
   const presentation = STATUS_PRESENTATION[props.entry.status];
   const settledButRunning = !props.entry.live && presentation.icon === null;
@@ -181,6 +184,7 @@ export interface AgentRowActions {
   readonly onStop: () => void;
   readonly onDismiss: () => void;
   readonly onNavigate: () => void;
+  readonly onOpenTranscript?: () => void;
   readonly onOpenThread: () => void;
   readonly onInspect: (cursor?: string) => Promise<NativeTaskInspection | null>;
   readonly onLoadPrompt: () => Promise<string | null>;
@@ -247,7 +251,12 @@ function AgentDetail(props: {
       <DetailSection
         title={entry.live ? "Latest output" : "Result"}
         action={
-          actions.canInspect ? (
+          entry.kind !== "shell" ? (
+            <Button size="xs" variant="ghost" onClick={actions.onOpenTranscript}>
+              <ScrollTextIcon />
+              Open transcript
+            </Button>
+          ) : actions.canInspect ? (
             <Button
               size="xs"
               variant="ghost"
@@ -342,6 +351,12 @@ function AgentDetail(props: {
         <Button size="xs" variant="outline" onClick={actions.onNavigate}>
           Jump to timeline
         </Button>
+        {entry.kind !== "shell" ? (
+          <Button size="xs" variant="outline" onClick={actions.onOpenTranscript}>
+            <ScrollTextIcon />
+            Open transcript
+          </Button>
+        ) : null}
         {!entry.active ? (
           <Button size="xs" variant="ghost" onClick={actions.onDismiss}>
             <EyeOffIcon />
@@ -420,6 +435,16 @@ export function AgentRow(props: {
           ) : null}
         </span>
         <span className="pointer-events-none absolute top-1 right-1 flex items-center gap-0.5 rounded-md bg-background/90 opacity-0 group-focus-within/agent:pointer-events-auto group-focus-within/agent:opacity-100 group-hover/agent:pointer-events-auto group-hover/agent:opacity-100">
+          {entry.kind !== "shell" ? (
+            <Button
+              size="icon-xs"
+              variant="ghost"
+              aria-label="Open transcript"
+              onClick={actions.onOpenTranscript}
+            >
+              <ScrollTextIcon />
+            </Button>
+          ) : null}
           {entry.live && actions.canStop ? (
             <Button
               size="icon-xs"

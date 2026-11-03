@@ -152,6 +152,9 @@ function taskTransition(
     return {
       threadId: event.threadId,
       workItemId: nativeTaskWorkItemId(event.payload.taskId, event.payload.runId),
+      ...(event.payload.nativeParentSessionId
+        ? { nativeParentSessionId: event.payload.nativeParentSessionId }
+        : {}),
       provider: event.provider,
       ...(event.payload.model ? { model: event.payload.model } : {}),
       ...(event.payload.effort !== undefined ? { effort: event.payload.effort } : {}),
@@ -366,6 +369,7 @@ const make = Effect.gen(function* () {
     expireStale,
     listProtectedThreadIds,
     hasFreshProtectingWork: (input) => repository.hasFreshProtectingWork(input),
+    getOwnedEntries: (input) => repository.getOwnedEntries(input),
     changes: Stream.fromPubSub(changesPubSub),
   } satisfies ThreadBackgroundWorkShape;
 });

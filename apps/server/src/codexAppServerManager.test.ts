@@ -4552,6 +4552,39 @@ it("reads one bounded native item page for an owned child thread", async () => {
   expect(sendRequest).toHaveBeenCalledTimes(1);
 });
 
+it("reads raw child transcript pages with ownership and envelope checks", async () => {
+  const { manager, context, sendRequest } = createThreadControlHarness();
+  const threadId = asThreadId("thread_1");
+  const sessions = (manager as unknown as { sessions: Map<ThreadId, unknown> }).sessions;
+  sessions.set(threadId, context);
+  Object.assign(context, { childThreadIds: new Set(["native-child"]) });
+  const data = [
+    {
+      id: "command",
+      type: "commandExecution",
+      command: "pwd",
+      aggregatedOutput: "x".repeat(100000),
+    },
+  ];
+  sendRequest.mockResolvedValue({ data, nextCursor: "next" });
+  expect(await manager.readChildThreadItems(threadId, "native-child", null, 50)).toEqual({
+    data,
+    nextCursor: "next",
+  });
+  expect(await manager.readChildThreadItems(threadId, "foreign-child", null, 50)).toBeNull();
+  expect(sendRequest).toHaveBeenCalledTimes(1);
+  sendRequest.mockResolvedValue({});
+  await expect(manager.readChildThreadItems(threadId, "native-child", null, 50)).rejects.toThrow(
+    "Invalid child transcript page",
+  );
+  sendRequest.mockRejectedValue(
+    new CodexJsonRpcError("thread/items/list", -32601, "not available"),
+  );
+  expect(await manager.readChildThreadItems(threadId, "native-child", null, 50)).toBe(
+    "unsupported-provider",
+  );
+});
+
 it.each(["0.144.3", "0.147.0", "0.160.1", "0.162.0"])(
   "gates goal deferral on resume for %s",
   (cliVersion) => {

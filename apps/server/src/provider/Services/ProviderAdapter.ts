@@ -148,6 +148,15 @@ export interface ProviderAdapterShape<TError> {
    */
   readonly provider: ProviderKind;
   readonly capabilities: ProviderAdapterCapabilities;
+  readonly readChildThreadItems?: (
+    threadId: ThreadId,
+    childId: string,
+    cursor: string | null,
+    limit: number,
+  ) => Effect.Effect<
+    { data: unknown[]; nextCursor: string | null } | "unsupported-provider" | null,
+    TError
+  >;
 
   /**
    * Start a provider-backed session.

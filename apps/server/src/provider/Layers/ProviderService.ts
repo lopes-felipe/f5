@@ -3065,6 +3065,18 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         return capabilities;
       });
 
+    // Read-only viewers use current support without imposing a mutation generation fence.
+    const isSessionActionAvailable = (
+      threadId: ThreadId,
+      action: import("@t3tools/contracts").ProviderSessionAction,
+    ) =>
+      getSessionCapabilities(threadId).pipe(
+        Effect.map(
+          (capabilities) =>
+            capabilities !== null && checkSessionAction({ capabilities, action }) === undefined,
+        ),
+      );
+
     const withLiveMcpApps = <A, E>(
       threadId: ThreadId,
       run: (
@@ -4097,6 +4109,38 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           : undefined;
       },
       nativeOperations,
+      readChildThreadItems: (input) =>
+        Effect.gen(function* () {
+          const binding = yield* directory.getBinding(input.threadId);
+          if (
+            Option.isNone(binding) ||
+            binding.value.provider !== "codex" ||
+            (binding.value.providerInstanceId ?? null) !== input.providerInstanceId
+          )
+            return { kind: "session-not-running" as const };
+          const routed = yield* resolveRoutableSession({
+            threadId: input.threadId,
+            operation: "agents.readTranscript",
+            allowRecovery: false,
+            binding,
+          });
+          if (!routed.isActive) return { kind: "session-not-running" as const };
+          if (
+            !(yield* isSessionActionAvailable(input.threadId, "childTaskInspection")) ||
+            !routed.adapter.readChildThreadItems
+          )
+            return { kind: "unsupported-provider" as const };
+          const page = yield* routed.adapter.readChildThreadItems(
+            input.threadId,
+            input.childId,
+            input.cursor,
+            input.limit,
+          );
+          if (page === "unsupported-provider") return { kind: "unsupported-provider" as const };
+          return page
+            ? { kind: "page" as const, ...page }
+            : { kind: "session-not-running" as const };
+        }),
       renameThread,
       replaceSession,
       startSession: (threadId, input) =>

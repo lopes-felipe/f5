@@ -179,7 +179,8 @@ import {
   formatInlineTerminalContextLabel,
   textContainsInlineTerminalContextLabels,
 } from "./userMessageTerminalContexts";
-import { buildCollapsedUserMessageText, shouldCollapseUserMessage } from "./userMessageCollapse";
+import { CollapsibleUserMessageBody } from "./CollapsibleUserMessageBody";
+import { iconForItemType } from "./workEntryIcons";
 import {
   clipUserMessageSegments,
   hasUserMessageMarkup,
@@ -2084,63 +2085,6 @@ const UserMessageTerminalContextInlineLabel = memo(
   },
 );
 
-const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(props: {
-  text: string;
-  skillCall?: UserMessageSkillCall | undefined;
-  terminalContexts: ParsedTerminalContextEntry[];
-  markup: boolean;
-  /** The active thread-find match is in this message: show it in full. */
-  forceExpandedForFind: boolean;
-}) {
-  // The manual choice survives a forced expansion and returns once the match moves on.
-  const [expanded, setExpanded] = useState(false);
-  const shouldCollapse =
-    props.terminalContexts.length === 0 && shouldCollapseUserMessage(props.text);
-  const collapsedText = shouldCollapse ? buildCollapsedUserMessageText(props.text) : props.text;
-  const canCollapse =
-    shouldCollapse &&
-    collapsedTextPreservesSkillPrefix({
-      text: props.text,
-      collapsedText,
-      skillCall: props.skillCall,
-    });
-  if (!canCollapse) {
-    return (
-      <UserMessageBody
-        text={props.text}
-        skillCall={props.skillCall}
-        terminalContexts={props.terminalContexts}
-        markup={props.markup}
-      />
-    );
-  }
-
-  const showsAll = expanded || props.forceExpandedForFind;
-  const displayText = showsAll ? props.text : collapsedText;
-  return (
-    <>
-      <UserMessageBody
-        text={displayText}
-        markupSource={props.text}
-        skillCall={props.skillCall}
-        terminalContexts={[]}
-        markup={props.markup}
-      />
-      {props.forceExpandedForFind ? null : (
-        <button
-          type="button"
-          className="mt-1 text-2xs text-muted-foreground transition-colors hover:text-foreground"
-          aria-expanded={expanded}
-          data-scroll-anchor-ignore
-          onClick={() => setExpanded((current) => !current)}
-        >
-          {expanded ? "Show less" : "Show more"}
-        </button>
-      )}
-    </>
-  );
-});
-
 /** `text` with each complete thread reference shown as a linked chip. */
 function renderWithThreadReferences(text: string): ReactNode {
   const matches = threadReferenceMatches(text);
@@ -2264,6 +2208,45 @@ function collapsedTextPreservesSkillPrefix(input: {
   }
   return hasRenderableSkillPrefix(input.collapsedText, input.skillCall);
 }
+
+const TimelineUserMessageBody = memo(function TimelineUserMessageBody(props: {
+  text: string;
+  skillCall?: UserMessageSkillCall | undefined;
+  terminalContexts: ParsedTerminalContextEntry[];
+  markup: boolean;
+  forceExpandedForFind: boolean;
+}) {
+  const preservesCollapsedPrefix = useCallback(
+    (collapsedText: string) =>
+      collapsedTextPreservesSkillPrefix({
+        text: props.text,
+        collapsedText,
+        skillCall: props.skillCall,
+      }),
+    [props.text, props.skillCall],
+  );
+  const renderBody = useCallback(
+    (text: string, collapsed: boolean) => (
+      <UserMessageBody
+        text={text}
+        {...(collapsed ? { markupSource: props.text } : {})}
+        skillCall={props.skillCall}
+        terminalContexts={collapsed ? [] : props.terminalContexts}
+        markup={props.markup}
+      />
+    ),
+    [props.text, props.skillCall, props.terminalContexts, props.markup],
+  );
+  return (
+    <CollapsibleUserMessageBody
+      text={props.text}
+      collapseAllowed={props.terminalContexts.length === 0}
+      preservesCollapsedPrefix={preservesCollapsedPrefix}
+      renderBody={renderBody}
+      forceExpandedForFind={props.forceExpandedForFind}
+    />
+  );
+});
 
 const UserMessageBody = memo(function UserMessageBody(props: {
   text: string;
@@ -2940,11 +2923,11 @@ function workEntryIcon(workEntry: TimelineWorkEntry): TimelineEntryIcon {
 
   switch (workEntry.itemType) {
     case "mcp_tool_call":
-      return McpIcon;
+      return iconForItemType(workEntry.itemType);
     case "dynamic_tool_call":
-      return HammerIcon;
+      return iconForItemType(workEntry.itemType);
     case "collab_agent_tool_call":
-      return BotIcon;
+      return iconForItemType(workEntry.itemType);
   }
 
   return workToneIcon(workEntry.tone).icon;
@@ -4691,7 +4674,7 @@ function UserMessageRowContent(props: {
           <>
             {/* The copy button below uses copyText, which is derived before
                     visual collapse, so collapsed messages still copy in full. */}
-            <CollapsibleUserMessageBody
+            <TimelineUserMessageBody
               key={row.message.id}
               text={displayedUserMessage.visibleText}
               skillCall={row.message.skillCall}

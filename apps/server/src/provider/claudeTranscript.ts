@@ -1,5 +1,6 @@
 import { createReadStream } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { readdir, stat, open } from "node:fs/promises";
+import { readBoundedJsonlLines } from "./agentTranscript/boundedJsonl.ts";
 import path from "node:path";
 import { Utf8Lines } from "@t3tools/shared/utf8Lines";
 import {
@@ -234,40 +235,20 @@ export async function readClaudeTranscriptPage(
   limit: number,
   signal?: AbortSignal,
 ) {
-  const input = createReadStream(file, signal ? { signal } : {});
-  // Cap the retained line before parsing it. readline would allocate an entire
-  // oversized tool-output line before we could decide to omit it.
-  async function* boundedLines(): AsyncGenerator<string | null> {
-    let parts: Buffer[] = [];
-    let size = 0;
-    let oversized = false;
-    for await (const value of input) {
-      const chunk = value as Buffer;
-      let start = 0;
-      while (start < chunk.length) {
-        const end = chunk.indexOf(10, start);
-        const segment = chunk.subarray(start, end < 0 ? chunk.length : end);
-        size += segment.length;
-        if (size > 64 * 1024) {
-          oversized = true;
-          parts = [];
-        } else if (!oversized) parts.push(segment);
-        if (end < 0) break;
-        yield oversized ? null : Buffer.concat(parts).toString("utf8");
-        parts = [];
-        size = 0;
-        oversized = false;
-        start = end + 1;
-      }
-    }
-    if (size || oversized) yield oversized ? null : Buffer.concat(parts).toString("utf8");
-  }
+  const input = await open(file, "r");
   const entries: Record<string, unknown>[] = [];
   let index = 0;
   let bytes = 0;
   let hasMore = false;
   try {
-    for await (const line of boundedLines()) {
+    for await (const framed of readBoundedJsonlLines(input, {
+      start: 0,
+      dir: "fwd",
+      maxLineBytes: 64 * 1024,
+      maxScanBytes: Infinity,
+      ...(signal ? { signal } : {}),
+    })) {
+      const line = framed.text;
       if (line !== null && !line.trim()) continue;
       if (index++ < offset) continue;
       if (entries.length >= limit) {
@@ -291,7 +272,7 @@ export async function readClaudeTranscriptPage(
       }
     }
   } finally {
-    input.destroy();
+    await input.close();
   }
   return { entries, nextCursor: hasMore ? String(index - 1) : null };
 }

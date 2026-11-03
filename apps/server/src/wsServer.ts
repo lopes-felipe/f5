@@ -124,6 +124,7 @@ import {
   runClaudeTranscriptMaintenance,
   claudeMaintenanceErrorMessage,
 } from "./maintenance/ClaudeTranscriptMaintenance.ts";
+import { readAgentTranscript } from "./provider/agentTranscript/readAgentTranscript.ts";
 import { stampSubmissionSource } from "./provider/submissionProvenance.ts";
 import { AgentBridgeHostError, type AgentBridgeHostShape } from "./agentBridge/AgentBridgeHost.ts";
 import {
@@ -4314,6 +4315,44 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               new RouteRequestError({
                 message: `Unable to load background work: ${error.message}`,
               }),
+          ),
+        );
+      }
+
+      case AGENTS_WS_METHODS.readTranscript: {
+        const { threadBackgroundWork, providerSessionDirectory } =
+          yield* awaitOrchestrationRuntimeForRoute;
+        const input = stripRequestTag(request.body);
+        const workspace = yield* projectionWorkspaceQuery
+          .getThreadWorkspace(input.threadId)
+          .pipe(
+            Effect.mapError(
+              () =>
+                new RouteRequestError({ message: "Unable to resolve the transcript workspace." }),
+            ),
+          );
+        return yield* readAgentTranscript(input, {
+          work: threadBackgroundWork,
+          directory: providerSessionDirectory,
+          service: providerService,
+          resolveAccount: (id) => accountService.resolve(id),
+          ...(Option.isSome(workspace) ? { cwd: workspace.value.workspaceRoot } : {}),
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.failCause(cause as Cause.Cause<never>)
+              : Effect.logWarning("Agent transcript read failed", {
+                  cause: Cause.pretty(cause),
+                }).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new RouteRequestError({
+                        message:
+                          "Unable to read this agent transcript. Retry or check the provider configuration.",
+                      }),
+                    ),
+                  ),
+                ),
           ),
         );
       }

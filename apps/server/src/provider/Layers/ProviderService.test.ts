@@ -440,6 +440,48 @@ function makeProviderServiceLayerForAdapters(
   );
 }
 
+it.effect("reads child transcripts without recovering stopped or replacement sessions", () => {
+  const codex = makeFakeCodexAdapter();
+  const read = vi.fn(() => Effect.succeed({ data: [], nextCursor: null }));
+  const adapter = { ...codex.adapter, readChildThreadItems: read };
+  const layer = makeProviderServiceLayerForAdapters(new Map([["codex", adapter]]));
+  return Effect.gen(function* () {
+    const provider = yield* ProviderService;
+    const directory = yield* ProviderSessionDirectory;
+    const threadId = asThreadId("transcript-routing");
+    const instanceId = ProviderInstanceId.make("codex");
+    const request = {
+      threadId,
+      childId: "child",
+      providerInstanceId: instanceId,
+      cursor: null,
+      limit: 50,
+    };
+    assert.deepStrictEqual(yield* provider.readChildThreadItems!(request), {
+      kind: "session-not-running",
+    });
+    yield* directory.upsert({ threadId, provider: "codex", providerInstanceId: instanceId });
+    assert.deepStrictEqual(
+      yield* provider.readChildThreadItems!({
+        ...request,
+        providerInstanceId: ProviderInstanceId.make("other-account"),
+      }),
+      { kind: "session-not-running" },
+    );
+    assert.deepStrictEqual(yield* provider.readChildThreadItems!(request), {
+      kind: "session-not-running",
+    });
+    codex.hasSession.mockReturnValue(Effect.succeed(true));
+    // This test registry reports no certified executable version.
+    assert.deepStrictEqual(yield* provider.readChildThreadItems!(request), {
+      kind: "unsupported-provider",
+    });
+    assert.equal(read.mock.calls.length, 0);
+    assert.equal(codex.startSession.mock.calls.length, 0);
+    assert.equal(codex.sendTurn.mock.calls.length, 0);
+  }).pipe(Effect.provide(layer));
+});
+
 it.effect(
   "reads capabilities from exact explicit instances without requiring a legacy default",
   () => {

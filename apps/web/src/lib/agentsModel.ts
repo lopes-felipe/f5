@@ -381,7 +381,9 @@ function chooseSnapshotEntry(
   };
 }
 
-function isLiveEntry(entry: Pick<AgentsPanelEntry, "active" | "classification" | "status">) {
+export function isLiveBackgroundWork(
+  entry: Pick<AgentsPanelEntry, "active" | "classification" | "status">,
+) {
   return (
     entry.active &&
     entry.classification !== "inert" &&
@@ -607,7 +609,7 @@ export function deriveAgentsPanelModel(input: {
       classification: group.entry.classification,
       status: group.entry.status,
       active: group.entry.active,
-      live: isLiveEntry(group.entry),
+      live: isLiveBackgroundWork(group.entry),
       provider: group.entry.provider,
       providerInstanceId: group.entry.providerInstanceId,
       model: group.entry.model ?? group.detail?.model ?? null,

@@ -57,6 +57,17 @@ export interface ProviderSubmissionHandle {
 }
 
 export interface ProviderServiceShape {
+  readonly readChildThreadItems?: (input: {
+    threadId: ThreadId;
+    childId: string;
+    providerInstanceId: ProviderInstanceId | null;
+    cursor: string | null;
+    limit: number;
+  }) => Effect.Effect<
+    | { kind: "page"; data: unknown[]; nextCursor: string | null }
+    | { kind: "session-not-running" | "unsupported-provider" },
+    ProviderServiceError
+  >;
   readonly mcpApps?: import("./ProviderAdapter.ts").ProviderMcpApps<ProviderServiceError>;
   /** Stop the matching live turn and preserve a send fence after event ingestion fails. */
   readonly requireHistoryReconciliation?: (

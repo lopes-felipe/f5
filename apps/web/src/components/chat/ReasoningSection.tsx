@@ -2,12 +2,13 @@ import type { TextRevision } from "../../lib/streamingTextRevision";
 import { BotIcon, ChevronDownIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import ChatMarkdown from "../ChatMarkdown";
+import ChatMarkdown, { type ChatMarkdownPolicy } from "../ChatMarkdown";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { formatCompactTokens } from "./composer/contextMeter.logic";
 import { cn } from "~/lib/utils";
 
 interface ReasoningSectionProps {
+  policy?: ChatMarkdownPolicy;
   reasoningText: string;
   textRevision?: TextRevision | undefined;
   reasoningTokens?: number | undefined;
@@ -41,6 +42,7 @@ function ReasoningLabel(props: {
 }
 
 export function ReasoningSection({
+  policy,
   reasoningText,
   textRevision,
   reasoningTokens,
@@ -103,6 +105,7 @@ export function ReasoningSection({
         <div className="rounded-xl border border-border bg-card/50 p-3">
           <div className="text-ui text-muted-foreground">
             <ChatMarkdown
+              {...(policy ? { policy } : {})}
               textRevision={textRevision}
               text={reasoningText}
               cwd={cwd}

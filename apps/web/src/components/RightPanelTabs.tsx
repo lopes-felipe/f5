@@ -83,6 +83,8 @@ function surfaceTitle(
   previewPresentation?: PreviewPresentation,
 ): string {
   switch (surface.kind) {
+    case "agent-transcript":
+      return surface.title;
     case "pull-request":
       return `PR ${surface.key.split("/").slice(1).join("/")}`;
     case "diff":
@@ -108,6 +110,8 @@ function SurfaceIcon({
   previewPresentation: PreviewPresentation | undefined;
 }) {
   switch (surface.kind) {
+    case "agent-transcript":
+      return <BotIcon className="size-3.5 shrink-0" />;
     case "pull-request":
       return <GitPullRequestIcon className="size-3.5 shrink-0" />;
     case "diff":
