@@ -11236,11 +11236,13 @@
     },
     {
       "createdAt": "2026-11-03T20:57:03.039Z",
-      "decidedAt": "2026-11-03T22:59:19.072Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T23:00:13.746Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-30004",
-      "status": "port",
+      "reason": "F5 uses externally installed Codex executables and has no managed Codex runtime pin or startup installer to upgrade.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers"
