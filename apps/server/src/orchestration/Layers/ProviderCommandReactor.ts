@@ -1405,8 +1405,15 @@ const make = Effect.gen(function* () {
                 }).pipe(Effect.as(undefined)),
               ),
             );
+          // Claude reported lost transcript writes: the resumed conversation can miss
+          // recent messages, so it also carries F5's summary of the thread.
+          const transcriptIncomplete =
+            input?.carriesHandoff !== true &&
+            instructionContext.priorWorkSummary === undefined &&
+            (input?.resumeCursor as { transcriptIncomplete?: unknown } | undefined)
+              ?.transcriptIncomplete === true;
           let recoverySummary =
-            needsNativeRecovery && input?.resumeCursor === undefined
+            (needsNativeRecovery && input?.resumeCursor === undefined) || transcriptIncomplete
               ? yield* recoverSummary()
               : undefined;
           const startInput = {
@@ -1441,6 +1448,7 @@ const make = Effect.gen(function* () {
           const expectedIdentity = nativeSessionIdentity(started.provider, input?.resumeCursor);
           if (
             needsNativeRecovery &&
+            !recoverySummary &&
             expectedIdentity !== undefined &&
             nativeSessionIdentity(started.provider, started.resumeCursor) !== expectedIdentity &&
             !(

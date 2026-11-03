@@ -303,3 +303,26 @@ it.effect("reserves the aggregate formatted context budget and escapes markup bo
     }),
   ),
 );
+it.effect("authorizes app calls on Claude sessions and refuses providers without MCP Apps", () =>
+  run((f) =>
+    Effect.gen(function* () {
+      const app = yield* f.capture();
+      const session = f.state.thread.session as { providerName: string };
+      session.providerName = "claudeAgent";
+      assert.equal((yield* f.service.toolInfo({ ...app, name: "forecast" })).readOnlyHint, false);
+      yield* f.service.callTool({
+        ...app,
+        name: "forecast",
+        arguments: {},
+        sessionIdentity: "session-1",
+        approved: true,
+      });
+      assert.equal(f.state.calls, 1);
+      session.providerName = "opencode";
+      assert.equal(
+        (yield* f.service.toolInfo({ ...app, name: "forecast" }).pipe(Effect.result))._tag,
+        "Failure",
+      );
+    }),
+  ),
+);

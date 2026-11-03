@@ -3,6 +3,7 @@ import type { ThreadId } from "@t3tools/contracts";
 import {
   injectMcpAppDocumentGuard,
   MCP_APP_MAX_HTML_BYTES,
+  MCP_APP_PROVIDERS,
   clampMcpAppHeight,
   mcpAppAllowAttribute,
   type McpAppView,
@@ -39,7 +40,10 @@ export function McpAppFrame({ app, threadId }: { app: McpAppView; threadId: Thre
   const theme = useHtmlRenderTheme();
   const live = useStore((state) => {
     const session = selectThreadById(state, threadId)?.session;
-    return session?.provider === "codex" && ["ready", "running"].includes(session.status);
+    return (
+      MCP_APP_PROVIDERS.has(session?.provider ?? "") &&
+      ["ready", "running"].includes(session?.status ?? "")
+    );
   });
   const awaitingApproval = useStore((state) => {
     const thread = selectThreadById(state, threadId);

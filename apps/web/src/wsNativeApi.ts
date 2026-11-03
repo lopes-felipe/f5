@@ -1063,6 +1063,7 @@ export function createWsNativeApi(): NativeApi {
       getSummary: (input, context) =>
         transport.request(USAGE_WS_METHODS.getSummary, input, context),
       getQuotaHistory: () => transport.request(USAGE_WS_METHODS.getQuotaHistory, {}),
+      analyzeClaudeUsage: (input) => transport.request(USAGE_WS_METHODS.analyzeClaudeUsage, input),
     },
     nativeOperations: {
       historyRecovery: (input) =>

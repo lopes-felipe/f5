@@ -108,7 +108,8 @@ const CLAUDE_MODEL_METADATA: Record<ClaudeBuiltInModelSlug, ClaudeModelMetadata>
     contextWindowTokens: 1_000_000,
     effortOptions: CLAUDE_CODE_EFFORT_OPTIONS,
     defaultEffort: "xhigh",
-    supportsFastMode: true,
+    // Fast mode is deprecated for Opus 4.8 (removed 2026-11-30); only an
+    // executable-reported capability still offers it.
     supportsContextWindow: true,
   },
   [CLAUDE_OPUS_4_7_MODEL]: {

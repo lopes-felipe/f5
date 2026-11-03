@@ -16,6 +16,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   CLAUDE_SUBAGENT_MODEL_INHERIT,
+  type ClaudeSubagentSettingsPatch,
   DEFAULT_CLAUDE_PROJECT_SETTINGS,
   getAppModelOptions,
   getClaudeProjectSettings,
@@ -61,7 +62,7 @@ export const EMPTY_MEMORY_DRAFT: MemoryDraft = {
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 
 function normalizeClaudeSubagentPatch(
-  patch: Partial<typeof DEFAULT_CLAUDE_PROJECT_SETTINGS>,
+  patch: ClaudeSubagentSettingsPatch,
   current: typeof DEFAULT_CLAUDE_PROJECT_SETTINGS,
 ): typeof DEFAULT_CLAUDE_PROJECT_SETTINGS {
   return {
@@ -73,6 +74,14 @@ function normalizeClaudeSubagentPatch(
           ? patch.subagentModel.trim()
           : CLAUDE_SUBAGENT_MODEL_INHERIT
         : current.subagentModel,
+    // An explicit undefined in the patch returns to Claude's default effort.
+    ...("subagentEffort" in patch
+      ? patch.subagentEffort
+        ? { subagentEffort: patch.subagentEffort }
+        : {}
+      : current.subagentEffort
+        ? { subagentEffort: current.subagentEffort }
+        : {}),
   };
 }
 
@@ -364,7 +373,7 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
   );
 
   const updateClaudeSubagentDefaults = useCallback(
-    (patch: Partial<typeof DEFAULT_CLAUDE_PROJECT_SETTINGS>) => {
+    (patch: ClaudeSubagentSettingsPatch) => {
       updateSettings({
         claudeSubagentDefaults: normalizeClaudeSubagentPatch(patch, claudeSubagentDefaults),
       });
@@ -374,7 +383,7 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
 
   /** Sets the project's own sub-agent settings; `null` returns it to the global defaults. */
   const updateSelectedProjectClaudeSettings = useCallback(
-    (patch: Partial<typeof DEFAULT_CLAUDE_PROJECT_SETTINGS> | null) => {
+    (patch: ClaudeSubagentSettingsPatch | null) => {
       if (!selectedProject) {
         return;
       }

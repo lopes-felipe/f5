@@ -31,6 +31,9 @@ export interface ProviderSessionDiscovery {
   readonly nativeCompaction?: boolean;
   readonly fileCheckpointing?: boolean;
   readonly childTaskStop?: boolean;
+  /** The version the running executable reported, which wins over the probed one. */
+  readonly executableVersion?: string;
+  readonly latestCacheWrites?: ProviderSessionCapabilities["latestCacheWrites"];
 }
 
 export interface BuildProviderSessionCapabilitiesInput {
@@ -135,12 +138,15 @@ function supportFor(
 export function buildProviderSessionCapabilities(
   input: BuildProviderSessionCapabilitiesInput,
 ): ProviderSessionCapabilities {
-  const runtime = providerRuntimeCapabilities(input.driver, input.executableVersion);
-  const executableVersion = input.executableVersion?.trim();
+  const executableVersion = (input.discovery?.executableVersion ?? input.executableVersion)?.trim();
+  const runtime = providerRuntimeCapabilities(input.driver, executableVersion);
   return {
     generation: input.generation,
     ...(input.providerInstanceId ? { providerInstanceId: input.providerInstanceId } : {}),
     ...(executableVersion ? { executableVersion } : {}),
+    ...(input.discovery?.latestCacheWrites
+      ? { latestCacheWrites: input.discovery.latestCacheWrites }
+      : {}),
     discovery: input.discovery?.outcome ?? "static",
     checkedAt: input.checkedAt,
     actions: PROVIDER_SESSION_ACTIONS.map((action) => supportFor(action, runtime, input)),

@@ -6,6 +6,8 @@ export const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app";
 export const MCP_APP_EXTENSION_ID = "io.modelcontextprotocol/ui";
 export const MCP_APP_RESOURCE_SCHEME = "ui://";
 export const MCP_APP_OUTPUT_KEY = "t3McpApp";
+/** Providers whose adapters capture MCP Apps and route app tool calls/resource reads. */
+export const MCP_APP_PROVIDERS: ReadonlySet<string> = new Set(["codex", "claudeAgent"]);
 
 const MCP_APP_MIN_HEIGHT = 80;
 export const MCP_APP_DEFAULT_HEIGHT = 320;

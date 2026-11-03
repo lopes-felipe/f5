@@ -193,7 +193,9 @@ function applyTaskCreate(
       tracking: withSync(tracking, "overflow", `More than ${MAX_THREAD_TASKS} tasks.`),
     };
   }
-  const description = boundedDescription(input?.description);
+  // Claude Code 2.1.317+ echoes the stored description, which may differ from the input.
+  const description =
+    boundedDescription(task?.description) ?? boundedDescription(input?.description);
   const created: TaskItem = {
     id,
     content: subject,

@@ -27,7 +27,7 @@ describe("bundled Claude runtime compatibility", () => {
     const version = output.match(/\d+\.\d+\.\d+/)?.[0];
     expect(version).toBeDefined();
     // Independent floor for the pinned SDK; newer optional models may be gated.
-    expect(compareCliVersions(version!, "2.1.295")).toBeGreaterThanOrEqual(0);
+    expect(compareCliVersions(version!, "2.1.317")).toBeGreaterThanOrEqual(0);
     const models = getBuiltInClaudeModelsForVersion(version);
     expect(models[0]?.isUnlisted).not.toBe(true);
     const snapshot: ServerProvider = {

@@ -239,6 +239,7 @@ export function normalizeProviderStartOptions(
           ? providerOptions.claudeAgent.subagentsEnabled
           : undefined;
       const subagentModel = normalizeOptionalString(providerOptions?.claudeAgent?.subagentModel);
+      const subagentEffort = providerOptions?.claudeAgent?.subagentEffort;
       const launchArgs = canonicalizeClaudeLaunchArgs(providerOptions?.claudeAgent?.launchArgs);
 
       if (
@@ -251,6 +252,7 @@ export function normalizeProviderStartOptions(
         nativeCompaction === undefined &&
         subagentsEnabled === undefined &&
         !subagentModel &&
+        !subagentEffort &&
         !launchArgs &&
         !hasMcpServers
       ) {
@@ -268,6 +270,7 @@ export function normalizeProviderStartOptions(
         nativeCompaction !== undefined ||
         subagentsEnabled !== undefined ||
         subagentModel ||
+        subagentEffort ||
         launchArgs
           ? {
               claudeAgent: {
@@ -280,6 +283,7 @@ export function normalizeProviderStartOptions(
                 ...(thinking !== undefined ? { thinking } : {}),
                 ...(subagentsEnabled !== undefined ? { subagentsEnabled } : {}),
                 ...(subagentModel ? { subagentModel } : {}),
+                ...(subagentEffort ? { subagentEffort } : {}),
                 ...(launchArgs ? { launchArgs } : {}),
               },
             }
@@ -390,7 +394,7 @@ export function getProviderEnvironmentKey(
             })
             .join(",")
         : "";
-      return `claudeAgent|binary:${normalized?.claudeAgent?.binaryPath ?? ""}|permission:${normalized?.claudeAgent?.permissionMode ?? ""}|maxThinkingTokens:${normalized?.claudeAgent?.maxThinkingTokens ?? ""}|subagentsEnabled:${subagentsEnabled ?? ""}|subagentModel:${subagentModel ?? ""}|launchArgs:${launchArgsKey}${claudeThinkingEnvironmentKeyComponent(normalized?.claudeAgent?.thinking)}${normalized?.claudeAgent?.promptSuggestions === true ? "|promptSuggestions:true" : ""}${normalized?.claudeAgent?.enableFileCheckpointing !== undefined ? `|fileCheckpointing:${normalized.claudeAgent.enableFileCheckpointing}` : ""}`;
+      return `claudeAgent|binary:${normalized?.claudeAgent?.binaryPath ?? ""}|permission:${normalized?.claudeAgent?.permissionMode ?? ""}|maxThinkingTokens:${normalized?.claudeAgent?.maxThinkingTokens ?? ""}|subagentsEnabled:${subagentsEnabled ?? ""}|subagentModel:${subagentModel ?? ""}|launchArgs:${launchArgsKey}${normalized?.claudeAgent?.subagentEffort ? `|subagentEffort:${normalized.claudeAgent.subagentEffort}` : ""}${claudeThinkingEnvironmentKeyComponent(normalized?.claudeAgent?.thinking)}${normalized?.claudeAgent?.promptSuggestions === true ? "|promptSuggestions:true" : ""}${normalized?.claudeAgent?.enableFileCheckpointing !== undefined ? `|fileCheckpointing:${normalized.claudeAgent.enableFileCheckpointing}` : ""}`;
     }
     case "cursor":
       return `cursor|binary:${normalized?.cursor?.binaryPath ?? ""}|apiEndpoint:${normalized?.cursor?.apiEndpoint ?? ""}`;

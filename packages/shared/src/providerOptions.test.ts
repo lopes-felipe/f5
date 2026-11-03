@@ -226,6 +226,20 @@ describe("Claude thinking launch identity", () => {
     expect(typed({ type: "enabled", budgetTokens: 0 })).toBe(LEGACY_KEY);
     expect(typed({ type: "bogus" })).toBe(LEGACY_KEY);
   });
+
+  it("adds sub-agent effort to the identity only when it is set", () => {
+    const withEffort = (subagentEffort: unknown) =>
+      getProviderEnvironmentKey("claudeAgent", {
+        claudeAgent: { ...legacy.claudeAgent, subagentEffort } as never,
+      });
+    expect(withEffort(undefined)).toBe(LEGACY_KEY);
+    expect(withEffort("high")).toBe(`${LEGACY_KEY}|subagentEffort:high`);
+    expect(
+      normalizeProviderStartOptions("claudeAgent", {
+        claudeAgent: { ...legacy.claudeAgent, subagentEffort: "max" },
+      })?.claudeAgent?.subagentEffort,
+    ).toBe("max");
+  });
 });
 
 it("keeps malformed legacy entries in pure normalization without throwing", () => {

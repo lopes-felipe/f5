@@ -75,6 +75,19 @@ arguments**.
   before compacting. **Auto-compact window** sets when automatic compaction starts.
 - F5 keeps Claude transcripts for 3,650 days so old threads can resume. Deleting a thread removes
   its transcript from F5-owned homes.
+- **Confine file edits to the workspace** (off by default, per provider) stops Claude's file tools
+  from writing outside the project. It also removes worktree switching (`EnterWorktree`/
+  `ExitWorktree`) and does not limit Bash. It applies at the next session start.
+- **Claude sub-agent effort** (Settings → Threads, next to the sub-agent model) sets the effort
+  sub-agents run at. Left on Default, a sub-agent on another model uses that model's default
+  effort. A `CLAUDE_CODE_SUBAGENT_EFFORT` provider variable wins.
+- **Analyze usage** on a Claude usage card scans this machine's Claude transcripts (up to 60
+  seconds) and lists what drives usage, with recommendations. Other devices and claude.ai are not
+  included, and results are kept in memory until the server restarts.
+- **MCP Apps**: when an MCP server's tool declares a `ui://` app, a successful call renders the app
+  in the chat, as with Codex. Calls the app makes to non-read-only tools ask for your approval.
+  App tool calls need the bundled runtime (or another version that supports them); otherwise the
+  app shows that they are unavailable.
 - Provider instances and [profiles](../profiles.md) solve different problems. Instances are several
   Claude entries inside one profile, each with its own Claude home. A profile is a separate F5
   environment with its own projects, threads, accounts and in-app login.
@@ -84,7 +97,7 @@ arguments**.
 
 | Topic                | Detail                                                                                                                           |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Bundled runtime      | Claude Code v2.1.295 (Agent SDK 0.3.295)                                                                                         |
+| Bundled runtime      | Claude Code v2.1.317 (Agent SDK 0.3.317)                                                                                         |
 | Model requirements   | Fable 5.1 needs v2.1.257+; Opus 5.5 needs v2.1.280+; Sonnet 5.5 and Haiku 5.5 need v2.1.299+                                     |
 | Default model        | Opus 5.5 with `medium` effort                                                                                                    |
 | Custom executables   | Known older versions hide models they can't run and show an upgrade notice; unknown versions list all models                     |

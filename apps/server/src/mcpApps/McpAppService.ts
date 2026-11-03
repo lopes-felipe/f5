@@ -8,6 +8,7 @@ import type {
   McpAppUpdateModelContextInput,
 } from "@t3tools/contracts";
 import {
+  MCP_APP_PROVIDERS,
   readMcpAppReference,
   readMcpAppToolResult,
   findMcpAppToolPolicy,
@@ -45,7 +46,11 @@ export const makeMcpAppService = Effect.gen(function* () {
       const thread = (yield* engine.getReadModel()).threads.find(
         (thread) => thread.id === input.threadId && !thread.deletedAt && !thread.archivedAt,
       );
-      if (!thread || thread.session?.providerName !== "codex" || !provider.mcpApps)
+      if (
+        !thread ||
+        !MCP_APP_PROVIDERS.has(thread.session?.providerName ?? "") ||
+        !provider.mcpApps
+      )
         return yield* new McpAppError({ message: "Send a message to reconnect." });
       const rows = yield* sql<{
         reference: string;

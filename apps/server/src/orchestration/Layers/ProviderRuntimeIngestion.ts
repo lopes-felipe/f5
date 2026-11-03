@@ -82,6 +82,7 @@ import {
 } from "@t3tools/shared/commandSummary";
 import {
   compactThreadActivityPayload,
+  parseMcpToolName,
   readToolActivityPayload,
   REASONING_STATUS_ACTIVITY_KIND,
 } from "@t3tools/shared/orchestrationActivityPayload";
@@ -2347,13 +2348,19 @@ export function runtimeEventToActivities(
       const normalizedTitle = commandExecutionLifecycleTitle(event);
       const data = asRecord(event.payload.data);
       const native = asRecord(data?.item);
-      const reference =
+      // Codex names the server and tool on its native item; Claude in `mcp__<server>__<tool>`.
+      const appTool =
         event.provider === "codex" &&
         native &&
         typeof native.server === "string" &&
         typeof native.tool === "string"
-          ? readMcpAppReferenceForTool(data?.mcpApp, native.server, native.tool)
-          : undefined;
+          ? { server: native.server, tool: native.tool }
+          : event.provider === "claudeAgent" && typeof data?.toolName === "string"
+            ? parseMcpToolName(data.toolName)
+            : null;
+      const reference = appTool
+        ? readMcpAppReferenceForTool(data?.mcpApp, appTool.server, appTool.tool)
+        : undefined;
       const bootstrap = asRecord(data?.mcpAppBootstrap);
       const initialResult = readMcpAppToolResult(bootstrap?.result);
       const initial =
@@ -6129,6 +6136,31 @@ const make = Effect.gen(function* () {
               createdAt: now,
             });
           }
+        }
+      }
+
+      // Claude reports its cache-write split with each result; re-snapshot so the
+      // runtime panel shows the latest session figures.
+      if (event.type === "turn.completed" && event.provider === "claudeAgent") {
+        const capabilities = yield* providerService
+          .getSessionCapabilities(thread.id)
+          .pipe(Effect.orElseSucceed(() => null));
+        // Turn completion already updated the session above; build on the current one.
+        const session = (yield* orchestrationEngine.getReadModel()).threads.find(
+          (entry) => entry.id === thread.id,
+        )?.session;
+        if (
+          capabilities &&
+          session &&
+          !sameSessionCapabilities(session.capabilities ?? null, capabilities)
+        ) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: providerCommandId(event, "thread-session-capabilities-turn"),
+            threadId: thread.id,
+            session: { ...session, capabilities, updatedAt: now },
+            createdAt: now,
+          });
         }
       }
 

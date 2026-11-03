@@ -4,6 +4,25 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- Claude MCP Apps: tools that declare a `ui://` app render it in the chat and can call tools with your approval, as with Codex.
+- Analyze usage on Claude usage cards, a Claude sub-agent effort setting, and an opt-in "Confine file edits to the workspace" option per Claude provider.
+- The runtime panel shows the observed Claude runtime version and 5-minute versus 1-hour cache writes.
+
+### Changed
+
+- Update the bundled Claude runtime to Claude Code 2.1.317 (Agent SDK 0.3.317), so Sonnet 5.5 and Haiku 5.5 work without an upgrade notice.
+- F5's mandatory Claude tool policy now blocks the tool if its check fails or times out (bundled runtime and Claude Code 2.1.317+).
+- Dismissed or skipped Claude questions tell Claude which questions went unanswered; Grep/Glob rows note searches stopped at the time limit; cron rows show the next run.
+- Claude Opus 4.8 Fast Mode is no longer offered by default (deprecated by Anthropic, removed 2026-11-30).
+- The Claude in Chrome certification record for 2.1.295 is withdrawn, superseded by the 2.1.317 record (not yet certified).
+
+### Fixed
+
+- Attachments and plan files stay readable when a Claude setting blocks reads outside the working directory.
+- Warn when Claude cannot save a conversation (disk full or quota), and give the next resume F5's summary.
+
 ### Computer use
 
 - Add a Windows x64 computer-use preview with app approvals, foreground and

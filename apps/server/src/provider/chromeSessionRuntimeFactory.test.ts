@@ -19,7 +19,8 @@ import {
   restoreChromeSessionSetup,
 } from "./chromeSessionRuntimeFactory";
 
-const base = PROVIDER_INTEGRATION_RECORDS["claude-chrome"][0]!;
+// The record for the pinned runtime; superseded records stay listed as withdrawn.
+const base = PROVIDER_INTEGRATION_RECORDS["claude-chrome"].find((record) => !record.withdrawn)!;
 const certified: ClaudeChromeRecord = {
   ...base,
   evidenceId: "fixture-evidence",

@@ -46,10 +46,12 @@ import {
   resolveClaudeTranscriptCleanupDir,
 } from "../claudeSessionCleanup.ts";
 import {
+  analyzeClaudeUsage,
   getClaudeModelCapabilities,
   checkClaudeProviderStatus,
   makePendingClaudeProvider,
 } from "../Layers/ClaudeProvider.ts";
+import { makeClaudeUsageAnalyzer } from "./ClaudeUsageAnalysis.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
@@ -208,6 +210,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           ...(effectiveConfig.nativeCompaction !== undefined
             ? { nativeCompaction: effectiveConfig.nativeCompaction }
             : {}),
+          ...(effectiveConfig.confineWritesToWorkspace === true
+            ? { confineWritesToWorkspace: true }
+            : {}),
           binaryPath: effectiveConfig.binaryPath,
           launchArgs,
         },
@@ -265,6 +270,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           // A failed or signed-out usage read retries instead of holding the TTL.
           retryFailedReads: true,
         },
+      );
+      const usageAnalyzer = yield* makeClaudeUsageAnalyzer(
+        analyzeClaudeUsage(effectiveConfig, processEnv, { cwd: serverConfig.stateDir }).pipe(
+          Effect.provideService(Path.Path, path),
+        ),
       );
 
       // Signing out drops cached account probes, so limits return as soon as the user signs back in.
@@ -329,13 +339,19 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           ...fallbackContinuationIdentity,
           continuationKey: continuationGroupKey,
         },
+        // Launch-only settings restart sessions at their next safe start. Set only when
+        // enabled so existing launch fingerprints stay stable.
+        ...(effectiveConfig.confineWritesToWorkspace === true
+          ? { launchIdentity: "claude:confineWritesToWorkspace" }
+          : {}),
         displayName,
         accentColor,
         enabled,
         snapshot,
         adapter: protectProfileAdapter(adapter, serverConfig, effectiveConfig),
         textGeneration,
-        accountUsage,
+        accountUsage: usageAnalyzer.withAnalysis(accountUsage),
+        analyzeClaudeUsage: usageAnalyzer.analyze,
         invalidateAccountStatus: probes.invalidate,
         updateModelCatalog: (models) => Ref.set(probedModels, models),
         inventory: ({ projectRoot }) => {

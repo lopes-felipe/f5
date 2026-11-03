@@ -3800,7 +3800,10 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
           {(workEntry.subagentType || workEntry.subagentModel || workEntry.subagentThreadId) && (
             <div className="mt-1 flex flex-wrap gap-1">
               {workEntry.subagentType && (
-                <span className={WORK_META_CHIP_CLASS_NAME}>{workEntry.subagentType}</span>
+                <span className={WORK_META_CHIP_CLASS_NAME}>
+                  {/* Claude Code 2.1.317 fork sub-agents carry the conversation; label them plainly. */}
+                  {workEntry.subagentType === "fork" ? "Fork" : workEntry.subagentType}
+                </span>
               )}
               {workEntry.subagentModel && (
                 <span className={cn(WORK_META_CHIP_CLASS_NAME, "font-mono")}>

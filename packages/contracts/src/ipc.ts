@@ -228,6 +228,8 @@ import type {
 } from "./settings";
 import type { ReviewPreviewDiffInput, ReviewPreviewDiffResult } from "./review";
 import type {
+  ClaudeUsageAnalysis,
+  UsageAnalyzeClaudeUsageInput,
   UsageConsumeResetCreditInput,
   UsageConsumeResetCreditResult,
   UsageGetAccountsInput,
@@ -1331,6 +1333,8 @@ export interface NativeApi {
       context?: NativeRequestContext,
     ) => Promise<UsageSummary>;
     getQuotaHistory: () => Promise<UsageQuotaHistory>;
+    /** Scan local Claude transcripts for usage recommendations (up to a minute). */
+    analyzeClaudeUsage: (input: UsageAnalyzeClaudeUsageInput) => Promise<ClaudeUsageAnalysis>;
   };
   /** Private provider form/URL answers; never go through orchestration commands. */
   nativeOperations?: {

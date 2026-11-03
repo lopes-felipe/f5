@@ -4596,6 +4596,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         );
       }
 
+      case USAGE_WS_METHODS.analyzeClaudeUsage: {
+        const { usageService } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* usageService
+          .analyzeClaudeUsage(stripRequestTag(request.body))
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+
       case ORCHESTRATION_WS_METHODS.getLatestSequence: {
         const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
         return {
