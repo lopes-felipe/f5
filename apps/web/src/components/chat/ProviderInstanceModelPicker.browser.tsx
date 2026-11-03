@@ -8,7 +8,7 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { page } from "vitest/browser";
+import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
 import { createTestServerProvider } from "../../testServerProvider";
@@ -56,6 +56,48 @@ afterEach(async () => {
 });
 
 describe("ProviderInstanceModelPicker", () => {
+  it("keeps composition keys in search and uses the short window height", async () => {
+    await page.viewport(800, 300);
+    const onChange = vi.fn();
+    active = await render(
+      <TooltipProvider delay={0}>
+        <div style={{ position: "fixed", bottom: 80 }}>
+          <ProviderInstanceModelPicker
+            docked
+            instanceId={CODEX_ID}
+            model="gpt-5.6-sol"
+            lockedInstanceId={null}
+            providers={PROVIDERS}
+            modelOptionsByInstance={MODELS}
+            onInstanceModelChange={onChange}
+          />
+        </div>
+      </TooltipProvider>,
+    );
+    await page.getByRole("button", { name: /GPT-5.6 Sol/ }).click();
+    const search = page.getByPlaceholder("Search models...");
+    await search.fill("Sonnet");
+    for (const native of [{ isComposing: true }, { keyCode: 229 }]) {
+      for (const key of ["Enter", "Escape"]) {
+        const event = new KeyboardEvent("keydown", {
+          key,
+          ...native,
+          bubbles: true,
+          cancelable: true,
+        });
+        search.element().dispatchEvent(event);
+        expect(event.defaultPrevented).toBe(false);
+        await expect.element(search).toBeVisible();
+        expect(onChange).not.toHaveBeenCalled();
+      }
+    }
+    const popup = document.querySelector('[data-slot="popover-popup"]')!;
+    await expect.poll(() => popup.getBoundingClientRect().height).toBeGreaterThan(250);
+    expect(popup.getBoundingClientRect().bottom).toBeLessThanOrEqual(300);
+    await userEvent.keyboard("{Enter}");
+    await expect.poll(() => onChange.mock.calls.length).toBe(1);
+    await page.viewport(1024, 900);
+  });
   it("keeps Pi provider/model identities distinct inside an explicit Pi instance", async () => {
     const piId = defaultInstanceIdForDriver(ProviderDriverKind.make("pi"));
     const onChange = vi.fn();

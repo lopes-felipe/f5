@@ -35,6 +35,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   modelOptionsByProvider: Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>>;
   ultrathinkActive?: boolean;
   compact?: boolean;
+  docked?: boolean;
   disabled?: boolean;
   terminalOpen?: boolean;
   open?: boolean;
@@ -163,6 +164,9 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       </PopoverTrigger>
       <PopoverPopup
         align="start"
+        {...(props.docked
+          ? { side: "top" as const, collisionAvoidance: { side: "shift", align: "shift" } as const }
+          : {})}
         touchBackdrop
         className="border-0 bg-transparent p-0 shadow-none before:hidden [--viewport-inline-padding:0] *:data-[slot=popover-viewport]:p-0"
       >

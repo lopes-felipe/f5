@@ -6199,6 +6199,95 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it.each(["gpt-5.4", "5.4"])(
+    "keeps draft effort on a same-driver instance fallback from %s",
+    async (model) => {
+      useComposerDraftStore.setState({
+        draftThreadsByThreadId: {
+          [THREAD_ID]: {
+            projectId: PROJECT_ID,
+            createdAt: NOW_ISO,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: "main",
+            worktreePath: null,
+            envMode: "local",
+          },
+        },
+        projectDraftThreadIdByProjectId: { [PROJECT_ID]: THREAD_ID },
+      });
+      const fallback = ProviderInstanceId.make("codex_work");
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createDraftOnlySnapshot(),
+        configureFixture: (fixture) => {
+          const stock = createTestServerProvider("codex", {
+            models: [
+              {
+                slug: "gpt-5.4",
+                name: "GPT-5.4",
+                isCustom: false,
+                capabilities: {
+                  optionDescriptors: [
+                    {
+                      id: "reasoningEffort",
+                      label: "Effort",
+                      type: "select",
+                      options: [
+                        { id: "low", label: "Low" },
+                        { id: "high", label: "High", isDefault: true },
+                      ],
+                    },
+                  ],
+                },
+              },
+            ],
+          });
+          fixture.serverConfig = {
+            ...fixture.serverConfig,
+            settings: {
+              ...DEFAULT_SERVER_SETTINGS,
+              providerInstances: {
+                [stock.instanceId]: { driver: stock.driver, enabled: false },
+                [fallback]: { driver: stock.driver, enabled: true },
+              },
+            },
+            providers: [
+              { ...stock, enabled: false },
+              { ...stock, instanceId: fallback },
+            ],
+          };
+        },
+      });
+      try {
+        const draft = useComposerDraftStore.getState();
+        draft.setProvider(THREAD_ID, "codex");
+        draft.setProviderInstance(THREAD_ID, ProviderInstanceId.make("codex"));
+        draft.setModel(THREAD_ID, model);
+        draft.setModelOptions(THREAD_ID, { codex: { reasoningEffort: "low" } });
+        draft.setPrompt(THREAD_ID, "Keep my effort");
+        const send = await waitForSendButton();
+        await vi.waitFor(() => expect(send.disabled).toBe(false));
+        send.click();
+        await vi.waitFor(() =>
+          expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(1),
+        );
+        const command = getSubmittedTurnCommand(
+          getDispatchCommandRequests("thread.turn.start")[0]!,
+        ) as {
+          modelSelection?: { instanceId: string; model: string; options?: unknown };
+        };
+        expect(command.modelSelection).toMatchObject({ instanceId: fallback, model: "gpt-5.4" });
+        expect(command.modelSelection?.options).toContainEqual({
+          id: "reasoningEffort",
+          value: "low",
+        });
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
   // Upstream ports and scheduled tasks create threads on the server, so only
   // the thread's selection knows the chosen effort.
   async function mountThreadWithSavedLowEffort() {
