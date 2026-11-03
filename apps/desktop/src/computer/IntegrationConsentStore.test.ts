@@ -139,7 +139,8 @@ describe("IntegrationConsentStore", () => {
     expect(io.read()).toBeUndefined();
     io.write("{}");
     expect(readFileSync(path, "utf8")).toBe("{}");
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    // Windows has no POSIX modes; its user profile directory carries the ACL instead.
+    if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(readdirSync(join(dir, "computer"))).toEqual(["integration-consent.json"]);
     io.remove();
     expect(io.read()).toBeUndefined();
