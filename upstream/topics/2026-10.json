@@ -43843,11 +43843,20 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T20:38:37.630Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts:810"
+        ],
+        "f5Refs": [
+          "86cbe6bdd8e0408e47a0c334f69f26149f08d435"
+        ]
+      },
       "id": "pr-23351",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "timeline",
