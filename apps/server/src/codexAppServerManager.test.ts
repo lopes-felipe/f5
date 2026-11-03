@@ -4268,6 +4268,45 @@ it("ends the session when codex app-server sends a message over the size cap", (
   expect(internal.sessions.has("oversized")).toBe(false);
 });
 describe("Release 5 native operations", () => {
+  it.each(["receipt", "history"] as const)(
+    "preserves cancellation while awaiting %s before sample dispatch",
+    async (phase) => {
+      const { manager, context, sendRequest } = createThreadControlHarness();
+      Object.assign(context, { cliVersion: "0.166.0", nextRequestId: 12 });
+      let release!: () => void;
+      const barrier = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let entered = false;
+      const receipt =
+        phase === "receipt"
+          ? async () => {
+              entered = true;
+              await barrier;
+            }
+          : undefined;
+      sendRequest.mockImplementation(async (_context, method) => {
+        if (method === "thread/turns/list") {
+          if (phase === "history") {
+            entered = true;
+            await barrier;
+          }
+          return { data: [{ id: "last", status: "completed" }] };
+        }
+        throw new Error("No sample should be dispatched.");
+      });
+      const pending = manager.executeNativeOperation(asideInput, receipt).catch((error) => error);
+      await vi.waitFor(() => expect(entered).toBe(true));
+      await manager.interruptTurn(asThreadId("thread_1"));
+      release();
+      expect(await pending).toMatchObject({
+        nativeOperationCancelled: true,
+        deliveryCertainty: "not_sent",
+      });
+      expect(context).toMatchObject({ samplePreparing: false });
+      expect(sendRequest.mock.calls.some((call) => call[1] === "thread/sample")).toBe(false);
+    },
+  );
   it("keeps the actual sample RPC pending past the control timeout and accepts a late response", async () => {
     vi.useFakeTimers();
     const manager = new CodexAppServerManager();

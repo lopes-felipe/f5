@@ -634,7 +634,7 @@ export class CodexControlClient extends EventEmitter<{
   }
 
   async listAccountSessions(): Promise<Record<string, unknown>> {
-    return this.sendRequest("accountSession/list", {});
+    return this.sendRequest("accountSession/list", { refreshWorkspaceMetadata: true });
   }
 
   async saveFeedback(savePath: string, timeoutMs = 120_000): Promise<unknown> {

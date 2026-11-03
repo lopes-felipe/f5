@@ -254,11 +254,16 @@ function NativeRuntimePanelContent(props: NativeRuntimePanelProps) {
                           reading || !supported(kind === "memory" ? "nativeAside" : "nativeGoals")
                         }
                         onClick={() => {
+                          const api = readNativeApi()?.nativeOperations;
+                          if (!api?.inspect) {
+                            setError("Native operations API is unavailable.");
+                            return;
+                          }
                           setReading(true);
                           setError(null);
                           setInspection(null);
-                          void readNativeApi()
-                            ?.nativeOperations?.inspect({
+                          void api
+                            .inspect({
                               threadId,
                               generation: capabilities.generation,
                               kind,

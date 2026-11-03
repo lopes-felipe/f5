@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CodexControlClient } from "../codex/CodexControlClient";
 import { supportsCodexRelease5 } from "@t3tools/shared/providerRuntimeCapabilities";
 import { detectCodexUsageLimit, formatCodexUsageError } from "./codexErrors";
 import {
@@ -8,6 +9,17 @@ import {
 } from "./codexInventory";
 
 describe("Codex Release 5", () => {
+  it("requests workspace membership metadata when listing account sessions", async () => {
+    const calls: unknown[] = [];
+    const client = {
+      sendRequest: async (...args: unknown[]) => {
+        calls.push(args);
+        return {};
+      },
+    } as unknown as CodexControlClient;
+    await CodexControlClient.prototype.listAccountSessions.call(client);
+    expect(calls).toEqual([["accountSession/list", { refreshWorkspaceMetadata: true }]]);
+  });
   it("decodes Vertex AI, workspace names and future account types", () => {
     expect(
       parseCodexInventoryAccount({

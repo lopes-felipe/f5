@@ -2108,7 +2108,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (!dispatched)
         throw Object.assign(
           new Error(cause instanceof Error ? cause.message : String(cause), { cause }),
-          { deliveryCertainty: "not_sent" as const },
+          {
+            deliveryCertainty: "not_sent" as const,
+            ...(asObject(cause)?.nativeOperationCancelled === true
+              ? { nativeOperationCancelled: true }
+              : {}),
+          },
         );
       throw cause;
     }
@@ -2127,21 +2132,30 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (!["thread/read", "thread/goal/get"].includes(method)) onDispatch();
       return this.sendRequest(context, method, params);
     };
-    await onReceipt?.({ nativeThreadId: threadId });
     if (command.kind === "aside") {
       if (!supportsCodexRelease5(context.cliVersion) || context.session.activeTurnId)
         throw new Error("Ask aside requires an idle Codex 0.166.0 session.");
       context.samplePreparing = true;
       context.sampleCancelled = false;
-      const history = asObject(
-        await this.sendRequest(context, "thread/turns/list", {
-          threadId,
-          limit: 1,
-          sortDirection: "desc",
-        }).finally(() => {
-          context.samplePreparing = false;
-        }),
-      );
+      let history: Record<string, unknown> | undefined;
+      const assertNotCancelled = () => {
+        if (signal?.aborted || context.sampleCancelled)
+          throw Object.assign(new Error("Aside cancelled."), { nativeOperationCancelled: true });
+      };
+      try {
+        await onReceipt?.({ nativeThreadId: threadId });
+        assertNotCancelled();
+        history = asObject(
+          await this.sendRequest(context, "thread/turns/list", {
+            threadId,
+            limit: 1,
+            sortDirection: "desc",
+          }),
+        );
+        assertNotCancelled();
+      } finally {
+        context.samplePreparing = false;
+      }
       const latest = Array.isArray(history?.data) ? asObject(history.data[0]) : undefined;
       if (
         !latest ||
@@ -2150,7 +2164,6 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         !["completed", "failed", "interrupted"].includes(latest.status)
       )
         throw new Error("Ask aside requires a settled native turn.");
-      if (signal?.aborted || context.sampleCancelled) throw new Error("Aside cancelled.");
       const requestId = context.nextRequestId;
       const sampleModel = context.session.model ?? null;
       context.sampleRequestId = requestId;
@@ -2211,6 +2224,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         signal?.removeEventListener("abort", cancel);
       }
     }
+    await onReceipt?.({ nativeThreadId: threadId });
     if (command.kind === "goalPause")
       return request("thread/goal/set", buildCodexGoalPauseParams(threadId, "user"));
     if (command.kind === "goalClear")
