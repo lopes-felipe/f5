@@ -7,6 +7,7 @@ import {
   PROVIDER_INTEGRATION_RECORDS,
   acceptanceMismatches,
   certifiedIntegrationRecord,
+  claudeChromeRecordFor,
   codexParentIdentifierAllowed,
   integrationTemplateRecord,
   newestRecordsFirst,
@@ -138,6 +139,39 @@ describe("provider integration certification records", () => {
     ).toBe(older.id);
   });
 
+  it("covers newer Claude builds from a certified floor unless a newer record shadows it", () => {
+    const at = (sdkMin: string, patch: Partial<ClaudeChromeRecord> = {}): ClaudeChromeRecord => ({
+      ...certified,
+      id: `claude-chrome-darwin-arm64-${sdkMin}`,
+      versions: { sdkMin, cliMin: sdkMin },
+      ...patch,
+    });
+    const { evidenceId: _evidence, ...unstamped } = at("0.5.0");
+    expect(claudeChromeRecordFor("darwin", "arm64", "0.4.9", [at("0.3.0")])?.id).toBe(
+      "claude-chrome-darwin-arm64-0.3.0",
+    );
+    expect(claudeChromeRecordFor("darwin", "arm64", "0.2.0", [at("0.3.0")])).toBeUndefined();
+    expect(claudeChromeRecordFor("darwin", "arm64", "0.4.0", [at("0.3.0"), at("0.4.0")])?.id).toBe(
+      "claude-chrome-darwin-arm64-0.4.0",
+    );
+    // An unstamped newer record closes the gate for the builds it covers.
+    expect(claudeChromeRecordFor("darwin", "arm64", "0.5.1", [at("0.3.0"), unstamped])).toBe(
+      undefined,
+    );
+    expect(claudeChromeRecordFor("darwin", "arm64", "0.4.9", [at("0.3.0"), unstamped])?.id).toBe(
+      "claude-chrome-darwin-arm64-0.3.0",
+    );
+    // A withdrawn record never shadows, and never certifies.
+    expect(
+      claudeChromeRecordFor("darwin", "arm64", "0.5.1", [
+        at("0.3.0"),
+        at("0.5.0", { withdrawn: "Withdrawn" }),
+      ])?.id,
+    ).toBe("claude-chrome-darwin-arm64-0.3.0");
+    expect(claudeChromeRecordFor("darwin", "x64", "0.4.0", [at("0.3.0")])).toBeUndefined();
+    expect(newestRecordsFirst([at("0.3.0"), at("0.4.0")])[0]?.versions.sdkMin).toBe("0.4.0");
+  });
+
   it("keeps every gate closed until a live run certifies a record", () => {
     for (const integration of ["claude-chrome", "codex-chrome", "codex-computer"] as const)
       expect(isIntegrationCertified(integration, "darwin", "arm64")).toBe(
@@ -211,9 +245,9 @@ describe("provider integration certification records", () => {
     expect(
       evidenceMismatches(certified, {
         ...report,
-        versions: { ...report.versions, cliVersion: "9.9.9" },
+        versions: { ...report.versions, cliMin: "9.9.9" },
       }),
-    ).toEqual(["versions.cliVersion"]);
+    ).toEqual(["versions.cliMin"]);
     expect(
       evidenceMismatches(certified, {
         ...report,

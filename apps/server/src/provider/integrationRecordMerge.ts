@@ -1,5 +1,8 @@
 import {
+  compareVersions,
   evidenceMismatches,
+  integrationTemplateRecord,
+  type ClaudeChromeRecord,
   type CodexChromeRecord,
   type CodexComputerRecord,
   type IntegrationEvidenceReport,
@@ -64,6 +67,45 @@ export function codexRecordFromEvidence<R extends CodexRecord>(
     id: `${template.integration}-${template.platform}-${template.arch}-${appMin}`,
     versions: { ...facts, ...floors },
   };
+}
+
+/** Claude records held exact `sdkVersion`/`cliVersion` before floors; both read as floors. */
+export function claudeRecordWithFloors(record: ClaudeChromeRecord): ClaudeChromeRecord {
+  const { sdkVersion, cliVersion, ...rest } = record.versions;
+  return {
+    ...record,
+    versions: {
+      ...(sdkVersion ? { sdkMin: sdkVersion } : {}),
+      ...(cliVersion ? { cliMin: cliVersion } : {}),
+      ...rest,
+    },
+  };
+}
+
+const canonical = (value: unknown): string =>
+  JSON.stringify(value, (_key, entry: unknown) =>
+    entry && typeof entry === "object" && !Array.isArray(entry)
+      ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a.localeCompare(b, "en")))
+      : entry,
+  );
+
+/**
+ * The existing record that already covers a freshly extracted `candidate`: the newest
+ * non-withdrawn record for its target, when its floor is at or below the candidate's and
+ * its static identity, browsers and profile isolation are unchanged. A covered CLI needs
+ * no new record (or live run); any descriptor change needs one.
+ */
+export function coveringClaudeChromeRecord(
+  existing: ReadonlyArray<ClaudeChromeRecord>,
+  candidate: ClaudeChromeRecord,
+): ClaudeChromeRecord | undefined {
+  const newest = integrationTemplateRecord(existing, candidate.platform, candidate.arch);
+  if (!newest) return undefined;
+  const floor = compareVersions(newest.versions.sdkMin, candidate.versions.sdkMin);
+  if (floor === undefined || floor > 0) return undefined;
+  const statics = (record: ClaudeChromeRecord) =>
+    canonical([record.identity, record.browsers, record.profileIsolation]);
+  return statics(newest) === statics(candidate) ? newest : undefined;
 }
 
 /**

@@ -6,6 +6,7 @@ import {
   IntegrationConsentStore,
   disclosuresDigest,
   fileConsentIo,
+  isAlwaysAllowableIntegration,
   keychainConsentKey,
   type IntegrationConsentIo,
 } from "./IntegrationConsentStore";
@@ -103,6 +104,23 @@ describe("IntegrationConsentStore", () => {
     state.failWrites = false;
     store.revoke("p1", "codex-chrome");
     expect(new IntegrationConsentStore(memoryIo(state.contents).io, key).list("p1")).toEqual([]);
+  });
+
+  it("keeps Claude in Chrome's grant apart from Codex Chrome's, each with its own digest", () => {
+    const { io, state } = memoryIo();
+    const store = new IntegrationConsentStore(io, key);
+    store.allow("p1", "claude-chrome");
+    expect(store.allowed("p1", "claude-chrome")).toBe(true);
+    expect(store.allowed("p1", "codex-chrome")).toBe(false);
+    expect(new IntegrationConsentStore(memoryIo(state.contents).io, key).list("p1")).toEqual([
+      "claude-chrome",
+    ]);
+    const stale = state.contents!.replace(disclosuresDigest("claude-chrome"), "0".repeat(64));
+    expect(new IntegrationConsentStore(memoryIo(stale).io, key).list("p1")).toEqual([]);
+    store.revoke("p1", "claude-chrome");
+    expect(store.allowed("p1", "claude-chrome")).toBe(false);
+    expect(isAlwaysAllowableIntegration("claude-chrome")).toBe(true);
+    expect(isAlwaysAllowableIntegration("codex-computer")).toBe(false);
   });
 
   it("asks again once the disclosures the user saw have changed", () => {

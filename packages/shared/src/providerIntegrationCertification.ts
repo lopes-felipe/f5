@@ -86,8 +86,9 @@ interface RecordBase<I extends ProviderIntegration, Identity> {
   readonly platform: "darwin" | "win32";
   readonly arch: string;
   /**
-   * Exact versions for bundled providers (Claude). Codex records hold certified floors
-   * (`*Min`); a missing `*Max` means no ceiling, and live checks guard newer builds.
+   * Certified floors (`*Min`): Claude's bundled SDK and CLI (`sdkMin`, `cliMin`), Codex's
+   * app, plugin, service or CLI. A missing `*Max` means no ceiling; live checks guard
+   * newer builds.
    */
   readonly versions: Readonly<Record<string, string>>;
   readonly identity: Identity;
@@ -194,9 +195,9 @@ export function compareVersions(a: string | undefined, b: string | undefined): n
   return 0;
 }
 
-/** The version a record certifies from: a Codex floor (`appMin`) or Claude's exact CLI. */
+/** The version a record certifies from: a Codex app floor or Claude's bundled SDK floor. */
 const certifiedFrom = (record: ProviderIntegrationRecord) =>
-  record.versions.appMin ?? record.versions.cliVersion;
+  record.versions.appMin ?? record.versions.sdkMin;
 
 /** Newest certified version first; records without a readable version last. */
 export function newestRecordsFirst<R extends ProviderIntegrationRecord>(
@@ -255,6 +256,27 @@ export function certifiedIntegrationRecord<I extends ProviderIntegration>(
   return version === undefined
     ? newestRecordsFirst(certifying)[0]
     : recordForVersion(certifying, version);
+}
+
+/**
+ * The Claude in Chrome record for a bundled SDK `version`: the non-withdrawn record with
+ * the highest floor at or below it, only when that record certifies. An unstamped record
+ * for a changed descriptor therefore shadows an older certified floor until its own live
+ * run, instead of letting the old identity cover a CLI it never described.
+ */
+export function claudeChromeRecordFor(
+  platform: string,
+  arch: string,
+  version: string,
+  records: ReadonlyArray<ClaudeChromeRecord> = PROVIDER_INTEGRATION_RECORDS["claude-chrome"],
+): ClaudeChromeRecord | undefined {
+  const record = recordForVersion(
+    records.filter(
+      (entry) => entry.platform === platform && entry.arch === arch && !entry.withdrawn,
+    ),
+    version,
+  );
+  return record && recordCertifies(record) ? record : undefined;
 }
 
 export function isIntegrationCertified(
@@ -333,6 +355,8 @@ export const INTEGRATION_DISCLOSURES: Readonly<Record<ProviderIntegration, Reado
 export const INTEGRATION_REQUIRED_ASSERTIONS: Readonly<
   Record<ProviderIntegration, ReadonlyArray<string>>
 > = Object.freeze({
+  // All observed by the live harness. Permission-mode behaviour (disclosed), routing
+  // isolation and stale native hosts are covered by unit tests, not the live run.
   "claude-chrome": [
     "manifests-and-wrapper",
     "allowed-origins",
@@ -340,10 +364,7 @@ export const INTEGRATION_REQUIRED_ASSERTIONS: Readonly<
     "status-shape",
     "tool-inventory",
     "read-only-call",
-    "permission-mode",
     "restore-original-bytes",
-    "routing-isolation",
-    "stale-native-host",
     "terminal-claude-unaffected",
     "frozen-server-stop-cancels-queued",
     "byte-identical-launches",

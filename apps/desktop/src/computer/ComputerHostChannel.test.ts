@@ -5,6 +5,7 @@ import { ChromeProcessSupervisor, type ChromeProcessIo } from "./ChromeProcessSu
 import { ComputerHostChannel } from "./ComputerHostChannel";
 import type { ComputerController } from "./ComputerController";
 import { ComputerLeaseAuthority } from "./ComputerLeaseAuthority";
+import type { AlwaysAllowableIntegration } from "./IntegrationConsentStore";
 function setup(
   certified = false,
   advertiseBackground?: boolean,
@@ -20,7 +21,7 @@ function setup(
       url: string,
     ) => Promise<import("@t3tools/contracts").OpenExternalUrlStatus>;
     cancelBrowserOpen?: (profileId: string) => void;
-    alwaysAllowed?: (profileId: string, integration: "codex-chrome") => boolean;
+    alwaysAllowed?: (profileId: string, integration: AlwaysAllowableIntegration) => boolean;
   } = {},
 ) {
   const { notification, supervisor, verifyAdoption, alwaysAllowed } = options;
@@ -712,6 +713,51 @@ describe("background capability negotiation", () => {
     expect(h.attention).toHaveBeenCalledTimes(2);
     // Only Codex Chrome can be always allowed: Computer Use never consults the grant.
     expect(alwaysAllowed).toHaveBeenCalledTimes(1);
+  });
+  it("answers a Claude in Chrome setup request the profile always allows", () => {
+    let allowed: AlwaysAllowableIntegration | undefined;
+    const h = setup(false, undefined, {
+      alwaysAllowed: (_profile, integration) => integration === allowed,
+    });
+    h.hello();
+    const setupRequest = (requestId: string, provider: "claude" | "codex") => ({
+      type: "accessRequested",
+      request: {
+        requestId,
+        threadId: requestId,
+        sessionGeneration: "s",
+        reason: "r",
+        kind: "chrome-setup",
+        chromeSetup: {
+          provider,
+          previousTargets: ["/terminal/wrapper"],
+          targetPath: "/f5/wrapper",
+        },
+        apps: [],
+      },
+    });
+    // A Codex Chrome grant doesn't cover Claude's setup.
+    allowed = "codex-chrome";
+    h.process.emit("message", setupRequest("before", "claude"));
+    expect(h.attention).toHaveBeenCalledOnce();
+    allowed = "claude-chrome";
+    h.process.emit("message", setupRequest("claude", "claude"));
+    expect(sent(h).at(-1)).toEqual({
+      type: "accessAnswer",
+      answer: {
+        requestId: "claude",
+        backendIncarnation: "incarnation",
+        decisions: [],
+        allowChromeSetup: true,
+      },
+    });
+    // Ticking the box answers the one already waiting.
+    h.channel.answerPendingAlwaysAllowed("profile");
+    expect(
+      sent(h)
+        .filter((message) => message.type === "accessAnswer")
+        .map((message) => (message as { answer: { requestId: string } }).answer.requestId),
+    ).toEqual(["claude", "before"]);
   });
   it("answers the profile's waiting Codex Chrome requests once it chooses always allow", () => {
     let allowed = false;

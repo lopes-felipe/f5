@@ -71,7 +71,9 @@ describe("renderer computer controls", () => {
     expect(integrationConsents.list).toHaveBeenCalledWith("profile");
     handlers.get("desktop-computer:revoke-integration-consent")!(event, "codex-chrome");
     expect(integrationConsents.revoke).toHaveBeenCalledWith("profile", "codex-chrome");
-    for (const other of ["claude-chrome", "codex-computer"])
+    handlers.get("desktop-computer:revoke-integration-consent")!(event, "claude-chrome");
+    expect(integrationConsents.revoke).toHaveBeenCalledWith("profile", "claude-chrome");
+    for (const other of ["codex-computer", "claude"])
       expect(() =>
         handlers.get("desktop-computer:revoke-integration-consent")!(event, other),
       ).toThrow("Invalid integration");

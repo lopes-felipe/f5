@@ -4,6 +4,15 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- A profile can always allow Claude in Chrome's setup consent, revocable in Settings → Browser & Computer.
+
+### Changed
+
+- Claude in Chrome certification records are version floors: a Claude update with the same browser setup stays covered, and a changed setup or tool list closes Claude in Chrome with its reason until a new live run.
+- The Claude in Chrome live harness observes frozen-server stop and terminal `claude --chrome` coexistence; permission-mode behaviour, routing isolation and stale native hosts are no longer required of the live run (covered by unit tests).
+
 ## [0.1.3] - 2026-11-03
 
 ### Added

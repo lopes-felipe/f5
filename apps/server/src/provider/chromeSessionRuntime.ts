@@ -7,6 +7,7 @@ import { ComputerControlError } from "@t3tools/shared/computerControl";
 import { ChromeArtifactCache } from "./chromeArtifactCache";
 import {
   chromeLaunchDecision,
+  chromeServerHasUncertifiedTools,
   type ChromeLaunchDecision,
   type ChromeNativeHostDescriptor,
   type ChromeServerStatus,
@@ -20,6 +21,7 @@ import type { PersistentChromeNativeHostStorage } from "./chromeNativeHostStorag
 import {
   CLAUDE_IN_CHROME_EXTERNAL_CONFLICT,
   CLAUDE_IN_CHROME_START_FAILED,
+  CLAUDE_IN_CHROME_TOOLS_CHANGED,
   classifyClaudeChromeTool,
   type ClaudeChromeToolClass,
 } from "./Layers/claudeAgentBrowser";
@@ -71,6 +73,8 @@ export const CHROME_ADMISSION_DEADLINE_MS = 1_000;
 export interface ChromeRuntimeDeps {
   readonly descriptor: ChromeNativeHostDescriptor;
   readonly record: ClaudeChromeRecord;
+  /** The bundled SDK version the session runs (at or above the record's floor). */
+  readonly sdkVersion?: string;
   readonly storage: PersistentChromeNativeHostStorage;
   readonly profileId: string;
   readonly userHome: string;
@@ -220,9 +224,7 @@ export class ChromeSessionRuntime {
         providerInstanceId: session.providerInstanceId,
         recordId: this.deps.record.id,
         ...(this.deps.record.evidenceId ? { evidenceId: this.deps.record.evidenceId } : {}),
-        ...(this.deps.record.versions.sdkVersion
-          ? { sdkVersion: this.deps.record.versions.sdkVersion }
-          : {}),
+        ...(this.deps.sdkVersion ? { sdkVersion: this.deps.sdkVersion } : {}),
         executablePath: this.deps.executableRealpath,
         providerHome: session.providerHome,
         userHome: this.deps.userHome,
@@ -261,7 +263,9 @@ export class ChromeSessionRuntime {
         threadId,
         generation,
         "failed",
-        "Claude in Chrome's connection changed. Reconnect it in F5.",
+        chromeServerHasUncertifiedTools(status, this.toolNames)
+          ? CLAUDE_IN_CHROME_TOOLS_CHANGED
+          : "Claude in Chrome's connection changed. Reconnect it in F5.",
       );
       return false;
     }
@@ -274,7 +278,9 @@ export class ChromeSessionRuntime {
         threadId,
         generation,
         "failed",
-        "F5 could not verify the Chrome server's provenance.",
+        chromeServerHasUncertifiedTools(status, this.toolNames)
+          ? CLAUDE_IN_CHROME_TOOLS_CHANGED
+          : "F5 could not verify the Chrome server's provenance.",
       );
       return false;
     }
@@ -513,6 +519,7 @@ export function chromeRuntimeHost(input: {
   broker: ComputerAutomationBrokerRuntime;
   descriptor: ChromeNativeHostDescriptor;
   record: ClaudeChromeRecord;
+  sdkVersion?: string;
   storage: PersistentChromeNativeHostStorage;
   userHome: string;
   executableRealpath: string;
@@ -522,6 +529,7 @@ export function chromeRuntimeHost(input: {
   return new ChromeSessionRuntime({
     descriptor: input.descriptor,
     record: input.record,
+    ...(input.sdkVersion ? { sdkVersion: input.sdkVersion } : {}),
     storage: input.storage,
     userHome: input.userHome,
     executableRealpath: input.executableRealpath,

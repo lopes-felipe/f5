@@ -1,14 +1,27 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import type { ComputerAccessRequested } from "@t3tools/contracts";
 import { INTEGRATION_DISCLOSURES } from "@t3tools/shared/providerIntegrationCertification";
 
 /**
- * Provider integrations whose per-session consent a profile can allow always. Only Codex
- * Chrome for now: each one needs its own Settings row to revoke it.
+ * Provider integrations whose consent a profile can allow always: Codex Chrome's
+ * per-session consent and Claude in Chrome's setup consent. Each one needs its own
+ * Settings row to revoke it.
  */
-export type AlwaysAllowableIntegration = "codex-chrome";
-const INTEGRATIONS: ReadonlyArray<AlwaysAllowableIntegration> = ["codex-chrome"];
+export type AlwaysAllowableIntegration = "codex-chrome" | "claude-chrome";
+const INTEGRATIONS: ReadonlyArray<AlwaysAllowableIntegration> = ["codex-chrome", "claude-chrome"];
+
+/** The integration a consent request can be always allowed for; undefined for any other. */
+export function alwaysAllowableIntegration(
+  request: Pick<ComputerAccessRequested, "kind" | "chromeSession" | "chromeSetup">,
+): AlwaysAllowableIntegration | undefined {
+  if (request.kind === "chrome-session" && request.chromeSession?.integration === "codex-chrome")
+    return "codex-chrome";
+  if (request.kind === "chrome-setup" && request.chromeSetup?.provider === "claude")
+    return "claude-chrome";
+  return undefined;
+}
 
 /** A grant covers the disclosures the user saw: changing them asks again. */
 export function disclosuresDigest(integration: AlwaysAllowableIntegration): string {

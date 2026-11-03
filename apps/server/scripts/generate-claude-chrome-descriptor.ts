@@ -7,7 +7,10 @@
  *
  * Static facts come from the shipped executable; `toolNames`, `evidenceId` and
  * `evidenceCommit` are stamped only from a live report (run outside F5, on a clean commit)
- * whose versions match. `--check` fails on drift without writing. Never launches the CLI.
+ * whose versions match. Records are floors: a CLI whose descriptor equals the newest
+ * record's is covered by it and adds nothing, so a Claude bump needs no new live run
+ * unless its Chrome setup changed. `--check` fails on drift without writing. Never
+ * launches the CLI.
  */
 import { execFileSync } from "node:child_process";
 import { open, readFile, realpath, writeFile } from "node:fs/promises";
@@ -22,7 +25,11 @@ import {
   extractClaudeChromeDescriptor,
   type DescriptorSource,
 } from "../src/provider/claudeChromeDescriptorExtraction";
-import { mergeIntegrationRecords } from "../src/provider/integrationRecordMerge";
+import {
+  claudeRecordWithFloors,
+  coveringClaudeChromeRecord,
+  mergeIntegrationRecords,
+} from "../src/provider/integrationRecordMerge";
 import { resolveBundledClaudeExecutable } from "../src/provider/claudeSdkExecutable";
 
 const root = resolve(import.meta.dirname, "../../..");
@@ -81,7 +88,7 @@ let record: ClaudeChromeRecord = {
   id: `claude-chrome-${platform}-${arch}-${descriptor.cliVersion}`,
   platform,
   arch,
-  versions: { sdkVersion, cliVersion: descriptor.cliVersion },
+  versions: { sdkMin: sdkVersion, cliMin: descriptor.cliVersion },
   identity: {
     teamId,
     platformPackage,
@@ -99,9 +106,11 @@ let record: ClaudeChromeRecord = {
 };
 
 const evidencePath = argument("--evidence");
-const existing = JSON.parse(
-  await readFile(outputPath, "utf8").catch(() => "[]"),
-) as ClaudeChromeRecord[];
+const existing = (
+  JSON.parse(await readFile(outputPath, "utf8").catch(() => "[]")) as ClaudeChromeRecord[]
+).map(claudeRecordWithFloors);
+// Evidence always stamps the exercised floor; otherwise an unchanged descriptor is covered.
+const covering = evidencePath ? undefined : coveringClaudeChromeRecord(existing, record);
 // Retiring a record is explicit (`--withdraw <id> --reason <note>`), so `sdk:audit` keeps
 // failing until a withdrawal with its CHANGELOG note is recorded.
 const withdrawId = argument("--withdraw");
@@ -110,7 +119,7 @@ if (withdrawId && !withdrawReason)
   throw new Error("--withdraw needs --reason, matching the CHANGELOG note.");
 const next = mergeIntegrationRecords({
   existing,
-  record,
+  ...(covering ? {} : { record }),
   ...(evidencePath
     ? {
         report: JSON.parse(
@@ -121,7 +130,10 @@ const next = mergeIntegrationRecords({
   reinstate: process.argv.includes("--reinstate"),
   ...(withdrawId ? { withdraw: { id: withdrawId, reason: withdrawReason! } } : {}),
 });
-record = next.find((entry) => entry.id === record.id)!;
+record = next.find((entry) => entry.id === (covering ?? record).id)!;
+const coverage = covering
+  ? `CLI ${descriptor.cliVersion} is covered by ${record.id} (floor ${record.versions.sdkMin})`
+  : undefined;
 const current = await readFile(outputPath, "utf8").catch(() => "");
 // Compared as data: the repository formatter owns the file's layout.
 const canonical = (text: string) => {
@@ -136,7 +148,7 @@ if (check) {
     console.error("Claude Chrome descriptor drifted from the bundled CLI. Regenerate it:");
     console.error("  bun apps/server/scripts/generate-claude-chrome-descriptor.ts");
     process.exitCode = 1;
-  } else console.log(`Claude Chrome descriptor matches CLI ${descriptor.cliVersion}.`);
+  } else console.log(coverage ?? `Claude Chrome descriptor matches CLI ${descriptor.cliVersion}.`);
 } else {
   await writeFile(outputPath, `${JSON.stringify(next, null, 2)}\n`);
   // Leave the file as `bun fmt` would, so `fmt:check` stays clean.
@@ -145,6 +157,7 @@ if (check) {
     stdio: "ignore",
   });
   console.log(
-    `Wrote ${record.id}${record.evidenceId ? ` (evidence ${record.evidenceId})` : " (uncertified)"}.`,
+    coverage ??
+      `Wrote ${record.id}${record.evidenceId ? ` (evidence ${record.evidenceId})` : " (uncertified)"}.`,
   );
 }

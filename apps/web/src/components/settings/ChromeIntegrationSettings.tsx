@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ChromeReadiness } from "@t3tools/contracts";
+import type { AlwaysAllowedIntegration, ChromeReadiness } from "@t3tools/contracts";
 import { defaultInstanceIdForDriver, ProviderDriverKind } from "@t3tools/contracts";
 import { INTEGRATION_DISCLOSURES } from "@t3tools/shared/providerIntegrationCertification";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
@@ -77,8 +77,25 @@ function useChromeReadiness(ids: ReadonlyArray<string>, enabled: boolean) {
   return readiness;
 }
 
-/** "Always allow" for Codex Chrome sessions, kept by desktop main for this profile. */
-function CodexChromeAlwaysAllowRow() {
+const ALWAYS_ALLOWED = {
+  claude: {
+    integration: "claude-chrome",
+    description:
+      "Claude takes over the browser connection without asking, even when another Claude or F5 profile set it up. Revoke to be asked again.",
+  },
+  codex: {
+    integration: "codex-chrome",
+    description:
+      "New Codex sessions use Chrome without asking. Revoke to be asked once per session again; sessions already running keep Chrome until they end.",
+  },
+} as const satisfies Record<
+  keyof typeof INTEGRATIONS,
+  { integration: AlwaysAllowedIntegration; description: string }
+>;
+
+/** "Always allow" kept by desktop main for this profile: Codex sessions, Claude setup. */
+function AlwaysAllowRow({ provider }: { provider: keyof typeof INTEGRATIONS }) {
+  const { integration, description } = ALWAYS_ALLOWED[provider];
   const bridge = window.desktopBridge?.computerAutomation;
   const [allowed, setAllowed] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -89,7 +106,7 @@ function CodexChromeAlwaysAllowRow() {
     const load = () =>
       void bridge
         ?.integrationConsents?.()
-        .then((list) => current && setAllowed(list.includes("codex-chrome")))
+        .then((list) => current && setAllowed(list.includes(integration)))
         .catch(() => undefined);
     load();
     window.addEventListener("focus", load);
@@ -97,13 +114,13 @@ function CodexChromeAlwaysAllowRow() {
       current = false;
       window.removeEventListener("focus", load);
     };
-  }, [bridge]);
+  }, [bridge, integration]);
   if (!allowed || !bridge?.revokeIntegrationConsent) return null;
   const revoke = async () => {
     setBusy(true);
     setError("");
     try {
-      await bridge.revokeIntegrationConsent?.("codex-chrome");
+      await bridge.revokeIntegrationConsent?.(integration);
       setAllowed(false);
     } catch (cause) {
       // Electron prefixes errors thrown in main with the IPC channel.
@@ -121,8 +138,7 @@ function CodexChromeAlwaysAllowRow() {
       title="Always allowed for this profile"
       description={
         <>
-          New Codex sessions use Chrome without asking. Revoke to be asked once per session again;
-          sessions already running keep Chrome until they end.
+          {description}
           {error ? (
             <span role="alert" className="block text-destructive-foreground">
               {error}
@@ -202,7 +218,7 @@ export function ChromeIntegrationRows({ provider }: { provider: keyof typeof INT
           />
         );
       })}
-      {provider === "codex" ? <CodexChromeAlwaysAllowRow /> : null}
+      <AlwaysAllowRow provider={provider} />
     </>
   );
 }

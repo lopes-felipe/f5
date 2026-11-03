@@ -77,6 +77,10 @@ export function claudeInChromeUnavailableDetail(
     "Claude in Chrome is unavailable for this session."
   );
 }
+export const CLAUDE_IN_CHROME_BUILD_NOT_CERTIFIED =
+  "Claude in Chrome isn't certified for this Claude build yet. Update F5.";
+export const CLAUDE_IN_CHROME_TOOLS_CHANGED =
+  "Claude in Chrome's tools changed in this Claude build; it needs a new certification.";
 export const CLAUDE_IN_CHROME_NEEDS_BUNDLED =
   "Claude in Chrome works only with F5's bundled Claude.";
 export const CLAUDE_IN_CHROME_HOME_MISMATCH =
