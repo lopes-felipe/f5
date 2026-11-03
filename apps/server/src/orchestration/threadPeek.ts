@@ -7,20 +7,20 @@ import {
 } from "@t3tools/contracts";
 import {
   ASSISTANT_TEXT_WHITESPACE,
+  isTurnInProgress,
   truncateMessagePreview,
 } from "@t3tools/shared/turnAssistantMessage";
 import { Effect, Option, Schema } from "effect";
 import type * as SqlClient from "effect/unstable/sql/SqlClient";
-
-import { readTurnAssistantMessages } from "./turnAssistantMessage.ts";
 
 const decodeCheckpointFiles = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Array(OrchestrationCheckpointFile)),
 );
 
 /**
- * The sidebar hover card's server-side fields for one thread: the last prompt, the latest
- * completed turn's final reply (never a streaming one), and the latest checkpoint's diff totals.
+ * The sidebar hover card's server-side fields for one thread: the last prompt, the newest
+ * settled reply outside a turn still in progress (the client's `localThreadPeek` rule), and
+ * the latest checkpoint's diff totals.
  */
 export function readThreadPeek(sql: SqlClient.SqlClient, threadId: ThreadId) {
   return Effect.gen(function* () {
@@ -30,14 +30,20 @@ export function readThreadPeek(sql: SqlClient.SqlClient, threadId: ThreadId) {
         AND length(trim(text, ${ASSISTANT_TEXT_WHITESPACE})) > 0
       ORDER BY created_at DESC, message_id DESC
       LIMIT 1`;
-    const [turnRow] = yield* sql<{ turn_id: string }>`
-      SELECT turn_id FROM projection_turns
-      WHERE thread_id = ${threadId} AND turn_id IS NOT NULL AND state = 'completed'
+    const [latestTurn] = yield* sql<{ turn_id: string; state: string }>`
+      SELECT turn_id, state FROM projection_turns
+      WHERE thread_id = ${threadId} AND turn_id IS NOT NULL
       ORDER BY requested_at DESC, turn_id DESC
       LIMIT 1`;
-    const [reply] = turnRow
-      ? yield* readTurnAssistantMessages(sql, [{ threadId, turnId: turnRow.turn_id }])
-      : [];
+    const inProgressTurnId =
+      latestTurn && isTurnInProgress(latestTurn.state) ? latestTurn.turn_id : null;
+    const [reply] = yield* sql<{ text: string }>`
+      SELECT text FROM projection_thread_messages
+      WHERE thread_id = ${threadId} AND role = 'assistant' AND is_streaming = 0
+        AND length(trim(text, ${ASSISTANT_TEXT_WHITESPACE})) > 0
+        ${inProgressTurnId === null ? sql`` : sql`AND (turn_id IS NULL OR turn_id <> ${inProgressTurnId})`}
+      ORDER BY created_at DESC, message_id DESC
+      LIMIT 1`;
     const [checkpointRow] = yield* sql<{ files: string }>`
       SELECT checkpoint_files_json AS files FROM projection_turns
       WHERE thread_id = ${threadId} AND checkpoint_turn_count IS NOT NULL

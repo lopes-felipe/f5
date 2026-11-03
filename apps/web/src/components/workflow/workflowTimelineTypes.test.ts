@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   currentStepFromPhases,
+  overallStateFromPhases,
   phaseSummariesFromPhases,
   threadOrderFromPhases,
   type WorkflowTimelinePhase,
@@ -100,6 +101,19 @@ describe("currentStepFromPhases", () => {
         phase("Implement", "pending", [step("Implementation", "pending")]),
       ]),
     ).toMatchObject({ label: "Merge", state: "needs-attention", threadId: "m" });
+  });
+
+  it("names a failed branch over a running one, matching the overall state", () => {
+    const phases = [
+      phase("Branch A", "error", [step("Branch A", "error", "a")]),
+      phase("Branch B", "active", [step("Branch B", "active", "b")]),
+    ];
+    expect(overallStateFromPhases(phases)).toBe("error");
+    expect(currentStepFromPhases(phases)).toMatchObject({
+      label: "Branch A",
+      state: "needs-attention",
+      threadId: "a",
+    });
   });
 
   it("reports Completed once every phase is done", () => {

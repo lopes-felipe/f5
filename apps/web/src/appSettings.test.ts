@@ -55,6 +55,20 @@ describe("parsePersistedAppSettings", () => {
     expect(parsed.customThemes).toEqual(customThemes);
   });
 
+  it("falls back to the default idle-fold age without resetting other settings", () => {
+    for (const stored of [5, "7", null]) {
+      const parsed = parsePersistedAppSettings(
+        JSON.stringify({ themeId: "custom-local", sidebarOlderThreadDays: stored }),
+      );
+      expect(parsed.sidebarOlderThreadDays).toBe(7);
+      expect(parsed.themeId).toBe("custom-local");
+    }
+    expect(
+      parsePersistedAppSettings(JSON.stringify({ sidebarOlderThreadDays: 0 }))
+        .sidebarOlderThreadDays,
+    ).toBe(0);
+  });
+
   it("migrates the former implicit blue default to black only once", () => {
     expect(parsePersistedAppSettings(JSON.stringify({ themeId: "f5-default" })).themeId).toBe(
       "f5-black",

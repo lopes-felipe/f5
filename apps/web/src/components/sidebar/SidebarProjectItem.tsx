@@ -42,6 +42,7 @@ import {
   pinnedThreadSortableId,
   workflowEntryKey,
 } from "./sidebarLists";
+import { liveSidebarActivityAt } from "./sidebarRecent";
 import { SidebarThreadRow } from "./SidebarThreadRow";
 import {
   ScheduledShelfIndicator,
@@ -144,6 +145,8 @@ export interface SidebarProjectItemProps {
   olderThreadDays: number;
   /** The clock aging compares against (floored to the hour). */
   now: number;
+  /** Live activity hours by thread id (`useLiveActivityHours`); summary times can lag. */
+  liveActivityHours: Readonly<Record<string, number>>;
   /** Threads that never fold: the open one, unread, running, waiting on the user, live terminals. */
   agingExemptThreadIds: ReadonlySet<ThreadId>;
   draftThreadsByThreadId: Readonly<Record<ThreadId, DraftThreadState>>;
@@ -295,7 +298,10 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
     props.now,
     olderThreadDays,
     agingExemptKeys,
-    { getKey: (thread) => thread.id, getActivityAt: (thread) => thread.lastInteractionAt },
+    {
+      getKey: (thread) => thread.id,
+      getActivityAt: (thread) => liveSidebarActivityAt(thread, props.liveActivityHours),
+    },
   );
   const agedWorkflows = partitionAgedSidebarItems(
     projectWorkflows,
@@ -314,17 +320,17 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
   const visibleOlderWorkflows = olderExpanded ? agedWorkflows.older : [];
   const visibleOlderThreads = olderExpanded ? agedThreads.older : [];
 
+  // The preview limit applies to the threads aging keeps in view: "Show more", then "N older".
   const activeExpanded = isListExpanded("active");
-  const visibleActiveThreads = agingEnabled
-    ? agedThreads.recent
-    : getVisibleThreadsWithPinnedDraft({
-        threads: activeThreads,
-        expanded: activeExpanded || activeThreads.length <= threadPreviewLimit,
-        previewLimit: threadPreviewLimit,
-        draftThreadId: projectDraftThreadId,
-      });
+  const recentThreads = agingEnabled ? agedThreads.recent : activeThreads;
+  const visibleActiveThreads = getVisibleThreadsWithPinnedDraft({
+    threads: recentThreads,
+    expanded: activeExpanded || recentThreads.length <= threadPreviewLimit,
+    previewLimit: threadPreviewLimit,
+    draftThreadId: projectDraftThreadId,
+  });
   const visibleWorkflows = agingEnabled ? agedWorkflows.recent : projectWorkflows;
-  const hasHiddenActiveThreads = !agingEnabled && activeThreads.length > threadPreviewLimit;
+  const hasHiddenActiveThreads = recentThreads.length > threadPreviewLimit;
 
   // The shelf's open list, with the preview limit and "Show all N".
   const previewList = <T,>(

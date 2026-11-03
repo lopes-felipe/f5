@@ -4,7 +4,28 @@ import { describe, expect, it } from "vitest";
 import type { ThreadStatus } from "../../threadStatus";
 import type { ThreadListItem } from "../../types";
 import type { SidebarWorkflowEntry } from "./sidebarLists";
-import { bucketRecentSidebarItems, type RecentSidebarItem } from "./sidebarRecent";
+import {
+  bucketRecentSidebarItems,
+  liveSidebarActivityAt,
+  type RecentSidebarItem,
+} from "./sidebarRecent";
+
+describe("liveSidebarActivityAt", () => {
+  const thread = { id: ThreadId.makeUnsafe("t"), lastInteractionAt: "2026-11-02T20:15:00.000Z" };
+
+  it("uses the live hour when it is later than the summary key", () => {
+    const liveHour = Date.parse("2026-11-03T09:00:00.000Z");
+    expect(liveSidebarActivityAt(thread, { t: liveHour })).toBe("2026-11-03T09:00:00.000Z");
+  });
+
+  it("keeps the summary key when it is current or no live time is known", () => {
+    expect(liveSidebarActivityAt(thread, { t: Date.parse("2026-11-02T20:00:00.000Z") })).toBe(
+      thread.lastInteractionAt,
+    );
+    expect(liveSidebarActivityAt(thread, {})).toBe(thread.lastInteractionAt);
+    expect(liveSidebarActivityAt(thread, undefined)).toBe(thread.lastInteractionAt);
+  });
+});
 
 const PROJECT_ID = ProjectId.makeUnsafe("project");
 // Local noon, so day boundaries are the machine's own midnight.
@@ -102,6 +123,16 @@ describe("bucketRecentSidebarItems", () => {
     expect(keysOf(buckets.pinned)).toEqual(["thread:first", "thread:second"]);
     expect(keysOf(buckets.running)).toEqual([]);
     expect(keysOf(buckets.today)).toEqual(["thread:plain"]);
+  });
+
+  it("buckets by the live activity time when the summary's sort key lags", () => {
+    // A lone thread's summary keeps yesterday's key after a turn ends today.
+    const stale = threadItem("lone", at(1, 20));
+    const live = { ...stale, bucketAt: at(0, 9) } as RecentSidebarItem;
+    expect(keysOf(bucketRecentSidebarItems([stale], new Map(), NOW).yesterday)).toEqual([
+      "thread:lone",
+    ]);
+    expect(keysOf(bucketRecentSidebarItems([live], new Map(), NOW).today)).toEqual(["thread:lone"]);
   });
 
   it("places every item in exactly one bucket", () => {

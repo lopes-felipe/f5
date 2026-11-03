@@ -2,7 +2,7 @@ import type { ProjectId, ThreadId } from "@t3tools/contracts";
 import { isScratchProject } from "@t3tools/shared/scratchProject";
 import { Schema } from "effect";
 import { ChevronRightIcon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { DraftThreadState } from "../../composerDraftStore";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
@@ -72,6 +72,8 @@ export function SidebarRecentView(props: {
   listsByProjectId: ReadonlyMap<ProjectId, ProjectSidebarLists<ThreadSummary>>;
   statusById: ReadonlyMap<ThreadId, ThreadStatus>;
   now: number;
+  /** Live activity hours by thread id (`useLiveActivityHours`); summary times can lag. */
+  liveActivityHours: Readonly<Record<string, number>>;
   /** Item keys in their order when the pointer entered the sidebar. */
   frozenItemKeys: readonly string[] | undefined;
   threadPreviewLimit: number;
@@ -98,7 +100,7 @@ export function SidebarRecentView(props: {
   const [earlierShowingAll, setEarlierShowingAll] = useState(false);
 
   const projectById = new Map(projects.map((project) => [project.id, project] as const));
-  const allItems = collectRecentSidebarItems(listsByProjectId);
+  const allItems = collectRecentSidebarItems(listsByProjectId, props.liveActivityHours);
   const listedProjects = projects.filter((project) => !isScratchProject(project));
   const scratchProjects = projects.filter(
     (project) =>
@@ -120,6 +122,25 @@ export function SidebarRecentView(props: {
       frozenOrder: props.frozenItemKeys,
     }),
   }));
+  // The bucket holding the open thread (directly, or as a workflow's child) opens for it.
+  const holdsRouteThread = (item: RecentSidebarItem) =>
+    routeThreadId !== null &&
+    (item.kind === "thread"
+      ? item.thread.id === routeThreadId
+      : (listsByProjectId.get(item.projectId)?.workflowThreadsByKey.get(item.key) ?? []).some(
+          (thread) => thread.id === routeThreadId,
+        ));
+  const routeBucket =
+    RECENT_SIDEBAR_BUCKETS.find((bucket) => liveBuckets[bucket].some(holdsRouteThread)) ?? null;
+  useEffect(() => {
+    if (routeBucket === null) return;
+    setCollapsedBuckets((current) => {
+      if (!current.has(routeBucket)) return current;
+      const next = new Set(current);
+      next.delete(routeBucket);
+      return next;
+    });
+  }, [routeThreadId, routeBucket]);
   const isDraft = (threadId: ThreadId) =>
     isDraftThreadId(threadId, props.draftThreadsByThreadId, props.persistedThreadIds);
   const visibleItemsOf = (bucket: RecentSidebarBucket, bucketItems: RecentSidebarItem[]) => {

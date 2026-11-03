@@ -6,10 +6,11 @@ import {
   THREAD_PEEK_USER_TEXT_MAX_CHARS,
   type ThreadId,
 } from "@t3tools/contracts";
-import { truncateMessagePreview } from "@t3tools/shared/turnAssistantMessage";
+import { isTurnInProgress, truncateMessagePreview } from "@t3tools/shared/turnAssistantMessage";
 import { queryOptions } from "@tanstack/react-query";
 
 import { formatRelativeTimeLabel } from "../../lib/relativeTime";
+import { rpcQueryContext } from "../../lib/rpcQueryContext";
 import { ensureNativeApi } from "../../nativeApi";
 import { formatDuration } from "../../session-logic";
 import type { ThreadStatusPill } from "../../threadStatus";
@@ -119,11 +120,17 @@ export function resolveSidebarPeekStatus(input: {
  * the request. The reply comes from the newest settled assistant message outside a running turn.
  */
 export function localThreadPeek(
-  thread: Pick<Thread, "id" | "detailsLoaded" | "messages" | "latestTurn" | "turnDiffSummaries">,
+  thread: Pick<
+    Thread,
+    "id" | "detailsLoaded" | "messages" | "latestTurn" | "turnDiffSummaries" | "history"
+  >,
 ): OrchestrationThreadPeek | null {
   if (!thread.detailsLoaded) return null;
-  const unsettledTurnId =
-    thread.latestTurn && thread.latestTurn.state !== "completed" ? thread.latestTurn.turnId : null;
+  // Same rule as the server's `readThreadPeek`: skip only a turn still producing output.
+  const inProgressTurnId =
+    thread.latestTurn && isTurnInProgress(thread.latestTurn.state)
+      ? thread.latestTurn.turnId
+      : null;
   const lastUser = thread.messages.findLast(
     (message) => message.role === "user" && message.text.trim().length > 0,
   );
@@ -132,8 +139,10 @@ export function localThreadPeek(
       message.role === "assistant" &&
       !message.streaming &&
       message.text.trim().length > 0 &&
-      (unsettledTurnId === null || message.turnId !== unsettledTurnId),
+      (inProgressTurnId === null || message.turnId !== inProgressTurnId),
   );
+  // Only a tail of history is loaded: what is missing may be older, so ask the server.
+  if (thread.history?.hasOlderMessages && (!lastUser || !lastReply)) return null;
   const latestDiff = thread.turnDiffSummaries.at(-1);
   const files = latestDiff?.files ?? [];
   return {
@@ -169,7 +178,9 @@ export function threadPeekQueryOptions(
       threadId,
       latestTurn ? `${latestTurn.turnId}:${latestTurn.state}` : null,
     ] as const,
-    queryFn: () => ensureNativeApi().orchestration.getThreadPeek({ threadId }),
+    // Forwards the abort signal and `meta.priority` (the hover prefetch is background).
+    queryFn: (context) =>
+      ensureNativeApi().orchestration.getThreadPeek({ threadId }, rpcQueryContext(context)),
     staleTime: 30_000,
   });
 }

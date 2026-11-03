@@ -278,6 +278,13 @@ function normalizeRuntimeWarningVisibility(value: unknown): RuntimeWarningVisibi
   return DEFAULT_RUNTIME_WARNING_VISIBILITY;
 }
 
+function normalizeSidebarOlderThreadDays(value: unknown): SidebarOlderThreadDays {
+  return (
+    SIDEBAR_OLDER_THREAD_DAYS_OPTIONS.find((option) => option === value) ??
+    SIDEBAR_OLDER_THREAD_DAYS_DEFAULT
+  );
+}
+
 function normalizeGitStatusAutoRefreshIntervalSeconds(value: unknown): number {
   if (typeof value === "boolean") {
     return value ? GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_DEFAULT : 0;
@@ -878,6 +885,7 @@ export function parsePersistedAppSettings(value: string | null): AppSettings {
           migrated.runtimeWarningVisibility,
         ),
         favoriteModels: normalizeFavoriteModels(migrated.favoriteModels),
+        sidebarOlderThreadDays: normalizeSidebarOlderThreadDays(migrated.sidebarOlderThreadDays),
         // One bad stored option must not reset every other setting.
         snoozePresets: normalizeSnoozePresets(migrated.snoozePresets ?? DEFAULT_SNOOZE_PRESETS),
         uiFontFamily: normalizeFontFamilyPreference(

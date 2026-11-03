@@ -114,6 +114,8 @@ export function SidebarThreadSearchInput(props: {
           event.currentTarget.contains(event.relatedTarget)
         )
           return;
+        // Switching windows blurs the field too; it is still there on return.
+        if (event.relatedTarget === null && !event.currentTarget.ownerDocument.hasFocus()) return;
         props.onDismiss(false, event.relatedTarget instanceof Element ? event.relatedTarget : null);
       }}
     >

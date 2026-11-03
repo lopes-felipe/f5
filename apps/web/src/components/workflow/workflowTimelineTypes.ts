@@ -117,15 +117,26 @@ function currentStepOf(
 }
 
 /**
- * The one step a collapsed workflow row names: the running step of the first active phase
- * (an active step with a thread first), else the first failed step, else "Completed" when
- * every phase is done, else the next pending step.
+ * The one step a collapsed workflow row names: the first failed step (an error wins, as in
+ * `overallStateFromPhases`), else the running step of the first active phase (an active
+ * step with a thread first), else "Completed" when every phase is done, else the next
+ * pending step.
  */
 export function currentStepFromPhases(
   phases: ReadonlyArray<WorkflowTimelinePhase>,
 ): WorkflowCurrentStep | null {
   const relevant = phases.filter((phase) => phase.state !== "skipped");
   if (relevant.length === 0) return null;
+
+  for (const phase of relevant) {
+    const step = phase.steps.find((candidate) => candidate.state === "error");
+    if (step) return currentStepOf(step, "needs-attention");
+    if (phase.state === "error") {
+      return phase.steps[0]
+        ? currentStepOf(phase.steps[0], "needs-attention")
+        : { label: phase.label, state: "needs-attention", threadId: null, modelSlot: null };
+    }
+  }
 
   const activePhase = relevant.find((phase) => phase.state === "active");
   if (activePhase) {
@@ -139,16 +150,6 @@ export function currentStepFromPhases(
     return step
       ? currentStepOf(step, "running")
       : { label: activePhase.label, state: "running", threadId: null, modelSlot: null };
-  }
-
-  for (const phase of relevant) {
-    const step = phase.steps.find((candidate) => candidate.state === "error");
-    if (step) return currentStepOf(step, "needs-attention");
-    if (phase.state === "error") {
-      return phase.steps[0]
-        ? currentStepOf(phase.steps[0], "needs-attention")
-        : { label: phase.label, state: "needs-attention", threadId: null, modelSlot: null };
-    }
   }
 
   if (relevant.every((phase) => phase.state === "completed")) {

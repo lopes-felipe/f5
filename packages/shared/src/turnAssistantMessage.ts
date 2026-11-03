@@ -12,6 +12,14 @@ export function truncateMessagePreview(text: string, maxChars: number): string {
     .trimEnd()}…`;
 }
 
+/**
+ * Whether a turn is still producing output. A thread preview's "last reply" skips such a
+ * turn and shows the newest settled reply before it; interrupted and failed turns count.
+ */
+export function isTurnInProgress(state: string | null | undefined): boolean {
+  return state === "pending" || state === "running";
+}
+
 /** Messages must be in creation order and already scoped to one thread. */
 export function resolveTurnAssistantMessage<
   M extends {

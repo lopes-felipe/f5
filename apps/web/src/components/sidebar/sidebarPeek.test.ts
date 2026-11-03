@@ -150,4 +150,48 @@ describe("localThreadPeek", () => {
       latestTurnDiff: { files: 2, additions: 6, deletions: 1 },
     });
   });
+
+  it("shows an interrupted turn's reply, like the server", () => {
+    // T1 completed, T2 interrupted, T3 running: the reply is T2's, the newest settled one.
+    const peek = localThreadPeek(
+      thread({
+        latestTurn: { turnId: "t3", state: "running" } as Thread["latestTurn"],
+        messages: [
+          message("a1", "assistant", "T1 reply", "t1"),
+          message("a2", "assistant", "T2 partial reply", "t2"),
+          message("a3", "assistant", "T3 commentary", "t3"),
+        ],
+      }),
+    );
+    expect(peek?.lastAssistantText).toBe("T2 partial reply");
+    const finished = localThreadPeek(
+      thread({
+        latestTurn: { turnId: "t2", state: "interrupted" } as Thread["latestTurn"],
+        messages: [
+          message("a1", "assistant", "T1 reply", "t1"),
+          message("a2", "assistant", "T2 partial reply", "t2"),
+        ],
+      }),
+    );
+    expect(finished?.lastAssistantText).toBe("T2 partial reply");
+  });
+
+  it("defers to the server when a partial history tail lacks the prompt or reply", () => {
+    const tail = { hasOlderMessages: true } as Thread["history"];
+    const runningTail = thread({
+      history: tail,
+      latestTurn: { turnId: "t9", state: "running" } as Thread["latestTurn"],
+      messages: [message("a9", "assistant", "Working on it", "t9")],
+    });
+    expect(localThreadPeek(runningTail)).toBeNull();
+    const completeTail = thread({
+      history: tail,
+      messages: [message("u9", "user", "Prompt", "t9"), message("a9", "assistant", "Reply", "t9")],
+    });
+    expect(localThreadPeek(completeTail)?.lastAssistantText).toBe("Reply");
+    // A fully loaded thread that has no reply yet answers locally.
+    expect(localThreadPeek(thread({ messages: [message("u1", "user", "Hi", "t1")] }))).toEqual(
+      expect.objectContaining({ lastUserText: "Hi", lastAssistantText: null }),
+    );
+  });
 });

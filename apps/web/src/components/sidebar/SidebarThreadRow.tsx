@@ -473,7 +473,10 @@ export function ThreadRowTrailingMeta(props: {
   terminalStatus: TerminalStatusIndicator | null;
   isHighlighted: boolean;
   showDraftIndicator?: boolean | undefined;
-  /** Shown in the timestamp's place on hover and focus (always on touch screens). */
+  /**
+   * Shown in the timestamp's place on hover and focus. Touch screens always show the last
+   * one, the row's main action; the others stay in the context menu there.
+   */
   actions?: readonly ThreadRowQuickAction[] | undefined;
 }) {
   "use memo";
@@ -550,14 +553,18 @@ export function ThreadRowTrailingMeta(props: {
             className="-mr-1 hidden items-center group-hover/thread-row:flex group-focus-within/thread-row:flex pointer-coarse:flex"
             data-testid="thread-row-quick-actions"
           >
-            {actions.map((action) => (
+            {actions.map((action, index) => (
               <Tooltip key={action.label}>
                 <TooltipTrigger
                   render={
                     <button
                       type="button"
                       aria-label={action.ariaLabel}
-                      className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                      className={cn(
+                        "inline-flex size-6 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
+                        // Touch screens keep only the row's main action, the last one.
+                        index < actions.length - 1 && "pointer-coarse:hidden",
+                      )}
                       onMouseDown={(event) => {
                         event.stopPropagation();
                       }}

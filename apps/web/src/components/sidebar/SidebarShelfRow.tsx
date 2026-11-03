@@ -43,6 +43,23 @@ export function SidebarShelfRow(props: {
     : null;
   // The row itself (Enter, or Right/Left in the tree) toggles the open bucket, else the first.
   const toggleFromRow = () => props.onToggle(openBucket ?? segments[0]!.bucket);
+  // The tree opens a row's menu (ContextMenu key, Shift+F10) on the row; route it to the
+  // segment that has one, below that segment.
+  const menuSegment = segments.find((segment) => segment.onContextMenu);
+  const openSegmentMenu = (
+    segment: SidebarShelfSegment,
+    event: React.MouseEvent<HTMLElement>,
+    anchor: HTMLElement,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    // A keyboard-opened menu has no pointer position.
+    const fromKeyboard = event.clientX === 0 && event.clientY === 0;
+    const rect = anchor.getBoundingClientRect();
+    segment.onContextMenu?.(
+      fromKeyboard ? { x: rect.left, y: rect.bottom } : { x: event.clientX, y: event.clientY },
+    );
+  };
 
   return (
     <SidebarMenuSubItem className="w-full" data-testid="sidebar-shelf">
@@ -51,7 +68,7 @@ export function SidebarShelfRow(props: {
         {...(isTreeRow ? { "aria-expanded": openBucket !== null } : {})}
         aria-label={`Shelf: ${segments.map((segment) => `${segment.count} ${segment.bucket}`).join(", ")}`}
         data-thread-selection-safe
-        className="mt-1 flex h-6 w-full min-w-0 cursor-default items-center gap-1 rounded-md px-2 text-2xs text-muted-foreground outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        className="mt-1 flex min-h-6 w-full min-w-0 cursor-default items-start gap-1 rounded-md px-2 py-0.5 text-2xs text-muted-foreground outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         onClick={(event) => {
           if (event.target !== event.currentTarget) return;
           toggleFromRow();
@@ -62,9 +79,24 @@ export function SidebarShelfRow(props: {
           event.preventDefault();
           toggleFromRow();
         }}
+        {...(menuSegment
+          ? {
+              onContextMenu: (event: React.MouseEvent<HTMLElement>) => {
+                if (event.target !== event.currentTarget) return;
+                const anchor = event.currentTarget.querySelector<HTMLElement>(
+                  `[data-shelf-bucket="${menuSegment.bucket}"]`,
+                );
+                openSegmentMenu(menuSegment, event, anchor ?? event.currentTarget);
+              },
+            }
+          : {})}
       >
-        <EllipsisIcon aria-hidden="true" className="size-3.5 shrink-0 text-faint-foreground" />
-        <span className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden whitespace-nowrap">
+        <EllipsisIcon
+          aria-hidden="true"
+          className="mt-0.5 size-3.5 shrink-0 text-faint-foreground"
+        />
+        {/* Segments wrap onto a second line rather than clipping in a narrow sidebar. */}
+        <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-0.5 whitespace-nowrap">
           {segments.map((segment, index) => (
             <Fragment key={segment.bucket}>
               {index > 0 ? (
@@ -86,11 +118,8 @@ export function SidebarShelfRow(props: {
                 }}
                 {...(segment.onContextMenu
                   ? {
-                      onContextMenu: (event: React.MouseEvent) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        segment.onContextMenu?.({ x: event.clientX, y: event.clientY });
-                      },
+                      onContextMenu: (event: React.MouseEvent<HTMLButtonElement>) =>
+                        openSegmentMenu(segment, event, event.currentTarget),
                     }
                   : {})}
               >

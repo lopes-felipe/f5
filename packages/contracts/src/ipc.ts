@@ -1495,7 +1495,10 @@ export interface NativeApi {
     getRewindDrafts: (
       input: OrchestrationGetRewindDraftsInput,
     ) => Promise<OrchestrationGetRewindDraftsResult>;
-    getThreadPeek: (input: OrchestrationGetThreadPeekInput) => Promise<OrchestrationThreadPeek>;
+    getThreadPeek: (
+      input: OrchestrationGetThreadPeekInput,
+      context?: NativeRequestContext,
+    ) => Promise<OrchestrationThreadPeek>;
     getThreadHistoryPage: (
       input: OrchestrationGetThreadHistoryPageInput,
     ) => Promise<OrchestrationThreadHistoryPage>;

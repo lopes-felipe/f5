@@ -51,7 +51,7 @@ import { useNextTurnQueueStore } from "../nextTurnQueueStore";
 import { pillForStatus } from "../threadStatus";
 import { toastManager } from "./ui/toast";
 import { useTestRenderCountProps } from "../lib/testRenderCount";
-import { useThreadSummaries } from "../threadSelectors";
+import { useLiveActivityHours, useThreadSummaries } from "../threadSelectors";
 import { type Project, type ThreadListItem } from "../types";
 import { Button } from "./ui/button";
 import {
@@ -385,6 +385,7 @@ export default function Sidebar() {
     [queueSummary],
   );
   const nowHour = useNowHour();
+  const liveActivityHours = useLiveActivityHours();
   // Threads aging never folds: the open one, unread, running or waiting, and live terminals.
   const agingExemptThreadIds = useMemo(() => {
     const ids = new Set<ThreadId>(unreadThreadIds);
@@ -452,7 +453,7 @@ export default function Sidebar() {
       attentionThreadIds: liveAttentionThreads.map((thread) => thread.id),
       recentItemKeys: Object.values(
         bucketRecentSidebarItems(
-          collectRecentSidebarItems(projectSidebarListsById),
+          collectRecentSidebarItems(projectSidebarListsById, liveActivityHours),
           threadStatusById,
           nowHour,
         ),
@@ -1107,6 +1108,7 @@ export default function Sidebar() {
         openShelfBucket={openShelfByProject.get(project.id) ?? null}
         olderThreadDays={appSettings.sidebarOlderThreadDays}
         now={nowHour}
+        liveActivityHours={liveActivityHours}
         agingExemptThreadIds={agingExemptThreadIds}
         draftThreadsByThreadId={draftThreadsByThreadId}
         persistedThreadIds={persistedThreadIds}
@@ -1200,15 +1202,33 @@ export default function Sidebar() {
                   aria-label="Sidebar view"
                   className="flex min-w-0 flex-1 rounded-lg border border-border p-0.5"
                 >
-                  {SIDEBAR_VIEW_OPTIONS.map((option) => (
+                  {SIDEBAR_VIEW_OPTIONS.map((option, index) => (
                     <button
                       key={option.value}
                       type="button"
                       role="radio"
                       aria-checked={sidebarView === option.value}
+                      // One Tab stop; the arrow keys move the choice, as in a radio group.
+                      tabIndex={sidebarView === option.value ? 0 : -1}
                       data-testid={`sidebar-view-${option.value}`}
                       className="h-6 min-w-0 flex-1 truncate rounded-md px-2 text-2xs text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-checked:bg-accent aria-checked:font-medium aria-checked:text-foreground"
                       onClick={() => setSidebarView(option.value)}
+                      onKeyDown={(event) => {
+                        const step =
+                          event.key === "ArrowRight" || event.key === "ArrowDown"
+                            ? 1
+                            : event.key === "ArrowLeft" || event.key === "ArrowUp"
+                              ? -1
+                              : 0;
+                        if (step === 0) return;
+                        event.preventDefault();
+                        const count = SIDEBAR_VIEW_OPTIONS.length;
+                        const next = SIDEBAR_VIEW_OPTIONS[(index + step + count) % count]!;
+                        setSidebarView(next.value);
+                        event.currentTarget.parentElement
+                          ?.querySelector<HTMLElement>(`[data-testid="sidebar-view-${next.value}"]`)
+                          ?.focus();
+                      }}
                     >
                       {option.label}
                     </button>
@@ -1240,6 +1260,7 @@ export default function Sidebar() {
                   listsByProjectId={projectSidebarListsById}
                   statusById={threadStatusById}
                   now={nowHour}
+                  liveActivityHours={liveActivityHours}
                   frozenItemKeys={sidebarHoverFreezeSnapshot?.recentItemKeys}
                   threadPreviewLimit={threadPreviewLimit}
                   draftThreadsByThreadId={draftThreadsByThreadId}

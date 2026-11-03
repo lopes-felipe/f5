@@ -49,11 +49,12 @@ it.layer(SqlitePersistenceMemory)("thread peek", (it) => {
             ('u2','t','turn-2','user',${"p".repeat(250)},0,'3','3'),
             ('a2','t','turn-2','assistant',${longReply},0,'4','4'),
             ('u3','t','turn-3','user','Still running',0,'5','5'),
+            ('a3c','t','turn-3','assistant','Settled commentary in a running turn',0,'5.5','5.5'),
             ('a3','t','turn-3','assistant','Streaming text',1,'6','6'),
             ('u4','other','turn-x','user','Other thread',0,'7','7')`;
         const peek = yield* readThreadPeek(sql, ThreadId.makeUnsafe("t"));
         assert.strictEqual(peek.lastUserText, "Still running");
-        // The running turn's streaming text is skipped for the latest completed reply.
+        // Everything from the running turn is skipped, settled commentary included.
         assert.strictEqual(peek.lastAssistantText, `${"r".repeat(599)}…`);
         assert.deepStrictEqual(peek.latestTurnDiff, { files: 2, additions: 13, deletions: 2 });
 
@@ -61,5 +62,28 @@ it.layer(SqlitePersistenceMemory)("thread peek", (it) => {
         const truncated = yield* readThreadPeek(sql, ThreadId.makeUnsafe("t"));
         assert.strictEqual(truncated.lastUserText, `${"p".repeat(199)}…`);
       }),
+  );
+
+  it.effect("shows an interrupted turn's reply, like the client's local peek", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      // T1 completed, T2 interrupted, T3 running: the reply is T2's, the newest settled one.
+      yield* sql`INSERT INTO projection_turns
+        (thread_id,turn_id,state,requested_at,checkpoint_files_json)
+        VALUES ('i','t1','completed','2026-11-01','[]'),
+          ('i','t2','interrupted','2026-11-02','[]'),
+          ('i','t3','running','2026-11-03','[]')`;
+      yield* sql`INSERT INTO projection_thread_messages
+        (message_id,thread_id,turn_id,role,text,is_streaming,created_at,updated_at)
+        VALUES ('i-a1','i','t1','assistant','T1 reply',0,'1','1'),
+          ('i-a2','i','t2','assistant','T2 partial reply',0,'2','2'),
+          ('i-a3','i','t3','assistant','T3 commentary',0,'3','3')`;
+      const running = yield* readThreadPeek(sql, ThreadId.makeUnsafe("i"));
+      assert.strictEqual(running.lastAssistantText, "T2 partial reply");
+      yield* sql`DELETE FROM projection_turns WHERE thread_id = 'i' AND turn_id = 't3'`;
+      yield* sql`DELETE FROM projection_thread_messages WHERE message_id = 'i-a3'`;
+      const interrupted = yield* readThreadPeek(sql, ThreadId.makeUnsafe("i"));
+      assert.strictEqual(interrupted.lastAssistantText, "T2 partial reply");
+    }),
   );
 });

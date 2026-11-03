@@ -10,6 +10,8 @@ import {
   type ReactNode,
   use,
   useEffect,
+  useLayoutEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -17,6 +19,7 @@ import { useComposerDraftStore } from "../../composerDraftStore";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useNowMinute } from "../../lib/nowTicker";
 import { formatRelativeTimeLabel } from "../../lib/relativeTime";
+import { rpcQueryMeta } from "../../lib/rpcQueryContext";
 import { cn } from "../../lib/utils";
 import { useStore } from "../../store";
 import { selectThreadById, type ThreadSummary } from "../../threadSelectors";
@@ -61,31 +64,36 @@ type SidebarPeekHandle = ReturnType<typeof TooltipPrimitive.createHandle<Sidebar
 
 interface SidebarPeekContextValue {
   readonly handle: SidebarPeekHandle;
+  /** Whether the card is kept closed now; rows skip prefetching then. */
+  readonly isDisabled: () => boolean;
 }
 
 const SidebarPeekContext = createContext<SidebarPeekContextValue | null>(null);
 
+/** Pointer rest on a row before its peek is prefetched; a sweep across rows reads nothing. */
+const PEEK_PREFETCH_DELAY_MS = 150;
+
 /**
- * Whether a press or drag is under way: a held pointer covers the dnd-kit reorders, and
- * native drag events cover thread reference drags, whose pointer stream the browser cancels.
+ * Whether a primary-button press or drag is under way: a held pointer covers the dnd-kit
+ * reorders, and native drag events cover thread reference drags, whose pointer stream the
+ * browser cancels. Other buttons are ignored: a native context menu swallows its pointerup.
  */
 function usePointerHeld(): boolean {
   const [held, setHeld] = useState(false);
   useEffect(() => {
-    const press = () => setHeld(true);
+    const press = (event: Event) => {
+      if (event instanceof PointerEvent && event.button !== 0) return;
+      setHeld(true);
+    };
     const release = () => setHeld(false);
-    window.addEventListener("pointerdown", press, true);
-    window.addEventListener("dragstart", press, true);
-    window.addEventListener("pointerup", release, true);
-    window.addEventListener("dragend", release, true);
-    window.addEventListener("drop", release, true);
+    const pressEvents = ["pointerdown", "dragstart"] as const;
+    const releaseEvents = ["pointerup", "pointercancel", "dragend", "drop", "contextmenu"] as const;
+    for (const type of pressEvents) window.addEventListener(type, press, true);
+    for (const type of releaseEvents) window.addEventListener(type, release, true);
     window.addEventListener("blur", release);
     return () => {
-      window.removeEventListener("pointerdown", press, true);
-      window.removeEventListener("dragstart", press, true);
-      window.removeEventListener("pointerup", release, true);
-      window.removeEventListener("dragend", release, true);
-      window.removeEventListener("drop", release, true);
+      for (const type of pressEvents) window.removeEventListener(type, press, true);
+      for (const type of releaseEvents) window.removeEventListener(type, release, true);
       window.removeEventListener("blur", release);
     };
   }, []);
@@ -101,10 +109,20 @@ function usePointerHeld(): boolean {
 export function SidebarPeekProvider(props: { suppressed: boolean; children: ReactNode }) {
   const [handle] = useState(() => TooltipPrimitive.createHandle<SidebarPeekPayload>());
   const pointerHeld = usePointerHeld();
+  const disabled = props.suppressed || pointerHeld;
+  // Read from row event handlers, so a change does not re-render every row.
+  const disabledRef = useRef(disabled);
+  useLayoutEffect(() => {
+    disabledRef.current = disabled;
+  }, [disabled]);
+  const [context] = useState<SidebarPeekContextValue>(() => ({
+    handle,
+    isDisabled: () => disabledRef.current,
+  }));
   return (
-    <SidebarPeekContext value={{ handle }}>
+    <SidebarPeekContext value={context}>
       {props.children}
-      <TooltipPrimitive.Root handle={handle} disabled={props.suppressed || pointerHeld}>
+      <TooltipPrimitive.Root handle={handle} disabled={disabled}>
         {({ payload }) =>
           payload ? (
             <TooltipPopup
@@ -167,12 +185,22 @@ export function useSidebarPeekTrigger(
         ? payload.threadId
         : null
       : options.prefetchThreadId;
-  // Starts the read during the hover delay, so the card usually opens complete.
-  const prefetch = () => {
-    if (!prefetchThreadId) return;
-    const thread = selectThreadById(useStore.getState(), prefetchThreadId);
-    if (!thread || localThreadPeek(thread)) return;
-    void queryClient.prefetchQuery(threadPeekQueryOptions(thread.id, thread.latestTurn));
+  // Starts the read during the hover delay, so the card usually opens complete. Only a row
+  // the pointer (or focus) rests on reads, and none while the card is kept closed.
+  const schedulePrefetch = () => {
+    cancelPendingPrefetch();
+    if (!prefetchThreadId || context.isDisabled()) return;
+    pendingPrefetch = setTimeout(() => {
+      pendingPrefetch = undefined;
+      if (context.isDisabled()) return;
+      const thread = selectThreadById(useStore.getState(), prefetchThreadId);
+      if (!thread || localThreadPeek(thread)) return;
+      // Background: a hover read must not delay the read that opens a thread.
+      void queryClient.prefetchQuery({
+        ...threadPeekQueryOptions(thread.id, thread.latestTurn),
+        meta: rpcQueryMeta("background"),
+      });
+    }, PEEK_PREFETCH_DELAY_MS);
   };
   return (element) => (
     <TooltipPrimitive.Trigger
@@ -181,10 +209,20 @@ export function useSidebarPeekTrigger(
       delay={SIDEBAR_PEEK_DELAY_MS}
       closeDelay={SIDEBAR_PEEK_CLOSE_DELAY_MS}
       render={element}
-      onPointerEnter={prefetch}
-      onFocus={prefetch}
+      onPointerEnter={schedulePrefetch}
+      onPointerLeave={cancelPendingPrefetch}
+      onFocus={schedulePrefetch}
+      onBlur={cancelPendingPrefetch}
     />
   );
+}
+
+// One pointer, one focus: at most one row waits to prefetch.
+let pendingPrefetch: ReturnType<typeof setTimeout> | undefined;
+function cancelPendingPrefetch() {
+  if (pendingPrefetch === undefined) return;
+  clearTimeout(pendingPrefetch);
+  pendingPrefetch = undefined;
 }
 
 /** Last prompt, reply snippet and diff totals: local when the thread is loaded, else the RPC. */
@@ -299,6 +337,12 @@ function ThreadPeekContent({
           thread.title
         )}
       </p>
+      {/* A workflow child's row shows its role; the thread's own title is only here. */}
+      {payload.roleLabel && thread.title !== payload.roleLabel ? (
+        <p className="-mt-1 text-foreground" data-testid="sidebar-peek-thread-title">
+          {thread.title}
+        </p>
+      ) : null}
       <p className="flex min-w-0 items-center gap-1 text-2xs text-muted-foreground">
         <span className="truncate">{scratch ? "No project" : (project?.name ?? "Project")}</span>
         {thread.branch ? (

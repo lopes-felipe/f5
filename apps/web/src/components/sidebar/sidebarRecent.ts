@@ -36,7 +36,10 @@ export type RecentSidebarItem<T extends ThreadListItem = ThreadListItem> =
       readonly key: string;
       readonly projectId: ProjectId;
       readonly thread: T;
+      /** Sort key within a bucket. */
       readonly activityAt: string;
+      /** Picks the day bucket; the live activity time when it is newer than the sort key. */
+      readonly bucketAt?: string | undefined;
     }
   | {
       readonly kind: "workflow";
@@ -44,6 +47,7 @@ export type RecentSidebarItem<T extends ThreadListItem = ThreadListItem> =
       readonly projectId: ProjectId;
       readonly entry: SidebarWorkflowEntry;
       readonly activityAt: string;
+      readonly bucketAt?: string | undefined;
       readonly overallState: WorkflowOverallState;
     };
 
@@ -52,11 +56,29 @@ export function recentThreadItemKey(threadId: ThreadId): string {
 }
 
 /**
+ * A thread's activity time for day buckets and idle folding: the summary's ordering key,
+ * or the live activity hour when that is later (the summary key lags while the activity
+ * order holds, e.g. for a project's only thread).
+ */
+export function liveSidebarActivityAt(
+  thread: Pick<ThreadListItem, "id" | "lastInteractionAt">,
+  liveActivityHours: Readonly<Record<string, number>> | undefined,
+): string {
+  const liveHour = liveActivityHours?.[thread.id];
+  if (liveHour === undefined) return thread.lastInteractionAt;
+  const summaryMs = Date.parse(thread.lastInteractionAt);
+  return Number.isFinite(summaryMs) && summaryMs >= liveHour
+    ? thread.lastInteractionAt
+    : new Date(liveHour).toISOString();
+}
+
+/**
  * Everything the Recent view lists, across projects: each project's live threads (not
  * archived, snoozed, settled or scheduled), its draft, and its active workflows.
  */
 export function collectRecentSidebarItems<T extends ThreadListItem>(
   listsByProjectId: ReadonlyMap<ProjectId, ProjectSidebarLists<T>>,
+  liveActivityHours?: Readonly<Record<string, number>>,
 ): RecentSidebarItem<T>[] {
   const items: RecentSidebarItem<T>[] = [];
   for (const [projectId, lists] of listsByProjectId) {
@@ -68,6 +90,7 @@ export function collectRecentSidebarItems<T extends ThreadListItem>(
         // Draft placeholders are full `Thread`s; the row only reads list fields.
         thread: thread as T,
         activityAt: thread.lastInteractionAt,
+        bucketAt: liveSidebarActivityAt(thread, liveActivityHours),
       });
     }
     for (const entry of lists.projectWorkflows) {
@@ -133,7 +156,7 @@ export function bucketRecentSidebarItems<T extends ThreadListItem>(
       buckets.running.push(item);
       continue;
     }
-    const activityMs = Date.parse(item.activityAt);
+    const activityMs = Date.parse(item.bucketAt ?? item.activityAt);
     const bucket: RecentSidebarBucket = !Number.isFinite(activityMs)
       ? "earlier"
       : activityMs >= todayStart

@@ -3318,7 +3318,7 @@ describe("Thread sidebar", () => {
       // Pinned and open threads never fold.
       expect(querySidebarThreadRowByTitle("Stale pinned")).not.toBeNull();
       expect(querySidebarThreadRowByTitle("Stale open")).not.toBeNull();
-      // Aging replaces the count-based "Show more".
+      // Three recent threads fit the default preview count.
       expect(querySidebarButtonByText("Show more")).toBeNull();
 
       older.click();
@@ -3327,6 +3327,153 @@ describe("Thread sidebar", () => {
       expect(older.getAttribute("aria-expanded")).toBe("true");
       older.click();
       await vi.waitFor(() => expect(querySidebarThreadRowByTitle("Stale thread A")).toBeNull());
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("moves a lone thread to Today when its turn finishes on a new day", async () => {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    yesterday.setHours(12, 0, 0, 0);
+    const lone = (at: string) =>
+      createSnapshotThread({ id: THREAD_ID, createdAt: at, lastInteractionAt: at, updatedAt: at });
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = createSnapshot([lone(yesterday.toISOString())]);
+      },
+    });
+    const bucketOfRow = () =>
+      querySidebarThreadRowByTitle(LONG_THREAD_TITLE)?.closest<HTMLElement>("[data-recent-bucket]")
+        ?.dataset.recentBucket;
+    try {
+      (
+        await waitForElement(
+          () => document.querySelector<HTMLButtonElement>('[data-testid="sidebar-view-recent"]'),
+          "The view toggle should render.",
+        )
+      ).click();
+      await vi.waitFor(() => expect(bucketOfRow()).toBe("yesterday"));
+      // The only thread keeps its place in the activity order, so its summary key lags.
+      useStore.getState().syncServerReadModel(createSnapshot([lone(new Date().toISOString())]));
+      await vi.waitFor(() => expect(bucketOfRow()).toBe("today"));
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the preview count for recent threads while aging folds older ones", async () => {
+    seedAppSettings({ sidebarOlderThreadDays: 7, sidebarThreadPreviewCount: 2 });
+    const daysAgo = (days: number) =>
+      new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const thread = (id: string, title: string, idleDays: number) =>
+      createSnapshotThread({
+        id: id as ThreadId,
+        title,
+        createdAt: daysAgo(idleDays),
+        lastInteractionAt: daysAgo(idleDays),
+        updatedAt: daysAgo(idleDays),
+      });
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: ["/recent-1"],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = createSnapshot([
+          thread("recent-1", "Recent one", 0.1),
+          thread("recent-2", "Recent two", 1),
+          thread("recent-3", "Recent three", 2),
+          thread("recent-4", "Recent four", 3),
+          thread("old-1", "Old one", 20),
+        ]);
+      },
+    });
+    try {
+      await waitForSidebarThreadRow("Recent one");
+      await waitForSidebarThreadRow("Recent two");
+      expect(querySidebarThreadRowByTitle("Recent three")).toBeNull();
+      expect(querySidebarThreadRowByTitle("Old one")).toBeNull();
+      const showMore = await waitForElement(
+        () => querySidebarButtonByText("Show more"),
+        "Recent threads past the preview count should sit behind Show more.",
+      );
+      const older = document.querySelector<HTMLElement>('[data-testid="sidebar-older-toggle"]')!;
+      expect(older.textContent).toBe("1 older than 7 days");
+      // "Show more" comes before the older row.
+      expect(
+        showMore.compareDocumentPosition(older) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      showMore.click();
+      await waitForSidebarThreadRow("Recent four");
+      expect(querySidebarThreadRowByTitle("Old one")).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("wraps every shelf segment within a minimum-width sidebar", async () => {
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+      configureFixture: (nextFixture) => {
+        const many = (
+          prefix: string,
+          count: number,
+          extra: (index: number) => Partial<SnapshotThread>,
+        ) =>
+          Array.from({ length: count }, (_, index) =>
+            createSnapshotThread({
+              id: `${prefix}-${index}` as ThreadId,
+              title: `${prefix} ${index}`,
+              ...extra(index),
+            }),
+          );
+        nextFixture.snapshot = createSnapshot([
+          createSnapshotThread({ id: THREAD_ID }),
+          // Four nonempty buckets already outgrow one line at 192px.
+          ...many("scheduled", 3, (index) => ({
+            scheduledOrigin: {
+              taskId: ScheduledTaskId.makeUnsafe("task"),
+              runId: ScheduledTaskRunId.makeUnsafe(`run-${index}`),
+            },
+          })),
+          ...many("snoozed", 3, () => ({
+            snoozedAt: NOW_ISO,
+            snoozedUntil: "2099-03-11T15:00:00.000Z",
+          })),
+          ...many("settled", 3, () => ({ settledAt: NOW_ISO })),
+          ...many("archived", 3, () => ({ archivedAt: NOW_ISO })),
+        ]);
+      },
+    });
+    try {
+      const shelf = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="sidebar-shelf"]'),
+        "The shelf should render.",
+      );
+      await vi.waitFor(() => expect(shelf.querySelectorAll("[data-shelf-bucket]").length).toBe(4));
+      const sidebarEl = [...document.querySelectorAll<HTMLElement>("[style]")].find((element) =>
+        element.getAttribute("style")?.includes("--sidebar-width"),
+      )!;
+      sidebarEl.style.setProperty("--sidebar-width", "12rem");
+      await vi.waitFor(() => {
+        const row = shelf.firstElementChild!.getBoundingClientRect();
+        const segments = [...shelf.querySelectorAll<HTMLElement>("[data-shelf-bucket]")];
+        for (const segment of segments) {
+          const rect = segment.getBoundingClientRect();
+          expect(rect.right).toBeLessThanOrEqual(row.right + 0.5);
+          expect(rect.width).toBeGreaterThan(0);
+        }
+        // They no longer fit on one line, so the last one wrapped.
+        expect(segments.at(-1)!.getBoundingClientRect().top).toBeGreaterThan(
+          segments[0]!.getBoundingClientRect().top,
+        );
+      });
+      // Segments are reached through the tree row, not as extra Tab stops.
+      for (const segment of shelf.querySelectorAll<HTMLElement>("[data-shelf-bucket]")) {
+        expect(segment.tabIndex).toBe(-1);
+      }
     } finally {
       await mounted.cleanup();
     }
@@ -3403,6 +3550,16 @@ describe("Thread sidebar", () => {
       }
       expect(useThreadSelectionStore.getState().selectedThreadIds.size).toBe(2);
       useThreadSelectionStore.getState().clearSelection();
+
+      // Opening a thread from elsewhere reveals it in the collapsed Earlier bucket.
+      await mounted.router.navigate({
+        to: "/$threadId",
+        params: { threadId: "recent-alpha-old" as ThreadId },
+      });
+      await vi.waitFor(() => expect(bucketOf("Alpha old")).toBe("earlier"));
+      expect(
+        tree.querySelector('[data-sidebar-row="recent:earlier"]')?.getAttribute("aria-expanded"),
+      ).toBe("true");
 
       document
         .querySelector<HTMLButtonElement>(`[data-testid="recent-project-chip-${otherProjectId}"]`)!
@@ -3786,6 +3943,40 @@ describe("Thread sidebar", () => {
       }
     });
 
+    it("prefetches only rows the pointer rests on and reopens after a right-click", async () => {
+      installDesktopBridgeMock({
+        showContextMenu: (async () => null) as DesktopBridge["showContextMenu"],
+      });
+      const mounted = await mountWithPeekRpc();
+      const peekReads = () =>
+        wsRequests.filter((request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadPeek)
+          .length;
+      try {
+        const otherRow = await waitForSidebarThreadRow(otherTitle);
+        const ownRow = await waitForSidebarThreadRow(LONG_THREAD_TITLE);
+        useStore.getState().evictThreadDetails([otherId]);
+        // Crossing a row on the way elsewhere reads nothing.
+        await userEvent.hover(otherRow);
+        await userEvent.hover(document.body);
+        await sleep(400);
+        expect(peekReads()).toBe(0);
+
+        // A right-click's native menu swallows the pointerup; the card still opens after it.
+        ownRow.dispatchEvent(
+          new PointerEvent("pointerdown", { bubbles: true, button: 2, buttons: 2 }),
+        );
+        ownRow.dispatchEvent(
+          new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }),
+        );
+        await userEvent.hover(otherRow);
+        const card = await waitForElement(peekCard, "The card should open after a right-click.");
+        await vi.waitFor(() => expect(card.textContent).toContain("Fix the login bug"));
+        expect(peekReads()).toBe(1);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
     it("lists a workflow's phases and steps", async () => {
       const workflowTitle = "Peek workflow";
       const branchAThreadId = "peek-workflow-branch-a" as ThreadId;
@@ -3819,6 +4010,15 @@ describe("Thread sidebar", () => {
         expect(phases[0]!.textContent).toContain("Authoring");
         expect(phases[0]!.textContent).toContain("Branch A");
         expect(phases[0]!.textContent).toContain("Branch B");
+
+        // A child row shows its role; its card also names the thread itself.
+        queryButtonByAriaLabel(`Expand ${workflowTitle}`)!.click();
+        await userEvent.hover(await waitForSidebarThreadRow("Branch A"));
+        await vi.waitFor(() =>
+          expect(
+            document.querySelector('[data-testid="sidebar-peek-thread-title"]')?.textContent,
+          ).toBe(`${workflowTitle} Branch A`),
+        );
       } finally {
         await mounted.cleanup();
       }
