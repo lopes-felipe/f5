@@ -13,6 +13,40 @@ const layer = it.layer(
 const at = "2026-01-01T00:00:00.000Z";
 
 layer("accepted pending turn reconciliation", (it) => {
+  it.effect("lists only fresh pending start placeholders for desktop activity", () =>
+    Effect.gen(function* () {
+      const turns = yield* ProjectionTurnRepository;
+      for (const [id, requestedAt] of [
+        ["fresh", at],
+        ["old", "2025-12-31T23:00:00.000Z"],
+      ] as const) {
+        yield* turns.replacePendingTurnStart({
+          threadId: ThreadId.makeUnsafe(id),
+          messageId: MessageId.makeUnsafe(id),
+          requestedAt,
+          sourceProposedPlanThreadId: null,
+          sourceProposedPlanId: null,
+        });
+      }
+      const sql = yield* SqlClient.SqlClient;
+      const plan = yield* sql<{ detail: string }>`EXPLAIN QUERY PLAN
+        SELECT DISTINCT thread_id FROM projection_turns
+        WHERE turn_id IS NULL AND state = 'pending'
+          AND pending_message_id IS NOT NULL AND checkpoint_turn_count IS NULL
+          AND requested_at >= ${at}`;
+      assert.equal(
+        plan.some((row) => row.detail.includes("idx_projection_turns_recent_pending")),
+        true,
+      );
+      yield* sql`INSERT INTO projection_turns
+        (thread_id, turn_id, state, requested_at, checkpoint_files_json)
+        VALUES ('concrete', 'turn', 'pending', ${at}, '[]')`;
+      assert.deepEqual(
+        yield* turns.listRecentPendingTurnStartThreadIds({ since: "2025-12-31T23:50:00.000Z" }),
+        [ThreadId.makeUnsafe("fresh")],
+      );
+    }),
+  );
   for (const pendingMessageId of [null, MessageId.makeUnsafe("original-boundary")]) {
     it.effect(
       `lists a retried delivery boundary with ${pendingMessageId ? "existing" : "missing"} pending metadata`,

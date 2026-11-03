@@ -703,11 +703,51 @@ export interface DesktopBrowserOpenBridge {
   answer: (requestId: string, choice: DesktopBrowserOpenChoice) => Promise<void>;
 }
 
+export type DesktopKeepAwakeMode = "off" | "agents" | "always";
+export type DesktopKeepAwakeBlockedReason =
+  | "stale-override"
+  | "reset-failed"
+  | "external-override"
+  | "external-change"
+  | "thermal"
+  | "battery-low"
+  | "battery-unknown"
+  | "permission-missing"
+  | "command-failed"
+  | "blocker-failed";
+export interface DesktopKeepAwakeState {
+  readonly revision: number;
+  readonly mode: DesktopKeepAwakeMode;
+  readonly closedLid: boolean;
+  readonly active: boolean;
+  readonly busyThreadCount: number;
+  readonly cooldownUntil: number | null;
+  readonly lid: {
+    readonly supported: boolean;
+    readonly permission: "unknown" | "missing" | "available";
+    readonly ruleInstalledByF5: boolean;
+    readonly engaged: boolean;
+    readonly sleepDisabled: 0 | 1 | null;
+    readonly pending: boolean;
+    readonly blockedReason: DesktopKeepAwakeBlockedReason | null;
+  };
+}
+export interface DesktopKeepAwakeBridge {
+  getState(): Promise<DesktopKeepAwakeState>;
+  setPreferences(input: {
+    mode?: DesktopKeepAwakeMode;
+    closedLid?: boolean;
+  }): Promise<DesktopKeepAwakeState>;
+  installLidPermission(): Promise<DesktopKeepAwakeState>;
+  removeLidPermission(): Promise<DesktopKeepAwakeState>;
+  onState(listener: (state: DesktopKeepAwakeState) => void): () => void;
+}
 export type DesktopTrackpadScrollEvent =
   // `precise` is false for a mouse wheel, and absent when Chromium did not report it.
   { readonly phase: "begin"; readonly precise?: boolean } | { readonly phase: "end" };
 
 export interface DesktopBridge {
+  readonly keepAwake?: DesktopKeepAwakeBridge;
   htmlPreview?: (input: HtmlPreviewRequest) => Promise<HtmlPreviewResult>;
   /** Consent for terminals and agents opening login URLs; requests arrive only on macOS. */
   browserOpen?: DesktopBrowserOpenBridge;

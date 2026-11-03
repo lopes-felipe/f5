@@ -385,6 +385,7 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "general.quit-shortcut": {
     category: "general",
   },
+  "general.keep-awake": { category: "general" },
   "general.confirm-delete": {
     category: "general",
   },
