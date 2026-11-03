@@ -123,7 +123,13 @@ export function itemDetail(
   payload: Record<string, unknown>,
 ): string | undefined {
   const nestedResult = asObject(item.result);
-  const durationMs = asNumber(item.durationMs ?? item.duration_ms);
+  const startedAtMs = asNumber(item.startedAtMs);
+  const completedAtMs = asNumber(item.completedAtMs);
+  const durationMs =
+    asNumber(item.durationMs ?? item.duration_ms) ??
+    (startedAtMs !== undefined && completedAtMs !== undefined
+      ? Math.max(0, completedAtMs - startedAtMs)
+      : undefined);
   const action = asObject(item.action);
   const actionQueries = Array.isArray(action?.queries)
     ? action.queries.map(asString).filter((value): value is string => value !== undefined)

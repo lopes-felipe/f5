@@ -4555,6 +4555,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
       }
       case NATIVE_OPERATION_WS_METHODS.historyRecovery:
+      case NATIVE_OPERATION_WS_METHODS.markRead:
       case NATIVE_OPERATION_WS_METHODS.resolve:
       case NATIVE_OPERATION_WS_METHODS.execute:
       case NATIVE_OPERATION_WS_METHODS.list:
@@ -4575,6 +4576,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           return yield* providerService.nativeOperations
             .historyRecovery(stripRequestTag(request.body))
             .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+        }
+        if (request.body._tag === NATIVE_OPERATION_WS_METHODS.markRead) {
+          yield* providerService.nativeOperations.markRead?.(input.threadId) ?? Effect.void;
+          return;
         }
         if (request.body._tag === NATIVE_OPERATION_WS_METHODS.resolve) {
           if (!providerService.nativeOperations.resolve)
@@ -6702,6 +6707,21 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return { ...result, providers: yield* providerAdvisoryProjection.getProviders };
       }
 
+      case WS_METHODS.serverSaveProviderFeedback: {
+        const body = stripRequestTag(request.body);
+        const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);
+        if (!instance || instance.driverKind !== "codex" || !instance.saveFeedback)
+          return yield* new RouteRequestError({
+            message: "Feedback bundles are only available for a configured Codex provider.",
+          });
+        return yield* instance
+          .saveFeedback()
+          .pipe(
+            Effect.mapError(
+              (error) => new RouteRequestError({ message: error.detail ?? error.message }),
+            ),
+          );
+      }
       case WS_METHODS.serverGetProviderInventory: {
         const body = stripRequestTag(request.body);
         const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);

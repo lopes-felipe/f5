@@ -617,6 +617,7 @@ export type SubagentActivityKind = typeof SubagentActivityKind.Type;
 
 const SubagentActivityPayload = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyStringSchema),
+  reasoningEffort: Schema.optional(TrimmedNonEmptyStringSchema),
   kind: SubagentActivityKind,
   agentThreadId: TrimmedNonEmptyStringSchema,
   agentPath: TrimmedNonEmptyStringSchema,

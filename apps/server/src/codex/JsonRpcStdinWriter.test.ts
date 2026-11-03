@@ -2,7 +2,13 @@ import { Writable } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { createJsonRpcStdinWriter } from "./JsonRpcStdinWriter.ts";
+import { createJsonRpcStdinWriter, jsonRpcWriteLane } from "./JsonRpcStdinWriter.ts";
+
+it("sends sample cancellation through the control lane", () => {
+  expect(jsonRpcWriteLane({ method: "thread/sample/cancel", params: { requestId: 1 } })).toBe(
+    "control",
+  );
+});
 
 class ControlledWritable extends Writable {
   readonly writes: string[] = [];

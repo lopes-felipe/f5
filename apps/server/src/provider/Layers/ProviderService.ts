@@ -1972,17 +1972,19 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           allowRecovery: false,
         });
         const action =
-          input.command.kind === "compact"
-            ? "nativeCompaction"
-            : input.command.kind === "review"
-              ? "nativeReview"
-              : input.command.kind === "fork"
-                ? "nativeFork"
-                : input.command.kind === "stopTask"
-                  ? "childTaskStop"
-                  : input.command.kind === "revertFiles"
-                    ? "fileCheckpointing"
-                    : "nativeGoals";
+          input.command.kind === "aside"
+            ? "nativeAside"
+            : input.command.kind === "compact"
+              ? "nativeCompaction"
+              : input.command.kind === "review"
+                ? "nativeReview"
+                : input.command.kind === "fork"
+                  ? "nativeFork"
+                  : input.command.kind === "stopTask"
+                    ? "childTaskStop"
+                    : input.command.kind === "revertFiles"
+                      ? "fileCheckpointing"
+                      : "nativeGoals";
         const admitted = yield* Deferred.make<
           import("@t3tools/contracts").NativeOperationRecord,
           import("../Errors.ts").ProviderServiceError
@@ -2072,6 +2074,16 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         return yield* Deferred.await(admitted);
       });
     const nativeOperations: NonNullable<ProviderServiceShape["nativeOperations"]> = {
+      markRead: (threadId) =>
+        Effect.gen(function* () {
+          const routed = yield* resolveRoutableSession({
+            threadId,
+            operation: "nativeOperation.markRead",
+            allowRecovery: false,
+          });
+          if (routed.adapter.markNativeThreadRead)
+            yield* routed.adapter.markNativeThreadRead(threadId);
+        }).pipe(Effect.catchCause(() => Effect.void)),
       historyRecovery: (input) =>
         withProviderThreadAccess(
           input.threadId,
@@ -2157,10 +2169,31 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             const record = (yield* nativeCoordinator.list(input.threadId)).find(
               (entry) => entry.operationId === input.operationId,
             );
-            if (!record || (yield* nativeGeneration(input.threadId)) !== input.generation)
+            if (
+              !record ||
+              record.generation !== input.generation ||
+              (yield* nativeGeneration(input.threadId)) !== input.generation
+            )
               return yield* nativeError(
                 "The provider session changed. Reload before resolving this outcome.",
               );
+            if (input.action === "cancel") {
+              if (record.command.kind !== "aside")
+                return yield* nativeError("Only aside sampling can be cancelled here.");
+              if (!["requested", "dispatched", "running"].includes(record.state)) return record;
+              yield* assertSessionAction({
+                threadId: input.threadId,
+                action: "nativeAside",
+                expectedGeneration: input.generation,
+              });
+              const routed = yield* resolveRoutableSession({
+                threadId: input.threadId,
+                operation: "nativeOperation.cancel",
+                allowRecovery: false,
+              });
+              yield* routed.adapter.interruptTurn(input.threadId);
+              return record;
+            }
             if (input.action === "reconcile") {
               yield* nativeCoordinator
                 .reconcileThread(input.threadId, checkNativeOperation)
@@ -2188,9 +2221,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 ? "childTaskInspection"
                 : input.kind === "filePreview"
                   ? "fileCheckpointing"
-                  : input.kind === "goal"
-                    ? "nativeGoals"
-                    : "nativeAttachments";
+                  : input.kind === "memory"
+                    ? "nativeAside"
+                    : input.kind === "goal" || input.kind === "usage"
+                      ? "nativeGoals"
+                      : "nativeAttachments";
             yield* assertSessionAction({
               threadId: input.threadId,
               action,

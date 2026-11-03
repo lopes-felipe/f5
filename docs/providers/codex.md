@@ -12,6 +12,29 @@ Codex history.
    with an empty **Shadow home path**.
 3. Pick a Codex model in the composer and start a thread.
 
+The audited version is **0.166.0**. To install that version explicitly, run
+`npm install -g @openai/codex@0.166.0`. F5 does not replace your installed executable.
+
+## Side questions and diagnostics
+
+On Codex 0.166.0 or later, use `/aside <question>` after a turn finishes to ask
+a side question using the thread context. The answer appears in an expandable Aside
+card and stays out of the provider conversation history. Use **Cancel aside** in the
+composer tray to cancel the sample. A user skill named `aside` keeps its command;
+F5 does not install its own shortcut when that name is already in use.
+A response that contains no text suggests asking as a normal message instead.
+
+Open **Runtime details** to load the thread's memory summary (0.166.0+) or dollar
+usage (0.162.0+). Dollar usage is labelled **Reported by Codex** and shows the native
+amount alongside Codex's estimate. An unavailable amount is shown as unknown.
+These reads require a running session.
+
+In **Settings → Providers → Hooks, plugins and connectors**, Codex can report the
+account's workspace name and a read-only list of account workspaces. Google Vertex AI
+accounts are recognised. **Save Codex feedback bundle** writes a ZIP to F5's local
+diagnostics directory and offers Reveal. Nothing is uploaded. Opening a Codex thread
+also sends a best-effort read receipt; F5 keeps its own unread markers.
+
 ## Work and personal accounts
 
 Keep one shared Codex home and give the second account a shadow home that holds only its login:
@@ -69,7 +92,7 @@ find ~/.codex_p -mindepth 1 ! -name auth.json -exec rm -rf {} +
 
 | Topic                | Detail                                                                                                                                                                                                                                                                                    |
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Managed profiles     | Need Codex 0.144.3+ and file-backed credentials. Versions older than 0.162.0 show a notice that newer features may be missing                                                                                                                                                             |
+| Managed profiles     | Need Codex 0.144.3+ and file-backed credentials. Versions older than 0.166.0 show a notice that newer features may be missing                                                                                                                                                             |
 | Windows shadow homes | Directories use junctions and files use hard links, so no Developer Mode or elevation is needed                                                                                                                                                                                           |
 | Background prompts   | Session notes, compaction and validation share one warm app-server per launch config. It stops after 5 minutes idle, 50 prompts or a failed prompt, and may use the previous login briefly after `codex login` switches accounts                                                          |
 | Plugins              | One-off app-servers and `codex exec` runs (titles, commit messages, PR text, branch names) start with plugins off; thread sessions keep them on                                                                                                                                           |

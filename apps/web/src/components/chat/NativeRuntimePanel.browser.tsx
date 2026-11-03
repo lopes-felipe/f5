@@ -14,6 +14,7 @@ import { NativeRuntimePanel } from "./NativeRuntimePanel";
 import { ComposerDock, ComposerDockColumn } from "./composer/ComposerDock";
 
 const mocks = vi.hoisted(() => ({
+  available: true,
   list: vi.fn(async (): Promise<readonly NativeOperationRecord[]> => []),
   snapshot: vi.fn(async () => ({ entries: [] })),
   execute: vi.fn(),
@@ -24,7 +25,7 @@ vi.mock("../../nativeApi", () => {
     nativeOperations: { list: mocks.list, execute: mocks.execute, inspect: mocks.inspect },
     agents: { getSnapshot: mocks.snapshot },
   };
-  return { readNativeApi: () => api, ensureNativeApi: () => api };
+  return { readNativeApi: () => (mocks.available ? api : undefined), ensureNativeApi: () => api };
 });
 const at = "2026-10-10T00:00:00.000Z";
 function fixture(overrides: Partial<Parameters<typeof NativeRuntimePanel>[0]> = {}) {
@@ -57,7 +58,84 @@ function warnings(): OrchestrationThreadActivity[] {
   }));
 }
 describe("NativeRuntimePanel", () => {
+  it("reports an unavailable API without leaving inspection stuck", async () => {
+    const screen = await render(<NativeRuntimePanel {...fixture({ provider: "codex" })} />);
+    try {
+      await page.getByRole("button", { name: /Runtime details/ }).click();
+      mocks.available = false;
+      await page.getByRole("button", { name: "Dollar usage", exact: true }).click();
+      await expect
+        .element(page.getByText("Native operations API is unavailable.", { exact: true }))
+        .toBeVisible();
+      await expect
+        .element(page.getByRole("button", { name: "Dollar usage", exact: true }))
+        .not.toBeDisabled();
+      mocks.available = true;
+      mocks.inspect.mockResolvedValue({ threadUsage: { nativeUsageUsdMicros: 1200000 } });
+      await page.getByRole("button", { name: "Dollar usage", exact: true }).click();
+      await expect.element(page.getByText(/1.200000/)).toBeVisible();
+    } finally {
+      mocks.available = true;
+      await screen.unmount();
+    }
+  });
+  it("shows a persisted aside answer in the operation history", async () => {
+    mocks.list.mockResolvedValue([
+      {
+        operationId: "aside",
+        threadId: ThreadId.makeUnsafe("thread"),
+        generation: 1,
+        command: { kind: "aside", question: "Why?" },
+        state: "completed",
+        result: { text: "Because." },
+        createdAt: at,
+        updatedAt: at,
+      },
+    ]);
+    const screen = await render(<NativeRuntimePanel {...fixture()} />);
+    try {
+      await page.getByRole("button", { name: /Runtime details/ }).click();
+      await page.getByText("Aside: Why?", { exact: true }).click();
+      await expect.element(page.getByText("Because.", { exact: true })).toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
+  it("loads memory and Codex dollar usage on demand", async () => {
+    mocks.inspect
+      .mockResolvedValueOnce({ summary: "Remember the project conventions." })
+      .mockResolvedValueOnce({
+        threadUsage: { nativeUsageUsdMicros: 1200000, estimatedUsageUsdMicros: 900000 },
+      });
+    const base = fixture({ provider: "codex" });
+    const props = {
+      ...base,
+      capabilities: {
+        ...base.capabilities!,
+        actions: [
+          ...base.capabilities!.actions,
+          { action: "nativeAside" as const, supported: true },
+        ],
+      },
+    };
+    const screen = await render(<NativeRuntimePanel {...props} />);
+    try {
+      await page.getByRole("button", { name: /Runtime details/ }).click();
+      await page.getByRole("button", { name: "Memory summary", exact: true }).click();
+      await expect.element(page.getByText(/Remember the project conventions/)).toBeVisible();
+      expect(mocks.inspect).toHaveBeenCalledWith({
+        threadId: props.threadId,
+        generation: 1,
+        kind: "memory",
+      });
+      await page.getByRole("button", { name: "Dollar usage", exact: true }).click();
+      await expect.element(page.getByText(/1.200000/)).toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
   beforeEach(() => {
+    mocks.available = true;
     vi.clearAllMocks();
     mocks.list.mockResolvedValue([]);
     document.documentElement.classList.add("dark");

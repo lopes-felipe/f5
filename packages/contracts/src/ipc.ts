@@ -1160,6 +1160,9 @@ export interface NativeApi {
     getProviderInventory: (
       input: ServerGetProviderInventoryInput,
     ) => Promise<ProviderInstanceInventory>;
+    saveProviderFeedback?: (
+      input: import("./providerInventory").ServerSaveProviderFeedbackInput,
+    ) => Promise<{ path: string }>;
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
     addKeybinding: (input: ServerAddKeybindingInput) => Promise<ServerKeybindingMutationResult>;
     updateKeybinding: (
@@ -1341,6 +1344,7 @@ export interface NativeApi {
   };
   /** Private provider form/URL answers; never go through orchestration commands. */
   nativeOperations?: {
+    markRead?: (input: { threadId: ThreadId }) => Promise<void>;
     historyRecovery?: (input: NativeHistoryRecoveryInput) => Promise<NativeHistoryRecovery | null>;
     resolve: (input: NativeOperationResolutionInput) => Promise<NativeOperationRecord>;
     fork: (input: NativeForkInput) => Promise<NativeOperationRecord>;

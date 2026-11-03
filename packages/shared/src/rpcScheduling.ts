@@ -154,6 +154,7 @@ export const RPC_METHOD_POLICY = {
   "nativeOperation.fork": MUTATION_RT,
   "nativeOperation.historyRecovery": MUTATION_RT,
   "nativeOperation.inspect": READ_RT,
+  "nativeOperation.markRead": MUTATION_RT,
   "nativeOperation.list": READ_RT,
   "nativeOperation.resolve": MUTATION_RT,
 
@@ -350,6 +351,7 @@ export const RPC_METHOD_POLICY = {
   "server.getConfig": READ,
   "server.getProjectSettings": READ,
   "server.getProviderInventory": READ,
+  "server.saveProviderFeedback": long(false, 130_000),
   "server.migrateClientSetting": MUTATION,
   "server.probe": HEALTH,
   "server.refreshProviders": MUTATION,
@@ -466,6 +468,8 @@ function commandType(body: { readonly command?: unknown }): string {
 
 /** Inspect the decoded command as well as its transport method. */
 export function rpcLane(body: { readonly _tag: string; readonly command?: unknown }): RpcLane {
+  if (body._tag === "nativeOperation.resolve" && "action" in body && body.action === "cancel")
+    return "stop";
   if (body._tag === "orchestration.dispatchCommand") {
     const type = commandType(body);
     if (Object.hasOwn(ORCHESTRATION_COMMAND_LANES, type))

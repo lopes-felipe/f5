@@ -148,6 +148,7 @@ describe("RPC method policy", () => {
         "mcp.startOAuthLogin",
         "prHub.analyzeAdvisories",
         "server.runProviderUpdate",
+        "server.saveProviderFeedback",
         "usage.analyzeClaudeUsage",
         "worktrees.moveThread",
         "worktrees.resolveTransition",
@@ -156,6 +157,14 @@ describe("RPC method policy", () => {
     );
     expect(rpcLongRunningTimeoutMs({ _tag: "git.runStackedAction" })).toBeNull();
     expect(rpcLongRunningTimeoutMs({ _tag: "server.runProviderUpdate" })).toBe(660_000);
+    expect(rpcLongRunningTimeoutMs({ _tag: "server.saveProviderFeedback" })).toBe(130_000);
+    expect(isReadOnlyRpc("server.saveProviderFeedback")).toBe(false);
+    expect(isReadOnlyRpc("nativeOperation.markRead")).toBe(false);
+    expect(
+      rpcLane({ _tag: "nativeOperation.resolve", action: "cancel" } as Parameters<
+        typeof rpcLane
+      >[0]),
+    ).toBe("stop");
     expect(rpcLongRunningTimeoutMs({ _tag: "mcp.probeServer" })).toBe(75_000);
     expect(rpcLongRunningTimeoutMs({ _tag: "mcp.startOAuthLogin" })).toBe(
       CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS,

@@ -198,6 +198,7 @@ export class CodexControlClient extends EventEmitter<{
   protocolError: [Error];
 }> {
   capabilities: CodexControlCapabilities;
+  cliVersion: string | null = null;
 
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly output: ProviderLineReader;
@@ -243,7 +244,7 @@ export class CodexControlClient extends EventEmitter<{
     signal?.throwIfAborted();
     const binaryPath = environment.binaryPath ?? "codex";
     const codexHomePath = resolveCodexHome({ homePath: environment.homePath });
-    await assertSupportedCodexCliVersion({
+    const cliVersion = await assertSupportedCodexCliVersion({
       processEnvironment: environment.processEnvironment ?? process.env,
       binaryPath,
       cwd: environment.cwd,
@@ -303,6 +304,7 @@ export class CodexControlClient extends EventEmitter<{
         method: "initialized",
       });
       client.capabilities = await client.probeCapabilities();
+      client.cliVersion = cliVersion;
       return client;
     } catch (error) {
       await client.closeAndWait();
@@ -575,6 +577,7 @@ export class CodexControlClient extends EventEmitter<{
     cursor?: string,
     limit?: number,
     timeoutMs?: number,
+    serverName?: string,
   ): Promise<CodexControlListMcpServerStatusResult> {
     if (!this.capabilities.listMcpServerStatus) {
       throw new Error("Codex control mcpServerStatus/list is unsupported.");
@@ -585,6 +588,7 @@ export class CodexControlClient extends EventEmitter<{
       {
         ...(cursor ? { cursor } : {}),
         ...(typeof limit === "number" ? { limit } : {}),
+        ...(serverName ? { serverName } : {}),
       },
       Number.isFinite(timeoutMs) ? timeoutMs : undefined,
     );
@@ -623,6 +627,26 @@ export class CodexControlClient extends EventEmitter<{
       cwds: [...cwds],
     });
     return Array.isArray(result.data) ? result.data.filter(isObject) : [];
+  }
+
+  async readAccount(): Promise<Record<string, unknown>> {
+    return this.sendRequest("account/read", {});
+  }
+
+  async listAccountSessions(): Promise<Record<string, unknown>> {
+    return this.sendRequest("accountSession/list", { refreshWorkspaceMetadata: true });
+  }
+
+  async saveFeedback(savePath: string, timeoutMs = 120_000): Promise<unknown> {
+    return this.sendRequest(
+      "feedback/save",
+      {
+        savePath,
+        classification: "bug",
+        includeLogs: true,
+      },
+      timeoutMs,
+    );
   }
 
   /** Installed plugins only; F5 never queries remote marketplaces. */

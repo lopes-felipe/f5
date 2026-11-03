@@ -288,3 +288,8 @@ export function rewriteComposerRuntimeSkillInvocationForSend(input: {
       : text;
   return { text: textWithPath, skillCall: { name: leadingCommandName } };
 }
+export const CODEX_NATIVE_ASIDE_COMMAND = {
+  name: "aside",
+  description: "Ask a side question without changing the conversation",
+  argumentHint: "<question>",
+} as const;

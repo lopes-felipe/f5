@@ -3791,6 +3791,7 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
               {workEntry.subagentModel && (
                 <span className={cn(WORK_META_CHIP_CLASS_NAME, "font-mono")}>
                   {workEntry.subagentModel}
+                  {workEntry.reasoningEffort ? " · " + workEntry.reasoningEffort : ""}
                 </span>
               )}
               {workEntry.subagentThreadId && (
@@ -4066,6 +4067,14 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
 }) {
   const { workEntry } = props;
   const { threadId } = useTimelineRowContext();
+  if (workEntry.activityKind === "native.aside") {
+    return (
+      <details className="my-2 rounded-lg border p-3">
+        <summary>{workEntry.label}</summary>
+        <p className="mt-2 whitespace-pre-wrap">{workEntry.detail}</p>
+      </details>
+    );
+  }
   const timestamp = (className: string) => (
     <time
       dateTime={workEntry.createdAt}

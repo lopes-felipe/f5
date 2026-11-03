@@ -440,6 +440,9 @@ function readSubagentPayload(payload: UnknownRecord): Partial<CompactToolActivit
     ...(subagentPrompt ? { subagentPrompt } : {}),
     ...(subagentResult ? { subagentResult } : {}),
     ...(subagentModel ? { subagentModel } : {}),
+    ...(asTrimmedString(payload.reasoningEffort)
+      ? { reasoningEffort: asTrimmedString(payload.reasoningEffort)! }
+      : {}),
     ...(subagentThreadId ? { subagentThreadId } : {}),
     ...(subagentPath ? { subagentPath } : {}),
     ...(subagentSenderThreadId ? { subagentSenderThreadId } : {}),

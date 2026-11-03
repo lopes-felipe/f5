@@ -142,6 +142,7 @@ export interface ProviderMcpApps<TError> {
 }
 
 export interface ProviderAdapterShape<TError> {
+  readonly markNativeThreadRead?: (threadId: ThreadId) => Effect.Effect<void, TError>;
   readonly mcpApps?: ProviderMcpApps<TError>;
   /**
    * Provider kind implemented by this adapter.

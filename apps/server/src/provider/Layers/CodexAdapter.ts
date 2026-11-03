@@ -251,7 +251,11 @@ function toSessionError(
       cause,
     });
   }
-  if (normalized.includes("session is closed")) {
+  if (
+    normalized.includes("session is closed") ||
+    (asObject(cause)?.code === -32600 &&
+      asObject(asObject(cause)?.data)?.reason === "serverShuttingDown")
+  ) {
     return new ProviderAdapterSessionClosedError({
       provider: PROVIDER,
       threadId,
@@ -831,6 +835,9 @@ function mapSubagentActivity(
       agentThreadId,
       agentPath,
       ...(asString(source.model)?.trim() ? { model: asString(source.model)!.trim() } : {}),
+      ...(asString(source.reasoningEffort)?.trim()
+        ? { reasoningEffort: asString(source.reasoningEffort)!.trim() }
+        : {}),
     },
   };
 }
@@ -1362,6 +1369,15 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (event.method === "f5/aside/completed") {
+    return [
+      {
+        type: "thread.metadata.updated",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: { metadata: { nativeAside: payload } },
+      },
+    ];
+  }
   if (
     ["thread/attachment/updated", "thread/goal/updated", "thread/goal/cleared"].includes(
       event.method ?? "",
@@ -3799,6 +3815,13 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         Effect.tryPromise({
           try: (signal) => manager.executeNativeOperation(input, onReceipt, signal),
           catch: (cause) => {
+            if (
+              input.command.kind === "aside" &&
+              asObject(cause)?.nativeOperationCancelled === true
+            )
+              return Object.assign(toRequestError(input.threadId, input.command.kind, cause), {
+                nativeOperationCancelled: true,
+              });
             const error = toRequestError(input.threadId, input.command.kind, cause);
             if (
               cause &&
@@ -3813,7 +3836,15 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               });
             return error;
           },
-        }),
+        }).pipe(
+          Effect.onInterrupt(() =>
+            input.command.kind === "aside"
+              ? Effect.promise(() => manager.interruptTurn(input.threadId).catch(() => undefined))
+              : Effect.void,
+          ),
+        ),
+      markNativeThreadRead: (threadId) =>
+        Effect.promise(() => manager.markNativeThreadRead(threadId)),
       inspectNativeOperation: (input) =>
         Effect.tryPromise({
           try: () => manager.inspectNativeOperation(input),

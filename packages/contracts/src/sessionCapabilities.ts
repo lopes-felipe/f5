@@ -14,6 +14,7 @@ export const PROVIDER_SESSION_ACTIONS = [
   "nativeCommands",
   "nativeSessionCleanup",
   "nativeReview",
+  "nativeAside",
   "nativeCompaction",
   "nativeFork",
   "nativeGoals",

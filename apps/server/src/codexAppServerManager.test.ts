@@ -4307,6 +4307,216 @@ it("ends the session when codex app-server sends a message over the size cap", (
   expect(lifecycle).toHaveBeenCalledWith(context, "session/exited", message, undefined);
   expect(internal.sessions.has("oversized")).toBe(false);
 });
+describe("Release 5 native operations", () => {
+  it.each(["receipt", "history"] as const)(
+    "preserves cancellation while awaiting %s before sample dispatch",
+    async (phase) => {
+      const { manager, context, sendRequest } = createThreadControlHarness();
+      Object.assign(context, { cliVersion: "0.166.0", nextRequestId: 12 });
+      let release!: () => void;
+      const barrier = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let entered = false;
+      const receipt =
+        phase === "receipt"
+          ? async () => {
+              entered = true;
+              await barrier;
+            }
+          : undefined;
+      sendRequest.mockImplementation(async (_context, method) => {
+        if (method === "thread/turns/list") {
+          if (phase === "history") {
+            entered = true;
+            await barrier;
+          }
+          return { data: [{ id: "last", status: "completed" }] };
+        }
+        throw new Error("No sample should be dispatched.");
+      });
+      const pending = manager.executeNativeOperation(asideInput, receipt).catch((error) => error);
+      await vi.waitFor(() => expect(entered).toBe(true));
+      await manager.interruptTurn(asThreadId("thread_1"));
+      release();
+      expect(await pending).toMatchObject({
+        nativeOperationCancelled: true,
+        deliveryCertainty: "not_sent",
+      });
+      expect(context).toMatchObject({ samplePreparing: false });
+      expect(sendRequest.mock.calls.some((call) => call[1] === "thread/sample")).toBe(false);
+    },
+  );
+  it("keeps the actual sample RPC pending past the control timeout and accepts a late response", async () => {
+    vi.useFakeTimers();
+    const manager = new CodexAppServerManager();
+    const context = { nextRequestId: 1, pending: new Map() };
+    const internal = manager as unknown as {
+      sendRequest(context: unknown, method: string, params: unknown): Promise<unknown>;
+      handleResponse(context: unknown, response: unknown): void;
+      writeMessage(...args: unknown[]): Promise<void>;
+    };
+    const write = vi.spyOn(internal, "writeMessage").mockResolvedValue();
+    try {
+      let settled = false;
+      const pending = internal.sendRequest(context, "thread/sample", {}).then((result) => {
+        settled = true;
+        return result;
+      });
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(settled).toBe(false);
+      expect(context.pending.size).toBe(1);
+      internal.handleResponse(context, { id: 1, result: { text: "Late answer" } });
+      expect(await pending).toEqual({ text: "Late answer" });
+      expect(context.pending.size).toBe(0);
+      expect(write).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      write.mockRestore();
+    }
+  });
+  it("interrupts an aside and waits for its sample response before releasing the waiter", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    Object.assign(context, { cliVersion: "0.166.0", nextRequestId: 12 });
+    let finish!: (value: unknown) => void;
+    sendRequest.mockImplementation(async (_context, method) => {
+      if (method === "thread/turns/list") return { data: [{ id: "last", status: "completed" }] };
+      if (method === "thread/sample")
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      return {};
+    });
+    const result = manager.executeNativeOperation(asideInput).catch((error) => error);
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    let settled = false;
+    const cancel = manager.interruptTurn(asThreadId("thread_1")).then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(sendRequest).toHaveBeenCalledWith(context, "thread/sample/cancel", { requestId: 12 });
+    finish({ text: null });
+    await cancel;
+    expect(await result).toMatchObject({ nativeOperationCancelled: true });
+  });
+  it.each(["memory", "usage"] as const)(
+    "reads %s only through the existing session",
+    async (kind) => {
+      const { manager, context, requireSession, sendRequest } = createThreadControlHarness();
+      Object.assign(context, { cliVersion: "0.166.0" });
+      sendRequest.mockResolvedValue({ summary: "summary" });
+      await manager.inspectNativeOperation({
+        threadId: asThreadId("thread_1"),
+        generation: 1,
+        kind,
+      });
+      expect(requireSession).toHaveBeenCalledWith("thread_1");
+      expect(sendRequest).toHaveBeenCalledWith(
+        context,
+        kind === "memory" ? "thread/memory/read" : "account/usage/read",
+        { threadId: "thread_1" },
+      );
+    },
+  );
+  it("aborting the waiter cancels with the JSON-RPC request id", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    Object.assign(context, { cliVersion: "0.166.0", nextRequestId: 12 });
+    let finish!: (value: unknown) => void;
+    sendRequest.mockImplementation(async (_context, method) => {
+      if (method === "thread/turns/list") return { data: [{ id: "last", status: "completed" }] };
+      if (method === "thread/sample")
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      return {};
+    });
+    const controller = new AbortController();
+    const pending = manager
+      .executeNativeOperation(asideInput, undefined, controller.signal)
+      .catch((error) => error);
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    controller.abort();
+    expect(sendRequest).toHaveBeenCalledWith(context, "thread/sample/cancel", { requestId: 12 });
+    finish({ text: null, inputTokens: 4, outputTokens: 1, cachedInputTokens: 2 });
+    expect(await pending).toMatchObject({ nativeOperationCancelled: true });
+  });
+  const asideInput = {
+    threadId: asThreadId("thread_1"),
+    operationId: "aside",
+    generation: 1,
+    command: { kind: "aside" as const, question: "Why?" },
+  };
+  it.each(["completed", "failed", "interrupted"])(
+    "samples a %s turn without a turn/start",
+    async (status) => {
+      const { manager, context, sendRequest } = createThreadControlHarness();
+      Object.assign(context, { cliVersion: "0.166.0", nextRequestId: 9 });
+      sendRequest.mockImplementation(async (_context, method) =>
+        method === "thread/turns/list"
+          ? { data: [{ id: "last", status }] }
+          : { text: "Because.", inputTokens: 3, cachedInputTokens: 2, outputTokens: 1 },
+      );
+      expect(await manager.executeNativeOperation(asideInput)).toMatchObject({
+        question: "Why?",
+        text: "Because.",
+      });
+      expect(sendRequest).toHaveBeenCalledWith(context, "thread/sample", {
+        threadId: "thread_1",
+        expectedTurnId: "last",
+        prompt: "Why?",
+      });
+      expect(sendRequest.mock.calls.some((call) => call[1] === "turn/start")).toBe(false);
+    },
+  );
+  it("rejects unsupported and active sources before sampling", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    await expect(manager.executeNativeOperation(asideInput)).rejects.toThrow("0.166.0");
+    Object.assign(context, { cliVersion: "0.166.0" });
+    sendRequest.mockResolvedValue({ data: [{ id: "last", status: "inProgress" }] });
+    await expect(manager.executeNativeOperation(asideInput)).rejects.toThrow("settled native turn");
+    expect(sendRequest.mock.calls.some((call) => call[1] === "thread/sample")).toBe(false);
+  });
+  it("does not create a session to mark a missing thread read", async () => {
+    const { manager, requireSession, sendRequest } = createThreadControlHarness();
+    await manager.markNativeThreadRead(asThreadId("missing"));
+    expect(requireSession).not.toHaveBeenCalled();
+    expect(sendRequest).not.toHaveBeenCalled();
+  });
+  it("replaces a conflicted read revision without retrying", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    Object.assign(context, {
+      cliVersion: "0.166.0",
+      readState: { firstUnread: {}, revision: "old" },
+    });
+    (manager as unknown as { sessions: Map<string, unknown> }).sessions.set("thread_1", context);
+    sendRequest.mockRejectedValue(
+      new CodexJsonRpcError("thread/readState/update", -32600, "Conflict", {
+        reason: "readStateConflict",
+        readState: { firstUnread: {}, revision: "new" },
+      }),
+    );
+    await manager.markNativeThreadRead(asThreadId("thread_1"));
+    expect(sendRequest).toHaveBeenCalledTimes(1);
+    expect(context).toMatchObject({ readState: { revision: "new" } });
+  });
+  it("marks only an unread supported live session", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    Object.assign(context, {
+      cliVersion: "0.166.0",
+      readState: { firstUnread: {}, revision: "seen" },
+    });
+    (manager as unknown as { sessions: Map<string, unknown> }).sessions.set("thread_1", context);
+    sendRequest.mockResolvedValue({});
+    await manager.markNativeThreadRead(asThreadId("thread_1"));
+    expect(sendRequest).toHaveBeenCalledWith(context, "thread/readState/update", {
+      threadId: "thread_1",
+      expectedRevision: "seen",
+      operation: { type: "read" },
+    });
+  });
+});
+
 describe("Release 4 native operations", () => {
   const input = (kind: "compact" | "review") => ({
     threadId: asThreadId("thread_1"),
@@ -4458,6 +4668,7 @@ describe("Release 4 native operations", () => {
       objective: "Goal",
       tokenBudget: 100,
       status: "active",
+      origin: "user",
     });
     expect(manager.listenerCount("event")).toBe(0);
   });

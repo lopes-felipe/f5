@@ -105,6 +105,7 @@ export interface ProviderInstance {
   readonly inventory?: (input: {
     readonly projectRoot?: string | undefined;
   }) => Effect.Effect<ProviderInstanceInventoryEntries, ProviderDriverError>;
+  readonly saveFeedback?: () => Effect.Effect<{ path: string }, ProviderDriverError>;
   /**
    * Remove a native session's local transcript from this instance's own
    * store (never the server-global home). Best-effort; callers log failures.
@@ -117,7 +118,14 @@ export interface ProviderInstance {
 /** Inventory body; the registry stamps instance id, driver and timestamps. */
 export type ProviderInstanceInventoryEntries = Pick<
   import("@t3tools/contracts").ProviderInstanceInventory,
-  "hooks" | "plugins" | "connectors" | "agents" | "warnings"
+  | "hooks"
+  | "plugins"
+  | "connectors"
+  | "agents"
+  | "warnings"
+  | "accountWorkspaces"
+  | "feedbackSupported"
+  | "account"
 >;
 
 export interface ProviderContinuationIdentity {

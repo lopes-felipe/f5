@@ -94,13 +94,14 @@ export function codexServerStatusCanReconcileCompletedOauthLogin(
 
 export async function listAllCodexServerStatuses(
   client: CodexControlClient,
+  serverName?: string,
 ): Promise<ReadonlyArray<CodexControlMcpServerStatus>> {
-  return (await readCodexServerStatusPages(client)).entries;
+  return (await readCodexServerStatusPages(client, serverName ? { serverName } : {})).entries;
 }
 
 export async function readCodexServerStatusPages(
   client: CodexControlClient,
-  options: { signal?: AbortSignal; deadline?: number } = {},
+  options: { signal?: AbortSignal; deadline?: number; serverName?: string } = {},
 ) {
   const context = client.getMcpObservationContext?.();
   const pages = await readBoundedPages<CodexControlMcpServerStatus>({
@@ -110,7 +111,21 @@ export async function readCodexServerStatusPages(
     maxPageItems: 100,
     initialFailureIsPartial: true,
     ...options,
-    request: (cursor, remaining) => client.listMcpServerStatus(cursor, 100, remaining),
+    request: async (cursor, remaining) => {
+      if (!options.serverName) return client.listMcpServerStatus(cursor, 100, remaining);
+      try {
+        return await client.listMcpServerStatus(cursor, 100, remaining, options.serverName);
+      } catch (error) {
+        if (
+          !error ||
+          typeof error !== "object" ||
+          !("code" in error) ||
+          ![-32600, -32601, -32602].includes(Number(error.code))
+        )
+          throw error;
+        return client.listMcpServerStatus(cursor, 100, remaining);
+      }
+    },
     decode: decodeCodexMcpServerStatus,
   });
   if (context && context !== client.getMcpObservationContext?.())
