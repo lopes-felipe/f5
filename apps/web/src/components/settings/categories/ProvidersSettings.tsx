@@ -183,7 +183,23 @@ export function ProvidersSettings() {
       }),
     );
 
-  const deleteProviderInstance = (id: ProviderInstanceId) => {
+  const confirmRemoval = async (question: string, turnsOff = false) => {
+    try {
+      return await ensureNativeApi().dialogs.confirm(
+        question +
+          "\nIts saved settings, including any custom binary path, will be removed." +
+          (turnsOff ? " It will also be turned off." : ""),
+      );
+    } catch {
+      return false;
+    }
+  };
+
+  const deleteProviderInstance = async (id: ProviderInstanceId) => {
+    const instance = unifiedSettings.providerInstances?.[id];
+    const name =
+      instance?.displayName?.trim() || (instance && getDriverOption(instance.driver)?.label) || id;
+    if (!(await confirmRemoval("Remove the " + name + " provider instance?"))) return;
     updateUnifiedSettings({
       providerInstances: withoutProviderInstanceKey(unifiedSettings.providerInstances, id),
       providerModelPreferences: withoutProviderInstanceKey(
@@ -237,7 +253,7 @@ export function ProvidersSettings() {
     });
   };
 
-  const resetDefaultInstance = (driverKind: ProviderDriverKind) => {
+  const resetDefaultInstance = async (driverKind: ProviderDriverKind) => {
     type LegacyProviderSettings = ServerSettings["providers"][keyof ServerSettings["providers"]];
     const defaultLegacyProviders = DEFAULT_UNIFIED_SETTINGS.providers as Record<
       string,
@@ -246,6 +262,18 @@ export function ProvidersSettings() {
     const defaultInstanceId = defaultInstanceIdForDriver(driverKind);
     const defaultLegacyProvider = defaultLegacyProviders[driverKind];
     if (defaultLegacyProvider === undefined) return;
+    const row = providerInstanceRows.find(
+      (candidate) => candidate.instanceId === defaultInstanceId,
+    );
+    const name =
+      row?.instance.displayName?.trim() || getDriverOption(driverKind)?.label || driverKind;
+    if (
+      !(await confirmRemoval(
+        "Reset the " + name + " provider to its defaults?",
+        (row?.instance.enabled ?? true) && !defaultLegacyProvider.enabled,
+      ))
+    )
+      return;
     updateUnifiedSettings({
       providers: {
         ...unifiedSettings.providers,
