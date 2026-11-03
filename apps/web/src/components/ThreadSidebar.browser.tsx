@@ -956,8 +956,20 @@ function seedAppSettings(settings: Record<string, unknown>): void {
     APP_SETTINGS_STORAGE_KEY,
     JSON.stringify({
       ...parsePersistedAppSettings(null),
+      // Fixtures are dated March 2026, so aging would fold every thread; aging tests opt in.
+      sidebarOlderThreadDays: 0,
       ...settings,
     }),
+  );
+}
+
+/** A project's shelf segment ("3 scheduled", "1 settled"...), optionally within one shelf. */
+function queryShelfSegment(
+  bucket: "scheduled" | "snoozed" | "settled" | "archived",
+  scope: ParentNode = document,
+): HTMLButtonElement | null {
+  return scope.querySelector<HTMLButtonElement>(
+    `[data-testid="sidebar-shelf"] button[data-shelf-bucket="${bucket}"]`,
   );
 }
 
@@ -1032,6 +1044,7 @@ describe("Thread sidebar", () => {
 
   beforeEach(() => {
     localStorage.clear();
+    seedAppSettings({});
     wsRequests.length = 0;
     Reflect.deleteProperty(window, "desktopBridge");
     document.body.innerHTML = "";
@@ -1068,7 +1081,7 @@ describe("Thread sidebar", () => {
     document.body.innerHTML = "";
   });
 
-  it("keeps settled threads in a collapsed bucket and reachable by their existing route", async () => {
+  it("keeps settled threads in a shelf bucket and reachable by their existing route", async () => {
     const mounted = await mountApp({
       width: 1400,
       initialEntries: [`/${THREAD_ID}`],
@@ -1084,12 +1097,18 @@ describe("Thread sidebar", () => {
       },
     });
     try {
-      await expect
-        .element(page.getByRole("treeitem", { name: "Settled (1)", exact: true }))
-        .toBeVisible();
-      expect(querySidebarThreadRowsByTitle("Settled conversation")).toHaveLength(0);
+      const segment = await waitForElement(
+        () => queryShelfSegment("settled"),
+        "The shelf should offer the settled bucket.",
+      );
+      expect(segment.textContent).toContain("1 settled");
       expect(mounted.router.state.location.pathname).toBe(`/${THREAD_ID}`);
-      await page.getByRole("treeitem", { name: "Settled (1)", exact: true }).click();
+      // The open thread is settled, so its bucket opens on its own.
+      await expect.poll(() => segment.getAttribute("aria-expanded")).toBe("true");
+      await expect.poll(() => querySidebarThreadRowsByTitle("Settled conversation").length).toBe(1);
+      segment.click();
+      await expect.poll(() => querySidebarThreadRowsByTitle("Settled conversation").length).toBe(0);
+      segment.click();
       await expect.poll(() => querySidebarThreadRowsByTitle("Settled conversation").length).toBe(1);
       const row = page.getByTestId(`thread-row-${THREAD_ID}`);
       await row.hover();
@@ -1115,16 +1134,14 @@ describe("Thread sidebar", () => {
           }),
         ]),
       );
-      await expect
-        .element(page.getByRole("treeitem", { name: "Settled (1)", exact: true }))
-        .not.toBeInTheDocument();
+      await expect.poll(() => queryShelfSegment("settled")).toBeNull();
       expect(querySidebarThreadRowsByTitle("Settled conversation")).toHaveLength(1);
     } finally {
       await mounted.cleanup();
     }
   });
 
-  it("groups existing Scheduled threads in a collapsed project folder with status indicators", async () => {
+  it("groups existing Scheduled threads in the project shelf with status indicators", async () => {
     const scheduled = (id: string, extra: Partial<SnapshotThread> = {}) =>
       createSnapshotThread({
         id: id as ThreadId,
@@ -1157,17 +1174,19 @@ describe("Thread sidebar", () => {
     });
     try {
       await waitForSidebarThreadRow("Normal conversation");
-      const folder = await waitForElement(
-        () => document.querySelector<HTMLElement>('[data-testid="scheduled-thread-folder"]'),
-        "Scheduled folder should render",
+      const toggle = await waitForElement(
+        () => queryShelfSegment("scheduled"),
+        "The shelf should offer the scheduled bucket",
       );
-      const toggle = folder.querySelector<HTMLButtonElement>("button[aria-expanded]")!;
+      const folder = toggle.closest<HTMLElement>('[data-testid="sidebar-shelf"]')!;
       expect(toggle.getAttribute("aria-expanded")).toBe("false");
-      expect(folder.textContent).toContain("Needs attention: 1");
-      expect(folder.textContent).toContain("Running: 1");
+      expect(toggle.textContent).toContain("4 scheduled");
+      expect(toggle.textContent).toContain("Needs attention: 1");
+      expect(toggle.textContent).toContain("Running: 1");
       expect(querySidebarThreadRowByTitle("Scheduled working")).toBeNull();
-      expect(querySidebarButtonByText("Archived")).toBeNull();
-      expect(querySidebarButtonByText("Snoozed (1)")).toBeNull();
+      // Archived and snoozed runs stay inside the scheduled bucket.
+      expect(queryShelfSegment("archived")).toBeNull();
+      expect(queryShelfSegment("snoozed")).toBeNull();
       toggle.click();
       for (const title of ["Scheduled working", "Scheduled attention", "Scheduled snoozed"]) {
         const row = await waitForElement(
@@ -1223,14 +1242,12 @@ describe("Thread sidebar", () => {
     });
     try {
       const selected = await waitForSidebarThreadRow("Scheduled run 0");
-      const folder = selected.closest<HTMLElement>('[data-testid="scheduled-thread-folder"]')!;
+      const folder = selected.closest<HTMLElement>('[data-testid="sidebar-shelf"]')!;
       expect(folder).not.toBeNull();
-      expect(folder.querySelector("button[aria-expanded]")?.getAttribute("aria-expanded")).toBe(
-        "true",
-      );
+      expect(queryShelfSegment("scheduled", folder)?.getAttribute("aria-expanded")).toBe("true");
       expect(folder.querySelectorAll("[data-thread-item]")).toHaveLength(6);
       const more = [...folder.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
-        button.textContent?.includes("Show more"),
+        button.textContent?.includes("Show all 8"),
       )!;
       more.click();
       await vi.waitFor(() => expect(folder.querySelectorAll("[data-thread-item]")).toHaveLength(8));
@@ -1239,7 +1256,7 @@ describe("Thread sidebar", () => {
       )!;
       less.click();
       await vi.waitFor(() => expect(folder.querySelectorAll("[data-thread-item]")).toHaveLength(6));
-      folder.querySelector<HTMLButtonElement>("button[aria-expanded]")!.click();
+      queryShelfSegment("scheduled", folder)!.click();
       await vi.waitFor(() => expect(querySidebarThreadRowByTitle("Scheduled run 0")).toBeNull());
       expect(querySidebarThreadRowByTitle("Normal conversation")).not.toBeNull();
     } finally {
@@ -1283,10 +1300,8 @@ describe("Thread sidebar", () => {
         await waitForSidebarThreadRow(
           selectArchive ? "Archived scheduled 0" : "Normal conversation",
         );
-        const folder = document.querySelector<HTMLElement>(
-          '[data-testid="scheduled-thread-folder"]',
-        )!;
-        const toggle = folder.querySelector<HTMLButtonElement>("button[aria-expanded]")!;
+        const toggle = queryShelfSegment("scheduled")!;
+        const folder = toggle.closest<HTMLElement>('[data-testid="sidebar-shelf"]')!;
         if (!selectArchive) toggle.click();
         const currentRows = () =>
           folder.querySelectorAll('[data-testid^="thread-row-active-scheduled-"]');
@@ -1302,7 +1317,7 @@ describe("Thread sidebar", () => {
         await vi.waitFor(() => expect(archivedRows()).toHaveLength(selectArchive ? 6 : 5));
         const moreButtons = () =>
           [...folder.querySelectorAll<HTMLButtonElement>("button")].filter(
-            (button) => button.textContent?.trim() === "Show more",
+            (button) => button.textContent?.trim() === "Show all 8",
           );
         expect(moreButtons()).toHaveLength(2);
         moreButtons()[0]!.click();
@@ -1314,13 +1329,15 @@ describe("Thread sidebar", () => {
         await vi.waitFor(() => expect(archivedRows()).toHaveLength(0));
         expect(currentRows()).toHaveLength(8);
         expect(querySidebarThreadRowByTitle("Normal archive")).toBeNull();
-        const otherArchiveToggle = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
-          (button) => button.textContent?.trim() === "Archived" && !folder.contains(button),
-        )!;
+        // The project's own archive is another shelf bucket; opening it closes Scheduled.
+        const otherArchiveToggle = queryShelfSegment("archived", folder)!;
+        expect(otherArchiveToggle.textContent).toContain("1 archived");
         expect(otherArchiveToggle.getAttribute("aria-expanded")).toBe("false");
         otherArchiveToggle.click();
         await waitForSidebarThreadRow("Normal archive");
         expect(archivedRows()).toHaveLength(0);
+        expect(currentRows()).toHaveLength(0);
+        expect(toggle.getAttribute("aria-expanded")).toBe("false");
       } finally {
         await mounted.cleanup();
       }
@@ -1500,11 +1517,11 @@ describe("Thread sidebar", () => {
       },
     });
     try {
-      const folder = await waitForElement(
-        () => document.querySelector<HTMLElement>('[data-testid="scheduled-thread-folder"]'),
-        "Scheduled folder should appear",
+      const toggle = await waitForElement(
+        () => queryShelfSegment("scheduled"),
+        "Scheduled shelf segment should appear",
       );
-      const toggle = folder.querySelector<HTMLButtonElement>("button[aria-expanded]")!;
+      const folder = toggle.closest<HTMLElement>('[data-testid="sidebar-shelf"]')!;
       expect(toggle.getAttribute("aria-expanded")).toBe("false");
       expect(folder.textContent).toContain("Unread: 8");
       toggle.dispatchEvent(
@@ -2222,31 +2239,59 @@ describe("Thread sidebar", () => {
     });
 
     try {
-      const trigger = await waitForElement(
-        () => document.querySelector<HTMLButtonElement>('[data-testid="command-palette-trigger"]'),
-        "Sidebar full-search button should render.",
+      const navigation = await waitForElement(
+        () => document.querySelector<HTMLElement>('nav[aria-label="Primary"]'),
+        "The nav strip should render.",
       );
+      const navLabels = [...navigation.querySelectorAll("button[aria-label]")].map((button) =>
+        button.getAttribute("aria-label"),
+      );
+      expect(navLabels).toEqual(["Home", "Search threads", "Pull requests", "Scheduled", "Usage"]);
+      const homeButton = navigation.querySelector<HTMLButtonElement>('[aria-label="Home"]')!;
+      const usageButton = navigation.querySelector<HTMLButtonElement>('[aria-label="Usage"]')!;
+      expect(usageButton.hasAttribute("aria-current")).toBe(false);
+      usageButton.click();
+      await vi.waitFor(() => expect(mounted.router.state.location.pathname).toBe("/usage"));
+      await vi.waitFor(() => expect(usageButton.getAttribute("aria-current")).toBe("page"));
+      expect(homeButton.hasAttribute("aria-current")).toBe(false);
+      expect(navigation.textContent).not.toContain("Bots");
+
+      // The search field stays hidden until the Search button opens it, focused.
+      expect(document.querySelector('[data-testid="sidebar-thread-search-input"]')).toBeNull();
+      const searchToggle = navigation.querySelector<HTMLButtonElement>(
+        '[data-testid="sidebar-search-toggle"]',
+      )!;
+      expect(searchToggle.getAttribute("aria-pressed")).toBe("false");
+      searchToggle.click();
       const searchInput = await waitForElement(
         () =>
           document.querySelector<HTMLInputElement>('[data-testid="sidebar-thread-search-input"]'),
         "Sidebar thread search input should render.",
       );
-      const homeButton = await waitForElement(
-        () =>
-          Array.from(
-            document.querySelectorAll<HTMLButtonElement>('[data-slot="sidebar-menu-button"]'),
-          ).find((button) => button.textContent?.trim() === "Home") ?? null,
-        "Home sidebar button should render on the home route.",
-      );
-      const navigation = document.querySelector('nav[aria-label="Primary"]');
-      expect(navigation?.textContent).toContain("Pull requests");
-      expect(navigation?.textContent).toContain("Usage");
-      expect(navigation?.textContent).not.toContain("Bots");
+      await vi.waitFor(() => expect(document.activeElement).toBe(searchInput));
+      expect(searchToggle.getAttribute("aria-pressed")).toBe("true");
 
+      // Escape on the empty field closes it and returns focus to the Search button.
+      searchInput.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      );
+      await vi.waitFor(() =>
+        expect(document.querySelector('[data-testid="sidebar-thread-search-input"]')).toBeNull(),
+      );
+      expect(document.activeElement).toBe(searchToggle);
+
+      searchToggle.click();
+      const trigger = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-testid="command-palette-trigger"]'),
+        "Sidebar full-search button should render.",
+      );
       expect(
         Boolean(homeButton.compareDocumentPosition(trigger) & Node.DOCUMENT_POSITION_FOLLOWING),
       ).toBe(true);
-      expect(searchInput.placeholder).toBe("Search");
+      expect(
+        document.querySelector<HTMLInputElement>('[data-testid="sidebar-thread-search-input"]')
+          ?.placeholder,
+      ).toBe("Search");
       expect(trigger.getAttribute("aria-label")).toBe("Open full search");
       expect(trigger.querySelector("kbd")?.textContent?.trim()).toBeTruthy();
 
@@ -2570,6 +2615,12 @@ describe("Thread sidebar", () => {
     });
 
     try {
+      (
+        await waitForElement(
+          () => document.querySelector<HTMLButtonElement>('[data-testid="sidebar-search-toggle"]'),
+          "The nav strip's Search button should render.",
+        )
+      ).click();
       const input = await waitForElement(
         () =>
           document.querySelector<HTMLInputElement>('[data-testid="sidebar-thread-search-input"]'),
@@ -3193,7 +3244,7 @@ describe("Thread sidebar", () => {
     }
   });
 
-  it("groups snoozed threads under a collapsed per-project section", async () => {
+  it("groups snoozed threads under the project's shelf", async () => {
     const snoozedTitle = "Snoozed implementation";
     const mounted = await mountApp({
       width: 1_400,
@@ -3212,12 +3263,70 @@ describe("Thread sidebar", () => {
 
     try {
       const toggle = await waitForElement(
-        () => querySidebarButtonByText("Snoozed (1)"),
-        "Snoozed section toggle should render.",
+        () => queryShelfSegment("snoozed"),
+        "Snoozed shelf segment should render.",
       );
-      expect(querySidebarThreadRowByTitle(snoozedTitle)).toBeNull();
+      expect(toggle.textContent).toBe("1 snoozed");
+      // The app opens the snoozed thread, so its bucket starts open.
+      await waitForSidebarThreadRow(snoozedTitle);
+      expect(toggle.getAttribute("aria-expanded")).toBe("true");
+      toggle.click();
+      await vi.waitFor(() => expect(querySidebarThreadRowByTitle(snoozedTitle)).toBeNull());
       toggle.click();
       await waitForSidebarThreadRow(snoozedTitle);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("folds threads idle past the configured age into an older row, except exempt ones", async () => {
+    seedAppSettings({ sidebarOlderThreadDays: 7 });
+    const daysAgo = (days: number) =>
+      new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const thread = (id: string, title: string, idleDays: number, extra = {}) =>
+      createSnapshotThread({
+        id: id as ThreadId,
+        title,
+        createdAt: daysAgo(idleDays),
+        lastInteractionAt: daysAgo(idleDays),
+        updatedAt: daysAgo(idleDays),
+        ...extra,
+      });
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: ["/stale-open"],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = createSnapshot([
+          thread("fresh", "Fresh thread", 1),
+          thread("stale-a", "Stale thread A", 20),
+          thread("stale-b", "Stale thread B", 9),
+          thread("stale-pinned", "Stale pinned", 30, { pinnedAt: daysAgo(30) }),
+          thread("stale-open", "Stale open", 40),
+        ]);
+      },
+    });
+    try {
+      await waitForSidebarThreadRow("Fresh thread");
+      const older = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-testid="sidebar-older-toggle"]'),
+        "The older row should render.",
+      );
+      expect(older.textContent).toBe("2 older than 7 days");
+      expect(older.getAttribute("aria-expanded")).toBe("false");
+      expect(querySidebarThreadRowByTitle("Stale thread A")).toBeNull();
+      expect(querySidebarThreadRowByTitle("Stale thread B")).toBeNull();
+      // Pinned and open threads never fold.
+      expect(querySidebarThreadRowByTitle("Stale pinned")).not.toBeNull();
+      expect(querySidebarThreadRowByTitle("Stale open")).not.toBeNull();
+      // Aging replaces the count-based "Show more".
+      expect(querySidebarButtonByText("Show more")).toBeNull();
+
+      older.click();
+      await waitForSidebarThreadRow("Stale thread A");
+      await waitForSidebarThreadRow("Stale thread B");
+      expect(older.getAttribute("aria-expanded")).toBe("true");
+      older.click();
+      await vi.waitFor(() => expect(querySidebarThreadRowByTitle("Stale thread A")).toBeNull());
     } finally {
       await mounted.cleanup();
     }
@@ -3274,7 +3383,7 @@ describe("Thread sidebar", () => {
     }
   });
 
-  it("renders archived threads in a collapsed archived section that can be expanded", async () => {
+  it("renders archived threads in a shelf bucket that can be opened", async () => {
     const activeThreadId = "active-thread" as ThreadId;
     const archivedThreadId = "archived-thread" as ThreadId;
     const mounted = await mountApp({
@@ -3308,8 +3417,8 @@ describe("Thread sidebar", () => {
     try {
       await waitForSidebarThreadRow("Active thread");
       const archivedToggle = await waitForElement(
-        () => querySidebarButtonByText("Archived"),
-        "Archived section toggle should render for projects with archived threads.",
+        () => queryShelfSegment("archived"),
+        "Archived shelf segment should render for projects with archived threads.",
       );
 
       expect(querySidebarThreadRowByTitle("Archived thread")).toBeNull();
@@ -3369,8 +3478,8 @@ describe("Thread sidebar", () => {
     try {
       await waitForSidebarThreadRow("Active thread");
       const archivedToggle = await waitForElement(
-        () => querySidebarButtonByText("Archived"),
-        "Archived section toggle should render for archived workflows.",
+        () => queryShelfSegment("archived"),
+        "Archived shelf segment should render for archived workflows.",
       );
 
       expect(querySidebarThreadRowByTitle("Archived workflow")).toBeNull();

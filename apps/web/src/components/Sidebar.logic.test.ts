@@ -3,8 +3,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildRenderedProjectThreadIds,
+  findShelfBucketForThread,
+  formatCompactCount,
   getVisibleSidebarThreadIds,
   isTrailingDoubleClick,
+  partitionAgedSidebarItems,
   polledSidebarGitStatusCwds,
   reconcileFrozenOrder,
   resolveSidebarComposerDraftPreview,
@@ -19,6 +22,87 @@ import {
   toggleWorkflowThreadListExpansion,
   threadBucketExpansionKey,
 } from "./Sidebar.logic";
+
+describe("formatCompactCount", () => {
+  it("keeps counts under 1000 exact and shortens thousands", () => {
+    expect(formatCompactCount(0)).toBe("0");
+    expect(formatCompactCount(432)).toBe("432");
+    expect(formatCompactCount(999)).toBe("999");
+    expect(formatCompactCount(1000)).toBe("1k");
+    expect(formatCompactCount(2224)).toBe("2.2k");
+    expect(formatCompactCount(9_999)).toBe("9.9k");
+    expect(formatCompactCount(15_400)).toBe("15k");
+  });
+});
+
+describe("partitionAgedSidebarItems", () => {
+  const now = Date.parse("2026-11-03T12:00:00.000Z");
+  const daysAgo = (days: number) => new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
+  const items = [
+    { id: "fresh", at: daysAgo(1) },
+    { id: "stale", at: daysAgo(8) },
+    { id: "boundary", at: daysAgo(7) },
+    { id: "exempt", at: daysAgo(30) },
+    { id: "unknown", at: null },
+  ];
+  const accessors = {
+    getKey: (item: (typeof items)[number]) => item.id,
+    getActivityAt: (item: (typeof items)[number]) => item.at,
+  };
+
+  it("folds items idle longer than the threshold, keeping order on both sides", () => {
+    const result = partitionAgedSidebarItems(items, now, 7, new Set(["exempt"]), accessors);
+    expect(result.recent.map((item) => item.id)).toEqual([
+      "fresh",
+      "boundary",
+      "exempt",
+      "unknown",
+    ]);
+    expect(result.older.map((item) => item.id)).toEqual(["stale"]);
+  });
+
+  it("keeps everything recent when aging is off", () => {
+    const result = partitionAgedSidebarItems(items, now, 0, new Set(), accessors);
+    expect(result.recent).toHaveLength(items.length);
+    expect(result.older).toEqual([]);
+  });
+
+  it("honours every exemption regardless of age", () => {
+    const result = partitionAgedSidebarItems(
+      items,
+      now,
+      3,
+      new Set(["stale", "boundary", "exempt"]),
+      accessors,
+    );
+    expect(result.older).toEqual([]);
+  });
+});
+
+describe("findShelfBucketForThread", () => {
+  const thread = (id: string) => ({ id: ThreadId.makeUnsafe(id) });
+  const lists = {
+    scheduledThreads: [thread("scheduled")],
+    snoozedThreads: [thread("snoozed")],
+    settledThreads: [thread("settled")],
+    archivedSidebarItems: [
+      { kind: "workflow" as const },
+      { kind: "thread" as const, thread: thread("archived") },
+    ],
+  };
+
+  it("finds the bucket that lists the open thread", () => {
+    expect(findShelfBucketForThread(lists, ThreadId.makeUnsafe("scheduled"))).toBe("scheduled");
+    expect(findShelfBucketForThread(lists, ThreadId.makeUnsafe("snoozed"))).toBe("snoozed");
+    expect(findShelfBucketForThread(lists, ThreadId.makeUnsafe("settled"))).toBe("settled");
+    expect(findShelfBucketForThread(lists, ThreadId.makeUnsafe("archived"))).toBe("archived");
+  });
+
+  it("returns null for threads off the shelf and for no thread", () => {
+    expect(findShelfBucketForThread(lists, ThreadId.makeUnsafe("active"))).toBeNull();
+    expect(findShelfBucketForThread(lists, null)).toBeNull();
+  });
+});
 
 describe("polledSidebarGitStatusCwds", () => {
   const target = (

@@ -367,6 +367,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "general.sidebar-preview": {
     category: "general",
   },
+  "general.sidebar-older-threads": {
+    category: "general",
+  },
   "general.task-sidebar": {
     category: "general",
   },

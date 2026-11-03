@@ -107,6 +107,10 @@ const DEFAULT_RUNTIME_WARNING_VISIBILITY: RuntimeWarningVisibility = "summarized
 export const SIDEBAR_THREAD_PREVIEW_COUNT_MIN = 1;
 export const SIDEBAR_THREAD_PREVIEW_COUNT_MAX = 15;
 export const SIDEBAR_THREAD_PREVIEW_COUNT_DEFAULT = 6;
+/** Days without activity before a sidebar thread folds into "N older"; 0 turns folding off. */
+export const SIDEBAR_OLDER_THREAD_DAYS_OPTIONS = [0, 3, 7, 14, 30] as const;
+export type SidebarOlderThreadDays = (typeof SIDEBAR_OLDER_THREAD_DAYS_OPTIONS)[number];
+export const SIDEBAR_OLDER_THREAD_DAYS_DEFAULT: SidebarOlderThreadDays = 7;
 export const WORKSPACE_FILE_TREE_ENTRY_LIMIT_MIN = 5_000;
 export const WORKSPACE_FILE_TREE_ENTRY_LIMIT_DEFAULT = PROJECT_LIST_ENTRIES_DEFAULT_LIMIT;
 export const WORKSPACE_FILE_TREE_ENTRY_LIMIT_MAX = PROJECT_LIST_ENTRIES_MAX_LIMIT;
@@ -525,6 +529,10 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withDecodingDefault(() => "stacked" as const),
   ),
   sidebarThreadPreviewCount: SidebarThreadPreviewCountSchema,
+  sidebarOlderThreadDays: Schema.Literals(SIDEBAR_OLDER_THREAD_DAYS_OPTIONS).pipe(
+    Schema.withConstructorDefault(() => Option.some(SIDEBAR_OLDER_THREAD_DAYS_DEFAULT)),
+    Schema.withDecodingDefault(() => SIDEBAR_OLDER_THREAD_DAYS_DEFAULT),
+  ),
   showReasoningExpanded: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(DEFAULT_SHOW_REASONING_EXPANDED)),
   ),

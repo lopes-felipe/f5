@@ -23,19 +23,13 @@ import {
   type GitStatusResult,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
-import { isArchivedWorkflow } from "@t3tools/shared/workflowArchive";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
 import { type AppSettings, useAppSettingsSelector } from "../appSettings";
 import { selectProjectDraftThread, useComposerDraftStore } from "../composerDraftStore";
 import { useStartupReady } from "../lib/startupReady";
 import { cn, newCommandId } from "../lib/utils";
-import {
-  getMostRecentProject,
-  getMostRecentThreadForProject,
-  isArchivedThread,
-  isSnoozedThread,
-} from "../lib/threadOrdering";
+import { getMostRecentProject, getMostRecentThreadForProject } from "../lib/threadOrdering";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { useStore } from "../store";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
@@ -47,9 +41,12 @@ import { useWorkflowCreateDialogStore } from "../workflowCreateDialogStore";
 import { useSummaryStatusById } from "../hooks/useThreadStatusById";
 import {
   bucketThreadsByAttention,
+  isAttentionStatus,
+  isWorkingStatus,
   selectStandaloneThreadsByActivity,
   selectVisibleWorkflowThreads,
 } from "../lib/threadAttentionBuckets";
+import { useNowHour } from "../lib/nowTicker";
 import { useNextTurnQueueStore } from "../nextTurnQueueStore";
 import { pillForStatus } from "../threadStatus";
 import { toastManager } from "./ui/toast";
@@ -80,8 +77,10 @@ import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { setWorkflowArchived } from "../archiveActions";
 import {
+  findShelfBucketForThread,
   polledSidebarGitStatusCwds,
   reconcileFrozenOrder,
+  type SidebarShelfBucket,
   resolvePrimaryNewThreadProjectId,
   shouldClearThreadSelectionOnMouseDown,
   toggleWorkflowThreadListExpansion,
@@ -147,6 +146,7 @@ function selectSidebarSettings(settings: AppSettings) {
     confirmThreadDelete: settings.confirmThreadDelete,
     gitStatusAutoRefreshIntervalSeconds: settings.gitStatusAutoRefreshIntervalSeconds,
     expandWorkflowThreadsByDefault: settings.expandWorkflowThreadsByDefault,
+    sidebarOlderThreadDays: settings.sidebarOlderThreadDays,
   };
 }
 
@@ -158,7 +158,6 @@ export default function Sidebar() {
   const planningWorkflows = useStore((store) => store.planningWorkflows);
   const codeReviewWorkflows = useStore((store) => store.codeReviewWorkflows);
   const investigationWorkflows = useStore((store) => store.investigationWorkflows);
-  const threadsHydrated = useStore((store) => store.threadsHydrated);
   const pinRevision = useStore((store) => store.pinRevision ?? 0);
   const startupReady = useStartupReady();
   const toggleProject = useStore((store) => store.toggleProject);
@@ -199,12 +198,9 @@ export default function Sidebar() {
   const [expandedThreadListsByProject, setExpandedThreadListsByProject] = useState<
     ReadonlySet<string>
   >(() => new Set());
-  const [collapsedArchivedSectionsByProject, setCollapsedArchivedSectionsByProject] = useState<
-    ReadonlySet<ProjectId>
-  >(() => new Set());
-  const [collapsedSnoozedSectionsByProject, setCollapsedSnoozedSectionsByProject] = useState<
-    ReadonlySet<ProjectId>
-  >(() => new Set());
+  const [openShelfByProject, setOpenShelfByProject] = useState<
+    ReadonlyMap<ProjectId, SidebarShelfBucket | null>
+  >(() => new Map());
   const openWorkflowCreateDialog = useWorkflowCreateDialogStore((state) => state.open);
   const lastCreatedWorkflowId = useWorkflowCreateDialogStore(
     (state) => state.lastCreatedWorkflowId,
@@ -215,7 +211,6 @@ export default function Sidebar() {
   >({});
   const [sidebarHoverFreezeSnapshot, setSidebarHoverFreezeSnapshot] =
     useState<SidebarHoverFreezeSnapshot | null>(null);
-  const archivedSectionsInitializedRef = useRef(false);
   const dragInProgressRef = useRef(false);
   const suppressProjectClickAfterDragRef = useRef(false);
   const sidebarHoverAnchorRef = useRef<HTMLDivElement | null>(null);
@@ -370,6 +365,24 @@ export default function Sidebar() {
       ),
     [queueSummary],
   );
+  const nowHour = useNowHour();
+  // Threads aging never folds: the open one, unread, running or waiting, and live terminals.
+  const agingExemptThreadIds = useMemo(() => {
+    const ids = new Set<ThreadId>(unreadThreadIds);
+    if (routeThreadId) ids.add(routeThreadId);
+    for (const [threadId, status] of threadStatusById)
+      if (isWorkingStatus(status) || isAttentionStatus(status)) ids.add(threadId);
+    for (const [threadId, terminalState] of Object.entries(terminalStateByThreadId))
+      if (terminalState.runningTerminalIds.length > 0) ids.add(ThreadId.makeUnsafe(threadId));
+    for (const threadId of pausedQueueThreadIds) ids.add(threadId);
+    return ids;
+  }, [
+    pausedQueueThreadIds,
+    routeThreadId,
+    terminalStateByThreadId,
+    threadStatusById,
+    unreadThreadIds,
+  ]);
   const liveAttentionThreads = useMemo(() => {
     const input = { threads, planningWorkflows, codeReviewWorkflows, investigationWorkflows };
     return bucketThreadsByAttention(
@@ -997,53 +1010,37 @@ export default function Sidebar() {
     },
   );
 
-  const toggleArchivedSectionForProject = useStableCallback((projectId: ProjectId) => {
-    setCollapsedArchivedSectionsByProject((current) => {
-      const next = new Set(current);
-      if (next.has(projectId)) {
-        next.delete(projectId);
-      } else {
-        next.add(projectId);
-      }
-      return next;
-    });
-  });
+  const toggleShelfBucketForProject = useStableCallback(
+    (projectId: ProjectId, bucket: SidebarShelfBucket) => {
+      setOpenShelfByProject((current) => {
+        const next = new Map(current);
+        next.set(projectId, current.get(projectId) === bucket ? null : bucket);
+        return next;
+      });
+    },
+  );
 
-  const toggleSnoozedSectionForProject = useStableCallback((projectId: ProjectId) => {
-    setCollapsedSnoozedSectionsByProject((current) => {
-      const next = new Set(current);
-      if (next.has(projectId)) next.delete(projectId);
-      else next.add(projectId);
-      return next;
-    });
-  });
-
-  useEffect(() => {
-    if (archivedSectionsInitializedRef.current || !threadsHydrated) {
-      return;
+  // Opening a thread that sits on a shelf opens its bucket, so the open row is always visible.
+  const routeShelf = useMemo(() => {
+    if (routeThreadId === null) return null;
+    for (const [projectId, lists] of projectSidebarListsById) {
+      const bucket = findShelfBucketForThread(lists, routeThreadId);
+      if (bucket) return { projectId, bucket };
     }
-
-    archivedSectionsInitializedRef.current = true;
-    setCollapsedArchivedSectionsByProject(
-      new Set([
-        ...threads.filter((thread) => isArchivedThread(thread)).map((thread) => thread.projectId),
-        ...planningWorkflows
-          .filter((workflow) => isArchivedWorkflow(workflow))
-          .map((workflow) => workflow.projectId),
-        ...codeReviewWorkflows
-          .filter((workflow) => isArchivedWorkflow(workflow))
-          .map((workflow) => workflow.projectId),
-        ...investigationWorkflows
-          .filter((workflow) => isArchivedWorkflow(workflow))
-          .map((workflow) => workflow.projectId),
-      ]),
-    );
-    setCollapsedSnoozedSectionsByProject(
-      new Set(
-        threads.filter((thread) => isSnoozedThread(thread)).map((thread) => thread.projectId),
-      ),
-    );
-  }, [codeReviewWorkflows, investigationWorkflows, planningWorkflows, threads, threadsHydrated]);
+    return null;
+  }, [projectSidebarListsById, routeThreadId]);
+  // Keyed by thread and bucket, not the lists, so closing the bucket afterwards sticks.
+  const routeShelfProjectId = routeShelf?.projectId ?? null;
+  const routeShelfBucket = routeShelf?.bucket ?? null;
+  useEffect(() => {
+    if (routeShelfProjectId === null || routeShelfBucket === null) return;
+    setOpenShelfByProject((current) => {
+      if (current.get(routeShelfProjectId) === routeShelfBucket) return current;
+      const next = new Map(current);
+      next.set(routeShelfProjectId, routeShelfBucket);
+      return next;
+    });
+  }, [routeThreadId, routeShelfProjectId, routeShelfBucket]);
 
   const projectActions: SidebarProjectActions = {
     onTitlePointerDownCapture: handleProjectTitlePointerDownCapture,
@@ -1066,8 +1063,7 @@ export default function Sidebar() {
     },
     onExpandThreadList: expandThreadListForProject,
     onCollapseThreadList: collapseThreadListForProject,
-    onToggleArchivedSection: toggleArchivedSectionForProject,
-    onToggleSnoozedSection: toggleSnoozedSectionForProject,
+    onToggleShelfBucket: toggleShelfBucketForProject,
     onPinnedThreadDragEnd: handlePinnedThreadDragEnd,
   };
 
@@ -1081,14 +1077,11 @@ export default function Sidebar() {
         sidebarLists={sidebarLists}
         freezeSnapshot={sidebarHoverFreezeSnapshot}
         threadPreviewLimit={threadPreviewLimit}
-        activeExpanded={expandedThreadListsByProject.has(
-          threadBucketExpansionKey(project.id, "active"),
-        )}
-        archivedExpanded={expandedThreadListsByProject.has(
-          threadBucketExpansionKey(project.id, "archived"),
-        )}
-        archivedSectionCollapsed={collapsedArchivedSectionsByProject.has(project.id)}
-        snoozedSectionCollapsed={collapsedSnoozedSectionsByProject.has(project.id)}
+        expandedThreadLists={expandedThreadListsByProject}
+        openShelfBucket={openShelfByProject.get(project.id) ?? null}
+        olderThreadDays={appSettings.sidebarOlderThreadDays}
+        now={nowHour}
+        agingExemptThreadIds={agingExemptThreadIds}
         draftThreadsByThreadId={draftThreadsByThreadId}
         persistedThreadIds={persistedThreadIds}
         routeThreadId={routeThreadId}
