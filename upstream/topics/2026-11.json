@@ -10309,11 +10309,13 @@
     },
     {
       "createdAt": "2026-11-03T10:28:38.430Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T20:58:06.096Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-29575",
-      "status": "port",
+      "reason": "F5 has no diff-review-comment composer payload or rendered-excerpt path.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "diff",
