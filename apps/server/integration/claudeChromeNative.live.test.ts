@@ -35,7 +35,10 @@ const execFileAsync = promisify(execFile);
  * them). It never stamps a record: it writes a scrubbed report that
  * `generate-claude-chrome-descriptor.ts --evidence` validates before stamping.
  *
- * F5_CLAUDE_CHROME_LIVE=1 opts in; F5_CLAUDE_CHROME_REPORT=<file> receives the report.
+ * F5_CLAUDE_CHROME_LIVE=1 opts in; F5_CLAUDE_CHROME_REPORT=<file> receives the report;
+ * F5_CLAUDE_CHROME_CONFIG_DIR=<dir> is the isolated, claude.ai-signed-in Claude config F5's
+ * sessions use. Vitest drops an inherited CLAUDE_CONFIG_DIR (see vitest.config.ts), so the
+ * harness takes its own variable and passes it to the CLI explicitly.
  */
 const optedIn = process.env.F5_CLAUDE_CHROME_LIVE === "1";
 describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
@@ -55,7 +58,12 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
     const source = evidenceSource();
     const descriptor = claudeChromeDescriptor(record);
     const userHome = userInfo().homedir;
-    const providerHome = process.env.CLAUDE_CONFIG_DIR ?? join(userHome, ".claude");
+    const configDir = process.env.F5_CLAUDE_CHROME_CONFIG_DIR;
+    if (!configDir)
+      throw new Error(
+        "Set F5_CLAUDE_CHROME_CONFIG_DIR to an isolated Claude config signed in to claude.ai (not ~/.claude).",
+      );
+    const providerHome = await realpath(configDir);
     const executable = await realpath(resolveBundledClaudeExecutable());
     // The exercised build, reported as the floors the generator stamps (never the record's).
     const exercised = {
@@ -110,7 +118,7 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
           settingSources: [],
           env: buildClaudeQueryEnv(
             { subagentModel: "inherit" },
-            { ...process.env, HOME: userHome },
+            { ...process.env, HOME: userHome, CLAUDE_CONFIG_DIR: providerHome },
           ),
           maxTurns: 4,
           extraArgs: { chrome: null },
@@ -272,7 +280,9 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
     // True unless a contested session ran and its restore left something behind.
     let contestedRestoreClean = true;
     if (terminalTarget === targetPath) {
-      observations.terminal = { skipped: "set CLAUDE_CONFIG_DIR to a config other than ~/.claude" };
+      observations.terminal = {
+        skipped: "set F5_CLAUDE_CHROME_CONFIG_DIR to a config other than ~/.claude",
+      };
     } else if (assertions["restore-original-bytes"]) {
       const contested = await transactions.approve({
         provider: "claude",
@@ -295,6 +305,7 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
             verifyWrapper: (bytes) => descriptor.verifyWrapper!(bytes, executable, realpath),
             allowedOrigins: descriptor.allowedOrigins,
           });
+          // The user's own terminal Claude: no config dir, so it uses ~/.claude.
           const { CLAUDE_CONFIG_DIR: _isolated, ...terminalEnv } = process.env;
           let exitCode = 0;
           try {
