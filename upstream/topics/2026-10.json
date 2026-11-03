@@ -50611,11 +50611,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T19:36:40.765Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-24639",
-      "status": "port",
+      "reason": "F5 uses Cursor CLI/ACP without the SDK /v1/me probe.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -52566,11 +52568,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T19:36:40.766Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-24978",
-      "status": "port",
+      "reason": "F5 has no Codex provider plan badge; Usage already reads the backend rate-limit plan.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
