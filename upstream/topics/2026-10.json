@@ -52047,11 +52047,21 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T19:14:22.447Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/desktop/src/preview/previewWindowOpen.ts:23",
+          "apps/desktop/src/preview/previewWindowOpen.ts:42"
+        ],
+        "f5Refs": [
+          "f1cc8af8f57279da57761302bd8554b6e12e5845"
+        ]
+      },
       "id": "pr-24866",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "preview browser",
