@@ -71,6 +71,7 @@ const decodeSessionUpdateSchema = Schema.decodeUnknownEffect(AcpSchema.SessionNo
 const decodeSessionUpdate = (payload: unknown) => {
   // Some agents send cancelled even though the pinned ACP schema has no such status.
   // Keep the compatibility mapping specific to tool calls; validate everything else.
+  // Persisted rawPayload also contains the normalized status; incoming wire logs retain the original.
   if (typeof payload === "object" && payload !== null && "update" in payload) {
     const update = payload.update;
     if (
