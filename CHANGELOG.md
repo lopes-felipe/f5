@@ -9,6 +9,14 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Claude MCP Apps: tools that declare a `ui://` app render it in the chat and can call tools with your approval, as with Codex.
 - Analyze usage on Claude usage cards, a Claude sub-agent effort setting, and an opt-in "Confine file edits to the workspace" option per Claude provider.
 - The runtime panel shows the observed Claude runtime version and 5-minute versus 1-hour cache writes.
+- Keep Awake in desktop settings: Off, While agents are working (with a five-minute cooldown), or Always while F5 is open, plus an optional macOS closed-lid mode with battery and thermal safeguards.
+- Hourly profile database snapshots (24 hourly and 7 daily, on by default on APFS), listed under "F5 recovery backups" in Storage settings. If the database is damaged while F5 runs, F5 saves its in-memory state to a recovery file and shows a "Do not quit F5" banner; at startup it refuses to initialize over a damaged database.
+- A recovery script rebuilds a profile database from an exported read model.
+- The sidebar shows update progress in a status pill: available version, download percent, Restart, Installing and Retry, with a popover for details.
+- Storage can reclaim dependency and build folders, more caches, Docker images and a database compaction that never finished.
+- Chat links offer Copy Link and Open in integrated browser from their context menu.
+- Codex-generated images appear as image replies.
+- A profile can always allow Codex Chrome sessions, revocable in Settings → Browser & Computer.
 
 ### Changed
 
@@ -17,11 +25,41 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Dismissed or skipped Claude questions tell Claude which questions went unanswered; Grep/Glob rows note searches stopped at the time limit; cron rows show the next run.
 - Claude Opus 4.8 Fast Mode is no longer offered by default (deprecated by Anthropic, removed 2026-11-30).
 - The Claude in Chrome certification record for 2.1.295 is withdrawn, superseded by the 2.1.317 record (not yet certified).
+- Agent questions render as one Q&A card with the questions and chosen answers. MCP tool-call cards are redesigned and finished calls stay visible after later turns.
+- Command cards are redesigned, show the command for backgrounded commands, and derive a header for Codex commands that have no description.
+- Mermaid diagrams render while a reply streams.
+- The PR hub lists failed and cancelled checks first and groups review threads in the Timeline.
+- Background Claude metadata generation (titles and similar) no longer saves throwaway sessions, and Claude subprocesses identify themselves as `t3-code`.
+
+### Performance
+
+- Coalesce rapid tool updates into 50 ms windows, and refresh the branch list when the branch picker opens.
 
 ### Fixed
 
 - Attachments and plan files stay readable when a Claude setting blocks reads outside the working directory.
 - Warn when Claude cannot save a conversation (disk full or quota), and give the next resume F5's summary.
+- Codex Chrome stops driving the browser when a turn is interrupted, keeps working after a pause and resume, and an idle Chrome session no longer reports that an agent is controlling this computer.
+- Required unanswered questions block Enter; tapping outside the model picker on touch screens no longer activates the control underneath; up-arrow recall skips automated messages; stale file suggestions and filesystem paths stay out of the composer menus.
+- Provider error details redact compound credential values and whole API keys.
+- Antigravity question cards keep option IDs, and Antigravity limits merge both quota endpoints so Gemini is not omitted.
+- OpenCode retries transient startup locks; Muse quota refusals show Limited and resume at reset; explicit effort reaches uncatalogued Claude models; Claude's rejected Auto fallback is retained for the selected model.
+- Ported Pi, Codex, Claude and ACP model fixes, including Pi input placeholders and Codex sessions whose stdout closes without an exit status.
+- Cursor usage limits accept `CURSOR_API_KEY` credentials.
+- Pi prompts sent during compaction are kept and retried in order.
+- A stuck quit no longer leaves the desktop app unkillable; fixes for Hyprland startup and held Cmd/Ctrl+W.
+- Diffs containing both a file and a folder of the same name keep both rows navigable.
+- MCP apps can enter fullscreen only after user activation inside the app, and thread errors are shown in readable form.
+- Renaming a saved sensitive provider variable or clearing its Sensitive checkbox no longer erases the stored value.
+- Large workspace file previews no longer stop early on SMB, NFS and sshfs.
+- Self-managed GitLab 15.7–17.10 merge request diffs load in the PR hub.
+- Queued upstream-port workflows no longer stall with zero running jobs.
+
+### Releases
+
+- Failed or timed-out beta candidate jobs are rerun automatically, up to three attempts, and newer main commits supersede older queued CI runs.
+- Publication no longer requires a fresh acceptance report for every build; each certifying record's evidence commit must be in the release tag's history.
+- Linux packages no longer grant group or other write access to the installed app.
 
 ### Computer use
 
@@ -33,6 +71,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
   capture privacy checks passed on Windows 11; full provider, physical-stop,
   display, Windows 10 and installed-build acceptance remain pending. Signed
   certification remains false.
+- Codex Chrome is certified on macOS Apple Silicon.
 
 ## [0.1.2] - 2026-11-01
 
