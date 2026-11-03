@@ -811,7 +811,11 @@ function OpenCommandPaletteDialog(props: {
 
   function handleQueryChange(nextQuery: string): void {
     setHighlightedItemValue(null);
-    setQuery(props.surfaceMode === "command" ? resolvePastedPath(query, nextQuery) : nextQuery);
+    setQuery(
+      props.surfaceMode === "command" && !nextQuery.startsWith("?") && !nextQuery.startsWith(">")
+        ? resolvePastedPath(query, nextQuery)
+        : nextQuery,
+    );
     if (nextQuery === "" && currentView?.initialQuery) {
       popView();
     }
