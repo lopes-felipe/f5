@@ -147,6 +147,7 @@ export function ComposerFooterControls(props: {
         </span>
       ) : (
         <ProviderInstanceModelPicker
+          docked
           compact={compact}
           instanceId={model.selectedProviderInstanceId}
           model={model.selectedModelForPickerWithCustomFallback}

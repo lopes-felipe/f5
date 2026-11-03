@@ -9,12 +9,17 @@ import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
   type ModelSelection,
+  type ProviderOptionSelection,
   type CustomModelSetting,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
 } from "@t3tools/contracts";
-import { createModelSelection, resolveSelectableModel } from "@t3tools/shared/model";
+import {
+  createModelSelection,
+  normalizeModelSlug,
+  resolveSelectableModel,
+} from "@t3tools/shared/model";
 import { getComposerProviderState } from "./components/chat/composerProviderState";
 import { UnifiedSettings } from "@t3tools/contracts/settings";
 import {
@@ -35,6 +40,49 @@ export type ModelCatalogSettings = Pick<
 const DEFAULT_TEXT_GENERATION_INSTANCE_ID = ProviderInstanceId.make("codex");
 const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_DRIVER =
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER as Partial<Record<string, string>>;
+
+export function resolveComposerFallbackModel(input: {
+  driver: ProviderDriverKind;
+  candidate: string | null | undefined;
+  instanceDefault: string | undefined;
+  models: ReadonlyArray<ModelEsque>;
+}): string | undefined {
+  return (
+    resolveSelectableModel(input.driver, input.candidate, input.models) ??
+    resolveSelectableModel(input.driver, input.instanceDefault, input.models) ??
+    input.models[0]?.slug
+  );
+}
+
+/** Only static aliases identify the same model across instances. Custom slugs stay exact. */
+export function resolveFallbackModelOptions(input: {
+  settings: ModelCatalogSettings;
+  providers: ReadonlyArray<ServerProvider>;
+  requestedInstanceId: ProviderInstanceId | undefined;
+  selectedInstanceId: ProviderInstanceId;
+  selectedDriver: ProviderDriverKind;
+  selectedModel: string;
+  selection: { model: string; options?: ReadonlyArray<ProviderOptionSelection> | undefined } | null;
+}): ReadonlyArray<ProviderOptionSelection> | undefined {
+  const { requestedInstanceId, selection } = input;
+  if (!requestedInstanceId || !selection?.options?.length) return undefined;
+  const requested = input.providers.find((entry) => entry.instanceId === requestedInstanceId);
+  if (requested?.driver !== input.selectedDriver) return undefined;
+  const identity = (instanceId: ProviderInstanceId, model: string) => {
+    const isCustom =
+      input.providers
+        .find((entry) => entry.instanceId === instanceId)
+        ?.models.some((entry) => entry.slug === model && entry.isCustom) ||
+      readInstanceCustomModels(input.settings, instanceId, input.selectedDriver).some(
+        (entry) => customModelSlug(entry) === model,
+      );
+    return isCustom ? model : normalizeModelSlug(model, input.selectedDriver);
+  };
+  return identity(requestedInstanceId, selection.model) ===
+    identity(input.selectedInstanceId, input.selectedModel)
+    ? selection.options
+    : undefined;
+}
 
 /**
  * Resolve the custom-model list for a given instance, preferring the

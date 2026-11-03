@@ -28,6 +28,7 @@ function PopoverPopup({
   tooltipStyle = false,
   anchor,
   touchBackdrop = false,
+  collisionAvoidance,
   ...props
 }: PopoverPrimitive.Popup.Props & {
   side?: PopoverPrimitive.Positioner.Props["side"];
@@ -37,6 +38,7 @@ function PopoverPopup({
   tooltipStyle?: boolean;
   anchor?: PopoverPrimitive.Positioner.Props["anchor"];
   touchBackdrop?: boolean;
+  collisionAvoidance?: PopoverPrimitive.Positioner.Props["collisionAvoidance"];
 }) {
   const finalFocus = usePopupFocus();
   const ownerAttributes = usePopupOwnerAttributes();
@@ -53,7 +55,8 @@ function PopoverPopup({
         align={align}
         alignOffset={alignOffset}
         anchor={anchor}
-        className="z-[130] h-(--positioner-height) w-(--positioner-width) max-w-(--available-width) transition-[top,left,right,bottom,transform] data-instant:transition-none"
+        className="z-[130] h-(--positioner-height) max-h-(--available-height) w-(--positioner-width) max-w-(--available-width) transition-[top,left,right,bottom,transform] data-instant:transition-none"
+        collisionAvoidance={collisionAvoidance}
         data-slot="popover-positioner"
         side={side}
         sideOffset={sideOffset}

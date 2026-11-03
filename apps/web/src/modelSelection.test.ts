@@ -12,7 +12,98 @@ import {
   getAppModelOptions,
   resolveAppModelSelectionForInstance,
   resolveAppModelSelectionState,
+  resolveFallbackModelOptions,
+  resolveComposerFallbackModel,
 } from "./modelSelection";
+
+describe("composer fallback model options", () => {
+  it("tries the saved model, then the instance default before picker ordering", () => {
+    const base = {
+      driver: ProviderDriverKind.make("codex"),
+      instanceDefault: "gpt-5.4",
+      models: [
+        { slug: "first-custom", name: "First" },
+        { slug: "gpt-5.4", name: "Default" },
+      ],
+    };
+    expect(resolveComposerFallbackModel({ ...base, candidate: "missing-custom" })).toBe("gpt-5.4");
+    expect(resolveComposerFallbackModel({ ...base, candidate: "first-custom" })).toBe(
+      "first-custom",
+    );
+    expect(
+      resolveComposerFallbackModel({
+        ...base,
+        candidate: "missing-custom",
+        instanceDefault: "also-missing",
+      }),
+    ).toBe("first-custom");
+  });
+  const requestedInstanceId = ProviderInstanceId.make("codex_old");
+  const selectedInstanceId = ProviderInstanceId.make("codex_work");
+  const selectedDriver = ProviderDriverKind.make("codex");
+  const options = [{ id: "reasoningEffort", value: "high" }];
+  const base = {
+    settings: DEFAULT_UNIFIED_SETTINGS,
+    providers: [
+      { ...provider({ instanceId: requestedInstanceId }), enabled: false },
+      provider({ instanceId: selectedInstanceId }),
+    ],
+    requestedInstanceId,
+    selectedInstanceId,
+    selectedDriver,
+    selectedModel: "gpt-5.4",
+    selection: { model: "gpt-5.4", options },
+  };
+
+  it.each(["gpt-5.4", "5.4"])("keeps effort saved as %s", (model) => {
+    expect(resolveFallbackModelOptions({ ...base, selection: { model, options } })).toEqual(
+      options,
+    );
+  });
+
+  it("does not copy effort from another model or driver", () => {
+    expect(resolveFallbackModelOptions({ ...base, selectedModel: "gpt-5.4-mini" })).toBeUndefined();
+    expect(
+      resolveFallbackModelOptions({
+        ...base,
+        selectedDriver: ProviderDriverKind.make("claudeAgent"),
+      }),
+    ).toBeUndefined();
+  });
+
+  it.each([requestedInstanceId, selectedInstanceId])(
+    "keeps custom slug identity on %s",
+    (instanceId) => {
+      const settings = {
+        ...DEFAULT_UNIFIED_SETTINGS,
+        providerInstances: {
+          [instanceId]: {
+            driver: selectedDriver,
+            enabled: true,
+            config: { customModels: ["5.4"] },
+          },
+        },
+      };
+      expect(
+        resolveFallbackModelOptions({
+          ...base,
+          settings,
+          selectedModel: instanceId === selectedInstanceId ? "5.4" : "gpt-5.4",
+          selection: { model: instanceId === requestedInstanceId ? "5.4" : "gpt-5.4", options },
+        }),
+      ).toBeUndefined();
+    },
+  );
+
+  it("does not expand instance catalog aliases", () => {
+    expect(
+      resolveFallbackModelOptions({
+        ...base,
+        selection: { model: "instance-default", options },
+      }),
+    ).toBeUndefined();
+  });
+});
 
 function provider(input: {
   provider?: ProviderDriverKind;

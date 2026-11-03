@@ -1,7 +1,7 @@
 import "../../index.css";
 
 import type {} from "@vitest/browser-playwright";
-import { cdp, page } from "vitest/browser";
+import { cdp, page, userEvent } from "vitest/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 import type {
@@ -126,6 +126,33 @@ function readStoredFavoriteModels() {
 }
 
 describe("ProviderModelPicker", () => {
+  it("ignores composition confirmation and dismissal keys", async () => {
+    const mounted = await mountPicker();
+    try {
+      await page.getByRole("button", { name: /GPT-5.5/ }).click();
+      const search = page.getByPlaceholder("Search models...");
+      await search.fill("GPT-5.4 Mini");
+      for (const native of [{ isComposing: true }, { keyCode: 229 }]) {
+        for (const key of ["Enter", "Escape"]) {
+          const event = new KeyboardEvent("keydown", {
+            key,
+            ...native,
+            bubbles: true,
+            cancelable: true,
+          });
+          search.element().dispatchEvent(event);
+          expect(event.defaultPrevented).toBe(false);
+          await expect.element(search).toBeVisible();
+          expect(mounted.onProviderModelChange).not.toHaveBeenCalled();
+        }
+      }
+      await search.fill("GPT-5.4 Mini");
+      await userEvent.keyboard("{Enter}");
+      await expect.poll(() => mounted.onProviderModelChange.mock.calls.length).toBe(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
   beforeEach(() => {
     localStorage.clear();
     useModelPreferencesStore.setState({

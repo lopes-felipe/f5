@@ -293,7 +293,12 @@ import { isTerminalFocused } from "../lib/terminalFocus";
 import { createTerminalCloseRepeatGuard } from "../lib/terminalCloseShortcut";
 import { isKeyboardEventComposing } from "../lib/keyboardComposition";
 import { recordModelSelection } from "../modelPreferencesStore";
-import { getCustomModelOptionsByInstance, type ModelCatalogSettings } from "../modelSelection";
+import {
+  getCustomModelOptionsByInstance,
+  resolveFallbackModelOptions,
+  resolveComposerFallbackModel,
+  type ModelCatalogSettings,
+} from "../modelSelection";
 import { selectServerSettings, type UnifiedWebSettings, useSettings } from "../hooks/useSettings";
 import { useWsConnectionState } from "../wsConnectionState";
 import BranchToolbar from "./BranchToolbar";
@@ -475,7 +480,7 @@ import {
   revokeBlobPreviewUrl,
   revokeComposerImagePreviewUrls,
   revokeUserMessagePreviewUrls,
-  resolveThreadModelOptionsSeed,
+  resolveComposerModelOptionsSeed,
   resolveSubmissionIntent,
   shouldRunNativeReviewShortcut,
   shouldRunNativeAsideShortcut,
@@ -1615,7 +1620,11 @@ export default memo(function ChatView({
     selectedProviderEntry !== undefined &&
     requestedInstanceId !== undefined &&
     requestedInstanceId !== selectedProviderEntry.instanceId;
-  const draftModelOptions = providerSelectionChanged ? null : composerDraft.modelOptions;
+  const sameDriverFallback =
+    providerSelectionChanged &&
+    providerStatuses.some(
+      (entry) => entry.instanceId === requestedInstanceId && entry.driver === selectedProvider,
+    );
   const selectedProviderDriver = ProviderDriverKind.make(selectedProvider);
   const selectedProviderInstanceId = selectedProviderEntry?.instanceId ?? NO_PROVIDER_INSTANCE_ID;
   const modelOptionsByProvider = useMemo(
@@ -1649,8 +1658,18 @@ export default memo(function ChatView({
       providerStatuses,
       selectedProviderInstanceId,
     );
+    if (sameDriverFallback) {
+      return (
+        resolveComposerFallbackModel({
+          driver: selectedProviderDriver,
+          candidate: activeThread?.model ?? activeProject?.model,
+          instanceDefault,
+          models: selectedProviderPickerOptions,
+        }) ?? getDefaultModel(selectedProvider)
+      );
+    }
     const rawModel =
-      (providerSelectionChanged
+      (providerSelectionChanged && !sameDriverFallback
         ? instanceDefault
         : (activeThread?.model ?? activeProject?.model)) ??
       instanceDefault ??
@@ -1666,6 +1685,7 @@ export default memo(function ChatView({
     providerStatuses,
     selectedProviderInstanceId,
     providerSelectionChanged,
+    sameDriverFallback,
     activeProject?.model,
     activeThread?.model,
     selectedProvider,
@@ -1673,7 +1693,7 @@ export default memo(function ChatView({
     selectedProviderPickerOptions,
   ]);
   const selectedModel = useMemo(() => {
-    const draftModel = providerSelectionChanged ? null : composerDraft.model;
+    const draftModel = providerSelectionChanged && !sameDriverFallback ? null : composerDraft.model;
     if (!draftModel) {
       return baseThreadModel;
     }
@@ -1686,19 +1706,59 @@ export default memo(function ChatView({
     baseThreadModel,
     composerDraft.model,
     providerSelectionChanged,
+    sameDriverFallback,
     selectedProviderDriver,
     selectedProviderPickerOptions,
+  ]);
+  const draftModelOptions = useMemo(() => {
+    if (!providerSelectionChanged) return composerDraft.modelOptions;
+    const draftOptions = providerModelOptionsToSelections(
+      selectedProvider,
+      composerDraft.modelOptions,
+    );
+    const selection = {
+      model: composerDraft.model ?? activeThread?.model ?? activeProject?.model ?? "",
+      options: draftOptions,
+    };
+    const options = resolveFallbackModelOptions({
+      settings: unifiedSettings,
+      providers: providerStatuses,
+      requestedInstanceId,
+      selectedInstanceId: selectedProviderInstanceId,
+      selectedDriver: selectedProviderDriver,
+      selectedModel,
+      selection,
+    });
+    return options ? providerSelectionsToModelOptions(selectedProvider, options) : null;
+  }, [
+    providerSelectionChanged,
+    composerDraft.modelOptions,
+    composerDraft.model,
+    activeThread?.model,
+    activeProject?.model,
+    unifiedSettings,
+    providerStatuses,
+    requestedInstanceId,
+    selectedProviderInstanceId,
+    selectedProviderDriver,
+    selectedProvider,
+    selectedModel,
   ]);
   const threadModelSelection = serverThread?.modelSelection;
   useEffect(() => {
     if (workflowThreadSlot) return;
-    const next = resolveThreadModelOptionsSeed({
+    const next = resolveComposerModelOptionsSeed({
       draftModelOptions: composerDraft.modelOptions,
       selectedModel,
       threadSelection: threadModelSelection,
       selectedInstanceId: selectedProviderInstanceId,
       selectedProvider,
       previous: getThreadModelOptionsSeed(threadId),
+      fallback: providerSelectionChanged,
+      requestedInstanceId,
+      projectSelection: activeProject?.defaultModelSelection,
+      providers: providerStatuses,
+      settings: unifiedSettings,
     });
     if (!next) return;
     recordThreadModelOptionsSeed(threadId, next.record);
@@ -1712,6 +1772,11 @@ export default memo(function ChatView({
     threadId,
     threadModelSelection,
     workflowThreadSlot,
+    providerSelectionChanged,
+    requestedInstanceId,
+    activeProject?.defaultModelSelection,
+    providerStatuses,
+    unifiedSettings,
   ]);
   const selectedProviderModelOptions = useMemo(
     () => providerModelOptionsToSelections(selectedProvider, draftModelOptions),
