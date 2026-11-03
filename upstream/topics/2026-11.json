@@ -4960,11 +4960,22 @@
     },
     {
       "createdAt": "2026-11-01T11:11:31.013Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T19:13:20.446Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/components/DiffPanel.tsx:119",
+          "apps/web/src/components/DiffPanel.tsx:541",
+          "apps/web/src/components/DiffPanel.tsx:741"
+        ],
+        "f5Refs": [
+          "f1cc8af8f57279da57761302bd8554b6e12e5845"
+        ]
+      },
       "id": "pr-27635",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "diff panel",
@@ -6131,14 +6142,25 @@
     },
     {
       "createdAt": "2026-11-01T11:11:31.013Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T19:13:46.767Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/usage/providerLimits.ts:23",
+          "apps/server/src/usage/providerLimits.ts:52",
+          "apps/server/src/usage/antigravityHubUsage.test.ts:338"
+        ],
+        "f5Refs": [
+          "f1cc8af8f57279da57761302bd8554b6e12e5845"
+        ]
+      },
       "id": "pr-28090",
+      "reason": "Already present in f5",
       "relatedTopics": [
         "pr-23558"
       ],
-      "status": "port",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "usage",

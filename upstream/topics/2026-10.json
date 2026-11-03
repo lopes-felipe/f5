@@ -56862,11 +56862,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-03T19:13:46.767Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-25453",
-      "status": "port",
+      "reason": "F5 derives usage totals from persisted usage facts and Codex account RPCs rather than scanning rollout files, so compressed rollouts do not affect its transcript discovery.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "usage",
